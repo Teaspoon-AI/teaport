@@ -25,7 +25,7 @@ different engine if it is compatible with the teaport-engine interface.
 # 2. Install NemoClaw (NVIDIA's installer — your consent, your terminal)
 bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)
 # 3. Install teaport
-bash <(curl -fsSL https://get.teagram.co/mini)
+bash <(curl -fsSL https://get.teaspoon.tech/teaport)
 ```
 
 Accept the engine license. Answer the LLM question. The installer then sets up

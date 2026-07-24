@@ -1,36 +1,36 @@
 {
   "version": "0.0.0",
   "channel": "stable",
-  "_note": "Release manifest — single source of truth for install.sh, `teaport update`, and box OTA. All URLs served from teagram.co (no HF, no binaries repo). Placeholder values until the first release is cut.",
+  "_note": "Release manifest — single source of truth for install.sh, `teaport update`, and box OTA. All URLs served from get.teaspoon.tech (no HF, no binaries repo). Placeholder values until the first release is cut.",
   "engine": {
     "release": "1.3",
     "eula": {
       "version": "1.0",
-      "url": "https://get.teagram.co/eula/teagram-mini-engine-license-1.0.txt",
-      "sha256": "5a424458179e2b67548aaecc64ef56079b5e487022cf7b5edef379fc376d58f8"
+      "url": "https://get.teaspoon.tech/eula/teaport-engine-license-1.0.txt",
+      "sha256": "33334d85d3f087da738131fcfe5ee6f862859c8130c4bbdd0aad441aff34effb"
     },
     "assets": {
       "l4t38-cu13": {
-        "url": "https://get.teagram.co/dl/engine/teagram-engine-1.3-l4t38-cu13",
+        "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.3-l4t38-cu13",
         "sha256": "8e8ccc194ae9966e6795078a822ab142200ab1f988faf014064fcb45f06d56a4"
       }
     }
   },
   "models": {
     "kokoro": {
-      "url": "https://get.teagram.co/dl/models/kokoro/Kokoro_espeak_F16.gguf",
+      "url": "https://get.teaspoon.tech/dl/models/kokoro/Kokoro_espeak_F16.gguf",
       "sha256": "bcda111bec780ba854b2aff76f0894d24ee4b3008f133d8586d628d1bffbe673"
     },
     "voxtral": {
-      "url": "https://get.teagram.co/dl/models/voxtral/consolidated.safetensors",
+      "url": "https://get.teaspoon.tech/dl/models/voxtral/consolidated.safetensors",
       "sha256": "fd25f9d675042c37b0a9b051a5333ef001c129d302461995bdc3e7b321c3b2b6",
       "aux": {
-        "params.json": "https://get.teagram.co/dl/models/voxtral/params.json",
-        "tekken.json": "https://get.teagram.co/dl/models/voxtral/tekken.json"
+        "params.json": "https://get.teaspoon.tech/dl/models/voxtral/params.json",
+        "tekken.json": "https://get.teaspoon.tech/dl/models/voxtral/tekken.json"
       }
     }
   },
   "brain": { "repo": "Teaspoon-AI/teaport", "tag": "main" },
-  "plugin": { "npm": "@teaspoon-ai/openclaw-teagram-realtime", "version": "0.1.0" },
+  "plugin": { "npm": "@teaspoon-ai/openclaw-teaport-realtime", "version": "0.1.0" },
   "nemoclaw": { "tested_tag": "TODO" }
 }

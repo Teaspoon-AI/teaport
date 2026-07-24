@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# teaport installer — served as:  bash <(curl -fsSL https://get.teagram.co/mini)
+# teaport installer — served as:  bash <(curl -fsSL https://get.teaspoon.tech/teaport)
 #
 # Idempotent, re-runnable (re-run == repair). Installs the closed engine + models +
 # the brain + (optionally) the OpenClaw plugin + systemd units on a JetPack 7.2 /
@@ -11,7 +11,7 @@
 #   ./install.sh --help
 #
 # Env overrides (mainly for dev/testing):
-#   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teagram.co/manifest/stable.json)
+#   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
 #   TEAPORT_PREFIX         install root (default /opt/teaport)
 #   TEAPORT_ETC            non-secret env dir (default /etc/teaport)
 #   TEAPORT_BRAIN_SRC      install the brain from this local dir instead of cloning
@@ -24,7 +24,7 @@
 #
 set -euo pipefail
 
-MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teagram.co/manifest/stable.json}"
+MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teaspoon.tech/manifest/stable.json}"
 PREFIX="${TEAPORT_PREFIX:-/opt/teaport}"
 ETC="${TEAPORT_ETC:-/etc/teaport}"
 STATE="${TEAPORT_STATE:-/var/lib/teaport}"
@@ -90,7 +90,7 @@ download() {
     log "have $(basename "$dest") (sha ok)"; return
   fi
   log "download $(basename "$dest")"
-  run curl -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is teagram.co live?): $url"
+  run curl -fL --retry 3 -C - -o "$dest.part" "$url" || die "download failed (is get.teaspoon.tech live?): $url"
   if [ "$DRY_RUN" != 1 ]; then
     [ -n "$sha" ] && { echo "$sha  $dest.part" | sha256sum -c --status || die "sha256 mismatch: $dest"; }
     mv "$dest.part" "$dest"
@@ -140,7 +140,7 @@ eula_gate() {
     [ -t 0 ] || die "the engine license needs acceptance — re-run on a TTY, or read $url and pass --accept-eula"
     printf '\n  Teaport Engine License v%s — summary (the full text below governs):\n' "$ver"
     printf '    - personal use by individuals: free\n'
-    printf '    - any organizational or commercial use: requires a written license (hello@teagram.co)\n\n'
+    printf '    - any organizational or commercial use: requires a written license (hello@teaspoon.tech)\n\n'
     read -r -p '  Press Enter to read the license... ' _ || true
     if have less; then less "$txt"; elif have more; then more "$txt"; else cat "$txt"; fi
     printf '\n'
@@ -174,7 +174,7 @@ phase_preflight() {
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
   have curl || die "curl is required"
-  run curl -fsSL -o /dev/null --max-time 8 https://get.teagram.co 2>/dev/null || warn "get.teagram.co not reachable (downloads will fail)"
+  run curl -fsSL -o /dev/null --max-time 8 https://get.teaspoon.tech 2>/dev/null || warn "get.teaspoon.tech not reachable (downloads will fail)"
 }
 
 phase_sysdeps() {

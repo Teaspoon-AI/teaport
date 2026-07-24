@@ -16,7 +16,7 @@ downloads. You bring your own Jetson and your own LLM.
   own terminal and give your own consent:
   `bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)`.
 - **Step 3 — Install teaport.** Run
-  `bash <(curl -fsSL https://get.teagram.co/mini)`.
+  `bash <(curl -fsSL https://get.teaspoon.tech/teaport)`.
 - **Step 4 — Open the front door and talk.** From any device on your network,
   open **`https://teaport.local`** in a browser and accept the one-time
   certificate warning. The appliance serves HTTPS with a self-signed
