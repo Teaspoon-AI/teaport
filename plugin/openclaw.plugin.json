@@ -1,0 +1,21 @@
+{
+  "id": "teaport-realtime",
+  "name": "Teaport Realtime Voice",
+  "description": "Routes OpenClaw realtime voice (gateway-relay) to an external Pipecat speech-to-speech server (on-device Voxtral STT + LLM + TTS with heard-grounded barge-in).",
+  "contracts": {
+    "realtimeVoiceProviders": ["teaport"]
+  },
+  "activation": {
+    "onStartup": true
+  },
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": true,
+    "properties": {
+      "url": {
+        "type": "string",
+        "description": "Fallback WebSocket URL of the teaport Pipecat gateway server (per-session config normally comes from talk.realtime.providers.teaport.url), e.g. ws://127.0.0.1:7861/talk"
+      }
+    }
+  }
+}

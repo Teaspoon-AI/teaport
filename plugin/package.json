@@ -1,0 +1,50 @@
+{
+  "name": "@teaspoon-ai/openclaw-teaport-realtime",
+  "version": "0.1.0",
+  "description": "OpenClaw realtime-voice provider bridging gateway-relay to an external Pipecat speech-to-speech server (on-device Voxtral STT + LLM + TTS with heard-grounded barge-in).",
+  "license": "MIT",
+  "author": "Teaspoon AI",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "openclaw": {
+    "extensions": ["./index.js"]
+  },
+  "peerDependencies": {
+    "openclaw": ">=2026.4.0"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "realtime-voice",
+    "voice",
+    "stt",
+    "tts",
+    "pipecat",
+    "teaport",
+    "voxtral",
+    "kokoro"
+  ],
+  "files": [
+    "index.js",
+    "provider.js",
+    "openclaw.plugin.json"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Teaspoon-AI/teaport.git",
+    "directory": "plugin"
+  },
+  "homepage": "https://github.com/Teaspoon-AI/teaport/tree/main/plugin#readme",
+  "bugs": {
+    "url": "https://github.com/Teaspoon-AI/teaport/issues"
+  },
+  "scripts": {
+    "test": "node --check index.js && node --check provider.js && node --check test/bridge_harness.mjs",
+    "test:live": "node test/bridge_harness.mjs"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}

@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.venv/
+venv/
+build/
+dist/
+
+# Node (plugin)
+node_modules/
+*.tsbuildinfo
+
+# Local env / secrets — never commit
+.env
+*.local
+*.key
+
+# Downloaded artifacts (the installer fetches these; never in git)
+models/
+*.gguf
+*.safetensors
+
+# OS
+.DS_Store

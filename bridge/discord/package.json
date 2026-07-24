@@ -1,0 +1,18 @@
+{
+  "name": "teaport-discord-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Host-side Discord voice bridge: joins a voice channel with the KettleBot identity and pipes audio to the teaport Pipecat brain (/talk). Discord voice needs UDP, which the NemoClaw sandbox forbids by design, so this tiny shim owns only the media leg on the host — the brain (and, through it, the sandboxed OpenClaw agent) stays the mind.",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "@discordjs/opus": "^0.10.0",
+    "@discordjs/voice": "^0.19.0",
+    "discord.js": "^14.16.0",
+    "libsodium-wrappers": "^0.7.15",
+    "opusscript": "^0.1.1"
+  },
+  "//opus": "Two Opus codecs on purpose. @discordjs/opus is the native (fast, low-jitter) codec prism-media prefers — it has no arm64 prebuild for recent Node ABIs, so it compiles from source on install (needs gcc/g++/make/python3; force with `npm rebuild @discordjs/opus --build-from-source`). opusscript is the pure-JS fallback prism-media uses if that native build is absent, so a toolchain-less box still works."
+}

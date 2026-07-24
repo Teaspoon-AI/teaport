@@ -1,0 +1,23 @@
+# teaport-engine — Voxtral STT + Kokoro TTS inference engine (the closed binary).
+# Rendered by install.sh: @USER@/@PREFIX@/@ETC@ are substituted at install time;
+# ${VARS} are read from @ETC@/engine.env (EnvironmentFile) at runtime.
+[Unit]
+Description=teaport engine (Voxtral STT + Kokoro TTS)
+After=network-online.target
+Wants=network-online.target
+# Engine stops propagate to the brain (its Requires= on this unit), but nothing
+# restarted it afterwards — an engine deploy/build --stop-service left the box
+# voice-dead until a manual start (observed live 2026-07-21). Upholds= keeps the
+# brain running while the engine is active, restarting it when found stopped.
+Upholds=teaport-brain.service
+
+[Service]
+Type=simple
+User=@USER@
+EnvironmentFile=@ETC@/engine.env
+ExecStart=@PREFIX@/bin/voxtral -d @PREFIX@/models/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY} --tts-ctx ${TTS_CTX} --tts-model @PREFIX@/models/kokoro/Kokoro_espeak_F16.gguf --vad --vad-mode 1 --vad-commit hard
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

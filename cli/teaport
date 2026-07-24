@@ -1,0 +1,149 @@
+#!/usr/bin/env bash
+#
+# teaport — operator CLI for a teaport appliance.
+#
+#   teaport status                three services + ports + memory at a glance
+#   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
+#   teaport update [--check]      diff installed vs the release manifest; apply what changed
+#   teaport logs [engine|brain]   journalctl wrapper (defaults to brain; passes -f/-n through)
+#
+# Thin wrapper over systemd + the release manifest, reading the layout install.sh
+# produces: /opt/teaport (bin/models/venv/manifest.json), /etc/teaport/*.env,
+# ~/.config/teaport (secrets).
+#
+set -euo pipefail
+
+PREFIX="${TEAPORT_PREFIX:-/opt/teaport}"
+ETC="${TEAPORT_ETC:-/etc/teaport}"
+SECRETS="${TEAPORT_SECRETS_DIR:-$HOME/.config/teaport}"
+MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teagram.co/manifest/stable.json}"
+ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
+BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
+
+GREEN='1;32'; RED='1;31'; YEL='1;33'
+c()    { printf '\033[%sm%s\033[0m' "$1" "$2"; }
+die()  { printf '\033[1;31merror:\033[0m %s\n' "$*" >&2; exit 1; }
+have() { command -v "$1" >/dev/null 2>&1; }
+SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
+
+active()    { local s; s="$(systemctl is-active "$1.service" 2>/dev/null || true)"; printf '%s' "${s:-unknown}"; }
+installed() { systemctl cat "$1.service" >/dev/null 2>&1; }
+listening() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
+envval()    { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }   # envval <file> <KEY>
+
+fetch() {  # fetch <url-or-path> <dest>
+  case "$1" in
+    /*|file://*) cp "${1#file://}" "$2" ;;
+    *) curl -fsSL --retry 3 -o "$2" "$1" || die "cannot fetch manifest: $1" ;;
+  esac
+  python3 -c "import json;json.load(open('$2'))" 2>/dev/null || die "manifest is not valid JSON: $1"
+}
+
+# ---- status ----------------------------------------------------------------
+svc_line()  { local st; st="$(active "$1")"; local col="$RED"; [ "$st" = active ] && col="$GREEN"; printf '  %-28s %s\n' "$1" "$(c "$col" "$st")"; }
+port_line() { if listening "$1"; then printf '  %-28s %s\n' "port :$1 ($2)" "$(c "$GREEN" listening)"; else printf '  %-28s %s\n' "port :$1 ($2)" "$(c "$RED" 'not listening')"; fi; }
+cmd_status() {
+  echo "teaport — status"
+  svc_line teaport-engine
+  svc_line teaport-brain
+  installed teaport-sandbox-recover && svc_line teaport-sandbox-recover
+  port_line "$ENGINE_PORT" engine
+  port_line "$BRAIN_PORT" "brain /talk"
+  have free && printf '  %-28s %s\n' memory "$(free -h | awk 'NR==2{print $3" used, "$7" avail / "$2" total"}')"
+  printf '  %-28s %s\n' load "$(cut -d' ' -f1-3 /proc/loadavg 2>/dev/null || echo n/a)"
+}
+
+# ---- doctor ----------------------------------------------------------------
+cmd_doctor() {
+  local fix=0; [ "${1:-}" = --fix ] && fix=1
+  local RC=0
+  ok()    { printf '  %s %s\n' "$(c "$GREEN" ✓)" "$*"; }
+  warnc() { printf '  %s %s\n' "$(c "$YEL" !)" "$*"; }
+  failc() { printf '  %s %s\n' "$(c "$RED" ✗)" "$*"; RC=1; }
+  echo "teaport — doctor"
+  [ -d "$PREFIX" ] && ok "install root $PREFIX" || failc "not installed — $PREFIX missing (run install.sh)"
+  [ -x "$PREFIX/bin/voxtral" ] && ok "engine binary" || failc "engine binary missing ($PREFIX/bin/voxtral)"
+  [ -f "$PREFIX/models/voxtral/consolidated.safetensors" ] && ok "STT model" || failc "STT model missing ($PREFIX/models/voxtral)"
+  [ -f "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf" ] && ok "Kokoro TTS model" || failc "Kokoro model missing ($PREFIX/models/kokoro)"
+  [ -x "$PREFIX/venv/bin/teaport-brain" ] && ok "brain (teaport-brain)" || failc "brain not installed in $PREFIX/venv"
+  have espeak-ng && ok "espeak-ng (engine G2P dep)" || failc "espeak-ng missing — apt install espeak-ng"
+  local fpt; fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"
+  if [ -z "$fpt" ]; then failc "KOKORO_RESERVE_FPT unset in $ETC/engine.env — the code default (50) OOMs an 8GB box"
+  elif [[ "$fpt" =~ ^[0-9]+$ ]] && [ "$fpt" -ge 40 ]; then warnc "KOKORO_RESERVE_FPT=$fpt is high (OOM risk on 8GB; expect 6 or 12)"
+  else ok "KOKORO_RESERVE_FPT=$fpt"; fi
+  [ -n "$(envval "$ETC/brain.env" LLM_BASE_URL)" ] && ok "LLM_BASE_URL set" || failc "LLM_BASE_URL unset in $ETC/brain.env"
+  [ -n "$(envval "$ETC/brain.env" GATEWAY_TOKEN)" ] && ok "GATEWAY_TOKEN set" || warnc "GATEWAY_TOKEN unset — /talk is unauthenticated"
+  if [ -f "$SECRETS/llm_key" ] || [ -n "${LLM_API_KEY:-}" ]; then ok "LLM API key present"; else warnc "no LLM key — set LLM_API_KEY or write $SECRETS/llm_key"; fi
+  local u st
+  for u in teaport-engine teaport-brain; do
+    st="$(active "$u")"
+    if [ "$st" = active ]; then ok "$u active"
+    else
+      failc "$u is $st"
+      if [ "$fix" = 1 ]; then warnc "  --fix: systemctl restart $u"; SUDO systemctl restart "$u.service" || true; fi
+    fi
+  done
+  listening "$ENGINE_PORT" && ok "engine :$ENGINE_PORT listening" || failc "engine :$ENGINE_PORT not listening (allow ~1min after start)"
+  listening "$BRAIN_PORT"  && ok "brain :$BRAIN_PORT listening"  || failc "brain :$BRAIN_PORT not listening"
+  local nc="$HOME/.local/bin/nemoclaw"; have nemoclaw && nc="$(command -v nemoclaw)"
+  if [ -x "$nc" ] && [ -f "$HOME/.nemoclaw/sandboxes.json" ]; then
+    local sb; sb="$(python3 -c "import json;d=json.load(open('$HOME/.nemoclaw/sandboxes.json'));print(d.get('defaultSandbox') or '')" 2>/dev/null || true)"
+    [ -n "$sb" ] && ok "NemoClaw sandbox: $sb (deeper check: nemoclaw $sb doctor)"
+  fi
+  echo
+  [ "$RC" = 0 ] && c "$GREEN" "doctor: all good"$'\n' || c "$YEL" "doctor: issues above"$'\n'
+  return "$RC"
+}
+
+# ---- update ----------------------------------------------------------------
+cmd_update() {
+  local check_only=0; [ "${1:-}" = --check ] && check_only=1
+  local local_mf="$PREFIX/manifest.json"
+  [ -f "$local_mf" ] || die "not installed: $local_mf missing (run install.sh first)"
+  local remote; remote="$(mktemp)"; fetch "$MANIFEST_URL" "$remote"
+  echo "teaport — update  (installed  ->  $MANIFEST_URL)"
+  local changed
+  changed="$(python3 - "$local_mf" "$remote" <<'PY'
+import json, sys
+a = json.load(open(sys.argv[1])); b = json.load(open(sys.argv[2]))
+comp = {"version": (a.get("version"), b.get("version")),
+        "engine":  (a.get("engine", {}).get("release"), b.get("engine", {}).get("release")),
+        "brain":   (a.get("brain", {}).get("tag"), b.get("brain", {}).get("tag")),
+        "plugin":  (a.get("plugin", {}).get("version"), b.get("plugin", {}).get("version"))}
+ch = []
+for k, (x, y) in comp.items():
+    print(f"  {k:8} {x}  {'->' if x != y else '=='}  {y}", file=sys.stderr)
+    if x != y: ch.append(k)
+print(",".join(ch))
+PY
+)"
+  if [ -z "$changed" ]; then echo "  up to date."; return 0; fi
+  echo "  changed: $changed"
+  [ "$check_only" = 1 ] && { echo "  (--check) not applying."; return 0; }
+  # Applying swaps only changed artifacts + restarts only affected units — the same
+  # idempotent, sha-verifying path install.sh runs. Wire it in once teagram.co hosts
+  # real artifacts; until then, re-run install.sh to update.
+  die "apply not wired yet — re-run install.sh (idempotent; downloads only changed artifacts). Auto-swap lands with teagram.co artifact hosting."
+}
+
+# ---- logs ------------------------------------------------------------------
+cmd_logs() {
+  local unit=teaport-brain
+  case "${1:-}" in
+    engine) unit=teaport-engine; shift ;;
+    brain)  unit=teaport-brain;  shift ;;
+  esac
+  exec journalctl -u "$unit.service" "$@"
+}
+
+usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; }
+
+cmd="${1:-}"; shift || true
+case "$cmd" in
+  status) cmd_status "$@" ;;
+  doctor) cmd_doctor "$@" ;;
+  update) cmd_update "$@" ;;
+  logs)   cmd_logs "$@" ;;
+  ""|-h|--help|help) usage ;;
+  *) die "unknown command: $cmd (try: status | doctor | update | logs)" ;;
+esac

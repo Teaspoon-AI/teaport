@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  brain:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install the brain + pytest
+        run: pip install ./brain pytest
+      - name: Hermetic tests
+        # test_suite.py runs each test_*.py as a subprocess. Two need the appliance and
+        # cannot run in CI — test_engine_text_stream (a live engine WebSocket) and
+        # test_remember_tool (a live LLM); the other five are hermetic.
+        run: python -m pytest brain/tests/test_suite.py -v -k "not test_engine_text_stream and not test_remember_tool"
+
+  plugin:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Syntax-check the plugin
+        working-directory: plugin
+        run: npm test
+
+  installer:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Shell syntax
+        run: bash -n install.sh
+      - name: shellcheck (advisory)
+        continue-on-error: true
+        run: shellcheck install.sh
+      - name: Manifest JSON is valid
+        run: |
+          for m in manifest/*.json; do
+            python3 -c "import json,sys; json.load(open(sys.argv[1])); print('ok', sys.argv[1])" "$m"
+          done
+      - name: Installer dry-run (voice-only path)
+        # No Jetson, no sandbox, not a TTY: exercises the full dry-run without touching the box.
+        run: TEAPORT_ALLOW_NON_JETSON=1 TEAPORT_MANIFEST_URL="$PWD/manifest/stable.json" bash install.sh --dry-run

@@ -1,0 +1,24 @@
+# teaport-discord-bridge — host-side Discord voice bridge (opt-in). Discord voice media is
+# RTP/UDP to per-call servers and the NemoClaw sandbox is TCP-only by design, so this shim
+# owns only the media leg on the host and pipes audio to the brain's /talk WS; the brain
+# (and, through it, the sandboxed agent) stays the mind. Rendered by install.sh
+# (@USER@/@PREFIX@/@NODE@); ${VARS} come from @ETC@/bridge.env. The bot token is read from
+# the secrets dir at runtime (DISCORD_BOT_TOKEN_FILE, mode 600), never baked into the unit.
+[Unit]
+Description=teaport Discord voice bridge
+# Soft dep only: the bridge dials the brain WS and re-joins on the user's next voice move,
+# so a brain restart must not stop the bridge (a hard Requires= would).
+After=network-online.target teaport-brain.service
+Wants=network-online.target teaport-brain.service
+
+[Service]
+Type=simple
+User=@USER@
+EnvironmentFile=@ETC@/bridge.env
+WorkingDirectory=@PREFIX@/bridge
+ExecStart=@NODE@ @PREFIX@/bridge/index.js
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

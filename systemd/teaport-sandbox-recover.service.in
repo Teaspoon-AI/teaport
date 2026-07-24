@@ -1,0 +1,17 @@
+# teaport-sandbox-recover — boot-time NemoClaw sandbox recovery. Installed only when a
+# NemoClaw sandbox exists. Rendered by install.sh: @NEMOCLAW@ = the nemoclaw binary,
+# @SANDBOX@ = the detected sandbox name. Restarts the OpenShell host gateway + repairs
+# forwards after the docker sandbox returns on reboot.
+[Unit]
+Description=teaport NemoClaw sandbox recovery (boot-time)
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=@USER@
+ExecStart=/bin/bash -lc 'for i in 1 2 3 4 5; do @NEMOCLAW@ @SANDBOX@ recover && break; sleep 10; done'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target
