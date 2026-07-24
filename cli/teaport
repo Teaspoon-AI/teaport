@@ -16,7 +16,7 @@ set -euo pipefail
 PREFIX="${TEAPORT_PREFIX:-/opt/teaport}"
 ETC="${TEAPORT_ETC:-/etc/teaport}"
 SECRETS="${TEAPORT_SECRETS_DIR:-$HOME/.config/teaport}"
-MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teagram.co/manifest/stable.json}"
+MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teaspoon.tech/manifest/stable.json}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 
@@ -121,9 +121,9 @@ PY
   echo "  changed: $changed"
   [ "$check_only" = 1 ] && { echo "  (--check) not applying."; return 0; }
   # Applying swaps only changed artifacts + restarts only affected units — the same
-  # idempotent, sha-verifying path install.sh runs. Wire it in once teagram.co hosts
+  # idempotent, sha-verifying path install.sh runs. Wire it in once get.teaspoon.tech hosts
   # real artifacts; until then, re-run install.sh to update.
-  die "apply not wired yet — re-run install.sh (idempotent; downloads only changed artifacts). Auto-swap lands with teagram.co artifact hosting."
+  die "apply not wired yet — re-run install.sh (idempotent; downloads only changed artifacts). Auto-swap lands with get.teaspoon.tech artifact hosting."
 }
 
 # ---- logs ------------------------------------------------------------------
