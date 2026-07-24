@@ -21,6 +21,6 @@
     "voxtral": { "url": "https://get.teagram.co/dl/models/voxtral/consolidated.safetensors", "sha256": "TODO", "aux": { "params.json": "TODO", "tekken.json": "TODO" } }
   },
   "brain": { "repo": "Teaspoon-AI/teaport", "tag": "main" },
-  "plugin": { "npm": "@teaspoon-ai/openclaw-teagram-realtime", "version": "0.1.0" },
+  "plugin": { "npm": "@teaspoon-ai/openclaw-teaport-realtime", "version": "0.1.0" },
   "nemoclaw": { "tested_tag": "TODO" }
 }
