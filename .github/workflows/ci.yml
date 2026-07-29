@@ -41,10 +41,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Shell syntax
-        run: bash -n install.sh
+        run: |
+          bash -n install.sh
+          bash -n install-bootstrap.sh
       - name: shellcheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh
+        run: shellcheck install.sh install-bootstrap.sh
       - name: Manifest JSON is valid
         run: |
           for m in manifest/*.json; do
