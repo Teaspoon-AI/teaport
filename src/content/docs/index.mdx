@@ -1,0 +1,36 @@
+---
+title: Teaport
+description: Docs for teaport, a local voice assistant for the NVIDIA Jetson Orin.
+template: splash
+hero:
+  tagline: A local voice assistant for the NVIDIA Jetson Orin. You speak to the device. The device answers with speech. Your voice does not leave the device.
+  actions:
+    - text: Install teaport
+      link: /getting-started/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/Teaspoon-AI/teaport
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+<CardGrid stagger>
+	<Card title="Installation" icon="rocket">
+		Flash JetPack, install NemoClaw, then install teaport. One command, about
+		45–60 minutes end to end. See [Installation](/getting-started/installation/).
+	</Card>
+	<Card title="Configuration" icon="setting">
+		Point teaport at your own LLM — a cloud key or a local OpenAI-compatible
+		endpoint. See [Configuration](/guides/configuration/).
+	</Card>
+	<Card title="Troubleshooting" icon="error">
+		`teaport status` and `teaport doctor` are your first stop when something
+		looks wrong. See [Troubleshooting](/guides/troubleshooting/).
+	</Card>
+	<Card title="Architecture" icon="puzzle">
+		One appliance, three parts: the engine, the brain, and the OpenClaw
+		plugin. See [Architecture](/reference/architecture/).
+	</Card>
+</CardGrid>
