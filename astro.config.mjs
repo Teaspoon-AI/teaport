@@ -1,6 +1,7 @@
 // @ts-check
 import { defineConfig } from 'astro/config';
 import starlight from '@astrojs/starlight';
+import starlightThemeFlexoki from 'starlight-theme-flexoki';
 
 // https://astro.build/config
 export default defineConfig({
@@ -9,6 +10,7 @@ export default defineConfig({
 		starlight({
 			title: 'Teaport',
 			description: 'Docs for teaport, a local voice assistant for the NVIDIA Jetson Orin.',
+			plugins: [starlightThemeFlexoki({ accentColor: 'blue' })],
 			logo: {
 				dark: './src/assets/teaport-mark-dark-bg.svg',
 				light: './src/assets/teaport-mark-light-bg.svg',
