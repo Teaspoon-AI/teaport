@@ -18,19 +18,21 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 
 <CardGrid stagger>
 	<Card title="Installation" icon="rocket">
-		Flash JetPack, install NemoClaw, then install teaport. One command, about
-		45–60 minutes end to end. See [Installation](/getting-started/installation/).
+		The install has three steps: flash JetPack, install NemoClaw, then
+		install teaport. It takes about 45 to 60 minutes in total. See
+		[Installation](/getting-started/installation/).
 	</Card>
 	<Card title="Configuration" icon="setting">
-		Point teaport at your own LLM — a cloud key or a local OpenAI-compatible
-		endpoint. See [Configuration](/guides/configuration/).
+		Set teaport to use your own large language model (LLM). Use a cloud
+		key or a local OpenAI-compatible endpoint. See
+		[Configuration](/guides/configuration/).
 	</Card>
 	<Card title="Troubleshooting" icon="error">
-		`teaport status` and `teaport doctor` are your first stop when something
-		looks wrong. See [Troubleshooting](/guides/troubleshooting/).
+		Run `teaport status` or `teaport doctor` first if teaport does not
+		work correctly. See [Troubleshooting](/guides/troubleshooting/).
 	</Card>
 	<Card title="Architecture" icon="puzzle">
-		One appliance, three parts: the engine, the brain, and the OpenClaw
+		teaport has three parts: the engine, the brain, and the OpenClaw
 		plugin. See [Architecture](/reference/architecture/).
 	</Card>
 </CardGrid>

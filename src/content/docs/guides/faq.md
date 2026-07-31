@@ -4,28 +4,20 @@ description: Frequently asked questions about teaport.
 ---
 
 :::note[Pre-launch scaffold]
-These are seed questions, ported from the [teaport repo](https://github.com/Teaspoon-AI/teaport). More come with the public docs pass.
+This page has a short, early list of questions from the [teaport repo](https://github.com/Teaspoon-AI/teaport). More questions will come with the public docs pass.
 :::
 
 **Does my voice leave the device?**
-No. Speech recognition and speech synthesis run on the device. Only your
-chosen LLM is remote. Point the brain at your own endpoint and the LLM is
-local too.
+No. Speech recognition and speech synthesis run on the device. Only your chosen large language model (LLM) is remote. Set the brain to use your own endpoint. Then the LLM is local too.
 
-**Do I need a GPU cloud key?**
-No. You supply an LLM: a cloud key (OpenRouter / Groq / …) or a local
-OpenAI-compatible server. See [Configuration](/guides/configuration/).
+**Do I need a graphics processor (GPU) in the cloud?**
+No. You must supply an LLM. Use a cloud key, for example from OpenRouter or Groq. You can also use a local OpenAI-compatible server. See [Configuration](/guides/configuration/).
 
-**Which Jetson?**
-Orin (Nano / NX / AGX), JetPack 7.2 / CUDA 13. The Nano 8 GB is the
-reference device.
+**Which Jetson boards work with teaport?**
+teaport works with the Jetson Orin Nano, NX, and AGX boards. All boards need JetPack 7.2 and CUDA 13. The Nano with 8 GB of memory is the reference device.
 
-**How is this repository licensed?**
-The brain and the plugin in the [teaport repo](https://github.com/Teaspoon-AI/teaport)
-are MIT. The engine is a separate component with its own license terms — see
-the license shown at install time. The installer downloads the engine for
-you.
+**What license covers this repository?**
+The brain and the plugin, in the [teaport repo](https://github.com/Teaspoon-AI/teaport), use the MIT license. The engine is a separate component with its own license terms. See the license text shown at install time. The installer downloads the engine for you.
 
-**Can I run it without NemoClaw?**
-Yes — voice-only. Install NemoClaw later and run the installer again to add
-the agent.
+**Can I run teaport without NemoClaw?**
+Yes. You can run teaport in voice-only mode. Install NemoClaw later. Then run the teaport installer again to add the agent.
