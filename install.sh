@@ -542,6 +542,11 @@ phase_frontdoor() {
   write_caddyfile /etc/caddy/Caddyfile
   set_avahi_hostname "${FRONTDOOR_HOST%.local}"
   SUDO systemctl enable --now avahi-daemon caddy.service
+  # `enable --now` starts a stopped unit but does NOT restart a running one, and avahi reads
+  # host-name only at startup. The apt-get above tends to leave avahi already running, so
+  # without an explicit restart it keeps publishing its default name and $FRONTDOOR_HOST
+  # never resolves — the documented browser entry point silently does not exist.
+  SUDO systemctl restart avahi-daemon
   SUDO systemctl reload caddy.service 2>/dev/null || SUDO systemctl restart caddy.service
 }
 
