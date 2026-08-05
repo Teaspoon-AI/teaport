@@ -58,6 +58,11 @@ run()  { if [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*
 # SUDO: privileged op (root when not already root). Honors --dry-run via run().
 SUDO() { if [ "$(id -u)" = 0 ]; then run "$@"; else run sudo "$@"; fi; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# contains <needle> <haystack> — substring test that replaces `cmd | grep -q needle`.
+# Under `set -o pipefail` that idiom is a trap: grep -q exits at the first match, the writer
+# takes SIGPIPE (141), and pipefail reports the pipeline as failed *because* it matched.
+# Capture the output first, then test it — no pipe, no race.
+contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
 # --- manifest ----------------------------------------------------------------
 MF=""  # local path to the fetched manifest
@@ -180,7 +185,10 @@ phase_preflight() {
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
   have curl || die "curl is required"
-  run curl -fsSL -o /dev/null --max-time 8 https://get.teaspoon.tech 2>/dev/null || warn "get.teaspoon.tech not reachable (downloads will fail)"
+  # No -f here: the bare host root serves 404 (only /dl, /manifest, /eula exist), and -f would
+  # turn that into a failure — warning "downloads will fail" on every healthy install. Any HTTP
+  # response proves reachability; DNS/TCP/TLS failures still exit non-zero.
+  run curl -sS -o /dev/null --max-time 8 https://get.teaspoon.tech 2>/dev/null || warn "get.teaspoon.tech not reachable (downloads will fail)"
 }
 
 phase_sysdeps() {
@@ -192,7 +200,7 @@ phase_sysdeps() {
   SUDO apt-get install -y espeak-ng libopenblas0 python3.12-venv
   if [ "$DRY_RUN" != 1 ]; then
     have espeak-ng || die "espeak-ng not installed"
-    ldconfig -p | grep -q 'libopenblas\.so\.0' || die "libopenblas.so.0 not installed"
+    contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
   fi
 }
 
@@ -339,7 +347,7 @@ agent_openclaw() {
 
   # The gateway is a systemd *user* service, so without linger it does not start until the
   # user logs in — a headless appliance would reboot into no gateway and no front door.
-  if ! loginctl show-user "$RUN_USER" --property=Linger 2>/dev/null | grep -q '=yes'; then
+  if ! contains '=yes' "$(loginctl show-user "$RUN_USER" --property=Linger 2>/dev/null || true)"; then
     log "enabling systemd linger for $RUN_USER (user gateway must survive reboot)"
     SUDO loginctl enable-linger "$RUN_USER"
   fi
@@ -607,12 +615,12 @@ phase_verify() {
   if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$AGENT_MODE" ] && echo ', front door :443, gateway->brain')"; return; fi
   # Engine loads its model in ~1 min (the --delay window); poll before giving up.
   local ok=1
-  for i in $(seq 1 40); do ss -ltn 2>/dev/null | grep -q ":$ENGINE_PORT " && break; sleep 3; done
-  ss -ltn 2>/dev/null | grep -q ":$ENGINE_PORT " || { warn "engine :$ENGINE_PORT not listening"; ok=0; }
-  ss -ltn 2>/dev/null | grep -q ":$BRAIN_PORT "  || { warn "brain :$BRAIN_PORT not listening";  ok=0; }
+  for i in $(seq 1 40); do contains ":$ENGINE_PORT " "$(ss -ltn 2>/dev/null || true)" && break; sleep 3; done
+  contains ":$ENGINE_PORT " "$(ss -ltn 2>/dev/null || true)" || { warn "engine :$ENGINE_PORT not listening"; ok=0; }
+  contains ":$BRAIN_PORT "  "$(ss -ltn 2>/dev/null || true)" || { warn "brain :$BRAIN_PORT not listening";  ok=0; }
   # Front door only exists when a gateway was fronted (phase_frontdoor).
   if [ -n "$AGENT_MODE" ]; then
-    ss -ltn 2>/dev/null | grep -q ":443 " || { warn "front door :443 not listening — browser access is down"; ok=0; }
+    contains ":443 " "$(ss -ltn 2>/dev/null || true)" || { warn "front door :443 not listening — browser access is down"; ok=0; }
   fi
   [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
 }
