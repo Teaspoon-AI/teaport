@@ -326,9 +326,19 @@ agent_openclaw() {
 
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+    printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n'
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
+    "$OPENCLAW" config patch --file "$patch"
+    # phase_frontdoor puts Caddy in front of the gateway on the same host. Caddy injects
+    # X-Forwarded-* headers, and the gateway refuses to treat a forwarded connection as local
+    # unless the proxy is trusted — logging "Proxy headers detected from untrusted address" on
+    # every browser hit. Loopback entries are valid here precisely for same-host reverse
+    # proxies. This does not weaken auth: gateway.auth.mode stays as configured.
+    cat > "$patch" <<'JSON'
+{ "gateway": { "trustedProxies": ["127.0.0.1", "::1"] } }
+JSON
     "$OPENCLAW" config patch --file "$patch"
     rm -f "$patch"
   fi
@@ -633,8 +643,23 @@ phase_verify() {
 usage_footer() {
   log "done."
   if [ -n "$AGENT_MODE" ]; then
-    printf '  browser: open https://%s from a LAN device (accept the one-time cert), then pair + Talk.\n' "$FRONTDOOR_HOST"
-    printf '  next:    pair the device from the OpenClaw dashboard, then start a Talk session.\n'
+    # The Control UI needs the *gateway's* auth token — a different secret from GATEWAY_TOKEN,
+    # which guards the brain's /talk. Without it the browser's WS connect is refused at
+    # phase=auth_credentials_received ("gateway token missing") and no pairing request is ever
+    # created, so the user lands on a page that silently never connects. Print the
+    # authenticated URL rather than leaving them to find the token in openclaw.json.
+    local url="https://$FRONTDOOR_HOST" octok=""
+    if [ "$AGENT_MODE" = openclaw ] && [ -r "$HOME/.openclaw/openclaw.json" ]; then
+      octok="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json')).get('gateway',{}).get('auth',{}).get('token',''))" 2>/dev/null || true)"
+    fi
+    if [ -n "$octok" ]; then
+      printf '  browser: open %s/#token=%s from a LAN device (accept the one-time cert).\n' "$url" "$octok"
+      printf '           the #token fragment authenticates you; it is never sent to the proxy.\n'
+    else
+      printf '  browser: open %s from a LAN device (accept the one-time cert).\n' "$url"
+      printf '           you will need the gateway auth token — see: openclaw dashboard --no-open\n'
+    fi
+    printf '  next:    start a Talk session from the dashboard.\n'
   else
     # Voice-only has no gateway, so no dashboard and no front door to point at.
     printf '  next:    voice-only install — the brain listens on ws://127.0.0.1:%s/talk and nothing fronts it.\n' "$BRAIN_PORT"
