@@ -232,15 +232,34 @@ phase_brain() {
   if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
 }
 
+# Which agent hosts the realtime-voice plugin: "nemoclaw" (OpenClaw inside NVIDIA's docker
+# sandbox), "openclaw" (OpenClaw installed directly on the host), or "" (voice-only).
+# NemoClaw wins when both are present: its sandbox is the packaged, supported arrangement.
+AGENT_MODE=""
 # NemoClaw sandbox name (empty if none) + the nemoclaw binary + the /talk auth token,
 # resolved once so the brain (brain.env) and the plugin config share the same token.
-SANDBOX=""; NEMOCLAW=""; GATEWAY_TOKEN=""
+SANDBOX=""; NEMOCLAW=""; GATEWAY_TOKEN=""; OPENCLAW=""
 detect_sandbox() {
   local sj="$HOME/.nemoclaw/sandboxes.json"
   { have nemoclaw || [ -x "$HOME/.local/bin/nemoclaw" ]; } || return 0
   [ -f "$sj" ] || return 0
   # sandboxes.json = {defaultSandbox, sandboxes:{<name>:...}} — prefer the default.
   SANDBOX="$(python3 -c "import json;d=json.load(open('$sj'));print(d.get('defaultSandbox') or (list(d.get('sandboxes',{})) or [''])[0])" 2>/dev/null || true)"
+}
+# A host OpenClaw counts only once it has written its config — `openclaw` on PATH with no
+# ~/.openclaw/openclaw.json means it was installed but never set up, and `config patch`
+# would be writing into a config the user has not chosen the shape of yet.
+detect_openclaw() {
+  have openclaw || return 0
+  [ -f "$HOME/.openclaw/openclaw.json" ] || return 0
+  OPENCLAW="$(command -v openclaw)"
+}
+detect_agent() {
+  detect_sandbox
+  if [ -n "$SANDBOX" ]; then AGENT_MODE=nemoclaw; return 0; fi
+  detect_openclaw
+  [ -n "$OPENCLAW" ] && AGENT_MODE=openclaw
+  return 0
 }
 resolve_nemoclaw() { NEMOCLAW="$(command -v nemoclaw || echo "$HOME/.local/bin/nemoclaw")"; }
 resolve_gateway_token() {
@@ -253,13 +272,83 @@ resolve_gateway_token() {
   return 0
 }
 
+# talk.realtime config, identical on both agent paths except the brain URL.
+# brain=none: the teaport brain orchestrates the turn, so OpenClaw must not answer too.
+# The token matches brain.env's GATEWAY_TOKEN so the brain accepts the relayed session.
+write_talk_patch() {
+  cat > "$1" <<JSON
+{ "talk": { "realtime": {
+  "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "none",
+  "providers": { "teaport": { "url": "$2", "token": "$GATEWAY_TOKEN" } } } } }
+JSON
+}
+
 phase_agent() {
-  detect_sandbox
-  if [ -z "$SANDBOX" ]; then
-    log "no NemoClaw sandbox detected — voice-only install"
-    warn "to add the agent later: install NemoClaw (bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)) and re-run"
-    return 0
+  case "$AGENT_MODE" in
+    nemoclaw) agent_nemoclaw ;;
+    openclaw) agent_openclaw ;;
+    *)
+      log "no agent detected — voice-only install"
+      warn "to add the agent later: install OpenClaw on the host (sudo npm install -g openclaw)"
+      warn "or NemoClaw (bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)), then re-run this installer"
+      ;;
+  esac
+}
+
+# --- host OpenClaw -----------------------------------------------------------
+agent_openclaw() {
+  resolve_gateway_token
+  log "host OpenClaw — installing the plugin + wiring talk.realtime"
+  # Loopback, not the docker bridge: OpenClaw runs on the host, beside the brain.
+  local brain_ws="ws://127.0.0.1:${BRAIN_PORT}/talk"
+
+  local psrc="${PLUGIN_SRC:-}"; if [ -z "$psrc" ] && [ -d "$HERE/plugin" ]; then psrc="$HERE/plugin"; fi
+  if [ -n "$psrc" ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+      printf '  [dry-run] (cd %s && npm pack) -> openclaw plugins install <tgz> --force\n' "$psrc"
+    else
+      have npm || die "npm is required to package the plugin from $psrc"
+      local tgz; tgz="$(cd "$psrc" && npm pack --silent --pack-destination /tmp)" || die "npm pack failed in $psrc"
+      "$OPENCLAW" plugins install "/tmp/$tgz" --force
+    fi
+  else
+    run "$OPENCLAW" plugins install "@teaspoon-ai/openclaw-teaport-realtime" --pin
   fi
+  run "$OPENCLAW" plugins enable teaport-realtime
+
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+  else
+    local patch; patch="$(mktemp)"
+    write_talk_patch "$patch" "$brain_ws"
+    "$OPENCLAW" config patch --file "$patch"
+    rm -f "$patch"
+  fi
+
+  # `openclaw gateway install` installs AND starts the unit. Calling `gateway start` after
+  # it restarts the service, killing that first process mid startup-migration and orphaning
+  # a ~5 minute lease in ~/.openclaw/state/openclaw.sqlite — which crash-loops the gateway
+  # until the lease expires. So: install when the unit is absent, restart when it is there.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw gateway install (unit absent) or gateway restart (unit present)\n'
+  elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then
+    "$OPENCLAW" gateway restart
+  else
+    "$OPENCLAW" gateway install
+  fi
+
+  # The gateway is a systemd *user* service, so without linger it does not start until the
+  # user logs in — a headless appliance would reboot into no gateway and no front door.
+  if ! loginctl show-user "$RUN_USER" --property=Linger 2>/dev/null | grep -q '=yes'; then
+    log "enabling systemd linger for $RUN_USER (user gateway must survive reboot)"
+    SUDO loginctl enable-linger "$RUN_USER"
+  fi
+
+  log "host OpenClaw wired — verify with: openclaw gateway status"
+}
+
+# --- NemoClaw sandbox --------------------------------------------------------
+agent_nemoclaw() {
   resolve_nemoclaw; resolve_gateway_token
   log "NemoClaw sandbox '$SANDBOX' — installing the plugin + wiring talk.realtime"
   local brain_ws="ws://172.18.0.1:${BRAIN_PORT}/talk"   # sandbox -> host brain over the docker bridge
@@ -285,11 +374,7 @@ phase_agent() {
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
   else
     local patch; patch="$(mktemp)"
-    cat > "$patch" <<JSON
-{ "talk": { "realtime": {
-  "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "none",
-  "providers": { "teaport": { "url": "$brain_ws", "token": "$GATEWAY_TOKEN" } } } } }
-JSON
+    write_talk_patch "$patch" "$brain_ws"
     "$NEMOCLAW" "$SANDBOX" upload "$patch" /tmp/teaport-talk.json
     "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw config patch --file /tmp/teaport-talk.json
   fi
@@ -433,7 +518,9 @@ install_caddy_apt() {
 # Only meaningful when a gateway exists to front (a sandbox was wired in phase_agent); a
 # voice-only install has no gateway, so skip.
 phase_frontdoor() {
-  if [ -z "$SANDBOX" ]; then log "front door: skipped (no gateway — voice-only install)"; return 0; fi
+  # Any agent means an OpenClaw gateway on 127.0.0.1:$GATEWAY_PORT — sandboxed or on the
+  # host, the Caddy config is the same. Only a voice-only install has nothing to front.
+  if [ -z "$AGENT_MODE" ]; then log "front door: skipped (no gateway — voice-only install)"; return 0; fi
   log "front door: Caddy TLS (:443 -> gateway :$GATEWAY_PORT) + mDNS $FRONTDOOR_HOST"
   # Caddy is third-party and network-facing: install from its official apt repo so security
   # fixes flow through the package manager. The deb ships its own caddy.service (runs as user
@@ -514,14 +601,14 @@ phase_bridge() {
 
 phase_verify() {
   log "verify"
-  if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$SANDBOX" ] && echo ', front door :443'), sandbox->brain"; return; fi
+  if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$AGENT_MODE" ] && echo ', front door :443, gateway->brain')"; return; fi
   # Engine loads its model in ~1 min (the --delay window); poll before giving up.
   local ok=1
   for i in $(seq 1 40); do ss -ltn 2>/dev/null | grep -q ":$ENGINE_PORT " && break; sleep 3; done
   ss -ltn 2>/dev/null | grep -q ":$ENGINE_PORT " || { warn "engine :$ENGINE_PORT not listening"; ok=0; }
   ss -ltn 2>/dev/null | grep -q ":$BRAIN_PORT "  || { warn "brain :$BRAIN_PORT not listening";  ok=0; }
   # Front door only exists when a gateway was fronted (phase_frontdoor).
-  if [ -n "$SANDBOX" ]; then
+  if [ -n "$AGENT_MODE" ]; then
     ss -ltn 2>/dev/null | grep -q ":443 " || { warn "front door :443 not listening — browser access is down"; ok=0; }
   fi
   [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
@@ -529,12 +616,16 @@ phase_verify() {
 
 usage_footer() {
   log "done."
-  if [ -n "$SANDBOX" ]; then
+  if [ -n "$AGENT_MODE" ]; then
     printf '  browser: open https://%s from a LAN device (accept the one-time cert), then pair + Talk.\n' "$FRONTDOOR_HOST"
+    printf '  next:    pair the device from the OpenClaw dashboard, then start a Talk session.\n'
+  else
+    # Voice-only has no gateway, so no dashboard and no front door to point at.
+    printf '  next:    voice-only install — the brain listens on ws://127.0.0.1:%s/talk and nothing fronts it.\n' "$BRAIN_PORT"
+    printf '           install OpenClaw (sudo npm install -g openclaw) or NemoClaw, then re-run to add Talk.\n'
   fi
   cat <<EOF
-  next: open your OpenClaw dashboard, pair the device, start a Talk session.
-  ops:  teaport status | teaport doctor | teaport logs [engine|brain]
+  ops:     teaport status | teaport doctor | teaport logs [engine|brain]
 EOF
 }
 
@@ -548,7 +639,7 @@ main() {
   phase_sysdeps
   phase_engine
   phase_brain
-  detect_sandbox
+  detect_agent
   phase_agent
   phase_credentials
   phase_services
