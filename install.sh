@@ -355,6 +355,26 @@ JSON
     "$OPENCLAW" gateway install
   fi
 
+  # The brain calls back into OpenClaw for memory recall and tools, authenticating with the
+  # gateway's *own* bearer token — openclaw_client._token() reads OPENCLAW_GATEWAY_TOKEN, else
+  # ~/.config/teaport/openclaw_token. Nothing wrote that file, so every install logged
+  # "no gateway token; skipping tool 'memory_search'" and lost memory recall silently, with a
+  # working voice loop hiding the failure. Read it after the gateway step above, which is what
+  # mints the token when it is absent. Note this is neither GATEWAY_TOKEN (brain /talk) nor the
+  # LLM key — three distinct secrets.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] write %s/openclaw_token from openclaw.json gateway.auth.token (mode 600)\n' "$SECRETS"
+  else
+    local octok; octok="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json')).get('gateway',{}).get('auth',{}).get('token',''))" 2>/dev/null || true)"
+    if [ -n "$octok" ]; then
+      mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
+      printf '%s' "$octok" > "$SECRETS/openclaw_token"; chmod 600 "$SECRETS/openclaw_token"
+      log "openclaw gateway token -> $SECRETS/openclaw_token (memory recall + tools)"
+    else
+      warn "no gateway.auth.token in openclaw.json — memory recall and OpenClaw tools will be skipped"
+    fi
+  fi
+
   # The gateway is a systemd *user* service, so without linger it does not start until the
   # user logs in — a headless appliance would reboot into no gateway and no front door.
   if ! contains '=yes' "$(loginctl show-user "$RUN_USER" --property=Linger 2>/dev/null || true)"; then
