@@ -158,14 +158,20 @@ eula_gate() {
 }
 
 # --- phases ------------------------------------------------------------------
-ASSET_KEY="l4t38-cu13"   # the only supported target (JetPack 7.2 / CUDA 13)
+# The "l4t38" in the asset name predates JetPack 7.2 shipping L4T R39 (7.2-b187 installs an
+# R39.2 rootfs with CUDA 13.2). The binary is CUDA-13 based and resolves its deps on both R38
+# and R39, so the name is a stale label rather than a real target. Renaming it would mean
+# republishing the artifact and the manifest, so the key stays put.
+ASSET_KEY="l4t38-cu13"   # JetPack 7.2 / CUDA 13 — L4T R38 or R39
 
 phase_preflight() {
   log "preflight"
   if [ -f /etc/nv_tegra_release ]; then
     local l4t; l4t="$(sed -n 's/.*# R\([0-9]\+\).*/\1/p' /etc/nv_tegra_release | head -1)"
-    [ "$l4t" = 38 ] || die "unsupported L4T R${l4t:-?} — the engine ships for JetPack 7.2 (L4T R38 / CUDA 13) only"
-    log "Jetson L4T R38 (JetPack 7.2) — engine asset: $ASSET_KEY"
+    case "$l4t" in
+      38|39) log "Jetson L4T R$l4t (JetPack 7.2) — engine asset: $ASSET_KEY" ;;
+      *) die "unsupported L4T R${l4t:-?} — the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) only" ;;
+    esac
   elif [ "$ALLOW_NON_JETSON" = 1 ]; then
     warn "not a Jetson — continuing because TEAPORT_ALLOW_NON_JETSON=1 (dev/dry-run only)"
   else
@@ -178,11 +184,16 @@ phase_preflight() {
 }
 
 phase_sysdeps() {
-  log "system deps: espeak-ng (engine G2P), python3.12-venv (brain)"
+  log "system deps: espeak-ng (engine G2P), libopenblas0 (engine BLAS), python3.12-venv (brain)"
   # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child).
+  # libopenblas0 provides libopenblas.so.0, which the engine links against. JetPack does not
+  # ship it, so without this the engine binary fails to load at first start.
   SUDO apt-get update -qq
-  SUDO apt-get install -y espeak-ng python3.12-venv
-  if [ "$DRY_RUN" != 1 ]; then have espeak-ng || die "espeak-ng not installed"; fi
+  SUDO apt-get install -y espeak-ng libopenblas0 python3.12-venv
+  if [ "$DRY_RUN" != 1 ]; then
+    have espeak-ng || die "espeak-ng not installed"
+    ldconfig -p | grep -q 'libopenblas\.so\.0' || die "libopenblas.so.0 not installed"
+  fi
 }
 
 phase_engine() {
