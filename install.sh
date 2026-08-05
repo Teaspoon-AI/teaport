@@ -468,9 +468,12 @@ set_avahi_hostname() {
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
-  # KOKORO_RESERVE_FPT: 6 when a sandbox coexists (RAM shared), 12 voice-only. The code
+  # KOKORO_RESERVE_FPT: 6 when an agent coexists (RAM shared), 12 voice-only. The code
   # default (50) OOMs an 8GB box — the installer must always set it.
-  local fpt=12; [ -n "$SANDBOX" ] && fpt=6
+  # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
+  # so reserving the voice-only amount alongside it is the direction that OOMs. 6 is the
+  # measured-safe sandbox figure and is conservative for the (lighter) host gateway.
+  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=6
   # GATEWAY_TOKEN protects the local /talk port; the same value is wired into the plugin
   # config (phase_agent) — resolve it once for both sides.
   resolve_gateway_token
