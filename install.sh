@@ -192,8 +192,10 @@ phase_preflight() {
 }
 
 phase_sysdeps() {
-  log "system deps: espeak-ng (engine G2P), libopenblas0 (engine BLAS), python3.12-venv (brain)"
-  # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child).
+  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), python3.12-venv (brain)"
+  # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child) —
+  # but ONLY as the OOV + non-English fallback. The en-us G2P is the misaki dict that
+  # phase_engine installs to bin/g2p/; espeak-only en-us speaks robotic prosody.
   # libopenblas0 provides libopenblas.so.0, which the engine links against. JetPack does not
   # ship it, so without this the engine binary fails to load at first start.
   SUDO apt-get update -qq
@@ -206,10 +208,20 @@ phase_sysdeps() {
 
 phase_engine() {
   log "engine + models -> $PREFIX"
-  SUDO mkdir -p "$PREFIX/bin" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
+  SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
   SUDO chown -R "$RUN_USER" "$PREFIX"
   download "$(mget engine.assets.$ASSET_KEY.url)"  "$PREFIX/bin/voxtral"                         "$(mget engine.assets.$ASSET_KEY.sha256)"
   run chmod +x "$PREFIX/bin/voxtral"
+  # The misaki G2P dict MUST land at bin/g2p/ — the engine probes
+  # <exe_dir>/g2p/kokoro_g2p.dict and, if absent, silently degrades to
+  # espeak-only English: every function word gets its stressed citation form,
+  # the duration predictor doubles it, and speech goes robotic with no error
+  # anywhere (shipped exactly so, 2026-08-05). espeak-ng (phase_sysdeps) is
+  # only the OOV + non-English fallback, NOT the en-us G2P.
+  local g2p_url g2p_sha
+  g2p_url="$(mget engine.g2p_dict.url 2>/dev/null)" || die "manifest has no engine.g2p_dict — a box installed without the dict speaks robotic en-us prosody; republish the manifest"
+  g2p_sha="$(mget engine.g2p_dict.sha256 2>/dev/null)" || die "manifest engine.g2p_dict.sha256 is missing"
+  download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.dict" "$g2p_sha"
   download "$(mget models.voxtral.url)"            "$PREFIX/models/voxtral/consolidated.safetensors" "$(mget models.voxtral.sha256)"
   download "$(mget models.kokoro.url)"             "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf"     "$(mget models.kokoro.sha256)"
   # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
@@ -545,8 +557,13 @@ phase_services() {
   # config (phase_agent) — resolve it once for both sides.
   resolve_gateway_token
 
+  # VOX_REQUIRE_DICT_G2P: refuse to serve if the misaki dict failed to load
+  # rather than silently fall back to espeak-only prosody (see phase_engine).
+  # Engine <= 1.3 ignores it; from the next release it turns a degraded box
+  # into a loud restart loop that `teaport doctor` / journalctl names.
   write_env "$ETC/engine.env" \
-    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=240" "TTS_CTX=192"
+    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=240" "TTS_CTX=192" \
+    "VOX_REQUIRE_DICT_G2P=1"
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \
     "LLM_BASE_URL=$LLM_BASE_URL" "LLM_MODEL=$LLM_MODEL" \
@@ -685,6 +702,12 @@ phase_verify() {
   # Front door only exists when a gateway was fronted (phase_frontdoor).
   if [ -n "$AGENT_MODE" ]; then
     contains ":443 " "$(ss -ltn 2>/dev/null || true)" || { warn "front door :443 not listening — browser access is down"; ok=0; }
+  fi
+  # A listening engine can still be prosody-degraded: without bin/g2p/ it runs
+  # espeak-only G2P and only says so in one journal line. Check that line.
+  local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
+  if contains "dict G2P unavailable" "$g2p_log"; then
+    warn "engine is running WITHOUT the misaki G2P dict (espeak-only fallback — robotic prosody): $g2p_log"; ok=0
   fi
   [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
 }

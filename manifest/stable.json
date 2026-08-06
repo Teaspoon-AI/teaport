@@ -14,6 +14,11 @@
         "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.3-l4t38-cu13",
         "sha256": "8e8ccc194ae9966e6795078a822ab142200ab1f988faf014064fcb45f06d56a4"
       }
+    },
+    "g2p_dict": {
+      "_note": "misaki en-us lexicon (teagram-engine engine/g2p/kokoro_g2p.dict). MUST install to bin/g2p/ — without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Arch-independent; rides the engine release.",
+      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.3-g2p.dict",
+      "sha256": "7d33f53aed4e1d6946ab726cda27cef897bbeb17911cbf70e01b63d5b581206b"
     }
   },
   "models": {

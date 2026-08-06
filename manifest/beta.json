@@ -14,6 +14,11 @@
         "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-l4t38-cu13",
         "sha256": "TODO"
       }
+    },
+    "g2p_dict": {
+      "_note": "misaki en-us lexicon (teagram-engine engine/g2p/kokoro_g2p.dict). MUST install to bin/g2p/ — without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Arch-independent; rides the engine release.",
+      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-g2p.dict",
+      "sha256": "TODO"
     }
   },
   "models": {
