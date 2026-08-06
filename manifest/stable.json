@@ -1,7 +1,7 @@
 {
   "version": "0.0.0",
   "channel": "stable",
-  "_note": "Release manifest — single source of truth for install.sh, `teaport update`, and box OTA. All URLs served from get.teaspoon.tech (no HF, no binaries repo). Placeholder values until the first release is cut.",
+  "_note": "Release manifest \u2014 single source of truth for install.sh, `teaport update`, and box OTA. All URLs served from get.teaspoon.tech (no HF, no binaries repo). Placeholder values until the first release is cut.",
   "engine": {
     "release": "1.3",
     "eula": {
@@ -16,7 +16,7 @@
       }
     },
     "g2p_dict": {
-      "_note": "misaki en-us lexicon (teagram-engine engine/g2p/kokoro_g2p.dict). MUST install to bin/g2p/ — without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Arch-independent; rides the engine release.",
+      "_note": "misaki en-us lexicon (teagram-engine engine/g2p/kokoro_g2p.dict). MUST install to bin/g2p/ \u2014 without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Arch-independent; rides the engine release.",
       "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.3-g2p.dict",
       "sha256": "7d33f53aed4e1d6946ab726cda27cef897bbeb17911cbf70e01b63d5b581206b"
     }
@@ -28,14 +28,24 @@
     },
     "voxtral": {
       "url": "https://get.teaspoon.tech/dl/models/voxtral/consolidated.safetensors",
-      "sha256": "fd25f9d675042c37b0a9b051a5333ef001c129d302461995bdc3e7b321c3b2b6",
+      "sha256": "3a77d633812ddd4d69036eb623141b92b673ba62c44585f14c2d0614a57f8f23",
+      "data_section_sha256": "98888a061018dc85477f101192f587343ce5609e5103634bf61af76f7a83a953",
+      "_provenance": "built by teagram-engine tools/quant/build_marlin_checkpoint.py from mistralai/Voxtral-Mini-4B-Realtime-2602@2769294da9567371363522aac9bbcfdd19447add; 893 tensors, 182 Marlin INT4 decoder linears. Build receipts: teagram-engine engine/tools/quant/BUILD_REPORT.md. Eval receipts (REGEN gates 3-5): teagram-mini docs/MODEL_EVAL_RESULTS.md, 2026-07-12 \u2014 LibriSpeech test-clean 2.78% / test-other 6.34%, quant cost +0.04/+0.06pp vs bf16, streaming certified equal to file mode, FLEURS 13 languages. The data_section_sha256 is what ties an artifact to those numbers: metadata differences change the full-file hash but not the weights.",
       "aux": {
         "params.json": "https://get.teaspoon.tech/dl/models/voxtral/params.json",
         "tekken.json": "https://get.teaspoon.tech/dl/models/voxtral/tekken.json"
       }
     }
   },
-  "brain": { "repo": "Teaspoon-AI/teaport", "tag": "main" },
-  "plugin": { "npm": "@teaspoon-ai/openclaw-teaport-realtime", "version": "0.1.0" },
-  "nemoclaw": { "tested_tag": "TODO" }
+  "brain": {
+    "repo": "Teaspoon-AI/teaport",
+    "tag": "main"
+  },
+  "plugin": {
+    "npm": "@teaspoon-ai/openclaw-teaport-realtime",
+    "version": "0.1.0"
+  },
+  "nemoclaw": {
+    "tested_tag": "TODO"
+  }
 }
