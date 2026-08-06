@@ -24,7 +24,10 @@ export default defineConfig({
 			sidebar: [
 				{
 					label: 'Getting Started',
-					items: [{ label: 'Installation', slug: 'getting-started/installation' }],
+					items: [
+						{ label: 'Prepare the Jetson', slug: 'getting-started/prepare-the-jetson' },
+						{ label: 'Installation', slug: 'getting-started/installation' },
+					],
 				},
 				{
 					label: 'Guides',
@@ -36,7 +39,10 @@ export default defineConfig({
 				},
 				{
 					label: 'Reference',
-					items: [{ label: 'Architecture', slug: 'reference/architecture' }],
+					items: [
+						{ label: 'Architecture', slug: 'reference/architecture' },
+						{ label: 'teaport CLI', slug: 'reference/cli' },
+					],
 				},
 			],
 		}),
