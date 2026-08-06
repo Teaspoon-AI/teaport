@@ -466,9 +466,38 @@ render_unit() {  # render_unit <template.in> <dest-name>
   else printf '%s\n' "$body" | SUDO tee "/etc/systemd/system/$out" >/dev/null; fi
 }
 write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
+  # Keys passed here are OURS: rewritten every run so a repair restores them. Everything
+  # else already in the file is an operator edit and is carried forward. Re-running the
+  # installer is the documented repair action (README, FAQ, Troubleshooting all say so), and
+  # a plain overwrite silently deleted hand-tuned settings — LLM_EXTRA_BODY provider routing,
+  # TTS_SEAM_KEEP_*, ENDPOINT_STOP_SECS/SMARTTURN_COMPLETE_THRESHOLD. The box came back
+  # "installed fine" and quietly sounded different, with nothing in the output saying why.
+  # Comments and blank lines are not preserved: the file is generated, and re-emitting a
+  # user's comment against a value we may have just changed would be worse than dropping it.
   local path="$1"; shift
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s:\n' "$path"; printf '    %s\n' "$@"; return; fi
-  printf '%s\n' "$@" | SUDO tee "$path" >/dev/null
+  local keep=() managed=" " line
+  for line in "$@"; do managed="$managed${line%%=*} "; done
+  # Read unprivileged: write_env's own chgrp/chmod 640 leaves these group-readable by
+  # RUN_USER, which is who runs the installer. A first install has no file to read.
+  if [ -r "$path" ]; then
+    while IFS= read -r line; do
+      case "$line" in
+        ''|'#'*) continue ;;
+        *=*) case "$managed" in *" ${line%%=*} "*) ;; *) keep+=("$line") ;; esac ;;
+      esac
+    done < "$path"
+  fi
+  # NB: `[ cond ] && cmd` as a statement returns non-zero when cond is false, which under
+  # `set -e` aborts the installer on a first install (empty keep array). Use if-blocks.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] write %s:\n' "$path"; printf '    %s\n' "$@"
+    if [ ${#keep[@]} -gt 0 ]; then printf '    %s   (preserved operator setting)\n' "${keep[@]}"; fi
+    return
+  fi
+  if [ ${#keep[@]} -gt 0 ]; then log "preserving ${#keep[@]} operator setting(s) in $path"; fi
+  { printf '%s\n' "$@"
+    if [ ${#keep[@]} -gt 0 ]; then printf '%s\n' "${keep[@]}"; fi
+  } | SUDO tee "$path" >/dev/null
   SUDO chmod 640 "$path"; SUDO chgrp "$RUN_USER" "$path" 2>/dev/null || true
 }
 
