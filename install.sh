@@ -168,11 +168,13 @@ eula_gate() {
 # and R39, so the name is a stale label rather than a real target. Renaming it would mean
 # republishing the artifact and the manifest, so the key stays put.
 ASSET_KEY="l4t38-cu13"   # JetPack 7.2 / CUDA 13 — L4T R38 or R39
+L4T_RELEASE=""           # R-number from /etc/nv_tegra_release; empty off-Jetson (dev/dry-run)
 
 phase_preflight() {
   log "preflight"
   if [ -f /etc/nv_tegra_release ]; then
     local l4t; l4t="$(sed -n 's/.*# R\([0-9]\+\).*/\1/p' /etc/nv_tegra_release | head -1)"
+    L4T_RELEASE="$l4t"
     case "$l4t" in
       38|39) log "Jetson L4T R$l4t (JetPack 7.2) — engine asset: $ASSET_KEY" ;;
       *) die "unsupported L4T R${l4t:-?} — the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) only" ;;
@@ -219,6 +221,18 @@ phase_engine() {
   SUDO chown -R "$RUN_USER" "$PREFIX"
   download "$(mget engine.assets.$ASSET_KEY.url)"  "$PREFIX/bin/voxtral"                         "$(mget engine.assets.$ASSET_KEY.sha256)"
   run chmod +x "$PREFIX/bin/voxtral"
+  # The preflight gate accepts R38 *and* R39 on the claim that this CUDA-13 binary resolves its
+  # deps on both (see ASSET_KEY). Check the claim instead of trusting the label: an unresolved
+  # .so is a crisp message here rather than a crash-looping unit after the ~15GB of models
+  # below. phase_sysdeps already installed libopenblas0, so a miss now is a real ABI gap.
+  if [ "$DRY_RUN" != 1 ]; then
+    local unresolved; unresolved="$(ldd "$PREFIX/bin/voxtral" 2>/dev/null | grep 'not found' || true)"
+    if [ -n "$unresolved" ]; then
+      die "engine binary has unresolved libraries on this L4T (R${L4T_RELEASE:-?}):
+$unresolved
+the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the lines above"
+    fi
+  fi
   # The misaki G2P dict MUST land at bin/g2p/ — the engine probes
   # <exe_dir>/g2p/kokoro_g2p.dict and, if absent, silently degrades to
   # espeak-only English: every function word gets its stressed citation form,
