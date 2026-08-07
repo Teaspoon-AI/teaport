@@ -51,7 +51,10 @@ _STREAM_TIMEOUT = float(os.getenv("TTS_REMOTE_TIMEOUT", "20"))
 # synthesizing — including work a barge-in abandoned, measured at ~1.5s on an Orin Nano. Two
 # overlapping barge-ins therefore refuse every new connect until they drain. Retry the connect
 # across that window: measured 0/3 clauses survive with a single attempt, 3/3 with three.
-_STREAM_CONNECT_RETRIES = int(os.getenv("TTS_CONNECT_RETRIES", "3"))
+# >= 1: the retry count is also the ATTEMPT count, so 0 would skip the connect entirely
+# and hand the caller a None websocket (AttributeError on .send) instead of a clean failure.
+# Setting it to 0/1 is how an operator disables the retry, and both must still connect once.
+_STREAM_CONNECT_RETRIES = max(1, int(os.getenv("TTS_CONNECT_RETRIES", "3")))
 _STREAM_CONNECT_BACKOFF = float(os.getenv("TTS_CONNECT_BACKOFF", "0.6"))
 
 # Caption lead: the transport releases each word's caption frame at its presentation
