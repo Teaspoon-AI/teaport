@@ -313,14 +313,29 @@ resolve_gateway_token() {
   return 0
 }
 
-# talk.realtime config, identical on both agent paths except the brain URL.
-# brain=none: the teaport brain orchestrates the turn, so OpenClaw must not answer too.
-# The token matches brain.env's GATEWAY_TOKEN so the brain accepts the relayed session.
+# The OpenClaw config both agent paths share; only the brain URL differs.
+#
+# talk.realtime — brain=none: the teaport brain orchestrates the turn, so OpenClaw must not
+# answer too. The token matches brain.env's GATEWAY_TOKEN so the brain accepts the relayed
+# session.
+#
+# device-pair — what `openclaw qr` advertises to a phone. Two non-obvious parts:
+#   * `enabled` must be explicit. The plugin ships enabledByDefault, but as a *bundled* plugin
+#     it still needs opt-in on this platform; config alone gets "plugin disabled ... but config
+#     is present" and the pairing methods never load.
+#   * publicUrl must be set at all. The gateway is loopback-only by design with Caddy as the
+#     front door (see phase_frontdoor), and nothing else tells device-pair the front door
+#     exists — so `openclaw qr` fails with "Gateway is only bound to loopback" and there is no
+#     way to pair a phone. Pointing it at Caddy is what makes the QR resolvable.
+# wss, not ws: OpenClaw hands a cleartext LAN pairing only a read+talk profile, so a phone
+# paired over ws:// silently comes up without operator scope.
 write_talk_patch() {
   cat > "$1" <<JSON
 { "talk": { "realtime": {
   "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "none",
-  "providers": { "teaport": { "url": "$2", "token": "$GATEWAY_TOKEN" } } } } }
+  "providers": { "teaport": { "url": "$2", "token": "$GATEWAY_TOKEN" } } } },
+  "plugins": { "entries": { "device-pair": {
+  "enabled": true, "config": { "publicUrl": "wss://$FRONTDOOR_HOST" } } } } }
 JSON
 }
 
@@ -371,6 +386,7 @@ agent_openclaw() {
 
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+    printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
     printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n'
   else
     local patch; patch="$(mktemp)"
@@ -448,9 +464,12 @@ agent_nemoclaw() {
   fi
   run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime
 
-  # 2. talk.realtime — one validated merge (openclaw config patch). The token matches brain.env.
+  # 2. talk.realtime + device-pair — one validated merge (openclaw config patch). The token
+  #    matches brain.env. Caddy fronts the *sandbox's* gateway through the same host port, so
+  #    the pairing URL is the host front door, exactly as on the host-OpenClaw path.
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+    printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
@@ -493,6 +512,9 @@ BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 GATEWAY_PORT="${TEAPORT_GATEWAY_PORT:-18789}"     # OpenClaw gateway (sandbox -> host forward)
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS
+# Where 'tls internal' keeps its CA. The Debian caddy package runs the daemon with
+# HOME=/var/lib/caddy, so its data dir is the XDG default underneath that.
+CADDY_PKI="${TEAPORT_CADDY_PKI:-/var/lib/caddy/.local/share/caddy/pki/authorities/local}"
 render_unit() {  # render_unit <template.in> <dest-name>
   local tpl="$HERE/systemd/$1" out="$2"
   [ -f "$tpl" ] || die "missing unit template: $tpl"
@@ -546,14 +568,39 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # cert (offline, one-time browser trust); swap it for an ACME/DNS-01 block to get a real
 # no-warning cert for a name that resolves to the LAN IP. WebSocket upgrades (the /talk
 # stream) pass through reverse_proxy automatically.
+#
+# The plain-HTTP block exists for phones. A browser can click through an untrusted cert; the
+# OpenClaw mobile app cannot, so pairing over wss:// needs Caddy's local root installed on the
+# device first — and that download cannot itself sit behind the cert it is meant to fix. Hence
+# exactly one path on :80, everything else redirected.
+#
+# It is served straight out of Caddy's PKI directory rather than copied: 'tls internal' issues
+# ~12-hour leaves under a 10-year root, so a copy would be a snapshot of something that rotates
+# twice a day, and would go stale silently if the CA were ever regenerated. The path matcher is
+# exact and rewrites to a fixed file, so root.key next to it stays unreachable.
 write_caddyfile() {
   local path="$1"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, tls internal)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, tls internal, + http://%s/teaport-ca.crt)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$FRONTDOOR_HOST"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
     "#   sudo systemctl reload caddy.service" \
+    "" \
+    "# Cleartext, one path only: the local CA, so a phone can trust us before it connects." \
+    "http://$FRONTDOOR_HOST {" \
+    "    handle /teaport-ca.crt {" \
+    "        root * $CADDY_PKI" \
+    "        rewrite * /root.crt" \
+    "        file_server" \
+    "        header Content-Type application/x-x509-ca-cert" \
+    "        header Content-Disposition \"attachment; filename=teaport-ca.crt\"" \
+    "    }" \
+    "    handle {" \
+    "        redir https://{host}{uri} permanent" \
+    "    }" \
+    "}" \
+    "" \
     "$FRONTDOOR_HOST {" \
     "    tls internal" \
     "    reverse_proxy 127.0.0.1:$GATEWAY_PORT" \
@@ -653,6 +700,26 @@ phase_frontdoor() {
   # never resolves — the documented browser entry point silently does not exist.
   SUDO systemctl restart avahi-daemon
   SUDO systemctl reload caddy.service 2>/dev/null || SUDO systemctl restart caddy.service
+  # Confirm the CA is actually downloadable. A 404 here is the same silent dead end as the
+  # avahi case above: everything looks installed, and pairing a phone is simply impossible.
+  # Poll — 'tls internal' provisions the CA when caddy first loads the site, which can trail
+  # the reload by a moment.
+  # Skip under --dry-run: nothing above actually ran, so this would probe whatever the box
+  # already has and report on that instead of on the install being previewed.
+  # (Written as an if, not `[ ] && return`: under set -e that construct returns non-zero when
+  # the test fails, which is how write_env aborted a real install once.)
+  if [ "$DRY_RUN" = 1 ]; then return 0; fi
+  local ca_ok=0 i
+  for i in $(seq 1 10); do
+    if curl -fsS -o /dev/null -H "Host: $FRONTDOOR_HOST" http://127.0.0.1/teaport-ca.crt 2>/dev/null; then ca_ok=1; break; fi
+    sleep 1
+  done
+  if [ "$ca_ok" = 1 ]; then
+    log "front door up — root cert at http://$FRONTDOOR_HOST/teaport-ca.crt"
+  else
+    warn "http://$FRONTDOOR_HOST/teaport-ca.crt does not serve (looked in $CADDY_PKI)"
+    warn "browsers still work; phones cannot install the root, so app pairing over wss:// will fail"
+  fi
 }
 
 # The Discord voice bridge (opt-in). The repo ships bridge/discord but nothing runs it, so a
@@ -774,6 +841,16 @@ usage_footer() {
       else
         printf '           you will need the gateway auth token — see: openclaw dashboard --no-open\n'
       fi
+    fi
+    # Phones need saying out loud. The mobile app cannot click through 'tls internal' the way
+    # a browser can, so scanning the QR before installing the root just fails the TLS
+    # handshake with nothing on screen to explain why. Order matters: cert, then scan.
+    printf '  phone:   install http://%s/teaport-ca.crt, then Settings > General > About >\n' "$FRONTDOOR_HOST"
+    printf '           Certificate Trust Settings and switch it on (a separate step from installing it).\n'
+    if [ "$AGENT_MODE" = nemoclaw ]; then
+      printf '           then pair: %s %s exec -- openclaw qr\n' "$NEMOCLAW" "$SANDBOX"
+    else
+      printf '           then pair: openclaw qr   (the code expires in 10 minutes)\n'
     fi
     printf '  next:    start a Talk session from the dashboard.\n'
   else
