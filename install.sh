@@ -324,6 +324,24 @@ write_talk_patch() {
 JSON
 }
 
+# The published plugin, when there is no local source to pack.
+PLUGIN_NPM_SPEC="@teaspoon-ai/openclaw-teaport-realtime"
+# plugin_tgz — echo the path of a packed local plugin tarball, or nothing when there is no
+# local source (install from PLUGIN_NPM_SPEC instead). Both agent paths resolve and pack
+# identically; only how the tgz reaches OpenClaw differs (direct vs sandbox upload), so only
+# that part stays in the callers. Progress goes to stderr — stdout is the return value.
+plugin_tgz() {
+  local psrc="${PLUGIN_SRC:-}"; if [ -z "$psrc" ] && [ -d "$HERE/plugin" ]; then psrc="$HERE/plugin"; fi
+  [ -n "$psrc" ] || return 0
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '\033[2m  [dry-run] (cd %s && npm pack) -> /tmp/<pkg>.tgz\033[0m\n' "$psrc" >&2
+    printf '/tmp/teaport-plugin.tgz'; return 0
+  fi
+  have npm || die "npm is required to package the plugin from $psrc"
+  local tgz; tgz="$(cd "$psrc" && npm pack --silent --pack-destination /tmp)" || die "npm pack failed in $psrc"
+  printf '/tmp/%s' "$tgz"
+}
+
 phase_agent() {
   case "$AGENT_MODE" in
     nemoclaw) agent_nemoclaw ;;
@@ -343,17 +361,11 @@ agent_openclaw() {
   # Loopback, not the docker bridge: OpenClaw runs on the host, beside the brain.
   local brain_ws="ws://127.0.0.1:${BRAIN_PORT}/talk"
 
-  local psrc="${PLUGIN_SRC:-}"; if [ -z "$psrc" ] && [ -d "$HERE/plugin" ]; then psrc="$HERE/plugin"; fi
-  if [ -n "$psrc" ]; then
-    if [ "$DRY_RUN" = 1 ]; then
-      printf '  [dry-run] (cd %s && npm pack) -> openclaw plugins install <tgz> --force\n' "$psrc"
-    else
-      have npm || die "npm is required to package the plugin from $psrc"
-      local tgz; tgz="$(cd "$psrc" && npm pack --silent --pack-destination /tmp)" || die "npm pack failed in $psrc"
-      "$OPENCLAW" plugins install "/tmp/$tgz" --force
-    fi
+  local tgz; tgz="$(plugin_tgz)"
+  if [ -n "$tgz" ]; then
+    run "$OPENCLAW" plugins install "$tgz" --force
   else
-    run "$OPENCLAW" plugins install "@teaspoon-ai/openclaw-teaport-realtime" --pin
+    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin
   fi
   run "$OPENCLAW" plugins enable teaport-realtime
 
@@ -425,18 +437,14 @@ agent_nemoclaw() {
   local brain_ws="ws://172.18.0.1:${BRAIN_PORT}/talk"   # sandbox -> host brain over the docker bridge
 
   # 1. Plugin into the sandbox. Published -> npm spec; otherwise npm-pack a tgz (honors the
-  #    files allowlist) and `openclaw plugins install <tgz>` copies it into .openclaw/extensions/.
-  local psrc="${PLUGIN_SRC:-}"; if [ -z "$psrc" ] && [ -d "$HERE/plugin" ]; then psrc="$HERE/plugin"; fi
-  if [ -n "$psrc" ]; then
-    if [ "$DRY_RUN" = 1 ]; then
-      printf '  [dry-run] (cd %s && npm pack) -> nemoclaw %s upload -> openclaw plugins install <tgz> --force\n' "$psrc" "$SANDBOX"
-    else
-      local tgz; tgz="$(cd "$psrc" && npm pack --silent --pack-destination /tmp)" || die "npm pack failed in $psrc"
-      "$NEMOCLAW" "$SANDBOX" upload "/tmp/$tgz" "/tmp/$tgz"
-      "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "/tmp/$tgz" --force
-    fi
+  #    files allowlist), upload it, and `openclaw plugins install <tgz>` copies it into
+  #    .openclaw/extensions/ — the pack itself is shared with the host path (plugin_tgz).
+  local tgz; tgz="$(plugin_tgz)"
+  if [ -n "$tgz" ]; then
+    run "$NEMOCLAW" "$SANDBOX" upload "$tgz" "$tgz"
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force
   else
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "@teaspoon-ai/openclaw-teaport-realtime" --pin
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin
   fi
   run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime
 
