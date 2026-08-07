@@ -750,15 +750,30 @@ usage_footer() {
     # created, so the user lands on a page that silently never connects. Print the
     # authenticated URL rather than leaving them to find the token in openclaw.json.
     local url="https://$FRONTDOOR_HOST" octok=""
-    if [ "$AGENT_MODE" = openclaw ] && [ -r "$HOME/.openclaw/openclaw.json" ]; then
-      octok="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json')).get('gateway',{}).get('auth',{}).get('token',''))" 2>/dev/null || true)"
+    # Read the token agent_openclaw already resolved and wrote, rather than re-parsing
+    # openclaw.json here — one site owns where the token lives, so the two cannot drift.
+    # NemoClaw keeps its gateway (and its token) inside the sandbox: nothing to fill in there.
+    if [ "$AGENT_MODE" = openclaw ]; then
+      if [ "$DRY_RUN" = 1 ]; then
+        # --dry-run changes nothing, so its output is the transcript operators paste into bug
+        # reports and CI logs. Show the URL's shape only: a real run's token at least reaches
+        # just the operator who installed the box, while a pasted preview travels.
+        octok="<gateway-token>"
+      else
+        octok="$(cat "$SECRETS/openclaw_token" 2>/dev/null || true)"
+      fi
     fi
     if [ -n "$octok" ]; then
       printf '  browser: open %s/#token=%s from a LAN device (accept the one-time cert).\n' "$url" "$octok"
       printf '           the #token fragment authenticates you; it is never sent to the proxy.\n'
     else
       printf '  browser: open %s from a LAN device (accept the one-time cert).\n' "$url"
-      printf '           you will need the gateway auth token — see: openclaw dashboard --no-open\n'
+      if [ "$AGENT_MODE" = nemoclaw ]; then
+        # The sandbox owns the OpenClaw CLI; there is no `openclaw` on the host to run.
+        printf '           you will need the gateway auth token — see: %s %s exec -- openclaw dashboard --no-open\n' "$NEMOCLAW" "$SANDBOX"
+      else
+        printf '           you will need the gateway auth token — see: openclaw dashboard --no-open\n'
+      fi
     fi
     printf '  next:    start a Talk session from the dashboard.\n'
   else
