@@ -185,10 +185,17 @@ phase_preflight() {
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
   have curl || die "curl is required"
-  # No -f here: the bare host root serves 404 (only /dl, /manifest, /eula exist), and -f would
-  # turn that into a failure — warning "downloads will fail" on every healthy install. Any HTTP
-  # response proves reachability; DNS/TCP/TLS failures still exit non-zero.
-  run curl -sS -o /dev/null --max-time 8 https://get.teaspoon.tech 2>/dev/null || warn "get.teaspoon.tech not reachable (downloads will fail)"
+  # Look at the status code rather than using -f: the bare host root serves 404 (only /dl,
+  # /manifest, /eula exist), so -f would warn "downloads will fail" on every healthy install —
+  # but ignoring the code entirely calls a 502 from the edge "reachable" and defers the outage
+  # to the download, an EULA prompt and ~15GB later. A 4xx proves the host answered; a 5xx (or
+  # 000, curl's code for a DNS/TCP/TLS failure) is the outage worth warning about.
+  if [ "$DRY_RUN" != 1 ]; then
+    local code; code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://get.teaspoon.tech 2>/dev/null || true)"
+    case "$code" in
+      5*|000|"") warn "get.teaspoon.tech not reachable (HTTP ${code:-no response} — downloads will fail)" ;;
+    esac
+  fi
 }
 
 phase_sysdeps() {
