@@ -16,7 +16,7 @@
       }
     },
     "g2p_dict": {
-      "_note": "misaki en-us lexicon (teagram-engine engine/g2p/kokoro_g2p.dict). MUST install to bin/g2p/ \u2014 without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Arch-independent; rides the engine release.",
+      "_note": "en-us G2P lexicon (teagram-engine engine/g2p/kokoro_g2p.dict). GENERATED FROM the misaki en-US gold/silver lexicons (Apache-2.0, hexgrad and the misaki contributors, https://github.com/hexgrad/misaki) by teagram-engine tools/g2p_dict_convert.py, which flattens POS entries to DEFAULT and merges silver under gold \u2014 a derivative work, not a file copied from misaki. Attribution ships in the engine's THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ \u2014 without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Arch-independent; rides the engine release.",
       "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.3-g2p.dict",
       "sha256": "7d33f53aed4e1d6946ab726cda27cef897bbeb17911cbf70e01b63d5b581206b"
     }
