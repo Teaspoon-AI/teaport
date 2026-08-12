@@ -321,8 +321,24 @@ resolve_nemoclaw() { NEMOCLAW="$(command -v nemoclaw || echo "$HOME/.local/bin/n
 resolve_gateway_token() {
   [ -n "$GATEWAY_TOKEN" ] && return 0
   if [ -n "${TEAPORT_GATEWAY_TOKEN:-}" ]; then GATEWAY_TOKEN="$TEAPORT_GATEWAY_TOKEN"; return 0; fi
-  # idempotent re-run: reuse the token already in brain.env instead of re-minting
-  if [ -f "$ETC/brain.env" ]; then GATEWAY_TOKEN="$(sed -n 's/^GATEWAY_TOKEN=//p' "$ETC/brain.env" 2>/dev/null | head -1)"; fi
+  # idempotent re-run: reuse the token already in brain.env instead of re-minting.
+  #
+  # This read has to survive an UNREADABLE brain.env, for the same reason write_env's does:
+  # a first install under plain sudo leaves the file root:root, and then a repair run by the
+  # operator cannot read it. The old one-liner did not survive it. `sed` exits non-zero on a
+  # file it cannot open, `set -o pipefail` promotes that to the pipeline, and the installer
+  # died right here — exit 2, no message, before any phase that could have explained it, and
+  # before write_env's privileged read ever ran (measured with a root:root brain.env,
+  # 2026-08-12). Read privileged when the plain read fails, and parse in-shell: `sed | head`
+  # also risks SIGPIPE killing sed under pipefail, which is the same class of bug.
+  if [ -f "$ETC/brain.env" ]; then
+    local envtxt="" line
+    if [ -r "$ETC/brain.env" ]; then envtxt="$(cat "$ETC/brain.env")"
+    else envtxt="$(sudo cat "$ETC/brain.env" 2>/dev/null || true)"; fi
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in GATEWAY_TOKEN=*) GATEWAY_TOKEN="${line#GATEWAY_TOKEN=}"; break ;; esac
+    done <<<"$envtxt"
+  fi
   [ -n "$GATEWAY_TOKEN" ] && return 0
   GATEWAY_TOKEN="$( (head -c18 /dev/urandom 2>/dev/null || echo "teaport-$$") | od -An -tx1 | tr -d ' \n')"
   return 0
