@@ -23,7 +23,7 @@ from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
-    LLMFullResponseEndFrame,
+    FunctionCallResultProperties,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     OutputTransportMessageUrgentFrame,
@@ -154,6 +154,14 @@ SWITCH_VOICE = FunctionSchema(
 )
 
 _BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mid-flight
+
+# Return a tool result WITHOUT triggering another inference pass. Pipecat runs the
+# LLM after every function-call result by default, which is right when the result
+# carries an answer and wrong when it carries a placeholder: the model has nothing
+# to say, so it invents something. Used by the async ask_openclaw path, whose real
+# answer is spoken later by the follow-up injector (it rewrites the tool result and
+# queues an LLMRunFrame, so inference happens once, on real data).
+NO_INFERENCE = FunctionCallResultProperties(run_llm=False)
 
 
 def _mem_available_mb() -> int | None:
@@ -374,11 +382,12 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
             inflight = params.llm._teaport_consults = {}
         prior = inflight.get(request)
         if prior is not None and not prior.done():
-            params.llm._teaport_mute_next_at = time.monotonic()
-            await params.result_callback({
-                "status": "duplicate",
-                "instruction": ("This exact request is already in progress; "
-                                "its outcome will arrive. Do not respond.")})
+            # No inference on a placeholder result — see NO_INFERENCE below.
+            await params.result_callback(
+                {"status": "duplicate",
+                 "instruction": ("This exact request is already in progress; "
+                                 "its outcome will arrive. Do not respond.")},
+                properties=NO_INFERENCE)
             return
 
     call_id = f"teaport-consult-{uuid.uuid4().hex[:12]}"
@@ -402,18 +411,21 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
         # finished must not be evicted by this one's completion callback.
         task.add_done_callback(
             lambda t, r=request: inflight.pop(r, None) if inflight.get(r) is t else None)
-        # Speech-mute the completion that consumes this tool result: prompt-level
-        # "don't claim it's done" failed three times live (the model announced
-        # "posted!" ~4s in, before anything happened). The user already heard the
-        # deterministic "I'll work on that" ack; the muted completion's text is
-        # swallowed by the push_frame patch, and the REAL outcome arrives via the
-        # follow-up injector.
-        params.llm._teaport_mute_next_at = time.monotonic()
+        # Run NO inference on this placeholder (NO_INFERENCE). There is nothing for
+        # the model to say: the user already heard the deterministic "I'll work on
+        # that" ack, and the real outcome arrives later via the follow-up injector,
+        # which rewrites this tool result and runs the LLM then. Asking the model to
+        # respond here and discarding what it says is what produced fabricated
+        # answers — prompt-level "don't claim it's done" failed three times live
+        # (it announced "posted!" ~4s in), and a speech mute over the discarded
+        # completion failed too (2026-08-12: a fully invented Hacker News headline
+        # and item id reached the speaker).
         await params.result_callback({
             "status": "working_in_background",
             "instruction": (
                 "The task is running in the background; the outcome will arrive "
-                "later. Do not respond now.")})
+                "later. Do not respond now.")},
+            properties=NO_INFERENCE)
         return
 
     # SYNC path (no follow-up injector — e.g. the WebRTC dev client): ack-gated wait,
@@ -573,20 +585,7 @@ def _install_spoke_tracker(llm) -> None:
     async def push_frame(frame, direction=FrameDirection.DOWNSTREAM):
         if isinstance(frame, LLMFullResponseStartFrame):
             llm._teaport_spoke = False
-            # Arm the one-completion mute (see _ask_openclaw async path): the
-            # completion that runs right after the "working in background" tool
-            # result must not speak — the model reliably ignores instructions
-            # and announces the task as DONE there (three live incidents). The
-            # 5s arm window keeps a late/raced completion from being muted.
-            armed_at = getattr(llm, "_teaport_mute_next_at", None)
-            llm._teaport_mute_next_at = None
-            llm._teaport_muting = (
-                armed_at is not None and (time.monotonic() - armed_at) < 5.0)
-        elif isinstance(frame, LLMFullResponseEndFrame):
-            llm._teaport_muting = False
         elif isinstance(frame, LLMTextFrame):
-            if getattr(llm, "_teaport_muting", False):
-                return None  # swallow: this completion is display/speech-muted
             if any(c.isalnum() for c in getattr(frame, "text", "")):
                 llm._teaport_spoke = True
         return await orig_push(frame, direction)
