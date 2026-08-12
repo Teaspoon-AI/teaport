@@ -74,7 +74,9 @@ from teaport_brain.gateway_serializer import (  # noqa: E402
     RELAY_SAMPLE_RATE,
     TeaportGatewaySerializer,
 )
+from teaport_brain import llm_text_guard  # noqa: E402
 from teaport_brain import raw_llm_capture  # noqa: E402
+from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
 from teaport_brain.memory_hygiene import MemoryReclaim, turn_reclaim  # noqa: E402
 from teaport_brain.memory_recall import MemoryRecall  # noqa: E402
 from teaport_brain.raw_llm_capture import RawLLMCapture  # noqa: E402
@@ -298,9 +300,13 @@ async def run_relay_bot(websocket: WebSocket):
         heard_corrector,
         llm,
         # tap (debug): log the raw completion verbatim when it degenerates into
-        # ellipsis/markdown runs. Must sit HERE — downstream of the TTS aggregator
-        # the model's own bytes are already normalized away.
+        # ellipsis/markdown runs. Must sit HERE — upstream of the guard and the TTS
+        # aggregator, where the model's own bytes are still visible.
         RawLLMCapture() if raw_llm_capture.ENABLED else None,
+        # fold no-break/zero-width unicode out of the deltas and cut a runaway
+        # ellipsis collapse — the TTS and the committed context both read what
+        # this forwards, so it cleans speech and history in one place.
+        LLMTextGuard() if llm_text_guard.ENABLED else None,
         TurnTimer(turn_marks),  # tap: llm-start + llm-first-token
         tts,
         ep_out,  # tap (debug): first-audio bubble
