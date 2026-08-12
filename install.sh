@@ -190,12 +190,15 @@ phase_preflight() {
   # Look at the status code rather than using -f: the bare host root serves 404 (only /dl,
   # /manifest, /eula exist), so -f would warn "downloads will fail" on every healthy install —
   # but ignoring the code entirely calls a 502 from the edge "reachable" and defers the outage
-  # to the download, an EULA prompt and ~15GB later. A 4xx proves the host answered; a 5xx (or
-  # 000, curl's code for a DNS/TCP/TLS failure) is the outage worth warning about.
+  # to the download, an EULA prompt and ~15GB later. So 404 is the ONE healthy error shape;
+  # anything else — 5xx, 000 (curl's code for a DNS/TCP/TLS failure), or another 4xx (a WAF's
+  # 403, a proxy's 429) — deserves the early warning, because it is exactly the blocked-network
+  # case that otherwise surfaces at the first download.
   if [ "$DRY_RUN" != 1 ]; then
     local code; code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://get.teaspoon.tech 2>/dev/null || true)"
     case "$code" in
-      5*|000|"") warn "get.teaspoon.tech not reachable (HTTP ${code:-no response} — downloads will fail)" ;;
+      2*|3*|404) ;;
+      *) warn "get.teaspoon.tech is not serving normally (HTTP ${code:-no response} — downloads will fail)" ;;
     esac
   fi
 }
@@ -244,9 +247,17 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   # flattened and merged, not a file copied from misaki. Attribution for it and for the
   # Apache-2.0 model weights below lives in the engine's THIRD_PARTY_NOTICES.txt.
   local g2p_url g2p_sha
-  g2p_url="$(mget engine.g2p_dict.url 2>/dev/null)" || die "manifest has no engine.g2p_dict — a box installed without the dict speaks robotic en-us prosody; republish the manifest"
-  g2p_sha="$(mget engine.g2p_dict.sha256 2>/dev/null)" || die "manifest engine.g2p_dict.sha256 is missing"
-  download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.dict" "$g2p_sha"
+  g2p_url="$(mget engine.g2p_dict.url 2>/dev/null)" || g2p_url=""
+  g2p_sha="$(mget engine.g2p_dict.sha256 2>/dev/null)" || g2p_sha=""
+  if [ -z "$g2p_url" ] || [ -z "$g2p_sha" ]; then
+    # Fail-fast on a real install: shipping without the dict reproduces the 2026-08-05
+    # incident. A preview must not abort mid-plan though — an operator pointing --dry-run
+    # at an older (pre-g2p) manifest gets the full plan plus this heads-up.
+    local g2p_msg="manifest has no engine.g2p_dict (url+sha256) — a box installed without the dict speaks robotic en-us prosody; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$g2p_msg"; else die "$g2p_msg"; fi
+  else
+    download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.dict" "$g2p_sha"
+  fi
   download "$(mget models.voxtral.url)"            "$PREFIX/models/voxtral/consolidated.safetensors" "$(mget models.voxtral.sha256)"
   download "$(mget models.kokoro.url)"             "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf"     "$(mget models.kokoro.sha256)"
   # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
@@ -391,7 +402,7 @@ agent_openclaw() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
-    printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n'
+    printf '  [dry-run] openclaw config patch: gateway.port=%s trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n' "$GATEWAY_PORT"
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
@@ -401,8 +412,12 @@ agent_openclaw() {
     # unless the proxy is trusted — logging "Proxy headers detected from untrusted address" on
     # every browser hit. Loopback entries are valid here precisely for same-host reverse
     # proxies. This does not weaken auth: gateway.auth.mode stays as configured.
-    cat > "$patch" <<'JSON'
-{ "gateway": { "trustedProxies": ["127.0.0.1", "::1"] } }
+    # gateway.port must be pinned too: Caddy proxies to 127.0.0.1:$GATEWAY_PORT and brain.env
+    # points OPENCLAW_GATEWAY_URL at the same port, but nothing else tells a host OpenClaw to
+    # LISTEN there — its own default (and any TEAPORT_GATEWAY_PORT override) would otherwise
+    # leave Caddy proxying to a dead port that phase_verify never checks.
+    cat > "$patch" <<JSON
+{ "gateway": { "port": $GATEWAY_PORT, "trustedProxies": ["127.0.0.1", "::1"] } }
 JSON
     "$OPENCLAW" config patch --file "$patch"
     rm -f "$patch"
@@ -474,11 +489,24 @@ agent_nemoclaw() {
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
+    printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1, 172.18.0.1] (Caddy front door)\n'
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
     "$NEMOCLAW" "$SANDBOX" upload "$patch" /tmp/teaport-talk.json
     "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw config patch --file /tmp/teaport-talk.json
+    # Same reason as the host path: Caddy injects X-Forwarded-* into the proxied hop, and an
+    # untrusted proxy gets every phone/browser hit refused as non-local — device-pair through
+    # the front door needs this HERE too, not just on the host. The hop reaches the sandbox
+    # gateway either from its own loopback (an in-sandbox forward) or from the docker-bridge
+    # host address (the same 172.18.0.1 the brain URL uses) — trust both; the forward is
+    # host-loopback-bound, so this adds no reachability an attacker didn't already have.
+    cat > "$patch" <<'JSON'
+{ "gateway": { "trustedProxies": ["127.0.0.1", "::1", "172.18.0.1"] } }
+JSON
+    "$NEMOCLAW" "$SANDBOX" upload "$patch" /tmp/teaport-proxies.json
+    "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw config patch --file /tmp/teaport-proxies.json
+    rm -f "$patch"
   fi
 
   # 3. Reload the sandbox gateway + snapshot the wired state.
@@ -544,24 +572,47 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   local path="$1"; shift
   local keep=() managed=" " line
   for line in "$@"; do managed="$managed${line%%=*} "; done
-  # Read unprivileged: write_env's own chgrp/chmod 640 leaves these group-readable by
-  # RUN_USER, which is who runs the installer. A first install has no file to read.
+  # The read must not silently degrade to a clobber. Usually the file is group-readable by
+  # RUN_USER (write_env's own chgrp/chmod 640) — but a first install under plain sudo leaves
+  # it root:root, and TEAPORT_USER may differ from whoever runs the repair. The rewrite
+  # below is privileged (SUDO tee), so when plain read fails, read privileged too.
+  local existing=""
   if [ -r "$path" ]; then
-    while IFS= read -r line; do
-      case "$line" in
-        ''|'#'*) continue ;;
-        *=*) case "$managed" in *" ${line%%=*} "*) ;; *) keep+=("$line") ;; esac ;;
-      esac
-    done < "$path"
+    existing="$(cat "$path")"
+  elif [ -e "$path" ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+      warn "$path is not readable by $(id -un) — a real run reads it with sudo to preserve operator settings"
+    else
+      existing="$(sudo cat "$path")" || die "cannot read $path — refusing to overwrite it blind and lose operator settings"
+    fi
   fi
+  # `|| [ -n "$line" ]`: without it, read's non-zero at EOF drops a final line that lacks a
+  # trailing newline — silently deleting that operator setting.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      *=*) case "$managed" in *" ${line%%=*} "*) ;; *) keep+=("$line") ;; esac ;;
+    esac
+  done <<< "$existing"
   # NB: `[ cond ] && cmd` as a statement returns non-zero when cond is false, which under
   # `set -e` aborts the installer on a first install (empty keep array). Use if-blocks.
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s:\n' "$path"; printf '    %s\n' "$@"
-    if [ ${#keep[@]} -gt 0 ]; then printf '    %s   (preserved operator setting)\n' "${keep[@]}"; fi
+    # --dry-run output is the transcript operators paste into bug reports and CI logs (see
+    # usage_footer) — show secret-bearing managed keys and preserved operator lines by NAME
+    # only, never the value.
+    printf '  [dry-run] write %s:\n' "$path"
+    for line in "$@"; do
+      case "${line%%=*}" in
+        *TOKEN|*KEY|*SECRET|*PASSWORD) printf '    %s=<redacted>\n' "${line%%=*}" ;;
+        *) printf '    %s\n' "$line" ;;
+      esac
+    done
+    if [ ${#keep[@]} -gt 0 ]; then printf '    %s=…   (preserved operator setting)\n' "${keep[@]%%=*}"; fi
     return
   fi
-  if [ ${#keep[@]} -gt 0 ]; then log "preserving ${#keep[@]} operator setting(s) in $path"; fi
+  # Name the carried keys: a preserved-but-broken operator setting is invisible otherwise,
+  # and "repair ran fine" + a box that still misbehaves points here.
+  if [ ${#keep[@]} -gt 0 ]; then log "preserving ${#keep[@]} operator setting(s) in $path: ${keep[*]%%=*}"; fi
   { printf '%s\n' "$@"
     if [ ${#keep[@]} -gt 0 ]; then printf '%s\n' "${keep[@]}"; fi
   } | SUDO tee "$path" >/dev/null
@@ -657,7 +708,14 @@ phase_services() {
   if [ -n "$SANDBOX" ]; then render_unit teaport-sandbox-recover.service.in teaport-sandbox-recover.service; fi
 
   SUDO systemctl daemon-reload
-  SUDO systemctl enable --now teaport-engine.service teaport-brain.service
+  # `enable --now` starts a stopped unit but does NOT restart a running one (see the avahi
+  # note in phase_frontdoor) — and a repair run exists precisely to change what a running
+  # engine/brain loaded at startup: the bin/g2p dict, engine.env/brain.env, the brain code.
+  # Without the restart, the repair "succeeds" and changes nothing until the next reboot —
+  # and phase_verify's journal check reads the OLD startup's lines and passes. `restart`
+  # also starts a stopped unit, so a first install behaves the same.
+  SUDO systemctl enable teaport-engine.service teaport-brain.service
+  SUDO systemctl restart teaport-engine.service teaport-brain.service
   if [ -n "$SANDBOX" ]; then SUDO systemctl enable --now teaport-sandbox-recover.service; fi
 }
 
@@ -784,7 +842,9 @@ phase_bridge() {
   # Enable + start only when fully configured; otherwise install the unit inert so the operator
   # can fill $ETC/bridge.env + the token and start it, with no crash-loop on missing config.
   if [ -n "$guild" ] && [ -n "$follow" ] && { [ -n "$token" ] || [ -f "$tokfile" ]; }; then
-    SUDO systemctl enable --now teaport-discord-bridge.service
+    # restart, not `enable --now`: a repair updates bridge code + env (see phase_services).
+    SUDO systemctl enable teaport-discord-bridge.service
+    SUDO systemctl restart teaport-discord-bridge.service
   else
     SUDO systemctl enable teaport-discord-bridge.service
     warn "bridge installed but not started — set BRIDGE_GUILD_ID/BRIDGE_FOLLOW_USER_ID in $ETC/bridge.env + the token in $tokfile, then: systemctl start teaport-discord-bridge"
