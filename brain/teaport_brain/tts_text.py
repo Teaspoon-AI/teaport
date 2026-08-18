@@ -34,10 +34,16 @@ def _normalize_for_tts(text: str) -> str:
     emits ellipses (unicode U+2026 or "...") and non-breaking spaces (U+00A0); the
     sentence splitter isolates those into punctuation-only chunks, and the engine TTS then
     fails the whole clause ("did not receive a valid HTTP response") and emits 0.0s
-    audio. Fold nbsp -> space and ellipses/dot-runs -> a comma pause. \\u escapes keep
-    this source pure-ASCII."""
-    text = text.replace(" ", " ")               # non-breaking space -> space
-    text = re.sub(r"[…]+|\.{2,}", ", ", text)    # …  or  ...  -> comma pause
+    audio. Fold the no-break/zero-width family -> plain equivalents and
+    ellipses/dot-runs -> a comma pause. Explicit \\u escapes ONLY in the fold
+    tables: a literal class once silently folded an ordinary space into itself.
+
+    U+202F/U+2011/U+200B were all present in live degenerate completions
+    (2026-08-12) and none was folded here, so they reached the engine verbatim."""
+    text = re.sub("[\u00a0\u202f]", " ", text)          # no-break spaces -> space
+    text = re.sub("[\u200b\u2060\ufeff]", "", text)      # zero-width chars -> removed
+    text = text.replace("\u2011", "-")                   # non-breaking hyphen -> hyphen
+    text = re.sub(r"\u2026+|\.{2,}", ", ", text)         # ellipses or dot-runs -> comma pause
     return text
 
 
@@ -79,13 +85,12 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
     # Drop chunks with nothing synthesizable (pure punctuation/whitespace) — the engine TTS
     # fails them ("did not receive a valid HTTP response") and yields 0.0s "audio".
     #
-    # [^\W_] (letters/digits in ANY script, minus underscore), not [A-Za-z0-9]: the ASCII
-    # class matches nothing in Japanese, Mandarin or Hindi, so EVERY reply in those
-    # languages was dropped here. They reach the engine today only because run_tts falls
-    # back to `or [text]` when this returns empty — i.e. three of the nine shipped voice
-    # languages have been riding an error path, and get no clause ramping at all.
-    # Verified on the deployed brain: Japanese, Mandarin and Hindi go from dropped to
-    # kept, while "..", "\u2026\xa0\xa0\n\n?" and friends are still correctly dropped.
+    # [^\W_] (any script's letters/digits, minus underscore) rather than [A-Za-z0-9]:
+    # the ASCII class matched nothing in Japanese, Mandarin or Hindi, so EVERY reply in
+    # those languages was dropped here and survived only because run_tts fell back to
+    # `or [text]`. That fallback then also resurrected the punctuation-only junk this
+    # line had just deliberately dropped, handing the engine raw "…\xa0\xa0\n\n" and
+    # earning a 500 per clause. Getting the test right is what lets the fallback go.
     out = [c for c in out if re.search(r"[^\W_]", c)]
     return out
 
