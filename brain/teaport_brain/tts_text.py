@@ -78,7 +78,15 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
         out = [sub for chunk in out for sub in _wordbreak_max(chunk, hard_max)]
     # Drop chunks with nothing synthesizable (pure punctuation/whitespace) — the engine TTS
     # fails them ("did not receive a valid HTTP response") and yields 0.0s "audio".
-    out = [c for c in out if re.search(r"[A-Za-z0-9]", c)]
+    #
+    # [^\W_] (letters/digits in ANY script, minus underscore), not [A-Za-z0-9]: the ASCII
+    # class matches nothing in Japanese, Mandarin or Hindi, so EVERY reply in those
+    # languages was dropped here. They reach the engine today only because run_tts falls
+    # back to `or [text]` when this returns empty — i.e. three of the nine shipped voice
+    # languages have been riding an error path, and get no clause ramping at all.
+    # Verified on the deployed brain: Japanese, Mandarin and Hindi go from dropped to
+    # kept, while "..", "\u2026\xa0\xa0\n\n?" and friends are still correctly dropped.
+    out = [c for c in out if re.search(r"[^\W_]", c)]
     return out
 
 

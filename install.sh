@@ -58,6 +58,11 @@ run()  { if [ "$DRY_RUN" = 1 ]; then printf '\033[2m  [dry-run] %s\033[0m\n' "$*
 # SUDO: privileged op (root when not already root). Honors --dry-run via run().
 SUDO() { if [ "$(id -u)" = 0 ]; then run "$@"; else run sudo "$@"; fi; }
 have() { command -v "$1" >/dev/null 2>&1; }
+# contains <needle> <haystack> — substring test that replaces `cmd | grep -q needle`.
+# Under `set -o pipefail` that idiom is a trap: grep -q exits at the first match, the writer
+# takes SIGPIPE (141), and pipefail reports the pipeline as failed *because* it matched.
+# Capture the output first, then test it — no pipe, no race.
+contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 
 # --- manifest ----------------------------------------------------------------
 MF=""  # local path to the fetched manifest
@@ -158,14 +163,22 @@ eula_gate() {
 }
 
 # --- phases ------------------------------------------------------------------
-ASSET_KEY="l4t38-cu13"   # the only supported target (JetPack 7.2 / CUDA 13)
+# The "l4t38" in the asset name predates JetPack 7.2 shipping L4T R39 (7.2-b187 installs an
+# R39.2 rootfs with CUDA 13.2). The binary is CUDA-13 based and resolves its deps on both R38
+# and R39, so the name is a stale label rather than a real target. Renaming it would mean
+# republishing the artifact and the manifest, so the key stays put.
+ASSET_KEY="l4t38-cu13"   # JetPack 7.2 / CUDA 13 — L4T R38 or R39
+L4T_RELEASE=""           # R-number from /etc/nv_tegra_release; empty off-Jetson (dev/dry-run)
 
 phase_preflight() {
   log "preflight"
   if [ -f /etc/nv_tegra_release ]; then
     local l4t; l4t="$(sed -n 's/.*# R\([0-9]\+\).*/\1/p' /etc/nv_tegra_release | head -1)"
-    [ "$l4t" = 38 ] || die "unsupported L4T R${l4t:-?} — the engine ships for JetPack 7.2 (L4T R38 / CUDA 13) only"
-    log "Jetson L4T R38 (JetPack 7.2) — engine asset: $ASSET_KEY"
+    L4T_RELEASE="$l4t"
+    case "$l4t" in
+      38|39) log "Jetson L4T R$l4t (JetPack 7.2) — engine asset: $ASSET_KEY" ;;
+      *) die "unsupported L4T R${l4t:-?} — the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) only" ;;
+    esac
   elif [ "$ALLOW_NON_JETSON" = 1 ]; then
     warn "not a Jetson — continuing because TEAPORT_ALLOW_NON_JETSON=1 (dev/dry-run only)"
   else
@@ -174,23 +187,77 @@ phase_preflight() {
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
   have curl || die "curl is required"
-  run curl -fsSL -o /dev/null --max-time 8 https://get.teaspoon.tech 2>/dev/null || warn "get.teaspoon.tech not reachable (downloads will fail)"
+  # Look at the status code rather than using -f: the bare host root serves 404 (only /dl,
+  # /manifest, /eula exist), so -f would warn "downloads will fail" on every healthy install —
+  # but ignoring the code entirely calls a 502 from the edge "reachable" and defers the outage
+  # to the download, an EULA prompt and ~15GB later. So 404 is the ONE healthy error shape;
+  # anything else — 5xx, 000 (curl's code for a DNS/TCP/TLS failure), or another 4xx (a WAF's
+  # 403, a proxy's 429) — deserves the early warning, because it is exactly the blocked-network
+  # case that otherwise surfaces at the first download.
+  if [ "$DRY_RUN" != 1 ]; then
+    local code; code="$(curl -sS -o /dev/null -w '%{http_code}' --max-time 8 https://get.teaspoon.tech 2>/dev/null || true)"
+    case "$code" in
+      2*|3*|404) ;;
+      *) warn "get.teaspoon.tech is not serving normally (HTTP ${code:-no response} — downloads will fail)" ;;
+    esac
+  fi
 }
 
 phase_sysdeps() {
-  log "system deps: espeak-ng (engine G2P), python3.12-venv (brain)"
-  # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child).
+  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), python3.12-venv (brain)"
+  # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child) —
+  # but ONLY as the OOV + non-English fallback. The en-us G2P is the misaki-derived dict
+  # that phase_engine installs to bin/g2p/; espeak-only en-us speaks robotic prosody.
+  # libopenblas0 provides libopenblas.so.0, which the engine links against. JetPack does not
+  # ship it, so without this the engine binary fails to load at first start.
   SUDO apt-get update -qq
-  SUDO apt-get install -y espeak-ng python3.12-venv
-  if [ "$DRY_RUN" != 1 ]; then have espeak-ng || die "espeak-ng not installed"; fi
+  SUDO apt-get install -y espeak-ng libopenblas0 python3.12-venv
+  if [ "$DRY_RUN" != 1 ]; then
+    have espeak-ng || die "espeak-ng not installed"
+    contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
+  fi
 }
 
 phase_engine() {
   log "engine + models -> $PREFIX"
-  SUDO mkdir -p "$PREFIX/bin" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
+  SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
   SUDO chown -R "$RUN_USER" "$PREFIX"
   download "$(mget engine.assets.$ASSET_KEY.url)"  "$PREFIX/bin/voxtral"                         "$(mget engine.assets.$ASSET_KEY.sha256)"
   run chmod +x "$PREFIX/bin/voxtral"
+  # The preflight gate accepts R38 *and* R39 on the claim that this CUDA-13 binary resolves its
+  # deps on both (see ASSET_KEY). Check the claim instead of trusting the label: an unresolved
+  # .so is a crisp message here rather than a crash-looping unit after the ~15GB of models
+  # below. phase_sysdeps already installed libopenblas0, so a miss now is a real ABI gap.
+  if [ "$DRY_RUN" != 1 ]; then
+    local unresolved; unresolved="$(ldd "$PREFIX/bin/voxtral" 2>/dev/null | grep 'not found' || true)"
+    if [ -n "$unresolved" ]; then
+      die "engine binary has unresolved libraries on this L4T (R${L4T_RELEASE:-?}):
+$unresolved
+the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the lines above"
+    fi
+  fi
+  # The en-us G2P dict MUST land at bin/g2p/ — the engine probes
+  # <exe_dir>/g2p/kokoro_g2p.dict and, if absent, silently degrades to
+  # espeak-only English: every function word gets its stressed citation form,
+  # the duration predictor doubles it, and speech goes robotic with no error
+  # anywhere (shipped exactly so, 2026-08-05). espeak-ng (phase_sysdeps) is
+  # only the OOV + non-English fallback, NOT the en-us G2P.
+  # The dict is GENERATED FROM the misaki en-US gold/silver lexicons (Apache-2.0,
+  # hexgrad and the misaki contributors) by teagram-engine tools/g2p_dict_convert.py —
+  # flattened and merged, not a file copied from misaki. Attribution for it and for the
+  # Apache-2.0 model weights below lives in the engine's THIRD_PARTY_NOTICES.txt.
+  local g2p_url g2p_sha
+  g2p_url="$(mget engine.g2p_dict.url 2>/dev/null)" || g2p_url=""
+  g2p_sha="$(mget engine.g2p_dict.sha256 2>/dev/null)" || g2p_sha=""
+  if [ -z "$g2p_url" ] || [ -z "$g2p_sha" ]; then
+    # Fail-fast on a real install: shipping without the dict reproduces the 2026-08-05
+    # incident. A preview must not abort mid-plan though — an operator pointing --dry-run
+    # at an older (pre-g2p) manifest gets the full plan plus this heads-up.
+    local g2p_msg="manifest has no engine.g2p_dict (url+sha256) — a box installed without the dict speaks robotic en-us prosody; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$g2p_msg"; else die "$g2p_msg"; fi
+  else
+    download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.dict" "$g2p_sha"
+  fi
   download "$(mget models.voxtral.url)"            "$PREFIX/models/voxtral/consolidated.safetensors" "$(mget models.voxtral.sha256)"
   download "$(mget models.kokoro.url)"             "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf"     "$(mget models.kokoro.sha256)"
   # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
@@ -221,9 +288,13 @@ phase_brain() {
   if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
 }
 
+# Which agent hosts the realtime-voice plugin: "nemoclaw" (OpenClaw inside NVIDIA's docker
+# sandbox), "openclaw" (OpenClaw installed directly on the host), or "" (voice-only).
+# NemoClaw wins when both are present: its sandbox is the packaged, supported arrangement.
+AGENT_MODE=""
 # NemoClaw sandbox name (empty if none) + the nemoclaw binary + the /talk auth token,
 # resolved once so the brain (brain.env) and the plugin config share the same token.
-SANDBOX=""; NEMOCLAW=""; GATEWAY_TOKEN=""
+SANDBOX=""; NEMOCLAW=""; GATEWAY_TOKEN=""; OPENCLAW=""
 detect_sandbox() {
   local sj="$HOME/.nemoclaw/sandboxes.json"
   { have nemoclaw || [ -x "$HOME/.local/bin/nemoclaw" ]; } || return 0
@@ -231,56 +302,227 @@ detect_sandbox() {
   # sandboxes.json = {defaultSandbox, sandboxes:{<name>:...}} — prefer the default.
   SANDBOX="$(python3 -c "import json;d=json.load(open('$sj'));print(d.get('defaultSandbox') or (list(d.get('sandboxes',{})) or [''])[0])" 2>/dev/null || true)"
 }
+# A host OpenClaw counts only once it has written its config — `openclaw` on PATH with no
+# ~/.openclaw/openclaw.json means it was installed but never set up, and `config patch`
+# would be writing into a config the user has not chosen the shape of yet.
+detect_openclaw() {
+  have openclaw || return 0
+  [ -f "$HOME/.openclaw/openclaw.json" ] || return 0
+  OPENCLAW="$(command -v openclaw)"
+}
+detect_agent() {
+  detect_sandbox
+  if [ -n "$SANDBOX" ]; then AGENT_MODE=nemoclaw; return 0; fi
+  detect_openclaw
+  [ -n "$OPENCLAW" ] && AGENT_MODE=openclaw
+  return 0
+}
 resolve_nemoclaw() { NEMOCLAW="$(command -v nemoclaw || echo "$HOME/.local/bin/nemoclaw")"; }
 resolve_gateway_token() {
   [ -n "$GATEWAY_TOKEN" ] && return 0
   if [ -n "${TEAPORT_GATEWAY_TOKEN:-}" ]; then GATEWAY_TOKEN="$TEAPORT_GATEWAY_TOKEN"; return 0; fi
-  # idempotent re-run: reuse the token already in brain.env instead of re-minting
-  if [ -f "$ETC/brain.env" ]; then GATEWAY_TOKEN="$(sed -n 's/^GATEWAY_TOKEN=//p' "$ETC/brain.env" 2>/dev/null | head -1)"; fi
+  # idempotent re-run: reuse the token already in brain.env instead of re-minting.
+  #
+  # This read has to survive an UNREADABLE brain.env, for the same reason write_env's does:
+  # a first install under plain sudo leaves the file root:root, and then a repair run by the
+  # operator cannot read it. The old one-liner did not survive it. `sed` exits non-zero on a
+  # file it cannot open, `set -o pipefail` promotes that to the pipeline, and the installer
+  # died right here — exit 2, no message, before any phase that could have explained it, and
+  # before write_env's privileged read ever ran (measured with a root:root brain.env,
+  # 2026-08-12). Read privileged when the plain read fails, and parse in-shell: `sed | head`
+  # also risks SIGPIPE killing sed under pipefail, which is the same class of bug.
+  if [ -f "$ETC/brain.env" ]; then
+    local envtxt="" line
+    if [ -r "$ETC/brain.env" ]; then envtxt="$(cat "$ETC/brain.env")"
+    else envtxt="$(sudo cat "$ETC/brain.env" 2>/dev/null || true)"; fi
+    while IFS= read -r line || [ -n "$line" ]; do
+      case "$line" in GATEWAY_TOKEN=*) GATEWAY_TOKEN="${line#GATEWAY_TOKEN=}"; break ;; esac
+    done <<<"$envtxt"
+  fi
   [ -n "$GATEWAY_TOKEN" ] && return 0
   GATEWAY_TOKEN="$( (head -c18 /dev/urandom 2>/dev/null || echo "teaport-$$") | od -An -tx1 | tr -d ' \n')"
   return 0
 }
 
-phase_agent() {
-  detect_sandbox
-  if [ -z "$SANDBOX" ]; then
-    log "no NemoClaw sandbox detected — voice-only install"
-    warn "to add the agent later: install NemoClaw (bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)) and re-run"
-    return 0
+# The OpenClaw config both agent paths share; only the brain URL differs.
+#
+# talk.realtime — brain=none: the teaport brain orchestrates the turn, so OpenClaw must not
+# answer too. The token matches brain.env's GATEWAY_TOKEN so the brain accepts the relayed
+# session.
+#
+# device-pair — what `openclaw qr` advertises to a phone. Two non-obvious parts:
+#   * `enabled` must be explicit. The plugin ships enabledByDefault, but as a *bundled* plugin
+#     it still needs opt-in on this platform; config alone gets "plugin disabled ... but config
+#     is present" and the pairing methods never load.
+#   * publicUrl must be set at all. The gateway is loopback-only by design with Caddy as the
+#     front door (see phase_frontdoor), and nothing else tells device-pair the front door
+#     exists — so `openclaw qr` fails with "Gateway is only bound to loopback" and there is no
+#     way to pair a phone. Pointing it at Caddy is what makes the QR resolvable.
+# wss, not ws: OpenClaw hands a cleartext LAN pairing only a read+talk profile, so a phone
+# paired over ws:// silently comes up without operator scope.
+write_talk_patch() {
+  cat > "$1" <<JSON
+{ "talk": { "realtime": {
+  "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "none",
+  "providers": { "teaport": { "url": "$2", "token": "$GATEWAY_TOKEN" } } } },
+  "plugins": { "entries": { "device-pair": {
+  "enabled": true, "config": { "publicUrl": "wss://$FRONTDOOR_HOST" } } } } }
+JSON
+}
+
+# The published plugin, when there is no local source to pack.
+PLUGIN_NPM_SPEC="@teaspoon-ai/openclaw-teaport-realtime"
+# plugin_tgz — echo the path of a packed local plugin tarball, or nothing when there is no
+# local source (install from PLUGIN_NPM_SPEC instead). Both agent paths resolve and pack
+# identically; only how the tgz reaches OpenClaw differs (direct vs sandbox upload), so only
+# that part stays in the callers. Progress goes to stderr — stdout is the return value.
+plugin_tgz() {
+  local psrc="${PLUGIN_SRC:-}"; if [ -z "$psrc" ] && [ -d "$HERE/plugin" ]; then psrc="$HERE/plugin"; fi
+  [ -n "$psrc" ] || return 0
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '\033[2m  [dry-run] (cd %s && npm pack) -> /tmp/<pkg>.tgz\033[0m\n' "$psrc" >&2
+    printf '/tmp/teaport-plugin.tgz'; return 0
   fi
+  have npm || die "npm is required to package the plugin from $psrc"
+  local tgz; tgz="$(cd "$psrc" && npm pack --silent --pack-destination /tmp)" || die "npm pack failed in $psrc"
+  printf '/tmp/%s' "$tgz"
+}
+
+phase_agent() {
+  case "$AGENT_MODE" in
+    nemoclaw) agent_nemoclaw ;;
+    openclaw) agent_openclaw ;;
+    *)
+      log "no agent detected — voice-only install"
+      warn "to add the agent later: install OpenClaw on the host (sudo npm install -g openclaw)"
+      warn "or NemoClaw (bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)), then re-run this installer"
+      ;;
+  esac
+}
+
+# --- host OpenClaw -----------------------------------------------------------
+agent_openclaw() {
+  resolve_gateway_token
+  log "host OpenClaw — installing the plugin + wiring talk.realtime"
+  # Loopback, not the docker bridge: OpenClaw runs on the host, beside the brain.
+  local brain_ws="ws://127.0.0.1:${BRAIN_PORT}/talk"
+
+  local tgz; tgz="$(plugin_tgz)"
+  if [ -n "$tgz" ]; then
+    run "$OPENCLAW" plugins install "$tgz" --force
+  else
+    run "$OPENCLAW" plugins install "$PLUGIN_NPM_SPEC" --pin
+  fi
+  run "$OPENCLAW" plugins enable teaport-realtime
+
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+    printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
+    printf '  [dry-run] openclaw config patch: gateway.port=%s trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n' "$GATEWAY_PORT"
+  else
+    local patch; patch="$(mktemp)"
+    write_talk_patch "$patch" "$brain_ws"
+    "$OPENCLAW" config patch --file "$patch"
+    # phase_frontdoor puts Caddy in front of the gateway on the same host. Caddy injects
+    # X-Forwarded-* headers, and the gateway refuses to treat a forwarded connection as local
+    # unless the proxy is trusted — logging "Proxy headers detected from untrusted address" on
+    # every browser hit. Loopback entries are valid here precisely for same-host reverse
+    # proxies. This does not weaken auth: gateway.auth.mode stays as configured.
+    # gateway.port must be pinned too: Caddy proxies to 127.0.0.1:$GATEWAY_PORT and brain.env
+    # points OPENCLAW_GATEWAY_URL at the same port, but nothing else tells a host OpenClaw to
+    # LISTEN there — its own default (and any TEAPORT_GATEWAY_PORT override) would otherwise
+    # leave Caddy proxying to a dead port that phase_verify never checks.
+    cat > "$patch" <<JSON
+{ "gateway": { "port": $GATEWAY_PORT, "trustedProxies": ["127.0.0.1", "::1"] } }
+JSON
+    "$OPENCLAW" config patch --file "$patch"
+    rm -f "$patch"
+  fi
+
+  # `openclaw gateway install` installs AND starts the unit. Calling `gateway start` after
+  # it restarts the service, killing that first process mid startup-migration and orphaning
+  # a ~5 minute lease in ~/.openclaw/state/openclaw.sqlite — which crash-loops the gateway
+  # until the lease expires. So: install when the unit is absent, restart when it is there.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] openclaw gateway install (unit absent) or gateway restart (unit present)\n'
+  elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then
+    "$OPENCLAW" gateway restart
+  else
+    "$OPENCLAW" gateway install
+  fi
+
+  # The brain calls back into OpenClaw for memory recall and tools, authenticating with the
+  # gateway's *own* bearer token — openclaw_client._token() reads OPENCLAW_GATEWAY_TOKEN, else
+  # ~/.config/teaport/openclaw_token. Nothing wrote that file, so every install logged
+  # "no gateway token; skipping tool 'memory_search'" and lost memory recall silently, with a
+  # working voice loop hiding the failure. Read it after the gateway step above, which is what
+  # mints the token when it is absent. Note this is neither GATEWAY_TOKEN (brain /talk) nor the
+  # LLM key — three distinct secrets.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] write %s/openclaw_token from openclaw.json gateway.auth.token (mode 600)\n' "$SECRETS"
+  else
+    local octok; octok="$(python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json')).get('gateway',{}).get('auth',{}).get('token',''))" 2>/dev/null || true)"
+    if [ -n "$octok" ]; then
+      mkdir -p "$SECRETS"; chmod 700 "$SECRETS"
+      printf '%s' "$octok" > "$SECRETS/openclaw_token"; chmod 600 "$SECRETS/openclaw_token"
+      log "openclaw gateway token -> $SECRETS/openclaw_token (memory recall + tools)"
+    else
+      warn "no gateway.auth.token in openclaw.json — memory recall and OpenClaw tools will be skipped"
+    fi
+  fi
+
+  # The gateway is a systemd *user* service, so without linger it does not start until the
+  # user logs in — a headless appliance would reboot into no gateway and no front door.
+  if ! contains '=yes' "$(loginctl show-user "$RUN_USER" --property=Linger 2>/dev/null || true)"; then
+    log "enabling systemd linger for $RUN_USER (user gateway must survive reboot)"
+    SUDO loginctl enable-linger "$RUN_USER"
+  fi
+
+  log "host OpenClaw wired — verify with: openclaw gateway status"
+}
+
+# --- NemoClaw sandbox --------------------------------------------------------
+agent_nemoclaw() {
   resolve_nemoclaw; resolve_gateway_token
   log "NemoClaw sandbox '$SANDBOX' — installing the plugin + wiring talk.realtime"
   local brain_ws="ws://172.18.0.1:${BRAIN_PORT}/talk"   # sandbox -> host brain over the docker bridge
 
   # 1. Plugin into the sandbox. Published -> npm spec; otherwise npm-pack a tgz (honors the
-  #    files allowlist) and `openclaw plugins install <tgz>` copies it into .openclaw/extensions/.
-  local psrc="${PLUGIN_SRC:-}"; if [ -z "$psrc" ] && [ -d "$HERE/plugin" ]; then psrc="$HERE/plugin"; fi
-  if [ -n "$psrc" ]; then
-    if [ "$DRY_RUN" = 1 ]; then
-      printf '  [dry-run] (cd %s && npm pack) -> nemoclaw %s upload -> openclaw plugins install <tgz> --force\n' "$psrc" "$SANDBOX"
-    else
-      local tgz; tgz="$(cd "$psrc" && npm pack --silent --pack-destination /tmp)" || die "npm pack failed in $psrc"
-      "$NEMOCLAW" "$SANDBOX" upload "/tmp/$tgz" "/tmp/$tgz"
-      "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "/tmp/$tgz" --force
-    fi
+  #    files allowlist), upload it, and `openclaw plugins install <tgz>` copies it into
+  #    .openclaw/extensions/ — the pack itself is shared with the host path (plugin_tgz).
+  local tgz; tgz="$(plugin_tgz)"
+  if [ -n "$tgz" ]; then
+    run "$NEMOCLAW" "$SANDBOX" upload "$tgz" "$tgz"
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$tgz" --force
   else
-    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "@teaspoon-ai/openclaw-teaport-realtime" --pin
+    run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins install "$PLUGIN_NPM_SPEC" --pin
   fi
   run "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw plugins enable teaport-realtime
 
-  # 2. talk.realtime — one validated merge (openclaw config patch). The token matches brain.env.
+  # 2. talk.realtime + device-pair — one validated merge (openclaw config patch). The token
+  #    matches brain.env. Caddy fronts the *sandbox's* gateway through the same host port, so
+  #    the pairing URL is the host front door, exactly as on the host-OpenClaw path.
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
+    printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
+    printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1, 172.18.0.1] (Caddy front door)\n'
   else
     local patch; patch="$(mktemp)"
-    cat > "$patch" <<JSON
-{ "talk": { "realtime": {
-  "provider": "teaport", "mode": "realtime", "transport": "gateway-relay", "brain": "none",
-  "providers": { "teaport": { "url": "$brain_ws", "token": "$GATEWAY_TOKEN" } } } } }
-JSON
+    write_talk_patch "$patch" "$brain_ws"
     "$NEMOCLAW" "$SANDBOX" upload "$patch" /tmp/teaport-talk.json
     "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw config patch --file /tmp/teaport-talk.json
+    # Same reason as the host path: Caddy injects X-Forwarded-* into the proxied hop, and an
+    # untrusted proxy gets every phone/browser hit refused as non-local — device-pair through
+    # the front door needs this HERE too, not just on the host. The hop reaches the sandbox
+    # gateway either from its own loopback (an in-sandbox forward) or from the docker-bridge
+    # host address (the same 172.18.0.1 the brain URL uses) — trust both; the forward is
+    # host-loopback-bound, so this adds no reachability an attacker didn't already have.
+    cat > "$patch" <<'JSON'
+{ "gateway": { "trustedProxies": ["127.0.0.1", "::1", "172.18.0.1"] } }
+JSON
+    "$NEMOCLAW" "$SANDBOX" upload "$patch" /tmp/teaport-proxies.json
+    "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw config patch --file /tmp/teaport-proxies.json
+    rm -f "$patch"
   fi
 
   # 3. Reload the sandbox gateway + snapshot the wired state.
@@ -318,6 +560,9 @@ BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 GATEWAY_PORT="${TEAPORT_GATEWAY_PORT:-18789}"     # OpenClaw gateway (sandbox -> host forward)
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS
+# Where 'tls internal' keeps its CA. The Debian caddy package runs the daemon with
+# HOME=/var/lib/caddy, so its data dir is the XDG default underneath that.
+CADDY_PKI="${TEAPORT_CADDY_PKI:-/var/lib/caddy/.local/share/caddy/pki/authorities/local}"
 render_unit() {  # render_unit <template.in> <dest-name>
   local tpl="$HERE/systemd/$1" out="$2"
   [ -f "$tpl" ] || die "missing unit template: $tpl"
@@ -332,9 +577,61 @@ render_unit() {  # render_unit <template.in> <dest-name>
   else printf '%s\n' "$body" | SUDO tee "/etc/systemd/system/$out" >/dev/null; fi
 }
 write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
+  # Keys passed here are OURS: rewritten every run so a repair restores them. Everything
+  # else already in the file is an operator edit and is carried forward. Re-running the
+  # installer is the documented repair action (README, FAQ, Troubleshooting all say so), and
+  # a plain overwrite silently deleted hand-tuned settings — LLM_EXTRA_BODY provider routing,
+  # TTS_SEAM_KEEP_*, ENDPOINT_STOP_SECS/SMARTTURN_COMPLETE_THRESHOLD. The box came back
+  # "installed fine" and quietly sounded different, with nothing in the output saying why.
+  # Comments and blank lines are not preserved: the file is generated, and re-emitting a
+  # user's comment against a value we may have just changed would be worse than dropping it.
   local path="$1"; shift
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s:\n' "$path"; printf '    %s\n' "$@"; return; fi
-  printf '%s\n' "$@" | SUDO tee "$path" >/dev/null
+  local keep=() managed=" " line
+  for line in "$@"; do managed="$managed${line%%=*} "; done
+  # The read must not silently degrade to a clobber. Usually the file is group-readable by
+  # RUN_USER (write_env's own chgrp/chmod 640) — but a first install under plain sudo leaves
+  # it root:root, and TEAPORT_USER may differ from whoever runs the repair. The rewrite
+  # below is privileged (SUDO tee), so when plain read fails, read privileged too.
+  local existing=""
+  if [ -r "$path" ]; then
+    existing="$(cat "$path")"
+  elif [ -e "$path" ]; then
+    if [ "$DRY_RUN" = 1 ]; then
+      warn "$path is not readable by $(id -un) — a real run reads it with sudo to preserve operator settings"
+    else
+      existing="$(sudo cat "$path")" || die "cannot read $path — refusing to overwrite it blind and lose operator settings"
+    fi
+  fi
+  # `|| [ -n "$line" ]`: without it, read's non-zero at EOF drops a final line that lacks a
+  # trailing newline — silently deleting that operator setting.
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      ''|'#'*) continue ;;
+      *=*) case "$managed" in *" ${line%%=*} "*) ;; *) keep+=("$line") ;; esac ;;
+    esac
+  done <<< "$existing"
+  # NB: `[ cond ] && cmd` as a statement returns non-zero when cond is false, which under
+  # `set -e` aborts the installer on a first install (empty keep array). Use if-blocks.
+  if [ "$DRY_RUN" = 1 ]; then
+    # --dry-run output is the transcript operators paste into bug reports and CI logs (see
+    # usage_footer) — show secret-bearing managed keys and preserved operator lines by NAME
+    # only, never the value.
+    printf '  [dry-run] write %s:\n' "$path"
+    for line in "$@"; do
+      case "${line%%=*}" in
+        *TOKEN|*KEY|*SECRET|*PASSWORD) printf '    %s=<redacted>\n' "${line%%=*}" ;;
+        *) printf '    %s\n' "$line" ;;
+      esac
+    done
+    if [ ${#keep[@]} -gt 0 ]; then printf '    %s=…   (preserved operator setting)\n' "${keep[@]%%=*}"; fi
+    return
+  fi
+  # Name the carried keys: a preserved-but-broken operator setting is invisible otherwise,
+  # and "repair ran fine" + a box that still misbehaves points here.
+  if [ ${#keep[@]} -gt 0 ]; then log "preserving ${#keep[@]} operator setting(s) in $path: ${keep[*]%%=*}"; fi
+  { printf '%s\n' "$@"
+    if [ ${#keep[@]} -gt 0 ]; then printf '%s\n' "${keep[@]}"; fi
+  } | SUDO tee "$path" >/dev/null
   SUDO chmod 640 "$path"; SUDO chgrp "$RUN_USER" "$path" 2>/dev/null || true
 }
 
@@ -342,14 +639,39 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # cert (offline, one-time browser trust); swap it for an ACME/DNS-01 block to get a real
 # no-warning cert for a name that resolves to the LAN IP. WebSocket upgrades (the /talk
 # stream) pass through reverse_proxy automatically.
+#
+# The plain-HTTP block exists for phones. A browser can click through an untrusted cert; the
+# OpenClaw mobile app cannot, so pairing over wss:// needs Caddy's local root installed on the
+# device first — and that download cannot itself sit behind the cert it is meant to fix. Hence
+# exactly one path on :80, everything else redirected.
+#
+# It is served straight out of Caddy's PKI directory rather than copied: 'tls internal' issues
+# ~12-hour leaves under a 10-year root, so a copy would be a snapshot of something that rotates
+# twice a day, and would go stale silently if the CA were ever regenerated. The path matcher is
+# exact and rewrites to a fixed file, so root.key next to it stays unreachable.
 write_caddyfile() {
   local path="$1"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, tls internal)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, tls internal, + http://%s/teaport-ca.crt)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$FRONTDOOR_HOST"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
     "#   sudo systemctl reload caddy.service" \
+    "" \
+    "# Cleartext, one path only: the local CA, so a phone can trust us before it connects." \
+    "http://$FRONTDOOR_HOST {" \
+    "    handle /teaport-ca.crt {" \
+    "        root * $CADDY_PKI" \
+    "        rewrite * /root.crt" \
+    "        file_server" \
+    "        header Content-Type application/x-x509-ca-cert" \
+    "        header Content-Disposition \"attachment; filename=teaport-ca.crt\"" \
+    "    }" \
+    "    handle {" \
+    "        redir https://{host}{uri} permanent" \
+    "    }" \
+    "}" \
+    "" \
     "$FRONTDOOR_HOST {" \
     "    tls internal" \
     "    reverse_proxy 127.0.0.1:$GATEWAY_PORT" \
@@ -372,15 +694,23 @@ set_avahi_hostname() {
 phase_services() {
   log "systemd units + env files"
   SUDO mkdir -p "$ETC"
-  # KOKORO_RESERVE_FPT: 6 when a sandbox coexists (RAM shared), 12 voice-only. The code
+  # KOKORO_RESERVE_FPT: 6 when an agent coexists (RAM shared), 12 voice-only. The code
   # default (50) OOMs an 8GB box — the installer must always set it.
-  local fpt=12; [ -n "$SANDBOX" ] && fpt=6
+  # Any agent counts, not just a NemoClaw sandbox: a host OpenClaw gateway is resident too,
+  # so reserving the voice-only amount alongside it is the direction that OOMs. 6 is the
+  # measured-safe sandbox figure and is conservative for the (lighter) host gateway.
+  local fpt=12; [ -n "$AGENT_MODE" ] && fpt=6
   # GATEWAY_TOKEN protects the local /talk port; the same value is wired into the plugin
   # config (phase_agent) — resolve it once for both sides.
   resolve_gateway_token
 
+  # VOX_REQUIRE_DICT_G2P: refuse to serve if the en-us G2P dict failed to load
+  # rather than silently fall back to espeak-only prosody (see phase_engine).
+  # Engine <= 1.3 ignores it; from the next release it turns a degraded box
+  # into a loud restart loop that `teaport doctor` / journalctl names.
   write_env "$ETC/engine.env" \
-    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=240" "TTS_CTX=192"
+    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=240" "TTS_CTX=192" \
+    "VOX_REQUIRE_DICT_G2P=1"
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \
     "LLM_BASE_URL=$LLM_BASE_URL" "LLM_MODEL=$LLM_MODEL" \
@@ -394,7 +724,14 @@ phase_services() {
   if [ -n "$SANDBOX" ]; then render_unit teaport-sandbox-recover.service.in teaport-sandbox-recover.service; fi
 
   SUDO systemctl daemon-reload
-  SUDO systemctl enable --now teaport-engine.service teaport-brain.service
+  # `enable --now` starts a stopped unit but does NOT restart a running one (see the avahi
+  # note in phase_frontdoor) — and a repair run exists precisely to change what a running
+  # engine/brain loaded at startup: the bin/g2p dict, engine.env/brain.env, the brain code.
+  # Without the restart, the repair "succeeds" and changes nothing until the next reboot —
+  # and phase_verify's journal check reads the OLD startup's lines and passes. `restart`
+  # also starts a stopped unit, so a first install behaves the same.
+  SUDO systemctl enable teaport-engine.service teaport-brain.service
+  SUDO systemctl restart teaport-engine.service teaport-brain.service
   if [ -n "$SANDBOX" ]; then SUDO systemctl enable --now teaport-sandbox-recover.service; fi
 }
 
@@ -422,7 +759,9 @@ install_caddy_apt() {
 # Only meaningful when a gateway exists to front (a sandbox was wired in phase_agent); a
 # voice-only install has no gateway, so skip.
 phase_frontdoor() {
-  if [ -z "$SANDBOX" ]; then log "front door: skipped (no gateway — voice-only install)"; return 0; fi
+  # Any agent means an OpenClaw gateway on 127.0.0.1:$GATEWAY_PORT — sandboxed or on the
+  # host, the Caddy config is the same. Only a voice-only install has nothing to front.
+  if [ -z "$AGENT_MODE" ]; then log "front door: skipped (no gateway — voice-only install)"; return 0; fi
   log "front door: Caddy TLS (:443 -> gateway :$GATEWAY_PORT) + mDNS $FRONTDOOR_HOST"
   # Caddy is third-party and network-facing: install from its official apt repo so security
   # fixes flow through the package manager. The deb ships its own caddy.service (runs as user
@@ -433,7 +772,32 @@ phase_frontdoor() {
   write_caddyfile /etc/caddy/Caddyfile
   set_avahi_hostname "${FRONTDOOR_HOST%.local}"
   SUDO systemctl enable --now avahi-daemon caddy.service
+  # `enable --now` starts a stopped unit but does NOT restart a running one, and avahi reads
+  # host-name only at startup. The apt-get above tends to leave avahi already running, so
+  # without an explicit restart it keeps publishing its default name and $FRONTDOOR_HOST
+  # never resolves — the documented browser entry point silently does not exist.
+  SUDO systemctl restart avahi-daemon
   SUDO systemctl reload caddy.service 2>/dev/null || SUDO systemctl restart caddy.service
+  # Confirm the CA is actually downloadable. A 404 here is the same silent dead end as the
+  # avahi case above: everything looks installed, and pairing a phone is simply impossible.
+  # Poll — 'tls internal' provisions the CA when caddy first loads the site, which can trail
+  # the reload by a moment.
+  # Skip under --dry-run: nothing above actually ran, so this would probe whatever the box
+  # already has and report on that instead of on the install being previewed.
+  # (Written as an if, not `[ ] && return`: under set -e that construct returns non-zero when
+  # the test fails, which is how write_env aborted a real install once.)
+  if [ "$DRY_RUN" = 1 ]; then return 0; fi
+  local ca_ok=0 i
+  for i in $(seq 1 10); do
+    if curl -fsS -o /dev/null -H "Host: $FRONTDOOR_HOST" http://127.0.0.1/teaport-ca.crt 2>/dev/null; then ca_ok=1; break; fi
+    sleep 1
+  done
+  if [ "$ca_ok" = 1 ]; then
+    log "front door up — root cert at http://$FRONTDOOR_HOST/teaport-ca.crt"
+  else
+    warn "http://$FRONTDOOR_HOST/teaport-ca.crt does not serve (looked in $CADDY_PKI)"
+    warn "browsers still work; phones cannot install the root, so app pairing over wss:// will fail"
+  fi
 }
 
 # The Discord voice bridge (opt-in). The repo ships bridge/discord but nothing runs it, so a
@@ -494,7 +858,9 @@ phase_bridge() {
   # Enable + start only when fully configured; otherwise install the unit inert so the operator
   # can fill $ETC/bridge.env + the token and start it, with no crash-loop on missing config.
   if [ -n "$guild" ] && [ -n "$follow" ] && { [ -n "$token" ] || [ -f "$tokfile" ]; }; then
-    SUDO systemctl enable --now teaport-discord-bridge.service
+    # restart, not `enable --now`: a repair updates bridge code + env (see phase_services).
+    SUDO systemctl enable teaport-discord-bridge.service
+    SUDO systemctl restart teaport-discord-bridge.service
   else
     SUDO systemctl enable teaport-discord-bridge.service
     warn "bridge installed but not started — set BRIDGE_GUILD_ID/BRIDGE_FOLLOW_USER_ID in $ETC/bridge.env + the token in $tokfile, then: systemctl start teaport-discord-bridge"
@@ -503,27 +869,77 @@ phase_bridge() {
 
 phase_verify() {
   log "verify"
-  if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$SANDBOX" ] && echo ', front door :443'), sandbox->brain"; return; fi
+  if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$AGENT_MODE" ] && echo ', front door :443, gateway->brain')"; return; fi
   # Engine loads its model in ~1 min (the --delay window); poll before giving up.
   local ok=1
-  for i in $(seq 1 40); do ss -ltn 2>/dev/null | grep -q ":$ENGINE_PORT " && break; sleep 3; done
-  ss -ltn 2>/dev/null | grep -q ":$ENGINE_PORT " || { warn "engine :$ENGINE_PORT not listening"; ok=0; }
-  ss -ltn 2>/dev/null | grep -q ":$BRAIN_PORT "  || { warn "brain :$BRAIN_PORT not listening";  ok=0; }
+  for i in $(seq 1 40); do contains ":$ENGINE_PORT " "$(ss -ltn 2>/dev/null || true)" && break; sleep 3; done
+  contains ":$ENGINE_PORT " "$(ss -ltn 2>/dev/null || true)" || { warn "engine :$ENGINE_PORT not listening"; ok=0; }
+  contains ":$BRAIN_PORT "  "$(ss -ltn 2>/dev/null || true)" || { warn "brain :$BRAIN_PORT not listening";  ok=0; }
   # Front door only exists when a gateway was fronted (phase_frontdoor).
-  if [ -n "$SANDBOX" ]; then
-    ss -ltn 2>/dev/null | grep -q ":443 " || { warn "front door :443 not listening — browser access is down"; ok=0; }
+  if [ -n "$AGENT_MODE" ]; then
+    contains ":443 " "$(ss -ltn 2>/dev/null || true)" || { warn "front door :443 not listening — browser access is down"; ok=0; }
+  fi
+  # A listening engine can still be prosody-degraded: without bin/g2p/ it runs
+  # espeak-only G2P and only says so in one journal line. Check that line.
+  local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
+  if contains "dict G2P unavailable" "$g2p_log"; then
+    warn "engine is running WITHOUT the en-us G2P dict (espeak-only fallback — robotic prosody): $g2p_log"; ok=0
   fi
   [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
 }
 
 usage_footer() {
   log "done."
-  if [ -n "$SANDBOX" ]; then
-    printf '  browser: open https://%s from a LAN device (accept the one-time cert), then pair + Talk.\n' "$FRONTDOOR_HOST"
+  if [ -n "$AGENT_MODE" ]; then
+    # The Control UI needs the *gateway's* auth token — a different secret from GATEWAY_TOKEN,
+    # which guards the brain's /talk. Without it the browser's WS connect is refused at
+    # phase=auth_credentials_received ("gateway token missing") and no pairing request is ever
+    # created, so the user lands on a page that silently never connects. Print the
+    # authenticated URL rather than leaving them to find the token in openclaw.json.
+    local url="https://$FRONTDOOR_HOST" octok=""
+    # Read the token agent_openclaw already resolved and wrote, rather than re-parsing
+    # openclaw.json here — one site owns where the token lives, so the two cannot drift.
+    # NemoClaw keeps its gateway (and its token) inside the sandbox: nothing to fill in there.
+    if [ "$AGENT_MODE" = openclaw ]; then
+      if [ "$DRY_RUN" = 1 ]; then
+        # --dry-run changes nothing, so its output is the transcript operators paste into bug
+        # reports and CI logs. Show the URL's shape only: a real run's token at least reaches
+        # just the operator who installed the box, while a pasted preview travels.
+        octok="<gateway-token>"
+      else
+        octok="$(cat "$SECRETS/openclaw_token" 2>/dev/null || true)"
+      fi
+    fi
+    if [ -n "$octok" ]; then
+      printf '  browser: open %s/#token=%s from a LAN device (accept the one-time cert).\n' "$url" "$octok"
+      printf '           the #token fragment authenticates you; it is never sent to the proxy.\n'
+    else
+      printf '  browser: open %s from a LAN device (accept the one-time cert).\n' "$url"
+      if [ "$AGENT_MODE" = nemoclaw ]; then
+        # The sandbox owns the OpenClaw CLI; there is no `openclaw` on the host to run.
+        printf '           you will need the gateway auth token — see: %s %s exec -- openclaw dashboard --no-open\n' "$NEMOCLAW" "$SANDBOX"
+      else
+        printf '           you will need the gateway auth token — see: openclaw dashboard --no-open\n'
+      fi
+    fi
+    # Phones need saying out loud. The mobile app cannot click through 'tls internal' the way
+    # a browser can, so scanning the QR before installing the root just fails the TLS
+    # handshake with nothing on screen to explain why. Order matters: cert, then scan.
+    printf '  phone:   install http://%s/teaport-ca.crt, then Settings > General > About >\n' "$FRONTDOOR_HOST"
+    printf '           Certificate Trust Settings and switch it on (a separate step from installing it).\n'
+    if [ "$AGENT_MODE" = nemoclaw ]; then
+      printf '           then pair: %s %s exec -- openclaw qr\n' "$NEMOCLAW" "$SANDBOX"
+    else
+      printf '           then pair: openclaw qr   (the code expires in 10 minutes)\n'
+    fi
+    printf '  next:    start a Talk session from the dashboard.\n'
+  else
+    # Voice-only has no gateway, so no dashboard and no front door to point at.
+    printf '  next:    voice-only install — the brain listens on ws://127.0.0.1:%s/talk and nothing fronts it.\n' "$BRAIN_PORT"
+    printf '           install OpenClaw (sudo npm install -g openclaw) or NemoClaw, then re-run to add Talk.\n'
   fi
   cat <<EOF
-  next: open your OpenClaw dashboard, pair the device, start a Talk session.
-  ops:  teaport status | teaport doctor | teaport logs [engine|brain]
+  ops:     teaport status | teaport doctor | teaport logs [engine|brain]
 EOF
 }
 
@@ -537,7 +953,7 @@ main() {
   phase_sysdeps
   phase_engine
   phase_brain
-  detect_sandbox
+  detect_agent
   phase_agent
   phase_credentials
   phase_services

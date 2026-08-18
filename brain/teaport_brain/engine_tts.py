@@ -47,6 +47,27 @@ _SAMPLE_RATE = 24000  # the engine outputs 24 kHz
 _ENGINE_WS = os.getenv("ENGINE_TTS_URL", "ws://127.0.0.1:8000/v1/tts").rsplit("/v1/", 1)[0]
 _STREAM_URL = os.getenv("ENGINE_TTS_STREAM_URL", _ENGINE_WS + "/v1/audio/speech/stream")
 _STREAM_TIMEOUT = float(os.getenv("TTS_REMOTE_TIMEOUT", "20"))
+# These two knobs live in brain.env, which installer repairs preserve verbatim — a bare
+# int()/float() here turns one typo ("", "off", "2.5") into an import-time ValueError that
+# crash-loops the whole brain service, and re-running the installer cannot clear it.
+def _env_num(name, default, cast):
+    raw = (os.getenv(name) or "").strip()
+    try:
+        return cast(raw or default)
+    except ValueError:
+        logger.warning(f"{name}={raw!r} is not a number; using default {default}")
+        return cast(default)
+
+
+# The engine caps this endpoint at OMNI_MAX_SESSIONS (2) and holds a slot until it finishes
+# synthesizing — including work a barge-in abandoned, measured at ~1.5s on an Orin Nano. Two
+# overlapping barge-ins therefore refuse every new connect until they drain. Retry the connect
+# across that window: measured 0/3 clauses survive with a single attempt, 3/3 with three.
+# >= 1: the retry count is also the ATTEMPT count, so 0 would skip the connect entirely
+# and hand the caller a None websocket (AttributeError on .send) instead of a clean failure.
+# Setting it to 0/1 is how an operator disables the retry, and both must still connect once.
+_STREAM_CONNECT_RETRIES = max(1, _env_num("TTS_CONNECT_RETRIES", "3", int))
+_STREAM_CONNECT_BACKOFF = _env_num("TTS_CONNECT_BACKOFF", "0.6", float)
 
 # Caption lead: the transport releases each word's caption frame at its presentation
 # timestamp (== when it SENDS that word's audio), but the client buffers and plays audio
@@ -356,6 +377,31 @@ class EngineTTSService(TTSService):
                      f"(turn_ctx={str(self._turn_context_id)[:8]})")
         await super()._handle_interruption(frame, direction)
 
+    async def _connect_stream(self):
+        """Open the one-shot synthesis stream, waiting out a full engine session pool.
+
+        Only the CONNECT is retried, and only a fast refusal. Once the stream is up, an
+        engine-side error is a real failure (unsupported language, OOM) and replaying it
+        would just burn a slot; a recv timeout likewise means the engine accepted and then
+        hung, which more attempts cannot fix — and the same goes for the open_timeout: a
+        wedged engine that accepts TCP but never finishes the handshake would otherwise
+        cost 3 x 5s of dead air PER CLAUSE before the caller sees the failure, versus the
+        pool-full case this retry exists for, where the refusal is immediate.
+        CancelledError is a BaseException, so a barge-in still cancels us here instead
+        of looping — the caller's clause is meant to die when the user interrupts.
+        """
+        import websockets
+        for attempt in range(_STREAM_CONNECT_RETRIES):
+            try:
+                return await websockets.connect(_STREAM_URL, max_size=None, open_timeout=5)
+            except (OSError, websockets.exceptions.WebSocketException) as e:
+                # TimeoutError is an OSError: it is the open_timeout expiring, not a refusal.
+                if isinstance(e, TimeoutError) or attempt + 1 >= _STREAM_CONNECT_RETRIES:
+                    raise
+                logger.debug(f"{self}: TTS connect refused ({e!r}); engine session pool "
+                             f"likely full — retry {attempt + 1}/{_STREAM_CONNECT_RETRIES - 1}")
+                await asyncio.sleep(_STREAM_CONNECT_BACKOFF * (attempt + 1))
+
     async def _synth_text(self, text: str):
         """Synthesize via the engine's vLLM-Omni text-in stream (/v1/audio/speech/stream).
         The ENGINE does G2P + number normalization + word timing — the brain sends raw text,
@@ -368,8 +414,7 @@ class EngineTTSService(TTSService):
         source token engine-side, so captions show "2026", not "twenty twenty six"."""
         import base64
         import json
-        import websockets
-        ws = await websockets.connect(_STREAM_URL, max_size=None, open_timeout=5)
+        ws = await self._connect_stream()
         try:
             await ws.send(json.dumps({"type": "session.config", "voice": self._voice,
                                       "response_format": "pcm", "stream_audio": True,

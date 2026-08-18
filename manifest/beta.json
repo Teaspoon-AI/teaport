@@ -14,6 +14,11 @@
         "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-l4t38-cu13",
         "sha256": "TODO"
       }
+    },
+    "g2p_dict": {
+      "_note": "en-us G2P lexicon (teagram-engine engine/g2p/kokoro_g2p.dict). GENERATED FROM the misaki en-US gold/silver lexicons (Apache-2.0, hexgrad and the misaki contributors, https://github.com/hexgrad/misaki) by teagram-engine tools/g2p_dict_convert.py, which flattens POS entries to DEFAULT and merges silver under gold — a derivative work, not a file copied from misaki. Attribution ships in the engine's THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ — without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Arch-independent; rides the engine release.",
+      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-g2p.dict",
+      "sha256": "TODO"
     }
   },
   "models": {
