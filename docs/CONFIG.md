@@ -46,7 +46,8 @@ the journal at startup.
   `ws://127.0.0.1:8000/v1/realtime`).
 - `OPENCLAW_GATEWAY_URL` — the co-resident gateway for shared persona and
   memory recall.
-- `~/.config/teaport/` — `openrouter_key` · `groq_key` · `cerebras_key` ·
-  `openclaw_token` · `persona.md`
+- `~/.config/teaport/` — `llm_key` · `openclaw_token` · `persona.md`.
+  One key for one OpenAI-compatible endpoint; the per-provider key files were
+  merged into `llm_key`, and nothing reads the old names.
 
 TODO: full table with defaults, and which settings are safe to change live.
