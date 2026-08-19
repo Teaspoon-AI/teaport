@@ -39,7 +39,9 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-ENABLED = os.getenv("TEAPORT_THINKING_SOUND", "1").strip().lower() not in ("0", "false", "no")
+from teaport_brain.env import env_flag
+
+ENABLED = env_flag("TEAPORT_THINKING_SOUND", True)
 
 _SR = 24000                 # engine TTS rate; the relay is 24 kHz both ways
 _CHUNK_MS = 40
