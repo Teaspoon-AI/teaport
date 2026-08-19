@@ -17,6 +17,7 @@ from loguru import logger
 
 from pipecat.services.openai.llm import OpenAILLMService
 
+from teaport_brain.env import env_num
 from teaport_brain.stt import TeaportSTTService
 
 TEAPORT_URL = os.getenv("TEAPORT_URL", "ws://127.0.0.1:8000/v1/realtime")
@@ -28,9 +29,16 @@ TEAPORT_URL = os.getenv("TEAPORT_URL", "ws://127.0.0.1:8000/v1/realtime")
 # `extra` kwarg; set LLM_REASONING_EFFORT="" for models that don't support it.
 # LLM_EXTRA_BODY (JSON) rides `extra_body` for provider-specific routing — e.g.
 # OpenRouter's {"provider": {"order": ["Groq"], "allow_fallbacks": true}}.
+_DEFAULT_EFFORT = "low"  # shared with _default_max_tokens — the two must not drift
+
+
+def _reasoning_effort() -> str:
+    return (os.getenv("LLM_REASONING_EFFORT", _DEFAULT_EFFORT) or "").strip().lower()
+
+
 def _llm_extra() -> dict:
     extra: dict = {}
-    effort = os.getenv("LLM_REASONING_EFFORT", "low")
+    effort = _reasoning_effort()
     if effort:
         extra["reasoning_effort"] = effort
     raw = os.getenv("LLM_EXTRA_BODY")
@@ -69,25 +77,48 @@ def get_llm_api_key() -> str:
 # journal, not the caller. A voice reply is two sentences; reserving 64K for it is what
 # turned a funded key into a dead assistant.
 #
-# 1024 is sized for gpt-oss's reasoning tokens (billed as completion tokens, a few
-# hundred at reasoning_effort=low) plus a spoken reply, with headroom — while cutting
-# the reservation ~64x. It also puts a hard ceiling on a degenerate collapse, which has
-# run to 2340 characters in a single completion; LLMTextGuard still does the fine-grained
-# containment, this just bounds the worst case.
+# The cap is sized for the reasoning effort ACTUALLY IN FORCE. gpt-oss bills hidden
+# chain-of-thought as completion tokens, and LLM_REASONING_EFFORT is an independent
+# knob an operator is invited to turn (docs/CONFIG.md) — so a cap sized for "low"
+# starves "high": the reasoning alone exhausts the budget, the completion comes back
+# finish_reason=length with zero visible content, no LLMTextFrame is ever pushed, and
+# the room hears dead air. That is the SAME silent assistant this cap exists to
+# prevent, arrived at from the other side. Hence a table, not a constant.
 #
+# The cap also bounds a degenerate collapse (2340 characters in one live completion),
+# but LLMTextGuard does the fine-grained containment; this only bounds the worst case.
+#
+# It applies to tool-call arguments too, which is the other reason for the headroom: a
+# truncated arguments stream is malformed JSON, and pipecat raises on it inside
+# _process_context, so the whole turn errors out and the function never runs. A long
+# ask_openclaw request is the realistic case.
+_MAX_TOKENS_BY_EFFORT = {"": 1024, "low": 1024, "medium": 3072, "high": 8192}
+_MAX_TOKENS_UNKNOWN_EFFORT = 4096
+
+
+def _default_max_tokens() -> int:
+    return _MAX_TOKENS_BY_EFFORT.get(_reasoning_effort(), _MAX_TOKENS_UNKNOWN_EFFORT)
+
+
 # Parsed defensively: this value lives in brain.env, which installer repairs preserve
 # verbatim, so a bare int() would turn one operator typo into an import-time crash-loop
-# that re-running the installer cannot clear (see engine_tts._env_num, same reasoning).
-def _max_tokens() -> int:
-    raw = (os.getenv("LLM_MAX_TOKENS") or "").strip()
-    try:
-        value = int(raw or "1024")
-    except ValueError:
-        logger.warning(f"LLM_MAX_TOKENS={raw!r} is not a number; using 1024")
-        return 1024
-    if value < 1:
-        logger.warning(f"LLM_MAX_TOKENS={value} is not positive; using 1024")
-        return 1024
+# that re-running the installer cannot clear (see env.env_num, which this shares).
+def _max_tokens() -> int | None:
+    """Completion cap, or None for no cap at all.
+
+    LLM_MAX_TOKENS=0 means uncapped — the pre-2026-08-18 behaviour. The cap exists to
+    stop a credit-metered gateway reserving against the model's 65536-token ceiling;
+    an operator on a local llama.cpp server or an un-metered endpoint has no such
+    gateway, and 0 is the value that most obviously reads as "no cap", so it must not
+    quietly mean 1024."""
+    default = _default_max_tokens()
+    value = env_num("LLM_MAX_TOKENS", str(default), int)
+    if value == 0:
+        logger.info("LLM_MAX_TOKENS=0 — completion cap disabled (no max_tokens sent)")
+        return None
+    if value < 0:
+        logger.warning(f"LLM_MAX_TOKENS={value} is negative; using {default}")
+        return default
     return value
 
 
@@ -104,14 +135,17 @@ def make_llm():
             "(e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:8182/v1 for a "
             "local server); see docs/CONFIG.md"
         )
+    # When uncapped, max_tokens is left OUT of Settings rather than set to None: the
+    # field then keeps its NOT_GIVEN default, the OpenAI SDK sentinel that drops it from
+    # the request body entirely. Passing None would serialize an explicit null.
+    settings = dict(model=os.getenv("LLM_MODEL", "gpt-oss-120b"), extra=_llm_extra())
+    cap = _max_tokens()
+    if cap is not None:
+        settings["max_tokens"] = cap
     return OpenAILLMService(
         api_key=get_llm_api_key(),
         base_url=base_url,
-        settings=OpenAILLMService.Settings(
-            model=os.getenv("LLM_MODEL", "gpt-oss-120b"),
-            max_tokens=_max_tokens(),
-            extra=_llm_extra(),
-        ),
+        settings=OpenAILLMService.Settings(**settings),
     )
 
 

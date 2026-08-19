@@ -21,6 +21,24 @@ Important settings:
 - `LLM_EXTRA_BODY` — optional JSON merged into the request `extra_body`.
   Example for OpenRouter routing:
   `{"provider":{"order":["Groq"],"allow_fallbacks":true}}`.
+- `LLM_MAX_TOKENS` — completion cap. A credit-metered gateway reserves against
+  the model's ceiling (65536 for gpt-oss-120b) and refuses the request when the
+  remaining balance cannot cover it, however short the answer would be. The
+  default follows `LLM_REASONING_EFFORT`, because reasoning tokens are billed as
+  completion tokens: **1024** at `low`, **3072** at `medium`, **8192** at `high`.
+  Set **0** for no cap — correct for a local or un-metered endpoint.
+- `TEAPORT_LLM_TEXT_GUARD` — fold degenerate unicode out of the model's replies
+  and cut a runaway ellipsis collapse (default on). Set `0` to disable.
+- `TEAPORT_LLM_GUARD_RECOVERY` — the one line spoken when that guard trips.
+  Override it for a non-English deployment.
+- `TEAPORT_RAW_LLM_CAPTURE` — log a completion verbatim when it degenerates
+  (default on; healthy turns log nothing). Set `0` to disable.
+- `TEAPORT_THINKING_SOUND` — the typing bed during a long agent consult
+  (default on). Set `0` to disable.
+
+Boolean settings accept `0`/`false`/`no`/`off` and `1`/`true`/`yes`/`on`. An
+empty value means *unset* — the default applies. A flag that is off says so in
+the journal at startup.
 - `KOKORO_RESERVE_FPT` — the engine memory reserve. Use **6** with a NemoClaw
   sandbox. Use **12** for a voice-only device. The installer always sets this
   value. The code default is not safe on an 8 GB device.
