@@ -22,11 +22,12 @@
 # It also records `after_tool`, because the standing hypothesis is that tool-call
 # formatting is what confuses the model. That flag is the discriminator: if degenerate
 # completions cluster on after_tool=True, the hypothesis is supported; if they are spread
-# evenly, it is not. Nothing else in the pipeline records that association.
+# evenly, it is not. Nothing else in the pipeline records that association — which is
+# exactly why it has to be right. See _pending_after_tool for the two ways a naive
+# implementation gets it wrong in OPPOSITE directions.
 #
 # Disable with TEAPORT_RAW_LLM_CAPTURE=0.
 #
-import os
 import re
 
 from loguru import logger
@@ -37,19 +38,36 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-ENABLED = os.getenv("TEAPORT_RAW_LLM_CAPTURE", "1").strip().lower() not in ("0", "false", "")
+from teaport_brain.env import env_flag
+from teaport_brain.tts_text import DOT_RUN
+
+ENABLED = env_flag("TEAPORT_RAW_LLM_CAPTURE", True)
 
 # What counts as degenerate. All three were present in the observed failures and none
 # belongs in speech output: a run of 3+ dots, two ellipsis characters near each other,
 # or markdown bold (the system prompt says "no markdown", so ** is always a defect).
 # A single "..." inside otherwise healthy prose is deliberately NOT matched — it is
 # ordinary punctuation, and matching it would make this log noisy enough to ignore.
-_DEGENERATE = re.compile(r"\.{3,}|…\s*…|\*\*")
-_DOT_RUN = re.compile(r"\.{3,}")
-_ELLIPSIS = "…"
+_DEGENERATE = re.compile(r"\.{3,}|\u2026\s*\u2026|\*\*")
+
+# Per-code-point counters. Explicit \uXXXX escapes, never the literal character: a
+# literal U+00A0 here is two indistinguishable-from-a-space bytes in the source, and
+# any formatter or paste through a normalizing tool silently turns it into 0x20 — at
+# which point this counter reports every ordinary space and the diagnostic is worse
+# than useless. U+202F/U+200B/U+2011 are counted separately because all three were
+# present in the live captures and a single "nbsp" number hid them.
+_EXOTIC = (
+    ("nbsp", "\u00a0"),          # no-break space
+    ("nnbsp", "\u202f"),         # narrow no-break space
+    ("zwsp", "\u200b"),          # zero-width space
+    ("wj", "\u2060"),            # word joiner
+    ("bom", "\ufeff"),           # zero-width no-break space
+    ("nbhyphen", "\u2011"),      # non-breaking hyphen
+)
 
 # Cap the logged text. Degenerate completions have run to thousands of characters of
 # pure punctuation; the first 1200 is more than enough to characterize one, and the
@@ -68,15 +86,40 @@ class RawLLMCapture(FrameProcessor):
     def __init__(self):
         super().__init__()
         self._buf: list[str] = []
+        # `_after_tool` describes the completion currently being buffered; it is
+        # latched from `_pending_after_tool` at the Start frame that opens it.
+        #
+        # Setting `_after_tool` directly on the result frame and clearing it on End
+        # was wrong in both directions. Too early: run_function_calls() only SCHEDULES
+        # the handler task, and base_llm pushes LLMFullResponseEndFrame immediately
+        # afterwards, so the usual order is End -> FunctionCallResultFrame and the flag
+        # survived to the next completion only by luck of scheduling — a tool that
+        # returned before End cleared it and its completion logged after_tool=False.
+        # Too late: with run_llm=False (the async ask_openclaw placeholders) NO
+        # completion follows at all, so the flag was cleared by some unrelated later
+        # turn, which was then logged after_tool=True. Latching at Start fixes the
+        # first; skipping results that suppress inference fixes the second.
         self._after_tool = False
+        self._pending_after_tool = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, FunctionCallResultFrame):
-            # The next completion is the model reacting to a tool result.
-            self._after_tool = True
+            # Only if a completion is actually coming. A result carrying run_llm=False
+            # is a placeholder the model never sees (tools.no_inference).
+            props = getattr(frame, "properties", None)
+            suppressed = (frame.run_llm is False
+                          or (props is not None and props.run_llm is False))
+            if not suppressed:
+                self._pending_after_tool = True
+        elif isinstance(frame, UserStartedSpeakingFrame):
+            # A new user turn: any tool result still waiting for a completion that
+            # never came is stale, and must not colour this turn's reply.
+            self._pending_after_tool = False
         elif isinstance(frame, LLMFullResponseStartFrame):
             self._buf = []
+            self._after_tool = self._pending_after_tool
+            self._pending_after_tool = False
         elif isinstance(frame, LLMTextFrame):
             self._buf.append(frame.text or "")
         elif isinstance(frame, LLMFullResponseEndFrame):
@@ -86,7 +129,6 @@ class RawLLMCapture(FrameProcessor):
             except Exception as e:  # noqa: BLE001
                 logger.debug(f"RawLLMCapture: report failed (ignored): {e!r}")
             self._buf = []
-            self._after_tool = False
         await self.push_frame(frame, direction)
 
     def _report(self):
@@ -94,14 +136,15 @@ class RawLLMCapture(FrameProcessor):
         if not raw or not _DEGENERATE.search(raw):
             return
         # Counts describe the WHOLE completion even though the text is capped.
-        dot_runs = len(_DOT_RUN.findall(raw))
-        ellipses = raw.count(_ELLIPSIS)
+        dot_runs = len(DOT_RUN.findall(raw))
+        ellipses = raw.count("\u2026")
         bold = raw.count("**")
-        nbsp = raw.count(" ")
+        exotic = " ".join(f"{name}={raw.count(ch)}" for name, ch in _EXOTIC
+                          if ch in raw) or "none"
         # repr() so ellipses, non-breaking spaces and newline runs are all visible as
         # escapes rather than collapsing into invisible whitespace in the journal.
         logger.warning(
             f"RawLLMCapture: DEGENERATE completion chars={len(raw)} "
             f"after_tool={self._after_tool} dot_runs={dot_runs} ellipsis={ellipses} "
-            f"bold={bold} nbsp={nbsp} raw={raw[:_MAX_LOG]!r}"
+            f"bold={bold} exotic=[{exotic}] raw={raw[:_MAX_LOG]!r}"
         )
