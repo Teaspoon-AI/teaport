@@ -299,6 +299,12 @@ async def run_relay_bot(websocket: WebSocket):
         context_aggregator.user(),
         heard_corrector,
         llm,
+        # tap: llm-start + llm-first-token. Must sit ABOVE the guard: downstream of it
+        # this would time the first token that SURVIVES the guard, and a completion the
+        # guard trips on immediately would set no llm_first_token mark at all — which
+        # turn_timing drops silently from the TURN-TIMING line, making a swallowed turn
+        # look like a missing log field.
+        TurnTimer(turn_marks),
         # tap (debug): log the raw completion verbatim when it degenerates into
         # ellipsis/markdown runs. Must sit HERE — upstream of the guard and the TTS
         # aggregator, where the model's own bytes are still visible.
@@ -307,7 +313,6 @@ async def run_relay_bot(websocket: WebSocket):
         # ellipsis collapse — the TTS and the committed context both read what
         # this forwards, so it cleans speech and history in one place.
         LLMTextGuard() if llm_text_guard.ENABLED else None,
-        TurnTimer(turn_marks),  # tap: llm-start + llm-first-token
         tts,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
