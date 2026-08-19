@@ -161,7 +161,13 @@ _BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mi
 # to say, so it invents something. Used by the async ask_openclaw path, whose real
 # answer is spoken later by the follow-up injector (it rewrites the tool result and
 # queues an LLMRunFrame, so inference happens once, on real data).
-NO_INFERENCE = FunctionCallResultProperties(run_llm=False)
+#
+# A FUNCTION, not a module-level constant. FunctionCallResultProperties is a plain
+# mutable dataclass carrying an on_context_updated callback field; one shared instance
+# handed to every result path in every concurrent session is a single assignment away
+# from leaking one turn's callback into an unrelated turn.
+def no_inference() -> FunctionCallResultProperties:
+    return FunctionCallResultProperties(run_llm=False)
 
 
 def _mem_available_mb() -> int | None:
@@ -382,12 +388,12 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
             inflight = params.llm._teaport_consults = {}
         prior = inflight.get(request)
         if prior is not None and not prior.done():
-            # No inference on a placeholder result — see NO_INFERENCE below.
+            # No inference on a placeholder result — see no_inference() below.
             await params.result_callback(
                 {"status": "duplicate",
                  "instruction": ("This exact request is already in progress; "
                                  "its outcome will arrive. Do not respond.")},
-                properties=NO_INFERENCE)
+                properties=no_inference())
             return
 
     call_id = f"teaport-consult-{uuid.uuid4().hex[:12]}"
@@ -411,7 +417,7 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
         # finished must not be evicted by this one's completion callback.
         task.add_done_callback(
             lambda t, r=request: inflight.pop(r, None) if inflight.get(r) is t else None)
-        # Run NO inference on this placeholder (NO_INFERENCE). There is nothing for
+        # Run NO inference on this placeholder (no_inference()). There is nothing for
         # the model to say: the user already heard the deterministic "I'll work on
         # that" ack, and the real outcome arrives later via the follow-up injector,
         # which rewrites this tool result and runs the LLM then. Asking the model to
@@ -425,7 +431,7 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
             "instruction": (
                 "The task is running in the background; the outcome will arrive "
                 "later. Do not respond now.")},
-            properties=NO_INFERENCE)
+            properties=no_inference())
         return
 
     # SYNC path (no follow-up injector — e.g. the WebRTC dev client): ack-gated wait,
