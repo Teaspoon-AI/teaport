@@ -33,6 +33,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
+from teaport_brain.env import env_num
 from teaport_brain.tts_text import split_clauses_ramp
 
 # TEAPORT_TRACE=1 keeps the [WTS] word-timestamp traces (debug aid for the
@@ -50,13 +51,9 @@ _STREAM_TIMEOUT = float(os.getenv("TTS_REMOTE_TIMEOUT", "20"))
 # These two knobs live in brain.env, which installer repairs preserve verbatim — a bare
 # int()/float() here turns one typo ("", "off", "2.5") into an import-time ValueError that
 # crash-loops the whole brain service, and re-running the installer cannot clear it.
-def _env_num(name, default, cast):
-    raw = (os.getenv(name) or "").strip()
-    try:
-        return cast(raw or default)
-    except ValueError:
-        logger.warning(f"{name}={raw!r} is not a number; using default {default}")
-        return cast(default)
+# env.env_num IS that defensive cast, shared with services.py's LLM_MAX_TOKENS so the
+# warn-and-fall-back behaviour is defined once.
+_env_num = env_num
 
 
 # The engine caps this endpoint at OMNI_MAX_SESSIONS (2) and holds a slot until it finishes
@@ -305,9 +302,18 @@ class EngineTTSService(TTSService):
         # not the whole reply; later clauses synthesize while the first plays. Each clause's
         # seam silence is trimmed (see _trim_seam_silence) so the joins sound like natural
         # comma pauses, and per-word times are offset by the emitted audio for an exact ledger.
+        # No `or [text]` fallback. split_clauses_ramp drops chunks with nothing
+        # synthesizable, and reinstating the raw text when it dropped everything handed
+        # the engine exactly the punctuation-only junk it had just removed, earning a
+        # 500 per clause and 0.0s of "audio". The fallback existed only because the old
+        # ASCII-only test dropped every Japanese/Mandarin/Hindi reply; [^\W_] fixed that
+        # at the source, so an empty list here now genuinely means "nothing to speak".
         clauses = split_clauses_ramp(text, first_max=_FIRST_CLAUSE_MAX_CHARS,
                                      growth=_CLAUSE_GROWTH, cap=_CLAUSE_CAP,
-                                     hard_max=_CLAUSE_HARD_MAX) or [text]
+                                     hard_max=_CLAUSE_HARD_MAX)
+        if not clauses:
+            logger.warning(f"{self}: nothing synthesizable in {text[:60]!r} — no audio")
+            return
         await self.start_tts_usage_metrics(text)
         # NB: use self._reply_audio_offset (carries across run_tts calls), NOT a local
         # per-call offset — see __init__ / reset_word_timestamps.
