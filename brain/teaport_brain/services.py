@@ -122,6 +122,36 @@ def _max_tokens() -> int | None:
     return value
 
 
+# Read timeout. The OpenAI SDK defaults to Timeout(connect=5, read=600, ...) — TEN
+# MINUTES of a voice turn hanging on a stalled connection, with no error, no log line
+# and no frame. Nothing else in the pipeline reports a slow completion either
+# ("Generating chat from context" prints BEFORE the HTTP call), so a stall is
+# indistinguishable from silence and the session simply dies.
+#
+# Measured live 2026-08-19: a turn was triggered at 12:06:25, nothing came back, and the
+# operator tore the session down 16 seconds later because the assistant had stopped
+# answering. The same request replayed in 2.8s — a transient, not a bad request, and it
+# would have hung for ten more minutes. Three "the bot stopped responding" reports across
+# three models are all consistent with this one mechanism.
+#
+# A voice turn is already lost by ~20s, so waiting longer buys nothing and costs the
+# session. Raise LLM_TIMEOUT_SECS for a slow local llama.cpp box.
+# pipecat HAS a request timeout — and ships it disabled. base_llm only wraps the call in
+# asyncio.wait_for `if self._retry_on_timeout`, which defaults to False, so by default
+# nothing bounds the request and it falls through to the SDK's 600s read timeout. Turning
+# it on also buys the retry: the stalled turn above replayed successfully in 2.8s, so one
+# retry would most likely have rescued it outright rather than merely failing faster.
+#
+# Setting it on the httpx client instead does NOT work — verified on the box, the client
+# still reported read=600 — because this wait_for is what actually bounds the call.
+def _llm_timeout_secs() -> float:
+    secs = env_num("LLM_TIMEOUT_SECS", "20", float)
+    if secs <= 0:
+        logger.warning(f"LLM_TIMEOUT_SECS={secs} is not positive; using 20")
+        return 20.0
+    return secs
+
+
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
 # llama.cpp server, etc. Point LLM_BASE_URL at the endpoint, LLM_API_KEY at its
 # key, LLM_MODEL at the served model. gpt-oss-120b is the reference model (clean
@@ -146,6 +176,9 @@ def make_llm():
         api_key=get_llm_api_key(),
         base_url=base_url,
         settings=OpenAILLMService.Settings(**settings),
+        # pipecat's own bound on the request, plus one retry (see _llm_timeout_secs).
+        retry_on_timeout=True,
+        retry_timeout_secs=_llm_timeout_secs(),
     )
 
 

@@ -74,8 +74,10 @@ from teaport_brain.gateway_serializer import (  # noqa: E402
     RELAY_SAMPLE_RATE,
     TeaportGatewaySerializer,
 )
+from teaport_brain import llm_error_speaker  # noqa: E402
 from teaport_brain import llm_text_guard  # noqa: E402
 from teaport_brain import raw_llm_capture  # noqa: E402
+from teaport_brain.llm_error_speaker import LLMErrorSpeaker  # noqa: E402
 from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
 from teaport_brain.memory_hygiene import MemoryReclaim, turn_reclaim  # noqa: E402
 from teaport_brain.memory_recall import MemoryRecall  # noqa: E402
@@ -313,6 +315,8 @@ async def run_relay_bot(websocket: WebSocket):
         # ellipsis collapse — the TTS and the committed context both read what
         # this forwards, so it cleans speech and history in one place.
         LLMTextGuard() if llm_text_guard.ENABLED else None,
+        # A failed completion must be HEARD, not just logged (see the module).
+        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         tts,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
