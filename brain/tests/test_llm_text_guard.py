@@ -94,9 +94,21 @@ def test_collapses_runs():
 
 DEGENERATE = [
     f"Sure{ELL}{ELL}{ELL}{ELL}{ELL}{ELL}",
-    "I can help... ... ... ...",
+    "I can help... ... ... ... ...",
     f"{ELL}{NBSP}{NBSP}\n\n{ELL}{NBSP}{ELL}{NBSP}{ELL}{NBSP}{ELL}",
-    "Let me check that.... hmm.... well.... so....",
+    "Let me check that.... hmm.... well.... so.... anyway....",
+]
+
+# Below the cut threshold ON PURPOSE. A mild run is not a collapse: the fold still
+# strips it to comma pauses and the clause splitter drops what is left, so it costs a
+# beat of silence rather than a truncated turn. Cutting this aggressively cost more
+# than it saved — three dot runs also fires on ordinary speech quoting a log line
+# ("Encoder... Decoder... Marlin..."), and a false cut interrupts a healthy answer.
+# These pin the boundary: folded, not cut.
+FOLDED_NOT_CUT = [
+    "I can help... ... ... ...",                     # four runs
+    "Let me check that.... hmm.... well.... so....",  # four runs
+    "The log said Encoder... Decoder... Marlin... and then it stopped.",
 ]
 
 HEALTHY = [
@@ -111,6 +123,14 @@ HEALTHY = [
 def test_trips_on_every_capture_shape():
     for text in DEGENERATE:
         assert is_degenerate(text), f"should trip: {text!r}"
+
+
+def test_mild_runs_are_folded_but_not_cut():
+    """The boundary between "clean it up" and "stop the turn"."""
+    for text in FOLDED_NOT_CUT:
+        assert not is_degenerate(text), f"should NOT cut: {text!r}"
+        folded = fold_degenerate_chars(text)
+        assert "...." not in folded, f"long run should be folded: {text!r}"
 
 
 def test_leaves_healthy_speech_alone():

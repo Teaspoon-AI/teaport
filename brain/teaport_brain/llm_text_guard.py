@@ -89,7 +89,7 @@ RECOVERY_TEXT = os.getenv(
 # reply is already unusual, while U+2026 is ordinary typography that healthy prose
 # reaches more often, so it needs more of them to mean the same thing.
 _MIN_DOT_RUN = 3
-_TRIP_DOT_RUNS = 3
+_TRIP_DOT_RUNS = 5
 _TRIP_ELLIPSES = 5
 _TRIP_COMBINED = 6
 
