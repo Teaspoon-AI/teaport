@@ -13,6 +13,8 @@
 import json
 import os
 
+from loguru import logger
+
 from pipecat.services.openai.llm import OpenAILLMService
 
 from teaport_brain.stt import TeaportSTTService
@@ -54,6 +56,41 @@ def get_llm_api_key() -> str:
     )
 
 
+# Completion cap. Left unset, a credit-metered gateway reserves against the MODEL'S
+# ceiling rather than the reply's actual size — 65536 tokens for gpt-oss-120b — and
+# refuses the whole request once the key's remaining balance cannot cover that
+# reservation, however short the answer would have been:
+#
+#   Error code: 402 - This request requires more credits, or fewer max_tokens.
+#   You requested up to 65536 tokens, but can only afford 55187.
+#
+# Live on 2026-08-18: nine turns failed that way with $7.75 still on the key, and the
+# only symptom in the room was the assistant going quiet — the ErrorFrame reaches the
+# journal, not the caller. A voice reply is two sentences; reserving 64K for it is what
+# turned a funded key into a dead assistant.
+#
+# 1024 is sized for gpt-oss's reasoning tokens (billed as completion tokens, a few
+# hundred at reasoning_effort=low) plus a spoken reply, with headroom — while cutting
+# the reservation ~64x. It also puts a hard ceiling on a degenerate collapse, which has
+# run to 2340 characters in a single completion; LLMTextGuard still does the fine-grained
+# containment, this just bounds the worst case.
+#
+# Parsed defensively: this value lives in brain.env, which installer repairs preserve
+# verbatim, so a bare int() would turn one operator typo into an import-time crash-loop
+# that re-running the installer cannot clear (see engine_tts._env_num, same reasoning).
+def _max_tokens() -> int:
+    raw = (os.getenv("LLM_MAX_TOKENS") or "").strip()
+    try:
+        value = int(raw or "1024")
+    except ValueError:
+        logger.warning(f"LLM_MAX_TOKENS={raw!r} is not a number; using 1024")
+        return 1024
+    if value < 1:
+        logger.warning(f"LLM_MAX_TOKENS={value} is not positive; using 1024")
+        return 1024
+    return value
+
+
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
 # llama.cpp server, etc. Point LLM_BASE_URL at the endpoint, LLM_API_KEY at its
 # key, LLM_MODEL at the served model. gpt-oss-120b is the reference model (clean
@@ -72,6 +109,7 @@ def make_llm():
         base_url=base_url,
         settings=OpenAILLMService.Settings(
             model=os.getenv("LLM_MODEL", "gpt-oss-120b"),
+            max_tokens=_max_tokens(),
             extra=_llm_extra(),
         ),
     )
