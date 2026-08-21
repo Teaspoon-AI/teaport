@@ -10,8 +10,10 @@
 # must not grow back.
 #
 
+import asyncio
 import json
 import os
+import time
 
 import httpx
 from loguru import logger
@@ -189,6 +191,27 @@ class BoundedOpenAILLMService(OpenAILLMService):
     The limits are upstream's, repeated here because create_client builds the client in
     one expression and there is no seam to inject only a timeout.
     """
+
+    # A cancelled completion is the one failure that leaves NO trace at all. base_llm
+    # wraps _process_context in `except Exception`, and CancelledError is a
+    # BaseException, so it is not caught, not logged, and not turned into an error
+    # frame -- the `finally` still pushes LLMFullResponseEndFrame, so the turn closes
+    # with no text and the room just goes quiet. Live on 2026-08-20: a turn committed
+    # at 19:25:55.55, "Generating chat from context" was logged at 19:25:55.56, and
+    # then the journal had nothing further at all. The event loop was idle and the
+    # process held no connection to the endpoint, so the request was not hung -- it
+    # was gone. Working that out took a stack dump and a context replay; it should
+    # take one log line.
+    async def _process_context(self, context):
+        started = time.monotonic()
+        try:
+            await super()._process_context(context)
+        except asyncio.CancelledError:
+            logger.warning(
+                f"{self}: completion CANCELLED after {time.monotonic() - started:.1f}s "
+                "— this turn produces no reply and raises no error"
+            )
+            raise
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):
