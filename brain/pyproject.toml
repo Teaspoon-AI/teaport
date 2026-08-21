@@ -12,10 +12,10 @@ license = { text = "MIT" }
 # Every entry below is a DIRECT import somewhere in the package (the import closure of
 # teaport_brain.gateway_server); transitive deps are left to the resolver.
 #
-# pipecat extras (1.5.0): only `websocket` is needed —
+# pipecat extras (1.7.0): only `websocket` is needed —
 #   websocket -> pipecat.transports.websocket.fastapi (the /talk transport) + fastapi.
 # The OpenAI LLM service (pipecat.services.openai.llm — the ONLY LLM service the brain
-# uses) is a BASE dependency in 1.5.0, so no `openai` extra is required; it talks to any
+# uses) is a BASE dependency, so no `openai` extra is required; it talks to any
 # OpenAI-compatible endpoint (Groq, Cerebras, OpenRouter, a local server) via LLM_BASE_URL.
 # Silero VAD + Smart Turn v3 also ride base deps (onnxruntime).
 #
@@ -31,7 +31,7 @@ license = { text = "MIT" }
 # extra owns it (>=13.1,<16.0); the appliance's installed 16.0 is out of that range
 # (drifted past pipecat's cap) and is not reproducible via pip, so let pipecat choose.
 dependencies = [
-  "pipecat-ai[websocket]==1.5.0",
+  "pipecat-ai[websocket]==1.7.0",
   "uvicorn==0.49.0",
   "fastapi==0.136.3",
   "loguru==0.7.3",

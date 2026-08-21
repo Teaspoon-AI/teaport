@@ -74,8 +74,14 @@ from teaport_brain.gateway_serializer import (  # noqa: E402
     RELAY_SAMPLE_RATE,
     TeaportGatewaySerializer,
 )
+from teaport_brain import llm_error_speaker  # noqa: E402
+from teaport_brain import llm_text_guard  # noqa: E402
+from teaport_brain import raw_llm_capture  # noqa: E402
+from teaport_brain.llm_error_speaker import LLMErrorSpeaker  # noqa: E402
+from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
 from teaport_brain.memory_hygiene import MemoryReclaim, turn_reclaim  # noqa: E402
 from teaport_brain.memory_recall import MemoryRecall  # noqa: E402
+from teaport_brain.raw_llm_capture import RawLLMCapture  # noqa: E402
 from teaport_brain.turn_timing import TurnTimer  # noqa: E402
 from teaport_brain import endpoint_debug  # noqa: E402
 from teaport_brain import thinking_sound  # noqa: E402
@@ -289,13 +295,30 @@ async def run_relay_bot(websocket: WebSocket):
         transport.input(),
         ep_in,  # tap (debug): VAD-stop / turn-commit bubbles
         stt,
-        TurnTimer(turn_marks),  # tap: user-stopped + stt-final
+        # This tap owns the silent-turn watchdog (see TurnTimer): it is the first to
+        # see the turn begin, and only one of the three may arm it.
+        TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
         UserTranscriptEmitter(activity),
         MemoryRecall(context),  # fire memory_search on interim, inject before the LLM
         context_aggregator.user(),
         heard_corrector,
         llm,
-        TurnTimer(turn_marks),  # tap: llm-start + llm-first-token
+        # tap: llm-start + llm-first-token. Must sit ABOVE the guard: downstream of it
+        # this would time the first token that SURVIVES the guard, and a completion the
+        # guard trips on immediately would set no llm_first_token mark at all — which
+        # turn_timing drops silently from the TURN-TIMING line, making a swallowed turn
+        # look like a missing log field.
+        TurnTimer(turn_marks),
+        # tap (debug): log the raw completion verbatim when it degenerates into
+        # ellipsis/markdown runs. Must sit HERE — upstream of the guard and the TTS
+        # aggregator, where the model's own bytes are still visible.
+        RawLLMCapture() if raw_llm_capture.ENABLED else None,
+        # fold no-break/zero-width unicode out of the deltas and cut a runaway
+        # ellipsis collapse — the TTS and the committed context both read what
+        # this forwards, so it cleans speech and history in one place.
+        LLMTextGuard() if llm_text_guard.ENABLED else None,
+        # A failed completion must be HEARD, not just logged (see the module).
+        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         tts,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
