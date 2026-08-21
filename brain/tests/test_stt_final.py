@@ -26,6 +26,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pinned_pipecat import require_pinned  # noqa: E402
+
+require_pinned()
+
 from pipecat.frames.frames import (  # noqa: E402
     InputAudioRawFrame,
     InterimTranscriptionFrame,

@@ -25,6 +25,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pinned_pipecat import require_pinned  # noqa: E402
+
+require_pinned()
+
 from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
     BaseSmartTurn,
     SmartTurnParams,
@@ -286,6 +290,80 @@ async def test_a_second_turn_from_a_later_interim_still_commits():
     committed = len(stops) >= 2
     await controller.cleanup()
     assert committed, "second turn started from a later interim and never committed"
+
+
+async def test_no_commit_before_this_utterance_has_a_transcript():
+    """A turn must not be committed on the previous utterance's words.
+
+    _text is the base strategy's "did the user say anything" gate. Carrying it across a
+    turn start before the CURRENT utterance has been transcribed satisfies that gate
+    with the last utterance's words, so the silence backstop commits the turn before
+    STT has delivered anything for it. The aggregator's own buffer is still empty, so
+    push_aggregation() returns without asking the model and the user gets nothing.
+
+    Live 2026-08-20: committed at 22:15:28.157, and the transcript it was supposedly
+    for arrived at 22:15:28.568.
+    """
+    task_manager = TaskManager()
+    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
+    stops = []
+    analyzer = AlwaysCompleteSmartTurn(
+        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
+    )
+    analyzer.set_sample_rate(SAMPLE_RATE)
+    controller = UserTurnController(
+        user_turn_strategies=UserTurnStrategies(
+            start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
+            stop=[LatchedTurnStopStrategy(turn_analyzer=analyzer)],
+        ),
+        user_turn_stop_timeout=3600,
+    )
+
+    async def ignore(*args, **kwargs):
+        pass
+
+    for event in ("on_push_frame", "on_broadcast_frame", "on_reset_aggregation",
+                  "on_user_turn_started", "on_user_turn_stop_timeout"):
+        controller.add_event_handler(event, ignore)
+
+    async def on_stopped(controller, strategy, params):
+        stops.append(True)
+
+    controller.add_event_handler("on_user_turn_stopped", on_stopped)
+    await controller.setup(task_manager)
+
+    async def speak(ms):
+        for _ in range(ms // CHUNK_MS):
+            await controller.process_frame(
+                InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE, num_channels=1)
+            )
+
+    # An utterance that completes normally, leaving its words in _text. VAD stop first,
+    # then the final — the order the live pipeline produces.
+    await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+    await speak(400)
+    stop_a = VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS)
+    stop_a.timestamp = 0.0
+    await controller.process_frame(stop_a)
+    first = TranscriptionFrame("four", "u", "t", None)
+    first.finalized = True
+    await controller.process_frame(first)
+    await asyncio.sleep(0.05)
+    assert len(stops) == 1, "the first utterance should have committed once"
+
+    # A NEW utterance. Its turn starts from an interim, and STT has not finalized it
+    # yet — exactly the live shape.
+    await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+    await speak(400)
+    await controller.process_frame(
+        InterimTranscriptionFrame("the one with", "u", "t", None))
+    await speak(300)          # trips the silence backstop
+    await asyncio.sleep(0.05)
+    committed_early = len(stops) > 1
+    await controller.cleanup()
+    assert not committed_early, (
+        "turn committed on the previous utterance's text, before its own transcript"
+    )
 
 
 def main():

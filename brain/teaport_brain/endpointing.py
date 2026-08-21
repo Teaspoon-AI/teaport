@@ -111,6 +111,9 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # the resets that a mid-utterance turn start causes. Cleared when the VAD says a
         # genuinely new utterance has begun.
         self._carried = None
+        # The prediction the most recent analyze_end_of_turn() produced, or None when
+        # the model did not run. This is the whole basis for the latch below.
+        self._last_prediction = None
 
     async def reset(self):
         """Keep what we know about the current utterance across a restart.
@@ -133,8 +136,15 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         Carrying is bounded by the utterance: VADUserStartedSpeakingFrame drops it, so
         nothing survives into a new one.
         """
-        if self._text or self._turn_complete:
-            self._carried = (self._text, self._turn_complete, self._transcript_finalized)
+        # ONLY once this utterance has produced a final. _text is the base strategy's
+        # "did the user say anything" gate, and carrying it before the current utterance
+        # has been transcribed satisfies that gate with the PREVIOUS utterance's words:
+        # the silence backstop then commits the turn before STT has delivered anything
+        # for it, the aggregator's own buffer is still empty, and push_aggregation()
+        # returns without asking the model. Measured 2026-08-20 22:15:28 — committed at
+        # .157, and the transcript it was for arrived at .568.
+        if self._transcript_finalized:
+            self._carried = (self._text, self._turn_complete, True)
         await super().reset()
         if self._carried:
             self._text, self._turn_complete, self._transcript_finalized = self._carried
@@ -162,6 +172,13 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._carried = None
         await super()._handle_vad_user_started_speaking(frame)
 
+    async def _handle_prediction_result(self, result):
+        # Remember whether the model actually produced a verdict. super() only pushes a
+        # MetricsFrame `if result`, so None here means _process_speech_segment returned
+        # early on an empty buffer and no inference happened at all.
+        self._last_prediction = result
+        await super()._handle_prediction_result(result)
+
     async def _handle_vad_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame):
         """Do not let a vacuous re-analysis revoke the silence backstop.
 
@@ -182,8 +199,13 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         produced no prediction is not evidence about the turn and may not revoke it.
         """
         completed = self._turn_complete
+        self._last_prediction = None
         await super()._handle_vad_user_stopped_speaking(frame)
-        if completed and not self._turn_complete:
+        # Only a VACUOUS re-analysis may be overridden. A real INCOMPLETE means the model
+        # ran and judged the user mid-thought, and overriding that commits the turn while
+        # they are still speaking -- measured 2026-08-20 22:15:28, committed 515ms after
+        # VAD-stop on p=0.25, 400ms before the transcript for it even arrived.
+        if completed and not self._turn_complete and self._last_prediction is None:
             self._turn_complete = True
             # The final transcript may already be in hand, in which case this ends the
             # turn now rather than waiting out the STT fallback timeout super() armed.
