@@ -16,7 +16,6 @@
 # the caption/heard-ledger machinery. Turn the whole thing off by unsetting the
 # env; the live pipeline is unchanged.
 #
-import os
 import time
 
 from loguru import logger
@@ -35,7 +34,9 @@ from pipecat.frames.frames import (
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-ENABLED = os.getenv("TEAPORT_ENDPOINT_DEBUG", "").strip().lower() in ("1", "true")
+from teaport_brain.env import env_flag
+
+ENABLED = env_flag("TEAPORT_ENDPOINT_DEBUG", False)
 
 
 class InstrumentedSileroVAD(SileroVADAnalyzer):
@@ -102,7 +103,6 @@ class EndpointDebug(FrameProcessor):
             if isinstance(frame, VADUserStartedSpeakingFrame):
                 m.clear()
                 m["speech_start"] = t
-            elif isinstance(frame, VADUserStartedSpeakingFrame):
                 logger.info("[EP] VAD speech STARTED")
             elif isinstance(frame, VADUserStoppedSpeakingFrame):
                 m["vad_stop"] = t

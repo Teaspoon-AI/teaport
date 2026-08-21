@@ -8,6 +8,10 @@
 import os
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.frames.frames import VADUserStoppedSpeakingFrame
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+    TurnAnalyzerUserTurnStopStrategy,
+)
 
 # Endpointing silence: how long the user must pause before we treat the turn as done
 # and start responding. Applied to BOTH Silero VAD (raw silence detection) and Smart
@@ -67,3 +71,47 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
         result = super()._predict_endpoint(audio_array)
         result["prediction"] = 1 if result["probability"] > self._complete_threshold else 0
         return result
+
+
+class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
+    """Keep a turn that the silence backstop already finished from being un-finished.
+
+    pipecat (0.0.108) decides the user turn is over in two independent places, and
+    the second one can revoke the first:
+
+      BaseSmartTurn.append_audio counts silence itself. When it reaches stop_secs it
+      returns COMPLETE *and clears its own audio buffer*. The strategy takes that as
+      the turn being complete and sets _turn_complete True.
+
+      The strategy then handles VADUserStoppedSpeakingFrame by calling
+      analyze_end_of_turn() a second time. The buffer is empty now, so
+      _process_speech_segment returns (INCOMPLETE, None) without ever running the
+      model, and `self._turn_complete = state == EndOfTurnState.COMPLETE` puts the
+      flag back to False.
+
+    Nothing re-evaluates it after that. The final transcript arrives,
+    _maybe_trigger_user_turn_stopped() sees _turn_complete False and returns, and the
+    turn ends only when the aggregator's 5s user_turn_stop_timeout force-stops it —
+    six seconds of dead air. Measured live on 2026-08-20: 20 of 246 turns committed at
+    5.8-6.2s instead of the usual 0.85s, every one of them logged "TURN-COMMIT ...
+    SmartTurn (no verdict - silence path)" because the model never ran to produce one.
+    That timeout is also re-armed by any VAD or transcription frame, so a mic that
+    keeps picking up room noise starves it and the turn never ends at all.
+
+    The race window is one audio chunk wide: the buffer clear has to land between the
+    last InputAudioRawFrame and the VAD frame. Anything that shifts the phase between
+    those two — a processor added to the input path, a different chunk size — changes
+    how often it is hit, which is what makes it look intermittent and environmental.
+
+    The silence timeout is the backstop, so it is authoritative. A later analysis that
+    produced no prediction is not evidence about the turn and must not revoke it.
+    """
+
+    async def _handle_vad_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame):
+        completed = self._turn_complete
+        await super()._handle_vad_user_stopped_speaking(frame)
+        if completed and not self._turn_complete:
+            self._turn_complete = True
+            # The final transcript may already be in hand, in which case this ends the
+            # turn now rather than waiting out the STT fallback timeout super() armed.
+            await self._maybe_trigger_user_turn_stopped()

@@ -25,6 +25,7 @@ SCRIPTS = [
     ("test_memory_recall.py", 120),
     ("test_remember_tool.py", 120),
     ("test_llm_text_guard.py", 120),
+    ("test_endpointing.py", 120),
 ]
 
 
