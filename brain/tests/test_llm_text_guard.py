@@ -355,6 +355,50 @@ async def test_after_tool_cleared_by_a_new_user_turn():
     assert h.c._after_tool is False
 
 
+async def test_a_reply_opening_with_an_ellipsis_loses_no_words():
+    """The leading dots must go, and nothing else may.
+
+    They arrive split across deltas, exactly as pipecat streams them, because that is
+    what produced the empty '..' and '.' TTS slots that made every spoken word miss its
+    slot and cost the user the whole caption bubble.
+    """
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for delta in (".", ".", ". ", "it was ", "the worst of times."):
+        await h.feed(LLMTextFrame(text=delta))
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "it was the worst of times."
+
+
+async def test_a_reply_opening_with_a_unicode_ellipsis_is_stripped_too():
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.feed(LLMTextFrame(text="\u2026 right, where were we?"))
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "right, where were we?"
+
+
+async def test_punctuation_inside_a_reply_is_left_alone():
+    """Only the opening is stripped: mid-reply a '.' ends a sentence, and dropping it
+    would merge two sentences into one TTS chunk."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for delta in ("Yes", ".", " ", "It is done", "."):
+        await h.feed(LLMTextFrame(text=delta))
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "Yes. It is done."
+
+
+async def test_each_response_strips_its_own_opening():
+    """_forwarded resets per response, so a second reply is stripped like the first."""
+    h = Guard()
+    for _ in range(2):
+        await h.feed(LLMFullResponseStartFrame())
+        await h.feed(LLMTextFrame(text="... here we go."))
+        await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "here we go.here we go."
+
+
 def main():
     sync = [v for k, v in sorted(globals().items())
             if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]

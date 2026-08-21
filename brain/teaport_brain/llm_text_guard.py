@@ -69,6 +69,19 @@ ENABLED = env_flag("TEAPORT_LLM_TEXT_GUARD", True)
 _ELLIPSIS_RUN = re.compile(r"(?:\u2026[ \t]*){2,}")
 _DOT_RUN_LONG = re.compile(r"\.{4,}")
 
+# Punctuation that opens a reply. It has no phonemes, and it costs the user the whole
+# caption: pipecat's TTS aggregator gives a leading "..." its own text frames, each one
+# opens a slot in the word-timestamp sequencer, and each synthesizes nothing. Every real
+# word that follows then fails to match a slot ("not recognised by any slot, emitting as
+# passthrough") and the assistant's bubble never assembles. Live 2026-08-20: the model
+# answered "Continue from where you left off." with "... it was the worst of times",
+# which became slots '..' and '.', and all thirty spoken words missed. The audio is
+# untouched by any of this, which is why it reads as "I heard it but saw nothing".
+#
+# Only at the START of a response, where there is nothing for the punctuation to attach
+# to. Mid-reply a "." delta is the end of a sentence and dropping it would merge two.
+_LEADING_PUNCT = re.compile(r"^[\s.,;:!?\u2026]+")
+
 # Spoken when the guard trips. Overridable because the pipeline serves Japanese,
 # Mandarin and Hindi too, and a hardcoded English apology is wrong in those rooms.
 # The leading space is deliberate: this is appended to whatever healthy prefix was
@@ -199,6 +212,10 @@ class LLMTextGuard(FrameProcessor):
                 await self.push_frame(LLMTextFrame(text=RECOVERY_TEXT), direction)
                 return
             frame.text = fold_degenerate_chars(frame.text)
+            if not self._forwarded:
+                frame.text = _LEADING_PUNCT.sub("", frame.text)
+                if not frame.text:
+                    return  # an empty text frame still opens a slot; drop it entirely
             self._forwarded += len(frame.text)
         elif isinstance(frame, LLMFullResponseEndFrame):
             if self._tripped:
