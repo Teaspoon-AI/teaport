@@ -219,6 +219,75 @@ async def test_a_turn_that_starts_from_a_final_transcript_commits_at_once():
     assert committed, "turn did not commit on its own finalized transcript"
 
 
+async def test_a_second_turn_from_a_later_interim_still_commits():
+    """One utterance, two turns -- the shape that produced no reply at all.
+
+    MinWordsUserTurnStartStrategy fires on INTERIM transcripts, so a later interim of a
+    sentence whose turn already committed starts a SECOND turn. That start resets the
+    stop strategy, and the second turn can never recover: the stop strategy ignores
+    interims, and the interruption the turn start raises flushes the queued final that
+    would have set _text. Live, the aggregator force-stopped it 5s later on a path that
+    runs no inference.
+
+    The final is deliberately never delivered here, because live it was flushed.
+    """
+    task_manager = TaskManager()
+    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
+    stops = []
+    analyzer = AlwaysCompleteSmartTurn(
+        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
+    )
+    analyzer.set_sample_rate(SAMPLE_RATE)
+    controller = UserTurnController(
+        user_turn_strategies=UserTurnStrategies(
+            start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
+            stop=[LatchedTurnStopStrategy(turn_analyzer=analyzer)],
+        ),
+        user_turn_stop_timeout=3600,
+    )
+
+    async def ignore(*args, **kwargs):
+        pass
+
+    for event in ("on_push_frame", "on_broadcast_frame", "on_reset_aggregation",
+                  "on_user_turn_started", "on_user_turn_stop_timeout"):
+        controller.add_event_handler(event, ignore)
+
+    async def on_stopped(controller, strategy, params):
+        stops.append(True)
+
+    controller.add_event_handler("on_user_turn_stopped", on_stopped)
+    await controller.setup(task_manager)
+
+    async def speak(ms):
+        for _ in range(ms // CHUNK_MS):
+            await controller.process_frame(
+                InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE, num_channels=1)
+            )
+
+    await controller.process_frame(STTMetadataFrame(service_name="teaport", ttfs_p99_latency=0.8))
+    await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+    await speak(400)
+    await controller.process_frame(
+        InterimTranscriptionFrame("they are pushing the code", "u", "t", None))
+    vad_stop = VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS)
+    vad_stop.timestamp = 0.0
+    await controller.process_frame(vad_stop)
+    final = TranscriptionFrame("they are pushing the code", "u", "t", None)
+    final.finalized = True
+    await controller.process_frame(final)
+    await asyncio.sleep(0.05)
+    assert stops, "first turn never committed"
+
+    # The same sentence, one word longer, arriving after the first turn committed.
+    await controller.process_frame(
+        InterimTranscriptionFrame("they are pushing the code somewhere", "u", "t", None))
+    await asyncio.sleep(0.05)
+    committed = len(stops) >= 2
+    await controller.cleanup()
+    assert committed, "second turn started from a later interim and never committed"
+
+
 def main():
     sync = [v for k, v in sorted(globals().items())
             if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]

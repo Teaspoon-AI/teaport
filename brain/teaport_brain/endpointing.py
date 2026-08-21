@@ -8,7 +8,13 @@
 import os
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-from pipecat.frames.frames import TranscriptionFrame, VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import (
+    Frame,
+    InterimTranscriptionFrame,
+    TranscriptionFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
@@ -106,6 +112,66 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     The silence timeout is the backstop, so it is authoritative. A later analysis that
     produced no prediction is not evidence about the turn and must not revoke it.
     """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        # What we already know about the utterance being spoken right now, kept across
+        # the resets that a mid-utterance turn start causes. Cleared when the VAD says a
+        # genuinely new utterance has begun.
+        self._carried = None
+
+    async def reset(self):
+        """Keep what we know about the current utterance across a restart.
+
+        One utterance can start TWO user turns. MinWordsUserTurnStartStrategy fires on
+        INTERIM transcripts, so a later interim of an utterance whose turn has already
+        committed starts a second turn -- and starting a turn resets this strategy,
+        discarding the text and the completion the first turn established.
+
+        That second turn can never recover them. The stop strategy ignores interim
+        frames, so only a final TranscriptionFrame could set _text again, and the turn
+        start broadcasts an interruption that flushes the queued frames -- including the
+        final that was right behind the interim. _text stays empty,
+        _maybe_trigger_user_turn_stopped() returns on its first line forever, and the
+        aggregator force-stops the turn 5s later on a path that runs no inference. The
+        user gets no reply.
+
+        Live 2026-08-20 21:00:52: a 15-word interim committed turn A and started the
+        model; the 16-word interim of the SAME sentence arrived 313ms later, started
+        turn B, cancelled turn A's completion, and was force-stopped at 21:00:57.591 as
+        "strategy: None" having never reached the model.
+
+        Carrying is bounded by the utterance: VADUserStartedSpeakingFrame drops it, so
+        nothing survives into a new one.
+        """
+        if self._text or self._turn_complete:
+            self._carried = (self._text, self._turn_complete, self._transcript_finalized)
+        await super().reset()
+        if self._carried:
+            self._text, self._turn_complete, self._transcript_finalized = self._carried
+
+    async def process_frame(self, frame: Frame):
+        """Let a late interim of an already-final utterance end its turn.
+
+        reset() restores what we knew, but nothing would act on it: the base strategy
+        ignores interim frames entirely, so the turn that a late interim starts has no
+        event left that would call _maybe_trigger_user_turn_stopped(). The controller
+        runs start strategies before stop strategies, so by the time this runs the turn
+        has started and been reset, and the carried state is back in place.
+
+        Gated on _transcript_finalized, which is only true once the final for THIS
+        utterance has been seen -- so this can never commit a turn mid-sentence, and an
+        ordinary interim stream is untouched.
+        """
+        result = await super().process_frame(frame)
+        if isinstance(frame, InterimTranscriptionFrame) and self._transcript_finalized:
+            await self._maybe_trigger_user_turn_stopped()
+        return result
+
+    async def _handle_vad_user_started_speaking(self, frame: VADUserStartedSpeakingFrame):
+        # A new utterance owes nothing to the last one.
+        self._carried = None
+        await super()._handle_vad_user_started_speaking(frame)
 
     async def _handle_vad_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame):
         completed = self._turn_complete
