@@ -51,9 +51,21 @@ FIRED = []
 
 
 class Injector(FrameProcessor):
-    def __init__(self, text):
+    """Put the user's line straight into the context and run the LLM.
+
+    NOT through a TranscriptionFrame. This test is about whether the remember tool is
+    registered, dispatched and written to the note — endpointing is test_endpointing.py's
+    job. Routing it through the user aggregator made it depend on pipecat's DEFAULT turn
+    strategies, which in 1.7.0 stop a turn with a Smart Turn analyzer over real audio;
+    this fixture pushes none, so no turn ever ended, the aggregation stayed empty and the
+    model was never asked. The tool then "failed" for reasons that had nothing to do with
+    the tool.
+    """
+
+    def __init__(self, text, context):
         super().__init__()
         self._t = text
+        self._ctx = context
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -63,7 +75,7 @@ class Injector(FrameProcessor):
 
     async def _emit(self):
         await asyncio.sleep(0.2)
-        await self.push_frame(TranscriptionFrame(self._t, "user", time_now_iso8601(), None))
+        self._ctx.add_message({"role": "user", "content": self._t})
         await self.push_frame(LLMRunFrame())
 
 
@@ -104,7 +116,8 @@ async def main() -> int:
     aggr = LLMContextAggregatorPair(context)
     cap = Capture()
     task = PipelineTask(Pipeline([
-        Injector("Please remember that my favorite hobby is rock climbing in the Dolomites."),
+        Injector("Please remember that my favorite hobby is rock climbing in the Dolomites.",
+                 context),
         aggr.user(), llm, cap, aggr.assistant(),
     ]))
     run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))

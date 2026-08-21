@@ -51,6 +51,9 @@ from pipecat.transports.websocket.fastapi import (  # noqa: E402
     FastAPIWebsocketTransport,
 )
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # noqa: E402
+    TurnAnalyzerUserTurnStopStrategy,
+)
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
 from teaport_brain.captions import (  # noqa: E402
@@ -65,7 +68,6 @@ from teaport_brain.endpointing import (  # noqa: E402
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
     EagerSmartTurnAnalyzer,
-    LatchedTurnStopStrategy,
 )
 from teaport_brain.gateway_serializer import (  # noqa: E402
     PIPELINE_SAMPLE_RATE,
@@ -265,7 +267,7 @@ async def run_relay_bot(websocket: WebSocket):
                 # sound, defeating the guard.
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[
-                    LatchedTurnStopStrategy(
+                    TurnAnalyzerUserTurnStopStrategy(
                         turn_analyzer=EagerSmartTurnAnalyzer(
                             complete_threshold=SMARTTURN_COMPLETE_THRESHOLD,
                             params=SmartTurnParams(stop_secs=ENDPOINT_STOP_SECS),

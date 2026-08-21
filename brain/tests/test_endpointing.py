@@ -1,24 +1,21 @@
 #
-# Unit test: the turn ALWAYS ends.
+# Unit test: the turn ALWAYS ends, and never before the user has finished.
 #
-# The failure this guards against is a user turn that starts and never stops. pipecat
-# finishes a turn in two places and the second can revoke the first: BaseSmartTurn's
-# own silence counter reaches stop_secs, returns COMPLETE and clears its audio buffer;
-# the strategy then re-runs analyze_end_of_turn() on VADUserStoppedSpeakingFrame, gets
-# (INCOMPLETE, None) back from the now-empty buffer without the model ever running, and
-# writes _turn_complete back to False. The final transcript then can't end the turn, and
-# only the aggregator's 5s force-stop does — six seconds of dead air, or forever if room
-# noise keeps re-arming that timeout. See endpointing.LatchedTurnStopStrategy.
+# These pin the pipecat behaviour teaport's endpointing depends on. They exist because
+# every one of these properties was broken at some point in pipecat 1.5.0, each failure
+# costing a live session: a turn that could not end at all, a turn committed on a timer a
+# barge-in cancelled, a turn committed on the previous utterance's words. All were fixed
+# upstream in 1.6.0/1.7.0, and the workarounds teaport carried for them were deleted when
+# it moved to 1.7.0 — these tests are what makes that deletion safe to keep.
 #
-# The window is ONE audio chunk wide, so the test walks the boundary rather than
-# guessing at it: with stop_secs=0.3 and 20ms chunks the wedge is at exactly 300ms of
-# post-start speech, and 280ms or 320ms both pass either way. A fix that only moved the
-# race somewhere else would still fail here, because every offset has to end its turn.
+# The window that used to matter is ONE audio chunk wide, so the first test walks the
+# boundary rather than guessing at it: with stop_secs=0.3 and 20ms chunks, 300ms of
+# post-start speech was the exact offset that wedged.
 #
 # The model is stubbed to vote COMPLETE unconditionally, so any INCOMPLETE the strategy
-# acts on can only have come from the empty-buffer path — never from a real verdict.
+# acts on can only have come from the empty-buffer path, never from a real verdict.
 #
-# Run: python test_endpointing.py   (or via pytest test_suite.py)
+# Run: on the appliance only — see pinned_pipecat.py.
 #
 import asyncio
 import os
@@ -49,10 +46,7 @@ from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 from pipecat.utils.asyncio.task_manager import TaskManager, TaskManagerParams  # noqa: E402
 
-from teaport_brain.endpointing import (  # noqa: E402
-    INTERRUPT_MIN_WORDS,
-    LatchedTurnStopStrategy,
-)
+from teaport_brain.endpointing import INTERRUPT_MIN_WORDS  # noqa: E402
 
 SAMPLE_RATE = 16000
 CHUNK_MS = 20
@@ -74,8 +68,7 @@ class AlwaysIncompleteSmartTurn(BaseSmartTurn):
         return {"prediction": 0, "probability": 0.01}
 
 
-async def run_turn(strategy_cls, speech_ms_after_start,
-                   analyzer_cls=AlwaysCompleteSmartTurn):
+async def run_turn(speech_ms_after_start, analyzer_cls=AlwaysCompleteSmartTurn):
     """One barge-in-shaped turn. Returns True if it ended on its own.
 
     The user is already speaking when the first interim transcript lands, which is
@@ -88,7 +81,7 @@ async def run_turn(strategy_cls, speech_ms_after_start,
     analyzer = analyzer_cls(
         sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
     )
-    stop = strategy_cls(turn_analyzer=analyzer)
+    stop = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)
     controller = UserTurnController(
         user_turn_strategies=UserTurnStrategies(
             start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
@@ -141,169 +134,33 @@ OFFSETS = [0, 100, 200, 260, 280, 300, 320, 340, 400, 600, 1000]
 
 async def test_every_offset_ends_its_turn():
     for ms in OFFSETS:
-        assert await run_turn(LatchedTurnStopStrategy, ms), (
+        assert await run_turn(ms), (
             f"turn never ended with {ms}ms of speech after the turn started"
         )
 
 
-async def test_stock_strategy_still_wedges():
-    """Upstream is still broken, so the shim is still load-bearing.
+async def test_an_incomplete_verdict_keeps_the_turn_open():
+    """Smart Turn's "they are mid-thought" veto must keep the turn open.
 
-    If this starts failing, pipecat fixed it and LatchedTurnStopStrategy can go.
-    """
-    wedged = [ms for ms in OFFSETS
-              if not await run_turn(TurnAnalyzerUserTurnStopStrategy, ms)]
-    assert wedged == [300], f"expected the stock strategy to wedge at 300ms, got {wedged}"
-
-
-async def test_latch_does_not_override_a_real_incomplete_verdict():
-    """Smart Turn's "they are mid-thought" veto has to still work.
-
-    The latch may only preserve a completion the silence backstop already reached;
-    it must never manufacture one. At 100ms of post-start speech the backstop has
-    not fired, so the model's INCOMPLETE is the only verdict and the turn must stay
-    open -- otherwise this change would cut people off mid-sentence.
-    """
-    assert not await run_turn(LatchedTurnStopStrategy, 100,
-                              analyzer_cls=AlwaysIncompleteSmartTurn), (
+    The counterpart to the test above: a turn has to end on its own, but never before
+    the user has finished. At 100ms of post-start speech the silence backstop has not
+    fired, so the model's INCOMPLETE is the only verdict there is — anything that
+    commits here cuts people off mid-sentence."""
+    assert not await run_turn(100, analyzer_cls=AlwaysIncompleteSmartTurn), (
         "the latch ended a turn Smart Turn had judged incomplete"
     )
-
-
-async def test_a_turn_that_starts_from_a_final_transcript_commits_at_once():
-    """The user answers while the bot is still talking, so the turn starts FROM the
-    final transcript. That start resets the stop strategy, and super() then arms a
-    (stt_p99 - stop_secs) timer instead of committing. Live, the interruption that the
-    same transcript triggers cancels that timer, nothing commits the turn, and the
-    aggregator force-stops it 5s later WITHOUT running inference -- so the user gets no
-    reply at all. The transcript is already final: commit on it, not on a timer.
-
-    STTMetadataFrame is what makes this bite. With no p99 the timer is 0s, fires
-    immediately, and the bug is invisible; 0.8s is what the appliance reports.
-    """
-    task_manager = TaskManager()
-    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
-    stopped = []
-    analyzer = AlwaysCompleteSmartTurn(
-        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
-    )
-    analyzer.set_sample_rate(SAMPLE_RATE)
-    controller = UserTurnController(
-        user_turn_strategies=UserTurnStrategies(
-            start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
-            stop=[LatchedTurnStopStrategy(turn_analyzer=analyzer)],
-        ),
-        user_turn_stop_timeout=3600,
-    )
-
-    async def ignore(*args, **kwargs):
-        pass
-
-    for event in ("on_push_frame", "on_broadcast_frame", "on_reset_aggregation",
-                  "on_user_turn_started", "on_user_turn_stop_timeout"):
-        controller.add_event_handler(event, ignore)
-
-    async def on_stopped(controller, strategy, params):
-        stopped.append(True)
-
-    controller.add_event_handler("on_user_turn_stopped", on_stopped)
-    await controller.setup(task_manager)
-
-    await controller.process_frame(
-        STTMetadataFrame(service_name="teaport", ttfs_p99_latency=0.8)
-    )
-    final = TranscriptionFrame("say exactly what is it saying", "u", "t", None)
-    final.finalized = True
-    await controller.process_frame(final)
-    # Deliberately shorter than the 0.5s timer super() arms: the commit must not
-    # depend on a timer a barge-in can cancel.
-    await asyncio.sleep(0.05)
-    committed = bool(stopped)
-    await controller.cleanup()
-    assert committed, "turn did not commit on its own finalized transcript"
-
-
-async def test_a_second_turn_from_a_later_interim_still_commits():
-    """One utterance, two turns -- the shape that produced no reply at all.
-
-    MinWordsUserTurnStartStrategy fires on INTERIM transcripts, so a later interim of a
-    sentence whose turn already committed starts a SECOND turn. That start resets the
-    stop strategy, and the second turn can never recover: the stop strategy ignores
-    interims, and the interruption the turn start raises flushes the queued final that
-    would have set _text. Live, the aggregator force-stopped it 5s later on a path that
-    runs no inference.
-
-    The final is deliberately never delivered here, because live it was flushed.
-    """
-    task_manager = TaskManager()
-    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
-    stops = []
-    analyzer = AlwaysCompleteSmartTurn(
-        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
-    )
-    analyzer.set_sample_rate(SAMPLE_RATE)
-    controller = UserTurnController(
-        user_turn_strategies=UserTurnStrategies(
-            start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
-            stop=[LatchedTurnStopStrategy(turn_analyzer=analyzer)],
-        ),
-        user_turn_stop_timeout=3600,
-    )
-
-    async def ignore(*args, **kwargs):
-        pass
-
-    for event in ("on_push_frame", "on_broadcast_frame", "on_reset_aggregation",
-                  "on_user_turn_started", "on_user_turn_stop_timeout"):
-        controller.add_event_handler(event, ignore)
-
-    async def on_stopped(controller, strategy, params):
-        stops.append(True)
-
-    controller.add_event_handler("on_user_turn_stopped", on_stopped)
-    await controller.setup(task_manager)
-
-    async def speak(ms):
-        for _ in range(ms // CHUNK_MS):
-            await controller.process_frame(
-                InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE, num_channels=1)
-            )
-
-    await controller.process_frame(STTMetadataFrame(service_name="teaport", ttfs_p99_latency=0.8))
-    await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
-    await speak(400)
-    await controller.process_frame(
-        InterimTranscriptionFrame("they are pushing the code", "u", "t", None))
-    vad_stop = VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS)
-    vad_stop.timestamp = 0.0
-    await controller.process_frame(vad_stop)
-    final = TranscriptionFrame("they are pushing the code", "u", "t", None)
-    final.finalized = True
-    await controller.process_frame(final)
-    await asyncio.sleep(0.05)
-    assert stops, "first turn never committed"
-
-    # The same sentence, one word longer, arriving after the first turn committed.
-    await controller.process_frame(
-        InterimTranscriptionFrame("they are pushing the code somewhere", "u", "t", None))
-    await asyncio.sleep(0.05)
-    committed = len(stops) >= 2
-    await controller.cleanup()
-    assert committed, "second turn started from a later interim and never committed"
 
 
 async def test_no_commit_before_this_utterance_has_a_transcript():
     """A turn must not be committed on the previous utterance's words.
 
-    _text is the base strategy's "did the user say anything" gate. Carrying it across a
-    turn start before the CURRENT utterance has been transcribed satisfies that gate
-    with the last utterance's words, so the silence backstop commits the turn before
-    STT has delivered anything for it. The aggregator's own buffer is still empty, so
-    push_aggregation() returns without asking the model and the user gets nothing.
+    _text is the strategy's "did the user say anything" gate. Anything that satisfies it
+    before the CURRENT utterance has been transcribed lets the silence backstop commit
+    the turn early — and the aggregator's own buffer is still empty at that point, so
+    push_aggregation() returns without asking the model and the user gets nothing back.
 
-    Live 2026-08-20: committed at 22:15:28.157, and the transcript it was supposedly
-    for arrived at 22:15:28.568.
-    """
+    Live on pipecat 1.5.0, 2026-08-20: committed at 22:15:28.157, and the transcript it
+    was supposedly for did not arrive until 22:15:28.568."""
     task_manager = TaskManager()
     task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
     stops = []
@@ -314,7 +171,7 @@ async def test_no_commit_before_this_utterance_has_a_transcript():
     controller = UserTurnController(
         user_turn_strategies=UserTurnStrategies(
             start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
-            stop=[LatchedTurnStopStrategy(turn_analyzer=analyzer)],
+            stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)],
         ),
         user_turn_stop_timeout=3600,
     )

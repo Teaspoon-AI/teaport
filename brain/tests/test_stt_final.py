@@ -42,10 +42,11 @@ from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 from pipecat.utils.asyncio.task_manager import TaskManager, TaskManagerParams  # noqa: E402
 
-from teaport_brain.endpointing import (  # noqa: E402
-    INTERRUPT_MIN_WORDS,
-    LatchedTurnStopStrategy,
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # noqa: E402
+    TurnAnalyzerUserTurnStopStrategy,
 )
+
+from teaport_brain.endpointing import INTERRUPT_MIN_WORDS  # noqa: E402
 from teaport_brain.stt import TeaportSTTService  # noqa: E402
 
 STOP_SECS = 0.3
@@ -104,7 +105,7 @@ async def test_the_turn_still_ends_after_an_unfinalizable_utterance():
     controller = UserTurnController(
         user_turn_strategies=UserTurnStrategies(
             start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
-            stop=[LatchedTurnStopStrategy(turn_analyzer=_always_complete())],
+            stop=[TurnAnalyzerUserTurnStopStrategy(turn_analyzer=_always_complete())],
         ),
         # The 5s force-stop is the symptom, not the cure: disable it so the test sees
         # whether the STRATEGY ended the turn.
