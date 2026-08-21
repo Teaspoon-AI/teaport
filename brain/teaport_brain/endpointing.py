@@ -80,37 +80,29 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
 
 
 class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
-    """Keep a turn that the silence backstop already finished from being un-finished.
+    """Make sure a turn the user has finished always ends on its own.
 
-    pipecat (0.0.108) decides the user turn is over in two independent places, and
-    the second one can revoke the first:
+    Everything in this class defends one invariant, because everything that breaks it
+    fails the same way. The base strategy commits a turn only when
+    _maybe_trigger_user_turn_stopped() finds BOTH a transcript and a completed turn, and
+    nothing re-runs that check unprompted. Lose either fact and the turn can never end:
+    the aggregator force-stops it 5s later on user_turn_stop_timeout, and THAT PATH RUNS
+    NO INFERENCE. The user gets no reply at all rather than a slow one, which is why
+    every one of these reads as the agent ignoring them. In the journal it is
+    "User stopped speaking (strategy: None)" — the one line worth alerting on. Any VAD
+    or transcription frame re-arms that timeout too, so on a live mic in a room with
+    noise the turn hangs indefinitely instead of for five seconds.
 
-      BaseSmartTurn.append_audio counts silence itself. When it reaches stop_secs it
-      returns COMPLETE *and clears its own audio buffer*. The strategy takes that as
-      the turn being complete and sets _turn_complete True.
+    Four ways the pair gets lost, one per override below, all measured live on
+    2026-08-20 and each pinned by a test in tests/test_endpointing.py:
 
-      The strategy then handles VADUserStoppedSpeakingFrame by calling
-      analyze_end_of_turn() a second time. The buffer is empty now, so
-      _process_speech_segment returns (INCOMPLETE, None) without ever running the
-      model, and `self._turn_complete = state == EndOfTurnState.COMPLETE` puts the
-      flag back to False.
+      reset                            one utterance starting a second turn
+      process_frame                    a late interim of an already-final utterance
+      _handle_vad_user_stopped_speaking  a re-analysis revoking the silence backstop
+      _handle_transcription            a commit left to a timer a barge-in cancels
 
-    Nothing re-evaluates it after that. The final transcript arrives,
-    _maybe_trigger_user_turn_stopped() sees _turn_complete False and returns, and the
-    turn ends only when the aggregator's 5s user_turn_stop_timeout force-stops it —
-    six seconds of dead air. Measured live on 2026-08-20: 20 of 246 turns committed at
-    5.8-6.2s instead of the usual 0.85s, every one of them logged "TURN-COMMIT ...
-    SmartTurn (no verdict - silence path)" because the model never ran to produce one.
-    That timeout is also re-armed by any VAD or transcription frame, so a mic that
-    keeps picking up room noise starves it and the turn never ends at all.
-
-    The race window is one audio chunk wide: the buffer clear has to land between the
-    last InputAudioRawFrame and the VAD frame. Anything that shifts the phase between
-    those two — a processor added to the input path, a different chunk size — changes
-    how often it is hit, which is what makes it look intermittent and environmental.
-
-    The silence timeout is the backstop, so it is authoritative. A later analysis that
-    produced no prediction is not evidence about the turn and must not revoke it.
+    Behaviour verified against the appliance's pipecat 1.5.0; the same code paths are
+    present in 0.0.108.
     """
 
     def __init__(self, **kwargs):
@@ -131,10 +123,7 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         That second turn can never recover them. The stop strategy ignores interim
         frames, so only a final TranscriptionFrame could set _text again, and the turn
         start broadcasts an interruption that flushes the queued frames -- including the
-        final that was right behind the interim. _text stays empty,
-        _maybe_trigger_user_turn_stopped() returns on its first line forever, and the
-        aggregator force-stops the turn 5s later on a path that runs no inference. The
-        user gets no reply.
+        final that was right behind the interim. _text stays empty for good.
 
         Live 2026-08-20 21:00:52: a 15-word interim committed turn A and started the
         model; the 16-word interim of the SAME sentence arrived 313ms later, started
@@ -174,6 +163,24 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         await super()._handle_vad_user_started_speaking(frame)
 
     async def _handle_vad_user_stopped_speaking(self, frame: VADUserStoppedSpeakingFrame):
+        """Do not let a vacuous re-analysis revoke the silence backstop.
+
+        The turn is decided in two places and the second can undo the first.
+        BaseSmartTurn.append_audio counts silence itself; at stop_secs it returns
+        COMPLETE *and clears its own audio buffer*, and the strategy sets _turn_complete.
+        super() then calls analyze_end_of_turn() again on that emptied buffer, so
+        _process_speech_segment returns (INCOMPLETE, None) without the model running at
+        all, and `_turn_complete = state == COMPLETE` puts it back to False.
+
+        Measured 2026-08-20: 20 of 246 turns committed at 5.8-6.2s instead of the usual
+        0.85s, a bimodal split with nothing in between. The race window is ONE audio
+        chunk wide — the buffer clear has to land between the last InputAudioRawFrame
+        and the VAD frame — so anything that shifts the phase between those two changes
+        how often it is hit, which is what makes it look environmental.
+
+        The silence timeout is the backstop, so it is authoritative: an analysis that
+        produced no prediction is not evidence about the turn and may not revoke it.
+        """
         completed = self._turn_complete
         await super()._handle_vad_user_stopped_speaking(frame)
         if completed and not self._turn_complete:
@@ -193,9 +200,6 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         transcript is already final, so there is nothing left to wait for, and the wait
         is where the turn is lost: that same transcript starts the user turn, the user
         turn broadcasts an interruption, and the interruption takes the timer with it.
-        Nothing then commits the turn, and the aggregator force-stops it 5s later on
-        user_turn_stop_timeout -- a path that ends the turn WITHOUT running inference,
-        so the user gets no reply at all.
 
         Live 2026-08-20, three times in ninety seconds. "say exactly what is it saying."
         landed at 20:50:46.983, started the turn at .987, cancelled the previous
