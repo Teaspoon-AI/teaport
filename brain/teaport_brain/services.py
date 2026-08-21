@@ -13,7 +13,9 @@
 import json
 import os
 
+import httpx
 from loguru import logger
+from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
 from pipecat.services.openai.llm import OpenAILLMService
 
@@ -142,14 +144,67 @@ def _max_tokens() -> int | None:
 # it on also buys the retry: the stalled turn above replayed successfully in 2.8s, so one
 # retry would most likely have rescued it outright rather than merely failing faster.
 #
-# Setting it on the httpx client instead does NOT work — verified on the box, the client
-# still reported read=600 — because this wait_for is what actually bounds the call.
+# That wait_for bounds only the OPENING of the stream, so it does not cover a server
+# that accepts the request and then stalls mid-response. Bounding the transport itself
+# is what covers that, and it has to be set on the httpx client — see
+# BoundedOpenAILLMService for why an AsyncOpenAI-level timeout is dropped on the floor.
+# This value feeds both.
 def _llm_timeout_secs() -> float:
     secs = env_num("LLM_TIMEOUT_SECS", "20", float)
     if secs <= 0:
         logger.warning(f"LLM_TIMEOUT_SECS={secs} is not positive; using 20")
         return 20.0
     return secs
+
+
+# Connect timeout. Separate from the read timeout below because they fail differently:
+# an unreachable endpoint should fail fast, a slow-but-alive one should not.
+_CONNECT_SECS = 5.0
+
+
+class BoundedOpenAILLMService(OpenAILLMService):
+    """OpenAILLMService whose timeout actually reaches the socket.
+
+    retry_on_timeout only wraps `chat.completions.create()`, and every request here is
+    a STREAM, so that call returns the moment the response headers land. It bounds
+    opening the stream and nothing else. A server that accepts the request and then
+    stalls mid-stream has already passed that gate, so the wait_for never fires, the
+    retry never happens, and consuming the stream falls through to the OpenAI SDK's
+    default read timeout of 600 seconds. Measured live 2026-08-20: a turn committed at
+    19:12:23.6, the request was sent, and 150+ seconds later there was still no
+    response, no error and no log line -- the assistant simply stopped answering.
+
+    Passing `timeout=` to OpenAILLMService does not fix it. create_client() accepts
+    **kwargs and then drops them, and it supplies its own DefaultAsyncHttpxClient, so
+    an AsyncOpenAI-level timeout leaves the transport at read=600 (verified on the
+    box: sdk=20.0 while httpx still reported read=600). Overriding create_client is
+    the only seam that sets the value httpx actually enforces.
+
+    With the transport bounded, a mid-stream stall raises httpx.ReadTimeout, which
+    base_llm already catches as httpx.TimeoutException -- it fires on_completion_timeout,
+    pushes an error and closes the turn, so LLMErrorSpeaker can say something out loud.
+    That path was always wired; nothing ever armed it. It also makes the untimed retry
+    inside get_chat_completions safe, since httpx now bounds that attempt too.
+
+    The limits are upstream's, repeated here because create_client builds the client in
+    one expression and there is no seam to inject only a timeout.
+    """
+
+    def create_client(self, api_key=None, base_url=None, organization=None,
+                      project=None, default_headers=None, **kwargs):
+        return AsyncOpenAI(
+            api_key=api_key,
+            base_url=base_url,
+            organization=organization,
+            project=project,
+            default_headers=default_headers,
+            http_client=DefaultAsyncHttpxClient(
+                timeout=httpx.Timeout(_llm_timeout_secs(), connect=_CONNECT_SECS),
+                limits=httpx.Limits(
+                    max_keepalive_connections=100, max_connections=1000, keepalive_expiry=None
+                ),
+            ),
+        )
 
 
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
@@ -172,7 +227,7 @@ def make_llm():
     cap = _max_tokens()
     if cap is not None:
         settings["max_tokens"] = cap
-    return OpenAILLMService(
+    return BoundedOpenAILLMService(
         api_key=get_llm_api_key(),
         base_url=base_url,
         settings=OpenAILLMService.Settings(**settings),
