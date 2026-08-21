@@ -293,7 +293,9 @@ async def run_relay_bot(websocket: WebSocket):
         transport.input(),
         ep_in,  # tap (debug): VAD-stop / turn-commit bubbles
         stt,
-        TurnTimer(turn_marks),  # tap: user-stopped + stt-final
+        # This tap owns the silent-turn watchdog (see TurnTimer): it is the first to
+        # see the turn begin, and only one of the three may arm it.
+        TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
         UserTranscriptEmitter(activity),
         MemoryRecall(context),  # fire memory_search on interim, inject before the LLM
         context_aggregator.user(),
