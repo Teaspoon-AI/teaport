@@ -212,6 +212,23 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 "— this turn produces no reply and raises no error"
             )
             raise
+        else:
+            # The success case is logged too, because "the bot said nothing" has three
+            # very different causes and the journal could not tell them apart: the
+            # completion never returned (no line), it returned and the reply went
+            # missing downstream (this line, then silence), or it returned a tool call
+            # that never dispatched (this line, then no "Calling function"). One line
+            # splits all three.
+            logger.info(f"{self}: completion finished in {time.monotonic() - started:.1f}s")
+
+    # Paired with the above: this marks the boundary between "the request never got a
+    # response" and "the response arrived but consuming it stalled". Without it both
+    # look identical from the journal — a "Generating chat from context" line and
+    # nothing after it.
+    async def get_chat_completions(self, context):
+        stream = await super().get_chat_completions(context)
+        logger.debug(f"{self}: response stream open")
+        return stream
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):
