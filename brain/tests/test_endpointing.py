@@ -32,6 +32,7 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    STTMetadataFrame,
     TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -163,6 +164,59 @@ async def test_latch_does_not_override_a_real_incomplete_verdict():
                               analyzer_cls=AlwaysIncompleteSmartTurn), (
         "the latch ended a turn Smart Turn had judged incomplete"
     )
+
+
+async def test_a_turn_that_starts_from_a_final_transcript_commits_at_once():
+    """The user answers while the bot is still talking, so the turn starts FROM the
+    final transcript. That start resets the stop strategy, and super() then arms a
+    (stt_p99 - stop_secs) timer instead of committing. Live, the interruption that the
+    same transcript triggers cancels that timer, nothing commits the turn, and the
+    aggregator force-stops it 5s later WITHOUT running inference -- so the user gets no
+    reply at all. The transcript is already final: commit on it, not on a timer.
+
+    STTMetadataFrame is what makes this bite. With no p99 the timer is 0s, fires
+    immediately, and the bug is invisible; 0.8s is what the appliance reports.
+    """
+    task_manager = TaskManager()
+    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
+    stopped = []
+    analyzer = AlwaysCompleteSmartTurn(
+        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
+    )
+    analyzer.set_sample_rate(SAMPLE_RATE)
+    controller = UserTurnController(
+        user_turn_strategies=UserTurnStrategies(
+            start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
+            stop=[LatchedTurnStopStrategy(turn_analyzer=analyzer)],
+        ),
+        user_turn_stop_timeout=3600,
+    )
+
+    async def ignore(*args, **kwargs):
+        pass
+
+    for event in ("on_push_frame", "on_broadcast_frame", "on_reset_aggregation",
+                  "on_user_turn_started", "on_user_turn_stop_timeout"):
+        controller.add_event_handler(event, ignore)
+
+    async def on_stopped(controller, strategy, params):
+        stopped.append(True)
+
+    controller.add_event_handler("on_user_turn_stopped", on_stopped)
+    await controller.setup(task_manager)
+
+    await controller.process_frame(
+        STTMetadataFrame(service_name="teaport", ttfs_p99_latency=0.8)
+    )
+    final = TranscriptionFrame("say exactly what is it saying", "u", "t", None)
+    final.finalized = True
+    await controller.process_frame(final)
+    # Deliberately shorter than the 0.5s timer super() arms: the commit must not
+    # depend on a timer a barge-in can cancel.
+    await asyncio.sleep(0.05)
+    committed = bool(stopped)
+    await controller.cleanup()
+    assert committed, "turn did not commit on its own finalized transcript"
 
 
 def main():

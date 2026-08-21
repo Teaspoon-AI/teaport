@@ -8,7 +8,7 @@
 import os
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-from pipecat.frames.frames import VADUserStoppedSpeakingFrame
+from pipecat.frames.frames import TranscriptionFrame, VADUserStoppedSpeakingFrame
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
@@ -114,4 +114,32 @@ class LatchedTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             self._turn_complete = True
             # The final transcript may already be in hand, in which case this ends the
             # turn now rather than waiting out the STT fallback timeout super() armed.
+            await self._maybe_trigger_user_turn_stopped()
+
+    async def _handle_transcription(self, frame: TranscriptionFrame):
+        """Act on a finalized transcript now, rather than on a timer that can be lost.
+
+        When a turn starts FROM a final transcript -- the user answers while the bot is
+        still speaking, so MinWordsUserTurnStartStrategy fires on that transcript -- the
+        turn start resets this strategy first, wiping the completion the VAD stop had
+        already established. super() then takes its no-VAD fallback, sets _turn_complete
+        again, and arms a timer for (stt_p99 - stop_secs) instead of committing. The
+        transcript is already final, so there is nothing left to wait for, and the wait
+        is where the turn is lost: that same transcript starts the user turn, the user
+        turn broadcasts an interruption, and the interruption takes the timer with it.
+        Nothing then commits the turn, and the aggregator force-stops it 5s later on
+        user_turn_stop_timeout -- a path that ends the turn WITHOUT running inference,
+        so the user gets no reply at all.
+
+        Live 2026-08-20, three times in ninety seconds. "say exactly what is it saying."
+        landed at 20:50:46.983, started the turn at .987, cancelled the previous
+        completion at .992, and was force-stopped at 20:50:51.988 as "strategy: None"
+        having never reached the model.
+
+        Triggering here is safe: _maybe_trigger_user_turn_stopped() still returns early
+        unless the turn is complete AND the transcript is final, so a Smart Turn
+        INCOMPLETE verdict keeps the turn open exactly as before.
+        """
+        await super()._handle_transcription(frame)
+        if frame.finalized:
             await self._maybe_trigger_user_turn_stopped()
