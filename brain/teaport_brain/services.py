@@ -159,6 +159,37 @@ def _llm_timeout_secs() -> float:
     return secs
 
 
+async def _sequential_tool_call_indices(stream):
+    """Renumber tool_call.index to the order calls first appear in the response.
+
+    base_llm coalesces streamed tool-call deltas on the assumption that
+    `tool_call.index` counts calls WITHIN the response — 0 for the first, 1 for the
+    second. It starts at func_idx=0 and treats any other index as "a new call started",
+    flushing the accumulator and resetting function_name. At the end it gates the ENTIRE
+    dispatch on that last function_name being non-empty.
+
+    This endpoint numbers them by position in the TOOLS ARRAY instead. `remember` is the
+    sixth of nine tools, so its deltas arrive as index=5, every one of them trips the
+    "new call" branch, function_name ends empty and run_function_calls() is never
+    reached — the parsed call is left sitting in functions_list and silently discarded.
+    No error, no warning, no log line: the model asked for a tool and the pipeline just
+    did not run it. Reproduced 3/3 on 2026-08-20; a tool at array index 0 would work and
+    every other tool would not, which is the shape of the ask_openclaw drops that went
+    unexplained for hours.
+
+    Mapping by order of first appearance is identity for a provider that already numbers
+    calls 0,1,2, so this costs nothing when it is not needed.
+    """
+    order: dict = {}
+    async for chunk in stream:
+        for choice in (chunk.choices or []):
+            for tool_call in (getattr(getattr(choice, "delta", None), "tool_calls", None) or []):
+                if tool_call.index not in order:
+                    order[tool_call.index] = len(order)
+                tool_call.index = order[tool_call.index]
+        yield chunk
+
+
 # Connect timeout. Separate from the read timeout below because they fail differently:
 # an unreachable endpoint should fail fast, a slow-but-alive one should not.
 _CONNECT_SECS = 5.0
@@ -225,10 +256,12 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # response" and "the response arrived but consuming it stalled". Without it both
     # look identical from the journal — a "Generating chat from context" line and
     # nothing after it.
+    #
+    # The stream is also renumbered on the way past — see _sequential_tool_call_indices.
     async def get_chat_completions(self, context):
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
-        return stream
+        return _sequential_tool_call_indices(stream)
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):
