@@ -19,4 +19,6 @@ Non-secret configuration files are in `/etc/teaport/{engine,brain}.env`. Per-use
 - `KOKORO_RESERVE_FPT`: the amount of memory that the engine reserves. Use the value **6** with a NemoClaw sandbox. Use the value **12** for a voice-only device. The installer always sets this value. The default value in the code is not safe to use on an 8 GB device.
 - `TEAPORT_URL`: the address of the engine's realtime WebSocket. The default value is `ws://127.0.0.1:8000/v1/realtime`.
 - `OPENCLAW_GATEWAY_URL`: the address of the gateway on the same device. teaport uses this gateway for the shared persona and for memory recall.
-- `~/.config/teaport/`: this folder holds the files `openrouter_key`, `groq_key`, `cerebras_key`, `openclaw_token`, and `persona.md`.
+- `~/.config/teaport/`: this folder holds the files `llm_key`, `openclaw_token`, and `persona.md`.
+  teaport uses one key for one OpenAI-compatible endpoint. Write that key to `llm_key`. Do not make a different file for each supplier.
+  <!-- source: install.sh:551-552 (llm_key), install.sh:466-467 (openclaw_token), install.sh:719 (persona.md) -->
