@@ -289,7 +289,22 @@ class TeaportSTTService(WebsocketSTTService):
             # timeout — that fallback is for STTs that never signal a final, and
             # eating it added ~(ttfs_p99 - stop_secs) of dead hang after every
             # finished utterance.
-            text = msg.get("text", self._interim_buffer)
+            # `or`, not get()'s default: the engine sends "text": "" (key PRESENT,
+            # value empty) for an utterance it could not finalize, so the default is
+            # never reached and the interim fallback was dead code for the one case it
+            # was written for. Verified against the engine on 2026-08-20 -- 1.5s of
+            # silence returns {"type": "transcription.done", "text": "", ...}.
+            #
+            # Pushing nothing wedges the turn. MinWordsUserTurnStartStrategy starts the
+            # user turn from an INTERIM, but TurnAnalyzerUserTurnStopStrategy only ever
+            # sets its _text from a final TranscriptionFrame, and
+            # _maybe_trigger_user_turn_stopped() returns early while that is empty. So a
+            # turn that started on interims and got an empty final can never stop: it
+            # waits out the aggregator's 5s user_turn_stop_timeout, and since any VAD or
+            # transcription frame re-arms that timeout, a noisy mic starves it and the
+            # turn never ends at all. Falling back to the hypothesis we already streamed
+            # both recovers the words and lets the turn close.
+            text = msg.get("text") or self._interim_buffer
             self._interim_buffer = ""
             if text:
                 await self.push_frame(
