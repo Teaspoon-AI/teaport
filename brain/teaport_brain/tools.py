@@ -137,6 +137,10 @@ LIST_VOICES = FunctionSchema(
     required=[],
 )
 
+# Every id the engine will accept, flattened from the same table
+# _switch_voice checks against.
+_ALL_VOICES = sorted({v for vs in ENGINE_VOICES.values() for v in vs})
+
 SWITCH_VOICE = FunctionSchema(
     name="switch_voice",
     description=(
@@ -147,8 +151,22 @@ SWITCH_VOICE = FunctionSchema(
     ),
     properties={"voice": {
         "type": "string",
-        "description": "Voice name, e.g. 'ef_dora' (Spanish), 'if_sara' (Italian), "
-                       "'af_heart' (US English)",
+        # The valid set, not three examples. Given only examples the model has to either
+        # guess the id or spend a turn on list_voices to find it, and both go wrong:
+        # measured 2026-08-23, gemma-4-31b-it guessed 'nova', 'Liam' and 'en_gb_emma' for
+        # three ordinary requests -- all rejected by _switch_voice, so the user heard "I
+        # couldn't find a voice called Liam" -- while gpt-oss-120b and qwen3.8-27b avoided
+        # guessing only by calling list_voices first, which costs a whole extra round trip
+        # before anything is spoken. An enum removes the choice: providers constrain the
+        # argument to it, so an invalid id cannot be produced and no lookup is needed.
+        #
+        # Built from ENGINE_VOICES, which is what _switch_voice validates against, so the
+        # advertised set and the accepted set cannot drift apart.
+        "enum": _ALL_VOICES,
+        "description": "Exact voice id. The first letter is the language (a=US English, "
+                       "b=British, e=Spanish, f=French, h=Hindi, i=Italian, j=Japanese, "
+                       "p=Portuguese, z=Mandarin) and the second is the gender (f/m), so "
+                       "the Nova voice is 'af_nova' and Liam is 'am_liam'.",
     }},
     required=["voice"],
 )

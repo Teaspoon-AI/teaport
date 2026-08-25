@@ -28,6 +28,7 @@ SCRIPTS = [
     ("test_endpointing.py", 120),
     ("test_stt_final.py", 120),
     ("test_tool_call_indices.py", 120),
+    ("test_tool_schema.py", 120),
 ]
 
 
