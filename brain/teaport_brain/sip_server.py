@@ -18,12 +18,21 @@
 #   Requires the engine at TEAPORT_URL (STT/TTS) and an LLM at LLM_BASE_URL.
 #
 # NOTE: parallel to gateway_server.py, not a replacement — the OpenClaw path is
-# untouched. Deferred vs. the OpenClaw pipeline (documented in RUNLOG): tools /
-# ask_openclaw, memory recall + reclaim, captions/transcript emitters (no SIP
-# control type carries them), thinking-sound, follow-up gate, turn-timing taps.
+# untouched. The LLM TOOLS are now wired in exactly like the OpenClaw path
+# (build_tools_schema -> LLMContext; register_tools after the PipelineTask; the
+# async ask_openclaw follow-up rides a FollowupGate + _make_consult_followup, with
+# a ThinkingSound bed over the consult wait) so a caller gets REAL tool results
+# instead of hallucinated ones. On SIP there is no OpenClaw plugin to service the
+# native openclaw_agent_consult round-trip (the sip_serializer drops it, being a
+# non-protocol control), so ask_openclaw degrades to the CLI agent_consult path;
+# the fast tools (host status, time, web search/fetch, memory) run unchanged.
+# Still deferred vs. the OpenClaw pipeline (documented in RUNLOG): memory recall +
+# reclaim, captions/transcript emitters (no SIP control type carries them),
+# turn-timing taps.
 
 import argparse
 import asyncio
+import json
 import os
 
 # Cache-only HF hub, read at huggingface_hub import time — set before any imports.
@@ -34,7 +43,14 @@ from loguru import logger  # noqa: E402
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams  # noqa: E402
 from pipecat.audio.vad.silero import SileroVADAnalyzer  # noqa: E402
 from pipecat.audio.vad.vad_analyzer import VADParams  # noqa: E402
-from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame  # noqa: E402
+from pipecat.frames.frames import (  # noqa: E402
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    InputAudioRawFrame,
+    LLMRunFrame,
+    TTSSpeakFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
 from pipecat.pipeline.task import PipelineTask  # noqa: E402
@@ -50,6 +66,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # n
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
 from teaport_brain import endpoint_debug  # noqa: E402
+from teaport_brain import thinking_sound  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
     ENDPOINT_STOP_SECS,
     INTERRUPT_MIN_WORDS,
@@ -59,6 +76,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     EagerSmartTurnAnalyzer,
 )
 from teaport_brain.engine_tts import LANG_NAMES  # noqa: E402
+from teaport_brain.followup_gate import FollowupGate  # noqa: E402
 from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
 from teaport_brain.persona import build_system_prompt, load_persona  # noqa: E402
 from teaport_brain.services import make_llm, make_stt, make_tts  # noqa: E402
@@ -69,6 +87,8 @@ from teaport_brain.sip_transport import (  # noqa: E402
     connect_seqpacket,
     make_sip_params,
 )
+from teaport_brain.thinking_sound import ThinkingSound  # noqa: E402
+from teaport_brain.tools import build_tools_schema, register_tools  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 # Non-English TTS languages → the name to steer the LLM to reply in (mirrors
@@ -81,11 +101,109 @@ def _vad_cls():
             else SileroVADAnalyzer)
 
 
+# --- DIAGNOSTIC: half-duplex input gate (echo-hypothesis test) ------------------
+# Telephony has no client-side echo cancellation (unlike the OpenClaw Talk client
+# the WS path relies on), so the bot's own audio echoes back down the line and
+# retriggers the VAD/STT (the bot fights itself → rough conversation). This gate
+# DROPS caller audio while the bot is speaking, plus a tail covering the gateway's
+# bounded (~1 s) playout backlog. It is NOT the real fix — that's an echo canceller
+# in the teaport-sip bridge (pjmedia AEC), keeping the brain transport-agnostic —
+# but it isolates whether echo is the cause. Kill switch: SIP_HALF_DUPLEX=0.
+HALF_DUPLEX = os.getenv("SIP_HALF_DUPLEX", "1").strip().lower() not in ("0", "false", "no")
+_HD_TAIL_S = float(os.getenv("SIP_HALF_DUPLEX_TAIL_S", "0.8"))
+
+
+class HalfDuplexInputGate(FrameProcessor):
+    """Swallow caller InputAudioRawFrames while the bot is speaking (+ a tail), so
+    un-cancelled line echo can't retrigger the VAD. Half-duplex: no barge-in."""
+
+    def __init__(self, tail_s: float = _HD_TAIL_S):
+        super().__init__()
+        self._muted = False
+        self._tail_s = tail_s
+        self._unmute_task = None
+
+    async def _unmute_after_tail(self):
+        await asyncio.sleep(self._tail_s)
+        self._muted = False
+        logger.debug("half-duplex: unmuted (tail elapsed)")
+
+    async def _cancel_pending(self):
+        if self._unmute_task is not None:
+            t, self._unmute_task = self._unmute_task, None
+            await self.cancel_task(t)
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, BotStartedSpeakingFrame):
+            await self._cancel_pending()
+            if not self._muted:
+                logger.debug("half-duplex: muted (bot speaking)")
+            self._muted = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            await self._cancel_pending()
+            self._unmute_task = self.create_task(self._unmute_after_tail())
+        # Drop the caller's mic while muted; pass everything else through.
+        if (self._muted and direction == FrameDirection.DOWNSTREAM
+                and isinstance(frame, InputAudioRawFrame)):
+            return
+        await self.push_frame(frame, direction)
+
+
 def _initial_messages(system_prompt: str, lang_name: str | None) -> list:
     msgs = [{"role": "system", "content": system_prompt}]
     if lang_name:
         msgs.append({"role": "system", "content": f"Always reply to the user in {lang_name}."})
     return msgs
+
+
+def _make_consult_followup(task, context, gate):
+    """Follow-up injector for the ASYNC ask_openclaw path (verbatim from
+    gateway_server.py). When a background consult finishes, append its answer to the
+    context and run the LLM so the bot SPEAKS it as an unprompted turn, reattached to
+    what the user asked. A failed/empty consult yields a brief 'couldn't get it' turn
+    instead of silence. Bound per-session to this task + context; `gate` holds the
+    turn until neither side is mid-speech."""
+    async def speak_followup(request, text, tool_call_id=None):
+        # Wait for a clear moment: don't step on the user mid-utterance OR the
+        # assistant mid-answer about something else. (Gives up after max_wait so a
+        # relentlessly chatty conversation can't strand the answer.)
+        await gate.wait_until_idle()
+        # Rewrite the placeholder tool result to the real outcome so the context
+        # reads like any normally-completed tool call (see gateway_server.py for the
+        # live-observed reason the placeholder instruction must not survive).
+        rewrote = False
+        for m in context.get_messages():
+            if (isinstance(m, dict) and m.get("role") == "tool"
+                    and m.get("tool_call_id") == tool_call_id):
+                m["content"] = json.dumps(
+                    {"status": "complete", "answer": text} if text
+                    else {"status": "unknown",
+                          "error": "the desktop agent did not report back; the "
+                                   "action may or may not have completed"})
+                rewrote = True
+                break
+        if text:
+            content = (
+                f"[background task complete] The desktop agent you delegated to has "
+                f"finished this earlier request: \"{request}\".\n\nIts answer:\n{text}\n\n"
+                "Tell the user now, in one or two short spoken sentences, briefly "
+                "reattaching it to what they asked (e.g. \"About that forecast you "
+                "wanted — …\"). Speak naturally; don't mention tools, agents, or that "
+                "it was delayed.")
+        else:
+            content = (
+                f"[background task: no confirmation] The desktop agent did not report "
+                f"back on this earlier request: \"{request}\". It may or may not have "
+                "completed. In one short spoken sentence, tell the user you didn't get "
+                "confirmation — and if the request was something visible (a message, "
+                "poll, or post), ask them to check whether it appeared. Do NOT state "
+                "that it definitely failed.")
+        context.add_message({"role": "system", "content": content})
+        logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
+                    f"tool result {'rewritten' if rewrote else 'not found'})")
+        await task.queue_frames([LLMRunFrame()])
+    return speak_followup
 
 
 async def run(sock_path: str):
@@ -110,8 +228,12 @@ async def run(sock_path: str):
     logger.info(f"loaded shared persona ({len(persona)} chars)")
     system_prompt = build_system_prompt(persona)
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
-    # M2: no tools schema — plain persona chat (tools/ask_openclaw deferred).
-    context = LLMContext(_initial_messages(system_prompt, lang_name))
+    # Tools wired in exactly like the OpenClaw path (gateway_server.py): the schema
+    # goes onto the context now; register_tools is deferred until after the
+    # PipelineTask exists (the async ask_openclaw follow-up needs a task-bound
+    # injector). The disconnect reset uses set_messages, which leaves _tools intact.
+    context = LLMContext(_initial_messages(system_prompt, lang_name),
+                         tools=build_tools_schema())
     if lang_name:
         logger.info(f"TTS language {lang_name} → instructing the LLM to reply in it")
 
@@ -134,19 +256,45 @@ async def run(sock_path: str):
 
     ledger = TranscriptLedger()  # observer: logs the merged user/assistant transcript
     heard_corrector = HeardContextCorrector(ledger, context)
+    # Gates the async ask_openclaw follow-up so its unprompted turn only speaks in a
+    # clear moment (mirrors gateway_server.py; placed right after transport.output()).
+    followup_gate = FollowupGate()
 
-    pipeline = Pipeline([
+    logger.info(f"half-duplex input gate: {'ON' if HALF_DUPLEX else 'off'} "
+                f"(tail {_HD_TAIL_S}s) — diagnostic; real fix is AEC in the bridge")
+    pipeline = Pipeline([p for p in [
         transport.input(),
+        HalfDuplexInputGate() if HALF_DUPLEX else None,
         stt,
         context_aggregator.user(),
         heard_corrector,
         llm,
         tts,
+        # Fill the dead air of a long ask_openclaw consult with a soft typing bed;
+        # stops the instant the reply's first audio arrives. No-op for fast tools.
+        # (Sits before transport.output() so the output transport resamples its
+        # 24 kHz frames down to the SIP wire's 16 kHz, same as the TTS frames.)
+        ThinkingSound() if thinking_sound.ENABLED else None,
         transport.output(),
+        followup_gate,  # track user/bot/LLM activity → hold async follow-ups for a clear moment
         context_aggregator.assistant(),
-    ])
+    ] if p is not None])
 
-    task = PipelineTask(pipeline, observers=[ledger])
+    # SIP path runs ONE persistent pipeline across calls (unlike the OpenClaw path's
+    # per-connection pipeline), so pipecat's idle-timeout (default ~5 min) must NOT
+    # cancel it between calls — otherwise the brain dies and the next caller gets
+    # silence. Proper fix is a per-call pipeline + shared slot (the reusable-agent
+    # refactor); this keeps the persistent pipeline alive for now.
+    task = PipelineTask(pipeline, observers=[ledger], cancel_on_idle_timeout=False)
+
+    # Now that the task exists, wire the tool handlers (mirrors gateway_server.py).
+    # ask_openclaw goes ASYNC: it hands the consult to a background waiter and this
+    # injector speaks the answer as an unprompted follow-up turn when it lands. On
+    # SIP the native openclaw_agent_consult round-trip has no plugin to service it
+    # (dropped by the serializer), so the waiter degrades to the CLI agent_consult
+    # path — still off the voice turn, still delivered via the same follow-up.
+    register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
+                   followup=_make_consult_followup(task, context, followup_gate))
 
     greeted = {"active": False}
 
