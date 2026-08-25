@@ -33,12 +33,12 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
-from teaport_brain.env import env_num
+from teaport_brain.env import env_flag, env_num
 from teaport_brain.tts_text import split_clauses_ramp
 
 # TEAPORT_TRACE=1 keeps the [WTS] word-timestamp traces (debug aid for the
 # caption/heard-ledger pipeline) without spamming normal logs.
-_TRACE = os.getenv("TEAPORT_TRACE", "").strip().lower() in ("1", "true")
+_TRACE = env_flag("TEAPORT_TRACE", False)
 
 _SAMPLE_RATE = 24000  # the engine outputs 24 kHz
 
@@ -47,7 +47,7 @@ _SAMPLE_RATE = 24000  # the engine outputs 24 kHz
 # derives from the engine ws base (ENGINE_TTS_URL, box-configured) unless set explicitly.
 _ENGINE_WS = os.getenv("ENGINE_TTS_URL", "ws://127.0.0.1:8000/v1/tts").rsplit("/v1/", 1)[0]
 _STREAM_URL = os.getenv("ENGINE_TTS_STREAM_URL", _ENGINE_WS + "/v1/audio/speech/stream")
-_STREAM_TIMEOUT = float(os.getenv("TTS_REMOTE_TIMEOUT", "20"))
+_STREAM_TIMEOUT = env_num("TTS_REMOTE_TIMEOUT", "20", float)
 # These two knobs live in brain.env, which installer repairs preserve verbatim — a bare
 # int()/float() here turns one typo ("", "off", "2.5") into an import-time ValueError that
 # crash-loops the whole brain service, and re-running the installer cannot clear it.
@@ -84,7 +84,7 @@ _CAPTION_LEAD_SECS = tts_text_lead.CAPTION_LEAD_SECS
 # reply). Its 3s default is fine on GPU (synth ≤ ~1.2s/chunk) but on the CPU backends a
 # ramped chunk of 110+ chars synthesizes >3s with nothing queued, tripping it in normal
 # operation. 15s covers the worst cap/hard_max-sized chunk at CPU RTF ~0.6 with margin.
-_STOP_FRAME_TIMEOUT_S = float(os.getenv("TTS_STOP_FRAME_TIMEOUT_S", "15"))
+_STOP_FRAME_TIMEOUT_S = env_num("TTS_STOP_FRAME_TIMEOUT_S", "15", float)
 
 # Clause-chunking: the engine TTS encodes the WHOLE input before emitting any audio, so first-audio
 # latency scales with input length. Synthesize a SHORT opening clause (fast first-audio) and
@@ -94,19 +94,19 @@ _STOP_FRAME_TIMEOUT_S = float(os.getenv("TTS_STOP_FRAME_TIMEOUT_S", "15"))
 # natural ~320 ms comma pause; trimming to ~lead+trail lands it near the natural pause, and the
 # terminal pitch + register are already continuous across the seam (measured). Per-word
 # timestamps are shifted for the leading trim, so the heard-ledger stays exact.
-_FIRST_CLAUSE_MAX_CHARS = int(os.getenv("TTS_FIRST_CLAUSE_CHARS", "32"))
+_FIRST_CLAUSE_MAX_CHARS = env_num("TTS_FIRST_CLAUSE_CHARS", "32", int)
 # Ramp-up chunking: each chunk may grow up to GROWTH x the previous. GROWTH must stay below
 # 1/RTF (~1.67 at the measured CPU RTF 0.6) so a chunk's synth never outruns the previous
 # chunk's playout — otherwise playback stalls at the seam even when RTF is healthy. 1.5 leaves
 # margin for light load; CAP bounds the largest chunk.
-_CLAUSE_GROWTH = float(os.getenv("TTS_CLAUSE_GROWTH", "1.5"))
-_CLAUSE_CAP = int(os.getenv("TTS_CLAUSE_CAP", "200"))
+_CLAUSE_GROWTH = env_num("TTS_CLAUSE_GROWTH", "1.5", float)
+_CLAUSE_CAP = env_num("TTS_CLAUSE_CAP", "200", int)
 # Last-resort word-break: any chunk longer than this (chars) is split mid-sentence so a
 # long run-on (e.g. the Tale of Two Cities opening) can't overflow the engine's ~512-token
 # utterance limit and crash the synth. Kept well under that limit with margin.
-_CLAUSE_HARD_MAX = int(os.getenv("TTS_CLAUSE_HARD_MAX", "350"))
-_SEAM_KEEP_LEAD = float(os.getenv("TTS_SEAM_KEEP_LEAD", "0.05"))   # s kept before first sound
-_SEAM_KEEP_TRAIL = float(os.getenv("TTS_SEAM_KEEP_TRAIL", "0.25"))  # s kept after last sound
+_CLAUSE_HARD_MAX = env_num("TTS_CLAUSE_HARD_MAX", "350", int)
+_SEAM_KEEP_LEAD = env_num("TTS_SEAM_KEEP_LEAD", "0.05", float)   # s kept before first sound
+_SEAM_KEEP_TRAIL = env_num("TTS_SEAM_KEEP_TRAIL", "0.25", float)  # s kept after last sound
 
 # GPU-yield hold: Kokoro synthesis and Voxtral STT share ONE CUDA context in the
 # engine, and synthesis starves transcription (measured 2026-07-21: decode
@@ -117,7 +117,7 @@ _SEAM_KEEP_TRAIL = float(os.getenv("TTS_SEAM_KEEP_TRAIL", "0.25"))  # s kept aft
 # cancels this task) or VAD-stop resumes synthesis. The cap bounds the hold so
 # sustained non-barge speech/noise can't stall the reply; the clause-ramp's
 # synthesized lead over playout absorbs a capped hold without an audible gap.
-_USER_SPEECH_HOLD_MAX_S = float(os.getenv("TTS_USER_SPEECH_HOLD_MAX_S", "3.0"))
+_USER_SPEECH_HOLD_MAX_S = env_num("TTS_USER_SPEECH_HOLD_MAX_S", "3.0", float)
 
 
 def _trim_seam_silence(audio, words, sr):
@@ -312,7 +312,16 @@ class EngineTTSService(TTSService):
                                      growth=_CLAUSE_GROWTH, cap=_CLAUSE_CAP,
                                      hard_max=_CLAUSE_HARD_MAX)
         if not clauses:
+            # ErrorFrame, not a bare return. Returning here yielded neither audio nor a
+            # signal, and by this point _push_tts_frames has already created the audio
+            # context and pushed TTSStartedFrame — so tts_process_generator saw no
+            # TTSAudioRawFrame, left _is_yielding_frames_synchronously False, and
+            # on_turn_context_completed skipped closing the context. It was then only
+            # reclaimed by the TTS_STOP_FRAME_TIMEOUT_S sweep: fifteen seconds of dead air
+            # per occurrence, with the silent-turn watchdog firing in the middle of it and
+            # nothing upstream told anything was wrong.
             logger.warning(f"{self}: nothing synthesizable in {text[:60]!r} — no audio")
+            yield ErrorFrame(error=f"tts: nothing synthesizable in {text[:60]!r}")
             return
         await self.start_tts_usage_metrics(text)
         # NB: use self._reply_audio_offset (carries across run_tts calls), NOT a local

@@ -100,7 +100,11 @@ from teaport_brain.persona import build_system_prompt, load_persona  # noqa: E40
 # Built from the shared service factories (services.py) — no transport/demo imports,
 # so the module stays cheap to import.
 from teaport_brain.services import make_llm, make_stt, make_tts  # noqa: E402
-from teaport_brain.tools import build_tools_schema, register_tools  # noqa: E402
+from teaport_brain.tools import (  # noqa: E402
+    AGENT_FIRST as tools_AGENT_FIRST,
+    build_tools_schema,
+    register_tools,
+)
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 LISTEN_PORT = int(os.getenv("GATEWAY_PORT", "7861"))
@@ -118,7 +122,7 @@ GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
 # the brain LLM a thin router/phraser instead of the mind. Bridge-is-brain is the
 # default; set TEAPORT_AGENT_FIRST=1 to enable (the launcher can source it from a
 # ~/.config/teaport/agent_first file so it toggles without editing the unit).
-AGENT_FIRST = os.getenv("TEAPORT_AGENT_FIRST", "").strip().lower() in ("1", "true")
+AGENT_FIRST = tools_AGENT_FIRST  # single definition, in tools.py — see there
 
 AGENT_FIRST_DIRECTIVE = (
     "AGENT-FIRST MODE — this overrides earlier tool guidance. For EVERY user "
@@ -302,6 +306,11 @@ async def run_relay_bot(websocket: WebSocket):
         MemoryRecall(context),  # fire memory_search on interim, inject before the LLM
         context_aggregator.user(),
         heard_corrector,
+        # A failed completion must be HEARD, not just logged (see the module). ABOVE the
+        # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a
+        # single LLM error and only ever caught the TTS's, which it then blamed on the
+        # model.
+        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         llm,
         # tap: llm-start + llm-first-token. Must sit ABOVE the guard: downstream of it
         # this would time the first token that SURVIVES the guard, and a completion the
@@ -317,8 +326,6 @@ async def run_relay_bot(websocket: WebSocket):
         # ellipsis collapse — the TTS and the committed context both read what
         # this forwards, so it cleans speech and history in one place.
         LLMTextGuard() if llm_text_guard.ENABLED else None,
-        # A failed completion must be HEARD, not just logged (see the module).
-        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         tts,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)

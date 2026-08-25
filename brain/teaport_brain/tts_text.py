@@ -44,8 +44,13 @@ _ZERO_WIDTH = re.compile("[\u200b\u2060\ufeff]")
 _MD_BOLD = re.compile(r"\*{2,}")
 
 # A run of three or more dots. Shared with llm_text_guard and raw_llm_capture, which
-# count these as a collapse marker.
-DOT_RUN = re.compile(r"\.{3,}")
+# count these as a collapse marker. MIN_DOT_RUN is exported alongside the pattern and
+# BUILDS it, so the length can only be changed in one place: llm_text_guard scans
+# character-by-character rather than by regex (it counts incrementally across frame
+# boundaries) and previously hard-coded its own 3, so widening this pattern would have
+# made the capture log and the guard disagree about how many markers a completion had.
+MIN_DOT_RUN = 3
+DOT_RUN = re.compile(r"\.{%d,}" % MIN_DOT_RUN)
 
 
 def fold_unspeakable(text: str) -> str:

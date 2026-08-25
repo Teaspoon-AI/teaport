@@ -9,9 +9,21 @@
 # room held silence.
 #
 # A timeout (services._llm_timeout) bounds how long the silence lasts. It does not make
-# the silence mean anything — that is this processor's job. It sits immediately after
-# the LLM service, where ErrorFrames pass on their way upstream to the task, and turns
-# one into a short spoken line.
+# the silence mean anything — that is this processor's job.
+#
+# PLACEMENT — this sits immediately BEFORE the LLM service, not after it.
+# push_error() ends in `push_frame(error, FrameDirection.UPSTREAM)`, so an ErrorFrame
+# raised by the LLM travels towards the transport input and terminates at PipelineTask.
+# Downstream of the LLM this processor saw nothing at all: the 402 above still played as
+# silence, and the only errors that DID reach it were the ones the TTS pushed up past it,
+# which it then announced as an LLM failure — into the very TTS that had just failed.
+# Upstream of the LLM, the LLM's errors pass through here on their way to the task.
+#
+# Attribution is explicit rather than positional. ErrorFrame carries `.processor` (set by
+# push_error to the originator), so a TTS or transport error travelling up past this point
+# is forwarded untouched instead of being blamed on the model. An ErrorFrame with no
+# attribution is left alone for the same reason — guessing wrong is worse than silence
+# from a processor whose whole job is to explain silence.
 #
 # TTSSpeakFrame, not LLMTextFrame: this is the pipeline talking, not the model. It goes
 # straight to the TTS without entering the conversation as an assistant turn, so a
@@ -29,6 +41,7 @@ from loguru import logger
 
 from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.services.llm_service import LLMService
 
 from teaport_brain.env import env_flag, env_num
 
@@ -47,20 +60,24 @@ class LLMErrorSpeaker(FrameProcessor):
 
     def __init__(self):
         super().__init__()
-        self._last = 0.0
+        # -inf, not 0.0: time.monotonic() is time since BOOT on Linux, so 0.0 is not a
+        # "never spoken" sentinel — it is boot. On an appliance that starts the brain a
+        # few seconds after boot, `now - 0.0` is smaller than the debounce window, and
+        # the FIRST error of the session — the one that matters most — was swallowed as
+        # a duplicate of an utterance that never happened.
+        self._last = float("-inf")
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, ErrorFrame):
+        if isinstance(frame, ErrorFrame) and isinstance(frame.processor, LLMService):
             now = time.monotonic()
             if now - self._last >= _DEBOUNCE_SECS:
                 self._last = now
                 logger.warning(
                     f"LLMErrorSpeaker: speaking the failure notice for {frame}"
                 )
-                # Downstream regardless of which way the error is travelling — the TTS
-                # is downstream of here, and the error itself still needs to reach the
-                # task upstream.
+                # DOWNSTREAM: the TTS is below this processor, and the error itself
+                # still continues upstream to the task on the push below.
                 await self.push_frame(TTSSpeakFrame(ERROR_TEXT), FrameDirection.DOWNSTREAM)
             else:
                 logger.debug("LLMErrorSpeaker: notice debounced")

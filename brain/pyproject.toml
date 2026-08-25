@@ -30,6 +30,17 @@ license = { text = "MIT" }
 # resolver-chosen. websockets is intentionally NOT pinned: pipecat's `websockets-base`
 # extra owns it (>=13.1,<16.0); the appliance's installed 16.0 is out of that range
 # (drifted past pipecat's cap) and is not reproducible via pip, so let pipecat choose.
+#
+# httpx and openai are DIRECT imports of services.py (BoundedOpenAILLMService builds its
+# own AsyncOpenAI with an httpx client whose timeout actually reaches the socket), so the
+# invariant at the top of this block requires them here. They were reaching the brain only
+# as transitive deps of pipecat-ai, which the comment above explicitly warns is not
+# something to rely on: the note that the OpenAI service "is a BASE dependency, so no
+# `openai` extra is required" is exactly the assumption that would strand the brain with an
+# ImportError at startup — before any pipeline exists — if pipecat ever moved it behind an
+# extra. Left UNPINNED rather than pinned to a guess: the other pins come from the
+# appliance venv freeze, and pipecat-ai==1.7.0 already constrains both, so this declares
+# the dependency without inventing a version. Pin them at the next freeze.
 dependencies = [
   "pipecat-ai[websocket]==1.7.0",
   "uvicorn==0.49.0",
@@ -37,6 +48,8 @@ dependencies = [
   "loguru==0.7.3",
   "numpy==1.26.4",
   "websockets",
+  "httpx",
+  "openai",
 ]
 
 [project.scripts]

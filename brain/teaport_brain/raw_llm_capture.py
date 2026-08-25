@@ -43,7 +43,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.env import env_flag
-from teaport_brain.tts_text import DOT_RUN
+from teaport_brain.tts_text import DOT_RUN, MIN_DOT_RUN
 
 ENABLED = env_flag("TEAPORT_RAW_LLM_CAPTURE", True)
 
@@ -52,7 +52,11 @@ ENABLED = env_flag("TEAPORT_RAW_LLM_CAPTURE", True)
 # or markdown bold (the system prompt says "no markdown", so ** is always a defect).
 # A single "..." inside otherwise healthy prose is deliberately NOT matched — it is
 # ordinary punctuation, and matching it would make this log noisy enough to ignore.
-_DEGENERATE = re.compile(r"\.{3,}|\u2026\s*\u2026|\*\*")
+# Built from MIN_DOT_RUN rather than repeating the "3" that DOT_RUN already encodes: the
+# dot-run length was previously spelled out in three files under two different values, so
+# widening it in one place made this log and the guard's trip line report different counts
+# for the same completion.
+_DEGENERATE = re.compile(r"\.{%d,}|\u2026\s*\u2026|\*\*" % MIN_DOT_RUN)
 
 # Per-code-point counters. Explicit \uXXXX escapes, never the literal character: a
 # literal U+00A0 here is two indistinguishable-from-a-space bytes in the source, and
@@ -107,8 +111,14 @@ class RawLLMCapture(FrameProcessor):
         if isinstance(frame, FunctionCallResultFrame):
             # Only if a completion is actually coming. A result carrying run_llm=False
             # is a placeholder the model never sees (tools.no_inference).
+            # getattr for BOTH. run_llm is the legacy duplicate of properties.run_llm and
+            # may not survive a pipecat bump; a bare attribute access would raise inside
+            # process_frame, and since the single push_frame is the LAST statement of this
+            # method the exception would skip it entirely — silently DROPPING the tool
+            # result, so no follow-up inference runs and the turn goes quiet. Instrumentation
+            # must not be able to do that (cf. the try/except around _report below).
             props = getattr(frame, "properties", None)
-            suppressed = (frame.run_llm is False
+            suppressed = (getattr(frame, "run_llm", None) is False
                           or (props is not None and props.run_llm is False))
             if not suppressed:
                 self._pending_after_tool = True

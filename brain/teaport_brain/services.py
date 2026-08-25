@@ -96,7 +96,16 @@ def get_llm_api_key() -> str:
 # truncated arguments stream is malformed JSON, and pipecat raises on it inside
 # _process_context, so the whole turn errors out and the function never runs. A long
 # ask_openclaw request is the realistic case.
-_MAX_TOKENS_BY_EFFORT = {"": 1024, "low": 1024, "medium": 3072, "high": 8192}
+#
+# "" is deliberately NOT in this table. LLM_REASONING_EFFORT="" is a configuration
+# docs/CONFIG.md invites ("for models that don't support it"), and _llm_extra() then omits
+# reasoning_effort from the request entirely — so the model runs at ITS OWN default, which
+# is typically medium. Mapping "" to the 1024-token low budget billed a medium-effort
+# completion against the cheapest cap and produced exactly the failure described above:
+# finish_reason=length, zero visible content, dead air. Falling through to the
+# unknown-effort headroom is correct, because the effort in force is unknown by
+# construction.
+_MAX_TOKENS_BY_EFFORT = {"low": 1024, "medium": 3072, "high": 8192}
 _MAX_TOKENS_UNKNOWN_EFFORT = 4096
 
 
@@ -140,6 +149,14 @@ def _max_tokens() -> int | None:
 #
 # A voice turn is already lost by ~20s, so waiting longer buys nothing and costs the
 # session. Raise LLM_TIMEOUT_SECS for a slow local llama.cpp box.
+#
+# PER ATTEMPT, not per turn. retry_on_timeout below buys one retry, and base_llm re-issues
+# it "without a timeout so we get a response" — but the httpx client timeout set in
+# create_client still applies to that second attempt, so the worst case before an
+# ErrorFrame appears is ~2x this value plus connect, not 1x. That is a deliberate trade:
+# the 2026-08-19 stall replayed successfully in 2.8s, so the retry most likely rescues the
+# turn outright rather than merely failing faster. Size the knob for one attempt and
+# expect up to two.
 # pipecat HAS a request timeout — and ships it disabled. base_llm only wraps the call in
 # asyncio.wait_for `if self._retry_on_timeout`, which defaults to False, so by default
 # nothing bounds the request and it falls through to the SDK's 600s read timeout. Turning
@@ -179,15 +196,74 @@ async def _sequential_tool_call_indices(stream):
 
     Mapping by order of first appearance is identity for a provider that already numbers
     calls 0,1,2, so this costs nothing when it is not needed.
+
+    Keyed on tool_call.id, NOT on index alone. Two calls to the SAME tool in one response
+    share an index under this numbering — "remember X and Y" sends both as index=5 — and
+    mapping index->ordinal collapsed them into one call: base_llm's "new call" branch
+    never fired, so it concatenated them into function_name="rememberremember" with
+    arguments='{"fact":"X"}{"fact":"Y"}', whose json.loads raises inside _process_context
+    and errors out the whole turn. Ids are unique per call, so they separate the two;
+    continuation deltas carry no id and inherit whichever call is currently open at that
+    index. A provider that sends no ids at all falls back to the old index ordering.
     """
-    order: dict = {}
+    by_id: dict = {}      # tool_call.id -> ordinal
+    open_at: dict = {}    # raw index -> ordinal currently accumulating there
+    issued = 0            # ordinals handed out so far
     async for chunk in stream:
         for choice in (chunk.choices or []):
             for tool_call in (getattr(getattr(choice, "delta", None), "tool_calls", None) or []):
-                if tool_call.index not in order:
-                    order[tool_call.index] = len(order)
-                tool_call.index = order[tool_call.index]
+                tid = getattr(tool_call, "id", None)
+                if tid:
+                    if tid not in by_id:
+                        by_id[tid] = issued
+                        issued += 1
+                    open_at[tool_call.index] = by_id[tid]
+                elif tool_call.index not in open_at:
+                    open_at[tool_call.index] = issued
+                    issued += 1
+                tool_call.index = open_at[tool_call.index]
         yield chunk
+
+
+class _RenumberedStream:
+    """The renumbering iterator, wrapped so base_llm can still CLOSE the real stream.
+
+    base_llm tears the completion stream down with:
+
+        chunk_iter = stream.__aiter__()
+        ...
+        if hasattr(chunk_iter, "aclose"): await chunk_iter.aclose()
+        if hasattr(stream, "close"):      await stream.close()
+        elif hasattr(stream, "aclose"):   await stream.aclose()
+
+    under a comment saying it exists "to prevent socket leaks and uvloop crashes ...
+    preventing uvloop's broken asyncgen finalizer from firing on Python 3.12+
+    (MagicStack/uvloop#699)".
+
+    openai.AsyncStream has close() — which does `await self.response.aclose()`, the call
+    that actually releases the HTTP connection — and NO aclose(). A bare async generator
+    is the exact reverse. So returning the generator from get_chat_completions sent
+    base_llm down the `elif aclose` branch, where it closed the WRAPPER and left the real
+    AsyncStream to the garbage collector: one leaked httpx response per interrupted
+    completion, and in a voice pipeline every barge-in interrupts one. With
+    keepalive_expiry=None below, nothing reclaims them on a timer either.
+
+    A small class rather than a generator keeps base_llm on the branch it intends: the
+    iterator still acloses first (cascading cleanup through httpx's nested generators),
+    then close() reaches the SDK stream.
+    """
+
+    __slots__ = ("_stream", "_iter")
+
+    def __init__(self, stream):
+        self._stream = stream
+        self._iter = _sequential_tool_call_indices(stream)
+
+    def __aiter__(self):
+        return self._iter
+
+    async def close(self):
+        await self._stream.close()
 
 
 # Connect timeout. Separate from the read timeout below because they fail differently:
@@ -261,7 +337,10 @@ class BoundedOpenAILLMService(OpenAILLMService):
     async def get_chat_completions(self, context):
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
-        return _sequential_tool_call_indices(stream)
+        # _RenumberedStream, not the bare generator — see the class docstring: a
+        # generator has no close(), so wrapping in one silently disabled base_llm's
+        # socket release.
+        return _RenumberedStream(stream)
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):
@@ -299,7 +378,15 @@ def make_llm():
     settings = dict(model=os.getenv("LLM_MODEL", "gpt-oss-120b"), extra=_llm_extra())
     cap = _max_tokens()
     if cap is not None:
+        # BOTH fields. pipecat sends max_tokens and max_completion_tokens side by side and
+        # drops whichever is left at the NOT_GIVEN sentinel, and the two halves of the
+        # ecosystem no longer agree on which one to read: max_tokens is what llama.cpp,
+        # Groq, Cerebras and OpenRouter accept, while pipecat's own InputParams marks it
+        # "deprecated, use max_completion_tokens" and newer endpoints honour only the
+        # latter. Setting one alone means a silently uncapped completion on half of them —
+        # and an uncapped completion on a credit-metered gateway is the 2026-08-18 402.
         settings["max_tokens"] = cap
+        settings["max_completion_tokens"] = cap
     return BoundedOpenAILLMService(
         api_key=get_llm_api_key(),
         base_url=base_url,

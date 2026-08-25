@@ -25,7 +25,9 @@ Important settings:
   the model's ceiling (65536 for gpt-oss-120b) and refuses the request when the
   remaining balance cannot cover it, however short the answer would be. The
   default follows `LLM_REASONING_EFFORT`, because reasoning tokens are billed as
-  completion tokens: **1024** at `low`, **3072** at `medium`, **8192** at `high`.
+  completion tokens: **1024** at `low`, **3072** at `medium`, **8192** at `high`,
+  and **4096** when the effort is unset or `""` — in that case the model applies
+  its own default effort, so the cap has to leave room for an unknown one.
   Set **0** for no cap — correct for a local or un-metered endpoint.
 - `TEAPORT_LLM_TEXT_GUARD` — fold degenerate unicode out of the model's replies
   and cut a runaway ellipsis collapse (default on). Set `0` to disable.
@@ -35,10 +37,19 @@ Important settings:
   (default on; healthy turns log nothing). Set `0` to disable.
 - `TEAPORT_THINKING_SOUND` — the typing bed during a long agent consult
   (default on). Set `0` to disable.
-
-Boolean settings accept `0`/`false`/`no`/`off` and `1`/`true`/`yes`/`on`. An
-empty value means *unset* — the default applies. A flag that is off says so in
-the journal at startup.
+- `LLM_TIMEOUT_SECS` — how long one completion attempt may take before it is
+  abandoned (default **20**). Without it the OpenAI SDK waits **600** — ten
+  minutes of a voice turn hanging with no error, no log line and no audio. This
+  bounds each *attempt*: one retry follows, so the worst case before the failure
+  is spoken is roughly twice this. Raise it for a slow local llama.cpp box.
+- `TEAPORT_LLM_ERROR_SPEECH` — say a short line out loud when the model call
+  fails, instead of leaving the room silent (default on). Set `0` to disable.
+- `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` — seconds between spoken failure notices
+  (default **30**), so a failing endpoint is reported once per window rather
+  than once per turn.
+- `TEAPORT_SILENT_TURN_SECS` — how long a committed turn may produce no audio
+  before it is reported in the journal (default **12**). A turn still waiting on
+  an agent consult is not counted against it.
 - `KOKORO_RESERVE_FPT` — the engine memory reserve. Use **6** with a NemoClaw
   sandbox. Use **12** for a voice-only device. The installer always sets this
   value. The code default is not safe on an 8 GB device.
@@ -49,5 +60,9 @@ the journal at startup.
 - `~/.config/teaport/` — `llm_key` · `openclaw_token` · `persona.md`.
   One key for one OpenAI-compatible endpoint; the per-provider key files were
   merged into `llm_key`, and nothing reads the old names.
+
+Boolean settings accept `0`/`false`/`no`/`off` and `1`/`true`/`yes`/`on`. An
+empty value means *unset* — the default applies. A flag that is off says so in
+the journal at startup.
 
 TODO: full table with defaults, and which settings are safe to change live.

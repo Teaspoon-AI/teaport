@@ -99,21 +99,27 @@ class EndpointDebug(FrameProcessor):
         await super().process_frame(frame, direction)
         m = self._m
         t = time.monotonic()
-        # Stage-independent: Smart Turn's verdict rides a MetricsFrame that the user
-        # aggregator queues DOWNSTREAM of itself, and the aggregator sits below the
-        # "in" tap — so the "in" tap can never see it, and for a year every TURN-COMMIT
-        # line claimed "no verdict" no matter what the model said. Record it wherever
-        # this tap happens to be.
-        if isinstance(frame, MetricsFrame):
+        # Smart Turn's verdict rides a MetricsFrame that the user aggregator queues
+        # DOWNSTREAM of itself, so the "in" tap can never see it and TURN-COMMIT below
+        # has never been able to print it.
+        #
+        # "out" ONLY, and deliberately NOT written into the shared marks dict. Both taps
+        # share one dict, so recording it from whichever tap happened to see the frame
+        # logged the same verdict twice; and because the frame has to traverse the LLM and
+        # the TTS before reaching the "out" tap, it routinely arrives after the NEXT turn's
+        # VAD-start has already cleared the dict — at which point the value would be read
+        # back as the next turn's verdict. A number that is sometimes a lie is worse than
+        # no number in a probe whose whole purpose is attribution.
+        #
+        # No "Nms after VAD-stop" either: that interval is dominated by LLM + TTS transit
+        # to this tap, so it measured pipeline latency and called it endpointing latency.
+        if self._stage == "out" and isinstance(frame, MetricsFrame):
             for d in (frame.data or []):
                 if isinstance(d, TurnMetricsData):
-                    m["st_prob"] = d.probability
-                    m["st_complete"] = d.is_complete
-                    vs = m.get("vad_stop")
-                    since = f"{(t - vs) * 1000:.0f}ms after VAD-stop" if vs else "?"
                     logger.info(f"[EP] SmartTurn verdict "
                                 f"{'COMPLETE' if d.is_complete else 'INCOMPLETE'} "
-                                f"p={d.probability:.3f} ({since})")
+                                f"p={d.probability:.3f} (seen at the output tap; the "
+                                f"verdict is made upstream, before turn-commit)")
         if self._stage == "in":
             if isinstance(frame, VADUserStartedSpeakingFrame):
                 m.clear()
@@ -129,14 +135,12 @@ class EndpointDebug(FrameProcessor):
                 m["commit"] = t
                 vs = m.get("vad_stop")
                 tail = f"+{(t - vs) * 1000:.0f}ms after VAD-stop" if vs else "(no VAD-stop seen)"
-                p = m.get("st_prob")
-                if p is not None:
-                    verdict = "✓COMPLETE" if m.get("st_complete") else "✗INCOMPLETE"
-                    ver = f" · SmartTurn {verdict} p={p:.2f}"
-                else:
-                    ver = " · SmartTurn verdict not seen yet"
-                logger.info(f"[EP] TURN-COMMIT {tail}{ver}")
-                await _bubble(self, f"⏱️ turn committed {tail}{ver}")
+                # No verdict field. It cannot be here: the MetricsFrame carrying it is
+                # queued downstream of the aggregator and reaches the "out" tap a whole
+                # LLM+TTS traversal later, so any value present at this instant would
+                # belong to a previous turn. The verdict has its own line above.
+                logger.info(f"[EP] TURN-COMMIT {tail}")
+                await _bubble(self, f"⏱️ turn committed {tail}")
         else:  # "out"
             if isinstance(frame, TTSAudioRawFrame) and not m.get("audio_done"):
                 m["audio_done"] = True

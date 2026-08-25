@@ -254,6 +254,9 @@ class TeaportSTTService(WebsocketSTTService):
         finally:
             self._websocket = None
             self._interim_buffer = ""
+            # Per-session, like the buffer beside it: a run of 4 empty finals before a
+            # reconnect plus 1 after is not 5 finals of the same microphone.
+            self._empty_finals = 0
 
     # ---- transcripts out ---------------------------------------------------
 
@@ -311,7 +314,19 @@ class TeaportSTTService(WebsocketSTTService):
             # transcription frame re-arms that timeout, a noisy mic starves it and the
             # turn never ends at all. Falling back to the hypothesis we already streamed
             # both recovers the words and lets the turn close.
-            text = msg.get("text") or self._interim_buffer
+            # The ENGINE's own verdict, kept separate from what we go on to push. The
+            # empty-final run below has to be counted on this and not on the fallback:
+            # `or self._interim_buffer` made `text` truthy whenever the engine had
+            # streamed so much as one delta before deciding the audio held no speech, so
+            # _empty_finals was reset instead of incremented and the "microphone muted"
+            # warning could never reach its run — the two halves of this hunk cancelled
+            # out. .strip() because a final of " " is truthy but wordless, and pushing it
+            # commits a user turn whose content is whitespace.
+            engine_text = (msg.get("text") or "").strip()
+            text = engine_text or self._interim_buffer.strip()
+            if text and not engine_text:
+                logger.debug(f"{self}: empty final — falling back to the interim "
+                             f"hypothesis {text[:60]!r} to close the turn")
             self._interim_buffer = ""
             # A run of finals with nothing in them means the engine is being handed audio
             # it can find no words in. Both are silent from the pipeline's side — no
@@ -326,7 +341,7 @@ class TeaportSTTService(WebsocketSTTService):
             #
             # One line per run, not per final: an isolated empty final is ordinary (the VAD
             # fires on a cough or a door), and warning on each would bury the real case.
-            if not text:
+            if not engine_text:
                 self._empty_finals += 1
                 if self._empty_finals == _EMPTY_FINAL_RUN:
                     logger.warning(

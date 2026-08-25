@@ -33,7 +33,16 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain import openclaw_client as oc
+from teaport_brain.env import env_flag
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
+
+# Agent-first mode. Defined HERE and imported by gateway_server, not parsed separately in
+# both: two copies of `os.getenv(...) in ("1","true")` could disagree if either was edited
+# alone, leaving the mode half-enabled — the strict router directive installed while this
+# module still spoke the "I'll work on that" ack the directive exists to suppress. It also
+# only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while docs/CONFIG.md
+# promised otherwise; env_flag is the documented table.
+AGENT_FIRST = env_flag("TEAPORT_AGENT_FIRST", False)
 
 # The engine's serve log (decode ms/step lives here). Override per host.
 ENGINE_LOG = os.getenv("ENGINE_LOG", os.path.expanduser("~/teaport-engine.log"))
@@ -587,7 +596,7 @@ def _fallback_line(name: str, args: dict, lang: str) -> str | None:
         # Agent-first: every turn is a consult — a stock ack per turn would be
         # noise (ThinkingSound covers the wait) and would corrupt TURN-TIMING's
         # tts_first_audio, which must mark the ANSWER in this mode.
-        if os.getenv("TEAPORT_AGENT_FIRST", "").strip().lower() in ("1", "true"):
+        if AGENT_FIRST:
             return None
         return {"es": "Voy a trabajar en eso, un momento.",
                 "it": "Ci lavoro subito, un attimo.",

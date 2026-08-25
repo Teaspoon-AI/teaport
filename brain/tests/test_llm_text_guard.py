@@ -27,6 +27,10 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pinned_pipecat import require_pinned  # noqa: E402
+
+require_pinned()
+
 from pipecat.frames.frames import (  # noqa: E402
     FunctionCallResultFrame,
     FunctionCallResultProperties,
@@ -219,22 +223,91 @@ async def test_recovery_speaks_even_when_nothing_healthy_preceded():
     await h.feed(LLMFullResponseStartFrame())
     await h.text(f"{ELL}{ELL}{ELL}{ELL}{ELL}{ELL}{NBSP}{NBSP}")
     await h.feed(LLMFullResponseEndFrame())
-    assert h.spoken() == RECOVERY_TEXT
+    # lstrip: RECOVERY_TEXT carries a deliberate leading space so it reads as its own
+    # sentence after a healthy prefix. With nothing forwarded there is no prefix, and a
+    # whitespace-opening frame is exactly the phantom caption slot _LEADING_PUNCT exists
+    # to prevent — so the strip applies to the recovery line too.
+    assert h.spoken() == RECOVERY_TEXT.lstrip()
     assert split_clauses_ramp(h.spoken()), "recovery line must be synthesizable"
 
 
-async def test_counters_reset_on_end_not_just_start():
+async def test_log_counters_reset_on_end_but_the_trip_stays_latched():
     # pipecat's audio-context watchdog can push a premature End mid-reply, splitting a
     # response into segments with no Start. Resetting only on Start let _swallowed
     # carry over, and the next trip log reported more swallowed chars than the
-    # response contained.
+    # response contained — so the per-segment ACCOUNTING resets here.
+    #
+    # _tripped and _forwarded deliberately do NOT: an End is not proof the completion
+    # ended, and clearing them re-armed the guard against the rest of the same collapse.
+    # See test_premature_end_does_not_speak_a_second_recovery_line.
     h = Guard()
     await h.feed(LLMFullResponseStartFrame())
     await h.text(f"{ELL}{ELL}{ELL}{ELL}{ELL}{ELL}")
     await h.text("swallowed tail")
     assert h.g._swallowed > 0
     await h.feed(LLMFullResponseEndFrame())
-    assert h.g._swallowed == 0 and h.g._forwarded == 0 and not h.g._tripped
+    assert h.g._swallowed == 0          # accounting: reset
+    assert h.g._tripped                 # verdict: latched
+    # A real new response clears everything.
+    await h.feed(LLMFullResponseStartFrame())
+    assert h.g._forwarded == 0 and not h.g._tripped
+
+
+async def test_premature_end_does_not_speak_a_second_recovery_line():
+    """The regression the End-reset caused: one collapse, two apologies.
+
+    engine_tts's audio-context watchdog pushes an End mid-reply. If that clears the
+    trip, the remaining deltas of the SAME degenerate completion flow again, re-cross
+    the threshold, and the user hears the recovery line twice."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("Sure. ")
+    await h.text(f"{ELL}{ELL}{ELL}{ELL}{ELL}{ELL}")   # trips
+    await h.feed(LLMFullResponseEndFrame())            # premature, mid-collapse
+    await h.text(f"{ELL}{ELL}{ELL}{ELL}{ELL}{ELL}")   # same completion, still junk
+    await h.text(f"{ELL}{NBSP}" * 40)
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken().count(RECOVERY_TEXT.strip()) == 1, h.spoken()
+
+
+async def test_a_solid_punctuation_run_trips_on_volume():
+    """One unbroken run is ONE marker, so the marker counts alone never saw the worst
+    capture on record — 2340 characters of punctuation arriving as a single run."""
+    assert is_degenerate("." * 2340)
+    assert is_degenerate(ELL * 60)
+    # And it still reaches the user as a sentence rather than as silence.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for _ in range(300):
+        await h.text(".")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken().strip() == RECOVERY_TEXT.strip()
+
+
+async def test_empty_text_frames_are_never_forwarded():
+    """An empty frame opens a word-timestamp slot that synthesizes nothing, and every
+    real word after it then misses its slot — the caption bubble never assembles."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("Hello there")
+    await h.text("**")          # folds to empty mid-reply
+    await h.text("")            # arrives empty
+    await h.text(" world.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert all(f.text for f in h.out if isinstance(f, LLMTextFrame)), h.spoken()
+    assert h.spoken() == "Hello there world."
+
+
+async def test_runs_split_across_deltas_still_fold():
+    """Guard output must not depend on where the provider chunks the stream."""
+    for chunks in ([f"a{ELL}", f"{ELL}b"], ["a**", "*b"], ["a**", "b"], ["a..", "..b"]):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for c in chunks:
+            await h.text(c)
+        await h.feed(LLMFullResponseEndFrame())
+        got = h.spoken()
+        assert "**" not in got and "...." not in got and f"{ELL}{ELL}" not in got, (chunks, got)
 
 
 # ------------------------------------------------- TTS-side integration
