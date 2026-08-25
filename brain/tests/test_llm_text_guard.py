@@ -472,6 +472,45 @@ async def test_each_response_strips_its_own_opening():
     assert h.spoken() == "here we go.here we go."
 
 
+async def test_pass_through_text_keeps_its_frame_identity():
+    """A delta that merely passes through must keep the frame id it arrived with.
+
+    TranscriptLedger is a BaseObserver: it sees every push of every frame and
+    de-duplicates on frame IDENTITY. Each LLMTextFrame is pushed twice on the way down,
+    once by the LLM service and once by this guard, and the ledger charts it once only
+    because both pushes carry the same object. Emitting a fresh frame gives the second
+    push an id the ledger has not seen, so the delta is charted TWICE — which corrupts
+    the denominator of the heard fraction, makes HeardContextCorrector drop replies the
+    user actually heard, and leaves the model re-answering questions it had answered.
+
+    Live 2026-08-25: "I like teal." was charted as "I like tealI. like teal.", 11 of 12
+    assistant turns doubled.
+    """
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    sent = [LLMTextFrame(text="I"), LLMTextFrame(text=" like teal.")]
+    for frame in sent:
+        await h.feed(frame)
+    await h.feed(LLMFullResponseEndFrame())
+    forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+    assert [f.id for f in forwarded] == [f.id for f in sent], (
+        "guard emitted new frame ids; the ledger will chart these deltas twice"
+    )
+    assert h.spoken() == "I like teal."
+
+
+async def test_the_recovery_line_is_allowed_a_new_frame():
+    """It is genuinely new text, so it SHOULD be charted — unlike pass-through deltas."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    sent = LLMTextFrame(text="." * 40)
+    await h.feed(sent)
+    await h.feed(LLMFullResponseEndFrame())
+    forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+    assert forwarded, "the recovery line must still be spoken"
+    assert forwarded[0].id != sent.id, "recovery text is new; it needs its own frame"
+
+
 def main():
     sync = [v for k, v in sorted(globals().items())
             if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]

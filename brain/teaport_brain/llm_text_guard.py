@@ -224,6 +224,7 @@ class LLMTextGuard(FrameProcessor):
     def __init__(self):
         super().__init__()
         self._pending = ""
+        self._pending_frame = None
         self._reset_response()
 
     def _reset_response(self):
@@ -233,6 +234,7 @@ class LLMTextGuard(FrameProcessor):
         self._forwarded = 0
         self._swallowed = 0
         self._pending = ""
+        self._pending_frame = None
 
     def _reset_log(self):
         """Reset the accounting a trip line reports, keeping the trip itself latched.
@@ -264,8 +266,28 @@ class LLMTextGuard(FrameProcessor):
             text = text[:m.start()]
         return fold_degenerate_chars(text) if text else ""
 
-    async def _emit(self, text: str, direction: FrameDirection):
+    async def _emit(self, text: str, direction: FrameDirection,
+                    frame: "LLMTextFrame | None" = None):
         """Push one text frame, applying the leading-punct strip. Empty -> nothing.
+
+        `frame` REUSES the inbound frame instead of building a new one, and that is
+        load-bearing rather than tidiness. TranscriptLedger is a BaseObserver: it sees
+        every push of every frame and de-duplicates on frame IDENTITY (`if f.id in
+        self._seen: return`). Each LLMTextFrame is pushed twice on the way down — once
+        by the LLM service, once by this guard — and the ledger charted it once only
+        because both pushes carried the same object. A fresh LLMTextFrame gives the
+        second push an id the ledger has never seen, so every delta lands in the
+        intended-text accumulator TWICE, interleaved by arrival order: "I like teal."
+        was charted as "I like tealI. like teal.".
+ 
+        That is the denominator of the heard fraction, so replies the user heard in
+        full scored 0-96%, HeardContextCorrector truncated or dropped them from history,
+        and the model — unable to see its own turns — re-answered questions it had
+        already answered. Live 2026-08-25: 11 of 12 assistant turns doubled, against
+        clean single TTS calls.
+
+        Only genuinely NEW text (the recovery line) may build a new frame. Text that
+        merely passed through keeps the identity it arrived with.
 
         Every emission goes through here, so the "an empty frame still opens a slot"
         rule cannot be enforced on one path and forgotten on another — which is how a
@@ -278,7 +300,11 @@ class LLMTextGuard(FrameProcessor):
         if not text:
             return
         self._forwarded += len(text)
-        await self.push_frame(LLMTextFrame(text=text), direction)
+        if frame is None:
+            await self.push_frame(LLMTextFrame(text=text), direction)
+            return
+        frame.text = text
+        await self.push_frame(frame, direction)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -310,19 +336,26 @@ class LLMTextGuard(FrameProcessor):
                 # speakable in both the audio and the committed context. Anything held
                 # back for folding is junk by the same argument and is dropped with it.
                 self._pending = ""
+                self._pending_frame = None
                 # Through _emit so the recovery line obeys the leading-punct rule as
                 # well: its deliberate leading space reads as a sentence break after a
                 # healthy prefix, but with nothing forwarded it is a whitespace-only
                 # frame, which opens the phantom caption slot the strip exists to stop.
                 await self._emit(RECOVERY_TEXT, direction)
                 return
-            await self._emit(self._fold_streaming(frame.text), direction)
+            emitted = self._fold_streaming(frame.text)
+            # If the folder held a tail back, remember which frame it came from: the
+            # ledger charted that delta's whole text on the LLM service's push, so the
+            # eventual flush must ride the same frame or the tail is charted twice.
+            self._pending_frame = frame if self._pending else None
+            await self._emit(emitted, direction, frame)
             return  # _emit already pushed; never fall through to the push below
         elif isinstance(frame, LLMFullResponseEndFrame):
             # Flush whatever the folder was holding, or it is lost with the turn.
             if self._pending and not self._tripped:
                 tail, self._pending = self._pending, ""
-                await self._emit(fold_degenerate_chars(tail), direction)
+                held, self._pending_frame = self._pending_frame, None
+                await self._emit(fold_degenerate_chars(tail), direction, held)
             if self._tripped:
                 logger.warning(
                     f"LLMTextGuard: response ended; swallowed {self._swallowed} "
