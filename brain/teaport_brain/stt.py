@@ -54,6 +54,11 @@ from pipecat.utils.time import time_now_iso8601
 # is a conservative default — override per deployment.
 TEAPORT_TTFS_P99 = 0.8
 
+# How many consecutive word-less finals before the brain says it cannot hear. Low enough
+# to catch a dead microphone inside one exchange, high enough that ordinary VAD triggers
+# on room noise never reach it.
+_EMPTY_FINAL_RUN = 5
+
 try:
     import websockets
     from websockets.protocol import State
@@ -101,6 +106,8 @@ class TeaportSTTService(WebsocketSTTService):
 
         # Running transcript for the current utterance (deltas are append-only).
         self._interim_buffer: str = ""
+        # Consecutive finals that carried no words at all — see _handle_message.
+        self._empty_finals = 0
         # _receive_task is created only on a SUCCESSFUL connect; initialize it here
         # so a failed/503 connect doesn't AttributeError during _disconnect teardown.
         self._receive_task = None
@@ -306,6 +313,32 @@ class TeaportSTTService(WebsocketSTTService):
             # both recovers the words and lets the turn close.
             text = msg.get("text") or self._interim_buffer
             self._interim_buffer = ""
+            # A run of finals with nothing in them means the engine is being handed audio
+            # it can find no words in. Both are silent from the pipeline's side — no
+            # transcript, so no turn, so no reply — and that is indistinguishable from the
+            # pipeline bugs that produce the same silence, which is why it has to say so.
+            #
+            # Live 2026-08-21: 77 seconds of it. The engine ran 11 segments and returned 0
+            # characters for every one while the brain's own VAD stayed QUIET, so the room
+            # was making noise and the user's voice was not reaching the microphone. The
+            # engine was healthy throughout — fed a synthesized sentence it transcribed it
+            # perfectly — and nothing anywhere said "I cannot hear you".
+            #
+            # One line per run, not per final: an isolated empty final is ordinary (the VAD
+            # fires on a cough or a door), and warning on each would bury the real case.
+            if not text:
+                self._empty_finals += 1
+                if self._empty_finals == _EMPTY_FINAL_RUN:
+                    logger.warning(
+                        f"{self}: {self._empty_finals} finals in a row with no words — "
+                        "the engine is hearing audio but no speech (microphone muted or "
+                        "routed away, or the room is louder than the speaker)"
+                    )
+            else:
+                if self._empty_finals >= _EMPTY_FINAL_RUN:
+                    logger.info(f"{self}: hearing speech again after "
+                                f"{self._empty_finals} empty finals")
+                self._empty_finals = 0
             if text:
                 await self.push_frame(
                     TranscriptionFrame(

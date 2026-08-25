@@ -47,7 +47,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # n
 )
 
 from teaport_brain.endpointing import INTERRUPT_MIN_WORDS  # noqa: E402
-from teaport_brain.stt import TeaportSTTService  # noqa: E402
+from teaport_brain.stt import _EMPTY_FINAL_RUN, TeaportSTTService  # noqa: E402
 
 STOP_SECS = 0.3
 SAMPLE_RATE = 16000
@@ -156,6 +156,40 @@ def _always_complete():
     analyzer = AlwaysComplete(sample_rate=16000, params=SmartTurnParams(stop_secs=STOP_SECS))
     analyzer.set_sample_rate(16000)
     return analyzer
+
+
+async def test_a_run_of_wordless_finals_is_reported_once():
+    """A dead microphone must not look like a pipeline bug.
+
+    When the engine is handed audio it can find no words in, it finalizes with empty text
+    over and over. Nothing downstream can tell that from the pipeline failures that
+    produce the same silence — no transcript, no turn, no reply — so it has to announce
+    itself. Live 2026-08-21: 77 seconds, 11 segments, 0 characters each, while the
+    engine itself was healthy.
+
+    Once per run, not once per final: an isolated empty final is ordinary, and warning on
+    every one would bury the case that matters.
+    """
+    from loguru import logger
+
+    stt = Recorder()
+    warnings = []
+    sink = logger.add(lambda m: warnings.append(m), level="WARNING")
+    try:
+        for _ in range(_EMPTY_FINAL_RUN * 3):
+            await stt._handle_message({"type": "transcription.done", "text": ""})
+        assert len(warnings) == 1, f"expected exactly one warning, got {len(warnings)}"
+        assert "no speech" in warnings[0]
+
+        # Real speech clears it, and a second run reports again.
+        await stt._handle_message({"type": "transcription.delta", "delta": "hello there"})
+        await stt._handle_message({"type": "transcription.done", "text": "hello there"})
+        assert stt._empty_finals == 0
+        for _ in range(_EMPTY_FINAL_RUN):
+            await stt._handle_message({"type": "transcription.done", "text": ""})
+        assert len(warnings) == 2, "a later run must be reported too"
+    finally:
+        logger.remove(sink)
 
 
 def main():
