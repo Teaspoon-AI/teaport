@@ -2,6 +2,7 @@
 # teaport demo — shared TTS text/pacing helpers (no model dependencies)
 #
 
+import difflib
 import os
 import re
 
@@ -51,6 +52,43 @@ _MD_BOLD = re.compile(r"\*{2,}")
 # made the capture log and the guard disagree about how many markers a completion had.
 MIN_DOT_RUN = 3
 DOT_RUN = re.compile(r"\.{%d,}" % MIN_DOT_RUN)
+
+# Sentence-repeat degeneracy: a completion that says the same sentence twice. Shared
+# by raw_llm_capture (which logs the raw completion when it happens) and
+# llm_text_guard (which drops the duplicate before it is spoken), for the same
+# reason MIN_DOT_RUN lives here: two private copies of "what counts as a repeat"
+# would drift, and then the capture log and the guard would disagree about the same
+# completion.
+#
+# NEAR-equality, not equality. Live 2026-08-26 08:48 (single completion, single
+# stream) the model generated its whole reply a second time and re-sampled the
+# spelled-out numbers on the second pass — "four thousand five hundred eight" became
+# "four five zero eight" — so the two copies measured 0.949 similar, and a verbatim
+# comparison saw nothing. Unrelated sentences from the same session's replies
+# measure far lower: the two most list-alike controls score 0.55 and 0.38, and a
+# short echo like "I can do that." vs "I can do that for you now." scores 0.70.
+# 0.9 splits the populations with margin on both sides. The 08:32 verbatim doubling
+# scores 1.0 and is still caught.
+#
+# 15 chars filters out the short repeats that are ordinary speech ("No." / "No.").
+MIN_REPEAT_CHARS = 15
+REPEAT_SIMILARITY = 0.9
+# Split AFTER sentence punctuation whether or not whitespace follows: the live
+# 08:32 doubling arrived as "...right on Burnet.If you're undecided..." with no
+# separator at all, and a split that required a following space kept both copies
+# in one "sentence" that then matched nothing.
+SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s*")
+
+
+def is_sentence_repeat(a: str, b: str) -> bool:
+    """True when two sentences are the same modulo re-sampled detail."""
+    m = difflib.SequenceMatcher(None, a, b)
+    # The quick ratios are cheap upper bounds; the full ratio only runs on pairs
+    # they cannot already rule out, which keeps the pairwise scan off the hot
+    # path's budget.
+    return (m.real_quick_ratio() > REPEAT_SIMILARITY
+            and m.quick_ratio() > REPEAT_SIMILARITY
+            and m.ratio() > REPEAT_SIMILARITY)
 
 
 def fold_unspeakable(text: str) -> str:

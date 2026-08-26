@@ -19,7 +19,7 @@
 # turn in history makes the next reply degenerate more often (measured 6/12 vs
 # 0/12 with clean history). This processor sits immediately downstream of the LLM
 # service — AFTER RawLLMCapture, which must keep seeing the model's raw bytes —
-# and does two things to LLMTextFrame deltas:
+# and does three things to LLMTextFrame deltas:
 #
 #   FOLD  no-break/zero-width characters to plain equivalents and collapse
 #         ellipsis runs. Healthy text passes unchanged. Folding here cleans both
@@ -32,6 +32,24 @@
 #         healthy one-or-two-sentence spoken reply reaches, swallow every
 #         remaining delta of the response and speak one short recovery line in
 #         its place. A single "..." or a few dramatic pauses never trip it.
+#
+#   REPEAT CUT  when the completion starts saying the same sentence again, drop the
+#         duplicate and everything after it. This is a second model-level failure
+#         mode, measured live twice on 2026-08-26 and both times INSIDE a single
+#         provider stream (one "Generating chat", one "response stream open", one
+#         "completion finished"): at 08:32 the deltas carried the one-sentence reply
+#         twice verbatim (13.5s of audio for one sentence), and at 08:48 they
+#         carried the whole reply twice at generation pace with the spelled-out
+#         numbers re-sampled on the second pass ("four thousand five hundred eight"
+#         -> "four five zero eight") — proof the model generated the copy, since no
+#         downstream replay can re-word a number. To be able to DROP a duplicate
+#         before any of it is spoken, deltas are held until their sentence
+#         completes; that adds no audible latency because pipecat's TTS aggregator
+#         only synthesizes whole sentences anyway, so nothing downstream would have
+#         run any earlier. No recovery line: unlike the punctuation collapse, the
+#         forwarded prefix here IS the complete healthy reply. The match and its
+#         thresholds are shared with raw_llm_capture (tts_text.is_sentence_repeat),
+#         which logs the raw completion when this fires.
 #
 # The recovery line matters: swallowing alone turned a degenerate turn into total
 # silence. The captures collapse within their first ~50 characters, and a prefix
@@ -54,6 +72,7 @@ from loguru import logger
 
 from pipecat.frames.frames import (
     Frame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -61,7 +80,12 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.env import env_flag
-from teaport_brain.tts_text import MIN_DOT_RUN, fold_unspeakable
+from teaport_brain.tts_text import (
+    MIN_DOT_RUN,
+    MIN_REPEAT_CHARS,
+    fold_unspeakable,
+    is_sentence_repeat,
+)
 
 ENABLED = env_flag("TEAPORT_LLM_TEXT_GUARD", True)
 
@@ -101,6 +125,15 @@ _MAX_HOLDBACK = 4
 # Only at the START of a response, where there is nothing for the punctuation to attach
 # to. Mid-reply a "." delta is the end of a sentence and dropping it would merge two.
 _LEADING_PUNCT = re.compile(r"^[\s.,;:!?\u2026]+")
+
+# Where the repeat cut closes a sentence in the folded stream. A run of terminators
+# is one boundary; no following whitespace is required, because the live 08:32
+# duplicate arrived as "...right on Burnet.If you're undecided..." with none. This
+# is deliberately simpler than pipecat's own end-of-sentence matcher: closing early
+# at an abbreviation or a decimal only changes the GRANULARITY of the duplicate
+# comparison (the text itself always flushes unchanged), and the persona has the
+# model spell numbers out, so digit-adjacent periods are rare here anyway.
+_SENT_END = re.compile(r"[.!?]+")
 
 # Spoken when the guard trips. Overridable because the pipeline serves Japanese,
 # Mandarin and Hindi too, and a hardcoded English apology is wrong in those rooms.
@@ -235,6 +268,14 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
         self._pending = ""
         self._pending_frame = None
+        # Repeat cut state: sentences already flushed this response, the folded text
+        # of the sentence still accumulating, and the frames that carry it — held
+        # unpushed until the sentence closes clean (see the module header; deliberately
+        # NOT cleared by _reset_log, because a watchdog's premature End does not end
+        # the completion and the duplicate can arrive in the next segment).
+        self._sentences = []
+        self._open_sent = ""
+        self._held = []
 
     def _reset_log(self):
         """Reset the accounting a trip line reports, keeping the trip itself latched.
@@ -265,6 +306,61 @@ class LLMTextGuard(FrameProcessor):
             self._pending = m.group(0)
             text = text[:m.start()]
         return fold_degenerate_chars(text) if text else ""
+
+    async def _flush_held(self, direction: FrameDirection, keep_tail: int = 0):
+        """Push held frames in arrival order, keeping back the ones whose text lies
+        entirely inside the last `keep_tail` chars — the next, still-open sentence.
+        A frame that straddles the boundary flushes whole: pass-through text must
+        keep the frame it arrived on (see _emit), so a frame is never split. The
+        few next-sentence chars that leak out with a straddler are harmless — the
+        TTS aggregator just buffers them — and in both live occurrences the copies
+        began on their own frame, so nothing leaked at all."""
+        keep = []
+        need = keep_tail
+        while self._held and need > 0 and len(self._held[-1][1]) <= need:
+            keep.append(self._held.pop())
+            need -= len(keep[-1][1])
+        keep.reverse()
+        flush, self._held = self._held, keep
+        for f, txt in flush:
+            await self._emit(txt, direction, f)
+
+    def _drop_duplicate(self, sentence: str):
+        """Latch the repeat cut: drop everything held (the unspoken duplicate) and
+        swallow the rest of the response. No recovery line — the flushed prefix is
+        the complete healthy reply (both live 2026-08-26 occurrences)."""
+        dropped = sum(len(t) for _, t in self._held)
+        self._tripped = True
+        self._swallowed += dropped
+        self._held.clear()
+        self._open_sent = ""
+        self._pending = ""
+        self._pending_frame = None
+        logger.warning(
+            f"LLMTextGuard: completion repeats itself — {sentence[:80]!r} "
+            f"near-matches an earlier sentence of this response; dropping the "
+            f"{dropped} held chars and swallowing the rest"
+        )
+
+    async def _close_sentences(self, direction: FrameDirection) -> bool:
+        """Close every completed sentence in the accumulator: flush it, or cut.
+
+        Returns True when a closed sentence near-repeats one already flushed in
+        this response — the duplicate (still held, so still unspoken) is dropped
+        and the response is latched cut."""
+        m = _SENT_END.search(self._open_sent)
+        while m:
+            sentence = self._open_sent[:m.end()].strip()
+            if len(sentence) >= MIN_REPEAT_CHARS:
+                if any(is_sentence_repeat(prior, sentence)
+                       for prior in self._sentences):
+                    self._drop_duplicate(sentence)
+                    return True
+                self._sentences.append(sentence)
+            self._open_sent = self._open_sent[m.end():]
+            await self._flush_held(direction, keep_tail=len(self._open_sent))
+            m = _SENT_END.search(self._open_sent)
+        return False
 
     async def _emit(self, text: str, direction: FrameDirection,
                     frame: "LLMTextFrame | None" = None):
@@ -331,6 +427,11 @@ class LLMTextGuard(FrameProcessor):
                     f"punct_chars={self._counter.punct_chars}); "
                     f"swallowing the rest and speaking the recovery line"
                 )
+                # Held frames are pre-trip text the counter already passed — the
+                # healthy prefix — and before the repeat cut existed they would have
+                # been pushed on arrival, so flush them first to keep that behaviour.
+                await self._flush_held(direction)
+                self._open_sent = ""
                 # The frame that crossed the threshold is junk too, so it is not
                 # forwarded; this takes its place and ends the turn with something
                 # speakable in both the audio and the committed context. Anything held
@@ -348,14 +449,44 @@ class LLMTextGuard(FrameProcessor):
             # ledger charted that delta's whole text on the LLM service's push, so the
             # eventual flush must ride the same frame or the tail is charted twice.
             self._pending_frame = frame if self._pending else None
-            await self._emit(emitted, direction, frame)
-            return  # _emit already pushed; never fall through to the push below
+            if emitted:
+                # Hold until the sentence closes — the repeat cut can only DROP a
+                # duplicate that has not been pushed yet, and the TTS aggregator
+                # would not have synthesized before the sentence closed anyway.
+                self._held.append((frame, emitted))
+                self._open_sent += emitted
+                await self._close_sentences(direction)
+            return  # held, flushed, or cut — never fall through to the push below
+        elif isinstance(frame, InterruptionFrame):
+            # A barge-in makes everything unspoken stale. base_llm still pushes an
+            # End after a cancelled completion, and the End flush below would
+            # otherwise hand the TTS a held sentence the user just cut off — the
+            # stale-speech bug class engine_tts documents.
+            self._held.clear()
+            self._open_sent = ""
+            self._pending = ""
+            self._pending_frame = None
         elif isinstance(frame, LLMFullResponseEndFrame):
-            # Flush whatever the folder was holding, or it is lost with the turn.
-            if self._pending and not self._tripped:
-                tail, self._pending = self._pending, ""
-                held, self._pending_frame = self._pending_frame, None
-                await self._emit(fold_degenerate_chars(tail), direction, held)
+            if not self._tripped:
+                # Fold-holdback first, so its tail joins the final sentence…
+                if self._pending:
+                    tail, self._pending = self._pending, ""
+                    held, self._pending_frame = self._pending_frame, None
+                    folded = fold_degenerate_chars(tail)
+                    if folded:
+                        self._held.append((held, folded))
+                        self._open_sent += folded
+                # …then close the final sentence, which may end without punctuation.
+                # It is dup-checked too: a duplicate the token cap cut short is
+                # still a duplicate.
+                final = self._open_sent.strip()
+                if (len(final) >= MIN_REPEAT_CHARS
+                        and any(is_sentence_repeat(prior, final)
+                                for prior in self._sentences)):
+                    self._drop_duplicate(final)
+                else:
+                    await self._flush_held(direction)
+                    self._open_sent = ""
             if self._tripped:
                 logger.warning(
                     f"LLMTextGuard: response ended; swallowed {self._swallowed} "
