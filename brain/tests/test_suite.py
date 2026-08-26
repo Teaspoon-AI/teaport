@@ -24,6 +24,13 @@ SCRIPTS = [
     ("test_ledger_words.py", 120),
     ("test_memory_recall.py", 120),
     ("test_remember_tool.py", 120),
+    ("test_llm_text_guard.py", 120),
+    ("test_endpointing.py", 120),
+    ("test_stt_final.py", 120),
+    ("test_final_survives_turn_start.py", 120),
+    ("test_tool_call_indices.py", 120),
+    ("test_tool_schema.py", 120),
+    ("test_heard_fraction.py", 120),
 ]
 
 

@@ -41,6 +41,7 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     StartFrame,
     TranscriptionFrame,
+    UninterruptibleFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
@@ -54,12 +55,41 @@ from pipecat.utils.time import time_now_iso8601
 # is a conservative default — override per deployment.
 TEAPORT_TTFS_P99 = 0.8
 
+# How many consecutive word-less finals before the brain says it cannot hear. Low enough
+# to catch a dead microphone inside one exchange, high enough that ordinary VAD triggers
+# on room noise never reach it.
+_EMPTY_FINAL_RUN = 5
+
 try:
     import websockets
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"{e}\nInstall with: pip install websockets")
     raise
+
+
+class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
+    """A final transcript that an interruption cannot flush.
+
+    TranscriptionFrame is a plain data frame. On InterruptionFrame every processor
+    flushes its queued data frames (FrameProcessor._start_interruption ->
+    FrameQueue.reset), and the LLM user aggregator flushes its own queue the moment
+    it broadcasts one (FrameProcessor.broadcast_interruption). The aggregator
+    broadcasts exactly that when MinWordsUserTurnStartStrategy starts a user turn
+    from an INTERIM — so when the engine closes a segment on its own, the final
+    rides a few frames behind the interim that starts the turn, and the turn's own
+    start flushes the turn's own words out of the pipeline. The turn is then empty:
+    TurnAnalyzerUserTurnStopStrategy cannot fire without transcript text, the 5 s
+    user_turn_stop_timeout force-stops the turn, push_aggregation() has nothing to
+    push, and the user gets silence. Live 2026-08-25 19:05 on jetson01: "Can you
+    recite Hamlet's soliloquy for me?" — charted by the ledger at the STT's push,
+    never seen by the model (SILENT TURN reached=['nothing']).
+
+    UninterruptibleFrame is pipecat's designed escape hatch for exactly this:
+    FrameQueue.reset() keeps such frames, and a task processing one is not
+    cancelled (same pattern as pipecat's own FunctionCallResultFrame). Interims
+    stay interruptible on purpose — they are disposable hypotheses.
+    """
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -101,6 +131,8 @@ class TeaportSTTService(WebsocketSTTService):
 
         # Running transcript for the current utterance (deltas are append-only).
         self._interim_buffer: str = ""
+        # Consecutive finals that carried no words at all — see _handle_message.
+        self._empty_finals = 0
         # _receive_task is created only on a SUCCESSFUL connect; initialize it here
         # so a failed/503 connect doesn't AttributeError during _disconnect teardown.
         self._receive_task = None
@@ -247,6 +279,9 @@ class TeaportSTTService(WebsocketSTTService):
         finally:
             self._websocket = None
             self._interim_buffer = ""
+            # Per-session, like the buffer beside it: a run of 4 empty finals before a
+            # reconnect plus 1 after is not 5 finals of the same microphone.
+            self._empty_finals = 0
 
     # ---- transcripts out ---------------------------------------------------
 
@@ -289,11 +324,64 @@ class TeaportSTTService(WebsocketSTTService):
             # timeout — that fallback is for STTs that never signal a final, and
             # eating it added ~(ttfs_p99 - stop_secs) of dead hang after every
             # finished utterance.
-            text = msg.get("text", self._interim_buffer)
+            # `or`, not get()'s default: the engine sends "text": "" (key PRESENT,
+            # value empty) for an utterance it could not finalize, so the default is
+            # never reached and the interim fallback was dead code for the one case it
+            # was written for. Verified against the engine on 2026-08-20 -- 1.5s of
+            # silence returns {"type": "transcription.done", "text": "", ...}.
+            #
+            # Pushing nothing wedges the turn. MinWordsUserTurnStartStrategy starts the
+            # user turn from an INTERIM, but TurnAnalyzerUserTurnStopStrategy only ever
+            # sets its _text from a final TranscriptionFrame, and
+            # _maybe_trigger_user_turn_stopped() returns early while that is empty. So a
+            # turn that started on interims and got an empty final can never stop: it
+            # waits out the aggregator's 5s user_turn_stop_timeout, and since any VAD or
+            # transcription frame re-arms that timeout, a noisy mic starves it and the
+            # turn never ends at all. Falling back to the hypothesis we already streamed
+            # both recovers the words and lets the turn close.
+            # The ENGINE's own verdict, kept separate from what we go on to push. The
+            # empty-final run below has to be counted on this and not on the fallback:
+            # `or self._interim_buffer` made `text` truthy whenever the engine had
+            # streamed so much as one delta before deciding the audio held no speech, so
+            # _empty_finals was reset instead of incremented and the "microphone muted"
+            # warning could never reach its run — the two halves of this hunk cancelled
+            # out. .strip() because a final of " " is truthy but wordless, and pushing it
+            # commits a user turn whose content is whitespace.
+            engine_text = (msg.get("text") or "").strip()
+            text = engine_text or self._interim_buffer.strip()
+            if text and not engine_text:
+                logger.debug(f"{self}: empty final — falling back to the interim "
+                             f"hypothesis {text[:60]!r} to close the turn")
             self._interim_buffer = ""
+            # A run of finals with nothing in them means the engine is being handed audio
+            # it can find no words in. Both are silent from the pipeline's side — no
+            # transcript, so no turn, so no reply — and that is indistinguishable from the
+            # pipeline bugs that produce the same silence, which is why it has to say so.
+            #
+            # Live 2026-08-21: 77 seconds of it. The engine ran 11 segments and returned 0
+            # characters for every one while the brain's own VAD stayed QUIET, so the room
+            # was making noise and the user's voice was not reaching the microphone. The
+            # engine was healthy throughout — fed a synthesized sentence it transcribed it
+            # perfectly — and nothing anywhere said "I cannot hear you".
+            #
+            # One line per run, not per final: an isolated empty final is ordinary (the VAD
+            # fires on a cough or a door), and warning on each would bury the real case.
+            if not engine_text:
+                self._empty_finals += 1
+                if self._empty_finals == _EMPTY_FINAL_RUN:
+                    logger.warning(
+                        f"{self}: {self._empty_finals} finals in a row with no words — "
+                        "the engine is hearing audio but no speech (microphone muted or "
+                        "routed away, or the room is louder than the speaker)"
+                    )
+            else:
+                if self._empty_finals >= _EMPTY_FINAL_RUN:
+                    logger.info(f"{self}: hearing speech again after "
+                                f"{self._empty_finals} empty finals")
+                self._empty_finals = 0
             if text:
                 await self.push_frame(
-                    TranscriptionFrame(
+                    FinalTranscriptionFrame(
                         text,
                         self._user_id,
                         time_now_iso8601(),

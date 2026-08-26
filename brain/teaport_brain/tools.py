@@ -23,7 +23,7 @@ from loguru import logger
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import (
-    LLMFullResponseEndFrame,
+    FunctionCallResultProperties,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     OutputTransportMessageUrgentFrame,
@@ -33,7 +33,16 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain import openclaw_client as oc
+from teaport_brain.env import env_flag
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
+
+# Agent-first mode. Defined HERE and imported by gateway_server, not parsed separately in
+# both: two copies of `os.getenv(...) in ("1","true")` could disagree if either was edited
+# alone, leaving the mode half-enabled — the strict router directive installed while this
+# module still spoke the "I'll work on that" ack the directive exists to suppress. It also
+# only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while docs/CONFIG.md
+# promised otherwise; env_flag is the documented table.
+AGENT_FIRST = env_flag("TEAPORT_AGENT_FIRST", False)
 
 # The engine's serve log (decode ms/step lives here). Override per host.
 ENGINE_LOG = os.getenv("ENGINE_LOG", os.path.expanduser("~/teaport-engine.log"))
@@ -137,6 +146,10 @@ LIST_VOICES = FunctionSchema(
     required=[],
 )
 
+# Every id the engine will accept, flattened from the same table
+# _switch_voice checks against.
+_ALL_VOICES = sorted({v for vs in ENGINE_VOICES.values() for v in vs})
+
 SWITCH_VOICE = FunctionSchema(
     name="switch_voice",
     description=(
@@ -147,13 +160,41 @@ SWITCH_VOICE = FunctionSchema(
     ),
     properties={"voice": {
         "type": "string",
-        "description": "Voice name, e.g. 'ef_dora' (Spanish), 'if_sara' (Italian), "
-                       "'af_heart' (US English)",
+        # The valid set, not three examples. Given only examples the model has to either
+        # guess the id or spend a turn on list_voices to find it, and both go wrong:
+        # measured 2026-08-23, gemma-4-31b-it guessed 'nova', 'Liam' and 'en_gb_emma' for
+        # three ordinary requests -- all rejected by _switch_voice, so the user heard "I
+        # couldn't find a voice called Liam" -- while gpt-oss-120b and qwen3.8-27b avoided
+        # guessing only by calling list_voices first, which costs a whole extra round trip
+        # before anything is spoken. An enum removes the choice: providers constrain the
+        # argument to it, so an invalid id cannot be produced and no lookup is needed.
+        #
+        # Built from ENGINE_VOICES, which is what _switch_voice validates against, so the
+        # advertised set and the accepted set cannot drift apart.
+        "enum": _ALL_VOICES,
+        "description": "Exact voice id. The first letter is the language (a=US English, "
+                       "b=British, e=Spanish, f=French, h=Hindi, i=Italian, j=Japanese, "
+                       "p=Portuguese, z=Mandarin) and the second is the gender (f/m), so "
+                       "the Nova voice is 'af_nova' and Liam is 'am_liam'.",
     }},
     required=["voice"],
 )
 
 _BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mid-flight
+
+# Return a tool result WITHOUT triggering another inference pass. Pipecat runs the
+# LLM after every function-call result by default, which is right when the result
+# carries an answer and wrong when it carries a placeholder: the model has nothing
+# to say, so it invents something. Used by the async ask_openclaw path, whose real
+# answer is spoken later by the follow-up injector (it rewrites the tool result and
+# queues an LLMRunFrame, so inference happens once, on real data).
+#
+# A FUNCTION, not a module-level constant. FunctionCallResultProperties is a plain
+# mutable dataclass carrying an on_context_updated callback field; one shared instance
+# handed to every result path in every concurrent session is a single assignment away
+# from leaking one turn's callback into an unrelated turn.
+def no_inference() -> FunctionCallResultProperties:
+    return FunctionCallResultProperties(run_llm=False)
 
 
 def _mem_available_mb() -> int | None:
@@ -318,6 +359,20 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
     from teaport_brain import consult_bridge
 
     progress = asyncio.create_task(_consult_progress(llm)) if llm is not None else None
+
+    async def deliver(answer):
+        """Hand the outcome to the injector, narrator first."""
+        # Stop the narrator BEFORE the answer is spoken, not in the finally below. It
+        # is a countdown against dead air, and there is no dead air once the outcome is
+        # known. Cancelling it afterwards used to be harmless because the injector
+        # returned as soon as it had queued the LLM run; it now waits for the delivered
+        # turn to finish speaking so it can retire its one-shot trigger, which left the
+        # narrator running for the whole delivery. Observed live 2026-08-26 09:44: the
+        # shop list was spoken at :25.0 and "Almost there — hang tight." landed at :37.3.
+        if progress is not None:
+            progress.cancel()
+        await followup(request, answer, tool_call_id)
+
     try:
         try:
             result = await asyncio.wait_for(asyncio.shield(fut),
@@ -327,24 +382,24 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
                 # Never acked — the relay didn't take it; run the CLI agent instead
                 # (still async w.r.t. the turn, which already ended).
                 reply = await oc.agent_consult(request)
-                await followup(request, reply or None, tool_call_id)
+                await deliver(reply or None)
                 return
             result = await asyncio.wait_for(fut, timeout=_ASYNC_CONSULT_TIMEOUT)
         text, err = _consult_outcome(result)
         if err:
             logger.warning(f"ask_openclaw(async): consult errored: {err!r}")
         logger.info(f"ask_openclaw(async): follow-up ready ({len(text or '')} chars)")
-        await followup(request, text, tool_call_id)
+        await deliver(text)
     except asyncio.TimeoutError:
         logger.warning(f"ask_openclaw(async): consult unfinished after "
                        f"{_ASYNC_CONSULT_TIMEOUT:.0f}s")
-        await followup(request, None, tool_call_id)
+        await deliver(None)
     except asyncio.CancelledError:
         raise  # session teardown
     except Exception as e:  # noqa: BLE001
         logger.warning(f"ask_openclaw(async) failed: {e!r}")
         try:
-            await followup(request, None, tool_call_id)
+            await deliver(None)
         except Exception:  # noqa: BLE001
             pass
     finally:
@@ -374,11 +429,12 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
             inflight = params.llm._teaport_consults = {}
         prior = inflight.get(request)
         if prior is not None and not prior.done():
-            params.llm._teaport_mute_next_at = time.monotonic()
-            await params.result_callback({
-                "status": "duplicate",
-                "instruction": ("This exact request is already in progress; "
-                                "its outcome will arrive. Do not respond.")})
+            # No inference on a placeholder result — see no_inference() below.
+            await params.result_callback(
+                {"status": "duplicate",
+                 "instruction": ("This exact request is already in progress; "
+                                 "its outcome will arrive. Do not respond.")},
+                properties=no_inference())
             return
 
     call_id = f"teaport-consult-{uuid.uuid4().hex[:12]}"
@@ -402,18 +458,21 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
         # finished must not be evicted by this one's completion callback.
         task.add_done_callback(
             lambda t, r=request: inflight.pop(r, None) if inflight.get(r) is t else None)
-        # Speech-mute the completion that consumes this tool result: prompt-level
-        # "don't claim it's done" failed three times live (the model announced
-        # "posted!" ~4s in, before anything happened). The user already heard the
-        # deterministic "I'll work on that" ack; the muted completion's text is
-        # swallowed by the push_frame patch, and the REAL outcome arrives via the
-        # follow-up injector.
-        params.llm._teaport_mute_next_at = time.monotonic()
+        # Run NO inference on this placeholder (no_inference()). There is nothing for
+        # the model to say: the user already heard the deterministic "I'll work on
+        # that" ack, and the real outcome arrives later via the follow-up injector,
+        # which rewrites this tool result and runs the LLM then. Asking the model to
+        # respond here and discarding what it says is what produced fabricated
+        # answers — prompt-level "don't claim it's done" failed three times live
+        # (it announced "posted!" ~4s in), and a speech mute over the discarded
+        # completion failed too (2026-08-12: a fully invented Hacker News headline
+        # and item id reached the speaker).
         await params.result_callback({
             "status": "working_in_background",
             "instruction": (
                 "The task is running in the background; the outcome will arrive "
-                "later. Do not respond now.")})
+                "later. Do not respond now.")},
+            properties=no_inference())
         return
 
     # SYNC path (no follow-up injector — e.g. the WebRTC dev client): ack-gated wait,
@@ -551,7 +610,7 @@ def _fallback_line(name: str, args: dict, lang: str) -> str | None:
         # Agent-first: every turn is a consult — a stock ack per turn would be
         # noise (ThinkingSound covers the wait) and would corrupt TURN-TIMING's
         # tts_first_audio, which must mark the ANSWER in this mode.
-        if os.getenv("TEAPORT_AGENT_FIRST", "").strip().lower() in ("1", "true"):
+        if AGENT_FIRST:
             return None
         return {"es": "Voy a trabajar en eso, un momento.",
                 "it": "Ci lavoro subito, un attimo.",
@@ -573,20 +632,7 @@ def _install_spoke_tracker(llm) -> None:
     async def push_frame(frame, direction=FrameDirection.DOWNSTREAM):
         if isinstance(frame, LLMFullResponseStartFrame):
             llm._teaport_spoke = False
-            # Arm the one-completion mute (see _ask_openclaw async path): the
-            # completion that runs right after the "working in background" tool
-            # result must not speak — the model reliably ignores instructions
-            # and announces the task as DONE there (three live incidents). The
-            # 5s arm window keeps a late/raced completion from being muted.
-            armed_at = getattr(llm, "_teaport_mute_next_at", None)
-            llm._teaport_mute_next_at = None
-            llm._teaport_muting = (
-                armed_at is not None and (time.monotonic() - armed_at) < 5.0)
-        elif isinstance(frame, LLMFullResponseEndFrame):
-            llm._teaport_muting = False
         elif isinstance(frame, LLMTextFrame):
-            if getattr(llm, "_teaport_muting", False):
-                return None  # swallow: this completion is display/speech-muted
             if any(c.isalnum() for c in getattr(frame, "text", "")):
                 llm._teaport_spoke = True
         return await orig_push(frame, direction)

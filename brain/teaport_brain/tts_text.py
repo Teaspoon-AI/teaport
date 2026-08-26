@@ -2,6 +2,7 @@
 # teaport demo — shared TTS text/pacing helpers (no model dependencies)
 #
 
+import difflib
 import os
 import re
 
@@ -29,15 +30,112 @@ def _wordbreak_max(piece: str, max_chars: int) -> list:
     return pieces
 
 
+# The unspeakable-character table, defined ONCE. llm_text_guard folds the streamed
+# deltas with it (cleaning speech and committed history together) and _normalize_for_tts
+# folds whatever reaches the synth. It lived in both files, which already disagreed on
+# ellipses and would have drifted further the next time the model surfaced a new code
+# point — the exact failure this table exists to fix. This module has no pipecat or
+# model imports, so the guard can import from here and not the other way round.
+#
+# Explicit \uXXXX escapes ONLY: a literal character class once silently folded an
+# ordinary space into itself, which is invisible in the source and survives review
+# because the line looks right.
+_NOBREAK_SPACES = re.compile("[\u00a0\u202f]")
+_ZERO_WIDTH = re.compile("[\u200b\u2060\ufeff]")
+_MD_BOLD = re.compile(r"\*{2,}")
+
+# A run of three or more dots. Shared with llm_text_guard and raw_llm_capture, which
+# count these as a collapse marker. MIN_DOT_RUN is exported alongside the pattern and
+# BUILDS it, so the length can only be changed in one place: llm_text_guard scans
+# character-by-character rather than by regex (it counts incrementally across frame
+# boundaries) and previously hard-coded its own 3, so widening this pattern would have
+# made the capture log and the guard disagree about how many markers a completion had.
+MIN_DOT_RUN = 3
+DOT_RUN = re.compile(r"\.{%d,}" % MIN_DOT_RUN)
+
+# Sentence-repeat degeneracy: a completion that says the same sentence twice. Shared
+# by raw_llm_capture (which logs the raw completion when it happens) and
+# llm_text_guard (which drops the duplicate before it is spoken), for the same
+# reason MIN_DOT_RUN lives here: two private copies of "what counts as a repeat"
+# would drift, and then the capture log and the guard would disagree about the same
+# completion.
+#
+# NEAR-equality, not equality. Live 2026-08-26 08:48 (single completion, single
+# stream) the model generated its whole reply a second time and re-sampled the
+# spelled-out numbers on the second pass — "four thousand five hundred eight" became
+# "four five zero eight" — so the two copies measured 0.949 similar, and a verbatim
+# comparison saw nothing. Unrelated sentences from the same session's replies
+# measure far lower: the two most list-alike controls score 0.55 and 0.38, and a
+# short echo like "I can do that." vs "I can do that for you now." scores 0.70.
+# 0.9 splits the populations with margin on both sides. The 08:32 verbatim doubling
+# scores 1.0 and is still caught.
+#
+# 15 chars filters out the short repeats that are ordinary speech ("No." / "No.").
+MIN_REPEAT_CHARS = 15
+REPEAT_SIMILARITY = 0.9
+# Split AFTER sentence punctuation whether or not whitespace follows: the live
+# 08:32 doubling arrived as "...right on Burnet.If you're undecided..." with no
+# separator at all, and a split that required a following space kept both copies
+# in one "sentence" that then matched nothing.
+SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s*")
+
+
+def is_sentence_repeat(a: str, b: str) -> bool:
+    """True when two sentences are the same modulo re-sampled detail."""
+    m = difflib.SequenceMatcher(None, a, b)
+    # The quick ratios are cheap upper bounds; the full ratio only runs on pairs
+    # they cannot already rule out, which keeps the pairwise scan off the hot
+    # path's budget.
+    return (m.real_quick_ratio() > REPEAT_SIMILARITY
+            and m.quick_ratio() > REPEAT_SIMILARITY
+            and m.ratio() > REPEAT_SIMILARITY)
+
+
+def fold_unspeakable(text: str) -> str:
+    """Fold characters that have no phonemes but reach the synth verbatim.
+
+    U+202F (narrow no-break space), U+2011 (non-breaking hyphen) and U+200B
+    (zero-width space) were all present in live degenerate completions (2026-08-12),
+    inside otherwise ordinary words, and none was folded. "**" is markdown that the
+    system prompt forbids, so it is never speech and is stripped rather than folded —
+    raw_llm_capture counts it as a degeneracy signal for the same reason.
+
+    U+2019 is here for a different reason and must not be dropped as cosmetic: it has a
+    perfectly good phoneme, but the ENGINE rewrites it to a plain apostrophe in the word
+    timestamps it returns, while the text we handed it keeps the curly one. The caption
+    sequencer matches those word-for-word against the slot built from our text, so the
+    first word containing one misses — and because it walks the slot in order, every word
+    after it misses too. The whole reply is then emitted as passthrough and the assistant
+    bubble never renders, while the audio plays perfectly.
+
+    Verified against the live engine 2026-08-25: of the typographic characters a model
+    actually emits, it normalizes exactly U+2019 -> ' and U+2011 -> -, and echoes curly
+    double quotes and em dashes back unchanged. Only the two it rewrites need folding,
+    and folding them costs nothing: the engine was going to speak them that way anyway.
+
+    This bit whenever a reply contained an apostrophe, so it arrived with the switch to a
+    model that writes typographically."""
+    text = _NOBREAK_SPACES.sub(" ", text)     # no-break spaces -> space
+    text = _ZERO_WIDTH.sub("", text)          # zero-width chars -> removed
+    text = text.replace("\u2011", "-")        # non-breaking hyphen -> hyphen
+    text = text.replace("\u2019", "'")        # curly apostrophe -> straight
+    text = _MD_BOLD.sub("", text)             # markdown bold -> removed
+    return text
+
+
 def _normalize_for_tts(text: str) -> str:
     """Strip punctuation that has no phonemes but derails the synth. The LLM sometimes
     emits ellipses (unicode U+2026 or "...") and non-breaking spaces (U+00A0); the
     sentence splitter isolates those into punctuation-only chunks, and the engine TTS then
     fails the whole clause ("did not receive a valid HTTP response") and emits 0.0s
-    audio. Fold nbsp -> space and ellipses/dot-runs -> a comma pause. \\u escapes keep
-    this source pure-ASCII."""
-    text = text.replace(" ", " ")               # non-breaking space -> space
-    text = re.sub(r"[…]+|\.{2,}", ", ", text)    # …  or  ...  -> comma pause
+    audio. Fold the unspeakable family -> plain equivalents and ellipses/dot-runs -> a
+    comma pause."""
+    text = fold_unspeakable(text)
+    # A whole run of ellipses/dot-runs -> ONE comma pause. The run must be matched as a
+    # unit: "a... ... b" folded per-item gives "a, , b", and the trailing \s* is what
+    # absorbs the space llm_text_guard's own ellipsis-run fold leaves behind, so text
+    # that passed through both becomes ", " and not ",  ".
+    text = re.sub(r"(?:(?:\u2026|\.{2,})\s*)+", ", ", text)
     return text
 
 
@@ -79,13 +177,15 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
     # Drop chunks with nothing synthesizable (pure punctuation/whitespace) — the engine TTS
     # fails them ("did not receive a valid HTTP response") and yields 0.0s "audio".
     #
-    # [^\W_] (letters/digits in ANY script, minus underscore), not [A-Za-z0-9]: the ASCII
-    # class matches nothing in Japanese, Mandarin or Hindi, so EVERY reply in those
-    # languages was dropped here. They reach the engine today only because run_tts falls
-    # back to `or [text]` when this returns empty — i.e. three of the nine shipped voice
-    # languages have been riding an error path, and get no clause ramping at all.
-    # Verified on the deployed brain: Japanese, Mandarin and Hindi go from dropped to
-    # kept, while "..", "\u2026\xa0\xa0\n\n?" and friends are still correctly dropped.
+    # [^\W_] (any script's letters/digits, minus underscore) rather than [A-Za-z0-9]:
+    # the ASCII class matched nothing in Japanese, Mandarin or Hindi, so EVERY reply in
+    # those languages was dropped here and survived only because run_tts fell back to
+    # `or [text]`. That fallback then also resurrected the punctuation-only junk this
+    # line had just deliberately dropped, handing the engine raw "…\xa0\xa0\n\n" and
+    # earning a 500 per clause. Getting the test right is what LET the fallback go:
+    # run_tts no longer has one, so an empty list here means "nothing to speak" and is
+    # honoured rather than overridden. Keep the two facts together — restoring the
+    # fallback without widening this test brings the 500-per-clause bug straight back.
     out = [c for c in out if re.search(r"[^\W_]", c)]
     return out
 

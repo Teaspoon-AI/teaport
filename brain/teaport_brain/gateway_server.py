@@ -74,8 +74,14 @@ from teaport_brain.gateway_serializer import (  # noqa: E402
     RELAY_SAMPLE_RATE,
     TeaportGatewaySerializer,
 )
+from teaport_brain import llm_error_speaker  # noqa: E402
+from teaport_brain import llm_text_guard  # noqa: E402
+from teaport_brain import raw_llm_capture  # noqa: E402
+from teaport_brain.llm_error_speaker import LLMErrorSpeaker  # noqa: E402
+from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
 from teaport_brain.memory_hygiene import MemoryReclaim, turn_reclaim  # noqa: E402
 from teaport_brain.memory_recall import MemoryRecall  # noqa: E402
+from teaport_brain.raw_llm_capture import RawLLMCapture  # noqa: E402
 from teaport_brain.turn_timing import TurnTimer  # noqa: E402
 from teaport_brain import endpoint_debug  # noqa: E402
 from teaport_brain import thinking_sound  # noqa: E402
@@ -94,7 +100,11 @@ from teaport_brain.persona import build_system_prompt, load_persona  # noqa: E40
 # Built from the shared service factories (services.py) — no transport/demo imports,
 # so the module stays cheap to import.
 from teaport_brain.services import make_llm, make_stt, make_tts  # noqa: E402
-from teaport_brain.tools import build_tools_schema, register_tools  # noqa: E402
+from teaport_brain.tools import (  # noqa: E402
+    AGENT_FIRST as tools_AGENT_FIRST,
+    build_tools_schema,
+    register_tools,
+)
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 LISTEN_PORT = int(os.getenv("GATEWAY_PORT", "7861"))
@@ -112,7 +122,7 @@ GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
 # the brain LLM a thin router/phraser instead of the mind. Bridge-is-brain is the
 # default; set TEAPORT_AGENT_FIRST=1 to enable (the launcher can source it from a
 # ~/.config/teaport/agent_first file so it toggles without editing the unit).
-AGENT_FIRST = os.getenv("TEAPORT_AGENT_FIRST", "").strip().lower() in ("1", "true")
+AGENT_FIRST = tools_AGENT_FIRST  # single definition, in tools.py — see there
 
 AGENT_FIRST_DIRECTIVE = (
     "AGENT-FIRST MODE — this overrides earlier tool guidance. For EVERY user "
@@ -185,10 +195,38 @@ def _make_consult_followup(task, context, gate):
                 "confirmation — and if the request was something visible (a message, "
                 "poll, or post), ask them to check whether it appeared. Do NOT state "
                 "that it definitely failed.")
-        context.add_message({"role": "system", "content": content})
+        # As a USER message, not a system one. A trailing system message is not a turn
+        # the model answers: it re-answers the last real user question instead and the
+        # delivery never happens. Measured against the live model on the exact context
+        # from the 2026-08-26 07:59 failure — system delivered the answer 0/4 times
+        # with an unrelated exchange in between (it repeated its own espresso answer,
+        # which is what the user saw) and only 1/4 even when nothing intervened, while
+        # leaking "background task"/"agent" wording 2/4. As a user message it delivered
+        # 8/8 across both shapes and leaked nothing.
+        #
+        # The tag matters because this message OUTLIVES the turn: without it the rest
+        # of the session reads a request the user never made, and the model starts
+        # attributing it to them.
+        trigger = {
+            "role": "user",
+            "content": f"[automated system notice, not spoken by the user]\n{content}"}
+        context.add_message(trigger)
         logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
                     f"tool result {'rewritten' if rewrote else 'not found'})")
         await task.queue_frames([LLMRunFrame()])
+        # Retire the trigger once its turn has been spoken. It is a one-shot: "Tell the
+        # user now..." left in the context is a standing order, and the model re-executes
+        # it the next time a turn gives it nothing else to do. Observed live 2026-08-26
+        # 08:17 — the shop list was delivered correctly, then the user said "That's
+        # useful." and the bot recited the whole list again.
+        #
+        # Neutralised in place rather than removed: the messages list may be a copy,
+        # but the dicts in it are live (that is how the tool result above is rewritten).
+        # Nothing is lost, because the answer itself stays in the rewritten tool result.
+        await gate.wait_until_delivered()
+        trigger["content"] = ("[automated system notice, not spoken by the user]\n"
+                              "An earlier background task finished and its outcome was "
+                              "already given to the user. Nothing further is needed.")
     return speak_followup
 
 
@@ -289,13 +327,33 @@ async def run_relay_bot(websocket: WebSocket):
         transport.input(),
         ep_in,  # tap (debug): VAD-stop / turn-commit bubbles
         stt,
-        TurnTimer(turn_marks),  # tap: user-stopped + stt-final
+        # This tap owns the silent-turn watchdog (see TurnTimer): it is the first to
+        # see the turn begin, and only one of the three may arm it.
+        TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
         UserTranscriptEmitter(activity),
         MemoryRecall(context),  # fire memory_search on interim, inject before the LLM
         context_aggregator.user(),
         heard_corrector,
+        # A failed completion must be HEARD, not just logged (see the module). ABOVE the
+        # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a
+        # single LLM error and only ever caught the TTS's, which it then blamed on the
+        # model.
+        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         llm,
-        TurnTimer(turn_marks),  # tap: llm-start + llm-first-token
+        # tap: llm-start + llm-first-token. Must sit ABOVE the guard: downstream of it
+        # this would time the first token that SURVIVES the guard, and a completion the
+        # guard trips on immediately would set no llm_first_token mark at all — which
+        # turn_timing drops silently from the TURN-TIMING line, making a swallowed turn
+        # look like a missing log field.
+        TurnTimer(turn_marks),
+        # tap (debug): log the raw completion verbatim when it degenerates into
+        # ellipsis/markdown runs. Must sit HERE — upstream of the guard and the TTS
+        # aggregator, where the model's own bytes are still visible.
+        RawLLMCapture() if raw_llm_capture.ENABLED else None,
+        # fold no-break/zero-width unicode out of the deltas and cut a runaway
+        # ellipsis collapse — the TTS and the committed context both read what
+        # this forwards, so it cleans speech and history in one place.
+        LLMTextGuard() if llm_text_guard.ENABLED else None,
         tts,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
