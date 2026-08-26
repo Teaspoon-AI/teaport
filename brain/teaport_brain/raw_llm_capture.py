@@ -73,6 +73,35 @@ _EXOTIC = (
     ("nbhyphen", "\u2011"),      # non-breaking hyphen
 )
 
+# A sentence the completion emits more than once, verbatim. This is a DIFFERENT
+# failure from the punctuation collapse above and needs its own detector, because the
+# text is otherwise perfectly well-formed — nothing in it looks degenerate.
+#
+# Live 2026-08-26 08:32: one completion, one stream, and the deltas carried "If you're
+# undecided, try Upper Crust for a classic buttery croissant; it's a reliable spot right
+# on Burnet." twice, back to back with no separator. The TTS was handed both copies and
+# spoke 13.5s of audio for a one-sentence reply. Replaying that exact context at the
+# provider 32 times (with and without the tools array) never reproduced it, so this
+# exists to catch the next one WITH the model's own bytes attached and settle whether
+# the duplication arrives from the provider or is introduced downstream of it.
+#
+# 15 chars filters out the short repeats that are ordinary speech ("No." / "No.").
+_MIN_REPEAT_CHARS = 15
+
+
+def _repeated_sentence(text: str) -> str:
+    """The first sentence that appears verbatim more than once, or ""."""
+    seen = set()
+    for sentence in re.split(r"(?<=[.!?])\s*", text):
+        sentence = sentence.strip()
+        if len(sentence) < _MIN_REPEAT_CHARS:
+            continue
+        if sentence in seen:
+            return sentence
+        seen.add(sentence)
+    return ""
+
+
 # Cap the logged text. Degenerate completions have run to thousands of characters of
 # pure punctuation; the first 1200 is more than enough to characterize one, and the
 # counts below describe the whole thing regardless of the cap.
@@ -143,7 +172,10 @@ class RawLLMCapture(FrameProcessor):
 
     def _report(self):
         raw = "".join(self._buf)
-        if not raw or not _DEGENERATE.search(raw):
+        if not raw:
+            return
+        repeated = _repeated_sentence(raw)
+        if not _DEGENERATE.search(raw) and not repeated:
             return
         # Counts describe the WHOLE completion even though the text is capped.
         dot_runs = len(DOT_RUN.findall(raw))
@@ -156,5 +188,6 @@ class RawLLMCapture(FrameProcessor):
         logger.warning(
             f"RawLLMCapture: DEGENERATE completion chars={len(raw)} "
             f"after_tool={self._after_tool} dot_runs={dot_runs} ellipsis={ellipses} "
-            f"bold={bold} exotic=[{exotic}] raw={raw[:_MAX_LOG]!r}"
+            f"bold={bold} exotic=[{exotic}] repeated={repeated[:60]!r} "
+            f"raw={raw[:_MAX_LOG]!r}"
         )
