@@ -359,6 +359,20 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
     from teaport_brain import consult_bridge
 
     progress = asyncio.create_task(_consult_progress(llm)) if llm is not None else None
+
+    async def deliver(answer):
+        """Hand the outcome to the injector, narrator first."""
+        # Stop the narrator BEFORE the answer is spoken, not in the finally below. It
+        # is a countdown against dead air, and there is no dead air once the outcome is
+        # known. Cancelling it afterwards used to be harmless because the injector
+        # returned as soon as it had queued the LLM run; it now waits for the delivered
+        # turn to finish speaking so it can retire its one-shot trigger, which left the
+        # narrator running for the whole delivery. Observed live 2026-08-26 09:44: the
+        # shop list was spoken at :25.0 and "Almost there — hang tight." landed at :37.3.
+        if progress is not None:
+            progress.cancel()
+        await followup(request, answer, tool_call_id)
+
     try:
         try:
             result = await asyncio.wait_for(asyncio.shield(fut),
@@ -368,24 +382,24 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
                 # Never acked — the relay didn't take it; run the CLI agent instead
                 # (still async w.r.t. the turn, which already ended).
                 reply = await oc.agent_consult(request)
-                await followup(request, reply or None, tool_call_id)
+                await deliver(reply or None)
                 return
             result = await asyncio.wait_for(fut, timeout=_ASYNC_CONSULT_TIMEOUT)
         text, err = _consult_outcome(result)
         if err:
             logger.warning(f"ask_openclaw(async): consult errored: {err!r}")
         logger.info(f"ask_openclaw(async): follow-up ready ({len(text or '')} chars)")
-        await followup(request, text, tool_call_id)
+        await deliver(text)
     except asyncio.TimeoutError:
         logger.warning(f"ask_openclaw(async): consult unfinished after "
                        f"{_ASYNC_CONSULT_TIMEOUT:.0f}s")
-        await followup(request, None, tool_call_id)
+        await deliver(None)
     except asyncio.CancelledError:
         raise  # session teardown
     except Exception as e:  # noqa: BLE001
         logger.warning(f"ask_openclaw(async) failed: {e!r}")
         try:
-            await followup(request, None, tool_call_id)
+            await deliver(None)
         except Exception:  # noqa: BLE001
             pass
     finally:
