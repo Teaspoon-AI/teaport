@@ -60,10 +60,27 @@ def fold_unspeakable(text: str) -> str:
     (zero-width space) were all present in live degenerate completions (2026-08-12),
     inside otherwise ordinary words, and none was folded. "**" is markdown that the
     system prompt forbids, so it is never speech and is stripped rather than folded —
-    raw_llm_capture counts it as a degeneracy signal for the same reason."""
+    raw_llm_capture counts it as a degeneracy signal for the same reason.
+
+    U+2019 is here for a different reason and must not be dropped as cosmetic: it has a
+    perfectly good phoneme, but the ENGINE rewrites it to a plain apostrophe in the word
+    timestamps it returns, while the text we handed it keeps the curly one. The caption
+    sequencer matches those word-for-word against the slot built from our text, so the
+    first word containing one misses — and because it walks the slot in order, every word
+    after it misses too. The whole reply is then emitted as passthrough and the assistant
+    bubble never renders, while the audio plays perfectly.
+
+    Verified against the live engine 2026-08-25: of the typographic characters a model
+    actually emits, it normalizes exactly U+2019 -> ' and U+2011 -> -, and echoes curly
+    double quotes and em dashes back unchanged. Only the two it rewrites need folding,
+    and folding them costs nothing: the engine was going to speak them that way anyway.
+
+    This bit whenever a reply contained an apostrophe, so it arrived with the switch to a
+    model that writes typographically."""
     text = _NOBREAK_SPACES.sub(" ", text)     # no-break spaces -> space
     text = _ZERO_WIDTH.sub("", text)          # zero-width chars -> removed
     text = text.replace("\u2011", "-")        # non-breaking hyphen -> hyphen
+    text = text.replace("\u2019", "'")        # curly apostrophe -> straight
     text = _MD_BOLD.sub("", text)             # markdown bold -> removed
     return text
 

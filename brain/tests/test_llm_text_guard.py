@@ -511,6 +511,29 @@ async def test_the_recovery_line_is_allowed_a_new_frame():
     assert forwarded[0].id != sent.id, "recovery text is new; it needs its own frame"
 
 
+def test_the_fold_matches_what_the_engine_rewrites():
+    """Fold exactly the characters the engine rewrites in its word timestamps.
+
+    The caption sequencer matches the engine's returned words against the slot built
+    from the text we sent it. A character the engine rewrites but we did not fold makes
+    the first word containing it miss — and because the sequencer walks the slot in
+    order, every word after it misses too. The reply is emitted as passthrough and the
+    assistant bubble never renders, while the audio plays perfectly. Live 2026-08-25:
+    "It\u2019s Tuesday August twenty-fifth..." lost all nine words and its bubble.
+
+    Verified against the live engine: of the typographic characters a model actually
+    emits it rewrites exactly U+2019 and U+2011, and echoes the rest back unchanged.
+    Folding MORE than it rewrites would create the same mismatch in the other direction,
+    which is why the second half of this test matters as much as the first.
+    """
+    assert fold_unspeakable("It\u2019s") == "It's"
+    assert fold_unspeakable("short\u2011wave") == "short-wave"
+    for ch in ("\u201c", "\u201d", "\u2014"):
+        assert ch in fold_unspeakable("a %s b" % ch), (
+            "the engine echoes %r unchanged; folding it would break the slot match" % ch
+        )
+
+
 def main():
     sync = [v for k, v in sorted(globals().items())
             if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]
