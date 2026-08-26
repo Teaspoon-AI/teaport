@@ -195,7 +195,21 @@ def _make_consult_followup(task, context, gate):
                 "confirmation — and if the request was something visible (a message, "
                 "poll, or post), ask them to check whether it appeared. Do NOT state "
                 "that it definitely failed.")
-        context.add_message({"role": "system", "content": content})
+        # As a USER message, not a system one. A trailing system message is not a turn
+        # the model answers: it re-answers the last real user question instead and the
+        # delivery never happens. Measured against the live model on the exact context
+        # from the 2026-08-26 07:59 failure — system delivered the answer 0/4 times
+        # with an unrelated exchange in between (it repeated its own espresso answer,
+        # which is what the user saw) and only 1/4 even when nothing intervened, while
+        # leaking "background task"/"agent" wording 2/4. As a user message it delivered
+        # 8/8 across both shapes and leaked nothing.
+        #
+        # The tag matters because this message OUTLIVES the turn: without it the rest
+        # of the session reads a request the user never made, and the model starts
+        # attributing it to them.
+        context.add_message({
+            "role": "user",
+            "content": f"[automated system notice, not spoken by the user]\n{content}"})
         logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
                     f"tool result {'rewritten' if rewrote else 'not found'})")
         await task.queue_frames([LLMRunFrame()])
