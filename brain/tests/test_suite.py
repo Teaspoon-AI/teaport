@@ -27,6 +27,7 @@ SCRIPTS = [
     ("test_llm_text_guard.py", 120),
     ("test_endpointing.py", 120),
     ("test_stt_final.py", 120),
+    ("test_final_survives_turn_start.py", 120),
     ("test_tool_call_indices.py", 120),
     ("test_tool_schema.py", 120),
 ]

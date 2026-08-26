@@ -41,6 +41,7 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     StartFrame,
     TranscriptionFrame,
+    UninterruptibleFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
@@ -65,6 +66,30 @@ try:
 except ModuleNotFoundError as e:
     logger.error(f"{e}\nInstall with: pip install websockets")
     raise
+
+
+class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
+    """A final transcript that an interruption cannot flush.
+
+    TranscriptionFrame is a plain data frame. On InterruptionFrame every processor
+    flushes its queued data frames (FrameProcessor._start_interruption ->
+    FrameQueue.reset), and the LLM user aggregator flushes its own queue the moment
+    it broadcasts one (FrameProcessor.broadcast_interruption). The aggregator
+    broadcasts exactly that when MinWordsUserTurnStartStrategy starts a user turn
+    from an INTERIM — so when the engine closes a segment on its own, the final
+    rides a few frames behind the interim that starts the turn, and the turn's own
+    start flushes the turn's own words out of the pipeline. The turn is then empty:
+    TurnAnalyzerUserTurnStopStrategy cannot fire without transcript text, the 5 s
+    user_turn_stop_timeout force-stops the turn, push_aggregation() has nothing to
+    push, and the user gets silence. Live 2026-08-25 19:05 on jetson01: "Can you
+    recite Hamlet's soliloquy for me?" — charted by the ledger at the STT's push,
+    never seen by the model (SILENT TURN reached=['nothing']).
+
+    UninterruptibleFrame is pipecat's designed escape hatch for exactly this:
+    FrameQueue.reset() keeps such frames, and a task processing one is not
+    cancelled (same pattern as pipecat's own FunctionCallResultFrame). Interims
+    stay interruptible on purpose — they are disposable hypotheses.
+    """
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -356,7 +381,7 @@ class TeaportSTTService(WebsocketSTTService):
                 self._empty_finals = 0
             if text:
                 await self.push_frame(
-                    TranscriptionFrame(
+                    FinalTranscriptionFrame(
                         text,
                         self._user_id,
                         time_now_iso8601(),
