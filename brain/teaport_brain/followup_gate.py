@@ -55,12 +55,16 @@ class FollowupGate(FrameProcessor):
         # Set == conversation idle. Starts idle (nobody has spoken yet).
         self._idle = asyncio.Event()
         self._idle.set()
+        # The complement, so a caller can wait for activity to START as well as stop.
+        self._busy = asyncio.Event()
 
     def _refresh(self):
         if self._user or self._bot or self._llm:
             self._idle.clear()
+            self._busy.set()
         else:
             self._idle.set()
+            self._busy.clear()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -83,6 +87,21 @@ class FollowupGate(FrameProcessor):
             self._llm = False
             self._refresh()
         await self.push_frame(frame, direction)
+
+    async def wait_until_delivered(self, start_timeout: float = 10.0) -> None:
+        """Wait for a turn we just queued to start speaking and then finish.
+
+        The caller needs this to retire a one-shot trigger it put in the context: the
+        trigger has to survive until the turn it drives has been generated, and must
+        not survive past it. Returns early if no turn starts within start_timeout —
+        the trigger is retired either way, because a trigger that never fired is still
+        a standing order to the next turn that reads the context.
+        """
+        try:
+            await asyncio.wait_for(self._busy.wait(), timeout=start_timeout)
+        except asyncio.TimeoutError:
+            return
+        await self._idle.wait()
 
     async def wait_until_idle(self) -> bool:
         """Block until a debounced quiet window. Returns True at a genuine window,

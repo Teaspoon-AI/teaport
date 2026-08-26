@@ -207,12 +207,26 @@ def _make_consult_followup(task, context, gate):
         # The tag matters because this message OUTLIVES the turn: without it the rest
         # of the session reads a request the user never made, and the model starts
         # attributing it to them.
-        context.add_message({
+        trigger = {
             "role": "user",
-            "content": f"[automated system notice, not spoken by the user]\n{content}"})
+            "content": f"[automated system notice, not spoken by the user]\n{content}"}
+        context.add_message(trigger)
         logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
                     f"tool result {'rewritten' if rewrote else 'not found'})")
         await task.queue_frames([LLMRunFrame()])
+        # Retire the trigger once its turn has been spoken. It is a one-shot: "Tell the
+        # user now..." left in the context is a standing order, and the model re-executes
+        # it the next time a turn gives it nothing else to do. Observed live 2026-08-26
+        # 08:17 — the shop list was delivered correctly, then the user said "That's
+        # useful." and the bot recited the whole list again.
+        #
+        # Neutralised in place rather than removed: the messages list may be a copy,
+        # but the dicts in it are live (that is how the tool result above is rewritten).
+        # Nothing is lost, because the answer itself stays in the rewritten tool result.
+        await gate.wait_until_delivered()
+        trigger["content"] = ("[automated system notice, not spoken by the user]\n"
+                              "An earlier background task finished and its outcome was "
+                              "already given to the user. Nothing further is needed.")
     return speak_followup
 
 

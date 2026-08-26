@@ -20,6 +20,7 @@
 # Run: python test_followup_injection.py
 #
 import asyncio
+import copy
 import json
 import os
 import sys
@@ -51,33 +52,51 @@ class _Context:
 
 
 class _Task:
-    def __init__(self):
+    def __init__(self, ctx):
+        self.ctx = ctx
         self.frames = []
+        self.at_run = None      # what the model would actually have seen
 
     async def queue_frames(self, frames):
         self.frames.extend(frames)
+        self.at_run = copy.deepcopy(self.ctx.messages)
 
 
 class _Gate:
     async def wait_until_idle(self):
         return
 
+    async def wait_until_delivered(self, start_timeout: float = 10.0):
+        return
+
 
 async def _deliver(text):
-    ctx, task = _Context(), _Task()
+    ctx = _Context()
+    task = _Task(ctx)
     await _make_consult_followup(task, ctx, _Gate())(REQUEST, text, CALL_ID)
     return ctx, task
 
 
 async def test_the_instruction_is_a_user_turn_not_a_system_message():
-    ctx, task = await _deliver(ANSWER)
-    last = ctx.messages[-1]
+    _, task = await _deliver(ANSWER)
+    assert task.frames, "the follow-up must actually run the LLM"
+    last = task.at_run[-1]
     assert last["role"] == "user", (
         f"injected as {last['role']!r} — a trailing system message is not a turn the "
         f"model answers, so it re-answers the previous question instead")
     assert "not spoken by the user" in last["content"], "missing the provenance tag"
     assert ANSWER in last["content"], "the answer itself must reach the model"
-    assert task.frames, "the follow-up must actually run the LLM"
+
+
+async def test_the_trigger_does_not_outlive_its_turn():
+    """A standing 'Tell the user now...' gets re-executed on the next empty turn."""
+    ctx, _ = await _deliver(ANSWER)
+    after = ctx.messages[-1]["content"]
+    assert "Tell the user now" not in after, (
+        "the delivery instruction is still in the context — the model will recite the "
+        "answer again the next time a turn gives it nothing else to do")
+    assert ANSWER not in after, "the answer must not remain as a standing order"
+    assert "already given to the user" in after, after
 
 
 async def test_the_placeholder_tool_result_is_rewritten():
