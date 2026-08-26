@@ -77,6 +77,12 @@ from teaport_brain.endpointing import (  # noqa: E402
 )
 from teaport_brain.engine_tts import LANG_NAMES  # noqa: E402
 from teaport_brain.followup_gate import FollowupGate  # noqa: E402
+from teaport_brain import llm_error_speaker  # noqa: E402
+from teaport_brain import llm_text_guard  # noqa: E402
+from teaport_brain import raw_llm_capture  # noqa: E402
+from teaport_brain.llm_error_speaker import LLMErrorSpeaker  # noqa: E402
+from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
+from teaport_brain.raw_llm_capture import RawLLMCapture  # noqa: E402
 from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
 from teaport_brain.persona import build_system_prompt, load_persona  # noqa: E402
 from teaport_brain.services import make_llm, make_stt, make_tts  # noqa: E402
@@ -199,10 +205,23 @@ def _make_consult_followup(task, context, gate):
                 "confirmation — and if the request was something visible (a message, "
                 "poll, or post), ask them to check whether it appeared. Do NOT state "
                 "that it definitely failed.")
-        context.add_message({"role": "system", "content": content})
+        # Deliver as a USER message, not a system one: a trailing system message is not
+        # a turn the model answers — it re-answers the last real user question instead
+        # (measured live in the merged fix), which is the "recites the previous answer"
+        # bug. The tag matters because this message OUTLIVES the turn.
+        trigger = {
+            "role": "user",
+            "content": f"[automated system notice, not spoken by the user]\n{content}"}
+        context.add_message(trigger)
         logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
                     f"tool result {'rewritten' if rewrote else 'not found'})")
         await task.queue_frames([LLMRunFrame()])
+        # Retire the one-shot trigger once spoken, or the model re-executes the
+        # "tell the user now" standing order on the next empty turn (recites again).
+        await gate.wait_until_delivered()
+        trigger["content"] = ("[automated system notice, not spoken by the user]\n"
+                              "An earlier background task finished and its outcome was "
+                              "already given to the user. Nothing further is needed.")
     return speak_followup
 
 
@@ -268,7 +287,18 @@ async def run(sock_path: str):
         stt,
         context_aggregator.user(),
         heard_corrector,
+        # A failed completion must be HEARD, not just logged. ABOVE the LLM: ErrorFrames
+        # travel UPSTREAM, so below the LLM it never sees an LLM error (mirrors gateway_server).
+        LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         llm,
+        # Capture the raw completion verbatim when it degenerates (must be upstream of the
+        # guard + TTS aggregator, where the model's own bytes are still visible).
+        RawLLMCapture() if raw_llm_capture.ENABLED else None,
+        # Fold no-break/zero-width unicode out of the deltas and cut a runaway ellipsis
+        # collapse — cleans both the spoken audio and the committed context in one place.
+        # This is the degenerate-text guard from the merged fix; without it the SIP path
+        # spoke the garbage/doubled output we saw live.
+        LLMTextGuard() if llm_text_guard.ENABLED else None,
         tts,
         # Fill the dead air of a long ask_openclaw consult with a soft typing bed;
         # stops the instant the reply's first audio arrives. No-op for fast tools.
