@@ -12,6 +12,7 @@
 
 import asyncio
 import json
+import logging
 import os
 import time
 
@@ -176,6 +177,79 @@ def _llm_timeout_secs() -> float:
     return secs
 
 
+class _InterceptHandler(logging.Handler):
+    """Forward a stdlib LogRecord to loguru."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            level = logger.level(record.levelname).name
+        except ValueError:
+            level = record.levelno
+        logger.opt(depth=6, exception=record.exc_info).log(level, record.getMessage())
+
+
+def _intercept_stdlib_logging() -> None:
+    """Make httpx and the OpenAI SDK visible in the journal.
+
+    Everything this brain logs goes through loguru, and loguru does not see stdlib
+    logging unless it is explicitly routed. httpx and the OpenAI SDK both use stdlib
+    logging, so the entire transport layer was silent: not one "HTTP Request: POST" line
+    in a whole session.
+
+    That silence hid the two ways a turn can issue more than one request. The SDK retries
+    on its own — create_client never sets max_retries, so the default of 2 applies — and
+    pipecat re-issues the call itself when retry_on_timeout fires. Neither writes a line
+    this process was capturing, so "one Generating chat" was being read as "one request"
+    when it only ever meant "one call into pipecat".
+
+    httpx logs each request at INFO, and the SDK logs "Retrying request..." at INFO, so
+    INFO is enough to count the requests a turn actually made.
+    """
+    for name in ("httpx", "openai"):
+        stdlib = logging.getLogger(name)
+        stdlib.handlers = [_InterceptHandler()]
+        stdlib.setLevel(logging.INFO)
+        stdlib.propagate = False
+
+
+async def _watch_completion_identity(stream):
+    """Log the completion id carried on every chunk, and WARN if it changes mid-stream.
+
+    A router (OpenRouter here) can fail over mid-response and regenerate on a second
+    backend, streaming the whole answer again down the SAME SSE connection. From inside
+    the process that is indistinguishable from one generation: one `create()` call, one
+    stream object, one LLMFullResponseStart/End pair. The only thing that separates the
+    two cases is the per-chunk completion id, which is why it is worth a log line.
+
+    Live 2026-08-26 08:32 and 08:48: the assistant spoke its reply twice. The second copy
+    at 08:48 had INDEPENDENTLY RE-SAMPLED wording — "four thousand five hundred eight"
+    became "four five zero eight" — so it was generated, not replayed by anything of ours.
+    Whether the provider generated it twice within one completion, or a router concatenated
+    two completions, was not decidable from the logs we had. Same id across both copies
+    means the model repeated itself; a changed id means the request was effectively served
+    twice. Nothing below our service layer was observable at all: httpx and the OpenAI SDK
+    log through stdlib logging, which this process never routed into loguru (see
+    _intercept_stdlib_logging).
+    """
+    first = None
+    changes = 0
+    async for chunk in stream:
+        cid = getattr(chunk, "id", None)
+        if cid and first is None:
+            first = cid
+            logger.debug(f"completion id={cid} "
+                         f"provider={getattr(chunk, 'provider', None)!r}")
+        elif cid and cid != first:
+            changes += 1
+            if changes == 1:
+                logger.warning(
+                    f"completion id CHANGED mid-stream: {first} -> {cid} — the response "
+                    f"was served by more than one generation, so any duplicated text is a "
+                    f"router retry, not the model repeating itself")
+            first = cid
+        yield chunk
+
+
 async def _sequential_tool_call_indices(stream):
     """Renumber tool_call.index to the order calls first appear in the response.
 
@@ -257,7 +331,7 @@ class _RenumberedStream:
 
     def __init__(self, stream):
         self._stream = stream
-        self._iter = _sequential_tool_call_indices(stream)
+        self._iter = _sequential_tool_call_indices(_watch_completion_identity(stream))
 
     def __aiter__(self):
         return self._iter
@@ -375,6 +449,7 @@ def make_llm():
     # When uncapped, max_tokens is left OUT of Settings rather than set to None: the
     # field then keeps its NOT_GIVEN default, the OpenAI SDK sentinel that drops it from
     # the request body entirely. Passing None would serialize an explicit null.
+    _intercept_stdlib_logging()
     settings = dict(model=os.getenv("LLM_MODEL", "gpt-oss-120b"), extra=_llm_extra())
     cap = _max_tokens()
     if cap is not None:
