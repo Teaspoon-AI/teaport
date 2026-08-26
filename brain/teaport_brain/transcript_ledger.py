@@ -329,6 +329,8 @@ class TranscriptLedger(BaseObserver):
                     f"audio_by_src={b['audio_by_src']} audio_dur={audio_dur:.2f} "
                     f"text_dur={text_dur:.2f} synth_done={b['synth_done']} "
                     f"full_dur={full_dur:.2f} frac={frac:.2f} "
+                    f"cut={cut_ns / 1e9:.2f} spoken={len(spoken)} "
+                    f"pts={[p / 1e9 if p is not None else None for _, p in spoken]} "
                     f"pts_heard={len(pts_heard.split())} est={len(est.split())} "
                     f"-> {len(heard_text.split())} words"
                 )
