@@ -45,10 +45,12 @@ def U(text, heard_text, frac=0.4, interrupted=True):
                      heard_text=heard_text)
 
 
-def run(ledger_events, msgs, mode="truncate"):
+def run(ledger_events, msgs, mode="truncate", mark=0):
     c = HeardContextCorrector.__new__(HeardContextCorrector)
     c._ledger, c._context, c._mode, c._done = (
         SimpleNamespace(events=ledger_events), FakeContext(msgs), mode, 0)
+    # How long the context was at the previous reconcile; anything older is settled.
+    c._mark = mark
     c._reconcile()
     return c._context._m
 
@@ -148,6 +150,37 @@ def test_midword_rounds_to_complete_item():
     print("  PASS mid-word -> rounded to last complete item ('aged parmesan')")
 
 
+def test_a_settled_reply_is_never_removed():
+    """The cut turn committed nothing, so the walk must not reach back a turn.
+
+    When the user hears NONE of a reply, pipecat commits no spoken text for it at all
+    (it appends the TTSTextFrame, and none was pushed). The tail is then the previous
+    exchange, and an unbounded walk removes a reply the user did hear.
+
+    Live 2026-08-26 08:17: a background consult's answer was delivered and heard in
+    full; the user said "Thanks, Kettlebot."; the one-line reply to THAT was barged
+    over at 0% heard; reconciling that cut deleted the delivery. With its own answer
+    gone from the context the model recited the whole shop list again — the user saw
+    the reply repeat twice.
+    """
+    delivered = "About that pastry-shop list: Upper Crust Bakery and La Patisserie."
+    msgs = [{"role": "system", "content": "s"},
+            {"role": "user", "content": "any pastry shops on Burnet?"},
+            {"role": "assistant", "content": delivered},   # heard in full
+            {"role": "user", "content": "Thanks, Kettlebot."},
+            {"role": "user", "content": "That's useful."}]
+    # The context was 4 long when the "Thanks, Kettlebot." turn started; the reply to
+    # it ("You're welcome...") was cut before a word of it was spoken and committed
+    # nothing, so only "That's useful." has been added since.
+    out = run([U("You're welcome! Let me know if you need anything else.", "", frac=0.0)],
+              msgs, mark=4)
+    kept = [m["content"] for m in asst_text(out)]
+    assert kept == [delivered], (
+        f"the settled, fully-heard reply was altered or removed: {kept!r} — "
+        f"the model will now repeat it")
+    print("  PASS settled reply -> untouched by a later 0%-heard cut")
+
+
 def test_no_bot_turn_safe():
     # a cut event but no bot turn in context -> no-op, no crash
     out = run([U(ROME_FULL, ROME_HEARD)],
@@ -161,6 +194,6 @@ if __name__ == "__main__":
                test_multi_fragment_trigger, test_prose_overwrite,
                test_nothing_heard_removes, test_note_mode_additive,
                test_fully_heard_untouched, test_midword_rounds_to_complete_item,
-               test_no_bot_turn_safe]:
+               test_no_bot_turn_safe, test_a_settled_reply_is_never_removed]:
         fn()
     print("ALL PASS")

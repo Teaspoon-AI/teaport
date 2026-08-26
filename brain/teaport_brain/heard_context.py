@@ -77,6 +77,9 @@ class HeardContextCorrector(FrameProcessor):
         self._context = context
         self._mode = mode or HEARD_MODE
         self._done = 0  # ledger events already reconciled
+        # How long the context was at the previous reconcile. The cut turn's spoken
+        # message can only be among the messages added since — see _truncate.
+        self._mark = 0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -85,16 +88,18 @@ class HeardContextCorrector(FrameProcessor):
         await self.push_frame(frame, direction)
 
     def _reconcile(self):
+        start = self._mark
         for u in self._ledger.events[self._done:]:
             if not (u.interrupted and u.cut_short):
                 continue
             if self._mode == "note":
                 self._add_note(u)
             else:
-                self._truncate(u)
+                self._truncate(u, start)
         self._done = len(self._ledger.events)
+        self._mark = len(self._context.get_messages())
 
-    def _truncate(self, u):
+    def _truncate(self, u, start=0):
         """Reconcile the cut turn's spoken message to the heard prefix.
 
         We CANNOT match by text: pipecat commits the TTS-spoken text (it sets the
@@ -109,10 +114,23 @@ class HeardContextCorrector(FrameProcessor):
         msgs = self._context.get_messages()
         # Skip the triggering user turn (trailing user/system messages); whatever
         # remains at the tail is the cut bot turn.
+        #
+        # The walk stops at `start` — the context length at the previous reconcile —
+        # because anything older belongs to an exchange that is already settled. When
+        # NOTHING was heard, pipecat commits no spoken text for the cut turn at all
+        # (it appends the TTSTextFrame, and none was ever pushed), so without that
+        # bound the walk crosses the intervening user turn and lands on the PREVIOUS
+        # assistant message — a reply the user did hear — and deletes it.
+        #
+        # Live 2026-08-26 08:17: a background consult's answer was delivered and heard
+        # in full, the user said "Thanks, Kettlebot.", the one-line reply to that was
+        # barged over at 0% heard, and reconciling THAT cut removed the delivery. With
+        # its own answer gone from the context the model recited the whole shop list
+        # again, which the user saw as the reply repeating twice.
         end = len(msgs)
-        while end > 0 and msgs[end - 1].get("role") in ("user", "system"):
+        while end > start and msgs[end - 1].get("role") in ("user", "system"):
             end -= 1
-        anchor = msgs[end - 1] if end > 0 else None
+        anchor = msgs[end - 1] if end > start else None
 
         if anchor is not None and anchor.get("role") == "assistant" and _msg_text(anchor).strip():
             # A spoken message was committed (possibly partial TTS text).
@@ -129,9 +147,14 @@ class HeardContextCorrector(FrameProcessor):
                 self._context.set_messages(
                     msgs[:end] + [{"role": "assistant", "content": heard}] + msgs[end:])
                 logger.info(f"HeardCorrector[truncate]: inserted heard reply …{heard[-40:]!r}")
+        elif anchor is None:
+            # Nothing was committed for the cut turn, so there is nothing to correct.
+            # Not a warning: this is the ordinary shape of a reply barged over before
+            # any of it was spoken.
+            logger.info("HeardCorrector[truncate]: cut turn left no committed message")
         else:
             logger.warning("HeardCorrector[truncate]: no anchor for the cut turn "
-                           f"(role={anchor.get('role') if anchor else None}); left unchanged")
+                           f"(role={anchor.get('role')}); left unchanged")
 
     def _add_note(self, u):
         heard = (u.heard_text or "").strip()
