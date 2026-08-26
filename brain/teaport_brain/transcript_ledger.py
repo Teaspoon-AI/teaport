@@ -133,7 +133,12 @@ class TranscriptLedger(BaseObserver):
             self._traced.add(f.id)
             info = getattr(f, "text", "")
             info = f" {info[:40]!r}" if info else ""
-            logger.info(f"TRACE {type(f).__name__} t={t:.2f}{info}")
+            # pts, not just arrival: engine-TTS word frames arrive CLUSTERED (the whole
+            # clip is pushed at once), so arrival order says nothing about what played.
+            # The heard-word cut is made on pts, so pts is what has to be inspectable.
+            pts = getattr(f, "pts", None)
+            pts_s = f" pts={pts / 1e9:.2f}" if pts else ""
+            logger.info(f"TRACE {type(f).__name__} t={t:.2f}{pts_s}{info}")
             if len(self._traced) > 8192:
                 self._traced.clear()
 
@@ -206,8 +211,27 @@ class TranscriptLedger(BaseObserver):
             self._seen.add(f.id)
             self._ensure_bot(t)
             if self._bot is not None:
-                self._bot["samples"] += getattr(f, "num_frames", 0) or 0
-                self._bot["sr"] = f.sample_rate
+                # Per PUSHING PROCESSOR, and take the max at the cut — never a running
+                # total. The same audio is pushed twice: once by the TTS service at
+                # 24 kHz and again by the output transport, which resamples to the
+                # pipeline's 16 kHz. Those are different frame ids, so id-dedup cannot
+                # catch them, and bucketing per SAMPLE RATE does not either — the
+                # resampled frames still carry sample_rate=24000 while num_frames counts
+                # 16 kHz samples, so both land in one bucket and inflate it by
+                # (24000+16000)/24000 = 1.67x. Every processor sees the whole reply
+                # exactly once, so the max across processors IS the reply's duration,
+                # whatever any one of them labels its rate.
+                #
+                # Live 2026-08-25: a 9.5s count measured as audio_dur=15.8, frac 0.39
+                # instead of 0.65, so a barge-in at "thirteen" was credited as "eight".
+                # The reply was then truncated to that in the context and the agent
+                # argued the point with the user.
+                src = self._bot["audio_by_src"]
+                proc = getattr(data, "processor", None)
+                key = getattr(proc, "name", None) or type(proc).__name__
+                acc = src.setdefault(key, [0, f.sample_rate])
+                acc[0] += getattr(f, "num_frames", 0) or 0
+                acc[1] = f.sample_rate
         elif isinstance(f, BotStartedSpeakingFrame):
             self._seen.add(f.id)
             self._ensure_bot(t)
@@ -236,7 +260,10 @@ class TranscriptLedger(BaseObserver):
         intended = ("".join(self._gen_acc).strip() if live else "") or self._pending_gen
         return {"t_start": t, "intended": intended, "intended_live": live,
                 "audio_start": None,
-                "samples": 0, "sr": None, "synth_done": False, "spoken": []}
+                # samples the reply is worth, bucketed by the processor that pushed
+            # them: {name: [samples, rate]}. See the TTSAudioRawFrame branch.
+            "audio_by_src": {}, "sr": None, "synth_done": False,
+                "spoken": []}
 
     def _ensure_bot(self, t: float):
         # Some TTS paths don't emit a TTSStartedFrame the ledger sees — notably
@@ -262,7 +289,11 @@ class TranscriptLedger(BaseObserver):
         self._pending_gen = ""
         if not intended:
             return
-        audio_dur = (b["samples"] / b["sr"]) if b["sr"] else 0.0
+        # Every processor saw the WHOLE reply, so each one's samples/rate is the
+        # reply's duration on its own. Take the longest, never the sum: a resampled
+        # copy must not add length, and the longest is the source that saw the most.
+        audio_dur = max((n / rate for n, rate in b["audio_by_src"].values() if rate),
+                        default=0.0)
         # If synthesis was cut short, audio_dur underestimates the intended
         # length; fall back to a word-count estimate so heard_fraction isn't
         # inflated.
@@ -291,6 +322,16 @@ class TranscriptLedger(BaseObserver):
             # played-audio fraction implies — guards against a misaligned pts
             # baseline (which would silently drop words the user did hear).
             heard_text = pts_heard if len(pts_heard.split()) >= len(est.split()) else est
+            if _TRACE:
+                logger.info(
+                    f"TRACE cut t={t:.2f} audio_start={b['audio_start'] or 0:.2f} "
+                    f"heard_dur={(t - (b['audio_start'] or t)):.2f} "
+                    f"audio_by_src={b['audio_by_src']} audio_dur={audio_dur:.2f} "
+                    f"text_dur={text_dur:.2f} synth_done={b['synth_done']} "
+                    f"full_dur={full_dur:.2f} frac={frac:.2f} "
+                    f"pts_heard={len(pts_heard.split())} est={len(est.split())} "
+                    f"-> {len(heard_text.split())} words"
+                )
         elif len(spoken) > 1:
             heard_text = "".join(txt for txt, _ in spoken).strip()
         else:

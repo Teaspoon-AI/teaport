@@ -30,6 +30,7 @@ SCRIPTS = [
     ("test_final_survives_turn_start.py", 120),
     ("test_tool_call_indices.py", 120),
     ("test_tool_schema.py", 120),
+    ("test_heard_fraction.py", 120),
 ]
 
 
