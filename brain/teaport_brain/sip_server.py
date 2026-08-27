@@ -11,10 +11,19 @@
 # (sip_transport.py) instead of a FastAPI WebSocket. A phone call at the gateway
 # reaches Voxtral STT -> LLM -> Kokoro TTS instead of a stub echo.
 #
-# Lifecycle (M2): the UDS connection = the pipeline's lifetime (one persistent
-# pipeline, single active call in protocol v0). We GREET on call.state=confirmed
-# and RESET the LLM context on call.state=disconnected so the next caller starts
-# fresh WITHOUT tearing the pipeline down. If the gateway socket closes, we stop.
+# Lifecycle (M2, per-call): the UDS connection is PERSISTENT (a SipConnection owns
+# the socket + receive loop + call-control dispatch for the whole process), but each
+# CALL gets a FRESH pipeline. On call.state=confirmed we build a new
+# SipGatewayTransport + AgentSession (fresh STT/LLM/TTS/context), run it as a
+# background task, and greet; on call.state=disconnected we cancel that task, tearing
+# the per-call transport down — which frees the engine's single STT slot and recycles
+# all per-call state (the next caller builds fresh, so no context reset is needed).
+# Single active call in protocol v0: a new confirmed cancels any running call first.
+# If the gateway socket closes (EOF), we cancel any running call and stop.
+#
+# This mirrors the OpenClaw path (gateway_server.py), which already builds a fresh
+# pipeline per WebSocket connection. The earlier one-persistent-pipeline design (reset
+# context between calls, cancel_on_idle_timeout=False to keep it alive) is gone.
 #
 # Usage:  python -m teaport_brain.sip_server [--socket /tmp/teaport-sip.sock]
 #   Requires the engine at TEAPORT_URL (STT/TTS) and an LLM at LLM_BASE_URL.
@@ -54,6 +63,7 @@ from teaport_brain.services import make_tts  # noqa: E402
 from teaport_brain.sip_serializer import SipProtocolSerializer  # noqa: E402
 from teaport_brain.sip_transport import (  # noqa: E402
     DEFAULT_UDS_PATH,
+    SipConnection,
     SipGatewayTransport,
     connect_seqpacket,
     make_sip_params,
@@ -117,60 +127,106 @@ async def run(sock_path: str):
     sock = connect_seqpacket(sock_path)
     logger.info("connected — the brain is the socket client (gateway is the server)")
 
-    transport = SipGatewayTransport(sock, make_sip_params(SipProtocolSerializer()))
+    # The serializer is shared: the persistent connection uses it to DESERIALIZE
+    # inbound datagrams; the per-call output transport uses it (via params) to
+    # SERIALIZE brain->gateway control. SipProtocolSerializer is stateless, so one
+    # instance is safe for both directions.
+    serializer = SipProtocolSerializer()
+    params = make_sip_params(serializer)
+    connection = SipConnection(sock, serializer)
 
     logger.info(f"half-duplex input gate: {'ON' if HALF_DUPLEX else 'off'} "
                 f"(tail {_HD_TAIL_S}s) — diagnostic; real fix is AEC in the bridge")
-    # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
-    # (the input gate is the ONE SIP-specific processor). SIP runs ONE persistent
-    # pipeline across calls, so pipecat's idle-timeout (default ~5 min) must NOT
-    # cancel it between calls — cancel_on_idle_timeout=False keeps the brain alive
-    # so the next caller isn't met with silence.
-    session = build_agent_session(
-        transport,
-        input_processors=[HalfDuplexInputGate()] if HALF_DUPLEX else None,
-        cancel_on_idle_timeout=False,
-    )
 
-    greeted = {"active": False}
+    # Single active call in protocol v0. Holds (session, runner_task, transport) for
+    # the currently-running per-call pipeline, or None between calls.
+    active = {"call": None}
 
-    @transport.event_handler("on_client_connected")
-    async def on_connected(_transport, _client):
+    async def cancel_active_call(reason: str):
+        """Tear down the running per-call pipeline (if any): cancel its task and wait
+        out its teardown so the STT _disconnect closes the engine socket and frees the
+        single STT slot before the next call's STT connects."""
+        call = active["call"]
+        if call is None:
+            return
+        active["call"] = None
+        session, runner_task, _transport = call
+        logger.info(f"tearing down the per-call pipeline ({reason})")
+        try:
+            await session.task.cancel()
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"error cancelling per-call pipeline task: {e!r}")
+        try:
+            await asyncio.wait_for(runner_task, timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("per-call pipeline runner did not finish within 5s of cancel")
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"per-call pipeline runner ended with: {e!r}")
+        # Let the engine process the STT close and free the single slot before the
+        # next call's STT connects (mirrors the OpenClaw path's acquire_slot settle).
+        await asyncio.sleep(0.3)
+
+    @connection.event_handler("on_client_connected")
+    async def on_connected(_connection):
         logger.info("SIP gateway socket connected")
 
-    @transport.event_handler("on_hello")
-    async def on_hello(_transport, msg):
+    @connection.event_handler("on_hello")
+    async def on_hello(_connection, msg):
         logger.info(f"gateway hello: proto={msg.get('proto')} rate={msg.get('rate')} "
                     f"ch={msg.get('channels')} ptime={msg.get('ptime_ms')}ms")
 
-    @transport.event_handler("on_call_incoming")
-    async def on_call_incoming(_transport, msg):
+    @connection.event_handler("on_call_incoming")
+    async def on_call_incoming(_connection, msg):
         logger.info(f"call.incoming id={msg.get('call_id')} from={msg.get('from')} to={msg.get('to')}")
 
-    @transport.event_handler("on_dtmf")
-    async def on_dtmf(_transport, call_id, digit):
+    @connection.event_handler("on_dtmf")
+    async def on_dtmf(_connection, call_id, digit):
         logger.info(f"dtmf {digit!r} (call {call_id})")
 
-    @transport.event_handler("on_call_state")
-    async def on_call_state(_transport, call_id, state):
+    @connection.event_handler("on_call_state")
+    async def on_call_state(_connection, call_id, state):
         logger.info(f"call.state={state} (call {call_id})")
-        if state == "confirmed" and not greeted["active"]:
-            greeted["active"] = True
+        if state == "confirmed":
+            # Single active call in v0: evict any running pipeline first so its STT
+            # slot is freed before ours connects.
+            await cancel_active_call("superseded by a new call")
+            logger.info(f"building a FRESH per-call pipeline for call {call_id} "
+                        "(new STT/LLM/TTS/context)")
+            transport = SipGatewayTransport(connection, params)
+            # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX
+            # is on (the input gate is the ONE SIP-specific processor). No
+            # cancel_on_idle_timeout override: a per-call pipeline uses PipelineTask's
+            # default, exactly like the OpenClaw per-connection pipeline.
+            session = build_agent_session(
+                transport,
+                input_processors=[HalfDuplexInputGate()] if HALF_DUPLEX else None,
+            )
+            runner_task = asyncio.create_task(
+                PipelineRunner(handle_sigint=False).run(session.task)
+            )
+            active["call"] = (session, runner_task, transport)
             await session.greet()
         elif state == "disconnected":
-            # Reset for the next caller WITHOUT tearing down the pipeline (M2).
-            greeted["active"] = False
-            session.reset_context()
-            logger.info("call disconnected — LLM context reset for the next caller")
+            await cancel_active_call("call disconnected")
+            logger.info("call disconnected — per-call pipeline torn down, STT slot freed")
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_disconnected(_transport, _client):
-        logger.info("SIP gateway hung up (socket EOF) — stopping the pipeline")
-        await session.task.cancel()
+    @connection.event_handler("on_client_disconnected")
+    async def on_disconnected(_connection):
+        logger.info("SIP gateway hung up (socket EOF) — stopping")
 
-    logger.info("SIP brain pipeline starting (STT -> LLM -> TTS over teaport-sip)")
-    await PipelineRunner(handle_sigint=False).run(session.task)
-    logger.info("SIP brain pipeline stopped")
+    logger.info("SIP brain ready — persistent connection up; a fresh pipeline is "
+                "built per call (STT -> LLM -> TTS over teaport-sip)")
+    try:
+        # Blocks for the whole process: dispatches control + routes audio. Per-call
+        # pipelines run as background tasks launched from on_call_state above.
+        await connection.run()
+    finally:
+        # EOF (or any exit): tear down any running call and close the socket.
+        await cancel_active_call("connection closed")
+        connection.close()
+    logger.info("SIP brain stopped")
 
 
 def main():
