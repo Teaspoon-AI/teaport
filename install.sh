@@ -419,6 +419,7 @@ agent_openclaw() {
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
     printf '  [dry-run] openclaw config patch: gateway.port=%s trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n' "$GATEWAY_PORT"
+    printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
@@ -432,8 +433,19 @@ agent_openclaw() {
     # points OPENCLAW_GATEWAY_URL at the same port, but nothing else tells a host OpenClaw to
     # LISTEN there — its own default (and any TEAPORT_GATEWAY_PORT override) would otherwise
     # leave Caddy proxying to a dead port that phase_verify never checks.
+    # http.endpoints.chatCompletions.enabled: turn on the warm-lane consult endpoint the brain
+    # prefers for ask_openclaw (openclaw_client._completions_consult -> POST /v1/chat/completions).
+    # It is a STOCK endpoint but ships DISABLED ("default: false"), so without this every consult
+    # 404s the fast lane and falls back to the ~25s cold `openclaw agent --local` spawn (which then
+    # tends to blow the 45s budget and fail silently). config patch deep-merges, so this only adds
+    # the key. (Bare OpenClaw needs nothing more; the NemoClaw sandbox additionally needs the
+    # 1e72408 dial-back patch for CHANNEL actions — a sandbox-image concern, see agent_nemoclaw.)
     cat > "$patch" <<JSON
-{ "gateway": { "port": $GATEWAY_PORT, "trustedProxies": ["127.0.0.1", "::1"] } }
+{ "gateway": {
+    "port": $GATEWAY_PORT,
+    "trustedProxies": ["127.0.0.1", "::1"],
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+} }
 JSON
     "$OPENCLAW" config patch --file "$patch"
     rm -f "$patch"
@@ -506,6 +518,7 @@ agent_nemoclaw() {
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
     printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1, 172.18.0.1] (Caddy front door)\n'
+    printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
@@ -517,8 +530,18 @@ agent_nemoclaw() {
     # gateway either from its own loopback (an in-sandbox forward) or from the docker-bridge
     # host address (the same 172.18.0.1 the brain URL uses) — trust both; the forward is
     # host-loopback-bound, so this adds no reachability an attacker didn't already have.
+    # Also enable the warm-lane consult endpoint (POST /v1/chat/completions) the brain prefers
+    # for ask_openclaw — a stock endpoint that ships DISABLED ("default: false"). NOTE: inside the
+    # sandbox this makes NON-channel consults fast, but a warm-lane turn that drives a CHANNEL
+    # action still needs the openshell-dialback-locality patch (NemoClaw 1e72408) to escape the
+    # device-pairing dial-back loop; without it the brain falls back to `openclaw agent --local`
+    # (which loads channel plugins in-process) for those. Enabling the flag is still strictly
+    # better than leaving every consult 404 the fast lane.
     cat > "$patch" <<'JSON'
-{ "gateway": { "trustedProxies": ["127.0.0.1", "::1", "172.18.0.1"] } }
+{ "gateway": {
+    "trustedProxies": ["127.0.0.1", "::1", "172.18.0.1"],
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+} }
 JSON
     "$NEMOCLAW" "$SANDBOX" upload "$patch" /tmp/teaport-proxies.json
     "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw config patch --file /tmp/teaport-proxies.json
