@@ -7,11 +7,16 @@
 #
 # The appliance pin lives in brain/pyproject.toml and is read from there, never restated
 # here: this comment used to name a version of its own and was wrong the day the pin moved
-# to 1.7.0, disagreeing with the very message the module prints. That release is not on the
-# public index, so a development machine silently ends up on 0.0.108 instead — and a test
-# written and "verified" there can fail the moment it runs where it matters. That happened
-# on 2026-08-20 and cost a debugging cycle, which is why this is enforced rather than
-# remembered.
+# to 1.7.0, disagreeing with the very message the module prints. A development machine that
+# resolves pipecat from an unconstrained environment silently ends up on 0.0.108 instead —
+# and a test written and "verified" there can fail the moment it runs where it matters.
+# That happened on 2026-08-20 and cost a debugging cycle, which is why this is enforced
+# rather than remembered.
+#
+# (This note used to add "that release is not on the public index". It was true when
+# written and is not any more — 1.7.0 publishes to PyPI, so `uv venv --python 3.12` plus
+# `uv pip install -e ./brain` gets a dev box onto the exact pin. See brain/tests/README.md.
+# The guard still earns its keep: it is what catches the box that skipped that step.)
 #
 # FAILS LOUD, never open. Both fallbacks here used to `return`, which disabled the check
 # in exactly the workflow the error message below tells you to use: copied to /tmp/btests

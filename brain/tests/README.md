@@ -6,6 +6,21 @@ CI gate for the public repo: **green pytest is the merge gate**.
 pytest brain/tests/
 ```
 
+## Setting up a dev box
+
+The tests assert on pipecat internals, so they mean nothing against the wrong version —
+`pinned_pipecat.py` refuses to run rather than report a false pass. The pin
+(`brain/pyproject.toml`) is on PyPI, so a dev box can match the appliance exactly:
+
+```sh
+uv venv --python 3.12 .venv          # the package requires >=3.12
+uv pip install -e ./brain pytest
+cd brain/tests && ../../.venv/bin/python -m pytest test_suite.py -q
+```
+
+Expect **2 failed, 16 passed** off-appliance: the two failures below need hardware this
+box doesn't have. Anything else failing is a real regression.
+
 `test_suite.py` is the gate — the `test_*.py` files are
 self-contained scripts (each has a `__main__` that exits nonzero), and the suite runs
 them one per subprocess rather than as pytest natives. Pytest is configured

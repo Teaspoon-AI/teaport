@@ -29,6 +29,7 @@ from pipecat.frames.frames import (
     Frame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    LLMTextFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
@@ -39,6 +40,73 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 _QUIET_SECS = float(os.getenv("TEAPORT_FOLLOWUP_QUIET_S", "0.7"))
 # Ceiling on how long to hold an answer waiting for a gap; past this, speak anyway.
 _MAX_WAIT = float(os.getenv("TEAPORT_FOLLOWUP_MAX_WAIT_S", "60"))
+
+
+class OneShot:
+    """A pending retirement: `fire()` runs `retire` exactly once and sets `fired`."""
+
+    def __init__(self, retire):
+        self._retire = retire
+        self.fired = asyncio.Event()
+
+    def fire(self) -> None:
+        if not self.fired.is_set():
+            self.fired.set()
+            self._retire()
+
+
+class FollowupTrigger(FrameProcessor):
+    """Retires a one-shot context trigger the instant the completion that READ it
+    starts answering from it.
+
+    The follow-up's trigger message ("tell the user now...") is a STANDING ORDER in
+    the context. Retire it too early and the answer is never spoken; too late and a
+    later turn re-executes it. Both were live incidents. The only sound retirement
+    point is one causally tied to a completion having read the trigger — which is
+    why this is a processor and not a timer on FollowupGate.
+
+    PLACEMENT — directly below the LLM, and it cannot move:
+      * FollowupGate sits after transport.output(), and LLMTextFrame never gets
+        there: TTSService consumes text frames (`push_text_frames=False`, see
+        engine_tts.py) rather than forwarding them.
+      * The signal is the first LLMTextFrame, NOT LLMFullResponseStartFrame.
+        pipecat pushes the start frame BEFORE `_process_context` serializes the
+        context into the request (pipecat/services/openai/base_llm.py — push then
+        `await self._process_context(...)`), so retiring there neutralises the
+        trigger in place before the model ever sees it, losing EVERY answer. The
+        first LLMTextFrame is the earliest point at which the request provably
+        carried the trigger and the model is answering from it.
+
+    A completion that reads the trigger and is cancelled before producing text
+    leaves it armed on purpose: nothing was spoken, so the next completion should
+    still deliver it.
+    """
+
+    def __init__(self):
+        super().__init__()
+        self._armed: list = []
+
+    def arm(self, retire) -> OneShot:
+        """Register `retire` to run when the next answering completion produces text."""
+        shot = OneShot(retire)
+        self._armed.append(shot)
+        return shot
+
+    def disarm(self, shot: OneShot) -> None:
+        """Withdraw a pending retirement (the caller gave up waiting for it)."""
+        if shot in self._armed:
+            self._armed.remove(shot)
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        # Fire synchronously, with no await between the check and the retirement, so
+        # a single completion can never be seen as two.
+        if self._armed and isinstance(frame, LLMTextFrame) \
+                and any(c.isalnum() for c in (frame.text or "")):
+            armed, self._armed = self._armed, []
+            for shot in armed:
+                shot.fire()
+        await self.push_frame(frame, direction)
 
 
 class FollowupGate(FrameProcessor):
@@ -89,13 +157,19 @@ class FollowupGate(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def wait_until_delivered(self, start_timeout: float = 10.0) -> None:
-        """Wait for a turn we just queued to start speaking and then finish.
+        """Wait for the next stretch of activity to start and then finish.
 
-        The caller needs this to retire a one-shot trigger it put in the context: the
-        trigger has to survive until the turn it drives has been generated, and must
-        not survive past it. Returns early if no turn starts within start_timeout —
-        the trigger is retired either way, because a trigger that never fired is still
-        a standing order to the next turn that reads the context.
+        Used by the SIP front-end to let the busy line play before hanging up, where
+        nothing else is talking and "any activity" is precisely the right signal.
+
+        NOT sound for retiring a one-shot context trigger, which is what it was
+        originally written for. _busy is set by ANY activity — the user's speech as
+        readily as the turn the caller queued — so this returns on someone else's
+        turn and the trigger is retired having never been read. TLC found the
+        interleaving in 8 steps (brain/formal/Followup.tla, MODE = "asWritten",
+        invariant NoSilentLoss); it needs nothing more exotic than the user speaking
+        just after a consult lands. Retirement now belongs to FollowupTrigger, which
+        keys on the completion that actually read the trigger.
         """
         try:
             await asyncio.wait_for(self._busy.wait(), timeout=start_timeout)

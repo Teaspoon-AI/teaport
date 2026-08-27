@@ -132,6 +132,9 @@ class SipConnection(BaseObject):
         self._connected = True
         self._closing = False
         self._hello_acked = False
+        # One writer at a time on this fd — see send(). Concurrent sock_sendall calls
+        # strand each other; audio and control both go out through here.
+        self._send_lock = asyncio.Lock()
         # The CURRENTLY-ACTIVE call's input transport (its push_audio_frame sink), or
         # None between calls. Set by SipGatewayInputTransport.start, cleared on its
         # stop/cancel. Inbound audio for a None sink is dropped.
@@ -162,19 +165,35 @@ class SipConnection(BaseObject):
         return self._closing
 
     async def send(self, data: bytes):
-        """Send one datagram (audio.out or a brain->gateway control) atomically.
-        Guarded so a dead peer can't raise into a pipeline."""
+        """Send one datagram (audio.out or a brain->gateway control).
+        Guarded so a dead peer can't raise into a pipeline.
+
+        SERIALIZED, and the lock is not optional. SEQPACKET makes each datagram atomic
+        ON THE WIRE, but that says nothing about two coroutines calling sock_sendall on
+        one fd: asyncio registers at most ONE writer per fd, so the second call's
+        _add_writer cancels the first's handle and the first future is never resolved.
+        Its awaiting coroutine then blocks forever.
+
+        That is not theoretical here. The output transport's MediaSender calls this via
+        write_audio_frame continuously, while the receive loop calls send_control() for
+        the hello ack and sip_server for call.hangup. Whenever the UDS send buffer is
+        full (gateway stalled), the audio sender is the one left hanging — the call goes
+        silent with nothing logged, because no exception is ever raised."""
         if not (self._connected and not self._closing):
             return
-        try:
-            loop = asyncio.get_event_loop()
-            await loop.sock_sendall(self._sock, data)
-        except Exception as e:  # noqa: BLE001 — dead peer must not kill the pipeline
-            logger.warning(f"{self}: send failed: {e!r}")
+        async with self._send_lock:
+            # Re-check: close() can land while we waited for the lock.
+            if not (self._connected and not self._closing):
+                return
+            try:
+                loop = asyncio.get_event_loop()
+                await loop.sock_sendall(self._sock, data)
+            except Exception as e:  # noqa: BLE001 — dead peer must not kill the pipeline
+                logger.warning(f"{self}: send failed: {e!r}")
 
     async def send_control(self, msg: dict):
-        """Send a brain->gateway control message (e.g. call.hangup). SEQPACKET sends
-        are atomic, so this is safe alongside the output side's audio."""
+        """Send a brain->gateway control message (e.g. call.hangup). send() serializes
+        it against the output side's audio."""
         try:
             await self.send(encode_control(msg))
         except (TypeError, ValueError) as e:

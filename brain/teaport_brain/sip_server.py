@@ -138,19 +138,36 @@ async def run(sock_path: str):
     logger.info(f"half-duplex input gate: {'ON' if HALF_DUPLEX else 'off'} "
                 f"(tail {_HD_TAIL_S}s) — diagnostic; real fix is AEC in the bridge")
 
-    # Single active call in protocol v0. Holds (session, runner_task, transport) for
-    # the currently-running per-call pipeline, or None between calls.
+    # Single active call in protocol v0. Holds (call_id, session, runner_task,
+    # transport) for the currently-running per-call pipeline, or None between calls.
+    # The call_id is load-bearing: without it a `disconnected` cannot tell whether it
+    # is about the pipeline we are actually running (see on_call_state).
     active = {"call": None}
+    # The in-flight bring-up, if any: {"task", "call_id"}. Building the pipeline and
+    # greeting is SLOW (model construction plus greet()'s STT poll), so it runs as a
+    # task rather than inline in the receive loop — see on_call_state.
+    setup = {"task": None, "call_id": None}
 
-    async def cancel_active_call(reason: str):
-        """Tear down the running per-call pipeline (if any): cancel its task and wait
-        out its teardown so the STT _disconnect closes the engine socket and frees the
-        single STT slot before the next call's STT connects."""
+    async def cancel_active_call(reason: str, call_id: str | None = None):
+        """Tear down the running per-call pipeline: cancel its task and wait out its
+        teardown so the STT _disconnect closes the engine socket and frees the single
+        STT slot before the next call's STT connects.
+
+        `call_id`, when given, is a GUARD: tear down only if the running pipeline
+        belongs to that call. Without it this cancelled whatever happened to be
+        running, so a stale `disconnected` for a finished call killed the pipeline of
+        the call that had replaced it — leaving that caller connected to a gateway with
+        no brain: no audio, no hangup, and no further `confirmed` ever coming. TLC finds
+        it in 9 steps (brain/formal/SipCall.tla, MODE = "asWritten", NoWrongTeardown)."""
         call = active["call"]
         if call is None:
             return
+        if call_id is not None and call[0] != call_id:
+            logger.info(f"ignoring {reason} for call {call_id} — the active pipeline "
+                        f"belongs to call {call[0]}")
+            return
         active["call"] = None
-        session, runner_task, _transport = call
+        _call_id, session, runner_task, _transport = call
         logger.info(f"tearing down the per-call pipeline ({reason})")
         try:
             await session.task.cancel()
@@ -185,44 +202,88 @@ async def run(sock_path: str):
     async def on_dtmf(_connection, call_id, digit):
         logger.info(f"dtmf {digit!r} (call {call_id})")
 
+    async def cancel_setup(reason: str, call_id: str | None = None):
+        """Abandon an in-flight bring-up. `call_id` guards it the same way
+        cancel_active_call's does."""
+        task = setup["task"]
+        if task is None:
+            return
+        if call_id is not None and setup["call_id"] != call_id:
+            return
+        logger.info(f"abandoning the in-flight bring-up for call {setup['call_id']} "
+                    f"({reason})")
+        setup["task"] = None
+        setup["call_id"] = None
+        if not task.done():
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"bring-up task ended with: {e!r}")
+
+    async def bring_up_call(call_id):
+        """Build the per-call pipeline and greet. Runs as a TASK, never inline in the
+        receive loop — see on_call_state."""
+        logger.info(f"building a FRESH per-call pipeline for call {call_id} "
+                    "(new STT/LLM/TTS/context)")
+        transport = SipGatewayTransport(connection, params)
+        # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
+        # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
+        # override: a per-call pipeline uses PipelineTask's default, exactly like the
+        # OpenClaw per-connection pipeline.
+        session = build_agent_session(
+            transport,
+            input_processors=[HalfDuplexInputGate()] if HALF_DUPLEX else None,
+        )
+        runner_task = asyncio.create_task(
+            PipelineRunner(handle_sigint=False).run(session.task)
+        )
+        # Publish BEFORE greeting: from here a `disconnected` for this call can find
+        # and tear down the pipeline even though the bring-up is still running.
+        active["call"] = (call_id, session, runner_task, transport)
+        await session.greet()
+        if session.should_end:
+            # STT is unavailable — either the engine's single slot is held by another
+            # session (e.g. the local OpenClaw brain) or the engine is unreachable.
+            # greet() spoke the matching line instead of greeting; let it play out, then
+            # hang the caller up and tear the pipeline down so the line drops cleanly.
+            # wait_until_delivered returns once the line has been spoken (or after a
+            # short timeout if the engine can't even synthesize it — hang up either way).
+            logger.info(f"STT unavailable for call {call_id} — playing the warning, "
+                        "then hanging up")
+            await session.followup_gate.wait_until_delivered()
+            await transport.send_control({"type": "call.hangup"})
+            await cancel_active_call("STT unavailable", call_id=call_id)
+
     @connection.event_handler("on_call_state")
     async def on_call_state(_connection, call_id, state):
         logger.info(f"call.state={state} (call {call_id})")
+        # This handler is dispatched sync=True, INLINE in the connection's single
+        # receive loop, so whatever it awaits is time the socket is not being read:
+        # no control, and no caller audio either. The bring-up is by far the longest
+        # thing here — model construction plus greet()'s 12s STT poll, plus the
+        # can't-hear branch's wait_until_delivered — so it runs as a task and this
+        # handler returns promptly. Teardown stays inline because ordering is
+        # load-bearing (the STT slot must be freed before the next call claims it) and
+        # it is bounded by cancel_active_call's 5s wait.
+        #
+        # See brain/formal/SipCall.tla: a blocked reader lets control events queue up,
+        # and a stale `disconnected` dispatched after the backlog clears is exactly what
+        # tore down the wrong call.
         if state == "confirmed":
-            # Single active call in v0: evict any running pipeline first so its STT
-            # slot is freed before ours connects.
+            # Single active call in v0: evict any running pipeline (and any bring-up
+            # still in flight) first, so the STT slot is free before ours connects.
+            await cancel_setup("superseded by a new call")
             await cancel_active_call("superseded by a new call")
-            logger.info(f"building a FRESH per-call pipeline for call {call_id} "
-                        "(new STT/LLM/TTS/context)")
-            transport = SipGatewayTransport(connection, params)
-            # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX
-            # is on (the input gate is the ONE SIP-specific processor). No
-            # cancel_on_idle_timeout override: a per-call pipeline uses PipelineTask's
-            # default, exactly like the OpenClaw per-connection pipeline.
-            session = build_agent_session(
-                transport,
-                input_processors=[HalfDuplexInputGate()] if HALF_DUPLEX else None,
-            )
-            runner_task = asyncio.create_task(
-                PipelineRunner(handle_sigint=False).run(session.task)
-            )
-            active["call"] = (session, runner_task, transport)
-            await session.greet()
-            if session.should_end:
-                # The engine's single STT slot is held by another session (e.g. the
-                # local OpenClaw brain). greet() spoke the busy line instead of
-                # greeting; let it play out, then hang the caller up and tear the
-                # per-call pipeline down so the line drops cleanly. wait_until_delivered
-                # returns once the line has been spoken (or after a short timeout if the
-                # engine can't even synthesize it — hang up either way).
-                logger.info(f"STT slot busy for call {call_id} — playing the busy "
-                            "message, then hanging up")
-                await session.followup_gate.wait_until_delivered()
-                await transport.send_control({"type": "call.hangup"})
-                await cancel_active_call("busy — STT slot held by another session")
+            setup["call_id"] = call_id
+            setup["task"] = asyncio.create_task(bring_up_call(call_id))
         elif state == "disconnected":
-            await cancel_active_call("call disconnected")
-            logger.info("call disconnected — per-call pipeline torn down, STT slot freed")
+            # Both guarded by call_id: this may be a stale disconnected for a call that
+            # has already been superseded, in which case it must touch nothing.
+            await cancel_setup("call disconnected during bring-up", call_id=call_id)
+            await cancel_active_call("call disconnected", call_id=call_id)
 
     @connection.event_handler("on_client_disconnected")
     async def on_disconnected(_connection):
@@ -235,7 +296,10 @@ async def run(sock_path: str):
         # pipelines run as background tasks launched from on_call_state above.
         await connection.run()
     finally:
-        # EOF (or any exit): tear down any running call and close the socket.
+        # EOF (or any exit): abandon any bring-up, tear down any running call, and
+        # close the socket. The bring-up first — it is the thing that could otherwise
+        # publish a new active call after we tore the old one down.
+        await cancel_setup("connection closed")
         await cancel_active_call("connection closed")
         connection.close()
     logger.info("SIP brain stopped")

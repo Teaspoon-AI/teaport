@@ -90,6 +90,16 @@ async def run_relay_bot(websocket: WebSocket):
     async def on_client_connected(_transport, _client):
         logger.info("OpenClaw relay client connected — greeting")
         await session.greet()
+        if session.should_end:
+            # greet() spoke the can't-hear line instead of greeting. Nothing read this
+            # before, so the session stayed up: the client saw a connected assistant
+            # that answered once and then never again, while holding _active_session.
+            # docs/CONFIG.md and docs/FAQ.md both promise the session ends here, and
+            # the SIP path already does it (hangs the caller up). Let the line play,
+            # then end the pipeline — the client sees a clean disconnect.
+            logger.info("STT unavailable — ending the session after the warning plays")
+            await session.followup_gate.wait_until_delivered()
+            await session.task.cancel()
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):

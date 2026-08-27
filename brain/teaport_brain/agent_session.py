@@ -61,7 +61,7 @@ from teaport_brain import llm_text_guard  # noqa: E402
 from teaport_brain import raw_llm_capture  # noqa: E402
 from teaport_brain import thinking_sound  # noqa: E402
 from teaport_brain.engine_tts import LANG_NAMES  # noqa: E402
-from teaport_brain.followup_gate import FollowupGate  # noqa: E402
+from teaport_brain.followup_gate import FollowupGate, FollowupTrigger  # noqa: E402
 from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker  # noqa: E402
 from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
@@ -112,12 +112,24 @@ AGENT_FIRST_DIRECTIVE = (
 _TTS_LANG_NAMES = {k: v for k, v in LANG_NAMES.items() if not k.startswith("en-")}
 
 
-# --- Single-slot arbiter --------------------------------------------------------
-# The engine STT serves a single session, so only one relay pipeline may hold it at
-# a time. Track the live (task, done-event) so a new connection can evict a stale
-# one (e.g. a frozen client whose disconnect was never detected, leaving the slot
-# held). Only the OpenClaw path (per-connection pipelines) uses this; the SIP path
-# runs one persistent pipeline and never contends for the slot.
+# --- Single-slot arbiter (WITHIN ONE PROCESS) -----------------------------------
+# The engine STT serves a single session, so only one pipeline may hold it at a time.
+# Track the live (task, done-event) so a new connection can evict a stale one (e.g. a
+# frozen client whose disconnect was never detected, leaving the slot held).
+#
+# SCOPE, because the name oversells it: these are module globals, so this arbitrates
+# only among pipelines in the SAME PROCESS — i.e. among OpenClaw /talk connections.
+# teaport-brain.service and teaport-sip-brain.service are two separate units running
+# two separate processes, so acquire_slot() cannot evict a SIP call and slot_active()
+# cannot see one (nor the reverse). The SIP path contends for the same engine slot on
+# every call — it has since 2612baf made it per-call — it just cannot register here.
+#
+# The real cross-front-end contract is therefore NOT handoff but: FIRST CONNECT WINS,
+# and the loser hears the busy line. That is enforced by the engine returning 503, not
+# by any code here. stt.py retries a 503 briefly so a slot still settling from the
+# previous session's close is not mistaken for one genuinely in use; see
+# brain/formal/SttSlot.tla, which models both front-ends against the one engine slot
+# and the close-latency window between them.
 _active_session = None
 _session_lock = asyncio.Lock()
 
@@ -163,12 +175,31 @@ async def acquire_slot(task):
     return my_done, release
 
 
-def _make_consult_followup(task, context, gate):
+# How many quiet windows to try before giving up on delivering a consult answer. A
+# barge-in between queueing the follow-up turn and the model reading it flushes the
+# queued LLMRunFrame, so the attempt has to be repeatable.
+# How long greet() waits for the STT tri-state to resolve before treating it as
+# can't-hear. The loopback engine answers in well under a second and a 503 now
+# resolves within the connect retry budget, but an unreachable HOST (SYN blackhole —
+# box off) takes the websockets ~10s open timeout to fail, so the window has to
+# outlast that. Named so tests can shorten it instead of sitting through it.
+_STT_RESOLVE_POLLS = 120
+_STT_RESOLVE_INTERVAL_S = 0.1
+
+_DELIVERY_ATTEMPTS = 3
+# How long one attempt waits for the model to start answering from the trigger before
+# treating the turn as flushed. Generous: this covers the queue plus a cold completion.
+_DELIVERY_START_TIMEOUT = 20.0
+
+
+def _make_consult_followup(task, context, gate, retirer):
     """Follow-up injector for the ASYNC ask_openclaw path. When a background consult
     finishes, append its answer to the context and run the LLM so the bot SPEAKS it
     as an unprompted turn, reattached to what the user asked. A failed/empty consult
     yields a brief 'couldn't get it' turn instead of silence. Bound per-session to
-    this task + context; `gate` holds the turn until neither side is mid-speech."""
+    this task + context; `gate` holds the turn until neither side is mid-speech and
+    `retirer` (FollowupTrigger) takes the one-shot trigger back out of the context
+    once the model has actually answered from it."""
     async def speak_followup(request, text, tool_call_id=None):
         # Wait for a clear moment: don't step on the user mid-utterance OR the
         # assistant mid-answer about something else. (Gives up after max_wait so a
@@ -228,20 +259,57 @@ def _make_consult_followup(task, context, gate):
         context.add_message(trigger)
         logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
                     f"tool result {'rewritten' if rewrote else 'not found'})")
-        await task.queue_frames([LLMRunFrame()])
-        # Retire the trigger once its turn has been spoken. It is a one-shot: "Tell the
-        # user now..." left in the context is a standing order, and the model re-executes
-        # it the next time a turn gives it nothing else to do. Observed live 2026-08-26
-        # 08:17 — the shop list was delivered correctly, then the user said "That's
-        # useful." and the bot recited the whole list again.
+
+        # Retire the trigger once the model has ANSWERED FROM IT. It is a one-shot:
+        # "Tell the user now..." left in the context is a standing order, and the model
+        # re-executes it the next time a turn gives it nothing else to do (observed live
+        # 2026-08-26 08:17 — the shop list was delivered, the user said "That's useful."
+        # and the bot recited the whole list again).
         #
-        # Neutralised in place rather than removed: the messages list may be a copy,
-        # but the dicts in it are live (that is how the tool result above is rewritten).
+        # Neutralised in place rather than removed: the messages list may be a copy, but
+        # the dicts in it are live (that is how the tool result above is rewritten).
         # Nothing is lost, because the answer itself stays in the rewritten tool result.
-        await gate.wait_until_delivered()
-        trigger["content"] = ("[automated system notice, not spoken by the user]\n"
-                              "An earlier background task finished and its outcome was "
-                              "already given to the user. Nothing further is needed.")
+        #
+        # This used to key on gate.wait_until_delivered(), and that is unsound: _busy is
+        # set by ANY activity, so the user speaking right after the consult landed
+        # satisfied it and the trigger was retired having never been read — the answer
+        # then never reached the user at all. TLC finds it in 8 steps
+        # (brain/formal/Followup.tla, MODE = "asWritten"). Keying on our OWN completion
+        # instead is not enough either: a barge-in between the read and the retirement
+        # leaves the trigger live for the next turn to recite a second time (MODE =
+        # "gateOnOwn" violates NoRepeatRecital). Only retiring AT the read satisfies
+        # both, which is what FollowupTrigger does.
+        def _retire():
+            trigger["content"] = ("[automated system notice, not spoken by the user]\n"
+                                  "An earlier background task finished and its outcome "
+                                  "was already given to the user. Nothing further is "
+                                  "needed.")
+
+        for attempt in range(_DELIVERY_ATTEMPTS):
+            # Arm BEFORE queueing: the completion can start while queue_frames is still
+            # awaiting, and an unarmed trigger read is exactly the double-recital case.
+            shot = retirer.arm(_retire)
+            await task.queue_frames([LLMRunFrame()])
+            try:
+                await asyncio.wait_for(shot.fired.wait(),
+                                       timeout=_DELIVERY_START_TIMEOUT)
+                return
+            except asyncio.TimeoutError:
+                # Nothing answered from the trigger — a barge-in flushed the queued
+                # LLMRunFrame. The trigger is still live and still accurate, so wait for
+                # the next clear moment and queue the turn again.
+                retirer.disarm(shot)
+                if attempt + 1 < _DELIVERY_ATTEMPTS:
+                    logger.info("consult follow-up: turn was flushed before the model "
+                                f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
+                    await gate.wait_until_idle()
+        # Out of attempts. Retire it anyway: a live "tell the user now" is a standing
+        # order the next unrelated turn would execute, which is worse than a lost answer
+        # (the answer itself survives in the rewritten tool result, so "what did the
+        # agent say?" still works).
+        logger.warning(f"consult follow-up: not delivered after {_DELIVERY_ATTEMPTS} "
+                       "attempts — retiring the trigger unread")
+        _retire()
     return speak_followup
 
 
@@ -261,8 +329,8 @@ def _build_initial_messages(system_prompt: str, lang_name: str | None) -> list:
 class AgentSession:
     """Everything a front-end drives after build_agent_session(): the PipelineTask to
     run, the LLMContext, the STT service (for the greeting's tri-state check), the
-    TranscriptLedger observer, and the FollowupGate. greet() / reset_context() are the
-    shared lifecycle helpers both front-ends call."""
+    TranscriptLedger observer, and the FollowupGate. greet() is the shared lifecycle
+    helper both front-ends call."""
 
     # The robust greeting: a USER-role stage direction (NOT a system-only note). At
     # connect the context is otherwise system-only, and strict OpenAI-compatible
@@ -279,17 +347,23 @@ class AgentSession:
         "Sorry, the voice assistant is busy with another session right now — "
         "please try again in a moment."
     )
+    # Spoken when STT is unavailable for any OTHER reason — engine service dead, box
+    # off, wrong host. These are NOT the same failure and must not read the same:
+    # "busy with another session" sends the user to the FAQ's "stop the local brain so
+    # the line wins the slot" remedy for what is actually a down engine. The STT
+    # service distinguishes them (stt.slot_busy) because a REJECTION is exactly what it
+    # retries and an unreachable host is what it does not.
+    _UNAVAILABLE_MESSAGE = (
+        "Sorry, I can't hear you right now — my speech recognition isn't available. "
+        "Please hang up and reconnect in a moment."
+    )
 
-    def __init__(self, *, task, context, stt, ledger, followup_gate,
-                 heard_corrector, system_prompt, lang_name):
+    def __init__(self, *, task, context, stt, ledger, followup_gate):
         self.task = task
         self.context = context
         self.stt = stt
         self.ledger = ledger
         self.followup_gate = followup_gate
-        self._heard_corrector = heard_corrector
-        self.system_prompt = system_prompt
-        self.lang_name = lang_name
         # Set by greet() when the STT slot is busy: the front-end reads it to end the
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
         # client disconnect). False on a normal greeting.
@@ -311,31 +385,36 @@ class AgentSession:
         block: the front-end decides how to end (SIP waits for the line to play, then
         hangs up; OpenClaw leaves it to its existing client-disconnect path). The normal
         (STT-available) greeting is unchanged."""
-        for _ in range(120):
+        for _ in range(_STT_RESOLVE_POLLS):
             if self.stt.stt_available is not None:
                 break
-            await asyncio.sleep(0.1)
+            await asyncio.sleep(_STT_RESOLVE_INTERVAL_S)
         if self.stt.stt_available is not True:
+            # Say WHICH failure it was. slot_busy is True only when the engine actively
+            # rejected us (503 — its one session is taken, after the connect retry gave
+            # the previous session's close time to land); False for an unreachable host
+            # and None when the tri-state never resolved at all, both of which mean the
+            # engine, not another session, is the problem.
+            busy = self.stt.slot_busy is True
             logger.warning(
-                "STT slot unavailable at connect (held by another session) — "
-                "speaking the busy message and ending this session instead of greeting"
+                ("STT slot held by another session at connect — " if busy else
+                 "STT engine unavailable at connect (not a busy slot) — ")
+                + "speaking the warning and ending this session instead of greeting"
             )
             self.should_end = True
-            await self.task.queue_frames([TTSSpeakFrame(self._BUSY_MESSAGE)])
+            await self.task.queue_frames([TTSSpeakFrame(
+                self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE)])
             return
         self.context.add_message({"role": "user", "content": self._GREETING})
         await self.task.queue_frames([LLMRunFrame()])
 
-    def reset_context(self, system_prompt: str | None = None, lang_name: str | None = None):
-        """Reset the LLM context to its starting messages for the next call WITHOUT
-        tearing the pipeline down (the SIP path's per-call reset). set_messages leaves
-        the tool schema intact; the heard-corrector's done-index is advanced past the
-        prior call's ledger so it doesn't re-reconcile old turns. Defaults to the
-        prompt/language this session was built with."""
-        system_prompt = self.system_prompt if system_prompt is None else system_prompt
-        lang_name = self.lang_name if lang_name is None else lang_name
-        self.context.set_messages(_build_initial_messages(system_prompt, lang_name))
-        self._heard_corrector._done = len(self.ledger.events)
+    # There is no reset_context() here any more. It existed for the pre-2612baf
+    # persistent SIP pipeline, which reset the context between calls; the per-call
+    # design builds a fresh pipeline (and a fresh context) each time, so nothing
+    # called it. It also reached into HeardContextCorrector._done, a private write
+    # that would have broken silently on a rename. If a persistent pipeline ever
+    # comes back, give HeardContextCorrector a public reset() rather than restoring
+    # this.
 
 
 def build_agent_session(transport, *, voice: str | None = None,
@@ -431,6 +510,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     ep_out = endpoint_debug.EndpointDebug(ep_marks, "out") if endpoint_debug.ENABLED else None
     # Gates the async ask_openclaw follow-up so it only speaks in a clear moment.
     followup_gate = FollowupGate()
+    # Retires the follow-up's one-shot trigger at the completion that reads it. Must
+    # sit directly below the LLM — see FollowupTrigger's placement note.
+    followup_trigger = FollowupTrigger()
 
     pipeline = Pipeline([p for p in [
         transport.input(),
@@ -451,6 +533,12 @@ def build_agent_session(transport, *, voice: str | None = None,
         # model.
         LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         llm,
+        # Retires the consult follow-up's one-shot trigger the moment the model starts
+        # answering from it. HERE and nowhere else: LLMTextFrame is consumed by the TTS
+        # (push_text_frames=False), so no position below it ever sees one — and
+        # LLMFullResponseStartFrame is pushed BEFORE the context is serialized, so it
+        # cannot be the signal. See FollowupTrigger.
+        followup_trigger,
         # tap: llm-start + llm-first-token. Must sit ABOVE the guard: downstream of it
         # this would time the first token that SURVIVES the guard, and a completion the
         # guard trips on immediately would set no llm_first_token mark at all — which
@@ -496,7 +584,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # the ThinkingSound bed covers the wait and TURN-TIMING measures to the answer.
     register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
                    followup=None if AGENT_FIRST
-                   else _make_consult_followup(task, context, followup_gate))
+                   else _make_consult_followup(task, context, followup_gate,
+                                               followup_trigger))
 
     return AgentSession(
         task=task,
@@ -504,7 +593,4 @@ def build_agent_session(transport, *, voice: str | None = None,
         stt=stt,
         ledger=ledger,
         followup_gate=followup_gate,
-        heard_corrector=heard_corrector,
-        system_prompt=system_prompt,
-        lang_name=lang_name,
     )
