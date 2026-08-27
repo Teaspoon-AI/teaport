@@ -208,6 +208,18 @@ async def run(sock_path: str):
             )
             active["call"] = (session, runner_task, transport)
             await session.greet()
+            if session.should_end:
+                # The engine's single STT slot is held by another session (e.g. the
+                # local OpenClaw brain). greet() spoke the busy line instead of
+                # greeting; let it play out, then hang the caller up and tear the
+                # per-call pipeline down so the line drops cleanly. wait_until_delivered
+                # returns once the line has been spoken (or after a short timeout if the
+                # engine can't even synthesize it — hang up either way).
+                logger.info(f"STT slot busy for call {call_id} — playing the busy "
+                            "message, then hanging up")
+                await session.followup_gate.wait_until_delivered()
+                await transport.send_control({"type": "call.hangup"})
+                await cancel_active_call("busy — STT slot held by another session")
         elif state == "disconnected":
             await cancel_active_call("call disconnected")
             logger.info("call disconnected — per-call pipeline torn down, STT slot freed")

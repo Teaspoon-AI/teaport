@@ -270,9 +270,14 @@ class AgentSession:
     # "No user query found in messages". The parenthetical reads as a call-connected
     # cue, so the persona still generates the wording.
     _GREETING = "(The call/session just connected. Greet me warmly in one short sentence.)"
-    _STT_UNAVAILABLE_WARNING = (
-        "Sorry, I can't hear you right now — my speech recognition isn't "
-        "available. Please hang up and reconnect in a moment."
+    # Spoken when the engine's single STT slot is already held by another session (the
+    # local OpenClaw brain and the SIP brain share ONE engine slot; whoever connects
+    # first holds it, the second hears this). Unified wording for both front-ends: the
+    # SIP side hangs the caller up after it plays, the OpenClaw side lets its own client
+    # disconnect — so a neutral "busy, try again" reads right on a phone and in the app.
+    _BUSY_MESSAGE = (
+        "Sorry, the voice assistant is busy with another session right now — "
+        "please try again in a moment."
     )
 
     def __init__(self, *, task, context, stt, ledger, followup_gate,
@@ -285,27 +290,38 @@ class AgentSession:
         self._heard_corrector = heard_corrector
         self.system_prompt = system_prompt
         self.lang_name = lang_name
+        # Set by greet() when the STT slot is busy: the front-end reads it to end the
+        # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
+        # client disconnect). False on a normal greeting.
+        self.should_end = False
 
     async def greet(self):
         """Greet the user with an LLM turn — but only through a working STT.
 
-        If STT didn't connect (e.g. the single-session engine is busy → 503), warn
-        the user instead of greeting, otherwise the bot 'talks but can't hear'. STT
-        connect fires on StartFrame; the loopback engine resolves the tri-state in
-        well under a second, but an unreachable engine HOST (SYN blackhole — box off)
-        takes the websockets ~10s open timeout to fail, so wait out the full
-        resolution window. The healthy path still resolves fast, so this adds no
-        latency when things work; still-None after the window is treated as
-        can't-hear too, not greeted through."""
+        If STT didn't connect (e.g. the single-session engine's STT slot is already
+        held → 503), speak a busy message and flag the session to END instead of
+        greeting, otherwise the bot 'talks but can't hear'. STT connect fires on
+        StartFrame; the loopback engine resolves the tri-state in well under a second,
+        but an unreachable engine HOST (SYN blackhole — box off) takes the websockets
+        ~10s open timeout to fail, so wait out the full resolution window. The healthy
+        path still resolves fast, so this adds no latency when things work; still-None
+        after the window is treated as can't-hear too, not greeted through.
+
+        On the busy path this sets self.should_end and queues the busy line but does NOT
+        block: the front-end decides how to end (SIP waits for the line to play, then
+        hangs up; OpenClaw leaves it to its existing client-disconnect path). The normal
+        (STT-available) greeting is unchanged."""
         for _ in range(120):
             if self.stt.stt_available is not None:
                 break
             await asyncio.sleep(0.1)
         if self.stt.stt_available is not True:
             logger.warning(
-                "STT engine unavailable at connect — warning the user instead of greeting"
+                "STT slot unavailable at connect (held by another session) — "
+                "speaking the busy message and ending this session instead of greeting"
             )
-            await self.task.queue_frames([TTSSpeakFrame(self._STT_UNAVAILABLE_WARNING)])
+            self.should_end = True
+            await self.task.queue_frames([TTSSpeakFrame(self._BUSY_MESSAGE)])
             return
         self.context.add_message({"role": "user", "content": self._GREETING})
         await self.task.queue_frames([LLMRunFrame()])

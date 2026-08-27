@@ -24,5 +24,18 @@ downloads. You bring your own Jetson and your own LLM.
   installer sets up the certificate and the `teaport.local` name for you. Pair
   the device, then start a Talk session. If something looks wrong, run
   `teaport status` or `teaport doctor`.
+- **Step 5 (optional) — Add a phone line.** SIP telephony is **opt-in**: the
+  installer places the SIP units but leaves them off. To answer real phone calls,
+  point the box at your SIP trunk / SBC:
+
+  ```
+  teaport sip configure
+  ```
+
+  The wizard asks for your registrar host, domain, username and password,
+  test-registers, and — only if that succeeds — enables the line. Manage it with
+  `teaport sip status` and `teaport sip disable`. The local assistant and the
+  phone line share one speech slot; see **docs/CONFIG.md → SIP telephony** for
+  how that works and how to dedicate a box to the phone.
 
 TODO: expand each step; add troubleshooting, uninstall, and update paths.

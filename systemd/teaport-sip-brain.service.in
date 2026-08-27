@@ -1,0 +1,26 @@
+# teaport-sip-brain — the SIP brain client (opt-in). Runs the SAME shared voice pipeline
+# as teaport-brain (agent_session.build_agent_session), but over the teaport-sip AF_UNIX
+# socket instead of the OpenClaw WebSocket. BindsTo the gateway: it exists only to serve a
+# live gateway and is stopped with it. Gated on the same @SIP_CONF@ as the gateway, so a
+# default box never starts it and a reboot brings it up ONLY if telephony was configured.
+# Rendered by install.sh (@USER@/@PREFIX@/@ETC@/@SIP_CONF@/@SIP_UDS@); ${VARS} and secrets
+# (the LLM key, the OpenClaw token) come from @ETC@/brain.env + ~/.config/teaport.
+[Unit]
+Description=teaport SIP brain (voice pipeline over the SIP gateway)
+After=teaport-sip.service teaport-engine.service
+BindsTo=teaport-sip.service
+ConditionPathExists=@SIP_CONF@
+
+[Service]
+Type=simple
+User=@USER@
+EnvironmentFile=@ETC@/brain.env
+# Full-duplex: the gateway's AEC cancels line echo, so the half-duplex input gate (the
+# diagnostic that drops caller audio while the bot speaks) stays OFF and barge-in works.
+Environment=SIP_HALF_DUPLEX=0
+ExecStart=@PREFIX@/venv/bin/python -m teaport_brain.sip_server --socket @SIP_UDS@
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

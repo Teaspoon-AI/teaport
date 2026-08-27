@@ -570,9 +570,18 @@ render_unit() {  # render_unit <template.in> <dest-name>
   # Absolute node path for the bridge unit's ExecStart — systemd services get a minimal PATH
   # and node may live outside it (nvm/NodeSource), so resolve it at render time like @NEMOCLAW@.
   local node_bin; node_bin="$(command -v node || echo /usr/bin/node)"
+  # SIP telephony unit substitutions (opt-in — see phase_sip). The GPL gateway binary lives
+  # in its own repo/build tree (NOT $PREFIX); @SIP_CONF@ is the credentials .conf the CLI
+  # (`teaport sip configure`) writes into the secrets dir and both SIP units gate on
+  # (ConditionPathExists); @SIP_UDS@ is the AF_UNIX socket the gateway and brain meet on.
+  local sip_gateway="${TEAPORT_SIP_GATEWAY:-$HOME/teaport-sip/build/teaport-sip}"
+  local sip_conf="$SECRETS/teaport-sip.conf"
+  local sip_uds="${TEAPORT_SIP_UDS:-/tmp/teaport-sip.sock}"
   local body; body="$(sed -e "s#@USER@#$RUN_USER#g" -e "s#@PREFIX@#$PREFIX#g" -e "s#@ETC@#$ETC#g" \
                           -e "s#@NEMOCLAW@#$nemoclaw_bin#g" -e "s#@SANDBOX@#$SANDBOX#g" \
-                          -e "s#@NODE@#$node_bin#g" "$tpl")"
+                          -e "s#@NODE@#$node_bin#g" \
+                          -e "s#@SIP_GATEWAY@#$sip_gateway#g" -e "s#@SIP_CONF@#$sip_conf#g" \
+                          -e "s#@SIP_UDS@#$sip_uds#g" "$tpl")"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> /etc/systemd/system/%s\n' "$1" "$out";
   else printf '%s\n' "$body" | SUDO tee "/etc/systemd/system/$out" >/dev/null; fi
 }
@@ -867,6 +876,26 @@ phase_bridge() {
   fi
 }
 
+# teaport-sip telephony (opt-in). The GPL C++ gateway (separate teaport-sip repo, NOT
+# built or installed here — the binary is expected at $HOME/teaport-sip/build/teaport-sip)
+# plus the SIP brain client (a second front-end onto the SAME shared pipeline as the
+# OpenClaw brain). Both units are laid down but left INERT: each carries
+# ConditionPathExists on the SIP config that `teaport sip configure` writes, so a default
+# box never starts them. Configuring — which test-registers, writes the .conf (mode 600),
+# then `enable --now`s both — is what turns telephony on. This mirrors the Discord bridge's
+# opt-in shape, minus the env/token wiring the CLI owns for SIP.
+phase_sip() {
+  log "sip telephony: installing units (opt-in — 'teaport sip configure' turns it on)"
+  render_unit teaport-sip.service.in       teaport-sip.service
+  render_unit teaport-sip-brain.service.in teaport-sip-brain.service
+  SUDO systemctl daemon-reload
+  # Deliberately NOT enabled/started here: the units are gated on the SIP config, and
+  # `teaport sip configure` registers a trunk, writes that config, then enables both. A
+  # re-run on an already-configured box re-renders the units but leaves their enabled
+  # state alone, so repairing never silently turns telephony off.
+  log "sip telephony: units installed but inert — run 'teaport sip configure' to register a SIP trunk and start it"
+}
+
 phase_verify() {
   log "verify"
   if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$AGENT_MODE" ] && echo ', front door :443, gateway->brain')"; return; fi
@@ -959,6 +988,7 @@ main() {
   phase_services
   phase_frontdoor
   phase_bridge
+  phase_sip
   phase_verify
   usage_footer
 }
