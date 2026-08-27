@@ -35,7 +35,9 @@
 #      and truncate the caller's audio).
 
 import asyncio
+import os
 import socket
+import struct
 import time
 
 from loguru import logger
@@ -78,9 +80,36 @@ class SipGatewayParams(TransportParams):
 # teaport-sip/src/ipc/protocol.h MAX_FRAME_BYTES; recv() truncates beyond this.
 MAX_FRAME_BYTES = 2048
 
-# Dev-default gateway socket path (the LIVE appliance gateway). The offline test
-# points at a separate fake-gateway socket instead.
-DEFAULT_UDS_PATH = "/tmp/teaport-sip.sock"
+# Default gateway socket path (the LIVE appliance gateway). It lives in the systemd
+# units' RuntimeDirectory (/run/teaport, mode 0750) — NOT world-writable /tmp — so no
+# other local user can pre-bind it to hijack the session. The offline test points at a
+# separate fake-gateway socket instead.
+DEFAULT_UDS_PATH = "/run/teaport/teaport-sip.sock"
+
+
+def _verify_peer_uid(s: socket.socket, path: str) -> None:
+    """Refuse a gateway socket whose PEER isn't us or root.
+
+    Defense-in-depth against a squatted rendezvous socket. The primary control is that
+    the gateway binds inside a non-world-writable RuntimeDirectory (see DEFAULT_UDS_PATH),
+    so no other user can create the path at all. But if an operator points
+    TEAPORT_SIP_SOCKET/@SIP_UDS@ back into a shared dir, a stranger's socket there could
+    be handed a live brain session (inject audio.in / read every audio.out frame). We
+    check the CONNECTED peer's uid via SO_PEERCRED — race-free, unlike stat'ing the path
+    (TOCTOU) — and accept only our own euid or root. Best-effort: if the platform has no
+    SO_PEERCRED (non-Linux dev), skip; the RuntimeDirectory is the real guard."""
+    peercred = getattr(socket, "SO_PEERCRED", None)
+    if peercred is None:
+        return
+    try:
+        raw = s.getsockopt(socket.SOL_SOCKET, peercred, struct.calcsize("iII"))
+        _pid, uid, _gid = struct.unpack("iII", raw)
+    except OSError:
+        return  # couldn't read creds — fall back to the directory guard
+    if uid not in (os.geteuid(), 0):
+        raise PermissionError(
+            f"refusing gateway socket {path}: peer uid {uid} is not us "
+            f"({os.geteuid()}) or root — possible squatted socket")
 
 
 def connect_seqpacket(path: str, timeout: float = 5.0) -> socket.socket:
@@ -88,12 +117,14 @@ def connect_seqpacket(path: str, timeout: float = 5.0) -> socket.socket:
 
     Returns a NON-BLOCKING socket ready for asyncio loop.sock_recv/sock_sendall.
     Raises (ConnectionRefusedError / FileNotFoundError / socket.timeout) if the
-    gateway isn't listening — the caller decides how to surface that.
+    gateway isn't listening, or PermissionError if the peer isn't us/root (see
+    _verify_peer_uid) — the caller decides how to surface that.
     """
     s = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     s.settimeout(timeout)
     try:
         s.connect(path)
+        _verify_peer_uid(s, path)
     except Exception:
         s.close()
         raise

@@ -15,6 +15,13 @@ ConditionPathExists=@SIP_CONF@
 [Service]
 Type=simple
 User=@USER@
+# The gateway<->brain rendezvous socket lives HERE, not in world-writable /tmp: systemd
+# creates /run/teaport owned by @USER@ at mode 0750 before ExecStart, so no other local
+# user can pre-bind (squat) the socket to hijack a call. Removed when the unit stops
+# (default preserve=no), so each start gets a clean dir and the gateway binds fresh. The
+# brain unit connects to the same path — it runs as the same @USER@, so it traverses 0750.
+RuntimeDirectory=teaport
+RuntimeDirectoryMode=0750
 ExecStart=@SIP_GATEWAY@ @SIP_CONF@
 Restart=always
 RestartSec=5

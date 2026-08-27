@@ -25,7 +25,7 @@
 # pipeline per WebSocket connection. The earlier one-persistent-pipeline design (reset
 # context between calls, cancel_on_idle_timeout=False to keep it alive) is gone.
 #
-# Usage:  python -m teaport_brain.sip_server [--socket /tmp/teaport-sip.sock]
+# Usage:  python -m teaport_brain.sip_server [--socket /run/teaport/teaport-sip.sock]
 #   Requires the engine at TEAPORT_URL (STT/TTS) and an LLM at LLM_BASE_URL.
 #
 # NOTE: parallel to gateway_server.py, not a replacement — the OpenClaw path is
@@ -308,7 +308,7 @@ async def run(sock_path: str):
 def main():
     parser = argparse.ArgumentParser(description="teaport SIP brain client (M2)")
     parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),
-                        help="gateway UDS path (default: the live /tmp/teaport-sip.sock)")
+                        help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()
     logger.info("Priming TTS service...")
     make_tts()  # warm the engine TTS client once at startup

@@ -16,7 +16,7 @@
 # never be received — this driver would hang and time out.
 #
 # It always binds a SEPARATE TEST socket (default /tmp/teaport-fakegw.sock), NEVER
-# the live /tmp/teaport-sip.sock — it refuses that path outright.
+# the live /run/teaport/teaport-sip.sock — it refuses that path outright.
 #
 # Usage:
 #   python3 fake_gateway_multicall.py --socket /tmp/teaport-fakegw.sock \
@@ -38,7 +38,7 @@ FRAME_SECS = 0.02
 WIRE_RATE = 16000
 MAX_FRAME_BYTES = 2048
 
-LIVE_SOCKET = "/tmp/teaport-sip.sock"  # NEVER bind this — it's the real gateway
+LIVE_SOCKET = "/run/teaport/teaport-sip.sock"  # NEVER bind this — it's the real gateway
 
 
 def read_wav_16k_mono(path: str) -> bytes:

@@ -599,7 +599,7 @@ render_unit() {  # render_unit <template.in> <dest-name>
   # (ConditionPathExists); @SIP_UDS@ is the AF_UNIX socket the gateway and brain meet on.
   local sip_gateway="${TEAPORT_SIP_GATEWAY:-$HOME/teaport-sip/build/teaport-sip}"
   local sip_conf="$SECRETS/teaport-sip.conf"
-  local sip_uds="${TEAPORT_SIP_UDS:-/tmp/teaport-sip.sock}"
+  local sip_uds="${TEAPORT_SIP_UDS:-/run/teaport/teaport-sip.sock}"
   local body; body="$(sed -e "s#@USER@#$RUN_USER#g" -e "s#@PREFIX@#$PREFIX#g" -e "s#@ETC@#$ETC#g" \
                           -e "s#@NEMOCLAW@#$nemoclaw_bin#g" -e "s#@SANDBOX@#$SANDBOX#g" \
                           -e "s#@NODE@#$node_bin#g" \

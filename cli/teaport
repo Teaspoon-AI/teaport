@@ -22,10 +22,11 @@ ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 # SIP telephony (opt-in). The credentials .conf the wizard writes + the two units gate on
 # (ConditionPathExists); the GPL gateway binary (separate teaport-sip repo); the AF_UNIX
-# socket the gateway and SIP brain meet on. All overridable for dev/testing.
+# socket the gateway and SIP brain meet on — in the units' RuntimeDirectory (/run/teaport,
+# mode 0750), NOT world-writable /tmp, so no other local user can squat it. All overridable.
 SIP_CONF="${TEAPORT_SIP_CONF:-$SECRETS/teaport-sip.conf}"
 SIP_GATEWAY="${TEAPORT_SIP_GATEWAY:-$HOME/teaport-sip/build/teaport-sip}"
-SIP_UDS="${TEAPORT_SIP_UDS:-/tmp/teaport-sip.sock}"
+SIP_UDS="${TEAPORT_SIP_UDS:-/run/teaport/teaport-sip.sock}"
 
 GREEN='1;32'; RED='1;31'; YEL='1;33'
 c()    { printf '\033[%sm%s\033[0m' "$1" "$2"; }
@@ -193,9 +194,13 @@ sip_test_register() {
   for i in $(seq 1 16); do              # ~8s: 16 * 0.5s
     kill -0 "$gpid" 2>/dev/null || break                                  # binary exited early
     if grep -Eiq 'REGISTERED.*200|registration success|200 *OK' "$out"; then ok=1; break; fi
-    # Fast-fail only on an UNAMBIGUOUS auth rejection; anything else (incl. a silent
-    # never-registers) falls through to the ~8s loop timeout below, which also fails.
-    if grep -Eiq '\b40[13]\b|unauthorized|forbidden|registration failed|register failed' "$out"; then break; fi
+    # Fast-fail ONLY on a terminal rejection (403 Forbidden or an explicit failure line).
+    # NOT 401/Unauthorized: that is the routine digest challenge every authenticated
+    # REGISTER receives before the client re-sends with credentials and gets 200 OK —
+    # matching it here reported a working (digest-auth) trunk as FAILED, which is what
+    # essentially every real registrar uses. A genuinely bad credential that never 403s
+    # just never logs 200 and falls through to the ~8s timeout below (slower, but correct).
+    if grep -Eiq '\b403\b|forbidden|registration failed|register failed' "$out"; then break; fi
     sleep 0.5
   done
   kill "$gpid" 2>/dev/null || true; wait "$gpid" 2>/dev/null || true

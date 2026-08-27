@@ -8,7 +8,7 @@
 # AF_UNIX SOCK_SEQPACKET *server* (the gateway is the server; the brain connects).
 #
 # It always binds a SEPARATE TEST socket (default /tmp/teaport-fakegw.sock), NEVER
-# the live /tmp/teaport-sip.sock — it refuses that path outright so a fat-finger
+# the live /run/teaport/teaport-sip.sock — it refuses that path outright so a fat-finger
 # can't disturb the real gateway's NetSapiens registration.
 #
 # Sequence it drives:
@@ -39,7 +39,7 @@ FRAME_SECS = 0.02
 WIRE_RATE = 16000
 MAX_FRAME_BYTES = 2048
 
-LIVE_SOCKET = "/tmp/teaport-sip.sock"  # NEVER bind this — it's the real gateway
+LIVE_SOCKET = "/run/teaport/teaport-sip.sock"  # NEVER bind this — it's the real gateway
 
 
 def read_wav_16k_mono(path: str) -> bytes:

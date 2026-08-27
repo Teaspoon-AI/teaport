@@ -18,6 +18,9 @@ EnvironmentFile=@ETC@/brain.env
 # Full-duplex: the gateway's AEC cancels line echo, so the half-duplex input gate (the
 # diagnostic that drops caller audio while the bot speaks) stays OFF and barge-in works.
 Environment=SIP_HALF_DUPLEX=0
+# @SIP_UDS@ is in the gateway unit's RuntimeDirectory (/run/teaport, mode 0750, owned by
+# @USER@ — NOT world-writable /tmp). BindsTo the gateway guarantees that dir/socket exists
+# while we run; connect_seqpacket also verifies the peer's uid (SO_PEERCRED) as a backstop.
 ExecStart=@PREFIX@/venv/bin/python -m teaport_brain.sip_server --socket @SIP_UDS@
 Restart=always
 RestartSec=5
