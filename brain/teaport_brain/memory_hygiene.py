@@ -9,6 +9,9 @@
 import asyncio
 import ctypes
 import gc
+import resource
+
+from loguru import logger
 
 from pipecat.frames.frames import BotStoppedSpeakingFrame, Frame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -19,6 +22,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 # sessions — but glibc keeps the pages in its arenas, so RSS ratchets up
 # ~35 MB/session. That is allocator fragmentation, not a Python leak; malloc_trim(0)
 # hands the pages back and RSS then plateaus. No-op on a non-glibc libc.
+_PAGE_SIZE = resource.getpagesize()
+
 try:
     _LIBC = ctypes.CDLL("libc.so.6")
 
@@ -44,10 +49,35 @@ def empty_cuda_cache():
         pass
 
 
+def _rss_mb() -> float | None:
+    """Resident set size in MiB, or None where /proc isn't available."""
+    try:
+        with open("/proc/self/statm") as f:
+            return int(f.read().split()[1]) * _PAGE_SIZE / (1024 * 1024)
+    except (OSError, IndexError, ValueError):
+        return None
+
+
 def turn_reclaim():
-    """Full reclaim (heap + CUDA) — session-end only; see MemoryReclaim for why."""
+    """Full reclaim (heap + CUDA) — session-end only; see MemoryReclaim for why.
+
+    Logs the RSS it handed back. This is the ONLY reclaim a session ever gets, and
+    what it defends against — ~35 MB/session of glibc arena ratchet on an 8 GB
+    unified pool — is invisible until the box OOMs days later. It used to log
+    nothing at all, so on the appliance there was no way to answer "did it run?"
+    except by watching RSS from outside; a run on 2026-08-28 could confirm the call
+    tore down but not that anything was reclaimed. One line per session is cheap
+    (two /proc reads) and turns a silent invariant into a checkable one.
+    """
+    before = _rss_mb()
     release_heap()
     empty_cuda_cache()
+    after = _rss_mb()
+    if before is None or after is None:
+        logger.info("session-end reclaim done (RSS unavailable)")
+    else:
+        logger.info(f"session-end reclaim: RSS {before:.0f} -> {after:.0f} MiB "
+                    f"({before - after:+.0f})")
 
 
 class MemoryReclaim(FrameProcessor):
