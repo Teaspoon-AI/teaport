@@ -1,0 +1,30 @@
+# teaport-sip — SIP telephony gateway (opt-in). The GPL C++/PJSIP binary (separate
+# teaport-sip repo, NOT installed by this repo) that bridges a SIP trunk/registrar to
+# the brain over an AF_UNIX socket. install.sh lays this unit down but leaves it INERT:
+# ConditionPathExists gates it on @SIP_CONF@ — the credentials .conf that
+# `teaport sip configure` writes (mode 600) only after a successful test-register — so a
+# default (unconfigured) box never binds a SIP port, and a reboot auto-starts telephony
+# ONLY if it was configured. Rendered by install.sh (@USER@/@SIP_GATEWAY@/@SIP_CONF@).
+[Unit]
+Description=teaport SIP gateway (PJSIP trunk -> brain over UDS)
+After=network-online.target teaport-engine.service
+Wants=network-online.target
+# Opt-in gate: no config, no telephony. `teaport sip configure` writes it + enables us.
+ConditionPathExists=@SIP_CONF@
+
+[Service]
+Type=simple
+User=@USER@
+# The gateway<->brain rendezvous socket lives HERE, not in world-writable /tmp: systemd
+# creates /run/teaport owned by @USER@ at mode 0750 before ExecStart, so no other local
+# user can pre-bind (squat) the socket to hijack a call. Removed when the unit stops
+# (default preserve=no), so each start gets a clean dir and the gateway binds fresh. The
+# brain unit connects to the same path — it runs as the same @USER@, so it traverses 0750.
+RuntimeDirectory=teaport
+RuntimeDirectoryMode=0750
+ExecStart=@SIP_GATEWAY@ @SIP_CONF@
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

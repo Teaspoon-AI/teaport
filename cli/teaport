@@ -6,6 +6,7 @@
 #   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
 #   teaport update [--check]      diff installed vs the release manifest; apply what changed
 #   teaport logs [engine|brain]   journalctl wrapper (defaults to brain; passes -f/-n through)
+#   teaport sip <cmd>             opt-in SIP telephony: configure | status | disable
 #
 # Thin wrapper over systemd + the release manifest, reading the layout install.sh
 # produces: /opt/teaport (bin/models/venv/manifest.json), /etc/teaport/*.env,
@@ -19,6 +20,13 @@ SECRETS="${TEAPORT_SECRETS_DIR:-$HOME/.config/teaport}"
 MANIFEST_URL="${TEAPORT_MANIFEST_URL:-https://get.teaspoon.tech/manifest/stable.json}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
+# SIP telephony (opt-in). The credentials .conf the wizard writes + the two units gate on
+# (ConditionPathExists); the GPL gateway binary (separate teaport-sip repo); the AF_UNIX
+# socket the gateway and SIP brain meet on — in the units' RuntimeDirectory (/run/teaport,
+# mode 0750), NOT world-writable /tmp, so no other local user can squat it. All overridable.
+SIP_CONF="${TEAPORT_SIP_CONF:-$SECRETS/teaport-sip.conf}"
+SIP_GATEWAY="${TEAPORT_SIP_GATEWAY:-$HOME/teaport-sip/build/teaport-sip}"
+SIP_UDS="${TEAPORT_SIP_UDS:-/run/teaport/teaport-sip.sock}"
 
 GREEN='1;32'; RED='1;31'; YEL='1;33'
 c()    { printf '\033[%sm%s\033[0m' "$1" "$2"; }
@@ -136,6 +144,158 @@ cmd_logs() {
   exec journalctl -u "$unit.service" "$@"
 }
 
+# ---- sip --------------------------------------------------------------------
+# Opt-in SIP telephony, mirroring the Discord bridge precedent: the units ship inert
+# (ConditionPathExists on $SIP_CONF) and this wizard is what turns telephony on. It
+# gathers the trunk credentials, test-registers with a THROWAWAY sip_port (never :5060,
+# so a live gateway is untouched), and only on a 200 OK writes the real .conf (mode 600)
+# and enables the units.
+
+# sip_emit_conf <dest> <sip_port> <uds> <host> <domain> <user> <pass>
+# Write a full teaport-sip gateway .conf (key=value). mode 600 — it holds the SIP password.
+sip_emit_conf() {
+  local dest="$1" port="$2" uds="$3" h="$4" d="$5" u="$6" p="$7"
+  ( umask 077
+    cat > "$dest" <<EOF
+# teaport-sip gateway config — written by 'teaport sip configure'. Keep mode 600.
+bind_addr=0.0.0.0
+sip_port=$port
+id_uri=sip:$u@$d
+register=true
+registrar_uri=sip:$h
+realm=*
+username=$u
+password=$p
+reg_timeout=300
+uds_path=$uds
+auto_answer=true
+aec=true
+aec_tail_ms=256
+log_level=3
+app_log_level=3
+EOF
+  )
+  chmod 600 "$dest"
+}
+
+# Briefly run the gateway against a throwaway config and confirm it registers (200 OK).
+# Returns 0 on success; on failure prints the gateway's output and returns 1.
+sip_test_register() {
+  local host="$1" domain="$2" user="$3" pass="$4"
+  [ -x "$SIP_GATEWAY" ] || die "SIP gateway binary not found/executable: $SIP_GATEWAY (set TEAPORT_SIP_GATEWAY)"
+  local testconf testuds testport=5062 out
+  testconf="$(mktemp)"; out="$(mktemp)"
+  testuds="$(mktemp -u --tmpdir teaport-sip-testreg.XXXXXX.sock)"
+  sip_emit_conf "$testconf" "$testport" "$testuds" "$host" "$domain" "$user" "$pass"
+  printf 'test-registering as %s@%s via %s (throwaway port %s — :5060 untouched)...\n' \
+    "$user" "$domain" "$host" "$testport"
+  "$SIP_GATEWAY" "$testconf" >"$out" 2>&1 &
+  local gpid=$! ok=0 i
+  for i in $(seq 1 16); do              # ~8s: 16 * 0.5s
+    kill -0 "$gpid" 2>/dev/null || break                                  # binary exited early
+    if grep -Eiq 'REGISTERED.*200|registration success|200 *OK' "$out"; then ok=1; break; fi
+    # Fast-fail ONLY on a terminal rejection (403 Forbidden or an explicit failure line).
+    # NOT 401/Unauthorized: that is the routine digest challenge every authenticated
+    # REGISTER receives before the client re-sends with credentials and gets 200 OK —
+    # matching it here reported a working (digest-auth) trunk as FAILED, which is what
+    # essentially every real registrar uses. A genuinely bad credential that never 403s
+    # just never logs 200 and falls through to the ~8s timeout below (slower, but correct).
+    if grep -Eiq '\b403\b|forbidden|registration failed|register failed' "$out"; then break; fi
+    sleep 0.5
+  done
+  kill "$gpid" 2>/dev/null || true; wait "$gpid" 2>/dev/null || true
+  rm -f "$testconf" "$testuds"
+  if [ "$ok" != 1 ]; then
+    printf '%s\n' "$(c "$RED" 'registration FAILED')" >&2
+    echo "  the gateway did not report a 200 OK registration within ~8s. Output tail:" >&2
+    tail -n 15 "$out" | sed 's/^/    /' >&2
+    rm -f "$out"; return 1
+  fi
+  rm -f "$out"; printf '%s\n' "$(c "$GREEN" 'registration OK (200)')"
+  return 0
+}
+
+sip_configure() {
+  local host="" domain="" user="" pass="" yes=0 pass_set=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --host)     host="${2:-}"; shift 2 ;;
+      --domain)   domain="${2:-}"; shift 2 ;;
+      --user)     user="${2:-}"; shift 2 ;;
+      --password) pass="${2:-}"; pass_set=1; shift 2 ;;
+      --yes|-y)   yes=1; shift ;;
+      -h|--help)  echo "usage: teaport sip configure [--host H --domain D --user U --password P] [--yes]"; return 0 ;;
+      *) die "unknown flag: $1 (see: teaport sip configure --help)" ;;
+    esac
+  done
+  # Prompt for anything still missing; --yes forbids prompting (headless/CI).
+  if [ -z "$host" ]; then [ "$yes" = 1 ] && die "--host is required with --yes"; read -r -p 'SIP registrar / SBC host: ' host; fi
+  if [ -z "$domain" ]; then
+    if [ "$yes" = 1 ]; then domain="$host"; else read -r -p "SIP domain [$host]: " domain; [ -z "$domain" ] && domain="$host"; fi
+  fi
+  if [ -z "$user" ]; then [ "$yes" = 1 ] && die "--user is required with --yes"; read -r -p 'SIP username: ' user; fi
+  if [ "$pass_set" = 0 ]; then [ "$yes" = 1 ] && die "--password is required with --yes"; read -r -s -p 'SIP password: ' pass; echo; fi
+  [ -n "$host" ] && [ -n "$user" ] && [ -n "$domain" ] || die "host, domain and user are all required"
+
+  # Test-register FIRST: write nothing / leave the units disabled if it fails.
+  sip_test_register "$host" "$domain" "$user" "$pass" \
+    || die "SIP registration failed — config not written, units left disabled. Fix the credentials/registrar and retry."
+
+  mkdir -p "$SECRETS"; chmod 700 "$SECRETS" 2>/dev/null || true
+  sip_emit_conf "$SIP_CONF" 5060 "$SIP_UDS" "$host" "$domain" "$user" "$pass"
+  printf 'wrote %s (mode 600)\n' "$SIP_CONF"
+  SUDO systemctl daemon-reload
+  SUDO systemctl enable --now teaport-sip.service teaport-sip-brain.service
+  printf '%s — telephony is on. Check: teaport sip status\n' "$(c "$GREEN" 'SIP enabled')"
+}
+
+sip_status() {
+  echo "teaport — sip status"
+  svc_line teaport-sip
+  svc_line teaport-sip-brain
+  if [ -f "$SIP_CONF" ]; then
+    printf '  %-28s %s\n' "config" "$(c "$GREEN" present) ($SIP_CONF)"
+    local reg user; reg="$(envval "$SIP_CONF" registrar_uri)"; user="$(envval "$SIP_CONF" username)"
+    printf '  %-28s %s\n' "registrar" "${reg:-?}  (user ${user:-?})"
+  else
+    printf '  %-28s %s\n' "config" "$(c "$YEL" absent) — run: teaport sip configure"
+  fi
+  local last; last="$(journalctl -u teaport-sip.service -n 300 --no-pager 2>/dev/null | grep -iE 'regist' | tail -1 || true)"
+  [ -n "$last" ] && printf '  %-28s %s\n' "last registration" "$last"
+}
+
+sip_disable() {
+  local purge=0; [ "${1:-}" = --purge ] && purge=1
+  SUDO systemctl disable --now teaport-sip-brain.service teaport-sip.service 2>/dev/null || true
+  echo "SIP units disabled + stopped."
+  if [ "$purge" = 1 ]; then
+    rm -f "$SIP_CONF" && echo "removed $SIP_CONF"
+  elif [ -f "$SIP_CONF" ]; then
+    echo "config kept at $SIP_CONF (use --purge to remove)"
+  fi
+}
+
+cmd_sip() {
+  local sub="${1:-}"; shift 2>/dev/null || true
+  case "$sub" in
+    configure) sip_configure "$@" ;;
+    status)    sip_status "$@" ;;
+    disable)   sip_disable "$@" ;;
+    ""|-h|--help|help)
+      cat <<'EOF'
+teaport sip — opt-in SIP telephony (off by default)
+
+  teaport sip configure    wizard: registrar/SBC host, domain, user, password; test-registers,
+                           then writes ~/.config/teaport/teaport-sip.conf (600) and enables the units.
+                           headless: --host H --domain D --user U --password P --yes
+  teaport sip status       service states + config presence + last registration
+  teaport sip disable      stop + disable both SIP units (--purge also removes the config)
+EOF
+      ;;
+    *) die "unknown sip subcommand: $sub (try: configure | status | disable)" ;;
+  esac
+}
+
 usage() { awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "$0"; }
 
 cmd="${1:-}"; shift || true
@@ -144,6 +304,7 @@ case "$cmd" in
   doctor) cmd_doctor "$@" ;;
   update) cmd_update "$@" ;;
   logs)   cmd_logs "$@" ;;
+  sip)    cmd_sip "$@" ;;
   ""|-h|--help|help) usage ;;
-  *) die "unknown command: $cmd (try: status | doctor | update | logs)" ;;
+  *) die "unknown command: $cmd (try: status | doctor | update | logs | sip)" ;;
 esac

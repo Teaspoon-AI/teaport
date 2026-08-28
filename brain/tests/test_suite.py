@@ -31,6 +31,12 @@ SCRIPTS = [
     ("test_tool_call_indices.py", 120),
     ("test_tool_schema.py", 120),
     ("test_heard_fraction.py", 120),
+    # Was absent from this list, and its import of _make_consult_followup broke when
+    # the agent factory moved to agent_session.py — nothing ran it, so nothing noticed.
+    ("test_followup_injection.py", 120),
+    ("test_followup_trigger.py", 120),
+    ("test_stt_connect_retry.py", 120),
+    ("test_sip_call_lifecycle.py", 120),
 ]
 
 

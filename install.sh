@@ -419,6 +419,7 @@ agent_openclaw() {
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
     printf '  [dry-run] openclaw config patch: gateway.port=%s trustedProxies=[127.0.0.1, ::1] (Caddy front door)\n' "$GATEWAY_PORT"
+    printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
@@ -432,8 +433,19 @@ agent_openclaw() {
     # points OPENCLAW_GATEWAY_URL at the same port, but nothing else tells a host OpenClaw to
     # LISTEN there — its own default (and any TEAPORT_GATEWAY_PORT override) would otherwise
     # leave Caddy proxying to a dead port that phase_verify never checks.
+    # http.endpoints.chatCompletions.enabled: turn on the warm-lane consult endpoint the brain
+    # prefers for ask_openclaw (openclaw_client._completions_consult -> POST /v1/chat/completions).
+    # It is a STOCK endpoint but ships DISABLED ("default: false"), so without this every consult
+    # 404s the fast lane and falls back to the ~25s cold `openclaw agent --local` spawn (which then
+    # tends to blow the 45s budget and fail silently). config patch deep-merges, so this only adds
+    # the key. (Bare OpenClaw needs nothing more; the NemoClaw sandbox additionally needs the
+    # 1e72408 dial-back patch for CHANNEL actions — a sandbox-image concern, see agent_nemoclaw.)
     cat > "$patch" <<JSON
-{ "gateway": { "port": $GATEWAY_PORT, "trustedProxies": ["127.0.0.1", "::1"] } }
+{ "gateway": {
+    "port": $GATEWAY_PORT,
+    "trustedProxies": ["127.0.0.1", "::1"],
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+} }
 JSON
     "$OPENCLAW" config patch --file "$patch"
     rm -f "$patch"
@@ -506,6 +518,7 @@ agent_nemoclaw() {
     printf '  [dry-run] openclaw config patch: talk.realtime provider=teaport brain=none url=%s (+token)\n' "$brain_ws"
     printf '  [dry-run] openclaw config patch: plugins.device-pair enabled=true publicUrl=wss://%s (phone pairing)\n' "$FRONTDOOR_HOST"
     printf '  [dry-run] openclaw config patch: gateway.trustedProxies=[127.0.0.1, ::1, 172.18.0.1] (Caddy front door)\n'
+    printf '  [dry-run] openclaw config patch: gateway.http.endpoints.chatCompletions.enabled=true (warm-lane consult; ships off)\n'
   else
     local patch; patch="$(mktemp)"
     write_talk_patch "$patch" "$brain_ws"
@@ -517,8 +530,18 @@ agent_nemoclaw() {
     # gateway either from its own loopback (an in-sandbox forward) or from the docker-bridge
     # host address (the same 172.18.0.1 the brain URL uses) — trust both; the forward is
     # host-loopback-bound, so this adds no reachability an attacker didn't already have.
+    # Also enable the warm-lane consult endpoint (POST /v1/chat/completions) the brain prefers
+    # for ask_openclaw — a stock endpoint that ships DISABLED ("default: false"). NOTE: inside the
+    # sandbox this makes NON-channel consults fast, but a warm-lane turn that drives a CHANNEL
+    # action still needs the openshell-dialback-locality patch (NemoClaw 1e72408) to escape the
+    # device-pairing dial-back loop; without it the brain falls back to `openclaw agent --local`
+    # (which loads channel plugins in-process) for those. Enabling the flag is still strictly
+    # better than leaving every consult 404 the fast lane.
     cat > "$patch" <<'JSON'
-{ "gateway": { "trustedProxies": ["127.0.0.1", "::1", "172.18.0.1"] } }
+{ "gateway": {
+    "trustedProxies": ["127.0.0.1", "::1", "172.18.0.1"],
+    "http": { "endpoints": { "chatCompletions": { "enabled": true } } }
+} }
 JSON
     "$NEMOCLAW" "$SANDBOX" upload "$patch" /tmp/teaport-proxies.json
     "$NEMOCLAW" "$SANDBOX" exec --no-tty -- openclaw config patch --file /tmp/teaport-proxies.json
@@ -570,9 +593,18 @@ render_unit() {  # render_unit <template.in> <dest-name>
   # Absolute node path for the bridge unit's ExecStart — systemd services get a minimal PATH
   # and node may live outside it (nvm/NodeSource), so resolve it at render time like @NEMOCLAW@.
   local node_bin; node_bin="$(command -v node || echo /usr/bin/node)"
+  # SIP telephony unit substitutions (opt-in — see phase_sip). The GPL gateway binary lives
+  # in its own repo/build tree (NOT $PREFIX); @SIP_CONF@ is the credentials .conf the CLI
+  # (`teaport sip configure`) writes into the secrets dir and both SIP units gate on
+  # (ConditionPathExists); @SIP_UDS@ is the AF_UNIX socket the gateway and brain meet on.
+  local sip_gateway="${TEAPORT_SIP_GATEWAY:-$HOME/teaport-sip/build/teaport-sip}"
+  local sip_conf="$SECRETS/teaport-sip.conf"
+  local sip_uds="${TEAPORT_SIP_UDS:-/run/teaport/teaport-sip.sock}"
   local body; body="$(sed -e "s#@USER@#$RUN_USER#g" -e "s#@PREFIX@#$PREFIX#g" -e "s#@ETC@#$ETC#g" \
                           -e "s#@NEMOCLAW@#$nemoclaw_bin#g" -e "s#@SANDBOX@#$SANDBOX#g" \
-                          -e "s#@NODE@#$node_bin#g" "$tpl")"
+                          -e "s#@NODE@#$node_bin#g" \
+                          -e "s#@SIP_GATEWAY@#$sip_gateway#g" -e "s#@SIP_CONF@#$sip_conf#g" \
+                          -e "s#@SIP_UDS@#$sip_uds#g" "$tpl")"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> /etc/systemd/system/%s\n' "$1" "$out";
   else printf '%s\n' "$body" | SUDO tee "/etc/systemd/system/$out" >/dev/null; fi
 }
@@ -867,6 +899,26 @@ phase_bridge() {
   fi
 }
 
+# teaport-sip telephony (opt-in). The GPL C++ gateway (separate teaport-sip repo, NOT
+# built or installed here — the binary is expected at $HOME/teaport-sip/build/teaport-sip)
+# plus the SIP brain client (a second front-end onto the SAME shared pipeline as the
+# OpenClaw brain). Both units are laid down but left INERT: each carries
+# ConditionPathExists on the SIP config that `teaport sip configure` writes, so a default
+# box never starts them. Configuring — which test-registers, writes the .conf (mode 600),
+# then `enable --now`s both — is what turns telephony on. This mirrors the Discord bridge's
+# opt-in shape, minus the env/token wiring the CLI owns for SIP.
+phase_sip() {
+  log "sip telephony: installing units (opt-in — 'teaport sip configure' turns it on)"
+  render_unit teaport-sip.service.in       teaport-sip.service
+  render_unit teaport-sip-brain.service.in teaport-sip-brain.service
+  SUDO systemctl daemon-reload
+  # Deliberately NOT enabled/started here: the units are gated on the SIP config, and
+  # `teaport sip configure` registers a trunk, writes that config, then enables both. A
+  # re-run on an already-configured box re-renders the units but leaves their enabled
+  # state alone, so repairing never silently turns telephony off.
+  log "sip telephony: units installed but inert — run 'teaport sip configure' to register a SIP trunk and start it"
+}
+
 phase_verify() {
   log "verify"
   if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$AGENT_MODE" ] && echo ', front door :443, gateway->brain')"; return; fi
@@ -959,6 +1011,7 @@ main() {
   phase_services
   phase_frontdoor
   phase_bridge
+  phase_sip
   phase_verify
   usage_footer
 }

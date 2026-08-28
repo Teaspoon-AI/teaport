@@ -284,10 +284,21 @@ def _completions_sync(message: str, token: str, timeout: float) -> str | None:
 async def _completions_consult(message: str, *, timeout: float) -> str | None:
     """WARM-LANE consult: one full agent turn on the already-running gateway
     daemon via its OpenAI-compatible endpoint — ~7s including Discord channel
-    actions, vs ~25s for the cold --local CLI spawn. Needs
-    gateway.http.endpoints.chatCompletions.enabled in the sandbox config and
-    the openshell-dialback-locality dist-patch (fork commit 1e72408); without
-    them the call fails fast and the caller falls back to the CLI lane.
+    actions, vs ~25s for the cold --local CLI spawn. Requires exactly ONE thing:
+    gateway.http.endpoints.chatCompletions.enabled=true in the OpenClaw config.
+    That endpoint is a STOCK OpenClaw feature but ships DISABLED ("default:
+    false"), so teaport's installer turns it on (install.sh agent_openclaw /
+    agent_nemoclaw); on an already-set-up box the manual form is
+    `openclaw config set gateway.http.endpoints.chatCompletions.enabled true`
+    + a gateway restart. A box where it is off 404s here and the caller falls
+    back to the CLI lane.
+
+    The openshell-dialback-locality dist-patch (NemoClaw fork commit 1e72408)
+    is NOT a requirement for this call — an earlier version of this note wrongly
+    bundled it in. It is gated on OPENSHELL_SANDBOX=1 and only matters when a
+    warm-lane turn drives a CHANNEL action THROUGH the NemoClaw sandbox egress
+    proxy (the device-pairing dial-back loop). On bare OpenClaw (no sandbox) the
+    config flag alone makes this lane work.
     Returns reply text, or None on any failure (never raises)."""
     token = _token()
     if not token:

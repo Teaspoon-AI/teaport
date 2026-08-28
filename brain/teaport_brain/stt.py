@@ -28,6 +28,7 @@
 #     and we reset our buffer on it.
 #
 
+import asyncio
 import base64
 import json
 from typing import AsyncGenerator, Optional
@@ -60,12 +61,42 @@ TEAPORT_TTFS_P99 = 0.8
 # on room noise never reach it.
 _EMPTY_FINAL_RUN = 5
 
+# Retry budget for a connect the engine REJECTS because its single STT slot is still
+# held (see _connect_websocket). Sized to cover the hand-off window both front-ends
+# currently paper over with `await asyncio.sleep(0.3)`, while staying well inside
+# greet()'s 12s tri-state resolution window so a genuinely busy engine still gets the
+# spoken warning promptly.
+_CONNECT_ATTEMPTS = 4
+_CONNECT_RETRY_S = 0.4
+
+
 try:
     import websockets
     from websockets.protocol import State
 except ModuleNotFoundError as e:
     logger.error(f"{e}\nInstall with: pip install websockets")
     raise
+
+
+def _is_slot_busy(exc: Exception) -> bool:
+    """True for an engine REJECTION (HTTP 503 / 4xx-5xx handshake failure), as opposed
+    to an unreachable host.
+
+    The distinction decides whether retrying is worth anything: a rejection means the
+    engine is up and its slot is momentarily taken, an unreachable host means each
+    further attempt burns the websockets open timeout for nothing.
+
+    Duck-typed on purpose. websockets is deliberately unpinned (see brain/pyproject.toml
+    — pipecat's `websockets-base` extra owns the range, and the appliance has drifted
+    past its cap), and the rejection carries its status as `.response.status_code` on
+    >=14 but `.status_code` on older releases. Matching the shape rather than the class
+    keeps this working across that range; an unrecognised exception is treated as NOT
+    retryable, so the worst case is the behaviour we had before.
+    """
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    if status is None:
+        status = getattr(exc, "status_code", None)
+    return isinstance(status, int)
 
 
 class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
@@ -140,12 +171,25 @@ class TeaportSTTService(WebsocketSTTService):
         # False = unavailable (e.g. the single-session engine returned 503). The
         # brain reads stt_available to warn the user it cannot hear.
         self._stt_available = None
+        # WHY the last connect failed, when it did: True = the engine REJECTED us (its
+        # one session is taken), False = we could not reach it at all. None until a
+        # failure resolves it. The brain speaks a different line for each — telling a
+        # caller the assistant is "busy with another session" when the engine is simply
+        # down sends them to the wrong remedy entirely.
+        self._slot_busy = None
 
     @property
     def stt_available(self):
         """None until a connect is attempted; True if the engine session is open;
         False if the engine was unavailable (no free session / 503 / refused)."""
         return self._stt_available
+
+    @property
+    def slot_busy(self):
+        """True if the last failure was the engine REJECTING us (503 — its single
+        session is held), False if the engine was unreachable, None if no connect has
+        failed. Only meaningful when stt_available is False."""
+        return self._slot_busy
 
     def can_generate_metrics(self) -> bool:
         """True: we start processing metrics in run_stt and stop them on the
@@ -241,31 +285,62 @@ class TeaportSTTService(WebsocketSTTService):
         if self._websocket:
             return
         logger.debug(f"{self}: connecting to the engine at {self._url}")
-        try:
-            self._websocket = await websockets.connect(self._url)
-            # Handshake: the engine is single-model and just acknowledges this.
-            await self._websocket.send(
-                json.dumps({"type": "session.update", "model": self._model})
-            )
-            self._stt_available = True
-        except Exception as e:  # 503 (engine session busy), refused, timeout, ...
-            # If connect succeeded but the handshake send failed, an OPEN socket
-            # holds the engine's single session slot — abandoning the reference
-            # leaks the slot until TCP notices ("talks but can't hear" for every
-            # later session). Close it before dropping it.
-            ws, self._websocket = self._websocket, None
-            if ws is not None:
-                try:
-                    await ws.close()
-                except Exception:  # noqa: BLE001 — best-effort cleanup
-                    pass
-            self._stt_available = False
-            logger.error(
-                f"{self}: STT engine unavailable ({type(e).__name__}: {e}) — the "
-                "agent cannot hear; the brain will warn the user."
-            )
-            # Do NOT re-raise: let the pipeline start so the brain can speak a
-            # pre-computed warning instead of silently 'talking but not hearing'.
+        for attempt in range(_CONNECT_ATTEMPTS):
+            try:
+                self._websocket = await websockets.connect(self._url)
+                # Handshake: the engine is single-model and just acknowledges this.
+                await self._websocket.send(
+                    json.dumps({"type": "session.update", "model": self._model})
+                )
+                self._stt_available = True
+                if attempt:
+                    logger.info(f"{self}: STT slot acquired on attempt {attempt + 1} "
+                                "(the previous session's close was still settling)")
+                return
+            except Exception as e:  # 503 (engine session busy), refused, timeout, ...
+                # If connect succeeded but the handshake send failed, an OPEN socket
+                # holds the engine's single session slot — abandoning the reference
+                # leaks the slot until TCP notices ("talks but can't hear" for every
+                # later session). Close it before dropping it.
+                ws, self._websocket = self._websocket, None
+                if ws is not None:
+                    try:
+                        await ws.close()
+                    except Exception:  # noqa: BLE001 — best-effort cleanup
+                        pass
+                # A 503 means the engine is up and its single slot is taken — which,
+                # right after an eviction, usually means "taken by the close we are
+                # still waiting on". Both front-ends hand that over to a bare
+                # `await asyncio.sleep(0.3)` and then connect once; if the engine has
+                # not finished processing the close by then, this session declares
+                # itself deaf and the user is told the assistant is busy with another
+                # session when nothing is using it at all (SIP also hangs the caller
+                # up). TLC finds the interleaving with one OpenClaw session and one
+                # SIP call — brain/formal/SttSlot.tla, MODE = "fixedSettle",
+                # invariant NoFalseBusy — because nothing anywhere observes that the
+                # engine has actually freed the slot.
+                #
+                # So retry a REJECTION briefly. Only a rejection: a refused or
+                # blackholed host is not going to fix itself in a second, and each
+                # such attempt costs the websockets open timeout (~10s), which would
+                # blow through greet()'s resolution window and leave the caller in
+                # silence instead of hearing the warning.
+                if attempt + 1 < _CONNECT_ATTEMPTS and _is_slot_busy(e):
+                    logger.debug(f"{self}: engine slot busy ({type(e).__name__}) — "
+                                 f"retrying in {_CONNECT_RETRY_S}s "
+                                 f"({attempt + 2}/{_CONNECT_ATTEMPTS})")
+                    await asyncio.sleep(_CONNECT_RETRY_S)
+                    continue
+                self._stt_available = False
+                self._slot_busy = _is_slot_busy(e)
+                logger.error(
+                    f"{self}: STT engine unavailable ({type(e).__name__}: {e}) — the "
+                    f"agent cannot hear; the brain will warn the user "
+                    f"({'engine slot held' if self._slot_busy else 'engine unreachable'})."
+                )
+                # Do NOT re-raise: let the pipeline start so the brain can speak a
+                # pre-computed warning instead of silently 'talking but not hearing'.
+                return
 
     async def _disconnect_websocket(self):
         try:
