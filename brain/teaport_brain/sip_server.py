@@ -45,25 +45,23 @@ import argparse
 import asyncio
 import os
 
-# Cache-only HF hub, read at huggingface_hub import time — set before any imports.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
 
-from loguru import logger  # noqa: E402
+from loguru import logger
 
-from pipecat.frames.frames import (  # noqa: E402
+from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     InputAudioRawFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
-from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.pipeline.runner import PipelineRunner
 
-from teaport_brain.agent_session import build_agent_session  # noqa: E402
-from teaport_brain.env import env_flag, env_num  # noqa: E402
-from teaport_brain.memory_hygiene import turn_reclaim  # noqa: E402
-from teaport_brain.services import make_tts  # noqa: E402
-from teaport_brain.sip_serializer import SipProtocolSerializer  # noqa: E402
-from teaport_brain.sip_transport import (  # noqa: E402
+from teaport_brain.agent_session import build_agent_session
+from teaport_brain.env import env_flag, env_num
+from teaport_brain.memory_hygiene import turn_reclaim
+from teaport_brain.services import make_tts
+from teaport_brain.sip_serializer import SipProtocolSerializer
+from teaport_brain.sip_transport import (
     DEFAULT_UDS_PATH,
     SipConnection,
     SipGatewayTransport,

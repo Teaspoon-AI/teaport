@@ -17,6 +17,8 @@ import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import appliance  # noqa: E402
+
 # Isolate the write BEFORE importing openclaw_client (it reads MEMORY_DIR at import).
 _TMP_MEM = tempfile.mkdtemp(prefix="teaport-remember-test-")
 os.environ["OPENCLAW_MEMORY_DIR"] = _TMP_MEM
@@ -87,6 +89,9 @@ class Capture(FrameProcessor):
 
 
 async def main() -> int:
+    # Before make_llm(), which raises on an unset base URL — that is a missing
+    # dependency, not a failure of what this test checks.
+    appliance.require_env("LLM_BASE_URL", "a live OpenAI-compatible LLM")
     llm = make_llm()
     tools_mod.register_tools(llm)
     orig = tools_mod._remember

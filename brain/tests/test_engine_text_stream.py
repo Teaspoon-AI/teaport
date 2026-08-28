@@ -15,7 +15,13 @@ import sys
 import numpy as np
 import websockets
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import appliance  # noqa: E402
+
 URL = os.getenv("ENGINE_TTS_STREAM_URL", "ws://127.0.0.1:8000/v1/audio/speech/stream")
+
+# Reachability only — if the engine answers, every failure below is a real one.
+appliance.require_reachable(URL, "a live engine TTS stream WebSocket")
 SR = 24000
 
 
