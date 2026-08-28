@@ -12,6 +12,11 @@ import sys
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
+# sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
+import teaport_brain  # noqa: E402, F401
+
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,

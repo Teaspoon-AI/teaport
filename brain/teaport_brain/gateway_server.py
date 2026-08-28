@@ -29,31 +29,28 @@
 import argparse
 import os
 
-# Cache-only HF hub, read at huggingface_hub import time — set before any imports.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
+import uvicorn
+from fastapi import FastAPI, WebSocket
+from loguru import logger
 
-import uvicorn  # noqa: E402
-from fastapi import FastAPI, WebSocket  # noqa: E402
-from loguru import logger  # noqa: E402
-
-from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
-from pipecat.transports.websocket.fastapi import (  # noqa: E402
+from pipecat.pipeline.runner import PipelineRunner
+from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
     FastAPIWebsocketTransport,
 )
 
-from teaport_brain.agent_session import (  # noqa: E402
+from teaport_brain.agent_session import (
     acquire_slot,
     build_agent_session,
     slot_active,
 )
-from teaport_brain.gateway_serializer import (  # noqa: E402
+from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
     TeaportGatewaySerializer,
 )
-from teaport_brain.memory_hygiene import turn_reclaim  # noqa: E402
-from teaport_brain.services import make_tts  # noqa: E402
+from teaport_brain.memory_hygiene import turn_reclaim
+from teaport_brain.services import make_tts
 
 LISTEN_PORT = int(os.getenv("GATEWAY_PORT", "7861"))
 # Shared secret for /talk. When set, a client must present it as ?token=<value> on

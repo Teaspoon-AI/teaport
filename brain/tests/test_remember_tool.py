@@ -10,12 +10,24 @@
 # dependent (recall is validated separately via the gateway). Writes to an ISOLATED tmp
 # memory dir so it never pollutes the real store. Run on the box. Usage: python test_remember_tool.py
 #
-import asyncio
 import os
 import sys
-import tempfile
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+import appliance  # noqa: E402
+
+# Before the imports below — pipecat, loguru, tempfile.mkdtemp — so a box missing
+# this dependency skips in milliseconds instead of paying for all of that first
+# (measured: ~1.9s of avoidable import/setup cost before this used to run).
+appliance.require_env("LLM_BASE_URL", "a live OpenAI-compatible LLM")
+
+import asyncio  # noqa: E402
+import tempfile  # noqa: E402
+
+# Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
+# sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
+import teaport_brain  # noqa: E402, F401
 
 # Isolate the write BEFORE importing openclaw_client (it reads MEMORY_DIR at import).
 _TMP_MEM = tempfile.mkdtemp(prefix="teaport-remember-test-")
@@ -87,7 +99,14 @@ class Capture(FrameProcessor):
 
 
 async def main() -> int:
-    llm = make_llm()
+    # make_llm() also raises RuntimeError when LLM_API_KEY (nor the installer's key
+    # file) is set — a missing credential, same as the missing base URL above: a
+    # missing dependency, not a failure of what this test checks, so it skips
+    # rather than crashing with a raw traceback.
+    try:
+        llm = make_llm()
+    except RuntimeError as e:
+        appliance.skip(str(e))
     tools_mod.register_tools(llm)
     orig = tools_mod._remember
 

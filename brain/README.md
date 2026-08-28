@@ -41,4 +41,5 @@ is configured to collect only the aggregate.
 Two of them need the box, not just a venv: `test_engine_text_stream.py` needs a **live
 engine** on `ENGINE_TTS_STREAM_URL`, and `test_remember_tool.py` calls a **live LLM** (it
 asserts the model emits the `remember` tool call, so it can flake on model behavior).
-The other five are hermetic.
+The rest are hermetic — see `brain/tests/README.md` for the current count and the
+mechanism that keeps this list from going stale again.

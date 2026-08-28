@@ -18,36 +18,32 @@
 #
 import asyncio
 import json
-import os
 
-# Cache-only HF hub, read at huggingface_hub import time — set before any imports.
-os.environ.setdefault("HF_HUB_OFFLINE", "1")
+from loguru import logger
 
-from loguru import logger  # noqa: E402
-
-from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams  # noqa: E402
-from pipecat.audio.vad.silero import SileroVADAnalyzer  # noqa: E402
-from pipecat.audio.vad.vad_analyzer import VADParams  # noqa: E402
-from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame  # noqa: E402
-from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
-from pipecat.pipeline.task import PipelineTask  # noqa: E402
-from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
-from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
+from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+from pipecat.audio.vad.silero import SileroVADAnalyzer
+from pipecat.audio.vad.vad_analyzer import VADParams
+from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.task import PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
-from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # noqa: E402
+from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
-from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
-from teaport_brain.captions import (  # noqa: E402
+from teaport_brain.captions import (
     CaptionTap,
     UserTranscriptEmitter,
     VoiceActivity,
 )
-from teaport_brain.endpointing import (  # noqa: E402
+from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
     INTERRUPT_MIN_WORDS,
     SMARTTURN_COMPLETE_THRESHOLD,
@@ -55,31 +51,31 @@ from teaport_brain.endpointing import (  # noqa: E402
     VAD_MIN_VOLUME,
     EagerSmartTurnAnalyzer,
 )
-from teaport_brain import endpoint_debug  # noqa: E402
-from teaport_brain import llm_error_speaker  # noqa: E402
-from teaport_brain import llm_text_guard  # noqa: E402
-from teaport_brain import raw_llm_capture  # noqa: E402
-from teaport_brain import thinking_sound  # noqa: E402
-from teaport_brain.engine_tts import LANG_NAMES  # noqa: E402
-from teaport_brain.followup_gate import FollowupGate, FollowupTrigger  # noqa: E402
-from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
-from teaport_brain.llm_error_speaker import LLMErrorSpeaker  # noqa: E402
-from teaport_brain.llm_text_guard import LLMTextGuard  # noqa: E402
-from teaport_brain.memory_hygiene import MemoryReclaim  # noqa: E402
-from teaport_brain.memory_recall import MemoryRecall  # noqa: E402
-from teaport_brain.persona import build_system_prompt, load_persona  # noqa: E402
-from teaport_brain.raw_llm_capture import RawLLMCapture  # noqa: E402
+from teaport_brain import endpoint_debug
+from teaport_brain import llm_error_speaker
+from teaport_brain import llm_text_guard
+from teaport_brain import raw_llm_capture
+from teaport_brain import thinking_sound
+from teaport_brain.engine_tts import LANG_NAMES
+from teaport_brain.followup_gate import FollowupGate, FollowupTrigger
+from teaport_brain.heard_context import HeardContextCorrector
+from teaport_brain.llm_error_speaker import LLMErrorSpeaker
+from teaport_brain.llm_text_guard import LLMTextGuard
+from teaport_brain.memory_hygiene import MemoryReclaim
+from teaport_brain.memory_recall import MemoryRecall
+from teaport_brain.persona import build_system_prompt, load_persona
+from teaport_brain.raw_llm_capture import RawLLMCapture
 # Built from the shared service factories (services.py) — no transport/demo imports,
 # so the module stays cheap to import.
-from teaport_brain.services import make_llm, make_stt, make_tts  # noqa: E402
-from teaport_brain.thinking_sound import ThinkingSound  # noqa: E402
-from teaport_brain.tools import (  # noqa: E402
+from teaport_brain.services import make_llm, make_stt, make_tts
+from teaport_brain.thinking_sound import ThinkingSound
+from teaport_brain.tools import (
     AGENT_FIRST,
     build_tools_schema,
     register_tools,
 )
-from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
-from teaport_brain.turn_timing import TurnTimer  # noqa: E402
+from teaport_brain.transcript_ledger import TranscriptLedger
+from teaport_brain.turn_timing import TurnTimer
 
 
 def _vad_cls():
