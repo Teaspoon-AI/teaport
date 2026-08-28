@@ -18,8 +18,12 @@ uv pip install -e ./brain pytest
 cd brain/tests && ../../.venv/bin/python -m pytest test_suite.py -q
 ```
 
-Expect **22 passed, 2 skipped** off-appliance. The two skips need hardware this box
-doesn't have; **anything failing is a real regression**, including on a laptop.
+Expect **23 passed, 2 skipped** off-appliance. The two skips need hardware this box
+doesn't have; **anything failing is a real regression**, including on a laptop —
+with one exception: if pipecat doesn't match the pin, every test that imports
+`pinned_pipecat` fails immediately with a message telling you to reinstall. That's
+an environment problem, not a regression; rerun the `uv pip install -e ./brain` step
+above and it goes away.
 
 That distinction is the point. Those two used to *fail* off-appliance, so this file
 called green pytest the merge gate while `pytest brain/tests/` could never be green —

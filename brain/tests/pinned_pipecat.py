@@ -26,6 +26,12 @@
 #
 import os
 
+# Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
+# sets HF_HUB_OFFLINE, and that only guards imports that come after it runs. Every
+# script that imports this module for the version pin gets that ordering for free —
+# see teaport_brain/__init__.py for why it has to happen this early.
+import teaport_brain  # noqa: E402, F401
+
 import pipecat
 
 try:

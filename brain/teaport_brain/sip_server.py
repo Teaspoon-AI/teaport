@@ -45,7 +45,6 @@ import argparse
 import asyncio
 import os
 
-
 from loguru import logger
 
 from pipecat.frames.frames import (
