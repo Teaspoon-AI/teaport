@@ -37,6 +37,7 @@ SCRIPTS = [
     ("test_followup_trigger.py", 120),
     ("test_stt_connect_retry.py", 120),
     ("test_sip_call_lifecycle.py", 120),
+    ("test_sip_output_framing.py", 120),
 ]
 
 

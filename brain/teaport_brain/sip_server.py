@@ -59,6 +59,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  #
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
 
 from teaport_brain.agent_session import build_agent_session  # noqa: E402
+from teaport_brain.env import env_flag, env_num  # noqa: E402
+from teaport_brain.memory_hygiene import turn_reclaim  # noqa: E402
 from teaport_brain.services import make_tts  # noqa: E402
 from teaport_brain.sip_serializer import SipProtocolSerializer  # noqa: E402
 from teaport_brain.sip_transport import (  # noqa: E402
@@ -78,8 +80,26 @@ from teaport_brain.sip_transport import (  # noqa: E402
 # bounded (~1 s) playout backlog. It is NOT the real fix — that's an echo canceller
 # in the teaport-sip bridge (pjmedia AEC), keeping the brain transport-agnostic —
 # but it isolates whether echo is the cause. Kill switch: SIP_HALF_DUPLEX=0.
-HALF_DUPLEX = os.getenv("SIP_HALF_DUPLEX", "1").strip().lower() not in ("0", "false", "no")
-_HD_TAIL_S = float(os.getenv("SIP_HALF_DUPLEX_TAIL_S", "0.8"))
+#
+# Both knobs go through env.py rather than a hand-rolled parse and a bare cast, because
+# both are read at IMPORT time out of /etc/teaport/brain.env, which installer repairs
+# preserve verbatim:
+#
+#   The kill switch had grown its OWN truth table ("0"/"false"/"no"), which accepted
+#   neither `off` nor `n`. So `SIP_HALF_DUPLEX=off` — a spelling docs/CONFIG.md
+#   documents, and one brain.env can decide, since an EnvironmentFile overrides the
+#   unit's own `Environment=SIP_HALF_DUPLEX=0` (systemd.exec) — left the gate ON:
+#   barge-in silently dead on the phone line, with not one journal line about it,
+#   since a private table also skips env_flag's "disabled" log. tools.py records the
+#   identical bug for `TEAPORT_AGENT_FIRST=on`.
+#
+#   A bare float() on the tail turns one operator typo (`SIP_HALF_DUPLEX_TAIL_S=`, or
+#   `=0,8` from a comma-decimal locale) into an import-time ValueError: sip_server never
+#   starts, and systemd/teaport-sip-brain.service.in's Restart=always + RestartSec=5
+#   crash-loop it forever, with no way to clear it short of hand-editing the file —
+#   re-running the installer will not. env_num warns and falls back instead.
+HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", True)
+_HD_TAIL_S = env_num("SIP_HALF_DUPLEX_TAIL_S", "0.8", float)
 
 
 class HalfDuplexInputGate(FrameProcessor):
@@ -129,8 +149,11 @@ async def run(sock_path: str):
 
     # The serializer is shared: the persistent connection uses it to DESERIALIZE
     # inbound datagrams; the per-call output transport uses it (via params) to
-    # SERIALIZE brain->gateway control. SipProtocolSerializer is stateless, so one
-    # instance is safe for both directions.
+    # SERIALIZE everything going the other way — control, audio, and interruptions.
+    # (Audio used to bypass it and call encode_audio() directly, which left the wire
+    # format defined in two places and the serializer's audio and InterruptionFrame
+    # branches unreachable; the transport now routes all three through it.)
+    # SipProtocolSerializer is stateless, so one instance is safe for both directions.
     serializer = SipProtocolSerializer()
     params = make_sip_params(serializer)
     connection = SipConnection(sock, serializer)
@@ -148,10 +171,15 @@ async def run(sock_path: str):
     # task rather than inline in the receive loop — see on_call_state.
     setup = {"task": None, "call_id": None}
 
-    async def cancel_active_call(reason: str, call_id: str | None = None):
+    async def cancel_active_call(reason: str, call_id: str | None = None,
+                                 reclaim: bool = True):
         """Tear down the running per-call pipeline: cancel its task and wait out its
         teardown so the STT _disconnect closes the engine socket and frees the single
         STT slot before the next call's STT connects.
+
+        `reclaim` runs the session-end memory reclaim once the pipeline is gone; pass
+        False when a replacement call is already being brought up behind this teardown
+        (see the `confirmed` branch of on_call_state, the only such caller).
 
         `call_id`, when given, is a GUARD: tear down only if the running pipeline
         belongs to that call. Without it this cancelled whatever happened to be
@@ -184,6 +212,23 @@ async def run(sock_path: str):
         # Let the engine process the STT close and free the single slot before the
         # next call's STT connects (mirrors the OpenClaw path's acquire_slot settle).
         await asyncio.sleep(0.3)
+        if reclaim:
+            # A CALL is a session, so this is the session end — the SIP twin of the
+            # turn_reclaim in gateway_server's talk() finally, and the only place the
+            # per-call pipeline's memory ever comes back: MemoryReclaim deliberately
+            # omits empty_cache per turn (it can lock the CUDA allocator against an
+            # in-flight synth and deadlock a barge-in), and glibc keeps the freed
+            # smart-turn/VAD/resampler arena pages (~35 MB a session) until something
+            # calls malloc_trim. Without this, RSS and VRAM ratchet call over call on
+            # the 8 GB unified pool — and on the phone-dedicated box docs/CONFIG.md
+            # recommends (`systemctl disable --now teaport-brain`) NO other process is
+            # running sessions to reclaim on our behalf, so it ends at an OOM.
+            #
+            # Off the loop, like MemoryReclaim's per-turn trim, but AWAITED: this
+            # usually runs inline in the connection's single receive loop, so awaiting
+            # it is also what guarantees no bring-up starts mid-reclaim — nothing is
+            # dispatched while the loop is not reading.
+            await asyncio.get_running_loop().run_in_executor(None, turn_reclaim)
 
     @connection.event_handler("on_client_connected")
     async def on_connected(_connection):
@@ -276,7 +321,20 @@ async def run(sock_path: str):
             # Single active call in v0: evict any running pipeline (and any bring-up
             # still in flight) first, so the STT slot is free before ours connects.
             await cancel_setup("superseded by a new call")
-            await cancel_active_call("superseded by a new call")
+            # No reclaim on THIS teardown: the bring-up below starts on the same event
+            # loop immediately behind it, and gc + malloc_trim + empty_cache would stall
+            # that caller's setup — with empty_cache free to contend the CUDA allocator
+            # lock against the greeting's synth, the hazard MemoryReclaim documents. The
+            # superseding call reclaims when IT ends, so nothing is lost.
+            #
+            # gateway_server writes this same rule as `if not slot_active()`. That guard
+            # would be inert here: slot_active() reads a module global in agent_session
+            # that only acquire_slot sets, and the SIP path never calls acquire_slot —
+            # different process, different globals (see agent_session's SCOPE note), so
+            # it is always False in this process and would skip nothing. The condition is
+            # therefore put where this process actually knows it: at the one call site
+            # that has a replacement call in hand.
+            await cancel_active_call("superseded by a new call", reclaim=False)
             setup["call_id"] = call_id
             setup["task"] = asyncio.create_task(bring_up_call(call_id))
         elif state == "disconnected":

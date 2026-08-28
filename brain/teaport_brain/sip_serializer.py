@@ -31,6 +31,15 @@
 #       0x10 + PCM  -> InputAudioRawFrame(16000, 1ch)
 #       0x01 + JSON -> SipControlFrame(control=<dict>)   (dispatched by the transport)
 #
+# This file is the SINGLE definition of that wire format, and the transport keeps it
+# that way: SipGatewayOutputTransport routes audio, control and interruptions alike
+# through _write_frame -> serialize(). It briefly did not — audio called encode_audio()
+# directly — which made the two branches above dead code that still read as normative,
+# exactly the trap a protocol v1 would fall into. Note the transport cuts playout into
+# 640-byte frames BEFORE calling serialize(), because the type tag is per datagram: the
+# chunk-after-serialize approach pipecat offers (params.fixed_audio_packet_size) would
+# leave the 0x11 on the first slice only.
+#
 # Robustness contract (mirrors gateway_serializer.py): one malformed datagram
 # from the socket must NEVER kill the session — anything we can't parse is logged
 # and dropped, never raised.
@@ -85,7 +94,13 @@ def encode_control(msg: dict) -> bytes:
 
 
 def encode_audio(pcm: bytes) -> bytes:
-    """0x11 + raw PCM16. `pcm` is expected to be one 640-byte / 20 ms frame."""
+    """0x11 + raw PCM16. `pcm` MUST be one 640-byte / 20 ms frame; the caller
+    (SipGatewayOutputTransport.write_audio_frame) re-packetizes to guarantee it.
+
+    Oversize is not a caught error anywhere: a 64 KB SEQPACKET send succeeds locally
+    and the gateway's MAX_FRAME_BYTES recv silently truncates it, so the audio just
+    disappears. Undersize is worse than useless too — the gateway treats one datagram
+    as one 20 ms RTP frame."""
     return bytes([MSG_AUDIO_OUT]) + bytes(pcm)
 
 
@@ -100,13 +115,16 @@ class SipProtocolSerializer(FrameSerializer):
 
     async def serialize(self, frame: Frame):
         if isinstance(frame, OutputAudioRawFrame):
-            # Already 16 kHz by now (audio_out_sample_rate=16000). Tag as playout.
+            # Already 16 kHz by now (audio_out_sample_rate=16000) and already cut to
+            # exactly BYTES_PER_FRAME by the transport. Tag as playout.
             return encode_audio(bytes(frame.audio))
         if isinstance(frame, InterruptionFrame):
-            # Protocol v0 has no "flush the caller's playout" control message, so
-            # a barge-in can't tell the gateway to drop already-queued audio; we
+            # Reached on every barge-in (the output transport's process_frame routes
+            # it here), but protocol v0 has no "flush the caller's playout" control
+            # message, so we can't tell the gateway to drop already-queued audio; we
             # simply stop sending, and the gateway's ~1 s bounded queue drains.
-            # (Documented deferral — see RUNLOG.)
+            # (Documented deferral — see RUNLOG. Adding the v1 flush is a one-line
+            # change right here, with nothing to touch in the transport.)
             return None
         if isinstance(frame, (OutputTransportMessageUrgentFrame, OutputTransportMessageFrame)):
             if self.should_ignore_frame(frame):  # drop RTVI protocol messages

@@ -23,6 +23,15 @@
 #      and the first future is never resolved — the audio MediaSender blocks forever
 #      and the call goes silent with nothing logged.
 #
+# And one that is not concurrency but lives in the same teardown:
+#
+#   4. The per-call teardown never ran the session-end memory reclaim the OpenClaw path
+#      runs in talk()'s finally. MemoryReclaim skips empty_cache per turn on purpose, so
+#      the CUDA cache and the freed glibc arena pages are ONLY returned at session end;
+#      on a phone-dedicated box (teaport-brain disabled) that made every call leak, until
+#      the 8 GB unified pool OOMs. It must NOT run on a superseded teardown, where the
+#      replacement call's bring-up is already starting behind it.
+#
 # Run: python test_sip_call_lifecycle.py
 #
 import asyncio
@@ -30,6 +39,7 @@ import os
 import socket
 import sys
 import tempfile
+import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -137,11 +147,14 @@ class _Harness:
         self.peer = None
         self.run_task = None
         self._pending = []
+        # (was_on_the_event_loop_thread,) per reclaim, newest last.
+        self.reclaims = []
 
     async def start(self):
         _FakeSession.built = []
         _FakeSession.greeted = []
         _FakeSession.by_id = {}
+        self.reclaims = []
         self._patch()
         self.run_task = asyncio.create_task(sip_server.run(self.path))
         loop = asyncio.get_running_loop()
@@ -153,6 +166,11 @@ class _Harness:
         self._orig_build = sip_server.build_agent_session
         self._orig_runner = sip_server.PipelineRunner
         self._orig_transport = sip_server.SipGatewayTransport
+        self._orig_reclaim = sip_server.turn_reclaim
+
+        def reclaim():
+            self.reclaims.append(threading.current_thread() is threading.main_thread())
+        sip_server.turn_reclaim = reclaim
 
         def build(transport, **kw):
             call_id = self._pending.pop(0)
@@ -180,6 +198,7 @@ class _Harness:
         sip_server.build_agent_session = self._orig_build
         sip_server.PipelineRunner = self._orig_runner
         sip_server.SipGatewayTransport = self._orig_transport
+        sip_server.turn_reclaim = self._orig_reclaim
 
     async def call_state(self, call_id, state):
         self._pending.append(call_id)
@@ -269,6 +288,75 @@ async def test_a_slow_bring_up_does_not_block_the_receive_loop():
             "the bring-up ran to completion for a call that had already hung up")
     finally:
         _FakeSession.greet_delay = 0.0
+        await h.stop()
+
+
+# --- 4. the session-end reclaim --------------------------------------------------
+
+async def test_a_finished_call_reclaims_its_memory_off_the_loop():
+    """A call IS a session, so its teardown is the session end — the only point where
+    empty_cache and malloc_trim ever run (MemoryReclaim skips both per turn). Without
+    this the phone-only box ratchets RSS/VRAM every call until it OOMs."""
+    h = _Harness()
+    try:
+        await h.start()
+        await h.call_state("A", "confirmed")
+        assert await wait_until(lambda: "A" in _FakeSession.built), "call A never built"
+        await h.send_raw({"type": "call.state", "call_id": "A", "state": "disconnected"})
+        assert await wait_until(lambda: len(h.reclaims) == 1), (
+            "the per-call teardown never reclaimed: the call's arena pages and CUDA "
+            "cache are held until the process dies")
+        assert h.reclaims == [False], (
+            "the reclaim ran ON the event loop thread — gc + malloc_trim there stalls "
+            "the receive loop, which is also the caller-audio path")
+    finally:
+        await h.stop()
+
+
+async def test_a_superseded_call_leaves_the_reclaim_to_its_replacement():
+    """The teardown that has a next call pending must skip it: the bring-up starts on
+    this same loop right behind it, and empty_cache can contend the CUDA allocator lock
+    against the greeting's synth. gateway_server spells this `if not slot_active()`,
+    which is inert in THIS process — the SIP path never calls acquire_slot."""
+    h = _Harness()
+    try:
+        await h.start()
+        await h.call_state("A", "confirmed")
+        assert await wait_until(lambda: "A" in _FakeSession.built), "call A never built"
+        await h.call_state("B", "confirmed")
+        assert await wait_until(lambda: "B" in _FakeSession.built), "call B never built"
+        assert torn_down("A"), "confirming B should have superseded A"
+        await asyncio.sleep(0.3)   # asserting a NEGATIVE: give it room to misbehave
+        assert h.reclaims == [], (
+            f"a superseded teardown reclaimed ({len(h.reclaims)}x) — that stalls the "
+            f"new caller's setup for a reclaim their own hangup would have done")
+
+        # ...and the replacement still reclaims when IT ends, so nothing is lost.
+        await h.send_raw({"type": "call.state", "call_id": "B", "state": "disconnected"})
+        assert await wait_until(lambda: len(h.reclaims) == 1), (
+            "the surviving call did not reclaim at its own teardown, so the memory of "
+            "BOTH calls is now held")
+    finally:
+        await h.stop()
+
+
+async def test_a_teardown_the_call_id_guard_rejects_does_not_reclaim():
+    """A stale disconnected tears nothing down, so it must not reclaim either: the
+    live call is mid-conversation and a gc + malloc_trim would stall its audio."""
+    h = _Harness()
+    try:
+        await h.start()
+        await h.call_state("A", "confirmed")
+        assert await wait_until(lambda: "A" in _FakeSession.built), "call A never built"
+        await h.call_state("B", "confirmed")
+        assert await wait_until(lambda: "B" in _FakeSession.built), "call B never built"
+        await h.send_raw({"type": "call.state", "call_id": "A", "state": "disconnected"})
+        await asyncio.sleep(0.3)   # asserting a NEGATIVE
+        assert not torn_down("B"), "the stale disconnected tore down the live call"
+        assert h.reclaims == [], (
+            "a stale disconnected reclaimed on top of the live call — audio stall for "
+            "a teardown that did not happen")
+    finally:
         await h.stop()
 
 

@@ -11,6 +11,14 @@
 # the live /run/teaport/teaport-sip.sock — it refuses that path outright so a fat-finger
 # can't disturb the real gateway's NetSapiens registration.
 #
+# Kept as its own file rather than folded into fake_gateway_multicall.py --calls 1
+# (which it nearly is), because two acceptance run logs — RUNLOG-sip-offline.md and
+# RUNLOG-sip-tools.md — quote the literal `fake_gateway.py ... --out-wav ...` command
+# they were produced by. Those are records of runs that happened, not docs to keep
+# current, so a rename would make them cite a command that never existed. The two
+# also differ in what they record: this one keeps every audio.out frame from connect
+# onward, the multicall driver drops anything arriving outside a call window.
+#
 # Sequence it drives:
 #   brain connects  ->  we send hello, call.incoming, call.state=confirmed
 #   wait --greet-wait s (collect any greeting audio.out)
