@@ -36,6 +36,15 @@ EXCLUDED: dict[str, str] = {}
 # Overrides for anything the default doesn't fit.
 TIMEOUTS: dict[str, int] = {}
 
+# Scripts whose core assertions need real hardware/network (they call
+# appliance.require_env / appliance.require_reachable at their own top level, which
+# this file can't see just by discovering them). Declared HERE too, so the
+# requirement is enumerable instead of only readable by opening each script — and so
+# test_declared_appliance_scripts_match_their_guards below can catch the two ways
+# this can drift: a script gains a guard and isn't added here, or is listed here
+# after its guard is removed.
+APPLIANCE_ONLY = {"test_engine_text_stream.py", "test_remember_tool.py"}
+
 
 def _discover():
     names = sorted(
@@ -54,6 +63,23 @@ def test_every_script_on_disk_is_collected():
     missing = sorted(set(EXCLUDED) - set(os.listdir(HERE)))
     assert not missing, f"EXCLUDED names scripts that no longer exist: {missing}"
     assert SCRIPTS, "no test scripts discovered — is this running from brain/tests?"
+
+
+def test_declared_appliance_scripts_match_their_guards():
+    """APPLIANCE_ONLY and each script's own appliance.require_* call have to agree,
+    or a hardware-dependent test can silently FAIL in CI instead of SKIP — the same
+    'someone has to remember' failure this file exists to eliminate, one level down.
+    """
+    guarded = set()
+    for name, _ in SCRIPTS:
+        with open(os.path.join(HERE, name)) as f:
+            if "appliance.require_" in f.read():
+                guarded.add(name)
+    assert guarded == APPLIANCE_ONLY, (
+        f"APPLIANCE_ONLY and the scripts that actually call appliance.require_* "
+        f"disagree — guarded but undeclared: {sorted(guarded - APPLIANCE_ONLY)}, "
+        f"declared but unguarded: {sorted(APPLIANCE_ONLY - guarded)}"
+    )
 
 
 @pytest.mark.parametrize("script,timeout", SCRIPTS,

@@ -19,6 +19,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import appliance  # noqa: E402
 
+# Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
+# sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
+import teaport_brain  # noqa: E402, F401
+
 # Isolate the write BEFORE importing openclaw_client (it reads MEMORY_DIR at import).
 _TMP_MEM = tempfile.mkdtemp(prefix="teaport-remember-test-")
 os.environ["OPENCLAW_MEMORY_DIR"] = _TMP_MEM

@@ -55,9 +55,7 @@ def require_reachable(url: str, what: str, timeout: float = 3.0):
     is a real one — the engine being wrong is exactly what these tests are for.
     """
     parsed = urlparse(url)
-    host = parsed.hostname
-    port = parsed.port or {"ws": 80, "wss": 443, "http": 80, "https": 443}.get(
-        parsed.scheme)
+    host, port = parsed.hostname, parsed.port
     if not host or not port:
         # Don't skip on something we failed to parse — that is a broken test, and
         # silently skipping it would hide the breakage this module exists to expose.

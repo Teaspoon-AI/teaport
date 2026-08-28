@@ -19,7 +19,6 @@
 import asyncio
 import json
 
-
 from loguru import logger
 
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
