@@ -63,11 +63,16 @@ def require_reachable(url: str, what: str, timeout: float = 3.0):
         # broken test/config, not an absent dependency — fail loud rather than skip,
         # and rather than let urlparse's own exception crash this with no context.
         raise ValueError(f"{url!r} is not a usable URL ({e}) for {what}") from e
+    # An omitted port is NOT malformed — the scheme supplies it, and `wss://host/path`
+    # is exactly what you get pointing ENGINE_TTS_STREAM_URL at a TLS-terminated
+    # engine. Treating that as unusable rejected a valid config with a message
+    # claiming the URL was broken, so resolve the scheme's default before giving up.
+    port = port or {"ws": 80, "wss": 443, "http": 80, "https": 443}.get(parsed.scheme)
     if not host or not port:
-        # Same reasoning: a URL with no explicit port can't be probed, and that's a
-        # broken test/config, not an absent dependency — fail loud, don't skip, and
-        # don't silently return unchecked (which would hide the breakage this module
-        # exists to expose behind whatever raw error the test hits downstream).
+        # Now genuinely unprobeable: no host, or a scheme we have no default for.
+        # That is a broken test/config, not an absent dependency — fail loud, don't
+        # skip, and don't silently return unchecked (which would hide the breakage
+        # this module exists to expose behind whatever raw error comes downstream).
         raise ValueError(f"{url!r} has no host:port to probe for {what}")
     # A daemon thread, not a bare create_connection(): create_connection's timeout
     # bounds the TCP connect but not the DNS lookup it does first, so a stuck
