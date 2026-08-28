@@ -7,12 +7,12 @@
 #
 #   * `pytest brain/tests/` could never be green, while brain/tests/README.md called
 #     green pytest the merge gate. A suite that is permanently two-red teaches
-#     everyone to read past red, which is the whole value of the other seventeen.
+#     everyone to read past red, which is the whole value of the other twenty-one.
 #   * A real regression in those two files looked EXACTLY like the environmental
 #     failure — same red, same place. The one signal they could give was unreadable.
 #   * CI worked around it with a hand-maintained denylist
 #     (`-k "not test_engine_text_stream and not test_remember_tool"`) whose comment
-#     said "the other five are hermetic" long after there were seventeen. Every new
+#     said "the other five are hermetic" long after there were twenty-three. Every new
 #     appliance-dependent test had to remember to edit that string, and one that
 #     forgot would fail CI rather than skip.
 #
@@ -28,6 +28,7 @@
 import os
 import socket
 import sys
+import threading
 from urllib.parse import urlparse
 
 SKIP_EXIT = 77
@@ -55,15 +56,39 @@ def require_reachable(url: str, what: str, timeout: float = 3.0):
     is a real one — the engine being wrong is exactly what these tests are for.
     """
     parsed = urlparse(url)
-    host, port = parsed.hostname, parsed.port
-    if not host or not port:
-        # Don't skip on something we failed to parse — that is a broken test, and
-        # silently skipping it would hide the breakage this module exists to expose.
-        return url
     try:
-        with socket.create_connection((host, port), timeout=timeout):
-            pass
-    except OSError as e:
-        skip(f"nothing listening at {host}:{port} ({e.__class__.__name__}) — this test "
+        host, port = parsed.hostname, parsed.port
+    except ValueError as e:
+        # A bad port string (urlparse raises ValueError, not OSError, for that) is a
+        # broken test/config, not an absent dependency — fail loud rather than skip,
+        # and rather than let urlparse's own exception crash this with no context.
+        raise ValueError(f"{url!r} is not a usable URL ({e}) for {what}") from e
+    if not host or not port:
+        # Same reasoning: a URL with no explicit port can't be probed, and that's a
+        # broken test/config, not an absent dependency — fail loud, don't skip, and
+        # don't silently return unchecked (which would hide the breakage this module
+        # exists to expose behind whatever raw error the test hits downstream).
+        raise ValueError(f"{url!r} has no host:port to probe for {what}")
+    # A daemon thread, not a bare create_connection(): create_connection's timeout
+    # bounds the TCP connect but not the DNS lookup it does first, so a stuck
+    # resolver could otherwise turn a "clean skip" into an indefinite hang. Daemon so
+    # that if it's still stuck when we give up, it can't also block process exit.
+    outcome: list = []
+    thread = threading.Thread(target=lambda: outcome.append(_probe(host, port, timeout)),
+                               daemon=True)
+    thread.start()
+    thread.join(timeout)
+    if not outcome or isinstance(outcome[0], OSError):
+        detail = outcome[0].__class__.__name__ if outcome else f"no response within {timeout}s"
+        skip(f"nothing listening at {host}:{port} ({detail}) — this test "
              f"needs {what}. It runs on the appliance; see brain/tests/README.md.")
+    outcome[0].close()
     return url
+
+
+def _probe(host: str, port: int, timeout: float):
+    """Connect or return the OSError — run on a worker thread by require_reachable."""
+    try:
+        return socket.create_connection((host, port), timeout=timeout)
+    except OSError as e:
+        return e

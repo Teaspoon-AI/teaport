@@ -7,6 +7,7 @@
 # Runs on the appliance (model files + venv deps live there):
 #   ~/teaport-venv/bin/python3 -m pytest test_suite.py -v
 #
+import ast
 import os
 import subprocess
 import sys
@@ -38,11 +39,13 @@ TIMEOUTS: dict[str, int] = {}
 
 # Scripts whose core assertions need real hardware/network (they call
 # appliance.require_env / appliance.require_reachable at their own top level, which
-# this file can't see just by discovering them). Declared HERE too, so the
-# requirement is enumerable instead of only readable by opening each script — and so
-# test_declared_appliance_scripts_match_their_guards below can catch the two ways
-# this can drift: a script gains a guard and isn't added here, or is listed here
-# after its guard is removed.
+# this file can't see just by discovering them). This one IS still hand-maintained —
+# unlike SCRIPTS/EXCLUDED/TIMEOUTS above there's no signal here to derive it from
+# without instrumenting appliance.py itself — but declaring it here makes the
+# requirement enumerable instead of only readable by opening each script, and
+# test_declared_appliance_scripts_match_their_guards below closes the gap that
+# matters: a script gains a guard and isn't added here, or is listed here after its
+# guard is removed, fails the suite instead of drifting unnoticed.
 APPLIANCE_ONLY = {"test_engine_text_stream.py", "test_remember_tool.py"}
 
 
@@ -62,7 +65,35 @@ def test_every_script_on_disk_is_collected():
     a script deleted or renamed while its exclusion stayed behind."""
     missing = sorted(set(EXCLUDED) - set(os.listdir(HERE)))
     assert not missing, f"EXCLUDED names scripts that no longer exist: {missing}"
+    empty_reasons = sorted(name for name, reason in EXCLUDED.items() if not reason.strip())
+    assert not empty_reasons, f"EXCLUDED entries need a real reason: {empty_reasons}"
     assert SCRIPTS, "no test scripts discovered — is this running from brain/tests?"
+
+
+def _calls_appliance_guard(path: str) -> bool:
+    """True if the script at `path` actually calls appliance.require_env /
+    require_reachable — including through `from appliance import require_env as x`.
+    Parsed with ast rather than a substring search on the script's text: a substring
+    match both false-positives (the words appearing in a comment or docstring) and
+    false-negatives (an aliased import, which contains no "appliance.require_"
+    substring at all)."""
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), filename=path)
+    guard_names = {"require_env", "require_reachable"}
+    aliases = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and node.module == "appliance":
+            aliases.update(alias.asname or alias.name
+                            for alias in node.names if alias.name in guard_names)
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        if isinstance(func, ast.Attribute) and func.attr in guard_names:
+            return True
+        if isinstance(func, ast.Name) and func.id in aliases:
+            return True
+    return False
 
 
 def test_declared_appliance_scripts_match_their_guards():
@@ -70,11 +101,7 @@ def test_declared_appliance_scripts_match_their_guards():
     or a hardware-dependent test can silently FAIL in CI instead of SKIP — the same
     'someone has to remember' failure this file exists to eliminate, one level down.
     """
-    guarded = set()
-    for name, _ in SCRIPTS:
-        with open(os.path.join(HERE, name)) as f:
-            if "appliance.require_" in f.read():
-                guarded.add(name)
+    guarded = {name for name, _ in SCRIPTS if _calls_appliance_guard(os.path.join(HERE, name))}
     assert guarded == APPLIANCE_ONLY, (
         f"APPLIANCE_ONLY and the scripts that actually call appliance.require_* "
         f"disagree — guarded but undeclared: {sorted(guarded - APPLIANCE_ONLY)}, "

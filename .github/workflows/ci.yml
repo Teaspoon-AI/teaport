@@ -27,7 +27,7 @@ jobs:
         #
         # The denylist this replaces had to be edited by hand for every new
         # appliance-dependent test, and its comment still said "the other five are
-        # hermetic" when there were seventeen. A test that forgot to add itself
+        # hermetic" when there were twenty-three. A test that forgot to add itself
         # failed CI instead of skipping.
         run: python -m pytest brain/tests/test_suite.py -v
 
