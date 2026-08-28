@@ -11,7 +11,29 @@ concurrency:
 
 jobs:
   brain:
-    runs-on: ubuntu-latest
+    # Both architectures, because the two answer different questions. x86 is where
+    # development happens, so it is what catches a regression before it is pushed.
+    # aarch64 is the ONLY architecture ever shipped to a user — a Jetson Orin — and
+    # until now nothing tested it automatically: every arm64 claim in this repo came
+    # from someone SSHing into the appliance and running the suite by hand, which
+    # makes it true on the day it was checked and unverified every day after.
+    #
+    # A GitHub-hosted arm64 runner is free for public repos and the pins resolve on
+    # it: pipecat-ai is py3-none-any, onnxruntime and numpy both ship manylinux
+    # aarch64 wheels.
+    #
+    # This is not a substitute for the appliance and does not pretend to be — no
+    # CUDA, no JetPack, no engine, no LLM. The two appliance-only tests skip on both
+    # runners exactly as they do on a laptop, and that they SKIP rather than fail is
+    # what lets a second runner be added without a denylist of its own.
+    #
+    # fail-fast is off on purpose: an arm-only break and an x86-only break are
+    # different bugs, and cancelling the other job would hide which one you have.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
