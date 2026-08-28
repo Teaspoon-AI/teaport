@@ -273,6 +273,25 @@ async def run(sock_path: str):
         receive loop — see on_call_state."""
         logger.info(f"building a FRESH per-call pipeline for call {call_id} "
                     "(new STT/LLM/TTS/context)")
+        try:
+            await _bring_up(call_id)
+        finally:
+            # Retire our own entry once the bring-up is over, so `setup` means what its
+            # name says: a bring-up STILL IN FLIGHT. Without this it stayed set for the
+            # life of the call, and every ordinary hangup logged "abandoning the
+            # in-flight bring-up" for one that had finished long before — observed on
+            # the appliance 2026-08-28, 30s after the bring-up completed. Harmless in
+            # effect (cancel_setup only cancels a task that is not done) but it puts a
+            # lie in the journal at exactly the moment someone reads it to find out why
+            # a call ended.
+            #
+            # Identity-checked on the TASK, not the call_id: a bring-up that has already
+            # been superseded must not clear the replacement's entry.
+            if setup["task"] is asyncio.current_task():
+                setup["task"] = None
+                setup["call_id"] = None
+
+    async def _bring_up(call_id):
         transport = SipGatewayTransport(connection, params)
         # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout

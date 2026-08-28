@@ -17,6 +17,7 @@
 #   default — and a flag that is off says so in the journal, because a safety guard
 #   must never be silently absent.
 #
+import json
 import os
 
 from loguru import logger
@@ -61,3 +62,32 @@ def env_num(name: str, default, cast):
     except ValueError:
         logger.warning(f"{name}={raw!r} is not a number; using default {default}")
         return cast(default)
+
+
+def env_json(name: str, default=None):
+    """Read a JSON-valued knob, warning and falling back rather than raising.
+
+    Same contract as env_num, for the same reason — these live in brain.env, which is
+    hand-edited and which installer repairs preserve verbatim — but the blast radius is
+    different enough to be worth naming. A bad number crash-loops the service at import,
+    which is at least loud. A bad LLM_EXTRA_BODY raises out of make_llm(), which runs
+    inside build_agent_session(), so the process stays up and healthy-looking while
+    EVERY session dies at construction: every phone call, every /talk connection.
+
+    It is also easy to produce without touching the file. Shell-sourcing brain.env
+    strips the quotes — `{"provider":{"order":["Groq"]}}` arrives as
+    `{provider:{order:[Groq]}}` — so any wrapper that does `. brain.env` instead of
+    parsing it the way systemd's EnvironmentFile does hands the brain a value that
+    cannot parse. Observed 2026-08-28 on the appliance. brain/test/sip_test_common.sh
+    loads it literally for exactly this reason.
+    """
+    raw = (os.getenv(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return json.loads(raw)
+    except ValueError as e:
+        logger.warning(f"{name} is not valid JSON ({e}); ignoring it. "
+                       f"If it came from a wrapper that `source`d brain.env, the quotes "
+                       f"were stripped — parse the file literally instead.")
+        return default

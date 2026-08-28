@@ -22,7 +22,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
 from pipecat.services.openai.llm import OpenAILLMService
 
-from teaport_brain.env import env_num
+from teaport_brain.env import env_json, env_num
 from teaport_brain.stt import TeaportSTTService
 
 TEAPORT_URL = os.getenv("TEAPORT_URL", "ws://127.0.0.1:8000/v1/realtime")
@@ -46,9 +46,13 @@ def _llm_extra() -> dict:
     effort = _reasoning_effort()
     if effort:
         extra["reasoning_effort"] = effort
-    raw = os.getenv("LLM_EXTRA_BODY")
-    if raw:
-        extra["extra_body"] = json.loads(raw)
+    # env_json, not a bare json.loads: this runs inside build_agent_session(), so a
+    # malformed hand-edit (or a wrapper that `source`d brain.env and stripped the
+    # quotes) took down EVERY session with a raw JSONDecodeError while the service
+    # itself looked healthy. See env.py.
+    body = env_json("LLM_EXTRA_BODY")
+    if body is not None:
+        extra["extra_body"] = body
     return extra
 
 
