@@ -36,6 +36,15 @@ jobs:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
+    # Overrides the workflow-level concurrency group above. x86 is cheap to
+    # restart, so it keeps cancel-in-progress. arm64 runners can queue behind
+    # other GitHub-hosted arm64 jobs — if it shared the ref-wide group, a
+    # fast-iterating PR would cancel it on every push and it could go the
+    # whole PR without ever reporting a real result. Queuing instead of
+    # cancelling means every push still gets checked, just later.
+    concurrency:
+      group: ci-brain-${{ matrix.runner }}-${{ github.ref }}
+      cancel-in-progress: ${{ matrix.runner == 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
