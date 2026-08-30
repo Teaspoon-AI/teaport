@@ -11,12 +11,47 @@ concurrency:
 
 jobs:
   brain:
-    runs-on: ubuntu-latest
+    # Two architectures because they answer different questions: x86 catches a
+    # regression before it's pushed, aarch64 is the only architecture ever shipped (a
+    # Jetson Orin) and until now nothing tested it automatically. Free on a
+    # GitHub-hosted runner for a public repo — worth revisiting this matrix if that
+    # ever changes. All eight direct deps in brain/pyproject.toml ship manylinux
+    # aarch64 wheels for cp312 (checked 2026-08-28, pipecat-ai's own onnxruntime
+    # dependency included), and actions/python-versions has a cached linux-arm64
+    # 3.12 build, so setup-python below doesn't fall back to building from source.
+    #
+    # Not a substitute for the appliance: no CUDA, no JetPack, no engine, no LLM. The
+    # two appliance-only tests SKIP here exactly as they do on a laptop — a green run
+    # is x86/aarch64 hermetic coverage, not a Jetson stand-in.
+    #
+    # fail-fast is off: an arm-only break and an x86-only break are different bugs,
+    # and cancelling one job would hide which one you have. The two legs also aren't
+    # guaranteed to finish together — hosted arm64 runners can queue behind x86 —
+    # so judge each leg's result on its own rather than expecting them in lockstep.
+    #
+    # Matrix jobs report as "brain (<runner>)", not "brain": a future branch
+    # protection rule needs the per-leg name, not the bare job name.
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # Overrides the workflow-level concurrency group above. x86 is cheap to
+    # restart, so it keeps cancel-in-progress. arm64 runners can queue behind
+    # other GitHub-hosted arm64 jobs — if it shared the ref-wide group, a
+    # fast-iterating PR would cancel it on every push and it could go the
+    # whole PR without ever reporting a real result. Queuing instead of
+    # cancelling means every push still gets checked, just later.
+    concurrency:
+      group: ci-brain-${{ matrix.runner }}-${{ github.ref }}
+      cancel-in-progress: ${{ matrix.runner == 'ubuntu-latest' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+          cache: pip
+          cache-dependency-path: brain/pyproject.toml
       - name: Install the brain + pytest
         run: pip install ./brain pytest
       - name: Hermetic tests
