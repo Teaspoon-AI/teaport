@@ -268,9 +268,27 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   run cp "$MF" "$PREFIX/manifest.json" 2>/dev/null || SUDO cp "$MF" "$PREFIX/manifest.json"
 }
 
+# uv — fast, reproducible installs from brain/uv.lock. Bootstrapped once: prefer an
+# already-installed uv, else fetch the standalone binary (a single static executable, no
+# Python needed) into ~/.local/bin. Sets $UV to the resolved path for phase_brain.
+UV=""
+ensure_uv() {
+  [ -n "$UV" ] && return 0
+  if have uv; then UV="$(command -v uv)"; return 0; fi
+  if [ -x "$HOME/.local/bin/uv" ]; then UV="$HOME/.local/bin/uv"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] install uv -> ~/.local/bin (astral standalone installer)\n'; UV=uv; return 0
+  fi
+  log "installing uv (astral standalone) -> ~/.local/bin"
+  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" INSTALLER_NO_MODIFY_PATH=1 sh >/dev/null 2>&1 \
+    || die "uv install failed — see https://docs.astral.sh/uv/getting-started/installation/"
+  [ -x "$HOME/.local/bin/uv" ] || die "uv not found at ~/.local/bin/uv after install"
+  UV="$HOME/.local/bin/uv"
+}
+
 phase_brain() {
-  log "brain -> $PREFIX/venv (python3.12)"
-  run python3.12 -m venv "$PREFIX/venv"
+  log "brain -> $PREFIX/venv (uv sync --frozen, python3.12)"
+  ensure_uv
   local src="$BRAIN_SRC"
   if [ -z "$src" ] && [ -d "$HERE/brain" ]; then src="$HERE/brain"; fi   # installing from a checkout
   if [ -z "$src" ]; then
@@ -280,9 +298,17 @@ phase_brain() {
     run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
     src="$work/brain"
   fi
-  log "pip install $src"
-  run "$PREFIX/venv/bin/pip" install -q -U pip
-  run "$PREFIX/venv/bin/pip" install "$src"
+  # brain/uv.lock (beside pyproject.toml) pins the FULL transitive closure, so a fresh box
+  # installs the EXACT set the brain was validated against — ending the reinstall drift the
+  # hand-pinned pyproject fought by guesswork (numpy, websockets, ...). Flags:
+  #   --frozen              install the lock verbatim; never re-resolve or rewrite it
+  #   --no-dev              skip dev/test groups (production install)
+  #   --python-preference only-system: use JetPack's python3.12 (phase_sysdeps), NOT a
+  #                         downloaded managed CPython, so the ABI matches the platform.
+  # UV_PROJECT_ENVIRONMENT redirects uv's project venv from brain/.venv to $PREFIX/venv.
+  log "uv sync $src -> $PREFIX/venv"
+  run env UV_PROJECT_ENVIRONMENT="$PREFIX/venv" "$UV" sync --frozen --no-dev \
+      --python 3.12 --python-preference only-system --project "$src"
   # ship the teaport operator CLI on PATH (repo root = the parent of the brain dir)
   local cli; cli="$(dirname "$src")/cli/teaport"
   if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
