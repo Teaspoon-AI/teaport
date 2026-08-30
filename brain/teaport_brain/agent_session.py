@@ -581,7 +581,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
                    followup=None if AGENT_FIRST
                    else _make_consult_followup(task, context, followup_gate,
-                                               followup_trigger))
+                                               followup_trigger),
+                   # Lets the consult narrator fit its progress lines into a gap
+                   # rather than talking over the user (see _consult_progress).
+                   gate=followup_gate)
 
     return AgentSession(
         task=task,

@@ -327,29 +327,81 @@ def _consult_outcome(result):
     return (consult_bridge.extract_text(result) or None), None
 
 
-async def _consult_progress(llm):
-    """Deterministic 'still alive' narration for the silent background stretch.
-    The ack sentence ends within ~2s but the CLI consult takes 15-30s, and dead
-    air reads as a hang — the user has no idea anything is happening. Spoken
-    lines, not the thinking bed: the bed is keyed to the in-turn function call,
-    which the ASYNC path resolves immediately (hence 'pushed 0 chunks').
-    Singleton per session: overlapping consults share ONE narrator — two
-    narrators doubled every line audibly (observed live)."""
+# How long after each countdown the narrator will wait for a conversational gap
+# before giving up on that line. Short: a status update is worth saying in a lull,
+# never worth cutting in for — the answer itself arrives as the follow-up regardless.
+_PROGRESS_GAP_WAIT = 6.0
+# The countdown before each line. Named so tests can shorten it.
+_PROGRESS_SCHEDULE = (9.0, 13.0)
+# Cap on how much of the user's own request the topic echo repeats.
+_PROGRESS_TOPIC_WORDS = 9
+
+
+def _topic_phrase(request):
+    """A short echo of what the user actually asked, for the progress line. Their own
+    words, capped — never a paraphrase, so it can't invent a topic the way an LLM
+    round-trip could (the whole async path exists because ungrounded model text
+    fabricated answers live)."""
+    words = (request or "").strip().split()
+    if not words:
+        return ""
+    return " ".join(words[:_PROGRESS_TOPIC_WORDS]).rstrip(" .,:;!?—-")
+
+
+def _progress_line(request, n):
+    """The nth (0-based) progress line, naming the topic when the request gives one.
+    'that <topic>' keeps it grounded in what they asked, so a status update heard a
+    minute later still has a referent — the confusion was 'still working on it'
+    landing after unrelated turns with no 'it' in sight."""
+    topic = _topic_phrase(request)
+    # The topic rides as a dash appositive after a complete clause, never inside a
+    # grammatical slot: the request is often a verb phrase ("find good pastry shops"),
+    # and "almost there on the find good pastry shops" is broken where
+    # "almost there — find good pastry shops" reads fine spoken.
+    if n == 0:
+        return f"Still working on that — {topic}." if topic else "Still working on it."
+    return f"Almost there — {topic}." if topic else "Almost there — hang tight."
+
+
+async def _consult_progress(llm, request=None, gate=None):
+    """'Still alive' narration for the silent background stretch. The ack ends within
+    ~2s but the CLI consult takes 15-30s, and dead air reads as a hang.
+
+    Two things make it read like a person rather than a countdown clock. It NAMES
+    what it's working on (the user's own words — see _progress_line), so a late line
+    still has a referent. And when a `gate` is given it waits for a conversational
+    gap before speaking, up to _PROGRESS_GAP_WAIT: if the user is mid-conversation it
+    stays quiet and skips that line rather than talking over them — under- is better
+    than over-communicating here, because the answer lands as the follow-up either
+    way. With no gap ever, the countdown still fires (the original behaviour), which
+    is why the SIP path and any caller without a gate is unchanged.
+
+    The graceful COMPLETION ('...and by the way, that's done, reattached to what you
+    asked') is not here: it is the follow-up injector, which the LLM writes grounded
+    in the real answer, so it already fits task/research/action without hardcoding.
+
+    Singleton per session: overlapping consults share ONE narrator — two narrators
+    doubled every line audibly (observed live)."""
     if getattr(llm, "_teaport_progress_active", False):
         return
     llm._teaport_progress_active = True
     try:
-        await asyncio.sleep(9)
-        await llm.push_frame(TTSSpeakFrame("Still working on it."))
-        await asyncio.sleep(13)
-        await llm.push_frame(TTSSpeakFrame("Almost there — hang tight."))
+        for n, delay in enumerate(_PROGRESS_SCHEDULE):
+            await asyncio.sleep(delay)
+            # Fit it into a lull the way a person waits for a gap. wait_until_idle
+            # returns False if no gap opened within the window — then skip this line
+            # rather than force it over whoever is talking.
+            if gate is not None and not await gate.wait_until_idle(max_wait=_PROGRESS_GAP_WAIT):
+                continue
+            await llm.push_frame(TTSSpeakFrame(_progress_line(request, n)))
     except asyncio.CancelledError:
         pass
     finally:
         llm._teaport_progress_active = False
 
 
-async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, llm=None):
+async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, llm=None,
+                                gate=None):
     """Background waiter for the ASYNC ask_openclaw path. The turn already ended, so
     there's no tight voice deadline: wait out the consult, then hand the answer to
     the follow-up injector, which runs a fresh LLM turn so the bot SPEAKS it. Runs as
@@ -358,7 +410,8 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
     injector rewrite the placeholder tool result once the real outcome is known."""
     from teaport_brain import consult_bridge
 
-    progress = asyncio.create_task(_consult_progress(llm)) if llm is not None else None
+    progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
+                if llm is not None else None)
 
     async def deliver(answer):
         """Hand the outcome to the injector, narrator first."""
@@ -408,7 +461,7 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         consult_bridge.cancel(call_id)
 
 
-async def _ask_openclaw(params: FunctionCallParams, followup=None):
+async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
     import uuid
 
     from teaport_brain import consult_bridge
@@ -452,7 +505,8 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None):
     # voice platforms use for slow sub-agent delegation.
     if followup is not None:
         task = params.llm.create_task(_consult_and_followup(
-            call_id, fut, request, followup, params.tool_call_id, llm=params.llm))
+            call_id, fut, request, followup, params.tool_call_id, llm=params.llm,
+            gate=gate))
         inflight[request] = task
         # Identity-checked pop: a same-text consult started AFTER this one
         # finished must not be evicted by this one's completion callback.
@@ -696,10 +750,12 @@ def _wrap(name, handler, lang_fn):
     return wrapped
 
 
-def register_tools(llm, lang: str = "en-us", tts=None, followup=None) -> None:
+def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None) -> None:
     """Wire the tool handlers onto `llm`. `followup`, if given, is an async
     `(request, text|None) -> None` injector that speaks a background consult's answer
-    as an unprompted turn; providing it switches ask_openclaw to the ASYNC path."""
+    as an unprompted turn; providing it switches ask_openclaw to the ASYNC path.
+    `gate` (a FollowupGate), if given, lets the consult narrator wait for a
+    conversational gap before speaking its progress lines."""
     _install_spoke_tracker(llm)
     if tts is not None:
         # Live language: read the TTS service at call time, so a mid-session
@@ -714,7 +770,8 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None) -> None:
         handlers["list_voices"] = functools.partial(_list_voices, tts=tts)
         handlers["switch_voice"] = functools.partial(_switch_voice, tts=tts)
     if followup is not None:
-        handlers["ask_openclaw"] = functools.partial(_ask_openclaw, followup=followup)
+        handlers["ask_openclaw"] = functools.partial(_ask_openclaw, followup=followup,
+                                                      gate=gate)
     for name, handler in handlers.items():
         # ask_openclaw runs a full agent turn (~15-35s); pipecat's default 10s
         # function-call timeout abandons it mid-flight and discards the answer

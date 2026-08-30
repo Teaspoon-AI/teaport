@@ -43,8 +43,10 @@ class _LLM:
             self.narrated_during_delivery.append(text)
 
 
-async def _fast_progress(llm):
-    """The real narrator's shape, on a timescale a test can wait out."""
+async def _fast_progress(llm, request=None, gate=None):
+    """The real narrator's shape, on a timescale a test can wait out. Accepts the
+    request/gate kwargs _consult_and_followup now passes, and ignores them — the
+    ordering-vs-delivery contract these tests check is independent of them."""
     try:
         await asyncio.sleep(0.05)
         await llm.push_frame(_Speak("Still working on it."))
@@ -96,6 +98,79 @@ async def test_a_failed_consult_also_stops_the_narrator():
     llm, delivered = await _run({"error": "the desktop agent did not answer"})
     assert delivered == [None], delivered
     assert not llm.narrated_during_delivery, llm.narrated_during_delivery
+
+
+# --- the real _consult_progress: names the topic, and fits into a gap ---
+
+class _Gate:
+    """Stub FollowupGate. `gap` is what wait_until_idle reports: True == a clear
+    moment opened (speak), False == none within the window (skip)."""
+
+    def __init__(self, gap):
+        self.gap = gap
+        self.waits = 0
+
+    async def wait_until_idle(self, max_wait=None):
+        self.waits += 1
+        return self.gap
+
+
+class _Recorder:
+    def __init__(self):
+        self.said = []
+
+    async def push_frame(self, frame):
+        self.said.append(getattr(frame, "text", ""))
+
+
+async def test_the_progress_line_names_the_user_request():
+    # Their own words, so a late line still has a referent — not a paraphrase.
+    line = tools._progress_line("Find good pastry shops on Burnet Road in Austin", 0)
+    assert "pastry shops on Burnet Road" in line, line
+    assert line.startswith("Still working on that"), line
+    # An empty request falls back to the generic line rather than a dangling "that —".
+    assert tools._progress_line("", 0) == "Still working on it."
+    assert "—" not in tools._progress_line("   ", 0)
+
+
+async def _drive_progress(gap):
+    saved = tools._PROGRESS_SCHEDULE
+    tools._PROGRESS_SCHEDULE = (0.0, 0.0)  # no countdown; exercise the gating only
+    gate = _Gate(gap)
+    llm = _Recorder()
+    llm._teaport_progress_active = False
+    try:
+        await tools._consult_progress(llm, request="look into the H-matrix question", gate=gate)
+    finally:
+        tools._PROGRESS_SCHEDULE = saved
+    return llm, gate
+
+
+async def test_the_narrator_speaks_when_a_gap_opens():
+    llm, gate = await _drive_progress(gap=True)
+    assert len(llm.said) == 2, llm.said
+    assert "H-matrix question" in llm.said[0], llm.said[0]
+    assert gate.waits == 2, "it should check for a gap before each line"
+
+
+async def test_the_narrator_stays_quiet_when_there_is_no_gap():
+    llm, gate = await _drive_progress(gap=False)
+    assert llm.said == [], (
+        f"the narrator talked over the user instead of skipping: {llm.said!r}")
+    assert gate.waits == 2, "it still checks (and skips) each line"
+
+
+async def test_no_gate_falls_back_to_speaking_unconditionally():
+    # The SIP path and any caller without a gate keep the original behaviour.
+    saved = tools._PROGRESS_SCHEDULE
+    tools._PROGRESS_SCHEDULE = (0.0, 0.0)
+    llm = _Recorder()
+    llm._teaport_progress_active = False
+    try:
+        await tools._consult_progress(llm, request="anything", gate=None)
+    finally:
+        tools._PROGRESS_SCHEDULE = saved
+    assert len(llm.said) == 2, llm.said
 
 
 def main():

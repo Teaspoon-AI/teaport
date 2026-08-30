@@ -177,13 +177,16 @@ class FollowupGate(FrameProcessor):
             return
         await self._idle.wait()
 
-    async def wait_until_idle(self) -> bool:
+    async def wait_until_idle(self, max_wait: float | None = None) -> bool:
         """Block until a debounced quiet window. Returns True at a genuine window,
-        False if it gave up at max_wait (caller should speak anyway rather than lose
-        the answer). Cancellation propagates (session teardown)."""
+        False if it gave up at max_wait. `max_wait` overrides the instance default
+        for this call — the consult narrator passes a short one so it fits into a
+        gap or gives up quickly, where the follow-up injector wants the long default
+        so it never loses the answer. Cancellation propagates (session teardown)."""
+        max_wait = self._max_wait if max_wait is None else max_wait
         start = time.monotonic()
         while True:
-            remaining = self._max_wait - (time.monotonic() - start)
+            remaining = max_wait - (time.monotonic() - start)
             if remaining <= 0:
                 logger.info("followup_gate: max wait reached; delivering anyway")
                 return False
