@@ -23,13 +23,18 @@ license = { text = "MIT" }
 # run ONNX models in THIS process) — the brain is torch-free, not onnxruntime-free.
 # See THIRD_PARTY_LICENSES.md.
 #
-# Pinned to the deployed appliance venv (`teaport-venv`, arm64 / py3.12.3, `pip freeze`
-# 2026-07-21) so a fresh install resolves the same set the brain was validated against —
-# notably numpy==1.26.4 (pipecat allows numpy<3, so a fresh resolve otherwise pulls 2.x).
-# These are the DIRECT imports of the gateway_server closure; transitive deps stay
-# resolver-chosen. websockets is intentionally NOT pinned: pipecat's `websockets-base`
-# extra owns it (>=13.1,<16.0); the appliance's installed 16.0 is out of that range
-# (drifted past pipecat's cap) and is not reproducible via pip, so let pipecat choose.
+# These are the DIRECT imports of the gateway_server closure; the FULL transitive closure is
+# pinned reproducibly in uv.lock (installed by install.sh phase_brain via `uv sync --frozen`),
+# so the constraints here only need to express INTENT — uv.lock records the exact resolved
+# versions. This retires the old "pin every direct dep from an appliance `pip freeze`"
+# approach, which could not pin transitives and so drifted on every reinstall.
+#
+# numpy: moved to 2.x. It sat at 1.26.4 only because a lock-free `pip install` would
+# otherwise pull 2.x unvalidated on a reinstall; with a lock the choice is deliberate and
+# STICKS. numpy 2.x is import/ABI-validated against this set — onnxruntime 1.24.4, the
+# C-extension that a numpy major bump would break, imports clean under numpy 2.5.x. websockets
+# is left to pipecat's own constraint; its earlier "not reproducible via pip" caveat is moot
+# now that uv.lock pins whatever pipecat resolves.
 #
 # httpx and openai are DIRECT imports of services.py (BoundedOpenAILLMService builds its
 # own AsyncOpenAI with an httpx client whose timeout actually reaches the socket), so the
@@ -46,7 +51,7 @@ dependencies = [
   "uvicorn==0.49.0",
   "fastapi==0.136.3",
   "loguru==0.7.3",
-  "numpy==1.26.4",
+  "numpy>=2,<3",
   "websockets",
   "httpx",
   "openai",
