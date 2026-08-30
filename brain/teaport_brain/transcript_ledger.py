@@ -191,9 +191,14 @@ class TranscriptLedger(BaseObserver):
             self._seen.add(f.id)
             # A mid-turn TTSStarted (audio context re-created after a stop-frame
             # timeout) must not clobber the in-flight bot dict — that would discard
-            # the samples/words already played and report the reply as unheard.
+            # the samples/words already played and report the reply as unheard. A
+            # started frame for a FOREIGN context (a filler) must not clobber it
+            # either; keeping the open turn is the right thing in both cases.
             if self._bot is None:
                 self._bot = self._new_bot(t)
+                # The opening started frame names this turn's context in the normal
+                # path (tts_service creates TTSStartedFrame(context_id=...)).
+                self._bot["ctx"] = getattr(f, "context_id", None)
         elif isinstance(f, TTSTextFrame):
             self._seen.add(f.id)
             # Per-word TTSTextFrames (engine TTS) are scheduled on the playout clock,
@@ -201,7 +206,7 @@ class TranscriptLedger(BaseObserver):
             # ones that arrive before an interruption gives EXACTLY what the user
             # heard — no estimate. (sherpa pushes one whole-reply frame instead.)
             self._ensure_bot(t)
-            if self._bot is not None:
+            if self._bot is not None and self._ctx_ok(f):
                 # Keep each word's SCHEDULED playout time (frame.pts), not its
                 # arrival order: our TTS pushes the whole clip at once, so the
                 # word frames arrive clustered, but their pts is each word's
@@ -210,7 +215,7 @@ class TranscriptLedger(BaseObserver):
         elif isinstance(f, TTSAudioRawFrame):
             self._seen.add(f.id)
             self._ensure_bot(t)
-            if self._bot is not None:
+            if self._bot is not None and self._ctx_ok(f):
                 # Per PUSHING PROCESSOR, and take the max at the cut — never a running
                 # total. The same audio is pushed twice: once by the TTS service at
                 # 24 kHz and again by the output transport, which resamples to the
@@ -260,6 +265,10 @@ class TranscriptLedger(BaseObserver):
         intended = ("".join(self._gen_acc).strip() if live else "") or self._pending_gen
         return {"t_start": t, "intended": intended, "intended_live": live,
                 "audio_start": None,
+                # The TTS context this turn belongs to, adopted from the frame that
+                # opens it (see _ctx_ok). A later frame from a DIFFERENT context is
+                # foreign and is not folded in.
+                "ctx": None,
                 # samples the reply is worth, bucketed by the processor that pushed
             # them: {name: [samples, rate]}. See the TTSAudioRawFrame branch.
             "audio_by_src": {}, "sr": None, "synth_done": False,
@@ -273,6 +282,34 @@ class TranscriptLedger(BaseObserver):
         if self._bot is None and (
                 self._gen_acc is not None or (self._pending_gen or "").strip()):
             self._bot = self._new_bot(t)
+
+    def _ctx_ok(self, frame) -> bool:
+        """True if `frame` belongs to the open bot turn's TTS context.
+
+        A bot turn is opened by an LLM response but CARRIED by a TTS context, and it
+        adopts the context_id of the first TTS frame that names one (the opening
+        TTSStartedFrame in the normal path). A frame from a DIFFERENT context is
+        foreign — a filler ("Still working on it.") pushed as its own TTSSpeakFrame
+        while a reply is mid-playout, or the next turn's audio arriving early — and
+        its words and samples must NOT be counted as part of this turn. Confirmed
+        live: brain/formal (LEDGER_TRACE, 2026-08-29 23:21:42) shows a narrator
+        filler's four words folded into a 29-word reply's utterance.
+
+        Frames with no context_id are accepted, not rejected: sherpa pushes one
+        whole-reply TTSTextFrame with none, and the output transport's resampled
+        audio copy is rebuilt without one — that copy is the same reply's audio and
+        is reconciled by the max in audio_by_src, so counting it changes nothing.
+        Only a frame that NAMES a different context is turned away.
+        """
+        if self._bot is None:
+            return False
+        fctx = getattr(frame, "context_id", None)
+        if fctx is None:
+            return True
+        if self._bot["ctx"] is None:
+            self._bot["ctx"] = fctx
+            return True
+        return fctx == self._bot["ctx"]
 
     def _finish_bot(self, t: float, interrupted: bool):
         b = self._bot
