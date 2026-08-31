@@ -44,18 +44,26 @@ Notes:
 of pipecat-ai, so the brain's installed tree is **not** uniformly MIT/BSD/Apache — but this
 is compliant and ordinary for an open-source Python package. LGPL is *weak* copyleft: it
 does not relicense teaport's MIT code; it only requires that a recipient be able to
-replace the LGPL library. Because `soxr` is fetched from PyPI by `pip` and this repo neither
-vendors, modifies, nor redistributes it, that condition is met automatically
-(`pip install soxr==<other>` swaps it). teaport ships none of its bytes; the pip wheel
-— which *does* statically bundle a modified libsoxr — is soxr's own LGPL-licensed artifact,
-distributed from PyPI, not by us.
+replace the LGPL library. Because `soxr` is fetched from PyPI by the installer (uv, from
+`brain/uv.lock`) and this repo neither vendors, modifies, nor redistributes it, that
+condition is met automatically — a recipient can swap it in place. Two mechanics notes,
+because the uv-managed venv ships **without pip** and a repair re-run re-syncs the venv
+back to the lock (removing anything not in it):
+
+- one-off swap: `uv pip install --python /opt/teaport/venv soxr==<other>` (uv performs the
+  install; no in-venv pip needed). The next repair run restores the locked version.
+- durable swap: pin the replacement in `brain/pyproject.toml`, run `uv lock`, and re-run
+  the installer — the lock is the source of truth the venv is synced to.
+
+teaport ships none of its bytes; the PyPI wheel — which *does* statically bundle a modified
+libsoxr — is soxr's own LGPL-licensed artifact, distributed from PyPI, not by us.
 
 **The one constraint (why this stays a non-issue):** the brain is distributed as
-**source + pip-installed dependencies** (the installer runs `pip install ./brain` into a
-venv). It must **never** be frozen or bundled into a single **closed** binary (PyInstaller,
+**source + PyPI-installed dependencies** (the installer builds a venv from `brain/uv.lock`
+with uv). It must **never** be frozen or bundled into a single **closed** binary (PyInstaller,
 a vendored/redistributed wheel, a shipped closed image) — that is the only action that would
 turn soxr's LGPL into a real relink/redistribution obligation. Keep the brain open and
-pip-installed and nothing further is owed beyond this attribution. (Re-audit the full tree
+PyPI-installed and nothing further is owed beyond this attribution. (Re-audit the full tree
 at each public cut — a pipecat bump could add a new-licensed dep.)
 
 ## Plugin (`plugin/`, MIT)

@@ -9,21 +9,22 @@ pytest brain/tests/
 ## Setting up a dev box
 
 The tests assert on pipecat internals, so they mean nothing against the wrong version —
-`pinned_pipecat.py` refuses to run rather than report a false pass. The pin
-(`brain/pyproject.toml`) is on PyPI, so a dev box can match the appliance exactly:
+`pinned_pipecat.py` refuses to run rather than report a false pass. `brain/uv.lock` pins
+the whole closure, so a dev box matches the appliance exactly — install from the LOCK
+(`uv sync`), not by re-resolving the loose pyproject constraints (`uv pip install -e`
+would hand you tomorrow's transitives while the appliance runs the frozen set):
 
 ```sh
-uv venv --python 3.12 .venv          # the package requires >=3.12
-uv pip install -e ./brain pytest
-cd brain/tests && ../../.venv/bin/python -m pytest test_suite.py -q
+uv sync --locked --project brain     # brain/.venv from uv.lock — the appliance set + the locked pytest (dev group)
+uv run --project brain python -m pytest brain/tests/test_suite.py -q
 ```
 
 Expect **23 passed, 2 skipped** off-appliance. The two skips need hardware this box
 doesn't have; **anything failing is a real regression**, including on a laptop —
 with one exception: if pipecat doesn't match the pin, every test that imports
 `pinned_pipecat` fails immediately with a message telling you to reinstall. That's
-an environment problem, not a regression; rerun the `uv pip install -e ./brain` step
-above and it goes away.
+an environment problem, not a regression; rerun the `uv sync` step above and it goes
+away.
 
 That distinction is the point. Those two used to *fail* off-appliance, so this file
 called green pytest the merge gate while `pytest brain/tests/` could never be green —
@@ -59,11 +60,11 @@ Hermetic here means *run anywhere*, and that is measured, not assumed — as of
 `HF_HOME` pointed at an empty directory. Nothing downloads and nothing needs a
 pre-seeded model cache: the Silero VAD and smart-turn ONNX files ship inside the
 pipecat wheel (`pipecat/audio/vad/data/`, `pipecat/audio/turn/smart_turn/data/`),
-so `pip install ./brain` is the whole setup. To re-check after adding a test:
+so `uv sync` is the whole setup. To re-check after adding a test:
 
 ```sh
 HF_HUB_OFFLINE=1 HF_HOME=$(mktemp -d) unshare -rn \
-  ../../.venv/bin/python test_your_new_one.py
+  ../.venv/bin/python test_your_new_one.py
 ```
 
 Need the appliance:

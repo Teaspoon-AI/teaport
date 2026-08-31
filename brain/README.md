@@ -4,8 +4,8 @@ The teaport voice brain, packaged for install: the Pipecat pipeline (engine STT 
 your LLM → engine TTS) with heard-grounded barge-in, memory recall, and tools.
 
 ```
-pip install ./brain
-teaport-brain --port 7861          # serves the OpenClaw plugin at ws://<host>:7861/talk
+uv sync --locked                     # in brain/ — venv from uv.lock, the validated closure
+uv run teaport-brain --port 7861     # serves the OpenClaw plugin at ws://<host>:7861/talk
 ```
 
 Needs the engine reachable at `TEAPORT_URL` (STT + TTS); it is not started here.
