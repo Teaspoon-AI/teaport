@@ -27,6 +27,8 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    FunctionCallInProgressFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -152,6 +154,19 @@ class FollowupGate(FrameProcessor):
             self._llm = True
             self._refresh()
         elif isinstance(frame, LLMFullResponseEndFrame):
+            self._llm = False
+            self._refresh()
+        elif isinstance(frame, (FunctionCallInProgressFrame, InterruptionFrame)):
+            # The end frame is NOT guaranteed to arrive: for a completion that
+            # produced no synthesizable text (a bare tool call), the TTS service
+            # holds LLMFullResponseEndFrame waiting for an audio context that empty
+            # text never creates, and an interruption discards a held one outright.
+            # Either way _llm stayed latched and the gate read "mid-response"
+            # forever — every narrator line was skipped and the follow-up injector
+            # burned its full max_wait, i.e. total dead air in genuine silence. A
+            # function call starting means the completion is done producing speech
+            # (any audio it did produce is tracked by _bot), and an interruption
+            # kills the in-flight response by definition.
             self._llm = False
             self._refresh()
         await self.push_frame(frame, direction)
