@@ -373,8 +373,9 @@ async def _consult_progress(llm, request=None, gate=None):
     gap before speaking, up to _PROGRESS_GAP_WAIT: if the user is mid-conversation it
     stays quiet and skips that line rather than talking over them — under- is better
     than over-communicating here, because the answer lands as the follow-up either
-    way. With no gap ever, the countdown still fires (the original behaviour), which
-    is why the SIP path and any caller without a gate is unchanged.
+    way. That means a conversation with no gap at all hears NO lines (every session
+    built by build_agent_session, SIP included, passes a gate); only a caller that
+    passes gate=None keeps the unconditional countdown.
 
     The graceful COMPLETION ('...and by the way, that's done, reattached to what you
     asked') is not here: it is the follow-up injector, which the LLM writes grounded
@@ -393,7 +394,14 @@ async def _consult_progress(llm, request=None, gate=None):
             # rather than force it over whoever is talking.
             if gate is not None and not await gate.wait_until_idle(max_wait=_PROGRESS_GAP_WAIT):
                 continue
-            await llm.push_frame(TTSSpeakFrame(_progress_line(request, n)))
+            # append_to_context=False: a filler is audio-only UX. Committed to the
+            # LLM context it becomes the tail assistant message, which is exactly
+            # where HeardContextCorrector's positional anchor looks for a cut
+            # reply — a barge-in then deleted or rewrote the filler line instead
+            # of the reply. The flag also marks the TTS context as a filler for
+            # TranscriptLedger (stamped onto its TTSStartedFrame by tts_service).
+            await llm.push_frame(TTSSpeakFrame(_progress_line(request, n),
+                                               append_to_context=False))
     except asyncio.CancelledError:
         pass
     finally:
@@ -721,7 +729,12 @@ def _wrap(name, handler, lang_fn):
             if not getattr(params.llm, "_teaport_spoke", True):
                 line = _fallback_line(name, args, lang_fn())
                 if line:
-                    await params.llm.push_frame(TTSSpeakFrame(line))
+                    # append_to_context=False — same as the consult narrator's
+                    # lines: audio-only, never an assistant message the heard
+                    # corrector could misanchor on, and marked as a filler
+                    # context for the ledger.
+                    await params.llm.push_frame(
+                        TTSSpeakFrame(line, append_to_context=False))
 
             # Mirror the native card's status dimension: intercept the result to
             # post a failure bubble (with duration) when the tool errors. Success
