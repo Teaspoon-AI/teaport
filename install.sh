@@ -186,6 +186,16 @@ phase_preflight() {
   fi
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
+  # phase_brain hard-requires brain/uv.lock beside the brain source's pyproject (uv sync
+  # --locked). For a LOCAL source — a checkout install or TEAPORT_BRAIN_SRC — that is
+  # checkable right now, before the EULA gate and the ~15GB engine phase; a pre-uv source
+  # can only be installed by the install.sh that shipped with it. The manifest-clone path
+  # is checked at clone time in phase_brain instead.
+  local early_src="$BRAIN_SRC"
+  if [ -z "$early_src" ] && [ -d "$HERE/brain" ]; then early_src="$HERE/brain"; fi
+  if [ -n "$early_src" ] && [ ! -f "$early_src/uv.lock" ]; then
+    die "no uv.lock in $early_src — this installer only installs brain sources that ship one (a pre-uv source needs its own install.sh)"
+  fi
   have curl || die "curl is required"
   # Look at the status code rather than using -f: the bare host root serves 404 (only /dl,
   # /manifest, /eula exist), so -f would warn "downloads will fail" on every healthy install —
@@ -216,6 +226,10 @@ phase_sysdeps() {
     have espeak-ng || die "espeak-ng not installed"
     contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
   fi
+  # Bootstrap uv HERE, before phase_engine's ~15GB of downloads: a uv fetch that is going
+  # to fail (proxy, DNS, an unwritable $PREFIX) should fail in the first minute, not the
+  # last. Idempotent — phase_brain's own ensure_uv call becomes a no-op.
+  ensure_uv
 }
 
 phase_engine() {
@@ -268,26 +282,51 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   run cp "$MF" "$PREFIX/manifest.json" 2>/dev/null || SUDO cp "$MF" "$PREFIX/manifest.json"
 }
 
-# uv — fast, reproducible installs from brain/uv.lock. Bootstrapped once: prefer an
-# already-installed uv, else fetch the standalone binary (a single static executable, no
-# Python needed) into ~/.local/bin. Sets $UV to the resolved path for phase_brain.
+# uv — fast, reproducible installs from brain/uv.lock. Pinned + sha256-verified like every
+# other artifact in this installer: the standalone binary (a single static executable, no
+# Python needed) comes from the astral GitHub release through download() — the old
+# `curl astral.sh | sh` was the ONE unpinned, unverified fetch in an otherwise hash-pinned
+# chain, and it discarded its own errors. It lands at $PREFIX/bin/uv: one shared copy no
+# matter who runs the installer — per-$HOME copies meant a sudo first-install and an
+# operator repair each kept (and re-downloaded) their own, possibly different, binary.
+# An already-present uv is adopted ONLY at exactly the pinned version: "any uv on PATH"
+# once meant a stale one that could not read this lock revision dying mid-phase_brain —
+# after the EULA and ~15GB of downloads — with an error nobody could map to teaport.
+# Sets $UV to the resolved path for phase_brain.
 UV=""
+UV_VERSION="0.9.24"
 ensure_uv() {
   [ -n "$UV" ] && return 0
-  if have uv; then UV="$(command -v uv)"; return 0; fi
-  if [ -x "$HOME/.local/bin/uv" ]; then UV="$HOME/.local/bin/uv"; return 0; fi
+  local cand v
+  for cand in "$PREFIX/bin/uv" "$(command -v uv 2>/dev/null || true)" "$HOME/.local/bin/uv"; do
+    if [ -n "$cand" ] && [ -x "$cand" ]; then
+      v="$("$cand" --version 2>/dev/null | awk '{print $2; exit}')" || v=""
+      if [ "$v" = "$UV_VERSION" ]; then UV="$cand"; return 0; fi
+    fi
+  done
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] install uv -> ~/.local/bin (astral standalone installer)\n'; UV=uv; return 0
+    printf '  [dry-run] install uv %s (sha256-verified) -> %s/bin/uv\n' "$UV_VERSION" "$PREFIX"; UV=uv; return 0
   fi
-  log "installing uv (astral standalone) -> ~/.local/bin"
-  curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" INSTALLER_NO_MODIFY_PATH=1 sh >/dev/null 2>&1 \
-    || die "uv install failed — see https://docs.astral.sh/uv/getting-started/installation/"
-  [ -x "$HOME/.local/bin/uv" ] || die "uv not found at ~/.local/bin/uv after install"
-  UV="$HOME/.local/bin/uv"
+  local arch sha
+  case "$(uname -m)" in
+    aarch64) arch="aarch64-unknown-linux-gnu"; sha="9b291a1a4f2fefc430e4fc49c00cb93eb448d41c5c79edf45211ceffedde3334" ;;
+    x86_64)  arch="x86_64-unknown-linux-gnu";  sha="fb13ad85106da6b21dd16613afca910994446fe94a78ee0b5bed9c75cd066078" ;;
+    *) die "no pinned uv build for $(uname -m) — install uv $UV_VERSION on PATH and re-run" ;;
+  esac
+  log "installing uv $UV_VERSION -> $PREFIX/bin/uv"
+  SUDO mkdir -p "$PREFIX/bin" "$STATE"
+  SUDO chown "$RUN_USER" "$STATE"
+  local tgz="$STATE/uv-$UV_VERSION-$arch.tar.gz"
+  download "https://github.com/astral-sh/uv/releases/download/$UV_VERSION/uv-$arch.tar.gz" "$tgz" "$sha"
+  local tmp; tmp="$(mktemp -d)"
+  tar -xzf "$tgz" -C "$tmp" || die "cannot extract $tgz"
+  SUDO install -m 0755 "$tmp/uv-$arch/uv" "$PREFIX/bin/uv"
+  rm -rf "$tmp"
+  UV="$PREFIX/bin/uv"
 }
 
 phase_brain() {
-  log "brain -> $PREFIX/venv (uv sync --frozen, python3.12)"
+  log "brain -> $PREFIX/venv (uv sync --locked, python3.12)"
   ensure_uv
   local src="$BRAIN_SRC"
   if [ -z "$src" ] && [ -d "$HERE/brain" ]; then src="$HERE/brain"; fi   # installing from a checkout
@@ -295,20 +334,76 @@ phase_brain() {
     # production: clone the product repo at the manifest-pinned tag, install its brain/
     local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
     work="$STATE/brain-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
+    # Re-run == repair, but `git clone` dies on a non-empty destination — a second run used
+    # to abort right here. The clone is STAGING ONLY (the venv holds a built COPY of the
+    # brain — see --no-editable below), so replace it wholesale: a manifest tag change
+    # re-clones honestly, and nothing at runtime points into the deleted tree.
+    if [ -e "$work" ]; then run rm -rf "$work"; fi
     run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
     src="$work/brain"
   fi
+  # A brain source without uv.lock — a manifest pinned to a pre-uv tag, or an old
+  # TEAPORT_BRAIN_SRC checkout — cannot be installed by this installer: say so crisply here
+  # rather than dying inside uv with an error nobody can map to teaport. Local sources are
+  # caught in phase_preflight, before the EULA gate and the ~15GB engine phase; the
+  # manifest clone only exists from this point. (Skipped under --dry-run: the clone above
+  # did not run, so there is nothing truthful to check.)
+  if [ "$DRY_RUN" != 1 ] && [ ! -f "$src/uv.lock" ]; then
+    die "no uv.lock in $src — this installer only installs brain sources that ship one.
+To install a pre-uv tag, run the install.sh that shipped with that tag."
+  fi
+  # uv's exact sync is a TEARDOWN of the live venv, not pip's mostly-no-op top-up: every
+  # dist that differs from the lock is removed/replaced while teaport-brain (and, when
+  # telephony is configured, teaport-sip-brain) may still be running out of it — a lazy
+  # import mid-sync (pipecat loaders, onnxruntime providers) then kills a live call, and
+  # Restart= relaunches into a half-built venv. Stop the brain units first: phase_services
+  # restarts teaport-brain unconditionally, and teaport-sip-brain — which phase_sip
+  # deliberately never touches — is restarted right after the sync below.
+  local stopped_sip=0
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] systemctl stop teaport-brain/teaport-sip-brain if running (restarted after the sync)\n'
+  else
+    if systemctl is-active --quiet teaport-sip-brain.service 2>/dev/null; then
+      log "stopping teaport-sip-brain.service for the venv sync (restarted below)"
+      SUDO systemctl stop teaport-sip-brain.service; stopped_sip=1
+    fi
+    if systemctl is-active --quiet teaport-brain.service 2>/dev/null; then
+      log "stopping teaport-brain.service for the venv sync (phase_services restarts it)"
+      SUDO systemctl stop teaport-brain.service
+    fi
+  fi
   # brain/uv.lock (beside pyproject.toml) pins the FULL transitive closure, so a fresh box
-  # installs the EXACT set the brain was validated against — ending the reinstall drift the
-  # hand-pinned pyproject fought by guesswork (numpy, websockets, ...). Flags:
-  #   --frozen              install the lock verbatim; never re-resolve or rewrite it
-  #   --no-dev              skip dev/test groups (production install)
+  # installs the EXACT set recorded at lock time — ending the reinstall drift the hand-pinned
+  # pyproject fought by guesswork (numpy, websockets, ...). Flags:
+  #   --locked              install the lock verbatim, and FAIL if it is stale against
+  #                         pyproject.toml. (--frozen would install a stale lock silently:
+  #                         a bumped dep whose `uv lock` was forgotten would ship to every
+  #                         appliance undetected while CI tested the new resolve.)
+  #   --no-editable         install teaport-brain as a built COPY into the venv. Without it
+  #                         uv honors the lock's `editable` source and leaves a .pth pointing
+  #                         back at $src — the bootstrap's self-deleting temp clone on the
+  #                         documented one-liner path, or the staging clone the next repair
+  #                         deletes: either way the service crash-loops on ModuleNotFoundError
+  #                         at its next restart while everything looks installed.
+  #   --no-dev              skip dev/test dependency groups (production install)
+  #   --link-mode copy      no hardlinks from the venv into the uv cache: phase_engine's
+  #                         repair-run `chown -R "$RUN_USER" "$PREFIX"` follows hardlinks to
+  #                         the shared inode, silently rewriting the ownership of cache files
+  #                         other installs (a root-run `uv sync`, another project) hardlink from.
   #   --python-preference only-system: use JetPack's python3.12 (phase_sysdeps), NOT a
   #                         downloaded managed CPython, so the ABI matches the platform.
   # UV_PROJECT_ENVIRONMENT redirects uv's project venv from brain/.venv to $PREFIX/venv.
+  # UV_CACHE_DIR pins the wheel cache to ONE shared, disk-accountable location — per-$HOME
+  # caches meant a sudo install and an operator repair each grew their own ~0.5GB invisibly,
+  # on a box whose own preflight warns below 15GB free.
   log "uv sync $src -> $PREFIX/venv"
-  run env UV_PROJECT_ENVIRONMENT="$PREFIX/venv" "$UV" sync --frozen --no-dev \
+  SUDO mkdir -p "$STATE/uv-cache"; SUDO chown -R "$RUN_USER" "$STATE/uv-cache"
+  run env UV_PROJECT_ENVIRONMENT="$PREFIX/venv" UV_CACHE_DIR="$STATE/uv-cache" \
+      "$UV" sync --locked --no-editable --no-dev --link-mode copy \
       --python 3.12 --python-preference only-system --project "$src"
+  # Keep the shared cache from growing without bound across repairs. Non-fatal on purpose.
+  run env UV_CACHE_DIR="$STATE/uv-cache" "$UV" cache prune -q || warn "uv cache prune failed (harmless)"
+  if [ "$stopped_sip" = 1 ]; then SUDO systemctl start teaport-sip-brain.service; fi
   # ship the teaport operator CLI on PATH (repo root = the parent of the brain dir)
   local cli; cli="$(dirname "$src")/cli/teaport"
   if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
@@ -899,6 +994,9 @@ phase_bridge() {
   if [ -z "$src" ]; then
     local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
     work="$STATE/bridge-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
+    # Same re-run == repair fix as phase_brain: `git clone` dies on a non-empty destination.
+    # This clone is pure staging too — index.js/package.json are copied out below.
+    if [ -e "$work" ]; then run rm -rf "$work"; fi
     run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
     src="$work/bridge/discord"
   fi
