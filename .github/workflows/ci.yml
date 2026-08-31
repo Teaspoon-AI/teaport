@@ -50,10 +50,16 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-          cache: pip
-          cache-dependency-path: brain/pyproject.toml
-      - name: Install the brain + pytest
-        run: pip install ./brain pytest
+      - name: Install the brain from uv.lock (the set that ships)
+        # Mirrors install.sh phase_brain, not a fresh pip resolve: --locked FAILS if
+        # brain/uv.lock is stale against brain/pyproject.toml (the silent-drift case a
+        # `pip install ./brain` papered over — CI green on a new resolve while every
+        # appliance shipped the old lock), and --no-editable installs the same built
+        # copy the appliance gets. The dev group supplies the locked pytest. uv itself
+        # is pinned to the same version install.sh bootstraps.
+        run: |
+          pip install uv==0.9.24
+          uv sync --locked --no-editable --project brain
       - name: Hermetic tests
         # No -k denylist. test_suite.py runs each test_*.py as a subprocess, and a
         # script whose dependency is absent exits appliance.SKIP_EXIT, which the
@@ -64,7 +70,7 @@ jobs:
         # appliance-dependent test, and its comment still said "the other five are
         # hermetic" when there were twenty-three. A test that forgot to add itself
         # failed CI instead of skipping.
-        run: python -m pytest brain/tests/test_suite.py -v
+        run: uv run --project brain python -m pytest brain/tests/test_suite.py -v
 
   plugin:
     runs-on: ubuntu-latest

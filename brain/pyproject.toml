@@ -1,5 +1,10 @@
 [build-system]
-requires = ["setuptools>=68"]
+# Capped, not just floored: build requirements are resolved AT INSTALL TIME on the
+# appliance — they live OUTSIDE uv.lock — so an uncapped setuptools was the one component
+# nothing pinned. A breaking setuptools release would fail phase_brain on every fresh
+# install with a byte-identical lock and nothing in CI able to see it coming. Raise the
+# cap deliberately, with a lock refresh and a green install.
+requires = ["setuptools>=68,<81"]
 build-backend = "setuptools.build_meta"
 
 [project]
@@ -10,7 +15,7 @@ readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 # Every entry below is a DIRECT import somewhere in the package (the import closure of
-# teaport_brain.gateway_server); transitive deps are left to the resolver.
+# teaport_brain.gateway_server); the FULL transitive closure is pinned in uv.lock.
 #
 # pipecat extras (1.7.0): only `websocket` is needed —
 #   websocket -> pipecat.transports.websocket.fastapi (the /talk transport) + fastapi.
@@ -24,7 +29,7 @@ license = { text = "MIT" }
 # See THIRD_PARTY_LICENSES.md.
 #
 # These are the DIRECT imports of the gateway_server closure; the FULL transitive closure is
-# pinned reproducibly in uv.lock (installed by install.sh phase_brain via `uv sync --frozen`),
+# pinned reproducibly in uv.lock (installed by install.sh phase_brain via `uv sync --locked`),
 # so the constraints here only need to express INTENT — uv.lock records the exact resolved
 # versions. This retires the old "pin every direct dep from an appliance `pip freeze`"
 # approach, which could not pin transitives and so drifted on every reinstall.
@@ -32,9 +37,17 @@ license = { text = "MIT" }
 # numpy: moved to 2.x. It sat at 1.26.4 only because a lock-free `pip install` would
 # otherwise pull 2.x unvalidated on a reinstall; with a lock the choice is deliberate and
 # STICKS. numpy 2.x is import/ABI-validated against this set — onnxruntime 1.24.4, the
-# C-extension that a numpy major bump would break, imports clean under numpy 2.5.x. websockets
-# is left to pipecat's own constraint; its earlier "not reproducible via pip" caveat is moot
-# now that uv.lock pins whatever pipecat resolves.
+# C-extension that a numpy major bump would break, imports clean under numpy 2.5.x.
+# (Runtime numerics — NEP 50 promotion on the int16 audio-frame math — still need a
+# live-call validation before a customer box ships on this lock.)
+#
+# websockets: bounded to the 16.x major the appliance was validated on. Do NOT widen it on
+# the theory that pipecat's own constraint governs the range: pipecat-ai's BASE websockets
+# dependency is UNBOUNDED — the remembered `<16` cap lives in its `websockets-base` extra,
+# which this project does not enable — so an unbounded spec here floats to whatever major
+# is newest at lock time (17.1 once landed on the live audio path — stt.py, engine_tts.py —
+# five days after its release, validated by nothing but an import). Bump deliberately:
+# raise the bound, relock, and validate on a live call.
 #
 # httpx and openai are DIRECT imports of services.py (BoundedOpenAILLMService builds its
 # own AsyncOpenAI with an httpx client whose timeout actually reaches the socket), so the
@@ -43,19 +56,33 @@ license = { text = "MIT" }
 # something to rely on: the note that the OpenAI service "is a BASE dependency, so no
 # `openai` extra is required" is exactly the assumption that would strand the brain with an
 # ImportError at startup — before any pipeline exists — if pipecat ever moved it behind an
-# extra. Left UNPINNED rather than pinned to a guess: the other pins come from the
-# appliance venv freeze, and pipecat-ai==1.7.0 already constrains both, so this declares
-# the dependency without inventing a version. Pin them at the next freeze.
+# extra. Left loosely constrained on purpose: uv.lock records their exact resolved versions
+# like everything else's, so this list only needs to declare the direct dependency.
 dependencies = [
   "pipecat-ai[websocket]==1.7.0",
   "uvicorn==0.49.0",
   "fastapi==0.136.3",
   "loguru==0.7.3",
   "numpy>=2,<3",
-  "websockets",
+  "websockets>=16,<17",
   "httpx",
   "openai",
 ]
+
+[dependency-groups]
+# Synced by default (CI and dev boxes get the LOCKED pytest, not a fresh resolve) and
+# EXCLUDED on the appliance — install.sh passes --no-dev — so the production venv stays
+# exactly the runtime closure.
+dev = [
+  "pytest",
+]
+
+[tool.uv]
+# Same cap as [build-system], but for the sdists uv builds ON the appliance: docopt
+# (num2words's dependency) is the lock's one wheel-less entry, rebuilt at install time by
+# whatever setuptools uv would otherwise fetch that day. Build deps are not recorded in
+# uv.lock, so this constraint is the only thing pinning them.
+build-constraint-dependencies = ["setuptools>=68,<81"]
 
 [project.scripts]
 teaport-brain = "teaport_brain.gateway_server:main"
