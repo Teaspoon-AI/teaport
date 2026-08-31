@@ -86,9 +86,9 @@ def _is_slot_busy(exc: Exception) -> bool:
     engine is up and its slot is momentarily taken, an unreachable host means each
     further attempt burns the websockets open timeout for nothing.
 
-    Duck-typed on purpose. websockets is deliberately unpinned (see brain/pyproject.toml
-    — pipecat's `websockets-base` extra owns the range, and the appliance has drifted
-    past its cap), and the rejection carries its status as `.response.status_code` on
+    Duck-typed on purpose. websockets is lock-pinned but bounded per-major and bumped
+    deliberately (see brain/pyproject.toml — the range is OURS to own; pipecat's base
+    dep is unbounded), and the rejection carries its status as `.response.status_code` on
     >=14 but `.status_code` on older releases. Matching the shape rather than the class
     keeps this working across that range; an unrecognised exception is treated as NOT
     retryable, so the worst case is the behaviour we had before.
