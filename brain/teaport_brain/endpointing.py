@@ -11,11 +11,14 @@ from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnal
 
 # Endpointing silence: how long the user must pause before we treat the turn as done
 # and start responding. Applied to BOTH Silero VAD (raw silence detection) and Smart
-# Turn v3 (the neural end-of-turn classifier that then confirms it). 0.8 was conservative;
-# 0.5 trims ~0.3s off every turn's perceived latency while Smart Turn still guards against
-# cutting the user off mid-thought. The VAD *model* isn't the cost (Silero is ~1ms/frame) —
-# this silence policy is. Tune via ENDPOINT_STOP_SECS.
-ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
+# Turn v3 (the neural end-of-turn classifier that then confirms it). History: 0.8 was
+# conservative, 0.5 trimmed ~0.3s off it; now 0.2. This silence floor IS the dominant
+# fixed latency on every turn (the VAD model itself is ~1ms/frame), and 0.2 is what
+# pipecat's STT p99 benchmark assumes — so it also silences the turn strategy's stop_secs
+# warning. At 0.2 the floor no longer does the mid-thought protection: Smart Turn's
+# INCOMPLETE verdict is now the sole guard against clipping a genuine pause, and the cost
+# is more premature commits when that verdict is wrong. Tune via ENDPOINT_STOP_SECS.
+ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.2"))
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
 # threshold; below it the utterance is "incomplete" and we wait out the silence
