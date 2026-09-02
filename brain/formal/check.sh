@@ -16,7 +16,7 @@ JAR="${TLA_TOOLS:-tla2tools.jar}"
 cd "$(dirname "$0")"
 
 run() {  # run <module> <config> <expectation>
-  printf '  %-12s %-20s %-22s ' "$1" "$2" "$3"
+  printf '  %-12s %-32s %-26s ' "$1" "$2" "$3"
   out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -nowarning -workers auto \
           -config "$2.cfg" "$1" 2>&1)
   if grep -qi "no error has been found" <<<"$out"; then echo "holds"
@@ -29,6 +29,11 @@ run Followup.tla fu_asWritten_repeat  "(expected: FAILS)"
 run Followup.tla fu_gateOnOwn_repeat  "(expected: FAILS)"
 run Followup.tla fu_retireOnRead      "(expected: holds)"
 echo
+echo "Followup.tla — PR #13: releasing the LLM latch on a tool call (LATCH)"
+run Followup.tla fu_clearedOnToolCall_existing "(expected: holds — blind)"
+run Followup.tla fu_held_interject             "(expected: holds)"
+run Followup.tla fu_clearedOnToolCall_interject "(expected: FAILS)"
+echo
 echo "SttSlot.tla — arbitration of the engine's single STT slot"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS)"
 run SttSlot.tla  stt_retryWhileBusy  "(expected: holds)"
@@ -38,3 +43,13 @@ run SipCall.tla  sipwt_asWritten     "(expected: FAILS)"
 run SipCall.tla  sipwt_callIdChecked "(expected: holds)"
 run SipCall.tla  sip_asWritten       "(expected: FAILS)"
 run SipCall.tla  sip_asyncSetup      "(expected: holds)"
+echo
+echo "Ledger.tla — the transcript ledger's bot-turn state machine, AS WRITTEN at PR #13"
+echo "  (every row fails by design: these pin the review's counterexamples until a fix MODE exists)"
+run Ledger.tla   ledger_phantom      "(expected: FAILS)"
+run Ledger.tla   ledger_ownStart     "(expected: FAILS)"
+run Ledger.tla   ledger_unheard      "(expected: FAILS)"
+run Ledger.tla   ledger_untagged     "(expected: FAILS)"
+run Ledger.tla   ledger_split        "(expected: FAILS)"
+run Ledger.tla   ledger_fillerSet    "(expected: FAILS)"
+run Ledger.tla   ledger_once         "(expected: FAILS — new)"
