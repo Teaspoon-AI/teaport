@@ -11,23 +11,49 @@
 # what the user actually *heard* as audio. This matters on barge-in: the agent
 # otherwise believes it said something the user never heard.
 #
-#   intended text  <- LLMTextFrame stream. NOT TTSTextFrame: engines without word
-#                     timestamps emit that as a single frame at the END of
-#                     synthesis, so an early barge-in leaves it empty (verified
-#                     against the live frame trace). With streaming TTS the first
-#                     audio can arrive BEFORE the LLM text finishes, so a bot turn
-#                     snapshotted mid-generation is completed on the response end
-#                     (see _new_bot / LLMFullResponseEndFrame).
-#   playout window <- BotStartedSpeaking -> (InterruptionFrame | BotStopped).
-#   heard fraction <- played duration / intended duration; the unheard tail is
-#                     flagged so the LLM can later be told what didn't land.
+# HOW A BOT TURN IS CHARTED
+#
+#   which text     <- the LLM stream, read where the TTS reads it: the sighting at
+#                     the TTS service (when the ledger is given it, see __init__), so
+#                     the text is what the TTS was handed -- after LLMTextGuard's
+#                     folding, cuts and recovery line, not the model's raw deltas. A
+#                     spoken notice (a TTSSpeakFrame that is not a filler) is text
+#                     too. Each is an EXPECTED CONTEXT, queued in the order the TTS
+#                     receives them; a TTS context claims the oldest when it starts,
+#                     because the TTS opens contexts in exactly that order. The claim
+#                     is then CONFIRMED when the context drains: pipecat holds a
+#                     response's LLMFullResponseEndFrame and re-pushes the SAME frame
+#                     after the context's last audio (tts_service.py,
+#                     _maybe_reset_word_timestamps), so its second sighting names the
+#                     response the context belonged to and says its synthesis is over.
+#   playout        <- the output transport plays what it is pushed, in push order,
+#                     from BotStartedSpeaking at real time until BotStoppedSpeaking
+#                     (0.35s with nothing left to play). The ledger keeps that FIFO:
+#                     every audio push -- tagged with its context; fillers and the
+#                     thinking-sound bed included, since they take playout time --
+#                     with its length, laid out back to back from the window's start.
+#                     A turn's playout start is where ITS first chunk lands in that
+#                     layout, never a frame that could be someone else's (BotStarted
+#                     is anonymous); heard time at a cut is the laid-out portion of
+#                     its chunks. The transport's rebuilt copy of every chunk it
+#                     played (untagged) is recognised and ignored.
+#   heard fraction <- heard / (audio length once synthesis is known complete, else
+#                     the longer of audio so far and a word-count estimate); the
+#                     per-word TTSTextFrames give the exact heard boundary by pts.
+#
+# Several turns can be open at once -- a reply chained behind another that is still
+# queued at the transport. Each closes when ITS audio has played out and its
+# synthesis is over, or at the barge-in with its own heard portion; a window
+# closing mid-reply (synthesis stalled behind STT on the GPU) leaves the turn open
+# and the next window continues it. A context starting proves every earlier
+# context ended, since the TTS runs them one at a time.
 #
 # STAGE 1 — observe-only: logs the merged timeline + heard/generated gap and
 # drives nothing.
 #
 
 import os
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import List, Optional
 
@@ -44,6 +70,7 @@ from pipecat.frames.frames import (
     LLMTextFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    TTSSpeakFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
     TTSTextFrame,
@@ -54,7 +81,7 @@ from pipecat.observers.base_observer import BaseObserver, FrameProcessed
 # LEDGER_TRACE=1 logs the real per-frame sequence (deduped) for diagnosis.
 _TRACE = os.getenv("LEDGER_TRACE") == "1"
 _TRACE_TYPES = (
-    TTSStartedFrame, TTSStoppedFrame, TTSTextFrame, BotStartedSpeakingFrame,
+    TTSStartedFrame, TTSStoppedFrame, TTSTextFrame, TTSSpeakFrame, BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame, InterruptionFrame, LLMFullResponseStartFrame,
     LLMFullResponseEndFrame, LLMTextFrame, TranscriptionFrame,
 )
@@ -69,6 +96,22 @@ _SECONDS_PER_WORD = 0.36
 # before comparing — otherwise every barge-in over-counts "heard" by the lead.
 _PTS_LEAD_SECS = CAPTION_LEAD_SECS
 
+# Bounds. Every structure here is fed by a stream that may never present the frame
+# that would drain it (a stop frame lost to an interruption, a response the TTS
+# never opens a context for), so each evicts its OLDEST entry on overflow -- never
+# clears, which used to drop the live entry along with the stale ones.
+_MAX_QUEUED = 32       # expected contexts the TTS has not opened yet
+_MAX_END_IDS = 64      # response End frames awaiting their post-drain re-push
+_MAX_FILLER_CTXS = 512
+_MAX_CLOSED_CTXS = 64
+_MAX_FIFO = 4096
+_MAX_SEEN = 8192
+
+# FIFO tag for the thinking-sound bed's audio: pushed into the transport by
+# thinking_sound.py with no context, it takes playout time and belongs to no turn.
+_BED = "<bed>"
+
+_EPS = 1e-6
 
 # heard_fraction at/above this counts as "the listener heard it all" — shared by
 # the ledger's own rendering/logging and heard_context's barge-in reconciliation.
@@ -93,75 +136,110 @@ class Utterance:
         return self.speaker == "assistant" and self.heard_fraction < HEARD_ALL
 
     def unheard_tail(self) -> str:
-        """The part of the reply the user did NOT hear. Word-level heard text
-        (engine TTS) isn't a char-prefix of the raw LLM text, so fall back gracefully
-        for display."""
+        """The part of the reply the user did NOT hear."""
         return _unheard(self.text, self.heard_text)
 
 
-def _prefix_words(text: str, fraction: float) -> str:
+def _prefix(text: str, fraction: float) -> str:
+    """The first `fraction` of `text`: by words, or by characters for a script
+    that writes without spaces (a Mandarin or Japanese reply is one "word")."""
     words = text.split()
     if not words:
         return ""
+    if len(words) == 1 and len(text) > 8:
+        return text[:max(0, min(len(text), round(len(text) * fraction)))]
     n = max(0, min(len(words), round(len(words) * fraction)))
     return " ".join(words[:n])
 
 
+def _nospace(s: str) -> str:
+    return "".join((s or "").split())
+
+
 def _unheard(text: str, heard: str) -> str:
-    # The part of the reply the user did NOT hear. Word-level heard text (engine TTS)
-    # isn't a char-prefix of the raw LLM text, so fall back gracefully for display.
-    return text[len(heard):].strip() if text.startswith(heard) else "(the rest)"
+    """The part of `text` after the heard prefix, matched IGNORING WHITESPACE.
+
+    The heard text is rebuilt from the TTS's per-word frames, whose spacing is the
+    frames' (engine word frames carry none; a CJK voice's tokens are characters), so
+    it is a prefix of the raw LLM text only up to whitespace. Comparing the two with
+    their spaces removed keeps the tail exact for both; a mismatch beyond spacing
+    falls back to a placeholder for display.
+    """
+    want = _nospace(heard)
+    if not want:
+        return (text or "").strip()
+    i = j = 0
+    while i < len(text) and j < len(want):
+        if text[i].isspace():
+            i += 1
+            continue
+        if text[i] != want[j]:
+            return "(the rest)"
+        i += 1
+        j += 1
+    if j < len(want):
+        return "(the rest)"
+    return text[i:].strip()
 
 
 class TranscriptLedger(BaseObserver):
-    """Single-writer merged transcript with heard-vs-generated bot tracking."""
+    """Single-writer merged transcript with heard-vs-generated bot tracking.
 
-    def __init__(self):
+    `tts` is the pipeline's TTS service and `output` its output transport. With
+    them the ledger tells a frame's sightings apart by the processor handling it:
+    the LLM stream and spoken notices are read at the TTS (the text it will
+    actually speak), a response's End frame sighted again downstream is pipecat's
+    post-drain re-push (see the module header), and untagged audio the transport
+    is HANDED (the thinking-sound bed) is told from the untagged copies it emits.
+    Without them -- the hermetic tests, and any pipeline whose observer carries no
+    processor -- every frame counts on its first sighting, the drain signal is
+    absent, and a turn is assumed fully synthesized once its response has ended.
+    """
+
+    def __init__(self, tts=None, output=None):
         super().__init__()
         self.events: List[Utterance] = []
+        self._tts = tts
+        self._output = output
         self._user_start: Optional[float] = None
-        self._gen_acc: Optional[List[str]] = None  # current LLM response text
-        # Whether a turn has already taken the in-flight response's text (a live
-        # turn). Its End frame must then NOT queue the text as unspoken: a reply
-        # whose playout ends before its End arrives (a generation stall longer than
-        # the transport's silence timeout) is charted from the partial, and the full
-        # text queued afterwards was claimed by the NEXT reply's context.
-        self._gen_claimed = False
-        # Completed replies not yet spoken, oldest first, as (seq, text). The TTS
-        # service synthesizes responses in the order it received them, so the turn
-        # that opens next is the OLDEST unspoken reply's; a turn takes its text off
-        # the front when it opens. A single slot here lost the older text whenever
-        # two completions finished before the first's TTS began (text plus a tool
-        # call, a fast tool, a slow first chunk) and charted that reply under the
-        # newer one's words.
-        self._pending: deque = deque()
-        self._pending_seq: int = 0  # response counter; a turn records the seq it took
-        self._bot: Optional[dict] = None  # active bot (TTS) utterance
+        # The response streaming now (an entry, see _new_entry), None between.
+        self._gen: Optional[dict] = None
+        self._seq = 0
+        # Expected contexts the TTS has not opened yet, oldest first.
+        self._queue: deque = deque()
+        # LLMFullResponseEnd frame id -> its response, for the post-drain re-push.
+        self._end_ids: OrderedDict = OrderedDict()
+        # Open bot turns, in playout order (see _open_turn for the record).
+        self._turns: List[dict] = []
         # TTS contexts opened by filler speak frames (append_to_context=False —
         # the consult narrator / tool-ack lines, see tools.py). Pure audio UX:
         # kept out of the LLM context at the source, and charted by nothing here.
-        self._filler_ctxs: dict = {}  # insertion-ordered set: oldest first
-        # The output transport's playout window, as far as the ledger can see it.
-        # BotStarted/BotStopped frames are anonymous, so what identifies a window is
-        # the FIRST audio pushed since the previous one closed: the transport plays
-        # in push order, and the ledger sees every push before the transport can
-        # open a window for it. That head decides whether a window is a filler's
-        # (no bot turn may open on it, however anonymous the frames inside it are)
-        # and, with the seconds of audio queued ahead, where a reply that chains
-        # into someone else's window actually begins playing. Replaces a
-        # last-started-context boolean, which named whichever context's started
-        # frame came LAST — not the one whose audio the window was opened for.
-        self._window_open = False
-        self._window_t0: Optional[float] = None
-        self._window_head_seen = False
-        self._window_head_filler = False
-        self._window_dur = 0.0  # seconds of tagged audio pushed into this window
-        self._seen = set()
+        self._filler_ctxs: OrderedDict = OrderedDict()  # insertion-ordered set
+        # Contexts whose turn has been charted; a late frame naming one belongs to
+        # no turn (a context re-created after pipecat's stop-frame timeout).
+        self._closed_ctxs: OrderedDict = OrderedDict()
+        # The pipeline tags its TTS frames with context ids (the engine TTS; any
+        # pipeline that names its TTS or transport here). Until the first tagged
+        # frame an unnamed pipeline is on the legacy ctx-less path, where untagged
+        # audio is the TTS's own push rather than the transport's copy.
+        self._tagged = tts is not None or output is not None
+        self._legacy_src_set = False
+        self._legacy_src = None
+        # The output transport's playout FIFO: audio pushed and not yet played
+        # out, as [ctx, seconds, push time]; ctx is None on the legacy path and
+        # _BED for the thinking sound. _win_t0 is when the open window started
+        # playing the head, None while no window is open.
+        self._fifo: List[list] = []
+        self._win_t0: Optional[float] = None
+        self._seen: OrderedDict = OrderedDict()
         self._traced = set()
+
+    # ------------------------------------------------------------------ frames
 
     async def on_process_frame(self, data: FrameProcessed):
         f = data.frame
         t = data.timestamp / 1e9  # pipeline clock ns -> s
+        proc = getattr(data, "processor", None)
 
         if _TRACE and isinstance(f, _TRACE_TYPES) and f.id not in self._traced:
             self._traced.add(f.id)
@@ -173,7 +251,7 @@ class TranscriptLedger(BaseObserver):
             pts = getattr(f, "pts", None)
             pts_s = f" pts={pts / 1e9:.2f}" if pts else ""
             logger.info(f"TRACE {type(f).__name__} t={t:.2f}{pts_s}{info}")
-            if len(self._traced) > 8192:
+            if len(self._traced) > _MAX_SEEN:
                 self._traced.clear()
 
         # --- user side ---
@@ -182,299 +260,259 @@ class TranscriptLedger(BaseObserver):
                 self._user_start = t
             return
 
-        # --- interruption: end an in-flight bot utterance as cut-off ---
+        # --- interruption: every open bot turn ends as cut-off ---
         if isinstance(f, InterruptionFrame):
-            if self._bot is not None:
-                self._finish_bot(t, interrupted=True)
-            # The interruption cancels the in-flight completion (its End frame still
-            # arrives, from a finally, with the partial text) and flushes every queued
-            # TTS context. Neither text will be spoken now, so neither may be left
-            # for the next turn to claim: the partial was charted above as the cut
-            # turn's intended, and a completed reply whose TTS had not started is
-            # gone with the flush. Leaving them armed let the next filler's untagged
-            # transport copy open a turn on the cut reply's text and chart it a
-            # second time, complete — and hand that text to the NEXT reply's turn.
-            self._gen_acc = None
-            self._pending.clear()
-            self._reset_window()
+            self._interrupt(t)
+            return
+
+        # --- the LLM stream and spoken notices: read where the TTS reads them ---
+        if isinstance(f, (LLMFullResponseStartFrame, LLMTextFrame,
+                          LLMFullResponseEndFrame, TTSSpeakFrame)):
+            if self._tts is not None and proc is not self._tts:
+                if isinstance(f, LLMFullResponseEndFrame):
+                    # Any sighting of a response's End AFTER the TTS's own is the
+                    # post-drain re-push (the frame keeps its id; upstream sightings
+                    # precede the TTS's and are not yet registered).
+                    self._end_drained(f, t)
+                return
+            if f.id in self._seen:
+                return
+            self._mark_seen(f)
+            self._llm_side(f, t)
             return
 
         if f.id in self._seen:
             return
+        self._mark_seen(f)
 
         if isinstance(f, TranscriptionFrame):
             if not (f.text or "").strip():
                 return
-            self._seen.add(f.id)
             self._add(Utterance("user", f.text.strip(),
                                 self._user_start if self._user_start is not None else t, t))
             self._user_start = None
 
-        # --- generated (intended) bot text from the LLM stream ---
-        elif isinstance(f, LLMFullResponseStartFrame):
-            self._seen.add(f.id)
-            self._gen_acc = []
-            self._gen_claimed = False
-        elif isinstance(f, LLMTextFrame):
-            self._seen.add(f.id)
-            if self._gen_acc is not None:
-                self._gen_acc.append(f.text or "")
-        elif isinstance(f, LLMFullResponseEndFrame):
-            self._seen.add(f.id)
-            txt = "".join(self._gen_acc or []).strip()
-            if txt:  # tool-call responses have no text; nothing to queue
-                self._pending_seq += 1
-                if self._bot is not None and self._bot.get("intended_live"):
-                    # This response's playout started before its text finished
-                    # streaming; complete the mid-generation snapshot with the
-                    # full reply so heard_fraction has the right denominator.
-                    # The live turn IS this reply's, so it is not queued.
-                    self._bot["intended"] = txt
-                    self._bot["intended_live"] = False
-                    self._bot["gen_seq"] = self._pending_seq
-                elif not self._gen_claimed:
-                    self._pending.append((self._pending_seq, txt))
-                # else: a live turn already spoke (and charted) this response.
-            self._gen_acc = None
-
-        # --- bot playout: associate the generated text with the audio ---
         elif isinstance(f, TTSStartedFrame):
-            self._seen.add(f.id)
             fctx = getattr(f, "context_id", None)
+            if fctx is not None:
+                self._tagged = True
             if getattr(f, "append_to_context", True) is False:
                 # A FILLER context: the narrator / tool-ack speak frames are pushed
                 # with append_to_context=False (tools.py), and tts_service stamps
                 # that onto the context's TTSStartedFrame. A filler is never part
-                # of a reply turn — it must neither open one (a phantom turn in the
-                # silence before a reply swallowed that reply's text) nor adopt an
-                # open one's identity (the reply's own frames then read as foreign
-                # and a barged reply was recorded fully heard). Remember the ctx so
-                # the filler's word/audio frames are dropped too — and so its audio
-                # is known to be a filler's when it becomes a window's head.
+                # of a reply turn: it neither opens one nor is folded into one.
+                # Remember the ctx so its word/audio frames are known as a filler's.
                 if fctx is not None:
-                    self._filler_ctxs[fctx] = None
-                    if len(self._filler_ctxs) > 512:
-                        # A filler whose stop frame was lost (an interruption
-                        # discards it) leaks its entry. Evict the OLDEST, never
-                        # clear: clearing dropped the context that had just been
-                        # added — the live filler — and its frames then folded
-                        # into the open reply.
-                        del self._filler_ctxs[next(iter(self._filler_ctxs))]
-            elif self._bot is None:
-                self._bot = self._new_bot(t)
-                # The opening started frame names this turn's context in the normal
-                # path (tts_service creates TTSStartedFrame(context_id=...)).
-                self._bot["ctx"] = fctx
-            elif fctx is None or self._bot["ctx"] is None:
-                # A mid-turn TTSStarted for the SAME turn (an audio context
-                # re-created after a stop-frame timeout keeps its context_id) or a
-                # ctx-less path: keep the open turn — clobbering it would discard
-                # the samples/words already played. Adopt the ctx if none yet.
-                if fctx is not None:
-                    self._bot["ctx"] = fctx
-            elif fctx != self._bot["ctx"]:
-                # A NEW spoken context chained straight onto the open turn with no
-                # BotStopped between (fast tool flow: the ack's context and the
-                # answer's context play back-to-back inside one BotStarted window).
-                # The open turn is over: chart it and start a turn for the new
-                # context, which claims the newer response's text. Rejecting these
-                # frames as foreign made the whole second reply vanish. (Any speak
-                # frame the brain plays INSIDE a reply must carry
-                # append_to_context=False, or it would close that reply early here.)
-                events_before = len(self.events)
-                self._finish_bot(t, interrupted=False)
-                self._bot = self._new_bot(t)
-                self._bot["ctx"] = fctx
-                if len(self.events) > events_before:
-                    # Gapless chain: the new context's playout begins where the
-                    # previous turn's ended (its charted t_end) — no second
-                    # BotStartedSpeaking comes mid-window, and this started frame's
-                    # own arrival is synthesis time, while the previous turn may
-                    # still be playing out downstream. Without this the chained
-                    # turn had no audio_start at all and a barge-in into it read
-                    # as heard_fraction 0.
-                    prev_end = self.events[-1].t_end
-                    self._bot["t_start"] = prev_end
-                    self._bot["audio_start"] = prev_end
+                    self._remember(self._filler_ctxs, fctx, _MAX_FILLER_CTXS)
+                self._context_started(t, fctx)
+                return
+            self._context_started(t, fctx)
+            if self._turn_for(fctx) is None:
+                self._open_turn(t, fctx)
+
         elif isinstance(f, TTSTextFrame):
-            self._seen.add(f.id)
-            # Per-word TTSTextFrames (engine TTS) are scheduled on the playout clock,
-            # so they arrive at the ledger as each word is spoken. Collecting the
-            # ones that arrive before an interruption gives EXACTLY what the user
-            # heard — no estimate. (sherpa pushes one whole-reply frame instead.)
-            if not self._is_filler(f):
-                self._ensure_bot(t)
-                if self._bot is not None and self._ctx_ok(f):
-                    # Keep each word's SCHEDULED playout time (frame.pts), not its
-                    # arrival order: our TTS pushes the whole clip at once, so the
-                    # word frames arrive clustered, but their pts is each word's
-                    # real playout instant — which is what tells us what was heard.
-                    self._bot["spoken"].append((f.text or "", getattr(f, "pts", None)))
-        elif isinstance(f, TTSAudioRawFrame):
-            self._seen.add(f.id)
+            if self._is_filler(f):
+                return
+            # Per-word TTSTextFrames (engine TTS) are scheduled on the playout clock
+            # and carry that schedule as pts; collecting the ones at/before an
+            # interruption's cut gives EXACTLY what the user heard — no estimate.
+            # (sherpa pushed one whole-reply frame instead; see _finish.)
             fctx = getattr(f, "context_id", None)
-            filler = self._is_filler(f)
+            turn = self._turn_for(fctx)
+            if turn is None:
+                if fctx is None and self._tagged:
+                    return  # a stray untagged word frame on a tagged pipeline
+                turn = self._open_turn(t, fctx)
+            # Keep each word's SCHEDULED playout time (frame.pts), not its arrival
+            # order: our TTS pushes the whole clip at once, so the word frames
+            # arrive clustered, but their pts is each word's real playout instant.
+            turn["spoken"].append((f.text or "", getattr(f, "pts", None)))
+            if getattr(f, "includes_inter_frame_spaces", False):
+                turn["ifs"] = True
+
+        elif isinstance(f, TTSAudioRawFrame):
+            fctx = getattr(f, "context_id", None)
             dur = ((getattr(f, "num_frames", 0) or 0) / f.sample_rate) if f.sample_rate else 0.0
-            if not self._window_head_seen:
-                # The first audio since the window closed: what the next window
-                # opens FOR. Filler-ness is decided now, while the filler's context
-                # is still in _filler_ctxs (its stop frame drains it before playout).
-                self._window_head_seen = True
-                self._window_head_filler = filler
-            if not filler:
-                # Only audio that NAMES a context may open a turn. The transport's
-                # untagged rebuild of a chunk names nothing, and in a filler's window
-                # it is the filler's — the frame that used to open a phantom turn on
-                # whatever text was pending and chart it off the filler's playout.
-                # (A reply's own audio is tagged on every path — engine_tts.py yields
-                # it with context_id — so nothing real is refused.)
-                if fctx is not None or not self._window_head_filler:
-                    self._ensure_bot(t)
-                if self._bot is not None and self._audio_ok(f):
-                    if self._bot.get("queue_ahead") is None:
-                        # This turn's first accepted audio (tagged, or untagged on the
-                        # ctx-less legacy path): it plays after whatever this window
-                        # already holds. A reply chained behind a filler
-                        # gets no BotStarted of its own, so this offset is the only
-                        # way to know when its playout begins — without it a barge-in
-                        # into such a reply read as heard_fraction 0.
-                        self._bot["queue_ahead"] = self._window_dur
-                        if self._window_open and self._bot["audio_start"] is None:
-                            self._bot["audio_start"] = self._window_t0 + self._window_dur
-                    # Per PUSHING PROCESSOR, and take the max at the cut — never a
-                    # running total. In a ctx-less pipeline the same audio is pushed
-                    # twice: once by the TTS service at 24 kHz and again by the output
-                    # transport, which resamples to the pipeline's 16 kHz. Those are
-                    # different frame ids, so id-dedup cannot catch them, and bucketing
-                    # per SAMPLE RATE does not either — the resampled frames still
-                    # carry sample_rate=24000 while num_frames counts 16 kHz samples,
-                    # so both land in one bucket and inflate it by (24000+16000)/24000
-                    # = 1.67x. Every processor sees the whole reply exactly once, so
-                    # the max across processors IS the reply's duration, whatever any
-                    # one of them labels its rate. (A ctx-tagged turn counts only the
-                    # TTS service's tagged copy — see _audio_ok — so it has one
-                    # bucket; the max is then just that bucket.)
-                    #
-                    # Live 2026-08-25: a 9.5s count measured as audio_dur=15.8, frac
-                    # 0.39 instead of 0.65, so a barge-in at "thirteen" was credited
-                    # as "eight". The reply was then truncated to that in the context
-                    # and the agent argued the point with the user.
-                    src = self._bot["audio_by_src"]
-                    proc = getattr(data, "processor", None)
-                    key = getattr(proc, "name", None) or type(proc).__name__
-                    acc = src.setdefault(key, [0, f.sample_rate])
-                    acc[0] += getattr(f, "num_frames", 0) or 0
-                    acc[1] = f.sample_rate
-            if fctx is not None:
-                self._window_dur += dur  # tagged pushes only: the copies are duplicates
+            if fctx is None:
+                if self._output is not None and proc is self._output:
+                    # Handed TO the transport by something other than the TTS: the
+                    # thinking-sound bed. It plays, so it takes playout time; it is
+                    # nobody's reply, so it opens no turn.
+                    self._push(_BED, dur, t)
+                    return
+                if self._tagged:
+                    # The transport's rebuild of a chunk it played: no context_id
+                    # (base_output re-chunks the bytes into new frames). Not a push.
+                    return
+                # Legacy ctx-less path: the TTS's own push -- but only from the
+                # first processor seen pushing audio. The transport's resampled
+                # copy comes from another and used to inflate the reply's length.
+                if not self._legacy_src_set:
+                    self._legacy_src_set = True
+                    self._legacy_src = proc
+                elif proc is not self._legacy_src:
+                    return
+            else:
+                self._tagged = True
+            if self._is_filler(f):
+                self._push(fctx, dur, t)
+                return
+            turn = self._turn_for(fctx)
+            if turn is None:
+                # No TTSStartedFrame was seen for this context (a path that routes
+                # audio straight through pipecat's audio context): open the turn on
+                # its first audio so the reply is still recorded.
+                turn = self._open_turn(t, fctx)
+            item = self._push(fctx, dur, t)
+            turn["pushed"] += dur
+            if turn["audio_start"] is None and self._win_t0 is not None:
+                # This turn's first chunk, pushed into a window already playing:
+                # it plays after whatever the window holds ahead of it.
+                turn["audio_start"] = self._layout()[-1][1] if item is self._fifo[-1] else None
+
         elif isinstance(f, BotStartedSpeakingFrame):
-            self._seen.add(f.id)
-            self._window_open = True
-            self._window_t0 = t
-            # A playout window opened by a FILLER must not start a bot turn:
-            # BotStarted is anonymous, and with a reply's text pending (its TTS
-            # delayed), _ensure_bot here would open a turn that claims the text,
-            # gets charted "fully heard" off the filler's playout, and consumes
-            # the pending — the delayed reply then vanishes (the phantom-turn
-            # swallow, via the side door). A reply that CHAINS into the filler's
-            # window still opens its turn on its own TTS frames, and its playout
-            # begins after the filler's audio, not at this frame: audio_start is
-            # set from its queue-ahead offset, never from a window that is not its
-            # own. (Stamping it here credited a barged reply with the seconds the
-            # FILLER had been playing.)
-            if not self._window_head_filler:
-                self._ensure_bot(t)
-            if (self._bot is not None and self._bot["audio_start"] is None
-                    and self._bot.get("queue_ahead") is not None):
-                self._bot["audio_start"] = t + self._bot["queue_ahead"]
+            # The transport began playing the head of its queue. Anonymous — it
+            # says nothing about WHOSE audio — so it opens no turn; it only dates
+            # the window, from which every queued chunk's playout start follows.
+            if self._win_t0 is None:
+                self._win_t0 = t
+                for item, start, _end in self._layout():
+                    turn = self._turn_for_item(item)
+                    if turn is not None and turn["audio_start"] is None:
+                        turn["audio_start"] = start
+
         elif isinstance(f, TTSStoppedFrame):
-            self._seen.add(f.id)
             fctx = getattr(f, "context_id", None)
             if fctx is not None and fctx in self._filler_ctxs:
                 # The filler's synthesis is over; its context won't be seen again.
                 self._filler_ctxs.pop(fctx, None)
-            elif self._bot is not None and (
-                    fctx is None or self._bot["ctx"] is None
-                    or fctx == self._bot["ctx"]):
-                # Only THIS turn's stop frame means its full audio length is known.
-                # A foreign context's stop (a filler chained inside the turn) said
-                # nothing about the reply, yet used to set synth_done and collapse
-                # full_dur to the samples synthesized so far — a barge-in a third
-                # of the way in then read as fully heard.
-                self._bot["synth_done"] = True
+                return
+            turn = self._turn_for(fctx)
+            if turn is None or (fctx is None and self._tagged and turn["ctx"] is not None):
+                return  # a foreign context's stop says nothing about the open turns
+            # Only THIS turn's stop frame means its full audio length is known.
+            turn["synth_done"] = True
+            if turn["pushed"] <= 0:
+                self._finish(turn, t, heard=0.0, interrupted=True, never=True)
+
         elif isinstance(f, BotStoppedSpeakingFrame):
-            self._seen.add(f.id)
-            # Only a turn whose audio was IN this window ends with it. A reply's
-            # TTSStarted is pushed at synthesis start; when its first chunk is slow
-            # (Kokoro shares the GPU with STT) a filler queued just before it plays
-            # out and closes its own window first. Closing the reply's turn on that
-            # BotStopped charted it complete with no audio, and its audio then
-            # opened a second turn on the same text -- charted again at the next
-            # cut. A turn with no accepted audio keeps waiting for its window.
-            if self._bot is not None and self._bot.get("queue_ahead") is not None:
-                self._finish_bot(t, interrupted=False)
-            self._reset_window()
+            self._window_closed(t)
 
-        if len(self._seen) > 8192:
-            self._seen.clear()
+    def _llm_side(self, f, t: float):
+        """The LLM stream and spoken notices, once each, at the TTS's sighting."""
+        if isinstance(f, LLMFullResponseStartFrame):
+            self._seq += 1
+            self._gen = self._new_entry("llm")
+        elif isinstance(f, LLMTextFrame):
+            if self._gen is not None:
+                self._gen["parts"].append(f.text or "")
+        elif isinstance(f, LLMFullResponseEndFrame):
+            gen, self._gen = self._gen, None
+            if gen is None:
+                # A cancelled completion's End: pipecat pushes it from a finally
+                # after the InterruptionFrame that dropped the stream. Nothing of
+                # it will be spoken.
+                return
+            gen["text"] = "".join(gen["parts"]).strip()
+            gen["ended"] = True
+            if not gen["text"]:
+                # A tool-call response, or one the guard emptied: the TTS opens
+                # no context for it, so nothing will claim it.
+                return
+            self._remember(self._end_ids, f.id, _MAX_END_IDS, gen)
+            if gen["turn"] is None:
+                self._enqueue(gen)
+            # else a live turn holds it and reads the completed text from it.
+        elif isinstance(f, TTSSpeakFrame):
+            if getattr(f, "append_to_context", True) is False:
+                return  # a filler; its TTSStartedFrame carries the flag
+            text = (f.text or "").strip()
+            if text:
+                # A spoken notice (the STT-busy line, an error read-out): its
+                # context will open in turn, and it IS an assistant utterance.
+                self._seq += 1
+                entry = self._new_entry("speak")
+                entry["text"] = text
+                entry["ended"] = True
+                self._enqueue(entry)
 
-    def _new_bot(self, t: float) -> dict:
-        # Which response does a turn that opens now belong to? The TTS service
-        # synthesizes responses in the order it received them, so if completed
-        # replies are still unspoken (_pending — a turn takes the front when it
-        # opens; an interruption drops them all) the oldest is older than anything
-        # still streaming and this turn is its. Only with nothing queued is the
-        # turn the in-flight generation's — the streaming-TTS shape, where the
-        # first audio arrives before LLMFullResponseEndFrame; that bot is marked
-        # live and its intended is completed on the response end, or from the
-        # partial text if barged first. (Preferring the in-flight text
-        # unconditionally charted a reply whose TTS began after the NEXT
-        # completion started streaming — text plus a tool call in one completion —
-        # under the next completion's text.)
-        if self._pending:
-            gen_seq, intended = self._pending.popleft()
-            live = False
+    def _end_drained(self, f, t: float):
+        """A response's End frame sighted again downstream of the TTS: the TTS
+        just drained the context it belonged to (the frame keeps its id, see
+        tts_service._maybe_reset_word_timestamps). Confirms which response that
+        context spoke, and that its synthesis is over."""
+        entry = self._end_ids.get(f.id)
+        if entry is None or entry["drained"]:
+            return
+        entry["drained"] = True
+        if _TRACE:
+            logger.info(f"TRACE LLMFullResponseEndFrame t={t:.2f} drained seq={entry['seq']}")
+        turn = entry["turn"]
+        if turn is not None and turn not in self._turns:
+            return  # its turn is charted already (closed on other evidence)
+        if turn is None:
+            # Nothing claimed this response, yet its context just drained: the
+            # context opened a turn claiming something else -- an older response
+            # the TTS never opened a context for -- or nothing. The re-push is
+            # the authority: the newest open turn is this response's, and
+            # whatever it held was never spoken.
+            cand = self._turns[-1] if self._turns else None
+            if cand is None or cand["entry"] is entry:
+                if entry in self._queue:
+                    self._queue.remove(entry)
+                if cand is None:
+                    logger.warning(
+                        f"LEDGER response {entry['seq']} drained with no turn open; "
+                        f"dropped {entry['text'][:40]!r}")
+                return
+            old = cand["entry"]
+            if old is not None and old is not entry:
+                logger.warning(
+                    f"LEDGER response {old['seq']} was never synthesized; its context "
+                    f"was response {entry['seq']}'s. Dropped {old['text'][:40]!r}")
+                old["turn"] = None
+            if entry in self._queue:
+                self._queue.remove(entry)
+            cand["entry"] = entry
+            cand["live"] = False
+            entry["turn"] = cand
+            turn = cand
+        turn["synth_done"] = True
+        turn["live"] = False
+        if turn["pushed"] <= 0:
+            # Drained without a chunk of audio: nothing of it was ever played.
+            self._finish(turn, t, heard=0.0, interrupted=True, never=True)
         else:
-            live = self._gen_acc is not None
-            intended = "".join(self._gen_acc).strip() if live else ""
-            gen_seq = None
-            if live:
-                self._gen_claimed = True
-        return {"t_start": t, "intended": intended, "intended_live": live,
-                # The response seq this turn took from the queue (None when the
-                # text came from the live accumulator; filled in on the response
-                # end for a live turn). Informational: the queue entry is gone.
-                "gen_seq": gen_seq,
-                "audio_start": None,
-                # Seconds of audio queued in the playout window ahead of this
-                # turn's first audio; None until that audio is seen. See the
-                # TTSAudioRawFrame and BotStarted branches.
-                "queue_ahead": None,
-                # The TTS context this turn belongs to, adopted from the frame that
-                # opens it (see _ctx_ok). A later frame from a DIFFERENT context is
-                # foreign and is not folded in.
-                "ctx": None,
-                # samples the reply is worth, bucketed by the processor that pushed
-                # them: {name: [samples, rate]}. See the TTSAudioRawFrame branch.
-                "audio_by_src": {}, "sr": None, "synth_done": False,
-                "spoken": []}
+            # Its window may have closed already (playout outran a stalled
+            # synthesis): then it is over now.
+            self._close_ready(t)
 
-    def _reset_window(self):
-        # The transport's window closed (BotStopped) or was flushed (interruption):
-        # the next audio pushed is the head of the next window.
-        self._window_open = False
-        self._window_t0 = None
-        self._window_head_seen = False
-        self._window_head_filler = False
-        self._window_dur = 0.0
+    # ------------------------------------------------------------ bookkeeping
 
-    def _ensure_bot(self, t: float):
-        # Some TTS paths don't emit a TTSStartedFrame the ledger sees — notably
-        # the engine's per-word path (push_text_frames=False), which routes frames
-        # through pipecat's audio context. Start the bot turn on whatever TTS
-        # frame arrives first so the turn is still recorded.
-        if self._bot is None and (self._gen_acc is not None or self._pending):
-            self._bot = self._new_bot(t)
+    def _new_entry(self, kind: str) -> dict:
+        return {"seq": self._seq, "kind": kind, "parts": [], "text": "",
+                "ended": False, "drained": False, "turn": None}
+
+    def _enqueue(self, entry: dict):
+        self._queue.append(entry)
+        while len(self._queue) > _MAX_QUEUED:
+            old = self._queue.popleft()
+            logger.warning(f"LEDGER dropped unspoken response {old['seq']}: "
+                           f"{old['text'][:40]!r} (queue overflow)")
+
+    @staticmethod
+    def _remember(od: OrderedDict, key, cap: int, value=None):
+        od[key] = value
+        while len(od) > cap:
+            od.popitem(last=False)
+
+    def _mark_seen(self, f):
+        self._remember(self._seen, f.id, _MAX_SEEN)
+        sib = getattr(f, "broadcast_sibling_id", None)
+        if sib is not None:
+            # BotStarted/BotStopped are broadcast as a downstream/upstream pair
+            # with distinct ids; the ledger sees both.
+            self._remember(self._seen, sib, _MAX_SEEN)
 
     def _is_filler(self, frame) -> bool:
         """True for a frame from a FILLER TTS context — a speak frame the brain
@@ -489,92 +527,198 @@ class TranscriptLedger(BaseObserver):
             return True
         return getattr(frame, "append_to_context", True) is False
 
-    def _ctx_ok(self, frame) -> bool:
-        """True if a WORD frame belongs to the open bot turn's TTS context.
-
-        A bot turn is opened by an LLM response but CARRIED by a TTS context, and it
-        adopts the context_id of the first TTS frame that names one (the opening
-        TTSStartedFrame in the normal path). A frame from a DIFFERENT context is
-        foreign — a filler ("Still working on it.") pushed as its own TTSSpeakFrame
-        while a reply is mid-playout, or the next turn's audio arriving early — and
-        its words and samples must NOT be counted as part of this turn. Confirmed
-        live: brain/formal (LEDGER_TRACE, 2026-08-29 23:21:42) shows a narrator
-        filler's four words folded into a 29-word reply's utterance.
-
-        Word frames with no context_id are accepted, not rejected: sherpa pushes
-        one whole-reply TTSTextFrame with none. Only a frame that NAMES a different
-        context is turned away. (Audio is stricter — see _audio_ok.)
-        """
-        if self._bot is None:
-            return False
-        fctx = getattr(frame, "context_id", None)
+    def _turn_for(self, fctx) -> Optional[dict]:
+        """The open turn a frame naming context `fctx` belongs to. A frame naming
+        NO context (the legacy path, sherpa's whole-reply word frame) goes to the
+        newest open turn; a frame naming a DIFFERENT context than every open turn
+        is foreign and belongs to none."""
         if fctx is None:
-            return True
-        if self._bot["ctx"] is None:
-            self._bot["ctx"] = fctx
-            return True
-        return fctx == self._bot["ctx"]
+            return self._turns[-1] if self._turns else None
+        for turn in reversed(self._turns):
+            if turn["ctx"] == fctx:
+                return turn
+        return None
 
-    def _audio_ok(self, frame) -> bool:
-        """True if an AUDIO frame's samples count toward the open turn's duration.
+    def _turn_for_item(self, item) -> Optional[dict]:
+        """The open turn a FIFO item's audio belongs to (None for a filler's, the
+        bed's, or a charted turn's)."""
+        ctx = item[0]
+        if ctx == _BED:
+            return None
+        if ctx is None:
+            for turn in reversed(self._turns):
+                if turn["ctx"] is None:
+                    return turn
+            return None
+        for turn in reversed(self._turns):
+            if turn["ctx"] == ctx:
+                return turn
+        return None
 
-        Stricter than _ctx_ok: once the turn is ctx-tagged, only audio that NAMES
-        that context counts. Unlike words, audio is REBUILT by the output transport
-        without its context_id, so an untagged frame is unattributable — it is just
-        as likely the transport's copy of a foreign filler's playout (verified: a
-        fully-heard 1.5s reply measured heard 0.53 because the filler's TAGGED copy
-        was rejected while its untagged transport copy landed in the reply's
-        denominator) or the thinking-sound loop as this reply's own resampled copy.
-        The TTS service's tagged copy alone already measures the reply in full, so
-        dropping untagged copies loses nothing. A turn with NO context accepts
-        everything, same as before (the ctx-less test/legacy shape).
+    def _open_turn(self, t: float, fctx) -> dict:
+        """Open a bot turn for TTS context `fctx` (None on the legacy path).
+
+        Which text is it speaking? The TTS opens contexts in the order it received
+        their text, so the oldest expected context not yet opened (the queue's
+        head) is this one's. With nothing queued it is the response streaming
+        now -- the streaming-TTS shape, where the first audio lands before the
+        LLMFullResponseEndFrame: the turn is LIVE and completes its text on the
+        response end, or charts the partial if barged first. A response with no
+        text yet cannot have audio, so an audio-only context opens ANONYMOUS
+        (entry None) and charts nothing rather than taking the next reply's words.
         """
-        if self._bot is None:
-            return False
-        fctx = getattr(frame, "context_id", None)
-        if self._bot["ctx"] is None:
-            if fctx is not None:
-                self._bot["ctx"] = fctx
-            return True
-        return fctx == self._bot["ctx"]
+        entry, live = None, False
+        if fctx is not None and fctx in self._closed_ctxs:
+            # A context re-created after pipecat's stop-frame timeout, whose turn
+            # is already charted: the tail belongs to no expected context.
+            pass
+        elif self._queue:
+            entry = self._queue.popleft()
+        elif (self._gen is not None and self._gen["turn"] is None
+              and "".join(self._gen["parts"]).strip()):
+            entry, live = self._gen, True
+        turn = {"ctx": fctx, "entry": entry, "live": live,
+                "t_open": t,          # when the ledger saw the turn begin
+                "audio_start": None,  # when its first chunk started playing
+                "last_end": None,     # when its last played-out chunk ended
+                "pushed": 0.0,        # seconds of its audio pushed to the transport
+                "played": 0.0,        # seconds played out in windows already closed
+                "synth_done": False,  # all of its audio has been pushed
+                "spoken": [],         # (word, pts) from its TTSTextFrames
+                "ifs": False}         # its word frames carry their own spacing
+        if entry is not None:
+            entry["turn"] = turn
+        self._turns.append(turn)
+        return turn
 
-    def _finish_bot(self, t: float, interrupted: bool):
-        b = self._bot
-        self._bot = None
-        if not b:
-            return
-        intended = (b["intended"] or "").strip()
-        if b.get("intended_live") and self._gen_acc is not None:
-            # Barged in while the reply was still streaming from the LLM: the text
-            # generated so far is the best available intended for this utterance.
-            intended = "".join(self._gen_acc).strip() or intended
+    def _context_started(self, t: float, fctx):
+        """A TTS context began (filler or not). The TTS drains contexts one at a
+        time, so every open turn of ANOTHER context is fully synthesized -- and one
+        that never got a chunk never will."""
+        for turn in list(self._turns):
+            if turn["ctx"] == fctx:
+                continue  # a context re-created under its own id: the same turn
+            if turn["ctx"] is None and fctx is None:
+                continue  # legacy: one ctx-less stream
+            turn["synth_done"] = True
+            turn["live"] = False
+            if turn["pushed"] <= 0:
+                self._finish(turn, t, heard=0.0, interrupted=True, never=True)
+
+    # ---------------------------------------------------------------- playout
+
+    def _push(self, ctx, dur: float, t: float) -> list:
+        item = [ctx, dur, t]
+        self._fifo.append(item)
+        if len(self._fifo) > _MAX_FIFO:
+            del self._fifo[0]
+        return item
+
+    def _layout(self):
+        """Where each queued chunk plays: back to back from the window's start,
+        in push order, and never before it was pushed (a chunk that arrived while
+        the queue had already run dry starts when it arrived). Empty while no
+        window is open -- nothing is playing."""
+        out = []
+        if self._win_t0 is None:
+            return out
+        cur = self._win_t0
+        for item in self._fifo:
+            start = max(cur, item[2])
+            end = start + item[1]
+            out.append((item, start, end))
+            cur = end
+        return out
+
+    def _window_closed(self, t: float):
+        """BotStoppedSpeaking: the transport played everything it held, then
+        0.35s of nothing. Credit each open turn with its chunks, drop the FIFO,
+        and chart the turns that are over -- oldest first, stopping at one that
+        is not (its synthesis stalled, or its first chunk has not come; the next
+        window continues it)."""
+        if self._win_t0 is not None:
+            for item, _start, end in self._layout():
+                turn = self._turn_for_item(item)
+                if turn is not None:
+                    turn["played"] += item[1]
+                    turn["last_end"] = end
+        self._fifo.clear()
+        self._win_t0 = None
+        self._close_ready(t)
+
+    def _close_ready(self, t: float):
+        """Chart every open turn that is over -- all of its audio played out and
+        its synthesis known complete -- oldest first, stopping at the first that
+        is not, so turns are charted in playout order."""
+        for turn in list(self._turns):
+            if turn["pushed"] <= 0 or turn["played"] < turn["pushed"] - _EPS:
+                break
+            entry = turn["entry"]
+            done = (entry is None or turn["synth_done"]
+                    or (self._tts is None and entry["ended"]))
+            if not done:
+                break
+            self._finish(turn, t, heard=turn["played"], interrupted=False)
+
+    def _interrupt(self, t: float):
+        """The user barged in: every open turn ends now, with the portion of its
+        audio the layout says had played. The completion is cancelled (its End
+        frame still comes, empty now) and the TTS flushes every queued context,
+        so nothing expected will be spoken -- neither text may wait for a later
+        turn to claim it."""
+        portions: dict = {}
+        for item, start, end in self._layout():
+            turn = self._turn_for_item(item)
+            if turn is None:
+                continue
+            played = min(item[1], max(0.0, t - start))
+            portions[id(turn)] = portions.get(id(turn), 0.0) + played
+            if played > 0:
+                turn["last_end"] = min(end, t)
+        for turn in list(self._turns):
+            self._finish(turn, t, heard=turn["played"] + portions.get(id(turn), 0.0),
+                         interrupted=True)
+        self._turns.clear()
+        self._gen = None
+        self._queue.clear()
+        self._fifo.clear()
+        self._win_t0 = None
+
+    # ------------------------------------------------------------------ chart
+
+    def _finish(self, turn: dict, t: float, heard: float, interrupted: bool,
+                never: bool = False):
+        if turn in self._turns:
+            self._turns.remove(turn)
+        if turn["ctx"] is not None:
+            self._remember(self._closed_ctxs, turn["ctx"], _MAX_CLOSED_CTXS)
+        entry = turn["entry"]
+        if entry is not None:
+            # The entry keeps pointing at this (now charted) turn: a live turn's
+            # End frame arriving after its playout must find it spoken, not queue
+            # the text for the next context to claim.
+            intended = (entry["text"] if entry["ended"]
+                        else "".join(entry["parts"]).strip())
+        else:
+            intended = ""
         if not intended:
             # Nothing was ever attributed to this turn: there is nothing to chart.
-            # (A turn takes its text off the queue when it OPENS, so an empty turn
-            # never held anything — the next reply's text is still queued for the
-            # turn that will speak it. Consuming here used to swallow it whenever
-            # an unmarked speak context opened a phantom turn in the silence
-            # before it; pre-existing, reproduced on main.)
             return
-        # Every processor saw the WHOLE reply, so each one's samples/rate is the
-        # reply's duration on its own. Take the longest, never the sum: a resampled
-        # copy must not add length, and the longest is the source that saw the most.
-        audio_dur = max((n / rate for n, rate in b["audio_by_src"].values() if rate),
-                        default=0.0)
+        audio_dur = turn["pushed"]
         # If synthesis was cut short, audio_dur underestimates the intended
         # length; fall back to a word-count estimate so heard_fraction isn't
-        # inflated. (Also with NO counted audio at all — a turn whose audio was
-        # never ctx-tagged — where trusting synth_done would make full_dur 0.)
+        # inflated. (Also with NO audio at all, where trusting synth_done would
+        # make full_dur 0.)
         text_dur = len(intended.split()) * _SECONDS_PER_WORD
-        full_dur = (audio_dur if b["synth_done"] and audio_dur > 0
+        full_dur = (audio_dur if turn["synth_done"] and audio_dur > 0
                     else max(audio_dur, text_dur))
+        heard = max(0.0, heard)
+        if interrupted and not never and turn["synth_done"] and heard >= audio_dur - _EPS > 0:
+            # Every chunk of it had played when the cut landed (a reply queued
+            # ahead of the one the user actually cut): heard in full.
+            interrupted = False
         if interrupted:
-            # audio_start is None when playout never began (cut during synthesis)
-            # — heard is genuinely zero. A turn chained mid-window never sees a
-            # BotStarted of its own; it gets audio_start preset from the previous
-            # turn's charted end instead (see the chained-context branch).
-            heard_dur = (t - b["audio_start"]) if b["audio_start"] else 0.0
-            frac = min(1.0, heard_dur / full_dur) if full_dur > 0 else 0.0
+            frac = min(1.0, heard / full_dur) if full_dur > 0 else 0.0
         else:
             frac = 1.0
         # Heard text from per-word TTSTextFrames (engine TTS): keep each word whose
@@ -583,36 +727,32 @@ class TranscriptLedger(BaseObserver):
         # by pts, not arrival order. Fall back to arrival order if frames carry
         # no pts, and to the played-fraction estimate with no per-word frames
         # (sherpa).
-        spoken = b.get("spoken", [])
-        est = _prefix_words(intended, frac)  # reliable played-audio-fraction estimate
+        spoken = turn["spoken"]
+        est = _prefix(intended, frac)  # reliable played-audio-fraction estimate
         if any(p is not None for _, p in spoken):
             # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
             # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
             cut_ns = (t - _PTS_LEAD_SECS) * 1e9
-            # Space-JOIN the matched word texts. The engine's per-word frames do not
-            # reliably carry inter-word spaces -- number/counting output arrives as
-            # "One,","two,",... with none -- so a bare "".join collapses them to a
-            # single whitespace-less token and len(...split()) reads 1 however many
-            # matched. That made the ">= est" guard below always reject the exact
-            # timing and fall back to the coarse fraction, so the EXACT heard boundary
-            # this path exists for went unused. Live 2026-09-02: a barge-in during
-            # "One..twenty" matched ~ten words, was counted as 1, and committed est=8
-            # while the user heard ~ten. Rejoin on single spaces so the count -- and
-            # the text -- reflect the words actually played.
-            pts_heard = " ".join(
+            # Rejoin the matched words with the spacing the frames declare: a
+            # frame set that includes its inter-frame spaces (a CJK voice's
+            # character tokens) is concatenated; one that does not (the engine's
+            # per-word frames, which carry no spaces at all -- "One,","two,") is
+            # space-joined, or the count read 1 however many words matched.
+            sep = "" if turn["ifs"] else " "
+            pts_heard = sep.join(
                 (txt or "").strip()
                 for txt, p in spoken
                 if p is not None and p <= cut_ns and (txt or "").strip())
-            # Prefer exact word-timing, but never report FEWER words than the
-            # played-audio fraction implies — guards against a misaligned pts
-            # baseline (which would silently drop words the user did hear).
-            heard_text = pts_heard if len(pts_heard.split()) >= len(est.split()) else est
+            # Prefer exact word-timing, but never report LESS than the played-audio
+            # fraction implies — guards against a misaligned pts baseline (which
+            # would silently drop words the user did hear). Compared by characters,
+            # not words, so a voice whose tokens are characters compares too.
+            heard_text = pts_heard if len(_nospace(pts_heard)) >= len(_nospace(est)) else est
             if _TRACE:
                 logger.info(
-                    f"TRACE cut t={t:.2f} audio_start={b['audio_start'] or 0:.2f} "
-                    f"heard_dur={(t - (b['audio_start'] or t)):.2f} "
-                    f"audio_by_src={b['audio_by_src']} audio_dur={audio_dur:.2f} "
-                    f"text_dur={text_dur:.2f} synth_done={b['synth_done']} "
+                    f"TRACE cut t={t:.2f} audio_start={turn['audio_start']} "
+                    f"heard={heard:.2f} pushed={audio_dur:.2f} played_before={turn['played']:.2f} "
+                    f"text_dur={text_dur:.2f} synth_done={turn['synth_done']} "
                     f"full_dur={full_dur:.2f} frac={frac:.2f} "
                     f"cut={cut_ns / 1e9:.2f} spoken={len(spoken)} "
                     f"pts={[p / 1e9 if p is not None else None for _, p in spoken]} "
@@ -623,17 +763,22 @@ class TranscriptLedger(BaseObserver):
             heard_text = "".join(txt for txt, _ in spoken).strip()
         else:
             heard_text = est
-        # The closing frame — the chain-end BotStopped, or the interruption — can
-        # arrive only after a FOREIGN filler chained onto this turn has played out.
-        # The turn's own end is when ITS audio finished, never later: without the
-        # clamp the utterance window stretched across the filler's playout, and a
-        # user remark made during the filler was marked OVERLAP against a reply it
-        # never touched. (Synthesis runs ahead of playout, so for a genuine mid-turn
-        # cut t is the earlier bound and the clamp is a no-op.)
-        t_end = t
-        if b["audio_start"] is not None and audio_dur > 0:
-            t_end = min(t, b["audio_start"] + audio_dur)
-        self._add(Utterance("assistant", intended, b["t_start"], t_end,
+        # The utterance's window is its PLAYOUT: from where its first chunk started
+        # to where its last played-out chunk ended (a foreign filler chained after
+        # it may still be playing when the closing frame arrives; the turn's own
+        # end is when ITS audio finished). A turn cut before any of it played, or
+        # never played at all, is a point at the time the ledger saw it begin.
+        t_start = turn["audio_start"] if turn["audio_start"] is not None else turn["t_open"]
+        if never or turn["audio_start"] is None:
+            t_end = t_start if never else t
+        elif interrupted:
+            t_end = t
+        else:
+            t_end = turn["last_end"] if turn["last_end"] is not None else t
+        t_end = max(t_start, min(t, t_end))
+        if never:
+            logger.warning(f"LEDGER assistant reply was never played: {intended[:60]!r}")
+        self._add(Utterance("assistant", intended, t_start, t_end,
                             interrupted=interrupted, heard_fraction=frac,
                             heard_text=heard_text))
 

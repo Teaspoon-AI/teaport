@@ -292,8 +292,11 @@ TTS service; playout lags it arbitrarily. A cancelled completion still ends: pip
 `InterruptionFrame`, and the ledger takes the partial text as a new `_pending_gen`.
 
 Two designs, selected by `MODE`. `asWritten` is the ledger at PR #13 and fails every
-property; its rows are kept failing, pinning the counterexamples. `windowHead` is the fix
-(below) and holds all but one.
+property; its rows are kept failing, pinning the counterexamples. `windowHead` was the
+first fix (below) and holds all but one — and was then taken apart in turn by the review
+of PR #13, so it is kept here as the second rejected design. The ledger as it stands is
+the playout design, modelled in [`LedgerPlayout.tla`](#ledgerplayouttla--the-transcript-ledger-the-playout-design)
+below, which holds every row including the one `windowHead` left open.
 
 | row | property | review finding | asWritten | windowHead |
 |---|---|---|---|---|
@@ -367,7 +370,17 @@ no assistant message for the answer at all, so the model has no record it answer
 Not barged, the wrong-text chart is inert, but `_pending_gen` is not consumed (`gen_seq`
 mismatch) and the next filler repeats the phantom.
 
-### What was changed
+### What was changed (`windowHead` — superseded)
+
+The design at commit 3a51294, kept as it was checked. The review of PR #13 found the
+premise it rests on — that the anonymous `BotStartedSpeaking` can be made to say whose
+audio the window is for — cannot be patched into soundness: the head's filler-ness was
+latched at push time and consumed at playout time, `queue_ahead is not None` closed
+turns that had not played a sample and never closed ones whose audio never came, the
+chained preset blocked the two accurate `audio_start` stamps, `_gen_claimed` latched
+across a turn that charted nothing, a ctx-less turn adopted the next reply's context, the
+`_pending` queue stranded entries with no cap, and a heard fraction went negative. See
+`LedgerPlayout.tla` for what replaced it.
 
 `windowHead`, in `transcript_ledger.py`. The window the transport is playing is
 identified by the FIRST audio pushed since the previous window closed — the transport
@@ -446,11 +459,91 @@ the window was opened by the filler. That review item folds into `:222`.
 - **Scale.** One reply and one filler is a few hundred states; two of each is 2.2M states
   and a minute. The rows use the small instance; the bugs need nothing larger.
 
+## `LedgerPlayout.tla` — the transcript ledger, the playout design
+
+The ledger after the review of PR #13 (`transcript_ledger.py` as it stands). The premise
+`windowHead` shared with `asWritten` — read whose audio a window is for off the
+anonymous `BotStartedSpeaking` — is dropped; what replaces it is in the module header
+and the file's. `Ledger.tla` keeps the two rejected designs and their counterexamples;
+this module has the same environment with the facts the redesign rests on spelled out:
+
+- The TTS re-pushes a response's `LLMFullResponseEndFrame` — the same frame, same id —
+  once the response's context has drained (pipecat 1.7.0,
+  `tts_service._maybe_reset_word_timestamps`). Sighted a second time, below the TTS, it
+  names the response the context spoke and says its synthesis is over. It comes only if
+  the End reached the TTS before the drain; a context that drains on the stop-frame
+  timeout while the LLM still streams gets none, and is re-created under the SAME id if
+  its audio resumes (`Resume`; `tts_service.append_to_audio_context`).
+- The engine TTS pushes no `TTSStoppedFrame` at all — `push_stop_frames` is False, and the
+  box's journal of 2026-09-02 traces 476 `TTSStartedFrame`s and not one stop — so the
+  re-push is the ledger's only completion signal, and `BotStoppedSpeaking` is the
+  transport's 0.35s silence timeout alone, which fires mid-reply when synthesis stalls.
+  `MaxChunks = 2` makes that stall reachable.
+- Every TTS push is tagged with its context (`engine_tts.py`); the transport's untagged
+  rebuild of each chunk it played is recognised and ignored, and the thinking-sound bed
+  (untagged, pushed INTO the transport) is told from it by the processor that sighted
+  it first. The untagged legacy path is out of scope.
+
+The ledger, in the model's terms: turns open only on the TTS's own frames, never on
+`BotStartedSpeaking`; a turn claims the oldest expected context (the queue of ended
+responses), else the response streaming now; several turns may be open at once — a
+reply queued behind another at the transport; a turn's `audio_start` is its own chunk's
+place in the transport's queue, laid out from the window's start; a window closing
+credits every queued chunk as played and charts, oldest first, the turns whose audio has
+all played and whose synthesis is over; a context starting proves every OTHER open
+context ended, since the TTS drains one at a time; the drain re-push confirms a turn's
+response or corrects it; an interruption charts every open turn with its own played
+portion. The heard arithmetic is `test_ledger_playout.py`'s, on the real ledger.
+
+| row | property | LedgerPlayout |
+|---|---|---|
+| `lp_phantom` | `NoPhantomFullHeard` — a reply charted complete had every chunk PLAYED. Strict: `Ledger.tla`'s allowed "queued at the transport", the residual noted under its limits | ✓ |
+| `lp_unheard` | `NoUnheardWhenPlayed` | ✓ |
+| `lp_once` | `ChartedAtMostOnce` | ✓ |
+| `lp_wrongText` | `ChartedTextMatchesContext`, two replies | ✓ (365k states) |
+| `lp_premature` | `NoPrematureFullChart`, with stalls and timeouts | ✓ |
+| `lp_playedCharted` | `PlayedIsCharted` — **new**: audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
+| `lp_fillerSet` | `FillerCtxRemembered` | ✓ |
+| `lp_resume` | `NoPrematureFullChart` under `Resume` | ✗ (9) — below |
+
+`ledger_split`'s question is settled rather than carried: pipecat re-creates a timed-out
+context under the SAME id, so a reply is never split across two ids and the ledger's
+`_turn_for(ctx)` finds the same open turn. `ledger_untagged` has no row (out of scope,
+above). `AudioStartIsOwn` holds by construction — `audio_start` is computed from the
+turn's own chunk or not at all — and has no row.
+
+### What the model found
+
+Writing the drain step found a hole in the code as first written: the re-push for a
+response whose turn was ALREADY charted (closed on other evidence — a newer context, or
+the hermetic fallback) reassigned the newest open turn to that response. Fixed before
+the tests ran: a charted turn's re-push is a no-op, and only an UNCLAIMED response's drain
+corrects the newest turn (`_end_drained`).
+
+### Known limits of this model
+
+- **`lp_resume`.** A context drained on the stop-frame timeout with its LLM still
+  streaming, then a filler starting — which proves, to the ledger, that the context ended
+  — then the window closing: the reply is charted complete. If its audio then resumes
+  under the same id, the tail plays under an anonymous turn and is charted nowhere. Real,
+  and accepted: it needs a 15s engine stall mid-reply with the LLM still streaming and a
+  narrator line in the gap; `TTS_STOP_FRAME_TIMEOUT_S` is the knob.
+- **Numbers are out of scope**, as in `Ledger.tla`: the layout's seconds, `heard_fraction`,
+  the pts cut.
+- **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its
+  own) and the **hermetic fallback** (a ledger given no TTS: the first sighting counts,
+  there is no drain signal, and a turn is taken as complete once its response has ended)
+  are not modelled.
+- **Scale.** One reply and one filler is 3k states; two replies 365k and about two
+  minutes.
+
 ## Worth modeling next
 
-1. **The chained branch** (`ledger_split`, `:236`), and the unspeakable-reply residual
-   above — both want the ledger to know which response a TTS context belongs to, which
-   only the TTS service knows.
+1. **Spoken notices in `LedgerPlayout.tla`.** The two `TTSSpeakFrame` call sites that
+   still default to `append_to_context=True` (`llm_error_speaker.py:81`,
+   `agent_session.py:401`) are now charted as utterances of their own; whether they
+   should be committed to the LLM context at all is `HeardContextCorrector`'s invariant,
+   not the ledger's — item 2.
 2. **`HeardContextCorrector`'s `_done`/`_mark` bounds** against ledger growth and
    `set_messages`. PR #13's `append_to_context=False` on the tool-ack line
    (`tools.py:737`) belongs here too: a turn the bot spoke that leaves no assistant

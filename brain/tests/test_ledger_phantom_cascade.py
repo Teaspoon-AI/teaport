@@ -30,7 +30,10 @@
 # fixes were in -- a filler's BotStopped closing a reply still awaiting its slow first
 # chunk (e), a single pending slot losing the older of two completed replies (f), and a
 # reply's late End frame re-queueing text a live turn had already spoken (g). Every
-# assertion states the behaviour the ledger should have; all seven failed at PR #13.
+# assertion states the behaviour the ledger should have. (The frame shapes are what
+# pipecat 1.7.0's TTS service and output transport produce; test_ledger_playout.py
+# carries the same ledger through the production sightings -- the TTS's own, and the
+# post-drain re-push of a response's End frame -- which these hermetic scripts omit.)
 #
 # Run: python test_ledger_phantom_cascade.py
 #
@@ -232,7 +235,11 @@ async def test_e_a_fillers_bot_stopped_does_not_close_a_reply_still_awaiting_its
 async def test_f_two_completions_before_any_tts_are_spoken_in_order_under_their_own_text():
     """Two replies complete before the first's TTS begins (text plus a tool call, a
     fast tool, a slow first chunk). A single pending slot kept only the newer text,
-    and the first reply's context then claimed it. Each context gets its own."""
+    and the first reply's context then claimed it. Each context gets its own: the
+    first is charted cut under ITS words, and when the barge-in makes the TTS drop
+    the queued second (its flush) and the LLM re-runs it, the re-run's context is
+    charted complete under the second's. (This used to script R2's playout after
+    the cut with no re-run and then check only R1 -- R2 was charted nowhere.)"""
     L = await feed_into(TranscriptLedger(), [
         (LLMFullResponseStartFrame(), 0.0),
         (LLMTextFrame(R1), 0.1),
@@ -244,16 +251,19 @@ async def test_f_two_completions_before_any_tts_are_spoken_in_order_under_their_
         (audio(2.0, "R1"), 0.6),
         (TTSStoppedFrame(context_id="R1"), 0.65),           # synthesized in full: 2.0s is the length
         (BotStartedSpeakingFrame(), 0.7),
-        (InterruptionFrame(), 1.7),                         # cut R1 half way
-        (TTSStartedFrame(context_id="R2"), 2.0),            # (pipecat re-runs; R2 is spoken later)
-        (audio(1.0, "R2"), 2.0),
+        (InterruptionFrame(), 1.7),                         # cut R1 half way; R2's context is flushed
+        (LLMFullResponseStartFrame(), 1.8),                 # the LLM re-runs R2...
+        (LLMTextFrame(R2), 1.85),
+        (LLMFullResponseEndFrame(), 1.9),
+        (TTSStartedFrame(context_id="R2b"), 2.0),           # ...and it is spoken under a new context
+        (audio(1.0, "R2b"), 2.0),
         (BotStartedSpeakingFrame(), 2.1),
         (BotStoppedSpeakingFrame(), 3.2),
     ])
     utts = _bot(L)
-    assert [u.text for u in utts][:1] == [R1], (
-        f"R1's context was charted as {utts[0].text[:30]!r}" if utts else "R1 not charted")
+    assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
     assert utts[0].interrupted and 0.3 < utts[0].heard_fraction < 0.7, utts[0].heard_fraction
+    assert not utts[1].interrupted and utts[1].heard_fraction >= 0.99, utts[1].heard_fraction
 
 
 async def test_g_a_reply_played_out_before_its_end_frame_is_not_queued_for_the_next():

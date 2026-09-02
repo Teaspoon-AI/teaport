@@ -20,7 +20,8 @@ run() {  # run <module> <config> <expectation>
   out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -nowarning -workers auto \
           -config "$2.cfg" "$1" 2>&1)
   if grep -qi "no error has been found" <<<"$out"; then echo "holds"
-  else grep -oE "Invariant [A-Za-z]+ is violated" <<<"$out" | head -1; fi
+  elif grep -q "is violated" <<<"$out"; then grep -oE "Invariant [A-Za-z]+ is violated" <<<"$out" | head -1
+  else echo "ERROR (not a verdict): $(grep -m1 -E "Error|error|Exception" <<<"$out")"; fi
 }
 
 echo "Followup.tla — retiring the consult follow-up's one-shot trigger"
@@ -64,3 +65,14 @@ run Ledger.tla   ledgerfix_fillerSet "(expected: holds)"
 run Ledger.tla   ledgerfix_once      "(expected: holds)"
 run Ledger.tla   ledgerfix_wrongText "(expected: holds)"
 run Ledger.tla   ledgerfix_split     "(expected: FAILS — :236 still open)"
+echo
+echo "LedgerPlayout.tla — the playout design (transcript_ledger.py after the review): turns on"
+echo "  the TTS's frames only, the transport's queue laid out, the End frame's post-drain re-push"
+run LedgerPlayout.tla lp_phantom       "(expected: holds — strict: PLAYED, not queued)"
+run LedgerPlayout.tla lp_unheard       "(expected: holds)"
+run LedgerPlayout.tla lp_once          "(expected: holds)"
+run LedgerPlayout.tla lp_wrongText     "(expected: holds — two replies)"
+run LedgerPlayout.tla lp_premature     "(expected: holds — stalls, timeouts)"
+run LedgerPlayout.tla lp_playedCharted "(expected: holds — new)"
+run LedgerPlayout.tla lp_fillerSet     "(expected: holds)"
+run LedgerPlayout.tla lp_resume        "(expected: FAILS — a context resumed after a timeout)"

@@ -43,6 +43,8 @@
 (*                   opened for something else; the oldest unspoken response *)
 (*                   is preferred; an interruption drops both texts; the     *)
 (*                   filler set evicts its oldest entry.                     *)
+(* Both are rejected designs now: the review of PR #13 took windowHead      *)
+(* apart in turn, and the ledger as it stands is LedgerPlayout.tla.         *)
 (* The properties, the rows and their traces are in README.md.              *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences, FiniteSets

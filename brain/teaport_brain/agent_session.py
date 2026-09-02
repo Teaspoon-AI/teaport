@@ -494,7 +494,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         ),
     )
 
-    ledger = TranscriptLedger()
+    # The ledger reads the LLM stream at the TTS's sighting (the text the TTS is
+    # actually handed, after the guard) and tells the thinking bed's audio, pushed
+    # into the transport, from the transport's untagged copies of what it played.
+    ledger = TranscriptLedger(tts=tts, output=transport.output())
     heard_corrector = HeardContextCorrector(ledger, context)
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)

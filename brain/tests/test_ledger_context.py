@@ -36,10 +36,10 @@ import sys
 from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-
-# Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
-# sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
-import teaport_brain  # noqa: E402, F401
+# Refuse to run against the wrong pipecat (this also imports the package first, for
+# HF_HUB_OFFLINE) -- the frame shapes below are 1.7.0's.
+from pinned_pipecat import require_pinned  # noqa: E402
+require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
@@ -265,10 +265,14 @@ async def test_b_untagged_transport_copies_do_not_inflate_the_denominator():
 
 
 async def test_b_foreign_stop_frame_does_not_collapse_the_denominator():
-    """TTSStoppedFrame carries a context_id too: a foreign context's stop (the
-    filler's) says nothing about the reply, but used to set synth_done — full_dur
-    then collapsed to the samples synthesized so far and a barge-in a third of the
-    way in read as fully heard, so the unheard tail was never reconciled."""
+    """TTSStoppedFrame carries a context_id too: a stop naming a context that is
+    not the reply's says nothing about the reply, but used to set synth_done —
+    full_dur then collapsed to the samples synthesized so far and a barge-in a
+    third of the way in read as fully heard, so the unheard tail was never
+    reconciled. (The stray stop stands alone on purpose: this used to pair it with
+    a filler's STARTED frame mid-reply, which is a shape the TTS cannot produce —
+    it drains one context at a time, so a context starting proves the reply's
+    synthesis is over, and the ledger now takes it as such; see _context_started.)"""
     L = await feed([
         (LLMFullResponseStartFrame(), 0.0),
         (LLMTextFrame(REPLY), 0.1),             # 9 words -> text_dur ~3.24s
@@ -278,8 +282,7 @@ async def test_b_foreign_stop_frame_does_not_collapse_the_denominator():
         (BotStartedSpeakingFrame(), 1.1),
         (word("I ", 1.2, "R"), 1.05), (word("have ", 1.5, "R"), 1.05),
         (word("queued ", 1.8, "R"), 1.05),
-        (filler_started("F"), 1.9),
-        (TTSStoppedFrame(context_id="F"), 2.0),  # the filler's stop, mid-reply
+        (TTSStoppedFrame(context_id="F"), 2.0),  # a stop the reply's context never saw
         (InterruptionFrame(), 2.1),
     ])
     u = _bot_utterances(L)[0]
