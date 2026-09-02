@@ -8,7 +8,7 @@
 # The shape: a reply is barged over during synthesis. The ledger charts it cut (heard 0),
 # correctly. But nothing resets what it holds -- InterruptionFrame only calls _finish_bot,
 # and the cancelled completion's finally (pipecat 1.7.0 base_llm.py:571-573) then pushes
-# LLMFullResponseEndFrame with the partial text, which re-arms _pending_gen. The next
+# LLMFullResponseEndFrame with the partial text, which re-arms the pending text. The next
 # filler to play (a tool ack, a narrator line) comes back from the output transport as an
 # UNTAGGED TTSAudioRawFrame (base_output rebuilds audio without its context_id), which
 # _is_filler cannot recognise, and _ensure_bot opens a turn on the cut reply's text.
@@ -25,8 +25,12 @@
 #      generation, so a reply whose TTS starts after the NEXT completion has begun
 #      streaming is charted under the next completion's text.
 #
-# Every assertion states the behaviour the ledger SHOULD have. As of PR #13 all three
-# fail; this file is red until the ledger is fixed.
+# Cases d-g were added while fixing: the PR's own filler-only shape WITH the untagged
+# copy it omits (d), and three more paths brain/formal/Ledger.tla found once the first
+# fixes were in -- a filler's BotStopped closing a reply still awaiting its slow first
+# chunk (e), a single pending slot losing the older of two completed replies (f), and a
+# reply's late End frame re-queueing text a live turn had already spoken (g). Every
+# assertion states the behaviour the ledger should have; all seven failed at PR #13.
 #
 # Run: python test_ledger_phantom_cascade.py
 #
@@ -167,6 +171,115 @@ async def test_c_reply_started_after_the_next_completion_streams_keeps_its_own_t
     cut = _bot(L)[0]
     assert cut.text == R1, (
         f"R1's playout was charted under the NEXT completion's text: {cut.text!r}")
+
+
+async def test_d_filler_window_with_its_untagged_copy_does_not_claim_a_pending_reply():
+    """test_b_filler_only_playout_never_becomes_a_turn, plus the frame it omits: the
+    transport's untagged rebuild of the filler's audio. A reply's text is pending
+    (its TTS delayed) while the narrator plays alone; that copy must not open a turn
+    on the pending text, and the delayed reply must still be charted, once, itself."""
+    L = await feed_into(TranscriptLedger(), [
+        (LLMFullResponseStartFrame(), 0.0),
+        (LLMTextFrame(R2), 0.1),
+        (LLMFullResponseEndFrame(), 0.2),                   # pending; the TTS is slow
+        (filler_started("F"), 0.5),
+        (audio(1.5, "F"), 0.5),
+        (BotStartedSpeakingFrame(), 0.6),
+        (audio(1.5, None), 0.7),                            # the transport's untagged copy
+        (TTSStoppedFrame(context_id="F"), 2.0),
+        (BotStoppedSpeakingFrame(), 2.2),
+        (TTSStartedFrame(context_id="R2"), 2.5),            # the delayed reply, own window
+        (audio(1.0, "R2"), 2.5),
+        (BotStartedSpeakingFrame(), 2.6),
+        (BotStoppedSpeakingFrame(), 3.7),
+    ])
+    utts = _bot(L)
+    assert len(utts) == 1 and utts[0].text == R2, (
+        f"{[(u.text[:20], round(u.t_start, 1)) for u in utts]} -- the filler's untagged "
+        "copy opened a turn on the pending reply")
+    assert utts[0].t_start >= 2.5 and utts[0].heard_fraction >= 0.99
+
+
+async def test_e_a_fillers_bot_stopped_does_not_close_a_reply_still_awaiting_its_audio():
+    """Found by the model once the other fixes were in: TTSStarted is pushed at
+    synthesis START, and when the first chunk is slow a filler queued just before it
+    plays out and closes its own window first. That BotStopped must not close the
+    reply's turn (it charted the reply complete with no audio, and the audio that
+    then arrived opened a second turn on the same text)."""
+    L = await feed_into(TranscriptLedger(), [
+        (LLMFullResponseStartFrame(), 0.0),
+        (LLMTextFrame(R1), 0.1),
+        (filler_started("F"), 0.3),
+        (audio(1.5, "F"), 0.3),
+        (TTSStoppedFrame(context_id="F"), 0.4),
+        (TTSStartedFrame(context_id="R1"), 0.5),            # synthesis starts...
+        (BotStartedSpeakingFrame(), 0.6),                   # ...the filler plays 0.6-2.1
+        (audio(1.5, None), 0.7),
+        (BotStoppedSpeakingFrame(), 2.1),                   # the FILLER's window closes
+        (LLMFullResponseEndFrame(), 2.2),
+        (audio(3.0, "R1"), 2.4),                            # ...the slow first chunk lands
+        (BotStartedSpeakingFrame(), 2.5),                   # the reply's own window
+        (InterruptionFrame(), 4.0),                         # cut half way through
+    ])
+    utts = _bot(L)
+    assert len(utts) == 1, (
+        f"{[(u.text[:20], u.interrupted, round(u.heard_fraction, 2)) for u in utts]} -- "
+        "the filler's BotStopped closed the reply's turn before its audio came")
+    assert utts[0].text == R1 and utts[0].interrupted
+    assert 0.3 < utts[0].heard_fraction < 0.7, utts[0].heard_fraction
+
+
+async def test_f_two_completions_before_any_tts_are_spoken_in_order_under_their_own_text():
+    """Two replies complete before the first's TTS begins (text plus a tool call, a
+    fast tool, a slow first chunk). A single pending slot kept only the newer text,
+    and the first reply's context then claimed it. Each context gets its own."""
+    L = await feed_into(TranscriptLedger(), [
+        (LLMFullResponseStartFrame(), 0.0),
+        (LLMTextFrame(R1), 0.1),
+        (LLMFullResponseEndFrame(), 0.2),
+        (LLMFullResponseStartFrame(), 0.3),
+        (LLMTextFrame(R2), 0.4),
+        (LLMFullResponseEndFrame(), 0.5),                   # both done; no TTS yet
+        (TTSStartedFrame(context_id="R1"), 0.6),
+        (audio(2.0, "R1"), 0.6),
+        (TTSStoppedFrame(context_id="R1"), 0.65),           # synthesized in full: 2.0s is the length
+        (BotStartedSpeakingFrame(), 0.7),
+        (InterruptionFrame(), 1.7),                         # cut R1 half way
+        (TTSStartedFrame(context_id="R2"), 2.0),            # (pipecat re-runs; R2 is spoken later)
+        (audio(1.0, "R2"), 2.0),
+        (BotStartedSpeakingFrame(), 2.1),
+        (BotStoppedSpeakingFrame(), 3.2),
+    ])
+    utts = _bot(L)
+    assert [u.text for u in utts][:1] == [R1], (
+        f"R1's context was charted as {utts[0].text[:30]!r}" if utts else "R1 not charted")
+    assert utts[0].interrupted and 0.3 < utts[0].heard_fraction < 0.7, utts[0].heard_fraction
+
+
+async def test_g_a_reply_played_out_before_its_end_frame_is_not_queued_for_the_next():
+    """A short reply's playout finishes before LLMFullResponseEnd arrives (the
+    generation stalls past the transport's silence timeout). Its turn is charted
+    from the live text; the End frame must not then queue the text as unspoken, or
+    the next reply's context takes it."""
+    L = await feed_into(TranscriptLedger(), [
+        (LLMFullResponseStartFrame(), 0.0),
+        (LLMTextFrame(R1), 0.1),
+        (TTSStartedFrame(context_id="R1"), 0.2),
+        (audio(1.0, "R1"), 0.2),
+        (TTSStoppedFrame(context_id="R1"), 0.25),
+        (BotStartedSpeakingFrame(), 0.3),
+        (BotStoppedSpeakingFrame(), 1.5),                   # played out, charted...
+        (LLMFullResponseEndFrame(), 2.0),                   # ...then the End arrives
+        (LLMFullResponseStartFrame(), 3.0),
+        (LLMTextFrame(R2), 3.1),
+        (TTSStartedFrame(context_id="R2"), 3.2),
+        (audio(1.0, "R2"), 3.2),
+        (BotStartedSpeakingFrame(), 3.3),
+        (InterruptionFrame(), 3.8),
+    ])
+    utts = _bot(L)
+    assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
+    assert not utts[0].interrupted and utts[1].interrupted
 
 
 def main():

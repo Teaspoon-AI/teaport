@@ -291,19 +291,22 @@ TTS service; playout lags it arbitrarily. A cancelled completion still ends: pip
 1.7.0 `base_llm.py:571-573` pushes `LLMFullResponseEndFrame` in a `finally`, after the
 `InterruptionFrame`, and the ledger takes the partial text as a new `_pending_gen`.
 
-It is the ledger AS WRITTEN at PR #13. There is no fix `MODE` yet, so every row fails —
-by design: the rows pin the counterexamples until the code changes.
+Two designs, selected by `MODE`. `asWritten` is the ledger at PR #13 and fails every
+property; its rows are kept failing, pinning the counterexamples. `windowHead` is the fix
+(below) and holds all but one.
 
-| row | property | review finding | steps |
-|---|---|---|---|
-| `ledger_phantom` | `NoPhantomFullHeard` — a reply charted complete had its audio played, or at least queued | `:267` the transport's untagged copy of a filler opens a phantom turn | 7 |
-| `ledger_ownStart` | `AudioStartIsOwn` — a ctx-tagged turn's `audio_start` is its own window's, never a filler's | `:310` `_last_started_filler` credits the filler's window to the reply | 8 |
-| `ledger_unheard` | `NoUnheardWhenPlayed` — a cut reply the transport played never charts with no `audio_start` | `:222` a reply chained into a filler's window gets no `audio_start` | 11 |
-| `ledger_untagged` | same, on the path with no `TTSStartedFrame` | `:222`, via `_ensure_bot` | 11 |
-| `ledger_split` | `NoPrematureFullChart` — a turn is never closed complete while the same reply is still synthesizing under another id | `:236` the chained branch charts the first half | 6 |
-| `ledger_fillerSet` | `FillerCtxRemembered` — a live filler context is in `_filler_ctxs` | `:220` the overflow guard `.clear()`s the live entry | 4 |
-| `ledger_once` | `ChartedAtMostOnce` — no response is charted twice | **new**, below | 9 |
-| `ledger_wrongText` | `ChartedTextMatchesContext` — a turn charted under a reply's context carries that reply's text | **new**, below; two replies | 6 |
+| row | property | review finding | asWritten | windowHead |
+|---|---|---|---|---|
+| `ledger_phantom` | `NoPhantomFullHeard` — a reply charted complete had its audio played, or at least queued | `:267` the transport's untagged copy of a filler opens a phantom turn | ✗ (7) | ✓ |
+| `ledger_ownStart` | `AudioStartIsOwn` — a ctx-tagged turn's `audio_start` is its own window's, never a filler's | `:310` `_last_started_filler` credits the filler's window to the reply | ✗ (8) | ✓ |
+| `ledger_unheard` | `NoUnheardWhenPlayed` — a cut reply the transport played never charts with no `audio_start` | `:222` a reply chained into a filler's window gets no `audio_start` | ✗ (11) | ✓ |
+| `ledger_untagged` | same, on the path with no `TTSStartedFrame` | `:222`, via `_ensure_bot` | ✗ (11) | ✓ |
+| `ledger_split` | `NoPrematureFullChart` — a turn is never closed complete while the same reply is still synthesizing under another id | `:236` the chained branch charts the first half | ✗ (6) | ✗ |
+| `ledger_fillerSet` | `FillerCtxRemembered` — a live filler context is in `_filler_ctxs` | `:220` the overflow guard `.clear()`s the live entry | ✗ (4) | ✓ |
+| `ledger_once` | `ChartedAtMostOnce` — no response is charted twice | **new**, below | ✗ (9) | ✓ |
+| `ledger_wrongText` | `ChartedTextMatchesContext` — a turn charted under a reply's context carries that reply's text | **new**, below; two replies | ✗ (6) | ✓ |
+
+(Steps are the `asWritten` counterexample lengths.)
 
 `ledger_phantom` is the shortest, and the one the new test misses. The answer is
 streaming while the ack plays; the ack's played chunk comes back from the transport
@@ -364,6 +367,46 @@ no assistant message for the answer at all, so the model has no record it answer
 Not barged, the wrong-text chart is inert, but `_pending_gen` is not consumed (`gen_seq`
 mismatch) and the next filler repeats the phantom.
 
+### What was changed
+
+`windowHead`, in `transcript_ledger.py`. The window the transport is playing is
+identified by the FIRST audio pushed since the previous window closed — the transport
+plays in push order and the ledger sees every push before the transport can open a
+window for it — and that head's filler-ness is decided at push time, while the filler's
+context is still in `_filler_ctxs`. From that:
+
+- `BotStartedSpeaking` opens a turn only in a window whose head is not a filler, and
+  stamps `audio_start` only on a turn whose own audio is in the window — as the window
+  start plus the seconds queued ahead of that audio (`queue_ahead`). A reply queued behind
+  a filler gets its real start; a reply whose `TTSStarted` beat the filler's window no
+  longer inherits the filler's.
+- An untagged audio frame — the transport's rebuild — never opens a turn inside a
+  filler's window. Every TTS-service push is tagged (`engine_tts.py` yields audio with
+  `context_id`), so nothing real is refused.
+- `BotStoppedSpeaking` closes only a turn whose audio was in that window. Found by the
+  model once the above was in: `TTSStarted` is pushed at synthesis start, and a slow
+  first chunk (Kokoro shares the GPU with STT) lets a filler queued just before it play
+  out and close its own window first — which charted the reply complete with no audio
+  and then charted it again. `test_e` in the regression file.
+- An interruption drops both the in-flight text and every queued reply: pipecat cancels
+  the completion (its End frame still comes, empty now) and flushes the TTS queue.
+- `_pending_gen` is a queue, oldest first, and a turn takes the front when it opens; the
+  in-flight text is used only with nothing queued. Two more paths the model found on the
+  way: a single slot lost the older text when two completions finished before the first's
+  TTS began (`test_f`), and a reply whose playout ends before its End frame arrives must
+  not have that End queue its text as unspoken (`_gen_claimed`, `test_g`).
+- `_filler_ctxs` evicts its oldest entry on overflow instead of clearing.
+
+`brain/tests/test_ledger_phantom_cascade.py` is the model's counterexamples as a script,
+seven cases; `test_ledger_context.py` still passes, with one timeline corrected:
+`test_b_filler_opening_first_does_not_steal_the_reply` scheduled a reply's words inside
+the filler's playout and asserted a heard fraction that counted the filler's seconds as
+the reply's — the `:310` credit written down as an expectation.
+
+Two environment facts were added to the model for the fix to be checkable, both
+pipecat's: the TTS service starts contexts in the order responses reached it, and an
+interruption drops a completed reply whose synthesis has not begun.
+
 ### What did not reproduce
 
 `:208` (the flag latches, so a later reply's `BotStartedSpeaking` is skipped) has no
@@ -381,9 +424,15 @@ the window was opened by the filler. That review item folds into `:222`.
 - **Words are not modelled.** `TTSTextFrame`s only add `spoken` entries and never open or
   close a turn on a path audio does not; they are omitted. `heard_text`'s pts cut is
   numeric anyway.
-- **Synthesis is sequential.** One context is between `TTSStarted` and `TTSStopped` at a
-  time, which is the TTS service's behaviour; playout is free to lag. A stop frame is
-  dropped only by an interruption; the audio-context timeout path is not modelled.
+- **Synthesis is sequential, and in response order.** One context is between
+  `TTSStarted` and `TTSStopped` at a time, a reply's context cannot start while an
+  earlier live reply's has not, and an interruption drops a completed reply whose
+  synthesis has not begun — all the TTS service's behaviour; playout is free to lag. A
+  stop frame is dropped only by an interruption; the audio-context timeout path is not
+  modelled. **Not modelled either: a completed reply with nothing speakable**, whose
+  context never starts. Its text would sit at the front of the queue and the next reply's
+  context would take it — the residual `windowHead` cannot close, because the ledger
+  cannot see which response a context belongs to.
 - **`Split` is an assumption the cfg selects**, as the gateway ordering is in
   `SipCall.tla`. The PR's comment says a re-created context keeps its id; pipecat pins
   that only while `context_id == _turn_context_id`, which `TTSSpeakFrame` nulls. The model
@@ -391,18 +440,17 @@ the window was opened by the filler. That review item folds into `:222`.
 - **`NoPhantomFullHeard` allows "queued".** The chained branch charts a turn complete
   while its tail may still be at the transport; a barge-in that flushes it is then
   misrecorded as heard. Residual, and pre-existing.
-- **No fix `MODE`.** Every row fails as written. The filler bookkeeping wants "which
-  context is playing" rather than a boolean set by the last started frame, and the
-  untagged transport copy wants attributing by what the transport is playing; both are
-  design decisions the model can check but should not make.
+- **`ledger_split` is still open under `windowHead`.** The chained branch charts the
+  first half of a reply re-created under a second context id; the fix did not touch it
+  (`:236`), and whether the case arises depends on the `Split` assumption above.
 - **Scale.** One reply and one filler is a few hundred states; two of each is 2.2M states
   and a minute. The rows use the small instance; the bugs need nothing larger.
 
 ## Worth modeling next
 
-1. **A fix `MODE` for `Ledger.tla`.** Every row fails as written; the first design that
-   makes `ledger_phantom`, `ledger_ownStart` and `ledger_unheard` hold together is the
-   one to build.
+1. **The chained branch** (`ledger_split`, `:236`), and the unspeakable-reply residual
+   above — both want the ledger to know which response a TTS context belongs to, which
+   only the TTS service knows.
 2. **`HeardContextCorrector`'s `_done`/`_mark` bounds** against ledger growth and
    `set_messages`. PR #13's `append_to_context=False` on the tool-ack line
    (`tools.py:737`) belongs here too: a turn the bot spoke that leaves no assistant

@@ -203,6 +203,12 @@ async def test_b_filler_opening_first_does_not_steal_the_reply():
     filler's context owned the turn, every reply frame was rejected as foreign,
     and the same barge-in reported heard_fraction 1.00 with the FULL reply as
     heard — the exact bug class the ledger exists to prevent, mirrored."""
+    # The transport plays in push order: the filler's 1.5s (pushed at 0.3) fills
+    # 0.9-2.4 of the window that opens at 0.9, and the reply's audio (pushed at 0.8,
+    # queued behind it) plays 2.4-5.4 — so its words are scheduled from 2.5 and the
+    # mid-reply barge-in is at 3.9. (This used to schedule the words from 1.0 and
+    # barge at 2.4, and asserted a heard fraction that counted the FILLER's seconds
+    # as the reply's — the credit the ledger's audio_start now refuses to give.)
     L = await feed([
         (LLMFullResponseStartFrame(), 0.0),
         (LLMTextFrame(REPLY), 0.1),
@@ -211,12 +217,12 @@ async def test_b_filler_opening_first_does_not_steal_the_reply():
         (word("Still ", 0.4, "F"), 0.35), (word("working ", 0.6, "F"), 0.35),
         (TTSStartedFrame(context_id="R"), 0.8),
         (audio(3.0, "R"), 0.8),
-        (BotStartedSpeakingFrame(), 0.9),
-        (word("I ", 1.0, "R"), 0.85), (word("have ", 1.2, "R"), 0.85),
-        (word("queued ", 1.5, "R"), 0.85), (word("the ", 1.8, "R"), 0.85),
-        (word("request; ", 2.1, "R"), 0.85),
+        (BotStartedSpeakingFrame(), 0.9),     # the FILLER's playout begins
+        (word("I ", 2.5, "R"), 0.85), (word("have ", 2.7, "R"), 0.85),
+        (word("queued ", 3.0, "R"), 0.85), (word("the ", 3.3, "R"), 0.85),
+        (word("request; ", 3.6, "R"), 0.85),
         (LLMFullResponseEndFrame(), 1.0),
-        (InterruptionFrame(), 2.4),           # barge-in ~half way into the reply
+        (InterruptionFrame(), 3.9),           # barge-in ~half way into the reply
     ])
     u = _bot_utterances(L)[0]
     assert u.text == REPLY, u.text
