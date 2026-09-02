@@ -570,6 +570,30 @@ async def test_a_leaked_reserved_token_never_reaches_speech_or_history():
                           "What would you like to do next?")
 
 
+async def test_a_token_split_across_deltas_is_still_stripped():
+    # Nothing guarantees a provider's chunking: the opener can arrive on one delta and
+    # the rest on the next. The partial is held back like a fold run and stripped whole.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("I like<|")
+    await h.text("reserved_200097|> teal.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "I like teal.", repr(h.spoken())
+    # An opener still open at the End is junk, not speech.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("I like teal. <|reserved_2000")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken().strip() == "I like teal.", repr(h.spoken())
+    # "<" with a space after it is prose, and still flows.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("use a <")
+    await h.text(" or a | here.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "use a < or a | here.", repr(h.spoken())
+
+
 async def test_a_token_glued_to_words_in_one_delta_is_stripped_in_place():
     # When the token shares a delta with real text, only the token is removed and the
     # surrounding words are spoken normally.

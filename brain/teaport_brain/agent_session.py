@@ -47,6 +47,7 @@ from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
     INTERRUPT_MIN_WORDS,
     SMARTTURN_COMPLETE_THRESHOLD,
+    SMARTTURN_STOP_SECS,
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
     EagerSmartTurnAnalyzer,
@@ -398,8 +399,11 @@ class AgentSession:
                 + "speaking the warning and ending this session instead of greeting"
             )
             self.should_end = True
+            # append_to_context=False: the pipeline talking, not the model -- never
+            # an assistant message, and a marked filler for TranscriptLedger.
             await self.task.queue_frames([TTSSpeakFrame(
-                self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE)])
+                self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE,
+                append_to_context=False)])
             return
         self.context.add_message({"role": "user", "content": self._GREETING})
         await self.task.queue_frames([LLMRunFrame()])
@@ -486,7 +490,9 @@ def build_agent_session(transport, *, voice: str | None = None,
                     TurnAnalyzerUserTurnStopStrategy(
                         turn_analyzer=EagerSmartTurnAnalyzer(
                             complete_threshold=SMARTTURN_COMPLETE_THRESHOLD,
-                            params=SmartTurnParams(stop_secs=ENDPOINT_STOP_SECS),
+                            # The CEILING on an INCOMPLETE verdict, not the VAD's
+                            # floor -- see endpointing.py.
+                            params=SmartTurnParams(stop_secs=SMARTTURN_STOP_SECS),
                         )
                     )
                 ]

@@ -102,13 +102,20 @@ _DOT_RUN_LONG = re.compile(r"\.{4,}")
 # "<|return|>", "<|constrain|>", and the reserved block "<|reserved_NNNNNN|>". The
 # provider is meant to consume these while parsing the stream; intermittently one leaks
 # into the CONTENT as literal text. Live 2026-09-02: a reply carried "<|reserved_200097|>"
-# -- the TTS spent 4.2s trying to pronounce it and it was charted as the assistant's own
-# words. It carries no dots/ellipsis, so the degeneracy counter is blind to it and it
-# needs its own strip. A special token is a SINGLE vocabulary token, so the provider
-# emits it atomically in one delta (the live capture arrived whole in one LLMTextFrame) --
-# hence NO cross-delta holdback, unlike the "*"/dot fold runs, which genuinely split. The
-# body is bounded so a stray "<|" in ordinary prose cannot anchor a runaway match.
+# -- the TTS spent 4.2s trying to pronounce it, and the ledger, which then read the
+# stream above this guard, charted it as the assistant's own words (it now reads the
+# stream at the TTS, so what is stripped here reaches neither speech nor the transcript).
+# It carries no dots/ellipsis, so the degeneracy counter is blind to it and it needs its
+# own strip. A special token is a SINGLE vocabulary token, and the live capture arrived
+# whole in one delta -- but nothing guarantees a provider's chunking, so a trailing
+# partial opener ("<|", "<|reserved_2000") is held back to the next delta like the fold
+# runs are (_TOKEN_HOLDBACK), and one still open at the End is dropped as junk. The body
+# is bounded so a stray "<|" in ordinary prose cannot anchor a runaway match.
 _SPECIAL_TOKEN = re.compile(r"<\|[A-Za-z0-9_]{0,64}\|>")
+# A delta's tail that could be the start of a special token: "<", "<|", "<|reserved_2".
+# Held back until the next delta says what it was; "a < b" has a space after the "<"
+# and is not matched.
+_TOKEN_HOLDBACK = re.compile(r"<\|?[A-Za-z0-9_]{0,64}\|?$")
 
 # The folds above are per-delta, and the stream splits wherever it likes: "**" arriving as
 # "*" + "*", or "\u2026" + "\u2026", or ".." + "..", passed through untouched while the same text in
@@ -243,7 +250,8 @@ def fold_degenerate_chars(text: str) -> str:
     """Strip leaked Harmony special tokens, fold the unspeakable family to plain
     equivalents, and collapse ellipsis runs. Called on every delta and on the
     End-flush of the fold holdback, so the strip covers both paths in one place."""
-    text = _SPECIAL_TOKEN.sub("", text)
+    if "<|" in text:
+        text = _SPECIAL_TOKEN.sub("", text)
     text = fold_unspeakable(text)
     text = _ELLIPSIS_RUN.sub("\u2026 ", text)
     text = _DOT_RUN_LONG.sub("...", text)
@@ -321,6 +329,11 @@ class LLMTextGuard(FrameProcessor):
         if m and len(m.group(0)) <= _MAX_HOLDBACK:
             self._pending = m.group(0)
             text = text[:m.start()]
+        elif "<" in text:
+            m = _TOKEN_HOLDBACK.search(text)
+            if m:
+                self._pending = m.group(0)
+                text = text[:m.start()]
         return fold_degenerate_chars(text) if text else ""
 
     async def _flush_held(self, direction: FrameDirection, keep_tail: int = 0):
@@ -460,11 +473,11 @@ class LLMTextGuard(FrameProcessor):
                 # frame, which opens the phantom caption slot the strip exists to stop.
                 await self._emit(RECOVERY_TEXT, direction)
                 return
-            if _SPECIAL_TOKEN.search(frame.text):
+            leaked = _SPECIAL_TOKEN.findall(frame.text) if "<|" in frame.text else ()
+            if leaked:
                 logger.warning(
-                    f"LLMTextGuard: stripping leaked Harmony control token(s) "
-                    f"{_SPECIAL_TOKEN.findall(frame.text)} from the reply "
-                    f"(gpt-oss emitted a special token into content)"
+                    f"LLMTextGuard: stripping leaked Harmony control token(s) {leaked} "
+                    f"from the reply (gpt-oss emitted a special token into content)"
                 )
             emitted = self._fold_streaming(frame.text)
             # If the folder held a tail back, remember which frame it came from: the
@@ -494,7 +507,9 @@ class LLMTextGuard(FrameProcessor):
                 if self._pending:
                     tail, self._pending = self._pending, ""
                     held, self._pending_frame = self._pending_frame, None
-                    folded = fold_degenerate_chars(tail)
+                    # A special-token opener still open at the End was never going
+                    # to close: junk, not speech.
+                    folded = fold_degenerate_chars(_TOKEN_HOLDBACK.sub("", tail))
                     if folded:
                         self._held.append((held, folded))
                         self._open_sent += folded

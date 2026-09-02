@@ -327,32 +327,60 @@ def _consult_outcome(result):
     return (consult_bridge.extract_text(result) or None), None
 
 
-# How long after each countdown the narrator will wait for a conversational gap
+# How long past each line's moment the narrator will wait for a conversational gap
 # before giving up on that line. Short: a status update is worth saying in a lull,
-# never worth cutting in for — the answer itself arrives as the follow-up regardless.
+# never worth cutting in for -- the answer itself arrives as the follow-up regardless.
 _PROGRESS_GAP_WAIT = 6.0
-# The countdown before each line. Named so tests can shorten it.
-_PROGRESS_SCHEDULE = (9.0, 13.0)
-# Cap on how much of the user's own request the topic echo repeats.
+# WHEN each line is due, in seconds from the start of the consult. Wall-clock
+# instants, not countdowns between lines: a gap wait for one line counts against the
+# next line's moment instead of pushing it out, so a conversation with no gaps (every
+# line skipped) still ends the narration on time rather than 2 x 6s late. Named so
+# tests can shorten it.
+_PROGRESS_SCHEDULE = (9.0, 22.0)
+# Caps on the topic echo: words, and characters (a request is often one long line).
 _PROGRESS_TOPIC_WORDS = 9
+_PROGRESS_TOPIC_CHARS = 60
+# A cut must not leave the echo hanging on a function word ("...pastry shop in.").
+_PROGRESS_TOPIC_TRAILING = frozenset(
+    "a an the in on at of to for with and or but by from near into onto about that this "
+    "these those my your our their its is are was were be if as than then".split())
 
 
 def _topic_phrase(request):
-    """A short echo of what the user actually asked, for the progress line. Their own
-    words, capped — never a paraphrase, so it can't invent a topic the way an LLM
-    round-trip could (the whole async path exists because ungrounded model text
-    fabricated answers live)."""
-    words = (request or "").strip().split()
-    if not words:
+    """A short echo of the request, for the progress line: its opening phrase, cut at
+    the first clause boundary or the caps, and never left hanging on a function word.
+
+    It is the MODEL's restatement of what the user asked -- ask_openclaw's `request`
+    argument, which the tool schema asks for as "the full request, self-contained" --
+    not the user's transcript, so it can misname the topic the way any paraphrase can.
+    But it is the same text the agent is answering, which is what a status line should
+    name. Anything that is not prose (a URL, JSON, code) yields "" and the generic
+    line is used instead: nine tokens of that read aloud is worse than "still working
+    on it"."""
+    text = " ".join((request or "").split())
+    if not text or "://" in text or any(c in text for c in "{}[]<>=`"):
         return ""
-    return " ".join(words[:_PROGRESS_TOPIC_WORDS]).rstrip(" .,:;!?—-")
+    words = []
+    for w in text.split():
+        words.append(w)
+        if len(" ".join(words)) > _PROGRESS_TOPIC_CHARS:
+            words.pop()
+            break
+        if w[-1] in ",;:.!?" and len(words) >= 3:  # a clause ended: the natural cut
+            break
+        if len(words) >= _PROGRESS_TOPIC_WORDS:
+            break
+    while words and words[-1].rstrip(".,:;!?").lower() in _PROGRESS_TOPIC_TRAILING:
+        words.pop()
+    phrase = " ".join(words).rstrip(" .,:;!?\u2014-")
+    return phrase if any(c.isalpha() for c in phrase) else ""
 
 
 def _progress_line(request, n):
     """The nth (0-based) progress line, naming the topic when the request gives one.
-    'that <topic>' keeps it grounded in what they asked, so a status update heard a
-    minute later still has a referent — the confusion was 'still working on it'
-    landing after unrelated turns with no 'it' in sight."""
+    'that <topic>' keeps it tied to the request, so a status update heard a minute
+    later still has a referent — the confusion was 'still working on it' landing
+    after unrelated turns with no 'it' in sight."""
     topic = _topic_phrase(request)
     # The topic rides as a dash appositive after a complete clause, never inside a
     # grammatical slot: the request is often a verb phrase ("find good pastry shops"),
@@ -368,14 +396,16 @@ async def _consult_progress(llm, request=None, gate=None):
     ~2s but the CLI consult takes 15-30s, and dead air reads as a hang.
 
     Two things make it read like a person rather than a countdown clock. It NAMES
-    what it's working on (the user's own words — see _progress_line), so a late line
-    still has a referent. And when a `gate` is given it waits for a conversational
-    gap before speaking, up to _PROGRESS_GAP_WAIT: if the user is mid-conversation it
-    stays quiet and skips that line rather than talking over them — under- is better
-    than over-communicating here, because the answer lands as the follow-up either
-    way. That means a conversation with no gap at all hears NO lines (every session
-    built by build_agent_session, SIP included, passes a gate); only a caller that
-    passes gate=None keeps the unconditional countdown.
+    what it's working on (the request's opening phrase — see _topic_phrase), so a
+    late line still has a referent. And when a `gate` is given it waits for a
+    conversational gap before speaking, up to _PROGRESS_GAP_WAIT past the line's
+    moment: if the user is mid-conversation it stays quiet and skips that line rather
+    than talking over them — under- is better than over-communicating here, because
+    the answer lands as the follow-up either way. That means a conversation with no
+    gap at all hears NO lines (every session built by build_agent_session, SIP
+    included, passes a gate); only a caller that passes gate=None keeps the
+    unconditional schedule. The lines are due at wall-clock instants from the
+    consult's start (_PROGRESS_SCHEDULE), so a gap wait never delays the next line.
 
     The graceful COMPLETION ('...and by the way, that's done, reattached to what you
     asked') is not here: it is the follow-up injector, which the LLM writes grounded
@@ -387,8 +417,9 @@ async def _consult_progress(llm, request=None, gate=None):
         return
     llm._teaport_progress_active = True
     try:
-        for n, delay in enumerate(_PROGRESS_SCHEDULE):
-            await asyncio.sleep(delay)
+        t0 = time.monotonic()
+        for n, due in enumerate(_PROGRESS_SCHEDULE):
+            await asyncio.sleep(max(0.0, t0 + due - time.monotonic()))
             # Fit it into a lull the way a person waits for a gap. wait_until_idle
             # returns False if no gap opened within the window — then skip this line
             # rather than force it over whoever is talking.

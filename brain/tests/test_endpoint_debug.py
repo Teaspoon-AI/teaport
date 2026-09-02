@@ -22,10 +22,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
-# sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
-import teaport_brain  # noqa: E402, F401
-import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong pipecat
+# Refuse to run against the wrong pipecat (a bare `import pinned_pipecat` checked
+# nothing: require_pinned() has to be CALLED). It imports the package first, for
+# HF_HUB_OFFLINE.
+from pinned_pipecat import require_pinned  # noqa: E402
+require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,

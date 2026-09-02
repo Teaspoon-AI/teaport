@@ -102,6 +102,11 @@ async def _bubble(proc: FrameProcessor, text: str) -> None:
     )
 
 
+def _withheld(shown: bool) -> str:
+    """The journal line's note when the chip it accompanies was withheld."""
+    return "" if shown else " (chip withheld: bot speaking)"
+
+
 class EndpointDebug(FrameProcessor):
     """Per-session timing taps. Instantiate two, sharing one dict:
     stage="in" (after transport.input) watches VAD/turn/metrics + emits the
@@ -166,7 +171,7 @@ class EndpointDebug(FrameProcessor):
                 dur = f" (utterance {(t - ss) * 1000:.0f}ms)" if ss else ""
                 shown = await self._chip("🎙️ VAD: speech stopped")
                 logger.info(f"[EP] VAD-STOP{dur}"
-                            + ("" if shown else " (chip withheld: bot speaking)"))
+                            + _withheld(shown))
             elif isinstance(frame, UserStoppedSpeakingFrame):
                 m["commit"] = t
                 vs = m.get("vad_stop")
@@ -177,7 +182,7 @@ class EndpointDebug(FrameProcessor):
                 # belong to a previous turn. The verdict has its own line above.
                 shown = await self._chip(f"⏱️ turn committed {tail}")
                 logger.info(f"[EP] TURN-COMMIT {tail}"
-                            + ("" if shown else " (chip withheld: bot speaking)"))
+                            + _withheld(shown))
         else:  # "out"
             if isinstance(frame, TTSAudioRawFrame) and not m.get("audio_done"):
                 m["audio_done"] = True
@@ -189,5 +194,5 @@ class EndpointDebug(FrameProcessor):
                     shown = await self._chip(
                         f"🔊 first audio +{(t - c) * 1000:.0f}ms after turn commit")
                     logger.info(f"[EP] FIRST-AUDIO +{(t - c) * 1000:.0f}ms after commit"
-                                + ("" if shown else " (chip withheld: bot speaking)"))
+                                + _withheld(shown))
         await self.push_frame(frame, direction)

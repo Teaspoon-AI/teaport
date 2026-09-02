@@ -20,6 +20,7 @@
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -124,13 +125,65 @@ class _Recorder:
 
 
 async def test_the_progress_line_names_the_user_request():
-    # Their own words, so a late line still has a referent — not a paraphrase.
+    # The request's own opening phrase, so a late line still has a referent.
     line = tools._progress_line("Find good pastry shops on Burnet Road in Austin", 0)
     assert "pastry shops on Burnet Road" in line, line
     assert line.startswith("Still working on that"), line
     # An empty request falls back to the generic line rather than a dangling "that —".
     assert tools._progress_line("", 0) == "Still working on it."
     assert "—" not in tools._progress_line("   ", 0)
+
+
+async def test_the_topic_echo_cuts_at_a_boundary_and_skips_non_prose():
+    """A fixed nine-word slice landed on a determiner ("...pastry shop in.") and had
+    no character cap, so a URL or a JSON argument -- one token, however long -- was
+    read aloud in full. The cut is at a clause boundary or the caps, never on a
+    function word, and anything that is not prose yields the generic line."""
+    T = tools._topic_phrase
+    assert T("find me a really good pastry shop in the old town") == "find me a really good pastry shop"
+    assert T("Find good pastry shops on Burnet Road, and check their hours") == \
+        "Find good pastry shops on Burnet Road"
+    assert T('{"task":"summarize","url":"https://news.example.com/x","depth":3}') == ""
+    assert T("summarize https://news.example.com/2026/09/02/a-really-long-slug-here") == ""
+    long = "compare " + " ".join(["antidisestablishmentarianism"] * 6)
+    assert 0 < len(T(long)) <= tools._PROGRESS_TOPIC_CHARS, T(long)
+    assert tools._progress_line('{"task": 1}', 0) == "Still working on it."
+
+
+class _Timed(_Recorder):
+    def __init__(self):
+        super().__init__()
+        self.at = []
+
+    async def push_frame(self, frame):
+        await super().push_frame(frame)
+        self.at.append(time.monotonic())
+
+
+async def test_the_schedule_is_wall_clock_so_a_gap_wait_does_not_push_the_next_line():
+    """_PROGRESS_SCHEDULE names the instants the lines are due, from the consult's
+    start. Sleeping the schedule's entries one after another, each AFTER the previous
+    line's gap wait, stacked every wait onto the next line: two 6s waits made a
+    22s schedule a 34s one. Here the gate takes 0.3s to find a gap and the second
+    line is due at 0.4s: it must fire at ~0.7s (its moment, then its own wait), not
+    at 1.0s (the first line's wait, then 0.4s more, then its own)."""
+    class SlowGate:
+        async def wait_until_idle(self, max_wait=None):
+            await asyncio.sleep(0.3)
+            return True
+    saved = (tools._PROGRESS_SCHEDULE, tools._PROGRESS_GAP_WAIT)
+    tools._PROGRESS_SCHEDULE, tools._PROGRESS_GAP_WAIT = (0.0, 0.4), 1.0
+    llm = _Timed()
+    llm._teaport_progress_active = False
+    t0 = time.monotonic()
+    try:
+        await tools._consult_progress(llm, request="anything", gate=SlowGate())
+    finally:
+        tools._PROGRESS_SCHEDULE, tools._PROGRESS_GAP_WAIT = saved
+    assert len(llm.said) == 2, llm.said
+    first, second = (t - t0 for t in llm.at)
+    assert 0.25 < first < 0.5, first
+    assert second < 0.85, f"the second line fired at {second:.2f}s: the gap wait stacked"
 
 
 async def _drive_progress(gap):

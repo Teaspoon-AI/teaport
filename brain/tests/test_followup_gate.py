@@ -22,13 +22,15 @@
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-# Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
-# sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
-import teaport_brain  # noqa: E402, F401
-import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong pipecat
+# Refuse to run against the wrong pipecat (a bare `import pinned_pipecat` checked
+# nothing: require_pinned() has to be CALLED). It imports the package first, for
+# HF_HUB_OFFLINE.
+from pinned_pipecat import require_pinned  # noqa: E402
+require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
     FunctionCallInProgressFrame,
@@ -41,9 +43,9 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 from teaport_brain.followup_gate import FollowupGate  # noqa: E402
 
 
-def _gate():
+def _gate(quiet_secs=0.01):
     """A FollowupGate with push_frame stubbed out (no pipeline downstream)."""
-    gate = FollowupGate(quiet_secs=0.01)
+    gate = FollowupGate(quiet_secs=quiet_secs)
 
     async def fake_push(frame, direction=FrameDirection.DOWNSTREAM):
         pass
@@ -101,6 +103,38 @@ async def test_an_interruption_releases_the_latch():
     await _feed(gate, LLMFullResponseStartFrame(), InterruptionFrame())
     assert await gate.wait_until_idle(max_wait=0.5), (
         "gate still busy after an interruption — the _llm latch is stuck")
+
+
+# --- the budget: one deadline for the whole call ---
+
+async def test_max_wait_bounds_the_whole_call_not_just_the_idle_wait():
+    """The debounce sleep used to be bounded by a `remaining` computed BEFORE the
+    idle wait and reused after it, so a call could overrun max_wait by a whole
+    quiet window -- measured at 1.65s for max_wait=1.0 with the real 0.7s window.
+    With 0.25s of budget and idle arriving at 0.15s, only 0.1s remains: less than
+    the window, so the answer is False, and it is given by the deadline."""
+    gate = _gate(quiet_secs=0.3)
+    await _feed(gate, LLMFullResponseStartFrame())          # busy
+
+    async def release():
+        await asyncio.sleep(0.15)
+        await _feed(gate, LLMFullResponseEndFrame())
+    task = asyncio.create_task(release())
+    t0 = time.monotonic()
+    ok = await gate.wait_until_idle(max_wait=0.25)
+    dt = time.monotonic() - t0
+    await task
+    assert not ok, "a debounce cut to a fraction of the quiet window was reported as a window"
+    assert dt < 0.3, f"wait_until_idle overran max_wait=0.25 by {dt - 0.25:.2f}s"
+
+
+async def test_a_pause_shorter_than_the_quiet_window_is_not_a_window():
+    """Idle from the start, but with a budget smaller than the window: the old
+    code slept for the budget and returned True -- the narrator could then push
+    its line into a 0.1s pause between the user's words."""
+    gate = _gate(quiet_secs=0.3)
+    assert not await gate.wait_until_idle(max_wait=0.1)
+    assert await gate.wait_until_idle(max_wait=1.0)         # the same gate, given room
 
 
 def main():

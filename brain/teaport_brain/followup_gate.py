@@ -167,6 +167,12 @@ class FollowupGate(FrameProcessor):
             # function call starting means the completion is done producing speech
             # (any audio it did produce is tracked by _bot), and an interruption
             # kills the in-flight response by definition.
+            #
+            # The call's RESULT is deliberately not waited for. The agent-first
+            # consult runs synchronously inside the call for up to 45s, and that
+            # silence is the very gap the narrator exists to fill; the async tools
+            # return within a second. The residual is a follow-up turn queued in
+            # that second against a tool result still in progress -- accepted.
             self._llm = False
             self._refresh()
         await self.push_frame(frame, direction)
@@ -193,26 +199,39 @@ class FollowupGate(FrameProcessor):
         await self._idle.wait()
 
     async def wait_until_idle(self, max_wait: float | None = None) -> bool:
-        """Block until a debounced quiet window. Returns True at a genuine window,
-        False if it gave up at max_wait. `max_wait` overrides the instance default
-        for this call — the consult narrator passes a short one so it fits into a
-        gap or gives up quickly, where the follow-up injector wants the long default
-        so it never loses the answer. Cancellation propagates (session teardown)."""
+        """Block until a debounced quiet window. Returns True at a genuine window --
+        idle, and STILL idle a full quiet_secs later -- and False when max_wait ran
+        out first, including when the budget left could not hold a full quiet
+        window: a pause shorter than the debounce is exactly what the debounce
+        exists to reject, so it is never reported as a window. `max_wait` overrides
+        the instance default for this call -- the consult narrator passes a short
+        one so it fits into a gap or gives up quickly, where the follow-up injector
+        wants the long default and delivers on False regardless. Cancellation
+        propagates (session teardown).
+
+        The budget is measured against one deadline throughout. It used to be a
+        `remaining` computed BEFORE the idle wait and reused to bound the debounce
+        after it, so a call could overrun max_wait by a whole quiet window -- or,
+        with little budget left, sleep a fraction of the window and report a
+        mid-utterance pause as a clear moment."""
         max_wait = self._max_wait if max_wait is None else max_wait
-        start = time.monotonic()
+        deadline = time.monotonic() + max_wait
         while True:
-            remaining = max_wait - (time.monotonic() - start)
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.info("followup_gate: max wait reached; delivering anyway")
+                logger.info("followup_gate: max wait reached with no quiet window")
                 return False
             try:
                 await asyncio.wait_for(self._idle.wait(), timeout=remaining)
             except asyncio.TimeoutError:
-                logger.info("followup_gate: max wait reached; delivering anyway")
+                logger.info("followup_gate: max wait reached with no quiet window")
                 return False
-            # Idle right now — require it to STAY idle through the debounce so we
+            # Idle right now -- require it to STAY idle through the debounce so we
             # don't jump into a brief pause between the user's (or bot's) phrases.
-            await asyncio.sleep(min(self._quiet_secs, max(0.05, remaining)))
+            if deadline - time.monotonic() < self._quiet_secs:
+                logger.info("followup_gate: max wait reached before a full quiet window")
+                return False
+            await asyncio.sleep(self._quiet_secs)
             if self._idle.is_set():
                 return True
-            # Someone resumed during the debounce — wait for the next window.
+            # Someone resumed during the debounce -- wait for the next window.
