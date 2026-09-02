@@ -589,8 +589,20 @@ class TranscriptLedger(BaseObserver):
             # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
             # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
             cut_ns = (t - _PTS_LEAD_SECS) * 1e9
-            pts_heard = "".join(txt for txt, p in spoken
-                                if p is not None and p <= cut_ns).strip()
+            # Space-JOIN the matched word texts. The engine's per-word frames do not
+            # reliably carry inter-word spaces -- number/counting output arrives as
+            # "One,","two,",... with none -- so a bare "".join collapses them to a
+            # single whitespace-less token and len(...split()) reads 1 however many
+            # matched. That made the ">= est" guard below always reject the exact
+            # timing and fall back to the coarse fraction, so the EXACT heard boundary
+            # this path exists for went unused. Live 2026-09-02: a barge-in during
+            # "One..twenty" matched ~ten words, was counted as 1, and committed est=8
+            # while the user heard ~ten. Rejoin on single spaces so the count -- and
+            # the text -- reflect the words actually played.
+            pts_heard = " ".join(
+                (txt or "").strip()
+                for txt, p in spoken
+                if p is not None and p <= cut_ns and (txt or "").strip())
             # Prefer exact word-timing, but never report FEWER words than the
             # played-audio fraction implies — guards against a misaligned pts
             # baseline (which would silently drop words the user did hear).
