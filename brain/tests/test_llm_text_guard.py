@@ -534,6 +534,52 @@ def test_the_fold_matches_what_the_engine_rewrites():
         )
 
 
+# ------------------------------------------------ leaked Harmony special tokens
+
+def test_fold_degenerate_chars_strips_harmony_special_tokens():
+    # The pure helper drops any complete <|...|> span and keeps the real words.
+    assert fold_degenerate_chars("<|reserved_200097|>") == ""
+    assert fold_degenerate_chars("I'm now<|reserved_200097|> here") == "I'm now here"
+    for tok in ("<|start|>", "<|end|>", "<|channel|>", "<|message|>",
+                "<|constrain|>", "<|call|>", "<|return|>"):
+        assert fold_degenerate_chars("a%sb" % tok) == "ab", tok
+
+
+def test_the_special_token_strip_leaves_ordinary_text_untouched():
+    # No <|...|> present -> byte-for-byte the same fold as before the strip existed.
+    assert fold_degenerate_chars("The voice is af_heart.") == "The voice is af_heart."
+    # A lone "<|" or "|>" in prose is not a token and must survive.
+    assert fold_degenerate_chars("use a < or a | here") == "use a < or a | here"
+
+
+async def test_a_leaked_reserved_token_never_reaches_speech_or_history():
+    # The exact live shape (2026-09-02): gpt-oss streamed "<|reserved_200097|>" as its
+    # own delta, between real text. Before the strip it was spoken (4.2s of audio) and
+    # charted as the assistant's words; now it is dropped and the real words remain.
+    # spoken() is the guard's forwarded text -- with push_text_frames=False that IS what
+    # the TTS synthesizes and what the assistant aggregator commits to history.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("I'm now speaking English again. ")
+    await h.text("<|reserved_200097|>")            # the leaked control token, alone
+    await h.text("What would you like to do next?")
+    await h.feed(LLMFullResponseEndFrame())
+    assert "reserved_200097" not in h.spoken()
+    assert "<|" not in h.spoken() and "|>" not in h.spoken()
+    assert h.spoken() == ("I'm now speaking English again. "
+                          "What would you like to do next?")
+
+
+async def test_a_token_glued_to_words_in_one_delta_is_stripped_in_place():
+    # When the token shares a delta with real text, only the token is removed and the
+    # surrounding words are spoken normally.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("The voice is <|channel|>af_heart.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "The voice is af_heart."
+
+
 def main():
     sync = [v for k, v in sorted(globals().items())
             if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]

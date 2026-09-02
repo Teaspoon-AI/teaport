@@ -97,6 +97,19 @@ ENABLED = env_flag("TEAPORT_LLM_TEXT_GUARD", True)
 _ELLIPSIS_RUN = re.compile(r"(?:\u2026\s*){2,}")
 _DOT_RUN_LONG = re.compile(r"\.{4,}")
 
+# gpt-oss speaks the Harmony chat format, whose vocabulary carries CONTROL and RESERVED
+# special tokens -- "<|start|>", "<|channel|>", "<|message|>", "<|end|>", "<|call|>",
+# "<|return|>", "<|constrain|>", and the reserved block "<|reserved_NNNNNN|>". The
+# provider is meant to consume these while parsing the stream; intermittently one leaks
+# into the CONTENT as literal text. Live 2026-09-02: a reply carried "<|reserved_200097|>"
+# -- the TTS spent 4.2s trying to pronounce it and it was charted as the assistant's own
+# words. It carries no dots/ellipsis, so the degeneracy counter is blind to it and it
+# needs its own strip. A special token is a SINGLE vocabulary token, so the provider
+# emits it atomically in one delta (the live capture arrived whole in one LLMTextFrame) --
+# hence NO cross-delta holdback, unlike the "*"/dot fold runs, which genuinely split. The
+# body is bounded so a stray "<|" in ordinary prose cannot anchor a runaway match.
+_SPECIAL_TOKEN = re.compile(r"<\|[A-Za-z0-9_]{0,64}\|>")
+
 # The folds above are per-delta, and the stream splits wherever it likes: "**" arriving as
 # "*" + "*", or "\u2026" + "\u2026", or ".." + "..", passed through untouched while the same text in
 # ONE delta folded cleanly — guard output that depended on provider chunking, and markdown
@@ -227,7 +240,10 @@ class DegeneracyCounter:
 
 
 def fold_degenerate_chars(text: str) -> str:
-    """Fold the unspeakable family to plain equivalents; collapse ellipsis runs."""
+    """Strip leaked Harmony special tokens, fold the unspeakable family to plain
+    equivalents, and collapse ellipsis runs. Called on every delta and on the
+    End-flush of the fold holdback, so the strip covers both paths in one place."""
+    text = _SPECIAL_TOKEN.sub("", text)
     text = fold_unspeakable(text)
     text = _ELLIPSIS_RUN.sub("\u2026 ", text)
     text = _DOT_RUN_LONG.sub("...", text)
@@ -444,6 +460,12 @@ class LLMTextGuard(FrameProcessor):
                 # frame, which opens the phantom caption slot the strip exists to stop.
                 await self._emit(RECOVERY_TEXT, direction)
                 return
+            if _SPECIAL_TOKEN.search(frame.text):
+                logger.warning(
+                    f"LLMTextGuard: stripping leaked Harmony control token(s) "
+                    f"{_SPECIAL_TOKEN.findall(frame.text)} from the reply "
+                    f"(gpt-oss emitted a special token into content)"
+                )
             emitted = self._fold_streaming(frame.text)
             # If the folder held a tail back, remember which frame it came from: the
             # ledger charted that delta's whole text on the LLM service's push, so the
