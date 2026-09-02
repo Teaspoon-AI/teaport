@@ -288,7 +288,7 @@ gapless chaining inside one `BotStartedSpeaking` window, a reply path with no
 `TTSStartedFrame` and no `context_id` (`_ensure_bot`'s docstring), and — under `Split` —
 a reply re-created under a second context id mid-turn. Synthesis is sequential per the
 TTS service; playout lags it arbitrarily. A cancelled completion still ends: pipecat
-0.0.108 `base_llm.py:619-621` pushes `LLMFullResponseEndFrame` in a `finally`, after the
+1.7.0 `base_llm.py:571-573` pushes `LLMFullResponseEndFrame` in a `finally`, after the
 `InterruptionFrame`, and the ledger takes the partial text as a new `_pending_gen`.
 
 It is the ledger AS WRITTEN at PR #13. There is no fix `MODE` yet, so every row fails —
@@ -303,6 +303,7 @@ by design: the rows pin the counterexamples until the code changes.
 | `ledger_split` | `NoPrematureFullChart` — a turn is never closed complete while the same reply is still synthesizing under another id | `:236` the chained branch charts the first half | 6 |
 | `ledger_fillerSet` | `FillerCtxRemembered` — a live filler context is in `_filler_ctxs` | `:220` the overflow guard `.clear()`s the live entry | 4 |
 | `ledger_once` | `ChartedAtMostOnce` — no response is charted twice | **new**, below | 9 |
+| `ledger_wrongText` | `ChartedTextMatchesContext` — a turn charted under a reply's context carries that reply's text | **new**, below; two replies | 6 |
 
 `ledger_phantom` is the shortest, and the one the new test misses. The answer is
 streaming while the ack plays; the ack's played chunk comes back from the transport
@@ -345,6 +346,23 @@ cancelled completion's `finally` pushes the End frame after the interruption, th
 text becomes `_pending_gen`, and `_ensure_bot` claims it. Same result. It needs no user
 turn in between — a false VAD trigger (an interruption with no transcription) followed by
 a narrator line is enough.
+
+On its own the second chart is inert: `HeardContextCorrector._reconcile` acts only on
+events that are `interrupted and cut_short`, and nothing else reads `ledger.events`. What
+bites is the turn the phantom leaves OPEN. `ledger_wrongText` (`ChartedTextMatchesContext`)
+fails with two replies, on two paths. TLC's shortest is pre-existing: `_new_bot` prefers
+the in-flight generation, so a reply whose TTS starts after the NEXT completion has begun
+streaming (text plus a tool call in one completion, the answer streaming before the ack's
+TTS starts) is charted under the next completion's text. The longer path is the
+phantom's: the ack's untagged copy opens a turn on the cut reply's text; the answer
+chains into the ack's window, so its `TTSStarted` takes the adopt-ctx branch instead of
+opening a turn; the answer is now charted under the OLD text with no `audio_start`.
+Barge into it and the corrector receives a cut event with `heard_text` empty — and
+deletes the answer's committed message. Reproduced against the real ledger and
+corrector (`HeardCorrector[truncate]: removed unheard reply`; afterwards the context has
+no assistant message for the answer at all, so the model has no record it answered).
+Not barged, the wrong-text chart is inert, but `_pending_gen` is not consumed (`gen_seq`
+mismatch) and the next filler repeats the phantom.
 
 ### What did not reproduce
 

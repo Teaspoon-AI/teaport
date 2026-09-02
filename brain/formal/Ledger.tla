@@ -207,7 +207,7 @@ LlmEnd(r) ==
     /\ UNCHANGED <<synth, pq, window, played, interrupts>>
 
 \* An interrupted completion still ends: base_llm.py process_frame pushes
-\* LLMFullResponseEndFrame in a finally (pipecat 0.0.108, lines 619-621), AFTER the
+\* LLMFullResponseEndFrame in a finally (pipecat 1.7.0, lines 571-573), AFTER the
 \* InterruptionFrame has gone through -- and the ledger takes the partial text as a
 \* new _pending_gen. No more text follows, so no TTS ever starts for it.
 LlmCancelEnd(r) ==
@@ -312,6 +312,12 @@ NoPrematureFullChart ==
 \* No response is charted twice (the stale-_pending_gen snapshot bug, fixed earlier).
 ChartedAtMostOnce ==
     \A i, j \in DOMAIN charted : i # j => charted[i].gen # charted[j].gen
+
+\* A turn charted under a reply's context carries THAT reply's text -- never an
+\* earlier response's, adopted by a turn that was already open when the context began.
+ChartedTextMatchesContext ==
+    \A i \in DOMAIN charted :
+        charted[i].ctx \in ReplyCtxs => GenOf(charted[i].ctx) = charted[i].gen
 
 \* While a filler context is live, the ledger remembers it is a filler.
 FillerCtxRemembered ==
