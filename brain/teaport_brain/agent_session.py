@@ -201,7 +201,7 @@ def _make_consult_followup(task, context, gate, retirer):
         # Wait for a clear moment: don't step on the user mid-utterance OR the
         # assistant mid-answer about something else. (Gives up after max_wait so a
         # relentlessly chatty conversation can't strand the answer.)
-        await gate.wait_until_idle()
+        await gate.wait_until_idle(turn_free=True)
         # Rewrite the placeholder tool result to the real outcome. The placeholder's
         # own instruction ("add nothing more... do not invent an answer now") stays
         # authoritative if left in the context — observed live: the model obeyed IT
@@ -299,7 +299,7 @@ def _make_consult_followup(task, context, gate, retirer):
                 if attempt + 1 < _DELIVERY_ATTEMPTS:
                     logger.info("consult follow-up: turn was flushed before the model "
                                 f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
-                    await gate.wait_until_idle()
+                    await gate.wait_until_idle(turn_free=True)
         # Out of attempts. Retire it anyway: a live "tell the user now" is a standing
         # order the next unrelated turn would execute, which is worse than a lost answer
         # (the answer itself survives in the rewritten tool result, so "what did the

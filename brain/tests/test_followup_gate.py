@@ -34,6 +34,8 @@ require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
     FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    FunctionCallResultProperties,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -68,6 +70,15 @@ async def _feed(gate, *frames):
 def _tool_call():
     return FunctionCallInProgressFrame(
         function_name="ask_openclaw", tool_call_id="tc-1", arguments={})
+
+
+def _tool_result(run_llm=None):
+    """The call's result. run_llm=False is tools.no_inference() -- the async
+    placeholder nothing answers from; None means the answering completion follows."""
+    return FunctionCallResultFrame(
+        function_name="ask_openclaw", tool_call_id="tc-1", arguments={},
+        result={"status": "queued"},
+        properties=FunctionCallResultProperties(run_llm=False) if run_llm is False else None)
 
 
 async def test_the_latch_latches():
@@ -106,6 +117,39 @@ async def test_an_interruption_releases_the_latch():
 
 
 # --- the budget: one deadline for the whole call ---
+
+async def test_the_injector_waits_out_a_synchronous_tool_call():
+    """The two waits across a tool call whose result IS answered: the narrator
+    reads idle the moment the call starts (its silence is the gap to fill), but
+    the follow-up injector must not -- appended now, its trigger would be read by
+    the tool's own answering completion. The turn is over when that completion
+    ends. Found by Followup.tla (LATCH = "clearedOnToolCall", NoInterjectMidTurn)."""
+    gate = _gate()
+    await _feed(gate, LLMFullResponseStartFrame(), _tool_call())
+    assert await gate.wait_until_idle(max_wait=0.5), "narrator: gate busy during the call"
+    assert not await gate.wait_until_idle(max_wait=0.05, turn_free=True), (
+        "injector: the gate read turn-free during a tool call whose answer is pending")
+    await _feed(gate, _tool_result(), LLMFullResponseStartFrame())
+    assert not await gate.wait_until_idle(max_wait=0.05, turn_free=True)
+    await _feed(gate, LLMFullResponseEndFrame())
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True), (
+        "injector: still held after the answering completion ended")
+
+
+async def test_a_no_inference_result_ends_the_turn():
+    """The async ask_openclaw shape: the placeholder result runs no inference, so
+    nothing will answer from it -- the turn is over and the injector may speak."""
+    gate = _gate()
+    await _feed(gate, LLMFullResponseStartFrame(), _tool_call(), _tool_result(run_llm=False))
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True), (
+        "injector: held after a no-inference result -- the turn never closes")
+
+
+async def test_an_interruption_ends_the_turn_too():
+    gate = _gate()
+    await _feed(gate, LLMFullResponseStartFrame(), _tool_call(), InterruptionFrame())
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+
 
 async def test_max_wait_bounds_the_whole_call_not_just_the_idle_wait():
     """The debounce sleep used to be bounded by a `remaining` computed BEFORE the

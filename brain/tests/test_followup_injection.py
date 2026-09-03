@@ -104,7 +104,7 @@ class _Gate:
     def __init__(self):
         self.idle_waits = 0
 
-    async def wait_until_idle(self):
+    async def wait_until_idle(self, max_wait=None, *, turn_free=False):
         self.idle_waits += 1
         return True
 

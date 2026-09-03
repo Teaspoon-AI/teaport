@@ -106,10 +106,17 @@ passed unchanged against a `followup_gate.py` it no longer described. `LATCH` ad
 `ToolCall` (the bare call; `_llm` cleared or not) and `ToolResult` (the answering
 completion, which is another read of the context):
 
-| LATCH | | `NoSilentLoss` | `NoRepeatRecital` | `NoInterjectMidTurn` |
-|---|---|---|---|---|
-| `held` | pre-PR: `_llm` latched until the answering completion ends | ✓ | ✓ | ✓ |
-| `clearedOnToolCall` | PR #13: `FunctionCallInProgressFrame` clears it | ✓ | ✓ | ✗ |
+| LATCH | | `NoSilentLoss` | `NoRepeatRecital` | `NoInterjectMidTurn` | `NoDeadAirDuringTool` |
+|---|---|---|---|---|---|
+| `held` | pre-PR: `_llm` latched until the answering completion ends | ✓ | ✓ | ✓ | ✗ |
+| `clearedOnToolCall` | PR #13: `FunctionCallInProgressFrame` clears it | ✓ | ✓ | ✗ | ✓ |
+| `turnAware` | the fix: `_llm` released as above, plus `_turn` for the injector alone | ✓ | ✓ | ✓ | ✓ |
+
+`NoDeadAirDuringTool` is the narrator's side of the trade — during a tool call with
+nobody speaking, the gate must read idle, because a synchronous consult runs *inside*
+its call for up to 45s and that silence is what a progress line fills. `held` fails it:
+the pre-PR dead air, the reason the latch was released at all. The two properties pull
+in opposite directions on one flag, which is why the fix is two.
 
 The middle two columns are the point. A follow-up appended during a tool call is read
 exactly once — by the tool's own answering completion — so both read-count properties
@@ -135,10 +142,18 @@ than the code and the violation holds a fortiori. `fu_clearedOnToolCall_existing
 kept as a row precisely because it *holds*: it is the record that the two original
 properties do not gate this.
 
-Not fixed in the code. The narrow release — clear the latch only for a call whose result
-comes back with `no_inference()` (the async `ask_openclaw` shape, where the tool result
-genuinely ends the response) — is what the model suggests; a `LATCH` value for it is the
-next row to add.
+### What was changed
+
+`turnAware`, in `followup_gate.py`. `_llm` is still released on
+`FunctionCallInProgressFrame`. A second flag, `_turn`, is set on
+`LLMFullResponseStartFrame` and cleared by the answering completion's End frame, by a
+`FunctionCallResultFrame` whose `run_llm` is False (`tools.no_inference()`, the async
+placeholder nothing answers from), or by an interruption. `wait_until_idle(turn_free=True)`
+waits on idle *and* `~_turn`; the follow-up injector (`agent_session.speak_followup`)
+passes it, the narrator does not. The gate sits before the assistant aggregator, so it
+sees the result frame. `test_followup_gate.py` covers the synchronous shape (narrator
+idle, injector held until the answering completion ends), the no-inference result, and
+the interruption.
 
 ### Known limits of this model
 

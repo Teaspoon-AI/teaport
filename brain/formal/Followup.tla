@@ -38,6 +38,18 @@
 (*                          NoInterjectMidTurn -- and ONLY that: the trigger  *)
 (*                          is read once, by the tool's own answer, so the   *)
 (*                          two read-count properties are blind to it.       *)
+(*   "turnAware"         -- the fix. _llm is released as above (the narrator *)
+(*                          must fill a synchronous consult's silence), and  *)
+(*                          a second flag, _turn, stays set from the         *)
+(*                          response's start until its answering completion *)
+(*                          ends, a result with run_llm=False closes it, or  *)
+(*                          an interruption. Only the follow-up injector's   *)
+(*                          wait requires ~_turn. Holds everything.          *)
+(*                                                                          *)
+(* NoDeadAirDuringTool is the narrator's side of the trade: during a tool    *)
+(* call with nobody speaking, the gate must read idle. "held" violates it -- *)
+(* the pre-PR dead air -- which is why the latch was released in the first  *)
+(* place.                                                                    *)
 (*                                                                          *)
 (* Checked designs and results are in README.md next to this file.          *)
 (***************************************************************************)
@@ -46,7 +58,7 @@ EXTENDS Naturals
 CONSTANTS MaxTurns, MaxRuns, MODE, LATCH
 
 \* MODE  \in {"asWritten", "gateOnOwn", "retireOnRead"}
-\* LATCH \in {"held", "clearedOnToolCall"}   -- how _llm behaves across a tool call
+\* LATCH \in {"held", "clearedOnToolCall", "turnAware"}   -- how the gate behaves across a tool call
 
 VARIABLES user, bot, llm, tool, fpc, trigger, run, q, sawLive, reads, started,
           turns, interjected
@@ -54,7 +66,8 @@ VARIABLES user, bot, llm, tool, fpc, trigger, run, q, sawLive, reads, started,
 vars == <<user, bot, llm, tool, fpc, trigger, run, q, sawLive, reads, started,
           turns, interjected>>
 
-Idle == (~user) /\ (~bot) /\ (~llm)
+Idle  == (~user) /\ (~bot) /\ (~llm)                      \* what the narrator waits for
+Clear == Idle /\ (LATCH # "turnAware" \/ run = "none")   \* what the follow-up injector waits for
 
 Init ==
     /\ user = FALSE /\ bot = FALSE /\ llm = FALSE /\ tool = FALSE
@@ -70,14 +83,14 @@ Init ==
 
 (* ---------------- speak_followup ---------------- *)
 
-FWaitIdle ==                                   \* await gate.wait_until_idle()
-    /\ fpc = "waitIdle" /\ Idle
+FWaitIdle ==                                   \* await gate.wait_until_idle(turn_free=True)
+    /\ fpc = "waitIdle" /\ Clear
     /\ fpc' = "queue"
     /\ UNCHANGED <<user,bot,llm,tool,trigger,run,q,sawLive,reads,started,turns,interjected>>
 
 FQueue ==                                      \* add trigger; queue LLMRunFrame
     /\ fpc = "queue"
-    /\ Idle                                    \* no await between the gate returning and the append
+    /\ Clear                                   \* no await between the gate returning and the append
     /\ trigger' = "live"
     /\ q' = q + 1                              \* queue_frames() ENQUEUES; it does not cancel
     /\ fpc' = "waitBusy"
@@ -151,8 +164,16 @@ ToolCall ==                        \* FunctionCallInProgressFrame: a bare tool c
     /\ tool' = TRUE
     \* PR #13, followup_gate.py:159. Pre-PR the end frame was held at the TTS
     \* service (empty text creates no audio context), so _llm stayed latched.
-    /\ llm' = IF LATCH = "clearedOnToolCall" THEN FALSE ELSE llm
+    /\ llm' = IF LATCH \in {"clearedOnToolCall", "turnAware"} THEN FALSE ELSE llm
     /\ UNCHANGED <<user,bot,fpc,trigger,run,q,sawLive,reads,started,turns,interjected>>
+
+ToolEnd ==                         \* the async shape: the result comes back with run_llm=False
+    /\ tool /\ run = "running"     \* and NO completion follows -- the turn is over
+    /\ tool' = FALSE /\ run' = "none" /\ sawLive' = FALSE
+    \* "held": the bare call's End frame never arrives, so _llm stays latched --
+    \* the dead air. The other designs read idle here.
+    /\ llm' = IF LATCH = "held" THEN llm ELSE FALSE
+    /\ UNCHANGED <<user,bot,fpc,trigger,q,reads,started,turns,interjected>>
 
 ToolResult ==                      \* the answering completion -- ANOTHER context read
     /\ tool /\ run = "running"
@@ -176,7 +197,7 @@ BotStop ==
 Next ==
     \/ FWaitIdle \/ FQueue \/ FWaitBusy \/ FWaitIdle2 \/ FNeutralize \/ FRequeue
     \/ UserStart \/ UserStop
-    \/ RunStart  \/ ToolCall \/ ToolResult \/ LLMEnd \/ BotStop
+    \/ RunStart  \/ ToolCall \/ ToolResult \/ ToolEnd \/ LLMEnd \/ BotStop
 
 Spec == Init /\ [][Next]_vars
 
@@ -198,6 +219,11 @@ NoRepeatRecital == reads <= 1
 \* a tool call is read exactly once, by the tool's own answering completion, so the
 \* read-count properties are satisfied while the two turns collide.
 NoInterjectMidTurn == ~interjected
+
+\* The narrator's side: during a tool call with nobody speaking the gate reads
+\* idle, so a progress line can fill the silence. "held" fails this -- the
+\* pre-PR dead air -- and is why the latch was released at all.
+NoDeadAirDuringTool == (tool /\ ~user /\ ~bot) => ~llm
 
 \* Liveness: the consult answer is eventually read by some completion.
 EventuallyDelivered == <>(reads >= 1)
