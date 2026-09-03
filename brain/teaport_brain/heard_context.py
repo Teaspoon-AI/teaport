@@ -112,8 +112,9 @@ class HeardContextCorrector(FrameProcessor):
 
         Positional anchoring is sound only while every spoken assistant message
         in the context is one the LEDGER also charted. Filler lines (the consult
-        narrator, the tool acks) are charted by nothing, so they must never be
-        committed either — which is why tools.py pushes every filler with
+        narrator, the tool acks, the pipeline's own notices) are charted by
+        nothing, so they must never be committed either — which is why tools.py,
+        llm_error_speaker.py and agent_session.py push every such line with
         append_to_context=False. A filler committed as the tail assistant message
         would BE the anchor here, and the cut reply's heard prefix would delete
         or overwrite the filler line instead of the reply.

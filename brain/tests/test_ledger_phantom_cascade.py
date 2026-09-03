@@ -6,24 +6,28 @@
 # in brain/formal/README.md) and reproduced here against the real ledger and corrector.
 #
 # The shape: a reply is barged over during synthesis. The ledger charts it cut (heard 0),
-# correctly. But nothing resets what it holds -- InterruptionFrame only calls _finish_bot,
-# and the cancelled completion's finally (pipecat 1.7.0 base_llm.py:571-573) then pushes
-# LLMFullResponseEndFrame with the partial text, which re-arms the pending text. The next
-# filler to play (a tool ack, a narrator line) comes back from the output transport as an
-# UNTAGGED TTSAudioRawFrame (base_output rebuilds audio without its context_id), which
-# _is_filler cannot recognise, and _ensure_bot opens a turn on the cut reply's text.
+# correctly. But the ledger of PR #13 reset nothing it held: the cancelled completion's
+# finally (pipecat 1.7.0 base_llm.py:571-573) then pushed LLMFullResponseEndFrame with
+# the partial text, which re-armed the pending text, and the next filler to play (a tool
+# ack, a narrator line) came back from the output transport as an UNTAGGED
+# TTSAudioRawFrame (base_output rebuilds audio without its context_id), which it could
+# not recognise as a filler's and which opened a turn on the cut reply's text.
 #
-#   A  If that turn closes on the filler's BotStoppedSpeaking, the cut reply is charted
+#   A  If that turn closed on the filler's BotStoppedSpeaking, the cut reply was charted
 #      AGAIN, complete, heard 1.0 -- during a window in which only the filler played.
-#      Inert today (HeardContextCorrector acts on cut turns only), but wrong.
-#   B  If the next reply's TTS starts while that turn is still open (the answer chaining
-#      into the ack's window -- the fast tool flow), its TTSStarted takes the adopt-ctx
-#      branch instead of opening a turn, and the answer is charted under the OLD text
-#      with no audio_start. Barged, the corrector receives heard_text "" and DELETES the
-#      answer's committed message: the model then has no record that it answered.
-#   C  The same wrong-text chart on a pre-existing path: _new_bot prefers the in-flight
-#      generation, so a reply whose TTS starts after the NEXT completion has begun
-#      streaming is charted under the next completion's text.
+#      Inert (HeardContextCorrector acts on cut turns only), but wrong.
+#   B  If the next reply's TTS started while that turn was still open (the answer
+#      chaining into the ack's window -- the fast tool flow), its TTSStarted was folded
+#      into the open turn instead of opening one, and the answer was charted under the
+#      OLD text with no audio_start. Barged, the corrector received heard_text "" and
+#      DELETED the answer's committed message: the model had no record it answered.
+#   C  The same wrong-text chart on a pre-existing path: the in-flight generation was
+#      preferred, so a reply whose TTS started after the NEXT completion had begun
+#      streaming was charted under the next completion's text.
+#
+# The ledger now drops everything it holds at an interruption, opens turns only on the
+# TTS's own frames (never on the transport's untagged copies), and claims the oldest
+# expected context for each -- see transcript_ledger.py's header.
 #
 # Cases d-g were added while fixing: the PR's own filler-only shape WITH the untagged
 # copy it omits (d), and three more paths brain/formal/Ledger.tla found once the first

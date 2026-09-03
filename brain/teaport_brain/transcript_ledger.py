@@ -212,8 +212,10 @@ class TranscriptLedger(BaseObserver):
         # Open bot turns, in playout order (see _open_turn for the record).
         self._turns: List[dict] = []
         # TTS contexts opened by filler speak frames (append_to_context=False —
-        # the consult narrator / tool-ack lines, see tools.py). Pure audio UX:
-        # kept out of the LLM context at the source, and charted by nothing here.
+        # the consult narrator and tool-ack lines in tools.py, the failure notice
+        # in llm_error_speaker.py, the STT-busy line in agent_session.py). Pure
+        # audio UX: kept out of the LLM context at the source, and charted by
+        # nothing here.
         self._filler_ctxs: OrderedDict = OrderedDict()  # insertion-ordered set
         # Contexts whose turn has been charted; a late frame naming one belongs to
         # no turn (a context re-created after pipecat's stop-frame timeout).
@@ -297,8 +299,8 @@ class TranscriptLedger(BaseObserver):
             if fctx is not None:
                 self._tagged = True
             if getattr(f, "append_to_context", True) is False:
-                # A FILLER context: the narrator / tool-ack speak frames are pushed
-                # with append_to_context=False (tools.py), and tts_service stamps
+                # A FILLER context: the narrator / tool-ack / notice speak frames
+                # are pushed with append_to_context=False, and tts_service stamps
                 # that onto the context's TTSStartedFrame. A filler is never part
                 # of a reply turn: it neither opens one nor is folded into one.
                 # Remember the ctx so its word/audio frames are known as a filler's.
@@ -316,7 +318,7 @@ class TranscriptLedger(BaseObserver):
             # Per-word TTSTextFrames (engine TTS) are scheduled on the playout clock
             # and carry that schedule as pts; collecting the ones at/before an
             # interruption's cut gives EXACTLY what the user heard — no estimate.
-            # (sherpa pushed one whole-reply frame instead; see _finish.)
+            # (A whole-reply frame, the legacy ctx-less shape, is not; see _finish.)
             fctx = getattr(f, "context_id", None)
             turn = self._turn_for(fctx)
             if turn is None:
@@ -363,12 +365,12 @@ class TranscriptLedger(BaseObserver):
                 # audio straight through pipecat's audio context): open the turn on
                 # its first audio so the reply is still recorded.
                 turn = self._open_turn(t, fctx)
-            item = self._push(fctx, dur, t)
+            self._push(fctx, dur, t)
             turn["pushed"] += dur
             if turn["audio_start"] is None and self._win_t0 is not None:
                 # This turn's first chunk, pushed into a window already playing:
                 # it plays after whatever the window holds ahead of it.
-                turn["audio_start"] = self._layout()[-1][1] if item is self._fifo[-1] else None
+                turn["audio_start"] = self._layout()[-1][1]
 
         elif isinstance(f, BotStartedSpeakingFrame):
             # The transport began playing the head of its queue. Anonymous — it
@@ -474,11 +476,9 @@ class TranscriptLedger(BaseObserver):
             if entry in self._queue:
                 self._queue.remove(entry)
             cand["entry"] = entry
-            cand["live"] = False
             entry["turn"] = cand
             turn = cand
         turn["synth_done"] = True
-        turn["live"] = False
         if turn["pushed"] <= 0:
             # Drained without a chunk of audio: nothing of it was ever played.
             self._finish(turn, t, heard=0.0, interrupted=True, never=True)
@@ -516,8 +516,8 @@ class TranscriptLedger(BaseObserver):
 
     def _is_filler(self, frame) -> bool:
         """True for a frame from a FILLER TTS context — a speak frame the brain
-        plays as pure audio UX (the consult narrator, the tool-ack lines), pushed
-        with append_to_context=False. Fillers are kept out of the LLM context at
+        plays as pure audio UX (the consult narrator, the tool-ack lines, the
+        pipeline's own notices), pushed with append_to_context=False. Fillers are kept out of the LLM context at
         the source, and the ledger charts nothing for them: they are not part of
         anything the assistant *said* as a reply. Identified by the flag where the
         frame carries one (TTSStartedFrame, TTSTextFrame) and by the context
@@ -529,8 +529,7 @@ class TranscriptLedger(BaseObserver):
 
     def _turn_for(self, fctx) -> Optional[dict]:
         """The open turn a frame naming context `fctx` belongs to. A frame naming
-        NO context (the legacy path, sherpa's whole-reply word frame) goes to the
-        newest open turn; a frame naming a DIFFERENT context than every open turn
+        NO context (the legacy ctx-less path) goes to the newest open turn; a frame naming a DIFFERENT context than every open turn
         is foreign and belongs to none."""
         if fctx is None:
             return self._turns[-1] if self._turns else None
@@ -567,7 +566,7 @@ class TranscriptLedger(BaseObserver):
         text yet cannot have audio, so an audio-only context opens ANONYMOUS
         (entry None) and charts nothing rather than taking the next reply's words.
         """
-        entry, live = None, False
+        entry = None
         if fctx is not None and fctx in self._closed_ctxs:
             # A context re-created after pipecat's stop-frame timeout, whose turn
             # is already charted: the tail belongs to no expected context.
@@ -576,8 +575,8 @@ class TranscriptLedger(BaseObserver):
             entry = self._queue.popleft()
         elif (self._gen is not None and self._gen["turn"] is None
               and "".join(self._gen["parts"]).strip()):
-            entry, live = self._gen, True
-        turn = {"ctx": fctx, "entry": entry, "live": live,
+            entry = self._gen  # live: the entry completes on the response end
+        turn = {"ctx": fctx, "entry": entry,  # entry None: anonymous, charts nothing
                 "t_open": t,          # when the ledger saw the turn begin
                 "audio_start": None,  # when its first chunk started playing
                 "last_end": None,     # when its last played-out chunk ended
@@ -601,7 +600,6 @@ class TranscriptLedger(BaseObserver):
             if turn["ctx"] is None and fctx is None:
                 continue  # legacy: one ctx-less stream
             turn["synth_done"] = True
-            turn["live"] = False
             if turn["pushed"] <= 0:
                 self._finish(turn, t, heard=0.0, interrupted=True, never=True)
 
@@ -726,7 +724,7 @@ class TranscriptLedger(BaseObserver):
         # arrive clustered (our TTS pushes the whole clip at once), so we filter
         # by pts, not arrival order. Fall back to arrival order if frames carry
         # no pts, and to the played-fraction estimate with no per-word frames
-        # (sherpa).
+        # (a single whole-reply frame, the legacy ctx-less shape).
         spoken = turn["spoken"]
         est = _prefix(intended, frac)  # reliable played-audio-fraction estimate
         if any(p is not None for _, p in spoken):

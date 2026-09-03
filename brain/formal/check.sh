@@ -56,7 +56,7 @@ run Ledger.tla   ledger_fillerSet    "(expected: FAILS)"
 run Ledger.tla   ledger_once         "(expected: FAILS — new)"
 run Ledger.tla   ledger_wrongText    "(expected: FAILS)"
 echo
-echo "Ledger.tla — windowHead: the fix (transcript_ledger.py after the review)"
+echo "Ledger.tla — windowHead: the first fix (3a51294), itself superseded by LedgerPlayout.tla"
 run Ledger.tla   ledgerfix_phantom   "(expected: holds)"
 run Ledger.tla   ledgerfix_ownStart  "(expected: holds)"
 run Ledger.tla   ledgerfix_unheard   "(expected: holds)"

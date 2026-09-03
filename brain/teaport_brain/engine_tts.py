@@ -80,8 +80,10 @@ _CAPTION_LEAD_SECS = tts_text_lead.CAPTION_LEAD_SECS
 
 # pipecat's audio-context watchdog closes a TTS context after this many seconds without a
 # new frame, resetting the word-timestamp baseline MID-REPLY and pushing a premature
-# LLMFullResponseEndFrame (splits the assistant context; the ledger records a partial
-# reply). Its 3s default is fine on GPU (synth ≤ ~1.2s/chunk) but on the CPU backends a
+# LLMFullResponseEndFrame (splits the assistant context; the ledger ignores that fresh
+# frame -- it takes a response's End at the TTS's own sighting and recognises only a
+# re-push of that same frame -- but its turn then closes on the next context's start
+# rather than on the drain). Its 3s default is fine on GPU (synth ≤ ~1.2s/chunk) but on the CPU backends a
 # ramped chunk of 110+ chars synthesizes >3s with nothing queued, tripping it in normal
 # operation. 15s covers the worst cap/hard_max-sized chunk at CPU RTF ~0.6 with margin.
 _STOP_FRAME_TIMEOUT_S = env_num("TTS_STOP_FRAME_TIMEOUT_S", "15", float)

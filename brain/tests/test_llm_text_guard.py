@@ -475,16 +475,14 @@ async def test_each_response_strips_its_own_opening():
 async def test_pass_through_text_keeps_its_frame_identity():
     """A delta that merely passes through must keep the frame id it arrived with.
 
-    TranscriptLedger is a BaseObserver: it sees every push of every frame and
-    de-duplicates on frame IDENTITY. Each LLMTextFrame is pushed twice on the way down,
-    once by the LLM service and once by this guard, and the ledger charts it once only
-    because both pushes carry the same object. Emitting a fresh frame gives the second
-    push an id the ledger has not seen, so the delta is charted TWICE — which corrupts
-    the denominator of the heard fraction, makes HeardContextCorrector drop replies the
-    user actually heard, and leaves the model re-answering questions it had answered.
-
-    Live 2026-08-25: "I like teal." was charted as "I like tealI. like teal.", 11 of 12
-    assistant turns doubled.
+    Each LLMTextFrame is pushed twice on the way down, once by the LLM service and
+    once by this guard, and an observer that de-duplicates on frame IDENTITY sees one
+    delta only because both pushes carry the same object. TranscriptLedger's intended
+    text no longer depends on it (it reads the stream at the TTS's own sighting), but
+    its LEDGER_TRACE and any other id-keyed observer still do -- and this is the rule
+    the 2026-08-25 incident made: a fresh frame per delta charted "I like teal." as
+    "I like tealI. like teal.", doubling the heard fraction's denominator, and
+    HeardContextCorrector dropped replies the user had heard; 11 of 12 assistant turns.
     """
     h = Guard()
     await h.feed(LLMFullResponseStartFrame())
@@ -494,7 +492,7 @@ async def test_pass_through_text_keeps_its_frame_identity():
     await h.feed(LLMFullResponseEndFrame())
     forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
     assert [f.id for f in forwarded] == [f.id for f in sent], (
-        "guard emitted new frame ids; the ledger will chart these deltas twice"
+        "guard emitted new frame ids; every id-keyed observer sees these deltas twice"
     )
     assert h.spoken() == "I like teal."
 

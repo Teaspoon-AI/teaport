@@ -289,7 +289,7 @@ gapless chaining inside one `BotStartedSpeaking` window, a reply path with no
 a reply re-created under a second context id mid-turn. Synthesis is sequential per the
 TTS service; playout lags it arbitrarily. A cancelled completion still ends: pipecat
 1.7.0 `base_llm.py:571-573` pushes `LLMFullResponseEndFrame` in a `finally`, after the
-`InterruptionFrame`, and the ledger takes the partial text as a new `_pending_gen`.
+`InterruptionFrame`, and the ledger of that time took the partial text as a new `_pending_gen`.
 
 Two designs, selected by `MODE`. `asWritten` is the ledger at PR #13 and fails every
 property; its rows are kept failing, pinning the counterexamples. `windowHead` was the

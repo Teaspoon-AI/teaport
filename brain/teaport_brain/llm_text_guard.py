@@ -395,21 +395,19 @@ class LLMTextGuard(FrameProcessor):
                     frame: "LLMTextFrame | None" = None):
         """Push one text frame, applying the leading-punct strip. Empty -> nothing.
 
-        `frame` REUSES the inbound frame instead of building a new one, and that is
-        load-bearing rather than tidiness. TranscriptLedger is a BaseObserver: it sees
-        every push of every frame and de-duplicates on frame IDENTITY (`if f.id in
-        self._seen: return`). Each LLMTextFrame is pushed twice on the way down — once
-        by the LLM service, once by this guard — and the ledger charted it once only
-        because both pushes carried the same object. A fresh LLMTextFrame gives the
-        second push an id the ledger has never seen, so every delta lands in the
-        intended-text accumulator TWICE, interleaved by arrival order: "I like teal."
-        was charted as "I like tealI. like teal.".
- 
-        That is the denominator of the heard fraction, so replies the user heard in
-        full scored 0-96%, HeardContextCorrector truncated or dropped them from history,
-        and the model — unable to see its own turns — re-answered questions it had
-        already answered. Live 2026-08-25: 11 of 12 assistant turns doubled, against
-        clean single TTS calls.
+        `frame` REUSES the inbound frame instead of building a new one. Each
+        LLMTextFrame is pushed twice on the way down — once by the LLM service, once
+        by this guard — and every observer that de-duplicates on frame IDENTITY sees
+        one delta only because both pushes carry the same object. That was
+        load-bearing for TranscriptLedger's intended text until it began reading the
+        stream at the TTS's own sighting (a fresh frame would now be charted once,
+        with the guarded text); it still is for its LEDGER_TRACE, which dedups every
+        traced frame by id, and for any other id-keyed observer. The incident that
+        made it a rule, live 2026-08-25: a fresh frame per delta charted "I like
+        teal." as "I like tealI. like teal.", the heard fraction's denominator
+        doubled, replies heard in full scored 0-96%, HeardContextCorrector dropped
+        them from history, and the model re-answered questions it had answered --
+        11 of 12 assistant turns.
 
         Only genuinely NEW text (the recovery line) may build a new frame. Text that
         merely passed through keeps the identity it arrived with.
@@ -480,9 +478,9 @@ class LLMTextGuard(FrameProcessor):
                     f"from the reply (gpt-oss emitted a special token into content)"
                 )
             emitted = self._fold_streaming(frame.text)
-            # If the folder held a tail back, remember which frame it came from: the
-            # ledger charted that delta's whole text on the LLM service's push, so the
-            # eventual flush must ride the same frame or the tail is charted twice.
+            # If the folder held a tail back, remember which frame it came from, so the
+            # eventual flush rides the same frame (pass-through text keeps its frame --
+            # see _emit) rather than a fresh one.
             self._pending_frame = frame if self._pending else None
             if emitted:
                 # Hold until the sentence closes — the repeat cut can only DROP a

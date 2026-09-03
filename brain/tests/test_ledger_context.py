@@ -17,16 +17,17 @@
 # HeardContextCorrector — the bot then "remembering" it said something it never
 # meant as part of that reply.
 #
-# The fix, in three parts. Fillers are MARKED: tools.py pushes them with
-# append_to_context=False, tts_service stamps that onto their TTSStartedFrame, and
-# the ledger charts nothing for a marked context — it can neither open a turn nor
-# be folded into one. A DIFFERENT unmarked context starting mid-turn is the next
-# genuine reply chained with no gap: the open turn is charted and a new one opened
-# (rejecting it made the whole second reply vanish). And audio is stricter than
-# words: in a ctx-tagged turn only audio NAMING that context counts, because the
-# output transport rebuilds audio without its context_id, so an untagged copy may
-# be a foreign filler's playout just as well as the reply's own (word frames with
-# no ctx are still accepted — sherpa's single whole-reply frame).
+# The contract, as the ledger now keeps it. Fillers are MARKED: tools.py pushes them
+# with append_to_context=False, tts_service stamps that onto their TTSStartedFrame,
+# and the ledger charts nothing for a marked context — it can neither open a turn
+# nor be folded into one; its audio still takes its place in the transport's queue,
+# which is how a reply chained behind it gets the right playout start. A DIFFERENT
+# unmarked context starting mid-turn is the next genuine reply: it opens a turn of
+# its own, and both stay open until each has played out (rejecting it made the whole
+# second reply vanish; charting the first complete at that instant credited a tail
+# the user never heard). And a turn folds in only the frames NAMING its context: the
+# output transport rebuilds every chunk it plays without its context_id, and on a
+# tagged pipeline that untagged copy is ignored, whichever context it came from.
 #
 # Run: python test_ledger_context.py   (or via pytest test_suite.py)
 #
@@ -178,7 +179,8 @@ async def test_a_barge_in_during_the_filler_does_not_attribute_it_to_the_reply()
 
 
 async def test_no_context_ids_behaves_as_before():
-    # sherpa / legacy: no context_id anywhere. Nothing is rejected; the single
+    # The legacy ctx-less shape (the sherpa TTS, long gone): no context_id anywhere,
+    # and no TTS or transport named to the ledger. Nothing is rejected; the single
     # whole-reply word frame path is unchanged.
     L = await feed([
         (LLMFullResponseStartFrame(), 0.0),
@@ -193,7 +195,7 @@ async def test_no_context_ids_behaves_as_before():
     assert len(u) == 1 and u[0].text == REPLY and u[0].heard_fraction >= 0.99
 
 
-# --- the marked-filler / chained-context / strict-audio contract ---
+# --- the marked-filler / queued-context / transport-copy contract ---
 
 async def test_b_filler_opening_first_does_not_steal_the_reply():
     """Adoption inversion: the narrator fires in the LLM's silence BEFORE the
