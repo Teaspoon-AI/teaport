@@ -294,8 +294,11 @@ Ledger(f) ==
 Streaming     == \E r \in Replies : llm[r] = "streaming"
 Synthesizing  == \E c \in Ctxs : synth[c] \in {"started", "audio"}
 
+\* A cancelled completion's End is pushed from its finally at cancellation, long
+\* before the next run can begin: no completion starts while one is "aborted".
+Aborted     == \E r \in Replies : llm[r] = "aborted"
 LlmStart(r) ==
-    /\ llm[r] = "idle" /\ ~Streaming
+    /\ llm[r] = "idle" /\ ~Streaming /\ ~Aborted
     /\ llm' = [llm EXCEPT ![r] = "streaming"]
     /\ order' = Append(order, r)
     /\ Ledger([type |-> "LLMStart", gen |-> r])

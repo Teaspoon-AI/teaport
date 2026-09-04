@@ -552,6 +552,70 @@ corrects the newest turn (`_end_drained`).
 - **Scale.** One reply and one filler is 3k states; two replies 365k and about two
   minutes.
 
+## `LedgerFifo.tla` — the ledger that ships (`66b6812`)
+
+`Ledger.tla`'s two designs are history: the PR #13 ledger, and `windowHead`, its first
+fix, which `66b6812` superseded with a redesign of a different shape — several turns open
+at once, the ledger's own copy of the transport's FIFO, text bound to a context by the
+TTS's queue order and CONFIRMED by pipecat's post-drain re-push of the response's End
+frame, and a "never played" chart. `LedgerFifo.tla` models that design over the same
+pipeline and checks it against the same eight properties, plus one of its own
+(`NeverMeansNever`: a reply that was played is never charted "never played").
+
+Two switches the code's docstring names:
+
+- **`Drain`** — TRUE is the live wiring (`TranscriptLedger(tts=…, output=…)`): the End
+  frame's second sighting confirms or corrects a context's claim. FALSE is the hermetic
+  tests' wiring: no drain signal, a turn is synthesized once its response has ended.
+- **`Unspeakable`** — replies the TTS never opens a context for (nothing synthesizable, or
+  a guard emptied them). They complete, are queued, and sit at the queue's head for the
+  next context to claim: the residual `windowHead` could not close.
+
+| row | property | live (`Drain`) | hermetic |
+|---|---|---|---|
+| `fifo_NoPhantomFullHeard` | a reply charted complete had its audio played or queued | ✓ | |
+| `fifo_AudioStartIsOwn` | a turn's `audio_start` is its own chunk's | ✓ | |
+| `fifo_NoUnheardWhenPlayed` | a cut reply that played never charts with no `audio_start` | ✓ | |
+| `fifo_FillerCtxRemembered` | a live filler context is in `_filler_ctxs` | ✓ | |
+| `fifo_NeverMeansNever` | "never played" means never played | ✓ | |
+| `fifo_ChartedAtMostOnce` (two replies) | no response charted twice | ✓ | ✓ (`fifoh_`) |
+| `fifo_ChartedTextMatchesContext` (two replies) | a context carries its own response's text | ✓ | ✓ (`fifoh_`) |
+| `fifo_split` | `NoPrematureFullChart`, under `Split` | ✗ (8) | |
+| `fifo_wrongText_unspeakable` | `ChartedTextMatchesContext`, with `Unspeakable = {r1}` | ✗ (6) | |
+
+The two failures are the design's own stated limits, now with traces:
+
+- **`fifo_split`**: a context's stop frame arrives while its response is still streaming,
+  the window plays out, and the reply is charted complete; the rest of it arrives under a
+  re-created context, which the design deliberately gives to no expected text
+  (`_open_turn`'s `_closed_ctxs` rule: "the tail belongs to no expected context").
+  Whether that is a defect depends on whether pipecat re-creates a context mid-response,
+  and under which id — the code's comment and the review's `:236` disagree.
+- **`fifo_wrongText_unspeakable`**: an unspeakable reply sits at the queue's head, the
+  next reply's context claims it, and the user barges in before that reply's End frame
+  has drained. The drain re-push is what corrects the claim, and it cannot arrive before
+  the response has ended — so a barge-in into a mis-claimed turn charts the wrong text,
+  and the corrector then rewrites the context with a prefix of it. After the drain the
+  claim is corrected and the unspeakable text dropped, as the commit says. This is the
+  residual the ledger cannot close alone: only the TTS knows which response a context
+  is for, and the drain tells it one response too late for a barge-in.
+
+One environment fact was added to both modules on the way: a cancelled completion's End
+frame is pushed from its `finally` at cancellation, before any new run can start. The
+model had let it arrive after the next response began streaming, and the ledger — which
+cannot tell whose End it is — closed that response on the stale frame. Real only if the
+event loop stalls between the cancel and the next run; excluded rather than modelled.
+
+### Known limits of this model
+
+- **The layout arithmetic is assumed.** A chunk's playout start from the window's start
+  and the chunks ahead of it is numeric; the model takes the ledger's "this chunk has
+  started" to be the transport's. The tests check the arithmetic.
+- **No thinking-sound bed, no spoken notices, no legacy ctx-less pipeline.** The shipped
+  wiring is tagged; `TTSSpeakFrame`s with text are an expected context of their own in
+  the code and would model like a reply.
+- **Words are not modelled**, as in `Ledger.tla`.
+
 ## Worth modeling next
 
 1. **Spoken notices in `LedgerPlayout.tla`.** The two `TTSSpeakFrame` call sites that
