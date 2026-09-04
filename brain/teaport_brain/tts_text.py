@@ -139,6 +139,23 @@ def _normalize_for_tts(text: str) -> str:
     return text
 
 
+# Any script's letters/digits, minus underscore -- see the note at the end of
+# split_clauses_ramp for why not [A-Za-z0-9].
+_SPEECH = re.compile(r"[^\W_]")
+
+
+def has_speech(text: str) -> bool:
+    """Whether the engine TTS will synthesize anything for `text`: after the same
+    normalization run_tts applies, at least one letter or digit in any script.
+    This is THE predicate for "nothing synthesizable": split_clauses_ramp drops
+    every chunk failing it and run_tts then yields no audio and no context. The
+    ledger applies it to a response's text before queuing the response as an
+    expected TTS context -- one that will never open must not sit at the queue's
+    head for the next context to claim (brain/formal/LedgerPlayout.tla,
+    lp_wrongText_unspeakable). One regex, so the two cannot drift."""
+    return bool(_SPEECH.search(_normalize_for_tts(text or "")))
+
+
 def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
                        cap: int = 200, hard_max: int = 350) -> list:
     """Ramp-up chunking for streaming TTS, splitting ONLY at sentence boundaries.
@@ -186,7 +203,7 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
     # run_tts no longer has one, so an empty list here means "nothing to speak" and is
     # honoured rather than overridden. Keep the two facts together — restoring the
     # fallback without widening this test brings the 500-per-clause bug straight back.
-    out = [c for c in out if re.search(r"[^\W_]", c)]
+    out = [c for c in out if _SPEECH.search(c)]     # has_speech, per chunk
     return out
 
 

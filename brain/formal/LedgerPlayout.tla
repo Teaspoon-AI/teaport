@@ -46,6 +46,9 @@ EXTENDS Naturals, Sequences, FiniteSets
 CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           Fillers,       \* filler context ids -- narrator / tool-ack TTSSpeakFrames
           Unspeakable,   \* replies the TTS never opens a context for (nothing synthesizable)
+          LedgerSpeakCheck, \* BOOLEAN: the ledger applies the engine's own has_speech
+                         \*   before queuing a response (transcript_ledger._llm_side);
+                         \*   FALSE is the ledger before that -- the counterexample
           Drain,         \* BOOLEAN: the live wiring (tts given: the End re-push is seen);
                          \*   FALSE is the hermetic tests' -- no drain signal, a turn is
                          \*   taken as synthesized once its response has ended
@@ -173,7 +176,10 @@ Ledger(f) ==
          \* stream begins, see LlmStart.
          IF genAcc = NONE THEN UNCHANGED ledgerVars
          ELSE /\ ended' = ended \cup {genAcc}
-              /\ queue' = IF genAcc \in claimed THEN queue ELSE Append(queue, genAcc)
+              \* LedgerSpeakCheck: text the engine will not synthesize is not an
+              \* expected context (tts_text.has_speech is the engine's predicate).
+              /\ queue' = IF genAcc \in claimed \/ (LedgerSpeakCheck /\ genAcc \in Unspeakable)
+                            THEN queue ELSE Append(queue, genAcc)
               /\ genAcc' = NONE
               /\ UNCHANGED <<claimed, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
     [] f.type = "TTSStarted" ->

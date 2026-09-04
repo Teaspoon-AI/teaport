@@ -48,6 +48,7 @@ from pipecat.frames.frames import (  # noqa: E402
 from pipecat.utils.text.base_text_aggregator import AggregationType  # noqa: E402
 
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
+from teaport_brain.tts_text import has_speech  # noqa: E402
 
 SR = 24000
 
@@ -486,6 +487,32 @@ async def test_k_the_intended_text_is_what_the_tts_receives_not_the_raw_deltas()
         *siblings(BotStoppedSpeakingFrame, 1.95),
     ])
     assert [u.text for u in bot(L)] == ["Sorry, let me try that again."], [u.text for u in bot(L)]
+
+
+async def test_k_a_response_with_nothing_synthesizable_is_not_expected_and_the_next_keeps_its_text():
+    """The engine opens no context for text it cannot synthesize (run_tts: "nothing
+    synthesizable" -- a bare ellipsis, punctuation, a symbol). Queued as an expected
+    context anyway, it sat at the queue's head and the NEXT reply's context claimed it;
+    a barge-in before that reply's End had drained then charted the wrong text, and no
+    drain could have corrected it in time (LedgerPlayout.tla, lp_wrongText_unspeakable).
+    The ledger now applies the engine's own predicate, tts_text.has_speech, before
+    queuing -- one regex shared with split_clauses_ramp, so the two cannot drift."""
+    assert not has_speech("...") and not has_speech("\u2026 \u2014") and not has_speech("  ")
+    assert has_speech("Ok.") and has_speech("\u65e5\u672c\u8a9e\u3067\u3059") and has_speech("7")
+    L = ledger()
+    silent, _ = response("...", 0.0)                   # the model emitted only an ellipsis
+    answer, _end2 = response(R2, 1.0)
+    await feed(L, silent + answer + [
+        (started("R2"), 1.2, BELOW),
+        at(audio(2.0, "R2"), 1.2),
+        *siblings(BotStartedSpeakingFrame, 1.3),
+        (InterruptionFrame(), 2.3),                    # before R2's End has drained
+    ])
+    utts = bot(L)
+    assert [u.text for u in utts] == [R2], (
+        f"{[u.text[:24] for u in utts]} -- the unsynthesizable response was expected, "
+        "and R2's context claimed it")
+    assert utts[0].interrupted and 0.3 < utts[0].heard_fraction < 0.7, utts[0].heard_fraction
 
 
 def main():

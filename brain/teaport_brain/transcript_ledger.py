@@ -59,7 +59,7 @@ from typing import List, Optional
 
 from loguru import logger
 
-from teaport_brain.tts_text import CAPTION_LEAD_SECS
+from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -421,6 +421,17 @@ class TranscriptLedger(BaseObserver):
                 # A tool-call response, or one the guard emptied: the TTS opens
                 # no context for it, so nothing will claim it.
                 return
+            if not has_speech(gen["text"]):
+                # Text the engine will not synthesize (punctuation, symbols, a
+                # bare ellipsis -- run_tts: "nothing synthesizable"): no context
+                # opens for it either. Queued, it sat at the queue's head and the
+                # NEXT reply's context claimed it; a barge-in before that reply's
+                # End had drained then charted the wrong text, and the drain that
+                # would have corrected the claim cannot come before the End.
+                # The predicate is the engine's own (tts_text.has_speech).
+                logger.warning(f"LEDGER response {gen['seq']} has nothing synthesizable; "
+                               f"not expected: {gen['text'][:40]!r}")
+                return
             self._remember(self._end_ids, f.id, _MAX_END_IDS, gen)
             if gen["turn"] is None:
                 self._enqueue(gen)
@@ -429,9 +440,11 @@ class TranscriptLedger(BaseObserver):
             if getattr(f, "append_to_context", True) is False:
                 return  # a filler; its TTSStartedFrame carries the flag
             text = (f.text or "").strip()
-            if text:
+            if text and has_speech(text):
                 # A spoken notice (the STT-busy line, an error read-out): its
                 # context will open in turn, and it IS an assistant utterance.
+                # (has_speech: as for a response -- one the engine will not
+                # synthesize opens no context and must not be expected.)
                 self._seq += 1
                 entry = self._new_entry("speak")
                 entry["text"] = text

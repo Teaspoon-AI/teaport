@@ -520,7 +520,8 @@ portion. The heard arithmetic is `test_ledger_playout.py`'s, on the real ledger.
 | `lp_playedCharted` | `PlayedIsCharted` — **new**: audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
 | `lp_fillerSet` | `FillerCtxRemembered` | ✓ |
 | `lp_resume` | `NoPrematureFullChart` under `Resume` | ✗ (9) — below |
-| `lp_wrongText_unspeakable` | `ChartedTextMatchesContext` with `Unspeakable = {r1}` | ✗ (6) — below |
+| `lp_wrongText_unspeakable` | `ChartedTextMatchesContext` with `Unspeakable = {r1}`, the ledger before `has_speech` (`LedgerSpeakCheck = FALSE`) | ✗ (6) — below |
+| `lp_wrongText_unspeakable_checked` | the same, the shipped ledger (`LedgerSpeakCheck = TRUE`) | ✓ |
 | `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ |
 | `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
 
@@ -547,6 +548,16 @@ After the drain the claim IS corrected and the unspeakable text dropped, as `_en
 says; a barge-in before it charts the wrong text, and the corrector then rewrites the
 context with a prefix of it. The ledger learns which response a context is for one
 response too late; only the TTS knows it at the context's start.
+
+**Closed in code**, from the other side: the ledger reads a response's text at the TTS's
+sighting, so it can ask the engine's own question of it. `transcript_ledger._llm_side`
+now applies `tts_text.has_speech` — one regex, shared with `split_clauses_ramp`'s chunk
+filter, so the ledger's "will this open a context" cannot drift from the engine's — and
+never queues a response the TTS will not open a context for (nor a spoken notice).
+`lp_wrongText_unspeakable` keeps the counterexample; `lp_wrongText_unspeakable_checked`
+is the ledger as shipped, and `test_ledger_playout.py`'s case `k` is the same on the real
+ledger. What the predicate cannot see — the engine failing a clause it accepted — is a
+different path: the context exists, and the turn is charted never-played.
 
 `lph_premature` fails in 8 steps, and only in the hermetic wiring: the response ends, the
 first chunk plays, synthesis stalls, the window closes on silence — and "ended" is taken
