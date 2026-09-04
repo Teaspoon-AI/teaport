@@ -520,6 +520,40 @@ portion. The heard arithmetic is `test_ledger_playout.py`'s, on the real ledger.
 | `lp_playedCharted` | `PlayedIsCharted` — **new**: audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
 | `lp_fillerSet` | `FillerCtxRemembered` | ✓ |
 | `lp_resume` | `NoPrematureFullChart` under `Resume` | ✗ (9) — below |
+| `lp_wrongText_unspeakable` | `ChartedTextMatchesContext` with `Unspeakable = {r1}` | ✗ (6) — below |
+| `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ |
+| `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
+
+Two switches were folded in afterwards, for what the module's first cut assumed away or
+left out. **`Unspeakable`**: a reply the TTS never opens a context for — nothing
+synthesizable, or the guard emptied it. `CanStart` had assumed "text reaching the TTS
+always opens a context, so no reply is stranded"; with one that does not, the ledger
+queues its text and the next context claims it. **`Drain = FALSE`**: the hermetic wiring
+the test suite runs (`TranscriptLedger()` with no `tts`): no drain signal exists, and
+`_close_ready` takes a turn as synthesized once its response has ended.
+
+`lp_wrongText_unspeakable` fails in 6 steps — the residual `windowHead` could not close,
+and this design closes only after the fact:
+
+```
+LlmStart(r1) LlmEnd(r1)   r1 completes; the TTS opens no context for it; the ledger queues it
+LlmStart(r2)              the next reply streams
+TtsStart(r2)              its context opens and claims the queue's head -- r1's text
+Interrupt                 barge-in before r2's End has reached the TTS, so before any drain
+                          could correct the claim: charted under r1's text, cut
+```
+
+After the drain the claim IS corrected and the unspeakable text dropped, as `_end_drained`
+says; a barge-in before it charts the wrong text, and the corrector then rewrites the
+context with a prefix of it. The ledger learns which response a context is for one
+response too late; only the TTS knows it at the context's start.
+
+`lph_premature` fails in 8 steps, and only in the hermetic wiring: the response ends, the
+first chunk plays, synthesis stalls, the window closes on silence — and "ended" is taken
+as "synthesized", so the reply is charted complete with a chunk still to come. Live, the
+drain re-push is the completion signal and the turn stays open (`lp_premature` holds).
+It means a stall is invisible to the test suite's ledger, not that the shipped one
+mischarts it.
 
 `ledger_split`'s question is settled rather than carried: pipecat re-creates a timed-out
 context under the SAME id, so a reply is never split across two ids and the ledger's
@@ -546,75 +580,15 @@ corrects the newest turn (`_end_drained`).
 - **Numbers are out of scope**, as in `Ledger.tla`: the layout's seconds, `heard_fraction`,
   the pts cut.
 - **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its
-  own) and the **hermetic fallback** (a ledger given no TTS: the first sighting counts,
-  there is no drain signal, and a turn is taken as complete once its response has ended)
-  are not modelled.
-- **Scale.** One reply and one filler is 3k states; two replies 365k and about two
-  minutes.
-
-## `LedgerFifo.tla` — the ledger that ships (`66b6812`)
-
-`Ledger.tla`'s two designs are history: the PR #13 ledger, and `windowHead`, its first
-fix, which `66b6812` superseded with a redesign of a different shape — several turns open
-at once, the ledger's own copy of the transport's FIFO, text bound to a context by the
-TTS's queue order and CONFIRMED by pipecat's post-drain re-push of the response's End
-frame, and a "never played" chart. `LedgerFifo.tla` models that design over the same
-pipeline and checks it against the same eight properties, plus one of its own
-(`NeverMeansNever`: a reply that was played is never charted "never played").
-
-Two switches the code's docstring names:
-
-- **`Drain`** — TRUE is the live wiring (`TranscriptLedger(tts=…, output=…)`): the End
-  frame's second sighting confirms or corrects a context's claim. FALSE is the hermetic
-  tests' wiring: no drain signal, a turn is synthesized once its response has ended.
-- **`Unspeakable`** — replies the TTS never opens a context for (nothing synthesizable, or
-  a guard emptied them). They complete, are queued, and sit at the queue's head for the
-  next context to claim: the residual `windowHead` could not close.
-
-| row | property | live (`Drain`) | hermetic |
-|---|---|---|---|
-| `fifo_NoPhantomFullHeard` | a reply charted complete had its audio played or queued | ✓ | |
-| `fifo_AudioStartIsOwn` | a turn's `audio_start` is its own chunk's | ✓ | |
-| `fifo_NoUnheardWhenPlayed` | a cut reply that played never charts with no `audio_start` | ✓ | |
-| `fifo_FillerCtxRemembered` | a live filler context is in `_filler_ctxs` | ✓ | |
-| `fifo_NeverMeansNever` | "never played" means never played | ✓ | |
-| `fifo_ChartedAtMostOnce` (two replies) | no response charted twice | ✓ | ✓ (`fifoh_`) |
-| `fifo_ChartedTextMatchesContext` (two replies) | a context carries its own response's text | ✓ | ✓ (`fifoh_`) |
-| `fifo_split` | `NoPrematureFullChart`, under `Split` | ✗ (8) | |
-| `fifo_wrongText_unspeakable` | `ChartedTextMatchesContext`, with `Unspeakable = {r1}` | ✗ (6) | |
-
-The two failures are the design's own stated limits, now with traces:
-
-- **`fifo_split`**: a context's stop frame arrives while its response is still streaming,
-  the window plays out, and the reply is charted complete; the rest of it arrives under a
-  re-created context, which the design deliberately gives to no expected text
-  (`_open_turn`'s `_closed_ctxs` rule: "the tail belongs to no expected context").
-  Whether that is a defect depends on whether pipecat re-creates a context mid-response,
-  and under which id — the code's comment and the review's `:236` disagree.
-- **`fifo_wrongText_unspeakable`**: an unspeakable reply sits at the queue's head, the
-  next reply's context claims it, and the user barges in before that reply's End frame
-  has drained. The drain re-push is what corrects the claim, and it cannot arrive before
-  the response has ended — so a barge-in into a mis-claimed turn charts the wrong text,
-  and the corrector then rewrites the context with a prefix of it. After the drain the
-  claim is corrected and the unspeakable text dropped, as the commit says. This is the
-  residual the ledger cannot close alone: only the TTS knows which response a context
-  is for, and the drain tells it one response too late for a barge-in.
-
-One environment fact was added to both modules on the way: a cancelled completion's End
-frame is pushed from its `finally` at cancellation, before any new run can start. The
-model had let it arrive after the next response began streaming, and the ledger — which
-cannot tell whose End it is — closed that response on the stale frame. Real only if the
-event loop stalls between the cancel and the next run; excluded rather than modelled.
-
-### Known limits of this model
-
-- **The layout arithmetic is assumed.** A chunk's playout start from the window's start
-  and the chunks ahead of it is numeric; the model takes the ledger's "this chunk has
-  started" to be the transport's. The tests check the arithmetic.
-- **No thinking-sound bed, no spoken notices, no legacy ctx-less pipeline.** The shipped
-  wiring is tagged; `TTSSpeakFrame`s with text are an expected context of their own in
-  the code and would model like a reply.
-- **Words are not modelled**, as in `Ledger.tla`.
+  own) are not modelled. The hermetic fallback is `Drain = FALSE`, above.
+- **A cancelled completion's End is assumed to precede the next run.** pipecat pushes it
+  from the cancelled task's `finally`, at cancellation; the model had let it arrive after
+  the next response began streaming, and the ledger — which cannot tell whose End it is
+  and ends the stream it holds — closed that response on the stale frame. Excluded as an
+  ordering fact (`LlmStart` waits for it) rather than modelled; real only if the event
+  loop stalls between the cancel and the next run.
+- **Scale.** One reply and one filler is 3k states; two replies 258k (365k before the
+  End-ordering fact pruned the stale-End interleavings) and about two minutes.
 
 ## Worth modeling next
 

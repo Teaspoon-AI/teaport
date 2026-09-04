@@ -45,6 +45,10 @@ EXTENDS Naturals, Sequences, FiniteSets
 
 CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           Fillers,       \* filler context ids -- narrator / tool-ack TTSSpeakFrames
+          Unspeakable,   \* replies the TTS never opens a context for (nothing synthesizable)
+          Drain,         \* BOOLEAN: the live wiring (tts given: the End re-push is seen);
+                         \*   FALSE is the hermetic tests' -- no drain signal, a turn is
+                         \*   taken as synthesized once its response has ended
           Resume,        \* BOOLEAN: a context drained on the stop-frame timeout may resume
           MaxChunks,     \* audio pushes per context (2 makes a stall mid-reply reachable)
           MaxInterrupts,
@@ -69,6 +73,7 @@ VARIABLES
     interrupts,
     \* --- the ledger: transcript_ledger.py ---
     genAcc,      \* _gen          : NONE or the reply streaming now
+    ended,       \* replies whose End the TTS sighted with text (entry["ended"])
     claimed,     \* replies some turn has taken (entry["turn"] is set)
     queue,       \* _queue        : ended replies no context has claimed, oldest first
     turns,       \* _turns        : open turns, playout order (see Opened)
@@ -79,16 +84,16 @@ VARIABLES
     charted      \* self.events, assistant utterances only
 
 envVars    == <<llm, order, synth, timedOut, chunks, playedN, pq, window, interrupts>>
-ledgerVars == <<genAcc, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
+ledgerVars == <<genAcc, ended, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
 vars       == <<llm, order, synth, timedOut, chunks, playedN, pq, window, interrupts,
-                genAcc, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
+                genAcc, ended, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
 
 Init ==
     /\ llm = [r \in Replies |-> "idle"] /\ order = <<>>
     /\ synth = [c \in Ctxs |-> "idle"] /\ timedOut = [c \in Ctxs |-> FALSE]
     /\ chunks = [c \in Ctxs |-> 0] /\ playedN = [c \in Ctxs |-> 0]
     /\ pq = <<>> /\ window = FALSE /\ interrupts = 0
-    /\ genAcc = NONE /\ claimed = {} /\ queue = <<>> /\ turns = <<>>
+    /\ genAcc = NONE /\ ended = {} /\ claimed = {} /\ queue = <<>> /\ turns = <<>>
     /\ fifo = <<>> /\ winOpen = FALSE /\ fillerCtxs = <<>> /\ closedCtxs = {}
     /\ charted = <<>>
 
@@ -139,7 +144,9 @@ Survive(ts, c) == SelectSeq(Marked(ts, c), LAMBDA t: t.ctx = c \/ t.qa)
 
 \* _close_ready: chart the turns that are over, oldest first, up to the first
 \* that is not (its synthesis stalled, or its first chunk has not come).
-Ready(t) == t.qa /\ t.playedAll /\ (t.gen = NONE \/ t.synthDone)
+\* Hermetic wiring (no drain signal): a turn is taken as synthesized once its
+\* response has ended -- transcript_ledger._close_ready's `self._tts is None` arm.
+Ready(t) == t.qa /\ t.playedAll /\ (t.gen = NONE \/ t.synthDone \/ (~Drain /\ t.gen \in ended))
 ReadyLen(ts) == CHOOSE n \in 0..Len(ts) :
                   /\ \A i \in 1..n : Ready(ts[i])
                   /\ (n = Len(ts) \/ ~Ready(ts[n + 1]))
@@ -155,14 +162,20 @@ WithChunk(ts, c) ==   \* _push for an open turn: its (next) chunk is queued, not
 Ledger(f) ==
   CASE f.type = "LLMStart" ->                    \* LLMFullResponseStart + LLMText, at the TTS
          /\ genAcc' = f.gen
-         /\ UNCHANGED <<claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
+         /\ UNCHANGED <<ended, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
     [] f.type = "LLMEnd" ->                      \* LLMFullResponseEnd, at the TTS
          \* A cancelled completion's End finds no stream (genAcc cleared at the
          \* interruption) and is ignored; a response a live turn already took
          \* is not queued; any other ended response is an expected context.
-         /\ queue' = IF genAcc # f.gen \/ f.gen \in claimed THEN queue ELSE Append(queue, f.gen)
-         /\ genAcc' = IF genAcc = f.gen THEN NONE ELSE genAcc
-         /\ UNCHANGED <<claimed, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
+         \* The ledger cannot tell WHOSE End this is: it ends the stream it holds
+         \* (_llm_side: `gen, self._gen = self._gen, None`); a cancelled
+         \* completion's End finds none and is ignored -- it arrives before any new
+         \* stream begins, see LlmStart.
+         IF genAcc = NONE THEN UNCHANGED ledgerVars
+         ELSE /\ ended' = ended \cup {genAcc}
+              /\ queue' = IF genAcc \in claimed THEN queue ELSE Append(queue, genAcc)
+              /\ genAcc' = NONE
+              /\ UNCHANGED <<claimed, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
     [] f.type = "TTSStarted" ->
          LET never == Never(turns, f.ctx)
              kept  == Survive(turns, f.ctx)
@@ -182,7 +195,7 @@ Ledger(f) ==
                   /\ queue' = QueueAfterOpen(f.ctx)
                   /\ claimed' = ClaimedAfterOpen(f.ctx)
                   /\ UNCHANGED fillerCtxs
-            /\ UNCHANGED <<genAcc, fifo, winOpen>>
+            /\ UNCHANGED <<genAcc, ended, fifo, winOpen>>
     [] f.type = "TTSAudio" ->                    \* the TTS's tagged push
          /\ fifo' = Append(fifo, f.ctx)
          /\ IF f.ctx \in Range(fillerCtxs) THEN
@@ -194,13 +207,13 @@ Ledger(f) ==
                /\ turns' = Append(turns, Opened(f.ctx, TRUE))
                /\ queue' = QueueAfterOpen(f.ctx)
                /\ claimed' = ClaimedAfterOpen(f.ctx)
-         /\ UNCHANGED <<genAcc, winOpen, fillerCtxs, closedCtxs, charted>>
+         /\ UNCHANGED <<genAcc, ended, winOpen, fillerCtxs, closedCtxs, charted>>
     [] f.type = "PlayStart" ->                   \* BotStartedSpeaking: anonymous; dates the window
          /\ winOpen' = TRUE
          /\ turns' = [i \in DOMAIN turns |->
                         IF turns[i].ctx \in Range(fifo) /\ turns[i].audioStart = NONE
                         THEN [turns[i] EXCEPT !.audioStart = OWN] ELSE turns[i]]
-         /\ UNCHANGED <<genAcc, claimed, queue, fifo, fillerCtxs, closedCtxs, charted>>
+         /\ UNCHANGED <<genAcc, ended, claimed, queue, fifo, fillerCtxs, closedCtxs, charted>>
     [] f.type = "PlayChunk" ->                   \* the transport's untagged copy: ignored
          UNCHANGED ledgerVars
     [] f.type = "PlayStop" ->                    \* BotStoppedSpeaking: everything queued played
@@ -211,13 +224,13 @@ Ledger(f) ==
             /\ charted' = charted \o ChartsAs(Done(ts), FALSE, NONE)
             /\ closedCtxs' = closedCtxs \cup CtxsOf(Done(ts))
             /\ fifo' = <<>> /\ winOpen' = FALSE
-            /\ UNCHANGED <<genAcc, claimed, queue, fillerCtxs>>
+            /\ UNCHANGED <<genAcc, ended, claimed, queue, fillerCtxs>>
     [] f.type = "Drained" ->                     \* the response's End, sighted again below the TTS
          IF f.gen \in claimed /\ ~(\E i \in DOMAIN turns : turns[i].gen = f.gen) THEN
             UNCHANGED ledgerVars                 \* its turn is charted already
          ELSE IF turns = <<>> THEN
             /\ queue' = Remove(queue, f.gen)
-            /\ UNCHANGED <<genAcc, claimed, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
+            /\ UNCHANGED <<genAcc, ended, claimed, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
          ELSE
             \* Unclaimed yet its context drained: the newest open turn is this
             \* response's, whatever it claimed by order (that was never spoken).
@@ -236,21 +249,26 @@ Ledger(f) ==
                      /\ charted' = charted \o ChartsAs(Done(tsB), FALSE, f.gen)
                      /\ turns' = Kept(tsB)
                      /\ closedCtxs' = closedCtxs \cup CtxsOf(Done(tsB))
-               /\ UNCHANGED <<genAcc, fifo, winOpen, fillerCtxs>>
+               /\ UNCHANGED <<genAcc, ended, fifo, winOpen, fillerCtxs>>
     [] f.type = "Interruption" ->
          /\ charted' = charted \o ChartsCut(turns)
          /\ closedCtxs' = closedCtxs \cup CtxsOf(turns)
          /\ turns' = <<>> /\ genAcc' = NONE /\ queue' = <<>>
          /\ fifo' = <<>> /\ winOpen' = FALSE
-         /\ UNCHANGED <<claimed, fillerCtxs>>
+         /\ UNCHANGED <<ended, claimed, fillerCtxs>>
 
 (* ---------------- the pipeline ---------------- *)
 
 Streaming     == \E r \in Replies : llm[r] = "streaming"
 Synthesizing  == \E c \in Ctxs : synth[c] \in {"started", "audio"}
 
+\* A cancelled completion's End is pushed from its finally at cancellation, before
+\* any new run can start: no completion begins while one is "aborted". (Without
+\* this the ledger, which cannot tell whose End it is, closed the NEXT stream on
+\* the stale frame.)
+Aborted == \E r \in Replies : llm[r] = "aborted"
 LlmStart(r) ==
-    /\ llm[r] = "idle" /\ ~Streaming
+    /\ llm[r] = "idle" /\ ~Streaming /\ ~Aborted
     /\ llm' = [llm EXCEPT ![r] = "streaming"]
     /\ order' = Append(order, r)
     /\ Ledger([type |-> "LLMStart", gen |-> r])
@@ -272,15 +290,19 @@ LlmCancelEnd(r) ==
 
 \* Synthesis is sequential per the TTS service, and in the order responses
 \* reached it: a reply's context cannot start while an earlier live reply's has
-\* not. (Text reaching the TTS always opens a context, so no reply is stranded.)
+\* not. An Unspeakable reply's text never opens a context (nothing synthesizable,
+\* or the guard emptied it): it ends, is queued by the ledger, and is stranded at
+\* the queue's head for the next context to claim.
 Pos(r) == CHOOSE i \in DOMAIN order : order[i] = r
 Earlier(r) == {order[i] : i \in 1..(Pos(r) - 1)}
 CanStart(c) ==
     /\ synth[c] = "idle" /\ ~Synthesizing
     /\ IF c \in Fillers THEN TRUE
-         ELSE /\ llm[c] \in {"streaming", "done"}
+         ELSE /\ c \notin Unspeakable
+              /\ llm[c] \in {"streaming", "done"}
               /\ \A r2 \in Earlier(c) :
-                    llm[r2] \in {"aborted", "cancelled"} \/ synth[r2] # "idle"
+                    llm[r2] \in {"aborted", "cancelled"} \/ r2 \in Unspeakable
+                        \/ synth[r2] # "idle"
 
 TtsStart(c) ==
     /\ CanStart(c)
@@ -304,8 +326,10 @@ TtsStop(c) ==
     /\ synth' = [synth EXCEPT ![c] = "stopped"]
     /\ IF c \in Fillers THEN
           /\ UNCHANGED ledgerVars /\ UNCHANGED timedOut
-       ELSE IF llm[c] = "done" THEN
+       ELSE IF llm[c] = "done" /\ Drain THEN
           /\ Ledger([type |-> "Drained", gen |-> c]) /\ UNCHANGED timedOut
+       ELSE IF llm[c] = "done" THEN            \* hermetic: there is no drain signal
+          /\ UNCHANGED ledgerVars /\ UNCHANGED timedOut
        ELSE
           /\ UNCHANGED ledgerVars
           /\ timedOut' = [timedOut EXCEPT ![c] = TRUE]
@@ -410,7 +434,8 @@ TypeOK ==
     /\ synth \in [Ctxs -> {"idle", "started", "audio", "stopped", "aborted"}]
     /\ timedOut \in [Ctxs -> BOOLEAN]
     /\ pq \in Seq(Ctxs) /\ window \in BOOLEAN
-    /\ genAcc \in {NONE} \cup Replies /\ claimed \subseteq Replies /\ queue \in Seq(Replies)
+    /\ genAcc \in {NONE} \cup Replies /\ ended \subseteq Replies
+    /\ claimed \subseteq Replies /\ queue \in Seq(Replies)
     /\ fifo \in Seq(Ctxs) /\ winOpen \in BOOLEAN
     /\ closedCtxs \subseteq Ctxs /\ fillerCtxs \in Seq(Fillers)
     /\ \A i \in DOMAIN turns :
