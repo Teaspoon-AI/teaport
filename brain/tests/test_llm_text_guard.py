@@ -669,11 +669,13 @@ def test_unglued_text_is_what_the_tts_can_split():
     glued = ("Tomorrow in Austin should be warm, with a low chance of rain."
              "Sounds like a pleasant day with only a slight chance of rain.")
     assert match_endofsentence(glued.split("Sounds")[0] + "S") == 0
-    assert len(split_clauses_ramp(glued)) == 1
+    # soft_max=0: the sentence-boundary split alone (the long-sentence clause split
+    # is a separate remedy, tested in test_clause_ramp.py).
+    assert len(split_clauses_ramp(glued, soft_max=0)) == 1
     spaced = unglue_sentences(glued)
     first = spaced.split(" Sounds")[0]
     assert match_endofsentence(first + " S") == len(first)
-    assert len(split_clauses_ramp(spaced)) == 2
+    assert len(split_clauses_ramp(spaced, soft_max=0)) == 2
 
 
 def main():

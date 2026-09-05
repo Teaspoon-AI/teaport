@@ -107,6 +107,12 @@ _CLAUSE_CAP = env_num("TTS_CLAUSE_CAP", "200", int)
 # long run-on (e.g. the Tale of Two Cities opening) can't overflow the engine's ~512-token
 # utterance limit and crash the synth. Kept well under that limit with margin.
 _CLAUSE_HARD_MAX = env_num("TTS_CLAUSE_HARD_MAX", "350", int)
+# A sentence longer than this is split at its clause boundaries before synthesis
+# (see split_clauses_ramp): the engine synthesizes a chunk whole before any of it
+# plays, so one long sentence is the whole first-audio wait. Live 2026-09-04: a
+# 236-char sentence began 4.6 s after the model finished it, a ~30 s one 6.6 s.
+# Sentences up to this length keep their prosody untouched. 0 disables the split.
+_SENTENCE_SOFT_MAX = env_num("TTS_SENTENCE_SOFT_MAX", "120", int)
 _SEAM_KEEP_LEAD = env_num("TTS_SEAM_KEEP_LEAD", "0.05", float)   # s kept before first sound
 _SEAM_KEEP_TRAIL = env_num("TTS_SEAM_KEEP_TRAIL", "0.25", float)  # s kept after last sound
 
@@ -327,7 +333,8 @@ class EngineTTSService(TTSService):
         # at the source, so an empty list here now genuinely means "nothing to speak".
         clauses = split_clauses_ramp(text, first_max=_FIRST_CLAUSE_MAX_CHARS,
                                      growth=_CLAUSE_GROWTH, cap=_CLAUSE_CAP,
-                                     hard_max=_CLAUSE_HARD_MAX)
+                                     hard_max=_CLAUSE_HARD_MAX,
+                                     soft_max=_SENTENCE_SOFT_MAX)
         if not clauses:
             # ErrorFrame, not a bare return. Returning here yielded neither audio nor a
             # signal, and by this point _push_tts_frames has already created the audio

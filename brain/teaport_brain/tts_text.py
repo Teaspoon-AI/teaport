@@ -143,6 +143,32 @@ def _normalize_for_tts(text: str) -> str:
 # split_clauses_ramp for why not [A-Za-z0-9].
 _SPEECH = re.compile(r"[^\W_]")
 
+# Clause boundaries inside an over-long sentence (split_clauses_ramp, soft_max): a
+# clause mark followed by whitespace, or a full-width one (CJK writes no space after
+# it). The whitespace requirement is what keeps "1,000" and "10:10" whole.
+_CLAUSE_SPLIT = re.compile(r"(?<=[,;:—–])\s+|(?<=[，、；：])")
+_NO_SPACE_AFTER = "，、；：。！？"
+
+# A web address as a model writes it into prose. Spoken aloud it is "nvd dot nist dot
+# gov slash vuln slash …" for ten seconds (live 2026-09-04: a five-item consult delivery
+# read five of them) — the persona now names sources instead, and the delivery text
+# has these removed before the model sees it (agent_session). Trailing sentence
+# punctuation is not part of the address.
+_URL = re.compile(r"(?:https?://|www\.)[^\s<>()\"']+?(?=[.,;:!?)]*(?:\s|$))")
+
+
+def strip_urls_for_speech(text: str) -> str:
+    """Remove web addresses from text that will be spoken, tidying the space they
+    leave (" at https://x.y, and" -> " at, and" is still a sentence the model can
+    rephrase; an address alone in parentheses goes with its parentheses)."""
+    if "http" not in text and "www." not in text:
+        return text
+    text = re.sub(r"\(\s*" + _URL.pattern + r"\s*\)", "", text)
+    text = _URL.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" ([.,;:!?])", r"\1", text)
+    return text
+
 
 def has_speech(text: str) -> bool:
     """Whether the engine TTS will synthesize anything for `text`: after the same
@@ -157,28 +183,44 @@ def has_speech(text: str) -> bool:
 
 
 def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
-                       cap: int = 200, hard_max: int = 350) -> list:
-    """Ramp-up chunking for streaming TTS, splitting ONLY at sentence boundaries.
+                       cap: int = 200, hard_max: int = 350, soft_max: int = 120) -> list:
+    """Ramp-up chunking for streaming TTS: at sentence boundaries, and inside a
+    sentence only when the sentence is long.
 
-    A chunk is one or more WHOLE sentences — never split mid-sentence. Earlier this
-    cut at clause punctuation (commas/colons) and word-broke a long opening clause,
-    but every chunk is synthesized as an independent TTS utterance, so a
-    sub-sentence boundary made the boundary word get utterance-final prosody (an
-    unnatural emphasis/fall) instead of mid-phrase continuation. Sentence boundaries
-    are genuine prosodic pauses, so chunking there has no audible seam.
+    A chunk is normally one or more WHOLE sentences. Earlier this cut every clause
+    (commas/colons) and word-broke a long opening clause, but every chunk is
+    synthesized as an independent TTS utterance, so a sub-sentence boundary makes the
+    boundary word get utterance-final prosody (an unnatural emphasis/fall) instead of
+    mid-phrase continuation. Sentence boundaries are genuine prosodic pauses, so
+    chunking there has no audible seam — and a sentence up to `soft_max` chars is
+    still never split.
 
-    A small first chunk still gates first-audio; each later chunk may grow up to
-    `growth`x the previous chunk's length, accumulating whole sentences and stretching
-    to the next sentence boundary. (growth < 1/RTF avoids mid-reply stalls; on the
-    GPU backend RTF is tiny so this is moot, but the ramp is harmless.)
+    Above `soft_max` the trade flips. The engine synthesizes a chunk whole before
+    any of it can play, so a long sentence IS the first-audio latency: measured live
+    2026-09-04, a 236-char sentence (18.8 s of audio) began 4.6 s after the model
+    finished it, a ~30 s one 6.6 s — 8 s of silence that the user read as "it's
+    done" and talked over. gpt-oss writes list answers as one comma-chained sentence,
+    so this is the common shape for a consult delivery, not an edge. A sentence over
+    `soft_max` is therefore split at its clause boundaries (", ; : — –", and the
+    CJK "，、；："), and the pieces ride the same ramp as sentences do — a comma seam
+    every few seconds inside a run-on list reads as the list's own rhythm. A comma
+    with no space after it ("1,000") is not a boundary. `soft_max=0` disables this.
 
-    A single sentence with no internal '.!?' (e.g. the Tale of Two Cities run-on) would
-    otherwise become one chunk that overflows the engine's max utterance length (~512
-    tokens) and CRASHES the synth, aborting the whole reply. So as a last resort a chunk
-    longer than `hard_max` chars is word-broken — a mid-sentence prosody seam beats a
-    dropped reply. hard_max is in chars, kept well under the token limit."""
+    A small first chunk gates first-audio; each later chunk may grow up to `growth`x
+    the previous chunk's length, accumulating whole pieces and stretching to the next
+    boundary. (growth < 1/RTF avoids mid-reply stalls; on the GPU backend RTF is tiny
+    so this is moot, but the ramp is harmless.)
+
+    A single sentence with no internal punctuation at all (e.g. the Tale of Two Cities
+    run-on) would otherwise become one chunk that overflows the engine's max utterance
+    length (~512 tokens) and CRASHES the synth, aborting the whole reply. So as a last
+    resort a chunk longer than `hard_max` chars is word-broken — a mid-word-group seam
+    beats a dropped reply. hard_max is in chars, kept well under the token limit."""
     text = _normalize_for_tts(text)
     parts = re.split(r"(?<=[.!?])\s+", text.strip())
+    if soft_max:
+        parts = [piece for p in parts
+                 for piece in (_CLAUSE_SPLIT.split(p) if len(p) > soft_max else [p])]
     out, cur, limit = [], "", first_max
     for p in parts:
         if cur and len(cur) + 1 + len(p) > limit:
@@ -186,7 +228,10 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
             limit = min(cap, max(first_max, int(round(len(cur) * growth))))
             cur = p
         else:
-            cur = f"{cur} {p}".strip()
+            # Pieces rejoin with the space the split consumed -- none after a
+            # full-width mark, where the source had none either.
+            sep = "" if cur and cur[-1] in _NO_SPACE_AFTER else " "
+            cur = f"{cur}{sep}{p}".strip()
     if cur:
         out.append(cur)
     if hard_max:

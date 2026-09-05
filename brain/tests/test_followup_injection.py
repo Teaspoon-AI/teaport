@@ -148,6 +148,22 @@ async def test_the_placeholder_tool_result_is_rewritten():
     assert body["answer"] == ANSWER, body
 
 
+async def test_web_addresses_leave_the_delivery_but_stay_in_the_record():
+    """Spoken, a URL is ten seconds of "dot … slash …" (live 2026-09-04 21:10: five of
+    them in one sentence, 6.6 s to first audio, the user talked over the silence).
+    The delivery text the model reads has them removed; the rewritten tool result —
+    what "what did the agent say?" answers from — keeps them."""
+    with_urls = ("Top story: Chromium sandbox RCE at https://nvd.nist.gov/vuln/detail/"
+                 "CVE-2026-85046, then Fermat at https://www.anthropic.com/research/fermat.")
+    ctx, task, _r, _g = await _deliver(with_urls)
+    trigger = task.at_run[-1]["content"]
+    assert "http" not in trigger and "www." not in trigger, trigger
+    assert "Chromium sandbox RCE" in trigger and "Fermat" in trigger, trigger
+    assert "don't read out web addresses" in trigger, trigger
+    tool = [m for m in ctx.messages if m.get("role") == "tool"][0]
+    assert json.loads(tool["content"])["answer"] == with_urls, "the record keeps the links"
+
+
 async def test_a_consult_that_never_reported_is_not_called_a_failure():
     """It can die on teardown AFTER the action landed, so asserting failure can lie."""
     ctx, task, _r, _g = await _deliver(None)

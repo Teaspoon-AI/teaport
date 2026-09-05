@@ -76,6 +76,7 @@ from teaport_brain.tools import (
     register_tools,
 )
 from teaport_brain.transcript_ledger import TranscriptLedger
+from teaport_brain.tts_text import strip_urls_for_speech
 from teaport_brain.turn_timing import TurnTimer
 
 
@@ -223,13 +224,21 @@ def _make_consult_followup(task, context, gate, retirer):
                 rewrote = True
                 break
         if text:
+            # The addresses stay in the rewritten tool result above (the record the
+            # user can ask about); they leave the delivery text. Spoken, each one is
+            # "nvd dot nist dot gov slash vuln slash …" — live 2026-09-04 21:10 a
+            # five-item delivery read five of them in ONE sentence, ~30 s of audio
+            # whose first chunk alone took 6.6 s to synthesize: 8 s of silence the
+            # user took for "done" and talked over, so the delivery was retired at
+            # 10% heard. The persona now names sources instead of reading them.
             content = (
                 f"[background task complete] The desktop agent you delegated to has "
-                f"finished this earlier request: \"{request}\".\n\nIts answer:\n{text}\n\n"
+                f"finished this earlier request: \"{request}\".\n\nIts answer:\n"
+                f"{strip_urls_for_speech(text)}\n\n"
                 "Tell the user now, in one or two short spoken sentences, briefly "
                 "reattaching it to what they asked (e.g. \"About that forecast you "
                 "wanted — …\"). Speak naturally; don't mention tools, agents, or that "
-                "it was delayed.")
+                "it was delayed, and don't read out web addresses — name the source.")
         else:
             content = (
                 f"[background task: no confirmation] The desktop agent did not report "
