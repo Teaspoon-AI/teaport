@@ -110,9 +110,10 @@ _CLAUSE_HARD_MAX = env_num("TTS_CLAUSE_HARD_MAX", "350", int)
 # A sentence longer than this is split at its clause boundaries before synthesis
 # (see split_clauses_ramp): the engine synthesizes a chunk whole before any of it
 # plays, so one long sentence is the whole first-audio wait. Live 2026-09-04: a
-# 236-char sentence began 4.6 s after the model finished it, a ~30 s one 6.6 s.
-# Sentences up to this length keep their prosody untouched. 0 disables the split.
-_SENTENCE_SOFT_MAX = env_num("TTS_SENTENCE_SOFT_MAX", "120", int)
+# 236-char sentence began 4.6 s after the model finished it, a ~30 s one 6.6 s, and
+# at a 120 cap a 112-char one still waited 1.7 s. Sentences up to this length keep
+# their prosody untouched. 0 disables the split.
+_SENTENCE_SOFT_MAX = env_num("TTS_SENTENCE_SOFT_MAX", "80", int)
 _SEAM_KEEP_LEAD = env_num("TTS_SEAM_KEEP_LEAD", "0.05", float)   # s kept before first sound
 _SEAM_KEEP_TRAIL = env_num("TTS_SEAM_KEEP_TRAIL", "0.25", float)  # s kept after last sound
 

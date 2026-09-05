@@ -55,13 +55,19 @@ def test_the_forecast_shape_gets_a_short_first_chunk():
 
 
 def test_a_sentence_up_to_soft_max_is_never_split():
-    s = ("It is known for its vibrant culinary scene, especially its famous ceviche, "
-         "and for its coastal cliffs.")               # 105 chars, three clauses
-    assert len(s) <= 120
+    s = "It is known for its vibrant culinary scene, especially its famous ceviche."  # 74 chars
+    assert len(s) <= 80
     assert split_clauses_ramp(s) == [s], split_clauses_ramp(s)
+    # Just over it, a sentence IS split (live 22:22: 112 chars under the old 120 cap
+    # was one 6.4 s call, 1.7 s to first audio).
+    long = ("Expect Thursday in Austin to be hot, around ninety degrees, mostly sunny with "
+            "a small chance of afternoon showers.")
+    assert len(long) > 80
+    chunks = split_clauses_ramp(long)
+    assert len(chunks) >= 2 and chunks[0] == "Expect Thursday in Austin to be hot,", chunks
     # ...and soft_max=0 switches the clause split off entirely.
     assert split_clauses_ramp(LIST_SENTENCE, soft_max=0) == [LIST_SENTENCE]
-    print("  PASS short sentences keep their prosody; soft_max=0 disables")
+    print("  PASS sentences up to 80 chars keep their prosody; longer ones split; soft_max=0 disables")
 
 
 def test_sentence_boundaries_still_come_first():

@@ -183,7 +183,7 @@ def has_speech(text: str) -> bool:
 
 
 def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
-                       cap: int = 200, hard_max: int = 350, soft_max: int = 120) -> list:
+                       cap: int = 200, hard_max: int = 350, soft_max: int = 80) -> list:
     """Ramp-up chunking for streaming TTS: at sentence boundaries, and inside a
     sentence only when the sentence is long.
 
@@ -205,6 +205,10 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
     CJK "，、；："), and the pieces ride the same ramp as sentences do — a comma seam
     every few seconds inside a run-on list reads as the list's own rhythm. A comma
     with no space after it ("1,000") is not a boundary. `soft_max=0` disables this.
+    80, not 120: at 120 a 112-char forecast sentence still went out as one call --
+    6.4 s of audio, 1.7 s of synthesis before its first word (live 22:22) -- and 80
+    chars is about five seconds of speech, the longest wait worth keeping for the
+    sake of an unbroken sentence.
 
     A small first chunk gates first-audio; each later chunk may grow up to `growth`x
     the previous chunk's length, accumulating whole pieces and stretching to the next
