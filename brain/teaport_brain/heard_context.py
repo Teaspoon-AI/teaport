@@ -109,6 +109,15 @@ class HeardContextCorrector(FrameProcessor):
         So we locate the cut turn by POSITION (it is the bot's most recent turn)
         and overwrite its spoken message with the accurate heard prefix from the
         ledger — or insert one if pipecat committed none. Tool results are kept.
+
+        Positional anchoring is sound only while every spoken assistant message
+        in the context is one the LEDGER also charted. Filler lines (the consult
+        narrator, the tool acks, the pipeline's own notices) are charted by
+        nothing, so they must never be committed either — which is why tools.py,
+        llm_error_speaker.py and agent_session.py push every such line with
+        append_to_context=False. A filler committed as the tail assistant message
+        would BE the anchor here, and the cut reply's heard prefix would delete
+        or overwrite the filler line instead of the reply.
         """
         heard = _clean_prefix(u.heard_text)
         msgs = self._context.get_messages()

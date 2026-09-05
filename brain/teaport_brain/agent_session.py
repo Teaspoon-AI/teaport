@@ -47,6 +47,7 @@ from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
     INTERRUPT_MIN_WORDS,
     SMARTTURN_COMPLETE_THRESHOLD,
+    SMARTTURN_STOP_SECS,
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
     EagerSmartTurnAnalyzer,
@@ -75,6 +76,7 @@ from teaport_brain.tools import (
     register_tools,
 )
 from teaport_brain.transcript_ledger import TranscriptLedger
+from teaport_brain.tts_text import strip_urls_for_speech
 from teaport_brain.turn_timing import TurnTimer
 
 
@@ -200,7 +202,7 @@ def _make_consult_followup(task, context, gate, retirer):
         # Wait for a clear moment: don't step on the user mid-utterance OR the
         # assistant mid-answer about something else. (Gives up after max_wait so a
         # relentlessly chatty conversation can't strand the answer.)
-        await gate.wait_until_idle()
+        await gate.wait_until_idle(turn_free=True)
         # Rewrite the placeholder tool result to the real outcome. The placeholder's
         # own instruction ("add nothing more... do not invent an answer now") stays
         # authoritative if left in the context — observed live: the model obeyed IT
@@ -208,11 +210,17 @@ def _make_consult_followup(task, context, gate, retirer):
         # so the answer never reached the user. With the tool result rewritten, the
         # context reads like any normally-completed tool call.
         rewrote = False
+        # The record loses the web addresses too. 2132096 kept them here so "what
+        # did the agent say?" could still offer a link -- and live 2026-09-04 21:59
+        # that question was answered FROM this record with every path read aloud
+        # ("nvd.nist.gov/vuln/detail/cve-2026-85046 … artificialanalysis.ai/articles/
+        # …"), 48 s of it, the overlay rule notwithstanding. On a voice surface the
+        # only thing this text is ever used for is being spoken.
         for m in context.get_messages():
             if (isinstance(m, dict) and m.get("role") == "tool"
                     and m.get("tool_call_id") == tool_call_id):
                 m["content"] = json.dumps(
-                    {"status": "complete", "answer": text} if text
+                    {"status": "complete", "answer": strip_urls_for_speech(text)} if text
                     # "unknown", not "failed": the consult can die on teardown
                     # AFTER the action landed (observed live — message posted,
                     # then rc=1), so asserting failure can be a lie.
@@ -222,13 +230,21 @@ def _make_consult_followup(task, context, gate, retirer):
                 rewrote = True
                 break
         if text:
+            # The addresses stay in the rewritten tool result above (the record the
+            # user can ask about); they leave the delivery text. Spoken, each one is
+            # "nvd dot nist dot gov slash vuln slash …" — live 2026-09-04 21:10 a
+            # five-item delivery read five of them in ONE sentence, ~30 s of audio
+            # whose first chunk alone took 6.6 s to synthesize: 8 s of silence the
+            # user took for "done" and talked over, so the delivery was retired at
+            # 10% heard. The persona now names sources instead of reading them.
             content = (
                 f"[background task complete] The desktop agent you delegated to has "
-                f"finished this earlier request: \"{request}\".\n\nIts answer:\n{text}\n\n"
+                f"finished this earlier request: \"{request}\".\n\nIts answer:\n"
+                f"{strip_urls_for_speech(text)}\n\n"
                 "Tell the user now, in one or two short spoken sentences, briefly "
                 "reattaching it to what they asked (e.g. \"About that forecast you "
                 "wanted — …\"). Speak naturally; don't mention tools, agents, or that "
-                "it was delayed.")
+                "it was delayed, and don't read out web addresses — name the source.")
         else:
             content = (
                 f"[background task: no confirmation] The desktop agent did not report "
@@ -298,7 +314,7 @@ def _make_consult_followup(task, context, gate, retirer):
                 if attempt + 1 < _DELIVERY_ATTEMPTS:
                     logger.info("consult follow-up: turn was flushed before the model "
                                 f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
-                    await gate.wait_until_idle()
+                    await gate.wait_until_idle(turn_free=True)
         # Out of attempts. Retire it anyway: a live "tell the user now" is a standing
         # order the next unrelated turn would execute, which is worse than a lost answer
         # (the answer itself survives in the rewritten tool result, so "what did the
@@ -398,8 +414,11 @@ class AgentSession:
                 + "speaking the warning and ending this session instead of greeting"
             )
             self.should_end = True
+            # append_to_context=False: the pipeline talking, not the model -- never
+            # an assistant message, and a marked filler for TranscriptLedger.
             await self.task.queue_frames([TTSSpeakFrame(
-                self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE)])
+                self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE,
+                append_to_context=False)])
             return
         self.context.add_message({"role": "user", "content": self._GREETING})
         await self.task.queue_frames([LLMRunFrame()])
@@ -486,7 +505,9 @@ def build_agent_session(transport, *, voice: str | None = None,
                     TurnAnalyzerUserTurnStopStrategy(
                         turn_analyzer=EagerSmartTurnAnalyzer(
                             complete_threshold=SMARTTURN_COMPLETE_THRESHOLD,
-                            params=SmartTurnParams(stop_secs=ENDPOINT_STOP_SECS),
+                            # The CEILING on an INCOMPLETE verdict, not the VAD's
+                            # floor -- see endpointing.py.
+                            params=SmartTurnParams(stop_secs=SMARTTURN_STOP_SECS),
                         )
                     )
                 ]
@@ -494,7 +515,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         ),
     )
 
-    ledger = TranscriptLedger()
+    # The ledger reads the LLM stream at the TTS's sighting (the text the TTS is
+    # actually handed, after the guard) and tells the thinking bed's audio, pushed
+    # into the transport, from the transport's untagged copies of what it played.
+    ledger = TranscriptLedger(tts=tts, output=transport.output())
     heard_corrector = HeardContextCorrector(ledger, context)
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
@@ -581,7 +605,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
                    followup=None if AGENT_FIRST
                    else _make_consult_followup(task, context, followup_gate,
-                                               followup_trigger))
+                                               followup_trigger),
+                   # Lets the consult narrator fit its progress lines into a gap
+                   # rather than talking over the user (see _consult_progress).
+                   gate=followup_gate)
 
     return AgentSession(
         task=task,

@@ -51,6 +51,21 @@
 #         thresholds are shared with raw_llm_capture (tts_text.is_sentence_repeat),
 #         which logs the raw completion when this fires.
 #
+#   UNGLUE  put the space back between a sentence's terminator and the capital that
+#         opens the next one. gpt-oss routinely streams "rain.Sounds", "jacket.Third",
+#         "need?Just" (15 of 198 texts handed to the TTS on 2026-09-04; "Burnet.If" on
+#         2026-08-26). Nothing downstream can split that: pipecat's sentence aggregator
+#         waits for the next non-space character and asks NLTK, and Punkt needs the
+#         space (match_endofsentence("rain.Sounds") == 0), so the WHOLE reply reaches
+#         run_tts as one sentence; split_clauses_ramp splits on `[.!?]\s+` and sees
+#         one clause too. The cost is first-audio: every word of the reply waited for
+#         the last word's synthesis (a 15 s forecast began 4.1 s after the LLM's End,
+#         a 13.7 s list 3.7 s), and the glued text was what history and the heard
+#         ledger recorded. Done here, across delta boundaries, because this is the
+#         one place that already sees every delta before the aggregator does. Lower
+#         case after the dot is left alone (anthropic.com, e.g.), and so is a dot
+#         after a lone letter (U.S., Ph.D.) — see unglue_sentences.
+#
 # The recovery line matters: swallowing alone turned a degenerate turn into total
 # silence. The captures collapse within their first ~50 characters, and a prefix
 # that short is usually punctuation, which split_clauses_ramp then drops as
@@ -97,6 +112,26 @@ ENABLED = env_flag("TEAPORT_LLM_TEXT_GUARD", True)
 _ELLIPSIS_RUN = re.compile(r"(?:\u2026\s*){2,}")
 _DOT_RUN_LONG = re.compile(r"\.{4,}")
 
+# gpt-oss speaks the Harmony chat format, whose vocabulary carries CONTROL and RESERVED
+# special tokens -- "<|start|>", "<|channel|>", "<|message|>", "<|end|>", "<|call|>",
+# "<|return|>", "<|constrain|>", and the reserved block "<|reserved_NNNNNN|>". The
+# provider is meant to consume these while parsing the stream; intermittently one leaks
+# into the CONTENT as literal text. Live 2026-09-02: a reply carried "<|reserved_200097|>"
+# -- the TTS spent 4.2s trying to pronounce it, and the ledger, which then read the
+# stream above this guard, charted it as the assistant's own words (it now reads the
+# stream at the TTS, so what is stripped here reaches neither speech nor the transcript).
+# It carries no dots/ellipsis, so the degeneracy counter is blind to it and it needs its
+# own strip. A special token is a SINGLE vocabulary token, and the live capture arrived
+# whole in one delta -- but nothing guarantees a provider's chunking, so a trailing
+# partial opener ("<|", "<|reserved_2000") is held back to the next delta like the fold
+# runs are (_TOKEN_HOLDBACK), and one still open at the End is dropped as junk. The body
+# is bounded so a stray "<|" in ordinary prose cannot anchor a runaway match.
+_SPECIAL_TOKEN = re.compile(r"<\|[A-Za-z0-9_]{0,64}\|>")
+# A delta's tail that could be the start of a special token: "<", "<|", "<|reserved_2".
+# Held back until the next delta says what it was; "a < b" has a space after the "<"
+# and is not matched.
+_TOKEN_HOLDBACK = re.compile(r"<\|?[A-Za-z0-9_]{0,64}\|?$")
+
 # The folds above are per-delta, and the stream splits wherever it likes: "**" arriving as
 # "*" + "*", or "\u2026" + "\u2026", or ".." + "..", passed through untouched while the same text in
 # ONE delta folded cleanly — guard output that depended on provider chunking, and markdown
@@ -134,6 +169,56 @@ _LEADING_PUNCT = re.compile(r"^[\s.,;:!?\u2026]+")
 # comparison (the text itself always flushes unchanged), and the persona has the
 # model spell numbers out, so digit-adjacent periods are rare here anyway.
 _SENT_END = re.compile(r"[.!?]+")
+
+# UNGLUE: a sentence closer -- terminator run plus any closing quote/bracket riding on
+# it ('."', '?)') -- and what may open the next sentence right behind it with no space.
+# Case is what makes it a boundary: "rain.Sounds" is two sentences, "anthropic.com" is
+# a domain, "3.5" a number. `isupper()` rather than [A-Z] so the accented capitals of
+# the Spanish/French/Portuguese rooms count too; CJK has no case and no spaces, and
+# its sentences end in "。", which is not in the closer set, so it is untouched.
+_SENT_CLOSER = re.compile(r"[.!?…]+[\"'”’)\]]*")
+_SENT_CLOSER_AT_END = re.compile(r"[.!?…]+[\"'”’)\]]*$")
+_SENT_OPENERS = "\"“‘("
+
+
+def _opens_sentence(ch: str) -> bool:
+    return ch.isupper() or ch in _SENT_OPENERS
+
+
+def _after_lone_letter(text: str, i: int) -> bool:
+    """Is the character at `i` (a '.') the dot of a one-letter word -- an initialism
+    (U.S., e.g., Ph.D.) rather than a sentence end? A lone letter is one preceded by
+    nothing alphabetic."""
+    return (i >= 1 and text[i - 1].isalpha()
+            and (i < 2 or not text[i - 2].isalpha()))
+
+
+def unglue_sentences(text: str, before: str = "") -> str:
+    """Insert the missing space after a sentence closer that a capital (or an opening
+    quote) follows directly -- inside `text`, and at its seam with `before`, the tail
+    of the text that preceded it in the stream. Pure; the guard supplies `before`."""
+    if not text:
+        return text
+    out, pos = [], 0
+    for m in _SENT_CLOSER.finditer(text):
+        end = m.end()
+        if end >= len(text) or not _opens_sentence(text[end]):
+            continue
+        if text[m.start()] == "." and _after_lone_letter(text, m.start()):
+            continue  # "U.S.Army": an initialism, not a boundary
+        if end + 1 < len(text) and text[end + 1] == ".":
+            continue  # "Ph.D.": the capital is itself an initial
+        out.append(text[pos:end])
+        out.append(" ")
+        pos = end
+    out.append(text[pos:])
+    text = "".join(out)
+    if before and _opens_sentence(text[0]) and not (len(text) > 1 and text[1] == "."):
+        m = _SENT_CLOSER_AT_END.search(before)
+        if m and not (before[m.start()] == "." and _after_lone_letter(before, m.start())):
+            text = " " + text
+    return text
+
 
 # Spoken when the guard trips. Overridable because the pipeline serves Japanese,
 # Mandarin and Hindi too, and a hardcoded English apology is wrong in those rooms.
@@ -227,7 +312,11 @@ class DegeneracyCounter:
 
 
 def fold_degenerate_chars(text: str) -> str:
-    """Fold the unspeakable family to plain equivalents; collapse ellipsis runs."""
+    """Strip leaked Harmony special tokens, fold the unspeakable family to plain
+    equivalents, and collapse ellipsis runs. Called on every delta and on the
+    End-flush of the fold holdback, so the strip covers both paths in one place."""
+    if "<|" in text:
+        text = _SPECIAL_TOKEN.sub("", text)
     text = fold_unspeakable(text)
     text = _ELLIPSIS_RUN.sub("\u2026 ", text)
     text = _DOT_RUN_LONG.sub("...", text)
@@ -268,6 +357,9 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
         self._pending = ""
         self._pending_frame = None
+        # UNGLUE state: the tail of the last folded text, so a terminator that ended
+        # one delta and the capital that opens the next still get their space.
+        self._tail = ""
         # Repeat cut state: sentences already flushed this response, the folded text
         # of the sentence still accumulating, and the frames that carry it — held
         # unpushed until the sentence closes clean (see the module header; deliberately
@@ -301,11 +393,23 @@ class LLMTextGuard(FrameProcessor):
         """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK."""
         text = self._pending + text
         self._pending = ""
+        # Before the holdback split: a held-back ".." rejoined here is the closer the
+        # capital after it is glued to, and the seam with the previous delta is the
+        # other place the space goes missing.
+        text = unglue_sentences(text, self._tail)
         m = _HOLDBACK.search(text)
         if m and len(m.group(0)) <= _MAX_HOLDBACK:
             self._pending = m.group(0)
             text = text[:m.start()]
-        return fold_degenerate_chars(text) if text else ""
+        elif "<" in text:
+            m = _TOKEN_HOLDBACK.search(text)
+            if m:
+                self._pending = m.group(0)
+                text = text[:m.start()]
+        folded = fold_degenerate_chars(text) if text else ""
+        if folded:
+            self._tail = folded[-8:]
+        return folded
 
     async def _flush_held(self, direction: FrameDirection, keep_tail: int = 0):
         """Push held frames in arrival order, keeping back the ones whose text lies
@@ -366,21 +470,19 @@ class LLMTextGuard(FrameProcessor):
                     frame: "LLMTextFrame | None" = None):
         """Push one text frame, applying the leading-punct strip. Empty -> nothing.
 
-        `frame` REUSES the inbound frame instead of building a new one, and that is
-        load-bearing rather than tidiness. TranscriptLedger is a BaseObserver: it sees
-        every push of every frame and de-duplicates on frame IDENTITY (`if f.id in
-        self._seen: return`). Each LLMTextFrame is pushed twice on the way down — once
-        by the LLM service, once by this guard — and the ledger charted it once only
-        because both pushes carried the same object. A fresh LLMTextFrame gives the
-        second push an id the ledger has never seen, so every delta lands in the
-        intended-text accumulator TWICE, interleaved by arrival order: "I like teal."
-        was charted as "I like tealI. like teal.".
- 
-        That is the denominator of the heard fraction, so replies the user heard in
-        full scored 0-96%, HeardContextCorrector truncated or dropped them from history,
-        and the model — unable to see its own turns — re-answered questions it had
-        already answered. Live 2026-08-25: 11 of 12 assistant turns doubled, against
-        clean single TTS calls.
+        `frame` REUSES the inbound frame instead of building a new one. Each
+        LLMTextFrame is pushed twice on the way down — once by the LLM service, once
+        by this guard — and every observer that de-duplicates on frame IDENTITY sees
+        one delta only because both pushes carry the same object. That was
+        load-bearing for TranscriptLedger's intended text until it began reading the
+        stream at the TTS's own sighting (a fresh frame would now be charted once,
+        with the guarded text); it still is for its LEDGER_TRACE, which dedups every
+        traced frame by id, and for any other id-keyed observer. The incident that
+        made it a rule, live 2026-08-25: a fresh frame per delta charted "I like
+        teal." as "I like tealI. like teal.", the heard fraction's denominator
+        doubled, replies heard in full scored 0-96%, HeardContextCorrector dropped
+        them from history, and the model re-answered questions it had answered --
+        11 of 12 assistant turns.
 
         Only genuinely NEW text (the recovery line) may build a new frame. Text that
         merely passed through keeps the identity it arrived with.
@@ -444,10 +546,16 @@ class LLMTextGuard(FrameProcessor):
                 # frame, which opens the phantom caption slot the strip exists to stop.
                 await self._emit(RECOVERY_TEXT, direction)
                 return
+            leaked = _SPECIAL_TOKEN.findall(frame.text) if "<|" in frame.text else ()
+            if leaked:
+                logger.warning(
+                    f"LLMTextGuard: stripping leaked Harmony control token(s) {leaked} "
+                    f"from the reply (gpt-oss emitted a special token into content)"
+                )
             emitted = self._fold_streaming(frame.text)
-            # If the folder held a tail back, remember which frame it came from: the
-            # ledger charted that delta's whole text on the LLM service's push, so the
-            # eventual flush must ride the same frame or the tail is charted twice.
+            # If the folder held a tail back, remember which frame it came from, so the
+            # eventual flush rides the same frame (pass-through text keeps its frame --
+            # see _emit) rather than a fresh one.
             self._pending_frame = frame if self._pending else None
             if emitted:
                 # Hold until the sentence closes — the repeat cut can only DROP a
@@ -472,7 +580,9 @@ class LLMTextGuard(FrameProcessor):
                 if self._pending:
                     tail, self._pending = self._pending, ""
                     held, self._pending_frame = self._pending_frame, None
-                    folded = fold_degenerate_chars(tail)
+                    # A special-token opener still open at the End was never going
+                    # to close: junk, not speech.
+                    folded = fold_degenerate_chars(_TOKEN_HOLDBACK.sub("", tail))
                     if folded:
                         self._held.append((held, folded))
                         self._open_sent += folded

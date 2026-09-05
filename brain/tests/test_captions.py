@@ -40,6 +40,7 @@ from pipecat.frames.frames import (  # noqa: E402
     AggregatedTextProgressFrame,
     BotStoppedSpeakingFrame,
     LLMFullResponseEndFrame,
+    TTSStartedFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 from pipecat.utils.text.base_text_aggregator import AggregationType  # noqa: E402
@@ -203,6 +204,42 @@ async def test_user_hold_survivor_resumes_full_text():
     print("  PASS user-hold survivor → resumed partial carries full text, one final")
 
 
+async def test_a_stop_between_contexts_does_not_split_the_next_bubble():
+    # engine_tts pushes stop frames, so BotStopped now fires at the end of EACH
+    # context -- 1 ms before the next queued one starts, and after that next one's
+    # first words may already have been released (its schedule is anchored at the
+    # previous context's last word). Live 2026-09-04 21:26: the queued consult
+    # delivery got a COMPLETE bubble at the reply's stop, then a second one that
+    # streamed in as it played. A sentence with words still to come is not over.
+    # The transport forwards each context's TTSStartedFrame as it starts writing
+    # that context's audio: that is which context the voice is on.
+    h = Harness()
+    await h.feed(TTSStartedFrame(context_id="ctx-reply"))
+    await h.sentence("Realism ties truth to correspondence.", "ctx-reply", pts=1_000)
+    await h.feed(END(pts=1_000))
+    assert h.finals() == ["Realism ties truth to correspondence."], h.sent
+    delivery = "About those Hacker News stories: the top five are a Chromium exploit."
+    seg = await h.sentence(delivery, "ctx-delivery", pts=2_000, stop_after=3)  # early words
+    await h.feed(BotStoppedSpeakingFrame())    # the REPLY's stop frame
+    assert h.finals() == ["Realism ties truth to correspondence."], (
+        f"the delivery was finalized on the reply's stop: {h.sent}")
+    await h.feed(TTSStartedFrame(context_id="ctx-delivery"))  # its audio starts now
+    for acc in prefixes(delivery)[3:]:
+        await h.feed(P("ctx-delivery", seg, delivery, acc, 2_000))
+    await h.feed(END(pts=2_000))
+    assert h.finals() == ["Realism ties truth to correspondence.", delivery], h.sent
+    assert h.partials()[-1] == delivery, "one bubble, streamed to completion"
+    await h.feed(BotStoppedSpeakingFrame())    # the delivery's own stop: already final
+    assert h.finals() == ["Realism ties truth to correspondence.", delivery], h.sent
+    # ...while a stop on the context the voice IS on still finalizes (the filler case).
+    h = Harness()
+    await h.feed(TTSStartedFrame(context_id="ctx-filler"))
+    await h.sentence("Opening that page.", "ctx-filler")
+    await h.feed(BotStoppedSpeakingFrame())
+    assert h.finals() == ["Opening that page."], h.sent
+    print("  PASS a context-boundary BotStopped leaves the queued utterance's bubble open")
+
+
 async def test_reply_end_finalizes_at_last_word():
     # The playout-paced LLMFullResponseEndFrame (pts = last word) finalizes
     # immediately — the final must beat the user's next interim, not wait ~0.4s
@@ -302,6 +339,7 @@ def test_captions():
         await test_barge_in_no_final_no_stragglers()
         await test_user_hold_no_reopened_bubble()
         await test_user_hold_survivor_resumes_full_text()
+        await test_a_stop_between_contexts_does_not_split_the_next_bubble()
         await test_reply_end_finalizes_at_last_word()
         await test_stale_end_ignored()
         await test_final_skipped_when_client_committed()

@@ -19,7 +19,7 @@ uv sync --locked --project brain     # brain/.venv from uv.lock — the applianc
 uv run --project brain python -m pytest brain/tests/test_suite.py -q
 ```
 
-Expect **23 passed, 2 skipped** off-appliance. The two skips need hardware this box
+Expect **28 passed, 2 skipped** off-appliance. The two skips need hardware this box
 doesn't have; **anything failing is a real regression**, including on a laptop —
 with one exception: if pipecat doesn't match the pin, every test that imports
 `pinned_pipecat` fails immediately with a message telling you to reinstall. That's

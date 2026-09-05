@@ -2,28 +2,42 @@
 # teaport — endpointing policy (how long until the bot decides you're done).
 #
 # Extracted from gateway_server.py; the constants + analyzer live together because
-# they ARE the policy: ENDPOINT_STOP_SECS is the silence floor, the Smart Turn
-# threshold is the semantic eagerness.
+# they ARE the policy: ENDPOINT_STOP_SECS is the VAD's silence floor, SMARTTURN_STOP_SECS
+# the ceiling on honouring Smart Turn's "not done", the Smart Turn threshold the
+# semantic eagerness.
 #
 import os
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
-# Endpointing silence: how long the user must pause before we treat the turn as done
-# and start responding. Applied to BOTH Silero VAD (raw silence detection) and Smart
-# Turn v3 (the neural end-of-turn classifier that then confirms it). 0.8 was conservative;
-# 0.5 trims ~0.3s off every turn's perceived latency while Smart Turn still guards against
-# cutting the user off mid-thought. The VAD *model* isn't the cost (Silero is ~1ms/frame) —
-# this silence policy is. Tune via ENDPOINT_STOP_SECS.
-ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
+# Endpointing silence, the VAD's: how long the user must pause before Silero VAD
+# reports them stopped -- which is what asks Smart Turn for its verdict. History: 0.8
+# was conservative, 0.5 trimmed ~0.3s off it; now 0.2. This floor IS the dominant fixed
+# latency on every turn (the VAD model itself is ~1ms/frame), and 0.2 is pipecat's
+# recommended VAD default, the one its built-in STT p99 latencies assume -- so it also
+# silences the turn strategy's stop_secs warning. Tune via ENDPOINT_STOP_SECS.
+ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.2"))
+
+# Smart Turn's OWN silence limit -- pipecat's SmartTurnParams.stop_secs -- is not a
+# floor but a CEILING: BaseSmartTurn.append_audio force-completes the turn once this
+# much silence has accumulated since the user's last speech, model verdict or not (and
+# empties its buffer, so no verdict is asked again). Both used to be fed
+# ENDPOINT_STOP_SECS, harmless at 0.5 + 0.5 and broken at 0.2: an INCOMPLETE verdict
+# was overridden one audio chunk later, so the "mid-thought protection now rests on
+# Smart Turn" that the cut to 0.2 claimed did not exist. This is how long an
+# INCOMPLETE verdict keeps the turn open, counted from the start of the silence: the
+# user pauses mid-sentence, the model says "not done", and they have until here to
+# resume before the turn commits anyway. 1.0 is the protection the old 0.5 + 0.5 gave.
+# Tune via SMARTTURN_STOP_SECS.
+SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
 # threshold; below it the utterance is "incomplete" and we wait out the silence
-# fallback (~ENDPOINT_STOP_SECS longer before responding). pipecat hardcodes 0.5.
+# (up to SMARTTURN_STOP_SECS before responding). pipecat hardcodes 0.5.
 # LOWER = the classifier lets go EASIER / snappier endpointing, at the cost of more
-# mid-thought cutoffs; higher = more patient. ENDPOINT_STOP_SECS is the silence floor
-# (clip protection); this is the *semantic* eagerness. Tune via
-# SMARTTURN_COMPLETE_THRESHOLD.
+# mid-thought cutoffs; higher = more patient. ENDPOINT_STOP_SECS is when the question
+# is asked, SMARTTURN_STOP_SECS how long a "no" is honoured; this is the *semantic*
+# eagerness. Tune via SMARTTURN_COMPLETE_THRESHOLD.
 SMARTTURN_COMPLETE_THRESHOLD = float(os.getenv("SMARTTURN_COMPLETE_THRESHOLD", "0.5"))
 
 # Silero VAD gates. These were tightened to 0.8 / 0.75 to reject ambient noise,

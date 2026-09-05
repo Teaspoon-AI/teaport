@@ -27,6 +27,9 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -111,7 +114,24 @@ class FollowupTrigger(FrameProcessor):
 
 class FollowupGate(FrameProcessor):
     """Tracks whether the user is speaking, the bot is speaking, or the LLM is
-    mid-response, and lets an unprompted turn wait for a clear moment."""
+    mid-response -- and, separately, whether a TURN is still in flight -- and lets
+    an unprompted turn wait for a clear moment.
+
+    Two waits, because two callers need different things across a tool call:
+
+      * The consult narrator wants "nobody is speaking": a synchronous consult runs
+        inside its tool call for up to 45s, and that silence is exactly the gap a
+        progress line exists to fill. So _llm is released the moment a function
+        call starts (the completion is done producing speech).
+      * The follow-up injector wants "no turn in flight": appended during a tool
+        call, its trigger is read by the tool's own answering completion, which
+        then answers two things at once. So _turn stays set from the response's
+        start until that answering completion ends, a result that runs no
+        inference closes the turn, or an interruption kills it -- and only
+        `wait_until_idle(turn_free=True)` waits for it.
+
+    brain/formal/Followup.tla checks both sides (NoInterjectMidTurn and
+    NoDeadAirDuringTool); this is its "turnAware" design."""
 
     def __init__(self, quiet_secs: float = _QUIET_SECS, max_wait: float = _MAX_WAIT):
         super().__init__()
@@ -120,19 +140,31 @@ class FollowupGate(FrameProcessor):
         self._user = False
         self._bot = False
         self._llm = False
+        # A turn is in flight: a response started and neither its answering
+        # completion has ended nor a no-inference result closed it. Survives the
+        # function-call release of _llm above -- see the class docstring.
+        self._turn = False
         # Set == conversation idle. Starts idle (nobody has spoken yet).
         self._idle = asyncio.Event()
         self._idle.set()
         # The complement, so a caller can wait for activity to START as well as stop.
         self._busy = asyncio.Event()
+        # Set == idle AND no turn in flight: what the follow-up injector waits for.
+        self._clear = asyncio.Event()
+        self._clear.set()
 
     def _refresh(self):
-        if self._user or self._bot or self._llm:
+        busy = self._user or self._bot or self._llm
+        if busy:
             self._idle.clear()
             self._busy.set()
         else:
             self._idle.set()
             self._busy.clear()
+        if busy or self._turn:
+            self._clear.clear()
+        else:
+            self._clear.set()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -150,8 +182,54 @@ class FollowupGate(FrameProcessor):
             self._refresh()
         elif isinstance(frame, LLMFullResponseStartFrame):
             self._llm = True
+            self._turn = True
             self._refresh()
         elif isinstance(frame, LLMFullResponseEndFrame):
+            self._llm = False
+            self._turn = False
+            self._refresh()
+        elif isinstance(frame, FunctionCallResultFrame):
+            # A result that runs no inference (tools.no_inference(): the async
+            # ask_openclaw placeholders) is the end of the turn -- nothing will
+            # answer from it. Any other result is followed by the answering
+            # completion, whose start/end frames carry the turn from here. The LLM
+            # service BROADCASTS the result frame (llm_service.broadcast_frame, both
+            # directions) and this gate sits before the assistant aggregator, so the
+            # frame is seen. getattr for both fields:
+            # run_llm is the legacy duplicate of properties.run_llm.
+            props = getattr(frame, "properties", None)
+            if (getattr(frame, "run_llm", None) is False
+                    or (props is not None and getattr(props, "run_llm", None) is False)):
+                self._turn = False
+                self._refresh()
+        elif isinstance(frame, InterruptionFrame):
+            # An interruption kills the in-flight response by definition, and
+            # discards any end frame the TTS service was holding.
+            self._llm = False
+            self._turn = False
+            self._refresh()
+        elif isinstance(frame, FunctionCallInProgressFrame):
+            # The end frame is NOT guaranteed to arrive: for a completion that
+            # produced no synthesizable text (a bare tool call), the TTS service
+            # holds LLMFullResponseEndFrame waiting for an audio context that empty
+            # text never creates, and an interruption discards a held one outright.
+            # Either way _llm stayed latched and the gate read "mid-response"
+            # forever — every narrator line was skipped and the follow-up injector
+            # burned its full max_wait, i.e. total dead air in genuine silence. A
+            # function call starting means the completion is done producing speech
+            # (any audio it did produce is tracked by _bot), and an interruption
+            # kills the in-flight response by definition.
+            #
+            # The call's RESULT is deliberately not waited for HERE. The agent-first
+            # consult runs synchronously inside the call for up to 45s, and that
+            # silence is the very gap the narrator exists to fill. What the release
+            # must not do is let the follow-up injector append its trigger into a
+            # turn whose answering completion has not started -- read by that
+            # completion, the trigger and the tool result get answered together.
+            # That is _turn's job (class docstring): it outlives this release and
+            # only the injector's wait requires it clear. brain/formal/Followup.tla
+            # found the interleaving in 7 steps (LATCH = "clearedOnToolCall",
+            # invariant NoInterjectMidTurn).
             self._llm = False
             self._refresh()
         await self.push_frame(frame, direction)
@@ -177,24 +255,45 @@ class FollowupGate(FrameProcessor):
             return
         await self._idle.wait()
 
-    async def wait_until_idle(self) -> bool:
-        """Block until a debounced quiet window. Returns True at a genuine window,
-        False if it gave up at max_wait (caller should speak anyway rather than lose
-        the answer). Cancellation propagates (session teardown)."""
-        start = time.monotonic()
+    async def wait_until_idle(self, max_wait: float | None = None, *,
+                              turn_free: bool = False) -> bool:
+        """Block until a debounced quiet window. Returns True at a genuine window --
+        idle, and STILL idle a full quiet_secs later -- and False when max_wait ran
+        out first, including when the budget left could not hold a full quiet
+        window: a pause shorter than the debounce is exactly what the debounce
+        exists to reject, so it is never reported as a window. `max_wait` overrides
+        the instance default for this call -- the consult narrator passes a short
+        one so it fits into a gap or gives up quickly, where the follow-up injector
+        wants the long default and delivers on False regardless. `turn_free=True`
+        additionally waits for no TURN to be in flight (see the class docstring) --
+        the follow-up injector's setting; the narrator leaves it False so it can
+        speak during a tool call's silence. Cancellation propagates (session
+        teardown).
+
+        The budget is measured against one deadline throughout. It used to be a
+        `remaining` computed BEFORE the idle wait and reused to bound the debounce
+        after it, so a call could overrun max_wait by a whole quiet window -- or,
+        with little budget left, sleep a fraction of the window and report a
+        mid-utterance pause as a clear moment."""
+        max_wait = self._max_wait if max_wait is None else max_wait
+        ev = self._clear if turn_free else self._idle
+        deadline = time.monotonic() + max_wait
         while True:
-            remaining = self._max_wait - (time.monotonic() - start)
+            remaining = deadline - time.monotonic()
             if remaining <= 0:
-                logger.info("followup_gate: max wait reached; delivering anyway")
+                logger.info("followup_gate: max wait reached with no quiet window")
                 return False
             try:
-                await asyncio.wait_for(self._idle.wait(), timeout=remaining)
+                await asyncio.wait_for(ev.wait(), timeout=remaining)
             except asyncio.TimeoutError:
-                logger.info("followup_gate: max wait reached; delivering anyway")
+                logger.info("followup_gate: max wait reached with no quiet window")
                 return False
-            # Idle right now — require it to STAY idle through the debounce so we
+            # Idle right now -- require it to STAY idle through the debounce so we
             # don't jump into a brief pause between the user's (or bot's) phrases.
-            await asyncio.sleep(min(self._quiet_secs, max(0.05, remaining)))
-            if self._idle.is_set():
+            if deadline - time.monotonic() < self._quiet_secs:
+                logger.info("followup_gate: max wait reached before a full quiet window")
+                return False
+            await asyncio.sleep(self._quiet_secs)
+            if ev.is_set():
                 return True
-            # Someone resumed during the debounce — wait for the next window.
+            # Someone resumed during the debounce -- wait for the next window.
