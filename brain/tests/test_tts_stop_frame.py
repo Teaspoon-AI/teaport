@@ -44,12 +44,14 @@ from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     OutputAudioRawFrame,
     TTSAudioRawFrame,
     TTSStoppedFrame,
+    TTSTextFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
@@ -203,12 +205,78 @@ async def test_without_stop_frame_transport_waits_out_the_fallback():
           f"(fallback {BOT_VAD_STOP_FALLBACK_SECS}s)")
 
 
+async def test_a_reply_queued_behind_audio_is_scheduled_from_that_audios_end():
+    """pipecat anchors a new context's word schedule at max(now, previous last-word
+    pts) -- the previous reply's last word START, minus the caption lead. A reply
+    queued behind another's audio actually plays when that audio ENDS, so its
+    captions ran 0.8-1.3 s ahead of its voice and the heard ledger over-credited a
+    word (live 2026-09-04, issue #19). EngineTTSService raises the baseline to the
+    previous context's audio end; after a barge-in nothing is carried."""
+    tts = EngineTTSService(voice="af_heart")
+    tts._synth_text = _fake_segments
+    ledger_side = Probe()
+    out = StubOutput()
+    task = PipelineTask(Pipeline([tts, ledger_side, out]), observers=[])
+    runner = PipelineRunner(handle_sigint=False)
+    running = asyncio.create_task(runner.run(task))
+    await asyncio.sleep(0.5)
+
+    async def reply(text):
+        await task.queue_frames([LLMFullResponseStartFrame(), LLMTextFrame(text),
+                                 LLMFullResponseEndFrame()])
+
+    def first_pts(ctx_index):
+        seen = {}
+        for _, f in ledger_side.seen:
+            if isinstance(f, TTSTextFrame) and f.context_id is not None:
+                seen.setdefault(f.context_id, f.pts)
+        return list(seen.values())[ctx_index] if len(seen) > ctx_index else None
+
+    async def wait_for(ctx_index):
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and first_pts(ctx_index) is None:
+            await asyncio.sleep(0.05)
+        return first_pts(ctx_index)
+
+    try:
+        await reply("First reply here.")
+        await asyncio.sleep(0.15)                 # queued while the first is "playing"
+        await reply("Second reply here.")
+        p2 = await wait_for(1)
+        p1 = first_pts(0)
+        assert p1 is not None and p2 is not None, (
+            f"both replies must schedule words (got {p1}, {p2}; "
+            f"frames seen: {[type(f).__name__ for _, f in ledger_side.seen][-12:]})")
+        clip_ns = AUDIO_SECS * 1e9
+        assert p2 >= p1 + clip_ns - 0.05e9, (
+            f"second reply scheduled {(p2 - p1) / 1e9:.2f}s after the first's start; its "
+            f"audio only starts when the first's {AUDIO_SECS}s clip ends")
+        # A barge-in flushes the queue: the next reply is scheduled from now, not from
+        # where the flushed audio would have ended.
+        await task.queue_frames([InterruptionFrame()])
+        await asyncio.sleep(0.1)
+        await reply("Third reply here.")
+        p3 = await wait_for(2)
+        assert p3 is not None, (
+            f"the reply after the barge-in never scheduled words; frames seen: "
+            f"{[type(f).__name__ for _, f in ledger_side.seen][-12:]}")
+        assert p3 < p2 + clip_ns, (
+            f"third reply scheduled {(p3 - p2) / 1e9:.2f}s after the second's start -- "
+            "chained behind audio a barge-in had already flushed")
+    finally:
+        await task.cancel()
+        await running
+    print(f"  PASS queued reply scheduled +{(p2 - p1) / 1e9:.2f}s (clip {AUDIO_SECS}s); "
+          f"after a barge-in +{(p3 - p2) / 1e9:.2f}s")
+
+
 def test_tts_stop_frame():
     require_pinned()
 
     async def main():
         await test_stop_frame_ends_bot_speaking_at_audio_end()
         await test_without_stop_frame_transport_waits_out_the_fallback()
+        await test_a_reply_queued_behind_audio_is_scheduled_from_that_audios_end()
     asyncio.run(main())
 
 

@@ -225,6 +225,17 @@ class EngineTTSService(TTSService):
         # base across calls; reset_word_timestamps() zeroes it when the base clears its
         # baseline (reply end / interruption).
         self._reply_audio_offset = 0.0
+        # Where the previous context's audio ENDS on the playout clock (its word
+        # baseline + all the audio it emitted), so a reply queued behind it is
+        # scheduled from there. pipecat anchors a new context at the previous one's
+        # last WORD pts (tts_service.start_word_timestamps: "continuity across
+        # overlapping audio contexts"), which is that word's start, shifted early by
+        # the caption lead -- 0.8-1.3 s before the audio actually starts (live
+        # 2026-09-04: a queued reply's captions ran 1.3 s ahead of its voice, the
+        # ledger over-credited one heard word, issue #19). Zeroed on a barge-in: the
+        # flushed audio ends now, not where it would have. See start_word_timestamps.
+        self._prev_audio_end_ns = 0
+        self._interrupted = False
         # Set = user silent (synthesize freely); cleared = user speaking (hold the
         # next clause so the GPU serves STT — see _USER_SPEECH_HOLD_MAX_S). Toggled
         # from process_frame by the VAD frames, which are SystemFrames handled on
@@ -401,11 +412,36 @@ class EngineTTSService(TTSService):
             # pipeline/user knows the voice is down.
             yield ErrorFrame(error=f"tts: all {failed_clauses} clause(s) failed to synthesize")
 
+    async def start_word_timestamps(self):
+        # The base sets the baseline to max(now, _word_last_pts) -- "the last emitted
+        # timestamp if it's ahead of current time, to maintain continuity across
+        # overlapping audio contexts" -- and flushes the words it cached before the
+        # first audio frame with that baseline, all inside this call. When the
+        # previous context's audio is still playing, this context plays when THAT
+        # audio ends, later than its last word's start: hand the base that instant
+        # through the hook it already reads, BEFORE it runs.
+        if self._initial_word_timestamp == -1 and self._word_last_pts < self._prev_audio_end_ns:
+            if _TRACE:
+                logger.info(f"[WTS] baseline floor {self._word_last_pts / 1e9:.2f} -> "
+                            f"{self._prev_audio_end_ns / 1e9:.2f} (queued behind audio)")
+            self._word_last_pts = self._prev_audio_end_ns
+        await super().start_word_timestamps()
+
     async def reset_word_timestamps(self):
         # The base zeroes its per-reply word-timestamp baseline here (reply end or
         # interruption); zero our cross-call audio-offset accumulator in lockstep so the
         # next reply's first sentence starts at 0 again — otherwise it would inherit the
         # previous reply's tail offset and schedule every word in the past (dropped).
+        # First, remember where this context's audio ends (baseline + everything it
+        # emitted) for the next one -- unless a barge-in just flushed it.
+        # (A reset with no baseline set is a no-op reset -- pipecat resets more than
+        # once around a context end -- and must not forget a real end.)
+        base = self._initial_word_timestamp
+        if self._interrupted:
+            self._prev_audio_end_ns = 0
+            self._interrupted = False
+        elif base != -1:
+            self._prev_audio_end_ns = base + int(self._reply_audio_offset * 1e9)
         await super().reset_word_timestamps()
         self._reply_audio_offset = 0.0
 
@@ -414,7 +450,9 @@ class EngineTTSService(TTSService):
         # reached the TTS (fresh context dicts, word-timestamp reset) and when.
         logger.debug(f"{self}: interruption reached TTS "
                      f"(turn_ctx={str(self._turn_context_id)[:8]})")
+        self._interrupted = True  # the base resets word timestamps below: no carry
         await super()._handle_interruption(frame, direction)
+        self._prev_audio_end_ns = 0
 
     async def _connect_stream(self):
         """Open the one-shot synthesis stream, waiting out a full engine session pool.

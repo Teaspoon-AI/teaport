@@ -454,6 +454,47 @@ async def test_j_two_replies_queued_in_one_window_are_each_cut_by_their_own_play
     assert utts[1].interrupted and 0.45 < utts[1].heard_fraction < 0.55, utts[1].heard_fraction
 
 
+async def test_j_a_stop_frame_between_two_queued_replies_credits_only_the_first():
+    """engine_tts pushes stop frames, so the transport says BotStopped at the end of
+    EACH context -- with the next context's chunks already queued and starting 1 ms
+    later. Live 2026-09-04 21:26: a consult delivery queued behind a 44 s reply was
+    credited in full at the reply's end, charted [98.3-98.3] before a word of it had
+    played, and a barge-in during it would have charted nothing. The first reply is
+    over at its stop; the second stays open, plays from there, and is cut by its
+    OWN playout."""
+    f1, end1 = response(R1, 0.0)
+    f2, end2 = response(R2, 0.3)
+    chain = f1 + f2 + [
+        (started("R1"), 0.5, BELOW), at(audio(2.0, "R1"), 0.5), drained(end1, 0.55),
+        *siblings(BotStartedSpeakingFrame, 0.6),    # R1 0.6-2.6
+        (started("R2"), 0.7, BELOW), at(audio(2.0, "R2"), 0.7), drained(end2, 0.75),  # R2 2.6-4.6
+        (copy(2.0), 2.6, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.6),    # R1's stop frame
+        *siblings(BotStartedSpeakingFrame, 2.601),  # R2 starts at once
+    ]
+    # Charted at R1's stop: R1 alone, complete, [0.6-2.6]; R2 still open.
+    L = await feed(ledger(), chain)
+    utts = bot(L)
+    assert [u.text for u in utts] == [R1], [u.text[:24] for u in utts]
+    assert not utts[0].interrupted and utts[0].heard_fraction >= 0.99
+    assert abs(utts[0].t_end - 2.6) < 0.01, utts[0].t_end
+    # A cut 1.0 s into R2 is R2's own cut: half heard, timed from 2.6.
+    L = await feed(ledger(), chain + [(InterruptionFrame(), 3.6)])
+    utts = bot(L)
+    assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
+    assert utts[1].interrupted and 0.45 < utts[1].heard_fraction < 0.55, utts[1].heard_fraction
+    assert abs(utts[1].t_start - 2.6) < 0.01 and abs(utts[1].t_end - 3.6) < 0.01, (
+        utts[1].t_start, utts[1].t_end)
+    # Left alone, R2 closes with ITS stop frame: complete, [2.6-4.6].
+    L = await feed(ledger(), chain + [(copy(2.0), 4.6, AFTER),
+                                      *siblings(BotStoppedSpeakingFrame, 4.6)])
+    utts = bot(L)
+    assert [u.text for u in utts] == [R1, R2]
+    assert not utts[1].interrupted and utts[1].heard_fraction >= 0.99
+    assert abs(utts[1].t_start - 2.6) < 0.01 and abs(utts[1].t_end - 4.6) < 0.01, (
+        utts[1].t_start, utts[1].t_end)
+
+
 async def test_k_the_intended_text_is_what_the_tts_receives_not_the_raw_deltas():
     """LLMTextGuard mutates the delta in place (a leaked Harmony token stripped)
     and forwards the same frame; a swallowed completion gets a NEW frame with the

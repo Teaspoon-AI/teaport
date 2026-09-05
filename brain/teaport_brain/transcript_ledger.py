@@ -644,21 +644,33 @@ class TranscriptLedger(BaseObserver):
         return out
 
     def _window_closed(self, t: float):
-        """BotStoppedSpeaking: the transport played everything it held (it ends
-        the window on the TTSStoppedFrame queued behind the last chunk, or --
-        with no stop frame -- after a 3 s idle fallback; see engine_tts
-        push_stop_frames). Credit each open turn with its chunks, drop the FIFO,
-        and chart the turns that are over -- oldest first, stopping at one that
-        is not (its synthesis stalled, or its first chunk has not come; the next
-        window continues it)."""
+        """BotStoppedSpeaking. The transport says this on the TTSStoppedFrame
+        queued behind a context's last chunk (engine_tts push_stop_frames) -- at
+        the end of EACH context, so when another context's chunks are already
+        queued behind, the next one starts 1 ms later and "the transport played
+        everything it held" is not what this means (live 2026-09-04 21:26: a
+        consult delivery queued behind a 44 s reply was credited in full at the
+        reply's end, charted [98.3-98.3] before a word of it had played, and
+        would have been uncuttable). Credit each open turn with the portion of
+        its chunks that had played by `t`; whatever is still ahead stays queued,
+        re-timed to play from `t`, and the window stays open for it. Then chart
+        the turns that are over -- oldest first, stopping at one that is not
+        (still queued, its synthesis stalled, or its first chunk has not come;
+        the next window continues it)."""
         if self._win_t0 is not None:
-            for item, _start, end in self._layout():
+            remaining = []
+            for item, start, end in self._layout():
+                played = min(item[1], max(0.0, t - start))
                 turn = self._turn_for_item(item)
-                if turn is not None:
-                    turn["played"] += item[1]
-                    turn["last_end"] = end
-        self._fifo.clear()
-        self._win_t0 = None
+                if turn is not None and played > 0:
+                    turn["played"] += played
+                    turn["last_end"] = min(end, t)
+                if item[1] - played > _EPS:
+                    remaining.append([item[0], item[1] - played, t])
+            self._fifo = remaining
+            self._win_t0 = t if remaining else None
+        else:
+            self._fifo.clear()
         self._close_ready(t)
 
     def _close_ready(self, t: float):
