@@ -210,11 +210,17 @@ def _make_consult_followup(task, context, gate, retirer):
         # so the answer never reached the user. With the tool result rewritten, the
         # context reads like any normally-completed tool call.
         rewrote = False
+        # The record loses the web addresses too. 2132096 kept them here so "what
+        # did the agent say?" could still offer a link -- and live 2026-09-04 21:59
+        # that question was answered FROM this record with every path read aloud
+        # ("nvd.nist.gov/vuln/detail/cve-2026-85046 … artificialanalysis.ai/articles/
+        # …"), 48 s of it, the overlay rule notwithstanding. On a voice surface the
+        # only thing this text is ever used for is being spoken.
         for m in context.get_messages():
             if (isinstance(m, dict) and m.get("role") == "tool"
                     and m.get("tool_call_id") == tool_call_id):
                 m["content"] = json.dumps(
-                    {"status": "complete", "answer": text} if text
+                    {"status": "complete", "answer": strip_urls_for_speech(text)} if text
                     # "unknown", not "failed": the consult can die on teardown
                     # AFTER the action landed (observed live — message posted,
                     # then rc=1), so asserting failure can be a lie.
