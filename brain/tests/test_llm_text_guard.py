@@ -48,6 +48,7 @@ from teaport_brain.llm_text_guard import (  # noqa: E402
     LLMTextGuard,
     fold_degenerate_chars,
     is_degenerate,
+    unglue_sentences,
 )
 from teaport_brain.raw_llm_capture import RawLLMCapture  # noqa: E402
 from teaport_brain.tts_text import fold_unspeakable, split_clauses_ramp  # noqa: E402
@@ -600,6 +601,79 @@ async def test_a_token_glued_to_words_in_one_delta_is_stripped_in_place():
     await h.text("The voice is <|channel|>af_heart.")
     await h.feed(LLMFullResponseEndFrame())
     assert h.spoken() == "The voice is af_heart."
+
+
+# ------------------------------------------------------------------ unglue
+
+def test_unglue_sentences_table():
+    # A capital right behind a sentence closer is the next sentence; put the space back.
+    for glued, spaced in [
+        ("low chance of rain.Sounds like a pleasant day", "low chance of rain. Sounds like a pleasant day"),
+        ("what do you need?Just let me know", "what do you need? Just let me know"),
+        ("okay, wait…Okay then", "okay, wait… Okay then"),
+        ('He said "no."Then he left', 'He said "no." Then he left'),
+        ("a jacket.Third, earbuds.Fourth, a bank.", "a jacket. Third, earbuds. Fourth, a bank."),
+        ("see Dr.Smith", "see Dr. Smith"),
+        ("ready?!Really", "ready?! Really"),
+        ("Está bien.Él llegó", "Está bien. Él llegó"),  # accented capital
+    ]:
+        assert unglue_sentences(glued) == spaced, repr(unglue_sentences(glued))
+    # ...and only then. Lower case after a dot is a domain or an abbreviation, a digit
+    # is a number, a lone letter before the dot is an initialism, an existing space
+    # must not become two, and CJK (no case, "。" ends its sentences) is untouched.
+    for same in [
+        "at statichost.eu and nvd.nist.gov",
+        "about 3.5 percent",
+        "the U.S.Army and a Ph.D.Student",
+        "e.g.This one",
+        "low chance of rain. Sounds like",
+        "rain.\n\nSounds like",
+        "今日は。明日も。",
+        "",
+    ]:
+        assert unglue_sentences(same) == same, repr(unglue_sentences(same))
+    # The seam with the previous delta: `before` is the stream's tail.
+    assert unglue_sentences("Sounds like", before="chance of rain.") == " Sounds like"
+    assert unglue_sentences("Sounds like", before="chance of rain") == "Sounds like"
+    assert unglue_sentences(" Sounds like", before="chance of rain.") == " Sounds like"
+    assert unglue_sentences("S.", before="the U.") == "S."         # U.S. across deltas
+    assert unglue_sentences("Then", before='said "no."') == " Then"
+
+
+async def test_glued_sentences_are_spaced_across_deltas():
+    # The live shape (2026-09-04 20:31): the terminator ends one delta, the capital
+    # opens the next, and the whole reply reached run_tts as ONE sentence.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for d in ["Tomorrow in Austin", " rain", ".", "Sounds", " like", " it", "."]:
+        await h.text(d)
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "Tomorrow in Austin rain. Sounds like it.", repr(h.spoken())
+    # No frame was added or dropped for it: the space rides the delta it belongs to.
+    assert h.kinds().count("LLMTextFrame") == 7
+
+
+async def test_glued_sentence_in_one_delta_is_spaced_in_place():
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("CPU load is under one percent.I'll keep watching.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "CPU load is under one percent. I'll keep watching.", repr(h.spoken())
+
+
+def test_unglued_text_is_what_the_tts_can_split():
+    # Why this matters: pipecat's aggregator (NLTK behind a lookahead) and the clause
+    # ramp both need the space. Glued, the reply is one sentence to both — first
+    # audio waits for the last word's synthesis. Unglued, both find the boundary.
+    from pipecat.utils.string import match_endofsentence
+    glued = ("Tomorrow in Austin should be warm, with a low chance of rain."
+             "Sounds like a pleasant day with only a slight chance of rain.")
+    assert match_endofsentence(glued.split("Sounds")[0] + "S") == 0
+    assert len(split_clauses_ramp(glued)) == 1
+    spaced = unglue_sentences(glued)
+    first = spaced.split(" Sounds")[0]
+    assert match_endofsentence(first + " S") == len(first)
+    assert len(split_clauses_ramp(spaced)) == 2
 
 
 def main():

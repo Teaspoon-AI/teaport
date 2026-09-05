@@ -51,6 +51,21 @@
 #         thresholds are shared with raw_llm_capture (tts_text.is_sentence_repeat),
 #         which logs the raw completion when this fires.
 #
+#   UNGLUE  put the space back between a sentence's terminator and the capital that
+#         opens the next one. gpt-oss routinely streams "rain.Sounds", "jacket.Third",
+#         "need?Just" (15 of 198 texts handed to the TTS on 2026-09-04; "Burnet.If" on
+#         2026-08-26). Nothing downstream can split that: pipecat's sentence aggregator
+#         waits for the next non-space character and asks NLTK, and Punkt needs the
+#         space (match_endofsentence("rain.Sounds") == 0), so the WHOLE reply reaches
+#         run_tts as one sentence; split_clauses_ramp splits on `[.!?]\s+` and sees
+#         one clause too. The cost is first-audio: every word of the reply waited for
+#         the last word's synthesis (a 15 s forecast began 4.1 s after the LLM's End,
+#         a 13.7 s list 3.7 s), and the glued text was what history and the heard
+#         ledger recorded. Done here, across delta boundaries, because this is the
+#         one place that already sees every delta before the aggregator does. Lower
+#         case after the dot is left alone (anthropic.com, e.g.), and so is a dot
+#         after a lone letter (U.S., Ph.D.) — see unglue_sentences.
+#
 # The recovery line matters: swallowing alone turned a degenerate turn into total
 # silence. The captures collapse within their first ~50 characters, and a prefix
 # that short is usually punctuation, which split_clauses_ramp then drops as
@@ -154,6 +169,56 @@ _LEADING_PUNCT = re.compile(r"^[\s.,;:!?\u2026]+")
 # comparison (the text itself always flushes unchanged), and the persona has the
 # model spell numbers out, so digit-adjacent periods are rare here anyway.
 _SENT_END = re.compile(r"[.!?]+")
+
+# UNGLUE: a sentence closer -- terminator run plus any closing quote/bracket riding on
+# it ('."', '?)') -- and what may open the next sentence right behind it with no space.
+# Case is what makes it a boundary: "rain.Sounds" is two sentences, "anthropic.com" is
+# a domain, "3.5" a number. `isupper()` rather than [A-Z] so the accented capitals of
+# the Spanish/French/Portuguese rooms count too; CJK has no case and no spaces, and
+# its sentences end in "。", which is not in the closer set, so it is untouched.
+_SENT_CLOSER = re.compile(r"[.!?…]+[\"'”’)\]]*")
+_SENT_CLOSER_AT_END = re.compile(r"[.!?…]+[\"'”’)\]]*$")
+_SENT_OPENERS = "\"“‘("
+
+
+def _opens_sentence(ch: str) -> bool:
+    return ch.isupper() or ch in _SENT_OPENERS
+
+
+def _after_lone_letter(text: str, i: int) -> bool:
+    """Is the character at `i` (a '.') the dot of a one-letter word -- an initialism
+    (U.S., e.g., Ph.D.) rather than a sentence end? A lone letter is one preceded by
+    nothing alphabetic."""
+    return (i >= 1 and text[i - 1].isalpha()
+            and (i < 2 or not text[i - 2].isalpha()))
+
+
+def unglue_sentences(text: str, before: str = "") -> str:
+    """Insert the missing space after a sentence closer that a capital (or an opening
+    quote) follows directly -- inside `text`, and at its seam with `before`, the tail
+    of the text that preceded it in the stream. Pure; the guard supplies `before`."""
+    if not text:
+        return text
+    out, pos = [], 0
+    for m in _SENT_CLOSER.finditer(text):
+        end = m.end()
+        if end >= len(text) or not _opens_sentence(text[end]):
+            continue
+        if text[m.start()] == "." and _after_lone_letter(text, m.start()):
+            continue  # "U.S.Army": an initialism, not a boundary
+        if end + 1 < len(text) and text[end + 1] == ".":
+            continue  # "Ph.D.": the capital is itself an initial
+        out.append(text[pos:end])
+        out.append(" ")
+        pos = end
+    out.append(text[pos:])
+    text = "".join(out)
+    if before and _opens_sentence(text[0]) and not (len(text) > 1 and text[1] == "."):
+        m = _SENT_CLOSER_AT_END.search(before)
+        if m and not (before[m.start()] == "." and _after_lone_letter(before, m.start())):
+            text = " " + text
+    return text
+
 
 # Spoken when the guard trips. Overridable because the pipeline serves Japanese,
 # Mandarin and Hindi too, and a hardcoded English apology is wrong in those rooms.
@@ -292,6 +357,9 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
         self._pending = ""
         self._pending_frame = None
+        # UNGLUE state: the tail of the last folded text, so a terminator that ended
+        # one delta and the capital that opens the next still get their space.
+        self._tail = ""
         # Repeat cut state: sentences already flushed this response, the folded text
         # of the sentence still accumulating, and the frames that carry it — held
         # unpushed until the sentence closes clean (see the module header; deliberately
@@ -325,6 +393,10 @@ class LLMTextGuard(FrameProcessor):
         """fold_degenerate_chars with one-delta lookahead — see _HOLDBACK."""
         text = self._pending + text
         self._pending = ""
+        # Before the holdback split: a held-back ".." rejoined here is the closer the
+        # capital after it is glued to, and the seam with the previous delta is the
+        # other place the space goes missing.
+        text = unglue_sentences(text, self._tail)
         m = _HOLDBACK.search(text)
         if m and len(m.group(0)) <= _MAX_HOLDBACK:
             self._pending = m.group(0)
@@ -334,7 +406,10 @@ class LLMTextGuard(FrameProcessor):
             if m:
                 self._pending = m.group(0)
                 text = text[:m.start()]
-        return fold_degenerate_chars(text) if text else ""
+        folded = fold_degenerate_chars(text) if text else ""
+        if folded:
+            self._tail = folded[-8:]
+        return folded
 
     async def _flush_held(self, direction: FrameDirection, keep_tail: int = 0):
         """Push held frames in arrival order, keeping back the ones whose text lies
