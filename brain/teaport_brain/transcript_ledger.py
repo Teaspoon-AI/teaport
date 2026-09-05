@@ -114,6 +114,10 @@ _MAX_SEEN = 8192
 _BED = "<bed>"
 
 _EPS = 1e-6
+# How far before a chunk's modelled end a stop-frame BotStopped may arrive and still
+# mean the chunk played out: the transport dequeues the stop frame as soon as the
+# last chunk is written, one write period (~20 ms live) before that chunk finishes.
+_STOP_WRITE_TOL = 0.05
 
 # heard_fraction at/above this counts as "the listener heard it all" — shared by
 # the ledger's own rendering/logging and heard_context's barge-in reconciliation.
@@ -660,7 +664,16 @@ class TranscriptLedger(BaseObserver):
         if self._win_t0 is not None:
             remaining = []
             for item, start, end in self._layout():
-                played = min(item[1], max(0.0, t - start))
+                # The stop frame is dequeued once the last chunk has been WRITTEN,
+                # a write period before the layout says it has finished playing
+                # (live: 20 ms). A chunk that is over, or that close to over, is
+                # played in full; only what is genuinely still ahead stays queued
+                # -- otherwise the turn waited for the next event to close, and a
+                # barge-in into the reply behind it charted THIS one as a cut.
+                if end <= t + _STOP_WRITE_TOL:
+                    played = item[1]
+                else:
+                    played = min(item[1], max(0.0, t - start))
                 turn = self._turn_for_item(item)
                 if turn is not None and played > 0:
                     turn["played"] += played

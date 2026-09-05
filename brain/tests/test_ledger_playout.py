@@ -495,6 +495,39 @@ async def test_j_a_stop_frame_between_two_queued_replies_credits_only_the_first(
         utts[1].t_start, utts[1].t_end)
 
 
+async def test_j_a_stop_frame_a_write_early_still_closes_the_turn_at_once():
+    """The transport dequeues the stop frame as soon as the last chunk is WRITTEN --
+    live 2026-09-04 21:50, 20 ms before the layout said the chunk finished. Crediting
+    strictly by time left a sliver unplayed, so every reply waited for the NEXT event
+    to be charted (a greeting charted 2 s late, at the user's turn), and a barge-in
+    into the reply queued behind it charted the finished one as a ~100% cut."""
+    f1, end1 = response(R1, 0.0)
+    L = await feed(ledger(), f1 + [
+        (started("R1"), 0.5, BELOW), at(audio(2.0, "R1"), 0.5), drained(end1, 0.55),
+        *siblings(BotStartedSpeakingFrame, 0.6),    # R1 0.6-2.6
+        (copy(2.0), 2.58, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.58),   # 20 ms before the modelled end
+    ])
+    utts = bot(L)
+    assert len(utts) == 1 and utts[0].text == R1, [u.text[:24] for u in utts]
+    assert not utts[0].interrupted and utts[0].heard_fraction >= 0.99, utts[0].heard_fraction
+    # ...and a reply queued behind is NOT swept up by that tolerance: it had not started.
+    f2, end2 = response(R2, 0.3)
+    L = await feed(ledger(), f1 + f2 + [
+        (started("R1"), 0.5, BELOW), at(audio(2.0, "R1"), 0.5), drained(end1, 0.55),
+        *siblings(BotStartedSpeakingFrame, 0.6),
+        (started("R2"), 0.7, BELOW), at(audio(2.0, "R2"), 0.7), drained(end2, 0.75),
+        (copy(2.0), 2.58, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.58),
+        *siblings(BotStartedSpeakingFrame, 2.6),
+        (InterruptionFrame(), 3.6),
+    ])
+    utts = bot(L)
+    assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
+    assert not utts[0].interrupted and utts[0].heard_fraction >= 0.99, utts[0].heard_fraction
+    assert utts[1].interrupted and 0.45 < utts[1].heard_fraction < 0.55, utts[1].heard_fraction
+
+
 async def test_k_the_intended_text_is_what_the_tts_receives_not_the_raw_deltas():
     """LLMTextGuard mutates the delta in place (a leaked Harmony token stripped)
     and forwards the same frame; a swallowed completion gets a NEW frame with the
