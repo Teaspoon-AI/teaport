@@ -28,7 +28,9 @@
 #                     response the context belonged to and says its synthesis is over.
 #   playout        <- the output transport plays what it is pushed, in push order,
 #                     from BotStartedSpeaking at real time until BotStoppedSpeaking
-#                     (0.35s with nothing left to play). The ledger keeps that FIFO:
+#                     (the TTSStoppedFrame queued behind the last chunk -- engine_tts
+#                     push_stop_frames; without one, pipecat's 3 s idle fallback).
+#                     The ledger keeps that FIFO:
 #                     every audio push -- tagged with its context; fillers and the
 #                     thinking-sound bed included, since they take playout time --
 #                     with its length, laid out back to back from the window's start.
@@ -642,8 +644,10 @@ class TranscriptLedger(BaseObserver):
         return out
 
     def _window_closed(self, t: float):
-        """BotStoppedSpeaking: the transport played everything it held, then
-        0.35s of nothing. Credit each open turn with its chunks, drop the FIFO,
+        """BotStoppedSpeaking: the transport played everything it held (it ends
+        the window on the TTSStoppedFrame queued behind the last chunk, or --
+        with no stop frame -- after a 3 s idle fallback; see engine_tts
+        push_stop_frames). Credit each open turn with its chunks, drop the FIFO,
         and chart the turns that are over -- oldest first, stopping at one that
         is not (its synthesis stalled, or its first chunk has not come; the next
         window continues it)."""
