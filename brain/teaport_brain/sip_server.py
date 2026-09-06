@@ -304,7 +304,7 @@ async def run(sock_path: str):
         )
 
         @session.task.event_handler("on_pipeline_finished")
-        async def on_pipeline_finished(_task):
+        async def on_pipeline_finished(_task, frame):
             """The pipeline ended and the CALLER did not: hang them up.
 
             A per-call pipeline can end without any call-control event behind it —
@@ -319,11 +319,18 @@ async def run(sock_path: str):
 
             The guard is the ordinary case: our own teardown clears active["call"]
             BEFORE it cancels, so a pipeline finishing under cancel_active_call (or one
-            belonging to a superseded call) finds nothing here and returns."""
+            belonging to a superseded call) finds nothing here and returns.
+
+            `frame` is the terminal frame (End, Stop or Cancel) and is taken because
+            pipecat PASSES it — `_call_event_handler("on_pipeline_finished", frame)`
+            calls every handler as `handler(worker, frame)`, and a handler of the wrong
+            arity does not raise where anyone would see it: BaseObject._run_handler
+            catches the TypeError and logs one line, so the handler simply never runs
+            and the caller is left on the dead line this exists to prevent."""
             call = active["call"]
             if call is None or call[0] != call_id:
                 return
-            logger.error(f"the pipeline for call {call_id} ended on its own "
+            logger.error(f"the pipeline for call {call_id} ended on its own on {frame} "
                          "(a service was written off, or a start/idle timeout fired) — "
                          "hanging the caller up rather than leaving them on a dead line")
             await transport.send_control({"type": "call.hangup"})

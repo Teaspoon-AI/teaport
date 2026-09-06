@@ -45,6 +45,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong pipecat
 
+from pipecat.frames.frames import EndFrame  # noqa: E402
+
 from teaport_brain import sip_server  # noqa: E402
 from teaport_brain.sip_serializer import encode_control  # noqa: E402
 from teaport_brain.sip_transport import SipConnection  # noqa: E402
@@ -111,15 +113,22 @@ class _FakeTask:
             return fn
         return register
 
-    async def finish(self):
+    async def finish(self, frame=None):
         """The pipeline ending on its OWN, with no cancel behind it.
 
         What processor_unusable_policy=END produces when a service is written off, and
         what a start/setup timeout or the idle timeout produce. pipecat calls the
         handlers as the worker finishes and the runner returns after them, so the fake
-        does the same."""
+        does the same.
+
+        The FRAME is not decoration. pipecat dispatches this as
+        `handler(worker, frame)` (BaseObject._call_event_handler -> _run_handler), and
+        a handler of the wrong arity raises a TypeError that _run_handler CATCHES and
+        logs — so the handler silently never runs. A fake that called `fn(self)` passed
+        against exactly that bug: the hangup below was asserted, and on a real call it
+        would never have been sent. Pass what pipecat passes."""
         for fn in self._handlers.get("on_pipeline_finished", []):
-            await fn(self)
+            await fn(self, frame if frame is not None else EndFrame())
         self.done.set()
 
     async def cancel(self):
