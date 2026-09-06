@@ -40,11 +40,12 @@ from pipecat.frames.frames import (  # noqa: E402
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
 from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
-from pipecat.utils.asyncio.task_manager import TaskManager, TaskManagerParams  # noqa: E402
 
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # noqa: E402
     TurnAnalyzerUserTurnStopStrategy,
 )
+
+from turn_harness import start_controller  # noqa: E402
 
 from teaport_brain.endpointing import INTERRUPT_MIN_WORDS  # noqa: E402
 from teaport_brain.stt import _EMPTY_FINAL_RUN, TeaportSTTService  # noqa: E402
@@ -99,8 +100,6 @@ async def test_nothing_heard_at_all_pushes_nothing():
 
 async def test_the_turn_still_ends_after_an_unfinalizable_utterance():
     """End to end over the real controller: the wedge this fallback exists to prevent."""
-    task_manager = TaskManager()
-    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
     stopped = []
     controller = UserTurnController(
         user_turn_strategies=UserTurnStrategies(
@@ -123,7 +122,7 @@ async def test_the_turn_still_ends_after_an_unfinalizable_utterance():
         stopped.append(True)
 
     controller.add_event_handler("on_user_turn_stopped", on_stopped)
-    await controller.setup(task_manager)
+    await start_controller(controller)
 
     async def speak(ms):
         for _ in range(ms // CHUNK_MS):

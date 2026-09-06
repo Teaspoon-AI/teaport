@@ -27,6 +27,7 @@ Notable transitive dependencies of `pipecat-ai`:
 | onnxruntime | runs Silero VAD + Smart Turn v3 in the brain process | MIT |
 | transformers | `WhisperFeatureExtractor` for Smart Turn v3 | Apache-2.0 |
 | soxr | resampling — **LGPL-2.1-or-later** (see below) | LGPL-2.1-or-later |
+| loudness | ITU-R BS.1770 loudness measurement for the VAD's volume gate (pipecat ≥ 1.8.0; replaced pyloudnorm + scipy) | MIT |
 | onnx model weights | Silero VAD + smart-turn-v3, shipped inside the pipecat wheel | see pipecat |
 
 Notes:

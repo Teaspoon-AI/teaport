@@ -14,9 +14,10 @@
 # rather than remembered.
 #
 # (This note used to add "that release is not on the public index". It was true when
-# written and is not any more — 1.7.0 publishes to PyPI, so `uv venv --python 3.12` plus
-# `uv pip install -e ./brain` gets a dev box onto the exact pin. See brain/tests/README.md.
-# The guard still earns its keep: it is what catches the box that skipped that step.)
+# written and is not any more — every pin since publishes to PyPI, so `uv sync --locked
+# --project brain` gets a dev box onto the exact pin. See brain/tests/README.md; install
+# from the LOCK, not from a fresh resolve of the loose constraints. The guard still earns
+# its keep: it is what catches the box that skipped that step.)
 #
 # FAILS LOUD, never open. Both fallbacks here used to `return`, which disabled the check
 # in exactly the workflow the error message below tells you to use: copied to /tmp/btests
@@ -45,7 +46,7 @@ _PYPROJECT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pyp
 # from the manifest (see above). pyproject.toml remains the source of truth and wins
 # whenever it can be read; this exists so a detached copy still refuses rather than
 # silently passing. Keep in step with brain/pyproject.toml.
-_EXPECTED_FALLBACK = "1.7.0"
+_EXPECTED_FALLBACK = "1.8.1"
 
 
 def _pinned_version() -> str:
@@ -58,7 +59,7 @@ def _pinned_version() -> str:
     except (OSError, KeyError, tomllib.TOMLDecodeError):
         return _EXPECTED_FALLBACK
     # tomllib, not a regex: the previous pattern required an extras bracket
-    # (pipecat-ai\[[^\]]*\]==), so dropping "[websocket]" or writing "pipecat-ai == 1.7.0"
+    # (pipecat-ai\[[^\]]*\]==), so dropping "[websocket]" or writing "pipecat-ai == 1.8.1"
     # made it match nothing and the check quietly stopped enforcing anything.
     for dep in deps:
         name, sep, version = dep.partition("==")

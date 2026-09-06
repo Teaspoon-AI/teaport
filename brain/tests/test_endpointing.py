@@ -44,7 +44,8 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # n
 )
 from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
-from pipecat.utils.asyncio.task_manager import TaskManager, TaskManagerParams  # noqa: E402
+
+from turn_harness import start_controller  # noqa: E402
 
 from teaport_brain.endpointing import (  # noqa: E402
     ENDPOINT_STOP_SECS,
@@ -81,8 +82,6 @@ async def run_turn(speech_ms_after_start, analyzer_cls=AlwaysCompleteSmartTurn,
     while the mic is still live, so every later chunk counts as silence. The VAD frame
     arrives with no audio chunk after it, which is the phase that wedges.
     """
-    task_manager = TaskManager()
-    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
     analyzer = analyzer_cls(
         sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=stop_secs)
     )
@@ -109,7 +108,7 @@ async def run_turn(speech_ms_after_start, analyzer_cls=AlwaysCompleteSmartTurn,
         stopped.append(True)
 
     controller.add_event_handler("on_user_turn_stopped", on_stopped)
-    await controller.setup(task_manager)
+    await start_controller(controller)
     analyzer.set_sample_rate(SAMPLE_RATE)
 
     async def speak(ms):
@@ -190,8 +189,6 @@ async def test_no_commit_before_this_utterance_has_a_transcript():
 
     Live on pipecat 1.5.0, 2026-08-20: committed at 22:15:28.157, and the transcript it
     was supposedly for did not arrive until 22:15:28.568."""
-    task_manager = TaskManager()
-    task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
     stops = []
     analyzer = AlwaysCompleteSmartTurn(
         sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
@@ -216,7 +213,7 @@ async def test_no_commit_before_this_utterance_has_a_transcript():
         stops.append(True)
 
     controller.add_event_handler("on_user_turn_stopped", on_stopped)
-    await controller.setup(task_manager)
+    await start_controller(controller)
 
     async def speak(ms):
         for _ in range(ms // CHUNK_MS):

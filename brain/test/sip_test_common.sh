@@ -38,18 +38,22 @@ fi
 
 # The interpreter is load-bearing: brain/tests/pinned_pipecat.py exists because the
 # pipeline asserts on pipecat internals, and a python with the wrong pipecat imports
-# cleanly and then fails somewhere deep in a call. Prefer the checkout venv that
-# brain/tests/README.md builds (uv venv .venv + uv pip install -e ./brain), then the
-# appliance venv. SIP_TEST_PYTHON overrides both.
+# cleanly and then fails somewhere deep in a call. This rig runs the BRAIN, not the
+# tests, so require_pinned() never gets a chance to refuse — the order below is the
+# only guard there is. Prefer brain/.venv, which is what `uv sync --locked --project
+# brain` builds (brain/tests/README.md) and therefore the locked closure; then the
+# repo-root .venv, which the older `uv venv .venv` flow left on many boxes and which
+# a pin bump does NOT update; then the appliance venv. SIP_TEST_PYTHON overrides all.
 PY=${SIP_TEST_PYTHON:-}
 if [ -z "$PY" ]; then
-  for _cand in "$(dirname -- "$BRAIN")/.venv/bin/python" /opt/teaport/venv/bin/python; do
+  for _cand in "$BRAIN/.venv/bin/python" "$(dirname -- "$BRAIN")/.venv/bin/python" \
+               /opt/teaport/venv/bin/python; do
     if [ -x "$_cand" ]; then PY=$_cand; break; fi
   done
   unset _cand
 fi
 if [ -z "$PY" ]; then
-  echo "no venv python found: neither $(dirname -- "$BRAIN")/.venv nor /opt/teaport/venv." >&2
+  echo "no venv python found: neither $BRAIN/.venv, $(dirname -- "$BRAIN")/.venv nor /opt/teaport/venv." >&2
   echo "Build one per brain/tests/README.md, or set SIP_TEST_PYTHON." >&2
   exit 1
 fi

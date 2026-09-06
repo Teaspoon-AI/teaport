@@ -7,7 +7,7 @@
 #
 # The shape: a reply is barged over during synthesis. The ledger charts it cut (heard 0),
 # correctly. But the ledger of PR #13 reset nothing it held: the cancelled completion's
-# finally (pipecat 1.7.0 base_llm.py:571-573) then pushed LLMFullResponseEndFrame with
+# finally (openai/base_llm.py:611-613 at the pin) then pushed LLMFullResponseEndFrame with
 # the partial text, which re-armed the pending text, and the next filler to play (a tool
 # ack, a narrator line) came back from the output transport as an UNTAGGED
 # TTSAudioRawFrame (base_output rebuilds audio without its context_id), which it could
@@ -35,7 +35,7 @@
 # chunk (e), a single pending slot losing the older of two completed replies (f), and a
 # reply's late End frame re-queueing text a live turn had already spoken (g). Every
 # assertion states the behaviour the ledger should have. (The frame shapes are what
-# pipecat 1.7.0's TTS service and output transport produce; test_ledger_playout.py
+# the pinned pipecat's TTS service and output transport produce; test_ledger_playout.py
 # carries the same ledger through the production sightings -- the TTS's own, and the
 # post-drain re-push of a response's End frame -- which these hermetic scripts omit.)
 #

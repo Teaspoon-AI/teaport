@@ -33,10 +33,17 @@
 #      its ~1 s queue overruns, so the output side paces at ~REAL TIME (one 20 ms frame
 #      per 20 ms). pipecat's BaseOutputTransport does NO pacing of its own — MediaSender
 #      hands write_audio_frame whatever the audio queue yields, as fast as it yields it
-#      (base_output.py:887-910) — so every 1.7.0 transport that writes to a socket
+#      (base_output.py:896-922 at the pin) — so every transport that writes to a socket
 #      itself hand-rolls a send clock (the WebRTC ones let their SDK pace instead), and
 #      so do we (see _write_audio_sleep). Without it the whole utterance goes out in a
 #      burst and the gateway drops the tail.
+#      pipecat 1.8.0 put a CEILING on how long one such write may take:
+#      MediaSender._internal_write_audio_frame wraps write_audio_frame in
+#      asyncio.wait_for(audio_out_write_timeout_secs, default 10 s), and a timeout is
+#      reported permanent — is_usable goes False and every later write is dropped. Our
+#      longest single call is the end-of-call silence (audio_out_end_silence_secs=2 ->
+#      64000 B -> 100 paced 20 ms frames -> ~2 s), so there is 8 s of headroom; raising
+#      that param, or slowing _send_interval, eats into it.
 
 import asyncio
 import os

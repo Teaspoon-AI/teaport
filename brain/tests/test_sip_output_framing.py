@@ -15,15 +15,21 @@
 #
 #   2. `_audio_send_buffer` was called a second copy of pipecat's framing that "can only
 #      ever pass data straight through", on the grounds that BaseOutputTransport always
-#      chunks output to audio_chunk_size (640 B here). That is false in pipecat 1.7.0:
-#      MediaSender._send_silence (base_output.py:870-885) builds ONE OutputAudioRawFrame
+#      chunks output to audio_chunk_size (640 B here). That is false at the pin:
+#      MediaSender._send_silence (base_output.py:885-894) builds ONE OutputAudioRawFrame
 #      of sample_rate*2*audio_out_end_silence_secs bytes — 64000 B at our 16 kHz with the
-#      default 2 s — and calls write_audio_frame with it directly, and _write_dtmf_audio
-#      (base_output.py:290-304) does the same with a whole 16000 B tone. Nothing raises if
+#      default 2 s — and writes it in one call, and _write_dtmf_audio
+#      (base_output.py:303-316) does the same with a whole 16000 B tone. Nothing raises if
 #      we forward that as one datagram: SEQPACKET accepts 64001 bytes and the gateway's
 #      2048-byte recv truncates it, losing 62 KB of playout in silence. Test 1 pins the
 #      unchunked frame arriving, so if a future pipecat DOES pre-chunk it, this fails and
 #      tells us the buffer may finally be deletable.
+#
+#      Since pipecat 1.8.0 that same call runs under a deadline — MediaSender wraps it in
+#      asyncio.wait_for(audio_out_write_timeout_secs) and treats a timeout as PERMANENT,
+#      so one slow write costs the transport every write after it. Our writes are paced
+#      to realtime, which makes the unchunked frame above the long pole: test 1 also pins
+#      that its paced duration stays inside the deadline.
 #
 # Both tests drive the real pipecat pipeline (pipecat.tests.utils.run_test) rather than
 # calling write_audio_frame by hand: the claims above are claims about what the BASE class
@@ -41,7 +47,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from pinned_pipecat import require_pinned  # noqa: E402
 
-require_pinned()  # these assertions are about 1.7.0 internals; a pass elsewhere is noise
+require_pinned()  # these assertions are about the PINNED pipecat's internals; a pass elsewhere is noise
 
 from pipecat.frames.frames import (  # noqa: E402
     InterruptionFrame,
@@ -155,11 +161,25 @@ async def test_every_audio_datagram_is_built_by_the_serializer():
     await wire.stop()
 
     assert max(handed) > BYTES_PER_FRAME, (
-        f"pipecat handed write_audio_frame only {sorted(set(handed))} bytes. In 1.7.0 "
-        f"MediaSender._send_silence (base_output.py:870-885) passes the whole "
+        f"pipecat handed write_audio_frame only {sorted(set(handed))} bytes. At the pin "
+        f"MediaSender._send_silence (base_output.py:885-894) passes the whole "
         f"audio_out_end_silence_secs buffer unchunked, which is why "
         f"_audio_send_buffer exists. If pipecat now pre-chunks everything, that buffer "
         f"may finally be redundant — verify _write_dtmf_audio too, then delete it.")
+
+    # ...and that unchunked frame has to finish inside pipecat's write deadline. Paced
+    # at realtime it takes ~2 s of the default 10 s; a timeout is reported permanent
+    # (is_usable goes False), so overrunning it does not drop one buffer of silence, it
+    # silences the call. Computed, not timed: the bound is the pacing contract, and a
+    # wall-clock assertion here would just re-measure the sleeps test 1 already checks.
+    frame_secs = (BYTES_PER_FRAME / 2) / PIPELINE_SAMPLE_RATE
+    longest_write_secs = (max(handed) / BYTES_PER_FRAME) * frame_secs
+    deadline = out._params.audio_out_write_timeout_secs
+    assert longest_write_secs < deadline * 0.5, (
+        f"the largest single write pipecat hands us ({max(handed)} B) paces out over "
+        f"{longest_write_secs:.1f}s against a {deadline}s write deadline. Past it "
+        f"MediaSender reports a PERMANENT error and the transport stops writing "
+        f"entirely — check audio_out_end_silence_secs and the send interval.")
 
     expected = sum(handed) // BYTES_PER_FRAME
     assert len(wire.datagrams) == expected, (

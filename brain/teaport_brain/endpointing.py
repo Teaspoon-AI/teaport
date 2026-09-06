@@ -46,6 +46,12 @@ SMARTTURN_COMPLETE_THRESHOLD = float(os.getenv("SMARTTURN_COMPLETE_THRESHOLD", "
 # SPEAKING<->STOPPING on normal amplitude dips (felt "over-active", and matters
 # more now the STT commit rides VADUserStoppedSpeaking). Back to pipecat's
 # defaults (0.7 / 0.6): speech clears the gate with margin -> stable detection.
+# pipecat 1.8.0 then integrated the volume measurement over a rolling 400 ms BS.1770
+# window (AudioVolumeTracker) instead of per 32 ms VAD frame, which removes the dip
+# source these values were chosen against -- the same 0..1 scale, so they carry over,
+# and the gate should now be steadier rather than needing re-tuning. One consequence:
+# volume reads 0 until the window has 400 ms of audio, so an analyzer sees no speech
+# for its first 400 ms (once per session, long before the greeting ends).
 # Tune via VAD_CONFIDENCE / VAD_MIN_VOLUME.
 VAD_CONFIDENCE = float(os.getenv("VAD_CONFIDENCE", "0.7"))
 VAD_MIN_VOLUME = float(os.getenv("VAD_MIN_VOLUME", "0.6"))
