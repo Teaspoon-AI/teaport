@@ -104,7 +104,7 @@ class _Gate:
     def __init__(self):
         self.idle_waits = 0
 
-    async def wait_until_idle(self):
+    async def wait_until_idle(self, max_wait=None, *, turn_free=False):
         self.idle_waits += 1
         return True
 
@@ -146,6 +146,26 @@ async def test_the_placeholder_tool_result_is_rewritten():
     body = json.loads(tool["content"])
     assert body["status"] == "complete", body
     assert body["answer"] == ANSWER, body
+
+
+async def test_web_addresses_leave_the_delivery_and_the_record():
+    """Spoken, a URL is ten seconds of "dot … slash …" (live 2026-09-04 21:10: five of
+    them in one sentence, 6.6 s to first audio, the user talked over the silence).
+    The delivery text the model reads has them removed -- and so does the rewritten
+    tool result: it used to keep them so "what did the agent say?" could offer a
+    link, and live 21:59 that question was answered from it with every path read
+    aloud, 48 s of it, the overlay rule notwithstanding."""
+    with_urls = ("Top story: Chromium sandbox RCE at https://nvd.nist.gov/vuln/detail/"
+                 "CVE-2026-85046, then Fermat at https://www.anthropic.com/research/fermat.")
+    ctx, task, _r, _g = await _deliver(with_urls)
+    trigger = task.at_run[-1]["content"]
+    assert "http" not in trigger and "www." not in trigger, trigger
+    assert "Chromium sandbox RCE" in trigger and "Fermat" in trigger, trigger
+    assert "don't read out web addresses" in trigger, trigger
+    tool = [m for m in ctx.messages if m.get("role") == "tool"][0]
+    record = json.loads(tool["content"])["answer"]
+    assert "http" not in record and "www." not in record, record
+    assert "Chromium sandbox RCE" in record and "Fermat" in record, record
 
 
 async def test_a_consult_that_never_reported_is_not_called_a_failure():

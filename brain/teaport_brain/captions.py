@@ -51,6 +51,7 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
     OutputTransportMessageUrgentFrame,
+    TTSStartedFrame,
     TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -227,6 +228,7 @@ class CaptionTap(FrameProcessor):
         self._last_sent = ""    # longest partial emitted (forward-only guard)
         self._first_pts = None  # pts of its first word (guards stale End frames)
         self._dead = set()      # barged context ids: drop their late progress frames
+        self._playing_ctx = None  # the context the transport is writing (its TTSStartedFrame)
 
     def _user_active(self) -> bool:
         return bool(self._activity) and self._activity.user_active()
@@ -340,4 +342,26 @@ class CaptionTap(FrameProcessor):
         elif isinstance(frame, BotStoppedSpeakingFrame):
             # Real playout silence — covers utterances with no End frame (fillers
             # trailing a segment). No-ops when a boundary already finalized.
+            #
+            # Since engine_tts pushes stop frames, the transport also says this at
+            # the end of EACH context, 1 ms before the next queued one starts — and
+            # that next one's first words can already be here, because its word
+            # schedule is anchored at the previous context's last word when its
+            # audio is queued behind. Live 2026-09-04 21:26: a consult delivery
+            # queued behind a 44 s reply got a complete bubble the instant the reply
+            # ended (this finalize, with the full source text), then a second one
+            # that streamed in as it actually played. That stop was the reply's,
+            # not the delivery's — leave the delivery's bubble open.
+            # The transport pushes each context's TTSStartedFrame downstream as it
+            # begins writing that context's audio, so _playing_ctx is the context
+            # the voice is on RIGHT NOW; a bubble that has moved on to a newer one
+            # is not what this stop is about.
+            if (self._playing_ctx is not None and self._ctx is not None
+                    and self._ctx != self._playing_ctx):
+                if _TRACE:
+                    logger.info(f"[CAP] bot stopped is {self._playing_ctx}'s, bubble is "
+                                f"{self._ctx}'s — keep it open")
+                return
             await self._finalize("bot stopped")
+        elif isinstance(frame, TTSStartedFrame) and frame.context_id is not None:
+            self._playing_ctx = frame.context_id

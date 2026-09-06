@@ -46,7 +46,11 @@ from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 from pipecat.utils.asyncio.task_manager import TaskManager, TaskManagerParams  # noqa: E402
 
-from teaport_brain.endpointing import INTERRUPT_MIN_WORDS  # noqa: E402
+from teaport_brain.endpointing import (  # noqa: E402
+    ENDPOINT_STOP_SECS,
+    INTERRUPT_MIN_WORDS,
+    SMARTTURN_STOP_SECS,
+)
 
 SAMPLE_RATE = 16000
 CHUNK_MS = 20
@@ -68,7 +72,8 @@ class AlwaysIncompleteSmartTurn(BaseSmartTurn):
         return {"prediction": 0, "probability": 0.01}
 
 
-async def run_turn(speech_ms_after_start, analyzer_cls=AlwaysCompleteSmartTurn):
+async def run_turn(speech_ms_after_start, analyzer_cls=AlwaysCompleteSmartTurn,
+                   stop_secs=STOP_SECS, silence_ms_after_stop=0):
     """One barge-in-shaped turn. Returns True if it ended on its own.
 
     The user is already speaking when the first interim transcript lands, which is
@@ -79,7 +84,7 @@ async def run_turn(speech_ms_after_start, analyzer_cls=AlwaysCompleteSmartTurn):
     task_manager = TaskManager()
     task_manager.setup(TaskManagerParams(loop=asyncio.get_running_loop()))
     analyzer = analyzer_cls(
-        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=STOP_SECS)
+        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=stop_secs)
     )
     stop = TurnAnalyzerUserTurnStopStrategy(turn_analyzer=analyzer)
     controller = UserTurnController(
@@ -123,6 +128,7 @@ async def run_turn(speech_ms_after_start, analyzer_cls=AlwaysCompleteSmartTurn):
     final = TranscriptionFrame("hello there", "u", "t", None)
     final.finalized = True
     await controller.process_frame(final)
+    await speak(silence_ms_after_stop)  # the mic stays live: silence keeps arriving
     await asyncio.sleep(0.2)
     await controller.cleanup()
     return bool(stopped)
@@ -149,6 +155,29 @@ async def test_an_incomplete_verdict_keeps_the_turn_open():
     assert not await run_turn(100, analyzer_cls=AlwaysIncompleteSmartTurn), (
         "the latch ended a turn Smart Turn had judged incomplete"
     )
+
+
+async def test_smart_turns_silence_limit_is_a_ceiling_on_an_incomplete_verdict():
+    """SmartTurnParams.stop_secs is not a silence floor: BaseSmartTurn.append_audio
+    force-completes the turn once that much silence has accumulated, INCOMPLETE
+    verdict or not, and empties its buffer so the model is never asked again.
+    Feeding it the VAD's 0.2 floor (commit 7136c88) left a mid-sentence pause one
+    audio chunk before it was committed anyway -- the "sole guard" was no guard.
+    The brain keeps the two apart: the VAD's ENDPOINT_STOP_SECS asks the question,
+    SMARTTURN_STOP_SECS is how long a "not done" is honoured."""
+    # The premise: at the old coupling, 500ms of silence commits over the veto.
+    assert await run_turn(100, analyzer_cls=AlwaysIncompleteSmartTurn,
+                          stop_secs=ENDPOINT_STOP_SECS, silence_ms_after_stop=400), (
+        "stop_secs did not force-complete over an INCOMPLETE verdict; the ceiling "
+        "semantics this split rests on have changed")
+    # The fix: at the brain's ceiling the veto survives the same silence.
+    assert not await run_turn(100, analyzer_cls=AlwaysIncompleteSmartTurn,
+                              stop_secs=SMARTTURN_STOP_SECS, silence_ms_after_stop=400), (
+        f"an INCOMPLETE verdict was overridden within 500ms of silence at "
+        f"SMARTTURN_STOP_SECS={SMARTTURN_STOP_SECS}")
+    assert SMARTTURN_STOP_SECS >= ENDPOINT_STOP_SECS + 0.5, (
+        "SMARTTURN_STOP_SECS must leave an INCOMPLETE verdict real room past the VAD "
+        "floor, or the model's veto is decorative")
 
 
 async def test_no_commit_before_this_utterance_has_a_transcript():

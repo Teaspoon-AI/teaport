@@ -125,9 +125,38 @@ async def test_full_playout_word_level():
     print(f"  PASS full playout -> heard all {e.heard_text!r}")
 
 
+async def test_wordlevel_survives_frames_without_trailing_spaces():
+    # Reality the mocked tests miss: the engine's per-word frames for number/counting
+    # output carry NO trailing space ("One,","two,",...). A bare "".join then collapses
+    # them to one whitespace-less token, the exact-timing count reads 1, the ">= est"
+    # guard rejects it, and the ledger silently falls back to the coarse fraction.
+    # Live 2026-09-02: a barge-in during a count was charted heard-up-to-eight while the
+    # user heard ~ten. Engineered so the estimate (~4) and the per-word timing (10)
+    # DISAGREE, so the assertion proves the exact boundary is used, not the estimate.
+    COUNT = ("One, two, three, four, five, six, seven, eight, "
+             "nine, ten, eleven, twelve.")
+    words = ["One,", "two,", "three,", "four,", "five,", "six,", "seven,",
+             "eight,", "nine,", "ten,", "eleven,", "twelve."]
+    frames = [(Wp(w, 1.0 + i * 0.3), 1.05) for i, w in enumerate(words)]  # clustered arrival
+    e = await feed(
+        [(LLMFullResponseStartFrame(), 0.0), (LLMTextFrame(COUNT), 0.0),
+         (LLMFullResponseEndFrame(), 0.0),
+         (TTSStartedFrame(), 1.0), (audio(10.0), 1.0),   # long clip -> small played-fraction
+         (BotStartedSpeakingFrame(), 1.0)]
+        + frames
+        + [(InterruptionFrame(), 4.0)])  # heard 3.0/10 -> est ~4; cut-lead 3.8 -> pts<=3.8 = 10 words
+    assert e.interrupted
+    assert e.heard_text == ("One, two, three, four, five, six, seven, eight, "
+                            "nine, ten,"), repr(e.heard_text)
+    assert len(e.heard_text.split()) == 10, repr(e.heard_text)   # NOT 1 (collapsed), NOT ~4 (est)
+    assert "eleven" not in e.heard_text and "twelve" not in e.heard_text
+    print(f"  PASS spaceless word frames -> exact {e.heard_text!r} (beat est, not collapsed)")
+
+
 async def main():
     for fn in [test_pts_filter_keeps_played_words,
                test_wordlevel_overrides_estimate,
+               test_wordlevel_survives_frames_without_trailing_spaces,
                test_fallback_to_estimate_without_word_frames,
                test_single_frame_is_not_treated_as_wordlevel,
                test_full_playout_word_level]:

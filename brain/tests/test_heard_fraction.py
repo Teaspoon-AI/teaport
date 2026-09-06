@@ -9,9 +9,11 @@
 # (24000 + 16000) / 24000 = 1.67x, which deflates the played fraction by the same factor,
 # so every barge-in under-credits what the user actually heard by about 40%.
 #
-# What makes the accounting sound is that every processor sees the whole reply exactly
-# once. So the reply's duration is the LONGEST any single processor saw — never the sum,
-# and independent of what rate any one of them labels its frames with.
+# What makes the accounting sound is that the reply is pushed to the transport once.
+# On the tagged pipeline only the TTS's tagged push counts and the transport's untagged
+# rebuild is ignored; on this ctx-less legacy shape the ledger keeps the FIRST processor
+# it sees pushing audio and ignores the rest — never a sum, and independent of what rate
+# any one of them labels its frames with.
 #
 # Live 2026-08-25: asked to count to twenty and interrupted 6.15s into a 9.5s clip, the
 # ledger measured audio_dur=15.8, frac=0.39, and credited "eight" — where the user had

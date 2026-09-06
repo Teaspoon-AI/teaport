@@ -80,8 +80,10 @@ _CAPTION_LEAD_SECS = tts_text_lead.CAPTION_LEAD_SECS
 
 # pipecat's audio-context watchdog closes a TTS context after this many seconds without a
 # new frame, resetting the word-timestamp baseline MID-REPLY and pushing a premature
-# LLMFullResponseEndFrame (splits the assistant context; the ledger records a partial
-# reply). Its 3s default is fine on GPU (synth ≤ ~1.2s/chunk) but on the CPU backends a
+# LLMFullResponseEndFrame (splits the assistant context; the ledger ignores that fresh
+# frame -- it takes a response's End at the TTS's own sighting and recognises only a
+# re-push of that same frame -- but its turn then closes on the next context's start
+# rather than on the drain). Its 3s default is fine on GPU (synth ≤ ~1.2s/chunk) but on the CPU backends a
 # ramped chunk of 110+ chars synthesizes >3s with nothing queued, tripping it in normal
 # operation. 15s covers the worst cap/hard_max-sized chunk at CPU RTF ~0.6 with margin.
 _STOP_FRAME_TIMEOUT_S = env_num("TTS_STOP_FRAME_TIMEOUT_S", "15", float)
@@ -105,6 +107,13 @@ _CLAUSE_CAP = env_num("TTS_CLAUSE_CAP", "200", int)
 # long run-on (e.g. the Tale of Two Cities opening) can't overflow the engine's ~512-token
 # utterance limit and crash the synth. Kept well under that limit with margin.
 _CLAUSE_HARD_MAX = env_num("TTS_CLAUSE_HARD_MAX", "350", int)
+# A sentence longer than this is split at its clause boundaries before synthesis
+# (see split_clauses_ramp): the engine synthesizes a chunk whole before any of it
+# plays, so one long sentence is the whole first-audio wait. Live 2026-09-04: a
+# 236-char sentence began 4.6 s after the model finished it, a ~30 s one 6.6 s, and
+# at a 120 cap a 112-char one still waited 1.7 s. Sentences up to this length keep
+# their prosody untouched. 0 disables the split.
+_SENTENCE_SOFT_MAX = env_num("TTS_SENTENCE_SOFT_MAX", "80", int)
 _SEAM_KEEP_LEAD = env_num("TTS_SEAM_KEEP_LEAD", "0.05", float)   # s kept before first sound
 _SEAM_KEEP_TRAIL = env_num("TTS_SEAM_KEEP_TRAIL", "0.25", float)  # s kept after last sound
 
@@ -217,6 +226,17 @@ class EngineTTSService(TTSService):
         # base across calls; reset_word_timestamps() zeroes it when the base clears its
         # baseline (reply end / interruption).
         self._reply_audio_offset = 0.0
+        # Where the previous context's audio ENDS on the playout clock (its word
+        # baseline + all the audio it emitted), so a reply queued behind it is
+        # scheduled from there. pipecat anchors a new context at the previous one's
+        # last WORD pts (tts_service.start_word_timestamps: "continuity across
+        # overlapping audio contexts"), which is that word's start, shifted early by
+        # the caption lead -- 0.8-1.3 s before the audio actually starts (live
+        # 2026-09-04: a queued reply's captions ran 1.3 s ahead of its voice, the
+        # ledger over-credited one heard word, issue #19). Zeroed on a barge-in: the
+        # flushed audio ends now, not where it would have. See start_word_timestamps.
+        self._prev_audio_end_ns = 0
+        self._interrupted = False
         # Set = user silent (synthesize freely); cleared = user speaking (hold the
         # next clause so the GPU serves STT — see _USER_SPEECH_HOLD_MAX_S). Toggled
         # from process_frame by the VAD frames, which are SystemFrames handled on
@@ -242,6 +262,21 @@ class EngineTTSService(TTSService):
             # what gives playout-paced per-word TTSTextFrames; True would emit one unpaced
             # lump at synthesis end.)
             push_start_frame=True,
+            # Push a TTSStoppedFrame once a context's audio is fully enqueued (pipecat
+            # 1.7.0 on_turn_context_completed). The output transport ends bot-speaking on
+            # that frame, which it queues behind the last chunk; with no stop frame it
+            # falls back to its BOT_VAD_STOP_FALLBACK_SECS (3 s) idle timeout, so every
+            # reply used to be followed by 3 s of "bot speaking" nobody could hear
+            # (journal 2026-09-04: BotStoppedSpeaking = audio end + 2.9..3.0 s on 8/8
+            # replies; `based on TTSStoppedFrame` never once). That tail is what the
+            # assistant aggregator waits out before running the post-tool-call
+            # completion (3 s of dead air after every tool filler), what keeps the
+            # 2-word barge-in guard armed past the audio, and what the follow-up gate
+            # reads as "still talking". stop_frame_timeout_s below remains the sweep
+            # for a context that never yielded audio (nothing synthesizable): pipecat
+            # appends no stop frame for it, so only the timeout reclaims it, and the
+            # transport ignores a stop frame that follows no audio.
+            push_stop_frames=True,
             stop_frame_timeout_s=_STOP_FRAME_TIMEOUT_S,
             settings=TTSSettings(model="engine-tts", voice=voice,
                                  language=self._espeak_lang),
@@ -310,7 +345,8 @@ class EngineTTSService(TTSService):
         # at the source, so an empty list here now genuinely means "nothing to speak".
         clauses = split_clauses_ramp(text, first_max=_FIRST_CLAUSE_MAX_CHARS,
                                      growth=_CLAUSE_GROWTH, cap=_CLAUSE_CAP,
-                                     hard_max=_CLAUSE_HARD_MAX)
+                                     hard_max=_CLAUSE_HARD_MAX,
+                                     soft_max=_SENTENCE_SOFT_MAX)
         if not clauses:
             # ErrorFrame, not a bare return. Returning here yielded neither audio nor a
             # signal, and by this point _push_tts_frames has already created the audio
@@ -377,11 +413,36 @@ class EngineTTSService(TTSService):
             # pipeline/user knows the voice is down.
             yield ErrorFrame(error=f"tts: all {failed_clauses} clause(s) failed to synthesize")
 
+    async def start_word_timestamps(self):
+        # The base sets the baseline to max(now, _word_last_pts) -- "the last emitted
+        # timestamp if it's ahead of current time, to maintain continuity across
+        # overlapping audio contexts" -- and flushes the words it cached before the
+        # first audio frame with that baseline, all inside this call. When the
+        # previous context's audio is still playing, this context plays when THAT
+        # audio ends, later than its last word's start: hand the base that instant
+        # through the hook it already reads, BEFORE it runs.
+        if self._initial_word_timestamp == -1 and self._word_last_pts < self._prev_audio_end_ns:
+            if _TRACE:
+                logger.info(f"[WTS] baseline floor {self._word_last_pts / 1e9:.2f} -> "
+                            f"{self._prev_audio_end_ns / 1e9:.2f} (queued behind audio)")
+            self._word_last_pts = self._prev_audio_end_ns
+        await super().start_word_timestamps()
+
     async def reset_word_timestamps(self):
         # The base zeroes its per-reply word-timestamp baseline here (reply end or
         # interruption); zero our cross-call audio-offset accumulator in lockstep so the
         # next reply's first sentence starts at 0 again — otherwise it would inherit the
         # previous reply's tail offset and schedule every word in the past (dropped).
+        # First, remember where this context's audio ends (baseline + everything it
+        # emitted) for the next one -- unless a barge-in just flushed it.
+        # (A reset with no baseline set is a no-op reset -- pipecat resets more than
+        # once around a context end -- and must not forget a real end.)
+        base = self._initial_word_timestamp
+        if self._interrupted:
+            self._prev_audio_end_ns = 0
+            self._interrupted = False
+        elif base != -1:
+            self._prev_audio_end_ns = base + int(self._reply_audio_offset * 1e9)
         await super().reset_word_timestamps()
         self._reply_audio_offset = 0.0
 
@@ -390,7 +451,9 @@ class EngineTTSService(TTSService):
         # reached the TTS (fresh context dicts, word-timestamp reset) and when.
         logger.debug(f"{self}: interruption reached TTS "
                      f"(turn_ctx={str(self._turn_context_id)[:8]})")
+        self._interrupted = True  # the base resets word timestamps below: no carry
         await super()._handle_interruption(frame, direction)
+        self._prev_audio_end_ns = 0
 
     async def _connect_stream(self):
         """Open the one-shot synthesis stream, waiting out a full engine session pool.

@@ -26,7 +26,9 @@
 # from a processor whose whole job is to explain silence.
 #
 # TTSSpeakFrame, not LLMTextFrame: this is the pipeline talking, not the model. It goes
-# straight to the TTS without entering the conversation as an assistant turn, so a
+# straight to the TTS without entering the conversation as an assistant turn
+# (append_to_context=False -- pipecat's default would commit the spoken notice as
+# an assistant message, and TranscriptLedger charts a marked filler as nothing), so a
 # failed call cannot poison the context the way a degenerate completion does (see
 # llm_text_guard).
 #
@@ -78,7 +80,8 @@ class LLMErrorSpeaker(FrameProcessor):
                 )
                 # DOWNSTREAM: the TTS is below this processor, and the error itself
                 # still continues upstream to the task on the push below.
-                await self.push_frame(TTSSpeakFrame(ERROR_TEXT), FrameDirection.DOWNSTREAM)
+                await self.push_frame(TTSSpeakFrame(ERROR_TEXT, append_to_context=False),
+                                      FrameDirection.DOWNSTREAM)
             else:
                 logger.debug("LLMErrorSpeaker: notice debounced")
         await self.push_frame(frame, direction)

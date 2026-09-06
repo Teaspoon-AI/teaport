@@ -48,6 +48,7 @@ from teaport_brain.llm_text_guard import (  # noqa: E402
     LLMTextGuard,
     fold_degenerate_chars,
     is_degenerate,
+    unglue_sentences,
 )
 from teaport_brain.raw_llm_capture import RawLLMCapture  # noqa: E402
 from teaport_brain.tts_text import fold_unspeakable, split_clauses_ramp  # noqa: E402
@@ -475,16 +476,14 @@ async def test_each_response_strips_its_own_opening():
 async def test_pass_through_text_keeps_its_frame_identity():
     """A delta that merely passes through must keep the frame id it arrived with.
 
-    TranscriptLedger is a BaseObserver: it sees every push of every frame and
-    de-duplicates on frame IDENTITY. Each LLMTextFrame is pushed twice on the way down,
-    once by the LLM service and once by this guard, and the ledger charts it once only
-    because both pushes carry the same object. Emitting a fresh frame gives the second
-    push an id the ledger has not seen, so the delta is charted TWICE — which corrupts
-    the denominator of the heard fraction, makes HeardContextCorrector drop replies the
-    user actually heard, and leaves the model re-answering questions it had answered.
-
-    Live 2026-08-25: "I like teal." was charted as "I like tealI. like teal.", 11 of 12
-    assistant turns doubled.
+    Each LLMTextFrame is pushed twice on the way down, once by the LLM service and
+    once by this guard, and an observer that de-duplicates on frame IDENTITY sees one
+    delta only because both pushes carry the same object. TranscriptLedger's intended
+    text no longer depends on it (it reads the stream at the TTS's own sighting), but
+    its LEDGER_TRACE and any other id-keyed observer still do -- and this is the rule
+    the 2026-08-25 incident made: a fresh frame per delta charted "I like teal." as
+    "I like tealI. like teal.", doubling the heard fraction's denominator, and
+    HeardContextCorrector dropped replies the user had heard; 11 of 12 assistant turns.
     """
     h = Guard()
     await h.feed(LLMFullResponseStartFrame())
@@ -494,7 +493,7 @@ async def test_pass_through_text_keeps_its_frame_identity():
     await h.feed(LLMFullResponseEndFrame())
     forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
     assert [f.id for f in forwarded] == [f.id for f in sent], (
-        "guard emitted new frame ids; the ledger will chart these deltas twice"
+        "guard emitted new frame ids; every id-keyed observer sees these deltas twice"
     )
     assert h.spoken() == "I like teal."
 
@@ -532,6 +531,151 @@ def test_the_fold_matches_what_the_engine_rewrites():
         assert ch in fold_unspeakable("a %s b" % ch), (
             "the engine echoes %r unchanged; folding it would break the slot match" % ch
         )
+
+
+# ------------------------------------------------ leaked Harmony special tokens
+
+def test_fold_degenerate_chars_strips_harmony_special_tokens():
+    # The pure helper drops any complete <|...|> span and keeps the real words.
+    assert fold_degenerate_chars("<|reserved_200097|>") == ""
+    assert fold_degenerate_chars("I'm now<|reserved_200097|> here") == "I'm now here"
+    for tok in ("<|start|>", "<|end|>", "<|channel|>", "<|message|>",
+                "<|constrain|>", "<|call|>", "<|return|>"):
+        assert fold_degenerate_chars("a%sb" % tok) == "ab", tok
+
+
+def test_the_special_token_strip_leaves_ordinary_text_untouched():
+    # No <|...|> present -> byte-for-byte the same fold as before the strip existed.
+    assert fold_degenerate_chars("The voice is af_heart.") == "The voice is af_heart."
+    # A lone "<|" or "|>" in prose is not a token and must survive.
+    assert fold_degenerate_chars("use a < or a | here") == "use a < or a | here"
+
+
+async def test_a_leaked_reserved_token_never_reaches_speech_or_history():
+    # The exact live shape (2026-09-02): gpt-oss streamed "<|reserved_200097|>" as its
+    # own delta, between real text. Before the strip it was spoken (4.2s of audio) and
+    # charted as the assistant's words; now it is dropped and the real words remain.
+    # spoken() is the guard's forwarded text -- with push_text_frames=False that IS what
+    # the TTS synthesizes and what the assistant aggregator commits to history.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("I'm now speaking English again. ")
+    await h.text("<|reserved_200097|>")            # the leaked control token, alone
+    await h.text("What would you like to do next?")
+    await h.feed(LLMFullResponseEndFrame())
+    assert "reserved_200097" not in h.spoken()
+    assert "<|" not in h.spoken() and "|>" not in h.spoken()
+    assert h.spoken() == ("I'm now speaking English again. "
+                          "What would you like to do next?")
+
+
+async def test_a_token_split_across_deltas_is_still_stripped():
+    # Nothing guarantees a provider's chunking: the opener can arrive on one delta and
+    # the rest on the next. The partial is held back like a fold run and stripped whole.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("I like<|")
+    await h.text("reserved_200097|> teal.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "I like teal.", repr(h.spoken())
+    # An opener still open at the End is junk, not speech.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("I like teal. <|reserved_2000")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken().strip() == "I like teal.", repr(h.spoken())
+    # "<" with a space after it is prose, and still flows.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("use a <")
+    await h.text(" or a | here.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "use a < or a | here.", repr(h.spoken())
+
+
+async def test_a_token_glued_to_words_in_one_delta_is_stripped_in_place():
+    # When the token shares a delta with real text, only the token is removed and the
+    # surrounding words are spoken normally.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("The voice is <|channel|>af_heart.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "The voice is af_heart."
+
+
+# ------------------------------------------------------------------ unglue
+
+def test_unglue_sentences_table():
+    # A capital right behind a sentence closer is the next sentence; put the space back.
+    for glued, spaced in [
+        ("low chance of rain.Sounds like a pleasant day", "low chance of rain. Sounds like a pleasant day"),
+        ("what do you need?Just let me know", "what do you need? Just let me know"),
+        ("okay, wait…Okay then", "okay, wait… Okay then"),
+        ('He said "no."Then he left', 'He said "no." Then he left'),
+        ("a jacket.Third, earbuds.Fourth, a bank.", "a jacket. Third, earbuds. Fourth, a bank."),
+        ("see Dr.Smith", "see Dr. Smith"),
+        ("ready?!Really", "ready?! Really"),
+        ("Está bien.Él llegó", "Está bien. Él llegó"),  # accented capital
+    ]:
+        assert unglue_sentences(glued) == spaced, repr(unglue_sentences(glued))
+    # ...and only then. Lower case after a dot is a domain or an abbreviation, a digit
+    # is a number, a lone letter before the dot is an initialism, an existing space
+    # must not become two, and CJK (no case, "。" ends its sentences) is untouched.
+    for same in [
+        "at statichost.eu and nvd.nist.gov",
+        "about 3.5 percent",
+        "the U.S.Army and a Ph.D.Student",
+        "e.g.This one",
+        "low chance of rain. Sounds like",
+        "rain.\n\nSounds like",
+        "今日は。明日も。",
+        "",
+    ]:
+        assert unglue_sentences(same) == same, repr(unglue_sentences(same))
+    # The seam with the previous delta: `before` is the stream's tail.
+    assert unglue_sentences("Sounds like", before="chance of rain.") == " Sounds like"
+    assert unglue_sentences("Sounds like", before="chance of rain") == "Sounds like"
+    assert unglue_sentences(" Sounds like", before="chance of rain.") == " Sounds like"
+    assert unglue_sentences("S.", before="the U.") == "S."         # U.S. across deltas
+    assert unglue_sentences("Then", before='said "no."') == " Then"
+
+
+async def test_glued_sentences_are_spaced_across_deltas():
+    # The live shape (2026-09-04 20:31): the terminator ends one delta, the capital
+    # opens the next, and the whole reply reached run_tts as ONE sentence.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for d in ["Tomorrow in Austin", " rain", ".", "Sounds", " like", " it", "."]:
+        await h.text(d)
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "Tomorrow in Austin rain. Sounds like it.", repr(h.spoken())
+    # No frame was added or dropped for it: the space rides the delta it belongs to.
+    assert h.kinds().count("LLMTextFrame") == 7
+
+
+async def test_glued_sentence_in_one_delta_is_spaced_in_place():
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("CPU load is under one percent.I'll keep watching.")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "CPU load is under one percent. I'll keep watching.", repr(h.spoken())
+
+
+def test_unglued_text_is_what_the_tts_can_split():
+    # Why this matters: pipecat's aggregator (NLTK behind a lookahead) and the clause
+    # ramp both need the space. Glued, the reply is one sentence to both — first
+    # audio waits for the last word's synthesis. Unglued, both find the boundary.
+    from pipecat.utils.string import match_endofsentence
+    glued = ("Tomorrow in Austin should be warm, with a low chance of rain."
+             "Sounds like a pleasant day with only a slight chance of rain.")
+    assert match_endofsentence(glued.split("Sounds")[0] + "S") == 0
+    # soft_max=0: the sentence-boundary split alone (the long-sentence clause split
+    # is a separate remedy, tested in test_clause_ramp.py).
+    assert len(split_clauses_ramp(glued, soft_max=0)) == 1
+    spaced = unglue_sentences(glued)
+    first = spaced.split(" Sounds")[0]
+    assert match_endofsentence(first + " S") == len(first)
+    assert len(split_clauses_ramp(spaced, soft_max=0)) == 2
 
 
 def main():
