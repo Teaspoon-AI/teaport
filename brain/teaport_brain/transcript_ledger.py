@@ -55,6 +55,7 @@
 #
 
 import os
+import re
 from collections import OrderedDict, deque
 from dataclasses import dataclass
 from typing import List, Optional
@@ -146,13 +147,23 @@ class Utterance:
         return _unheard(self.text, self.heard_text)
 
 
+# A script that writes without spaces -- kana, the CJK ideographs, Thai -- arrives as ONE
+# "word" however long the reply, so its heard prefix is taken by characters. Any other
+# single token is one word, heard or not: "Understood." cut at 40% is "" (the word
+# rounding), not "Under", which HeardContextCorrector would otherwise write into the
+# context as what the assistant said. (Length alone was the test once, and every
+# Latin word past eight letters took the character path.)
+_SPACELESS_SCRIPT = re.compile(
+    r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff\uf900-\ufaff\uff66-\uff9f\u0e00-\u0e7f]")
+
+
 def _prefix(text: str, fraction: float) -> str:
     """The first `fraction` of `text`: by words, or by characters for a script
     that writes without spaces (a Mandarin or Japanese reply is one "word")."""
     words = text.split()
     if not words:
         return ""
-    if len(words) == 1 and len(text) > 8:
+    if len(words) == 1 and _SPACELESS_SCRIPT.search(text):
         return text[:max(0, min(len(text), round(len(text) * fraction)))]
     n = max(0, min(len(words), round(len(words) * fraction)))
     return " ".join(words[:n])

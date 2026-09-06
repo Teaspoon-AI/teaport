@@ -127,10 +127,12 @@ _DOT_RUN_LONG = re.compile(r"\.{4,}")
 # runs are (_TOKEN_HOLDBACK), and one still open at the End is dropped as junk. The body
 # is bounded so a stray "<|" in ordinary prose cannot anchor a runaway match.
 _SPECIAL_TOKEN = re.compile(r"<\|[A-Za-z0-9_]{0,64}\|>")
-# A delta's tail that could be the start of a special token: "<", "<|", "<|reserved_2".
-# Held back until the next delta says what it was; "a < b" has a space after the "<"
-# and is not matched.
-_TOKEN_HOLDBACK = re.compile(r"<\|?[A-Za-z0-9_]{0,64}\|?$")
+# A delta's tail that could be the start of a special token: "<", "<|", "<|reserved_2",
+# "<|reserved_200097|". Held back until the next delta says what it was. Past the "<"
+# the pipe is REQUIRED: "<5", "<3" and "x<y" are prose, and while it was optional a
+# reply-final "keep it under <5" was held as an opener and dropped at the End as
+# junk. "a < b" has a space after the "<" and is not matched either.
+_TOKEN_HOLDBACK = re.compile(r"<(?:\|[A-Za-z0-9_]{0,64}\|?)?$")
 
 # The folds above are per-delta, and the stream splits wherever it likes: "**" arriving as
 # "*" + "*", or "\u2026" + "\u2026", or ".." + "..", passed through untouched while the same text in
@@ -177,12 +179,21 @@ _SENT_END = re.compile(r"[.!?]+")
 # the Spanish/French/Portuguese rooms count too; CJK has no case and no spaces, and
 # its sentences end in "。", which is not in the closer set, so it is untouched.
 _SENT_CLOSER = re.compile(r"[.!?…]+[\"'”’)\]]*")
-_SENT_CLOSER_AT_END = re.compile(r"[.!?…]+[\"'”’)\]]*$")
 _SENT_OPENERS = "\"“‘("
 
 
-def _opens_sentence(ch: str) -> bool:
-    return ch.isupper() or ch in _SENT_OPENERS
+def _opens_sentence(text: str, i: int) -> bool:
+    """Does the character at `i` open a sentence: an opening quote/bracket, or a capital
+    that starts a word? A capital with another capital right behind it is a run of
+    them -- "Node.JS", "ASP.NET" -- a name, not a boundary. (The price: "percent.CPU"
+    stays glued. A dotted product name is the commoner shape in a consult delivery,
+    and a glued pair costs a pause where a split name costs a sentence cut.)"""
+    ch = text[i]
+    if ch in _SENT_OPENERS:
+        return True
+    if not ch.isupper():
+        return False
+    return not (i + 1 < len(text) and text[i + 1].isupper())
 
 
 def _after_lone_letter(text: str, i: int) -> bool:
@@ -196,28 +207,31 @@ def _after_lone_letter(text: str, i: int) -> bool:
 def unglue_sentences(text: str, before: str = "") -> str:
     """Insert the missing space after a sentence closer that a capital (or an opening
     quote) follows directly -- inside `text`, and at its seam with `before`, the tail
-    of the text that preceded it in the stream. Pure; the guard supplies `before`."""
+    of the text that preceded it in the stream. Pure; the guard supplies `before`.
+
+    Every check runs on `before + text` as one string, because a delta boundary can
+    fall anywhere: whether a dot is an initial's is only visible across the seam
+    ("the U" + ".S" + ". Army" spoke as "the U. S. Army" while the check saw the
+    delta alone), and a closer can itself straddle it ('no.' + '"Then')."""
     if not text:
         return text
-    out, pos = [], 0
-    for m in _SENT_CLOSER.finditer(text):
+    ctx, off = before + text, len(before)
+    out, pos = [], off
+    for m in _SENT_CLOSER.finditer(ctx):
         end = m.end()
-        if end >= len(text) or not _opens_sentence(text[end]):
+        if end < off:
+            continue  # closed inside earlier deltas: its space was placed back then
+        if end >= len(ctx) or not _opens_sentence(ctx, end):
             continue
-        if text[m.start()] == "." and _after_lone_letter(text, m.start()):
+        if ctx[m.start()] == "." and _after_lone_letter(ctx, m.start()):
             continue  # "U.S.Army": an initialism, not a boundary
-        if end + 1 < len(text) and text[end + 1] == ".":
+        if end + 1 < len(ctx) and ctx[end + 1] == ".":
             continue  # "Ph.D.": the capital is itself an initial
-        out.append(text[pos:end])
+        out.append(ctx[pos:end])
         out.append(" ")
         pos = end
-    out.append(text[pos:])
-    text = "".join(out)
-    if before and _opens_sentence(text[0]) and not (len(text) > 1 and text[1] == "."):
-        m = _SENT_CLOSER_AT_END.search(before)
-        if m and not (before[m.start()] == "." and _after_lone_letter(before, m.start())):
-            text = " " + text
-    return text
+    out.append(ctx[pos:])
+    return "".join(out)
 
 
 # Spoken when the guard trips. Overridable because the pipeline serves Japanese,
@@ -357,8 +371,10 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
         self._pending = ""
         self._pending_frame = None
-        # UNGLUE state: the tail of the last folded text, so a terminator that ended
-        # one delta and the capital that opens the next still get their space.
+        # UNGLUE state: the tail of the folded STREAM so far (not of the last delta,
+        # which can be one character), so a terminator that ended one delta and the
+        # capital that opens the next still get their space, and an initial's dot is
+        # still seen as one.
         self._tail = ""
         # Repeat cut state: sentences already flushed this response, the folded text
         # of the sentence still accumulating, and the frames that carry it — held
@@ -408,7 +424,7 @@ class LLMTextGuard(FrameProcessor):
                 text = text[:m.start()]
         folded = fold_degenerate_chars(text) if text else ""
         if folded:
-            self._tail = folded[-8:]
+            self._tail = (self._tail + folded)[-8:]
         return folded
 
     async def _flush_held(self, direction: FrameDirection, keep_tail: int = 0):
@@ -574,6 +590,7 @@ class LLMTextGuard(FrameProcessor):
             self._open_sent = ""
             self._pending = ""
             self._pending_frame = None
+            self._tail = ""
         elif isinstance(frame, LLMFullResponseEndFrame):
             if not self._tripped:
                 # Fold-holdback first, so its tail joins the final sentence…

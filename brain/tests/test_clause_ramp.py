@@ -114,6 +114,12 @@ def test_strip_urls_for_speech():
          "Actively exploited sandbox RCE at, a formal proof at."),
         ("Statichost.eu (https://www.statichost.eu) is European.", "Statichost.eu is European."),
         ("See www.example.com for details.", "See for details."),
+        # The wrapper the model put around an address goes with it: gpt-oss writes
+        # autolinks as <https://...>, and a quoted or bracketed one was read out whole.
+        ("See <https://nvd.nist.gov/vuln/detail/CVE-2026-1> for details.", "See for details."),
+        ('Source: "https://www.nist.gov/x" says so.', "Source: says so."),
+        ("Ref [https://a.b/c] here.", "Ref here."),
+        ("Read it at <https://example.com/a>.", "Read it at."),
         ("No addresses here, 3.5 percent and e.g. this.", "No addresses here, 3.5 percent and e.g. this."),
         ("", ""),
     ]
