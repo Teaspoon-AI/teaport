@@ -33,17 +33,25 @@
 #      its ~1 s queue overruns, so the output side paces at ~REAL TIME (one 20 ms frame
 #      per 20 ms). pipecat's BaseOutputTransport does NO pacing of its own — MediaSender
 #      hands write_audio_frame whatever the audio queue yields, as fast as it yields it
-#      (base_output.py:896-922 at the pin) — so every transport that writes to a socket
+#      (base_output.py:896-923 at the pin) — so every transport that writes to a socket
 #      itself hand-rolls a send clock (the WebRTC ones let their SDK pace instead), and
 #      so do we (see _write_audio_sleep). Without it the whole utterance goes out in a
 #      burst and the gateway drops the tail.
-#      pipecat 1.8.0 put a CEILING on how long one such write may take:
-#      MediaSender._internal_write_audio_frame wraps write_audio_frame in
-#      asyncio.wait_for(audio_out_write_timeout_secs, default 10 s), and a timeout is
-#      reported permanent — is_usable goes False and every later write is dropped. Our
-#      longest single call is the end-of-call silence (audio_out_end_silence_secs=2 ->
-#      64000 B -> 100 paced 20 ms frames -> ~2 s), so there is 8 s of headroom; raising
-#      that param, or slowing _send_interval, eats into it.
+#      pipecat 1.8.0 changed what a slow write COSTS. 1.7.0 already bounded one write —
+#      _send_silence wrapped its own call in asyncio.wait_for(timeout=secs + 1), i.e.
+#      3 s for our 2 s of silence — and a timeout there was a logged warning and nothing
+#      more. 1.8.0 moved the bound into MediaSender._internal_write_audio_frame
+#      (base_output.py:925), so it now covers EVERY audio write; it no longer scales
+#      with the buffer (one flat audio_out_write_timeout_secs, default 10 s, where the
+#      old bound grew with audio_out_end_silence_secs); and a timeout is reported
+#      PERMANENT — is_usable goes False and every later write is dropped, i.e. the call
+#      is silenced rather than one buffer lost. Our longest single write is still the
+#      end-of-call silence (audio_out_end_silence_secs=2 -> 64000 B -> 100 paced 20 ms
+#      frames -> ~2 s), so there is 8 s of headroom; raising that param, or slowing
+#      _send_interval, eats into it. Note the DTMF tone does not run under that
+#      deadline: _write_dtmf_audio calls BaseOutputTransport.write_audio_frame directly
+#      (base_output.py:303-316), so it reaches us the same way but outside both the
+#      wait_for and the is_usable gate.
 
 import asyncio
 import os
@@ -64,7 +72,7 @@ from pipecat.frames.frames import (
     OutputTransportMessageUrgentFrame,
     StartFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup
 from pipecat.serializers.base_serializer import FrameSerializer
 from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
@@ -377,13 +385,13 @@ class SipGatewayOutputTransport(BaseOutputTransport):
         #
         # This used to say "FastAPI uses interval/2 (2x realtime) because a WS client
         # buffers". That is FALSE, and the /2 is what made it tempting: pipecat writes
-        # `(self.audio_chunk_size / self.sample_rate) / 2` (fastapi.py:463) where
-        # audio_chunk_size is in BYTES (base_output.py:135), so the /2 is the S16LE
+        # `(self.audio_chunk_size / self.sample_rate) / 2` (fastapi.py:456) where
+        # audio_chunk_size is in BYTES (base_output.py:136), so the /2 is the S16LE
         # bytes->samples correction, NOT a burst. At 640 B / 16 kHz that is
         # (640/16000)/2 = 0.02 s — the same 20 ms our spelling below produces.
         #
         # The clock itself is still ours to keep: BaseOutputTransport paces nothing
-        # (base_output.py:887-910), so fastapi/websocket-server/websocket-client/tavus
+        # (base_output.py:896-923), so fastapi/websocket-server/websocket-client/tavus
         # each hand-roll exactly this. And we keep OUR spelling because the two agree
         # only while audio_out_10ms_chunks == 2: pipecat's interval is per INCOMING
         # chunk, ours is per OUTGOING 640-byte datagram, and write_audio_frame sleeps
@@ -393,12 +401,12 @@ class SipGatewayOutputTransport(BaseOutputTransport):
         self._next_send_time = 0.0
         # Re-packetization remainder. NOT a duplicate of the base class's chunking:
         # MediaSender.handle_audio_frame cuts the TTS path to audio_chunk_size = 640 B
-        # (base_output.py:598-606), but two base-class paths call write_audio_frame
+        # (base_output.py:595-621), but two base-class paths call write_audio_frame
         # DIRECTLY with a whole unchunked buffer:
-        #   * _send_silence on EndFrame (base_output.py:870-885) — one frame of
+        #   * _send_silence on EndFrame (base_output.py:885-894) — one frame of
         #     sample_rate * 2 * audio_out_end_silence_secs bytes, i.e. 64000 B here with
-        #     the default 2 s (base_transport.py:72). Every graceful teardown hits this.
-        #   * _write_dtmf_audio (base_output.py:291-304) — one whole 16000 B tone.
+        #     the default 2 s (base_transport.py:75). Every graceful teardown hits this.
+        #   * _write_dtmf_audio (base_output.py:303-316) — one whole 16000 B tone.
         # Without the loop below either becomes a single 64001-byte datagram, and
         # nothing raises to tell us: measured on this box, SO_SNDBUF is 212992 and
         # SEQPACKET send() happily returns 64001 — the gateway's MAX_FRAME_BYTES-sized
@@ -406,14 +414,37 @@ class SipGatewayOutputTransport(BaseOutputTransport):
         self._audio_send_buffer = bytearray()
         self._started = False
 
+    async def setup(self, setup: FrameProcessorSetup):
+        await super().setup(setup)
+        # setup(), not start(), and the FrameProcessorSetup rather than the StartFrame:
+        # FrameSerializer.setup takes a FrameProcessorSetup since 1.8.0 and every one of
+        # pipecat's own serializers now reads it (twilio/plivo/vonage/genesys/exotel/
+        # telnyx all do `self._params.sample_rate or setup.audio_in_sample_rate`).
+        # Handing it a StartFrame was silent only because neither of OUR serializers
+        # overrides setup at all — the inherited `pass` swallowed the wrong type — so the
+        # first serializer written to the documented contract would have raised on
+        # setup.task_manager/.clock/.pipeline_worker, or worse, read
+        # setup.audio_out_sample_rate and got the TASK's 24000 instead of this
+        # transport's 16000. Mirrors fastapi.py:448-461.
+        #
+        # The INPUT transport deliberately does not do this too: SIP shares ONE
+        # SipProtocolSerializer between both directions and the connection (sip_server
+        # builds it once), so setting it up twice would be setting up the same object
+        # twice. pipecat's transports each own their instance, which is why fastapi
+        # calls it on both sides.
+        if self._params.serializer:
+            await self._params.serializer.setup(setup)
+
     async def start(self, frame: StartFrame):
         await super().start(frame)
         if self._started:
             return
         self._started = True
-        if self._params.serializer:
-            await self._params.serializer.setup(frame)
         # One 20 ms frame every 20 ms (BYTES_PER_FRAME/2 samples / sample_rate).
+        # Left here rather than moved up with the serializer: sample_rate is already
+        # final in setup(), but arming the send clock belongs beside
+        # set_transport_ready — the transport starts pacing from the same instant it
+        # declares itself ready to write.
         self._send_interval = (BYTES_PER_FRAME / 2) / self.sample_rate
         await self.set_transport_ready(frame)
 
@@ -435,7 +466,7 @@ class SipGatewayOutputTransport(BaseOutputTransport):
             # Barge-in. Drop any partially buffered playout so stale PCM isn't replayed
             # (the media sender already dropped its queued chunks), reset the clock, and
             # OFFER the interruption to the serializer — the hook pipecat's Twilio
-            # serializer uses for {"event":"clear"} and fastapi.py:501-506 wires up.
+            # serializer uses for {"event":"clear"} and fastapi.py:508-515 wires up.
             # Protocol v0 has no playout flush, so it serializes to None today; wiring
             # it now means a v1 flush control needs no change on this side.
             self._audio_send_buffer.clear()
@@ -482,8 +513,8 @@ class SipGatewayOutputTransport(BaseOutputTransport):
             del self._audio_send_buffer[:BYTES_PER_FRAME]
             # Cut BEFORE tagging: the 0x11 tag is per datagram, so pipecat's own
             # fixed_audio_packet_size trick (chunk the SERIALIZED payload,
-            # fastapi.py:569-580) would slice our tag off every frame but the first.
-            # Re-wrap in the class we were handed, as base_output.py:599 does, so the
+            # fastapi.py:578-587) would slice our tag off every frame but the first.
+            # Re-wrap in the class we were handed, as base_output.py:610-618 does, so the
             # serializer sees the same frame type the pipeline produced.
             await self._write_frame(type(frame)(
                 chunk, sample_rate=frame.sample_rate, num_channels=frame.num_channels))

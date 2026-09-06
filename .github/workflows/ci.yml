@@ -15,10 +15,14 @@ jobs:
     # regression before it's pushed, aarch64 is the only architecture ever shipped (a
     # Jetson Orin) and until now nothing tested it automatically. Free on a
     # GitHub-hosted runner for a public repo — worth revisiting this matrix if that
-    # ever changes. All eight direct deps in brain/pyproject.toml ship manylinux
-    # aarch64 wheels for cp312 (checked 2026-08-28, pipecat-ai's own onnxruntime
-    # dependency included), and actions/python-versions has a cached linux-arm64
-    # 3.12 build, so setup-python below doesn't fall back to building from source.
+    # ever changes. The whole LOCKED closure, not just the eight direct deps, ships
+    # manylinux aarch64 wheels for cp312 — 63 packages checked against brain/uv.lock on
+    # 2026-09-06, after the pipecat 1.8.1 bump swapped scipy for the compiled
+    # `loudness`; the only three without one are docopt (sdist, the one thing the
+    # appliance builds), teaport-brain itself, and audioop-lts (marker-gated
+    # python >= 3.13, so never installed on the cp312 appliance). actions/python-versions
+    # has a cached linux-arm64 3.12 build, so setup-python below doesn't fall back to
+    # building from source.
     #
     # Not a substitute for the appliance: no CUDA, no JetPack, no engine, no LLM. The
     # two appliance-only tests SKIP here exactly as they do on a laptop — a green run
@@ -88,12 +92,17 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Shell syntax
+        # The SIP rigs under brain/test are in here too. Nothing else parses them —
+        # they only run on a box with a gateway — so a syntax error in the shared
+        # sip_test_common.sh (which now refuses an unpinned interpreter, and so has
+        # real logic in it) would otherwise first surface on the appliance.
         run: |
           bash -n install.sh
           bash -n install-bootstrap.sh
+          for f in brain/test/*.sh; do bash -n "$f"; done
       - name: shellcheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh install-bootstrap.sh
+        run: shellcheck install.sh install-bootstrap.sh brain/test/*.sh
       - name: Manifest JSON is valid
         run: |
           for m in manifest/*.json; do

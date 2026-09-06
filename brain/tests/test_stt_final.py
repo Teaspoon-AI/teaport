@@ -45,7 +45,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # n
     TurnAnalyzerUserTurnStopStrategy,
 )
 
-from turn_harness import start_controller  # noqa: E402
+from turn_harness import running_controller  # noqa: E402
 
 from teaport_brain.endpointing import INTERRUPT_MIN_WORDS  # noqa: E402
 from teaport_brain.stt import _EMPTY_FINAL_RUN, TeaportSTTService  # noqa: E402
@@ -122,27 +122,28 @@ async def test_the_turn_still_ends_after_an_unfinalizable_utterance():
         stopped.append(True)
 
     controller.add_event_handler("on_user_turn_stopped", on_stopped)
-    await start_controller(controller)
+    async with running_controller(controller):
 
-    async def speak(ms):
-        for _ in range(ms // CHUNK_MS):
-            await controller.process_frame(
-                InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE, num_channels=1)
-            )
+        async def speak(ms):
+            for _ in range(ms // CHUNK_MS):
+                await controller.process_frame(
+                    InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE,
+                                       num_channels=1)
+                )
 
-    await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
-    await speak(400)
-    await controller.process_frame(InterimTranscriptionFrame("change your voice", "u", "t", None))
-    await speak(200)
-    vad_stop = VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS)
-    vad_stop.timestamp = 0.0
-    await controller.process_frame(vad_stop)
-    # The engine could not finalize; stt.py falls back to the interim hypothesis.
-    for frame in await finalize(["change your voice"], ""):
-        await controller.process_frame(frame)
-    await asyncio.sleep(0.2)
-    await controller.cleanup()
-    assert stopped, "turn never ended after an unfinalizable utterance"
+        await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await speak(400)
+        await controller.process_frame(
+            InterimTranscriptionFrame("change your voice", "u", "t", None))
+        await speak(200)
+        vad_stop = VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS)
+        vad_stop.timestamp = 0.0
+        await controller.process_frame(vad_stop)
+        # The engine could not finalize; stt.py falls back to the interim hypothesis.
+        for frame in await finalize(["change your voice"], ""):
+            await controller.process_frame(frame)
+        await asyncio.sleep(0.2)
+        assert stopped, "turn never ended after an unfinalizable utterance"
 
 
 def _always_complete():

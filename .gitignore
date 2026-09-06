@@ -22,5 +22,10 @@ models/
 *.gguf
 *.safetensors
 
+# Generated at runtime, not shipped: thinking_sound synthesizes its typing bed on first
+# use and caches it next to the module. Any test that builds an agent session creates
+# it, so it would otherwise land in someone's commit as a 288 KB binary.
+brain/teaport_brain/assets/
+
 # OS
 .DS_Store

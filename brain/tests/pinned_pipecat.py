@@ -72,9 +72,16 @@ def require_pinned():
     """Raise unless the installed pipecat matches the pin. Call at import time."""
     want, have = _pinned_version(), pipecat.__version__
     if have != want:
+        # Both routes, because the header above and this message used to disagree —
+        # exactly the drift this file exists to stop. Off-box is the normal one now
+        # (every pin since 1.7.0 publishes to PyPI); the appliance one is for a box
+        # where the deployed venv is the thing under test.
         raise SystemExit(
             f"\nWRONG PIPECAT: installed {have}, this suite is only meaningful against "
-            f"{want} (brain/pyproject.toml).\nRun it on the appliance:\n"
+            f"{want} (brain/pyproject.toml).\nBuild the pinned venv from the lock:\n"
+            f"  uv sync --locked --project brain --python 3.12 && "
+            f"uv run --project brain python -m pytest brain/tests/test_suite.py -q\n"
+            f"...or run it on the appliance, against the deployed venv:\n"
             f"  scp tests/*.py teaspoon@<box>:/tmp/btests/ && "
             f"/opt/teaport/venv/bin/python3 /tmp/btests/<test>.py\n"
         )

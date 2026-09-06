@@ -15,11 +15,17 @@ the whole closure, so a dev box matches the appliance exactly — install from t
 would hand you tomorrow's transitives while the appliance runs the frozen set):
 
 ```sh
-uv sync --locked --project brain     # brain/.venv from uv.lock — the appliance set + the locked pytest (dev group)
+uv sync --locked --project brain --python 3.12   # brain/.venv from uv.lock — the appliance set + the locked pytest (dev group)
 uv run --project brain python -m pytest brain/tests/test_suite.py -q
 ```
 
-Expect **31 passed, 2 skipped** off-appliance. The two skips need hardware this box
+`--python 3.12` is not optional if you want "matches the appliance exactly" to be
+true. `requires-python = ">=3.12"` lets uv pick whatever it has, and on a newer
+interpreter the lock resolves marker-gated packages the appliance never installs
+(`audioop-lts` is gated `python_full_version >= '3.13'`) — so a closure claim
+validated on that venv is a claim about a set the appliance does not ship.
+
+Expect **32 passed, 2 skipped** off-appliance. The two skips need hardware this box
 doesn't have; **anything failing is a real regression**, including on a laptop —
 with one exception: if pipecat doesn't match the pin, every test that imports
 `pinned_pipecat` fails immediately with a message telling you to reinstall. That's
@@ -56,7 +62,7 @@ running it to notice) plus `consult_progress`, `raw_llm_capture`, `repeat_cut` a
 all it takes to have it run.
 
 Hermetic here means *run anywhere*, and that is measured, not assumed — as of
-2026-08-28 all twenty-one pass inside `unshare -rn` (no network at all) with
+2026-09-06 all thirty pass inside `unshare -rn` (no network at all) with
 `HF_HOME` pointed at an empty directory. Nothing downloads and nothing needs a
 pre-seeded model cache: the Silero VAD and smart-turn ONNX files ship inside the
 pipecat wheel (`pipecat/audio/vad/data/`, `pipecat/audio/turn/smart_turn/data/`),

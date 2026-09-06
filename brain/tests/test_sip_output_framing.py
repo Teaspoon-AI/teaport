@@ -25,11 +25,16 @@
 #      unchunked frame arriving, so if a future pipecat DOES pre-chunk it, this fails and
 #      tells us the buffer may finally be deletable.
 #
-#      Since pipecat 1.8.0 that same call runs under a deadline — MediaSender wraps it in
+#      Since pipecat 1.8.0 the _send_silence call — that one, not the DTMF one — runs
+#      under a deadline: MediaSender._internal_write_audio_frame wraps it in
 #      asyncio.wait_for(audio_out_write_timeout_secs) and treats a timeout as PERMANENT,
-#      so one slow write costs the transport every write after it. Our writes are paced
-#      to realtime, which makes the unchunked frame above the long pole: test 1 also pins
-#      that its paced duration stays inside the deadline.
+#      so one slow write costs the transport every write after it. (1.7.0 wrapped this
+#      call too, in wait_for(secs + 1), but a timeout there was only a logged warning.)
+#      _write_dtmf_audio still calls BaseOutputTransport.write_audio_frame directly
+#      (base_output.py:303-316), so it is outside both the deadline and the is_usable
+#      gate — it is in this file for its SIZE, not its timing. Our writes are paced to
+#      realtime, which makes the unchunked silence the long pole: test 1 also pins that
+#      its paced duration stays inside the deadline.
 #
 # Both tests drive the real pipecat pipeline (pipecat.tests.utils.run_test) rather than
 # calling write_audio_frame by hand: the claims above are claims about what the BASE class
@@ -54,6 +59,7 @@ from pipecat.frames.frames import (  # noqa: E402
     OutputAudioRawFrame,
     TTSAudioRawFrame,
 )
+from pipecat.processors.frame_processor import FrameProcessorSetup  # noqa: E402
 from pipecat.tests.utils import run_test  # noqa: E402
 
 from teaport_brain.sip_serializer import (  # noqa: E402
@@ -77,6 +83,11 @@ class _RecordingSerializer(SipProtocolSerializer):
     def __init__(self):
         super().__init__()
         self.seen = []
+        self.setups = []
+
+    async def setup(self, setup):
+        self.setups.append(setup)
+        return await super().setup(setup)
 
     async def serialize(self, frame):
         self.seen.append(frame)
@@ -160,6 +171,12 @@ async def test_every_audio_datagram_is_built_by_the_serializer():
     elapsed = time.monotonic() - started
     await wire.stop()
 
+    # Guarded, because every assertion below reads max(handed): with an empty list the
+    # first one dies on a bare ValueError from max() instead of saying that the
+    # transport was handed nothing at all, which is a different and larger failure.
+    assert handed, (
+        "pipecat never called write_audio_frame: no audio reached the transport at all, "
+        "so nothing below is testing framing")
     assert max(handed) > BYTES_PER_FRAME, (
         f"pipecat handed write_audio_frame only {sorted(set(handed))} bytes. At the pin "
         f"MediaSender._send_silence (base_output.py:885-894) passes the whole "
@@ -172,14 +189,29 @@ async def test_every_audio_datagram_is_built_by_the_serializer():
     # (is_usable goes False), so overrunning it does not drop one buffer of silence, it
     # silences the call. Computed, not timed: the bound is the pacing contract, and a
     # wall-clock assertion here would just re-measure the sleeps test 1 already checks.
-    frame_secs = (BYTES_PER_FRAME / 2) / PIPELINE_SAMPLE_RATE
+    #
+    # frame_secs is read off the LIVE transport, not respelled from the constants.
+    # Respelled, this whole expression cancels down to audio_out_end_silence_secs and
+    # says nothing about the send clock — so the one regression its own failure message
+    # names ("check ... the send interval") was the one thing it could not see: a
+    # _send_interval left at 4x realtime takes the 64000 B write to 8.0s, one step from
+    # the permanent write-off, while the assertion still computed 2.0s and passed.
+    # (The realtime bound further down keeps the independent spelling on purpose: it is
+    # the DEFINITION of realtime, and reading _send_interval there would let a wrong
+    # interval agree with itself.)
+    frame_secs = out._send_interval
     longest_write_secs = (max(handed) / BYTES_PER_FRAME) * frame_secs
     deadline = out._params.audio_out_write_timeout_secs
+    # Half the deadline, because the claim is HEADROOM, not "scrapes in": at the pin
+    # this is ~2s against 10s (sip_transport.py's "8 s of headroom"), so anything past
+    # 5s means the silence length or the send clock has doubled and the change after
+    # that one lands on the timeout.
     assert longest_write_secs < deadline * 0.5, (
         f"the largest single write pipecat hands us ({max(handed)} B) paces out over "
-        f"{longest_write_secs:.1f}s against a {deadline}s write deadline. Past it "
-        f"MediaSender reports a PERMANENT error and the transport stops writing "
-        f"entirely — check audio_out_end_silence_secs and the send interval.")
+        f"{longest_write_secs:.1f}s at a {frame_secs * 1000:.0f}ms send interval, "
+        f"against a {deadline}s write deadline. Past it MediaSender reports a PERMANENT "
+        f"error and the transport stops writing entirely — check "
+        f"audio_out_end_silence_secs and the send interval.")
 
     expected = sum(handed) // BYTES_PER_FRAME
     assert len(wire.datagrams) == expected, (
@@ -190,6 +222,19 @@ async def test_every_audio_datagram_is_built_by_the_serializer():
             f"datagram {i} is {len(d)} bytes; the gateway reads one datagram as one "
             f"20 ms RTP frame, and its recv truncates anything oversized")
     assert wire.datagrams[0][1:] == speech[:BYTES_PER_FRAME]
+
+    # FrameSerializer.setup takes a FrameProcessorSetup since 1.8.0, and every pipecat
+    # serializer now reads fields off it. Neither of ours overrides setup, so the
+    # transport handing it a StartFrame instead was invisible — inherited `pass` — until
+    # the first serializer that used the argument. This is the assertion that would have
+    # caught it, and it costs one override on the recorder above.
+    assert wire.serializer.setups, (
+        "the transport never set the serializer up; a serializer that resolves its "
+        "sample rate or task manager there would run unconfigured")
+    assert all(isinstance(x, FrameProcessorSetup) for x in wire.serializer.setups), (
+        f"serializer.setup() was handed {[type(x).__name__ for x in wire.serializer.setups]}, "
+        f"not FrameProcessorSetup — pipecat's own serializers dereference it "
+        f"(twilio.py: `setup.audio_in_sample_rate`) and would raise on every call")
 
     audio = wire.serializer.audio_frames()
     assert len(audio) == len(wire.datagrams), (

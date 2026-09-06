@@ -47,11 +47,30 @@ SMARTTURN_COMPLETE_THRESHOLD = float(os.getenv("SMARTTURN_COMPLETE_THRESHOLD", "
 # more now the STT commit rides VADUserStoppedSpeaking). Back to pipecat's
 # defaults (0.7 / 0.6): speech clears the gate with margin -> stable detection.
 # pipecat 1.8.0 then integrated the volume measurement over a rolling 400 ms BS.1770
-# window (AudioVolumeTracker) instead of per 32 ms VAD frame, which removes the dip
-# source these values were chosen against -- the same 0..1 scale, so they carry over,
-# and the gate should now be steadier rather than needing re-tuning. One consequence:
-# volume reads 0 until the window has 400 ms of audio, so an analyzer sees no speech
-# for its first 400 ms (once per session, long before the greeting ends).
+# window (AudioVolumeTracker) instead of per 32 ms VAD frame. That does remove the dip
+# source these values were chosen against, and the scale is unchanged -- the two
+# normalizations agree to within 0.002 on the same buffer -- so the numbers carry over.
+# But it is a LAG, not just a smoother, and BOTH edges of the gate moved. Measured at
+# 16 kHz over Silero's 512-sample frames, stable across amplitudes:
+#
+#   * Leading edge: volume reads 0 until the window holds 400 ms of audio, so the gate
+#     cannot pass until ~0.55 s of speech has arrived, against ~0.16 s at 1.7.0. And
+#     this is NOT once per session -- sip_server builds a fresh pipeline, and so a
+#     fresh AudioVolumeTracker, per CALL (its _bring_up; reset() otherwise fires only
+#     on a sample-rate change). Every caller gets it, so one who speaks over or
+#     straight after the greeting cannot start a turn or barge in for that half second.
+#   * Trailing edge, which moved further and matters more: the window still holds
+#     400 ms of speech after the user falls silent, so volume stays above min_volume
+#     for ~0.45 s past the end of speech, against ~0.1 s at 1.7.0. This gate is a VETO
+#     on a Silero confidence spike, and ~0.35 s more of it is ~0.35 s in which AEC
+#     residue, half-duplex echo or line noise can hold SPEAKING and delay
+#     VADUserStoppedSpeaking -- and with it the STT commit that now rides that frame.
+#
+# Left at 0.7 / 0.6 rather than re-tuned, deliberately: the trailing lag is a window
+# length, not a threshold, so no value of min_volume removes it. Lowering it buys a
+# faster leading edge and pays with a longer trailing one; raising it puts the gate
+# back in the middle of real speech loudness, which is the flicker this paragraph
+# opens with. Revisit here first if turns start committing late.
 # Tune via VAD_CONFIDENCE / VAD_MIN_VOLUME.
 VAD_CONFIDENCE = float(os.getenv("VAD_CONFIDENCE", "0.7"))
 VAD_MIN_VOLUME = float(os.getenv("VAD_MIN_VOLUME", "0.6"))

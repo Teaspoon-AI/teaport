@@ -27,6 +27,7 @@ from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask
+from pipecat.pipeline.worker import ProcessorUnusablePolicy
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -69,6 +70,7 @@ from teaport_brain.raw_llm_capture import RawLLMCapture
 # Built from the shared service factories (services.py) — no transport/demo imports,
 # so the module stays cheap to import.
 from teaport_brain.services import make_llm, make_stt, make_tts
+from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.tools import (
     AGENT_FIRST,
@@ -102,6 +104,16 @@ AGENT_FIRST_DIRECTIVE = (
     "naturally in one or two short spoken sentences. Only list_voices and "
     "switch_voice may be called directly."
 )
+
+# How long pipecat may spend setting the pipeline up, and how long a StartFrame may
+# take to cross it, before it gives up and tears the pipeline down (1.8.0; 1.7.0 waited
+# forever). The STT's engine connect happens inside that StartFrame and is by far the
+# long pole, so the budget is its worst case plus room for the ~20 processors behind it.
+# Generous on purpose: too long only delays the give-up on a pipeline that was never
+# going to start, while too short KILLS one that would have — including the deliberate
+# "start anyway and speak the can't-hear warning" path stt.py takes on a failed connect.
+_PIPELINE_PHASE_TIMEOUT_S = _STT_CONNECT_BUDGET_S + 20.0
+
 
 # Non-English TTS languages → the name to steer the LLM to reply in, so a selected
 # Spanish/Italian/… voice speaks coherent text rather than mispronounced English.
@@ -342,7 +354,11 @@ class AgentSession:
     """Everything a front-end drives after build_agent_session(): the PipelineTask to
     run, the LLMContext, the STT service (for the greeting's tri-state check), the
     TranscriptLedger observer, and the FollowupGate. greet() is the shared lifecycle
-    helper both front-ends call."""
+    helper both front-ends call.
+
+    tts and llm are carried for the same reason stt is — so the session's own services
+    are reachable without taking the pipeline apart. No front-end drives them today;
+    the tests use them to check the wiring the factory does around them."""
 
     # The robust greeting: a USER-role stage direction (NOT a system-only note). At
     # connect the context is otherwise system-only, and strict OpenAI-compatible
@@ -370,10 +386,12 @@ class AgentSession:
         "Please hang up and reconnect in a moment."
     )
 
-    def __init__(self, *, task, context, stt, ledger, followup_gate):
+    def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate):
         self.task = task
         self.context = context
         self.stt = stt
+        self.tts = tts
+        self.llm = llm
         self.ledger = ledger
         self.followup_gate = followup_gate
         # Set by greet() when the STT slot is busy: the front-end reads it to end the
@@ -432,6 +450,45 @@ class AgentSession:
     # this.
 
 
+def _end_session_when_unusable(service, what: str, task):
+    """End the session if `service` is written off, and say what was lost.
+
+    pipecat 1.8.0 gave every processor an is_usable flag that a permanent error clears
+    FOR GOOD, and the services then enforce it themselves: an STT that gave up
+    reconnecting is no longer handed audio and will not reconnect
+    (stt_service.py `if not self.is_usable: return`, websocket_service.py "not
+    reconnecting: the service is no longer usable"); a TTS written off is no longer
+    handed text ("service is no longer usable, not speaking"); an output transport that
+    timed out on a write drops every write after it. None of that ends anything — at
+    1.7.0 there was no such flag and these all self-healed, so the pipeline is now
+    perfectly happy to run deaf, mute, or unable to reach the caller for as long as they
+    stay on the line, logging one "<processor> can no longer do its job" as it goes.
+    Nothing else here would catch it: LLMErrorSpeaker answers only LLMService errors,
+    and sip_server's teardown is driven by call-state events, not ErrorFrames.
+
+    So: end the session. stop_when_done() is what ProcessorUnusablePolicy.END would do,
+    applied to the three processors a session genuinely cannot do without rather than to
+    every processor — see the policy note in build_agent_session for why not the policy.
+    It drains first, so a reply already in flight still plays; the front-ends take it
+    from there (OpenClaw's talk() falls into its finally, sip_server hangs the caller
+    up — see the on_pipeline_finished handler in its _bring_up).
+
+    Handlers registered on this event run as their own task (BaseObject only runs
+    `sync=True` ones inline), so ending from here cannot block the frame that reported
+    the error."""
+    @service.event_handler("on_usable_changed")
+    async def _on_usable_changed(svc, is_usable):
+        if is_usable:
+            # Only reachable if something calls set_usable(True) explicitly; pipecat
+            # never brings a service back on its own.
+            logger.info(f"{svc} can {what} again")
+            return
+        logger.error(f"{svc} can no longer {what}, and pipecat will not hand it any "
+                     "more work — ending this session rather than leaving the user "
+                     "with a half-dead one")
+        await task.stop_when_done()
+
+
 def build_agent_session(transport, *, voice: str | None = None,
                         language: str | None = None,
                         input_processors: list | None = None,
@@ -448,10 +505,12 @@ def build_agent_session(transport, *, voice: str | None = None,
     - input_processors: optional processors inserted right after transport.input()
       (before the debug ep_in tap) — the ONLY place a front-end injects its own
       processors. SIP passes [HalfDuplexInputGate()]; OpenClaw passes nothing.
-    - cancel_on_idle_timeout: forwarded to PipelineTask only when set. Left unset for
-      the OpenClaw per-connection pipeline (PipelineTask's default); the SIP path runs
-      ONE persistent pipeline across calls and passes False so pipecat's idle-timeout
-      can't cancel the brain between callers.
+    - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
+      front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
+      is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
+      neither has an idle brain to keep alive between sessions. It stays a parameter
+      for the pre-2612baf persistent-SIP shape, which passed False so pipecat's
+      idle-timeout could not cancel the brain between callers.
     """
     # pipecat 1.0 moved VAD off the transport onto the user aggregator
     # (LLMUserAggregatorParams.vad_analyzer); it drives endpointing + barge-in.
@@ -518,7 +577,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # The ledger reads the LLM stream at the TTS's sighting (the text the TTS is
     # actually handed, after the guard) and tells the thinking bed's audio, pushed
     # into the transport, from the transport's untagged copies of what it played.
-    ledger = TranscriptLedger(tts=tts, output=transport.output())
+    # One instance, used three times below (pipeline, ledger, unusable handler) —
+    # transport.output() caches, but naming it says so rather than relying on it.
+    transport_output = transport.output()
+    ledger = TranscriptLedger(tts=tts, output=transport_output)
     heard_corrector = HeardContextCorrector(ledger, context)
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
@@ -579,7 +641,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         # Fill the dead air of a long ask_openclaw consult with a soft typing bed;
         # stops the instant the reply's first audio arrives. No-op for fast tools.
         ThinkingSound() if thinking_sound.ENABLED else None,
-        transport.output(),
+        transport_output,
         followup_gate,  # track user/bot/LLM activity → hold async follow-ups for a clear moment
         CaptionTap(activity),  # AFTER the transport: playout-paced partials + per-utterance finals
         MemoryReclaim(),  # per-turn: hand glibc arena pages back to the OS (CUDA at session end)
@@ -594,8 +656,54 @@ def build_agent_session(transport, *, voice: str | None = None,
         # barge-in is governed by the turn-start strategy's enable_interruptions (default
         # True on MinWordsUserTurnStartStrategy); pipecat 1.0 removed the
         # PipelineParams.allow_interruptions global switch.
+        #
+        # CONTINUE is 1.8.1's default; it is passed EXPLICITLY because it is a decision
+        # now, not an omission. The policy is pipeline-wide, and END would also end the
+        # session on a permanent LLM error — and pipecat calls 400/401/403/404/422
+        # permanent (utils/errors.py), so a context that outgrew the window would hang
+        # the caller up. LLMErrorSpeaker exists precisely because that case must be
+        # SPOKEN and survived; it cost three debugging sessions to get there and is not
+        # given up to a framework default.
+        #
+        # What END would have bought is applied per service instead, to the three a
+        # session cannot do without: see _end_session_when_unusable below, wired to the
+        # STT, the TTS and the output transport just after this task is built. Between
+        # them, that and max_consecutive_zero_audio_contexts=0 in engine_tts.py cover
+        # every door 1.8.0 opened — the transient failures stay self-healing, and the
+        # permanent ones end the session instead of running it deaf or mute.
+        processor_unusable_policy=ProcessorUnusablePolicy.CONTINUE,
+        # 1.8.0 also bounded the two phases 1.7.0 left unbounded — and an overrun is not
+        # a warning, the pipeline is torn down. Both defaults are 20 s, which is under
+        # this brain's own worst case: TeaportSTTService.start() connects to the engine
+        # INSIDE the StartFrame, deliberately (stt.py returns rather than raises on a
+        # failed connect, so the pipeline starts and the brain can SPEAK "I can't hear
+        # you" instead of silently talking) — and at the default a slow engine turns
+        # that design into a dead session with no warning spoken and one logger.error.
+        # So the budget is the STT's own connect budget plus room for the StartFrame's
+        # trip through the rest of the pipeline, and the same figure covers a cold
+        # first-call setup on the Jetson.
+        start_timeout_secs=_PIPELINE_PHASE_TIMEOUT_S,
+        setup_timeout_secs=_PIPELINE_PHASE_TIMEOUT_S,
         **task_kwargs,
     )
+
+    # The three whose loss IS the loss of the session (see the policy note above). The
+    # LLM is deliberately absent: its failures are spoken and survived by LLMErrorSpeaker.
+    _end_session_when_unusable(stt, "hear the user", task)
+    _end_session_when_unusable(tts, "speak", task)
+    _end_session_when_unusable(transport_output, "reach the user", task)
+
+    @task.event_handler("on_setup_timeout")
+    async def _on_setup_timeout(_task):
+        logger.error(f"pipeline setup did not finish within {_PIPELINE_PHASE_TIMEOUT_S}s "
+                     "— pipecat is tearing it down; this session never starts")
+
+    @task.event_handler("on_pipeline_timeout")
+    async def _on_pipeline_timeout(_task, frame):
+        logger.error(f"{frame} did not reach the end of the pipeline within "
+                     f"{_PIPELINE_PHASE_TIMEOUT_S}s — pipecat is tearing the pipeline "
+                     "down. A processor is blocked in start(); the STT engine connect "
+                     "is the long pole (see stt.CONNECT_BUDGET_S)")
 
     # Now that the task exists, wire the tools — ask_openclaw goes ASYNC: it hands
     # the consult to a background waiter and this injector speaks the answer as an
@@ -614,6 +722,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         task=task,
         context=context,
         stt=stt,
+        tts=tts,
+        llm=llm,
         ledger=ledger,
         followup_gate=followup_gate,
     )
