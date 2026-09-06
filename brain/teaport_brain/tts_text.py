@@ -153,17 +153,23 @@ _NO_SPACE_AFTER = "，、；：。！？"
 # gov slash vuln slash …" for ten seconds (live 2026-09-04: a five-item consult delivery
 # read five of them) — the persona now names sources instead, and the delivery text
 # has these removed before the model sees it (agent_session). Trailing sentence
-# punctuation is not part of the address.
-_URL = re.compile(r"(?:https?://|www\.)[^\s<>()\"']+?(?=[.,;:!?)]*(?:\s|$))")
+# punctuation is not part of the address, and neither is the bracket or quote the
+# model wrapped it in: gpt-oss writes autolinks as "<https://...>", and a source's
+# address arrives quoted or in square brackets too. The body stops at any of those
+# and the lookahead admits them, so a wrapped address still matches (the lookahead
+# once admitted sentence punctuation only, and "<https://...>" was read out whole).
+_URL = re.compile(r"(?:https?://|www\.)[^\s<>()\[\]\"']+?(?=[.,;:!?)\]>\"']*(?:\s|$))")
+# ...and the wrapper goes with it: "(https://x.y)", "<https://x.y>", "[...]", quotes.
+_WRAPPED_URL = re.compile(r"[(<\[\"']\s*" + _URL.pattern + r"\s*[)>\]\"']")
 
 
 def strip_urls_for_speech(text: str) -> str:
     """Remove web addresses from text that will be spoken, tidying the space they
     leave (" at https://x.y, and" -> " at, and" is still a sentence the model can
-    rephrase; an address alone in parentheses goes with its parentheses)."""
+    rephrase; an address alone in parentheses, brackets or quotes goes with them)."""
     if "http" not in text and "www." not in text:
         return text
-    text = re.sub(r"\(\s*" + _URL.pattern + r"\s*\)", "", text)
+    text = _WRAPPED_URL.sub("", text)
     text = _URL.sub("", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
     text = re.sub(r" ([.,;:!?])", r"\1", text)

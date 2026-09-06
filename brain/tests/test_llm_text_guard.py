@@ -603,6 +603,23 @@ async def test_a_token_glued_to_words_in_one_delta_is_stripped_in_place():
     assert h.spoken() == "The voice is af_heart."
 
 
+async def test_a_less_than_sign_in_prose_is_speech():
+    # The holdback is for the START of a special token, "<|...": past the "<" the pipe
+    # is required. With it optional, a reply-final "keep it under <5" was held as an
+    # opener and dropped at the End as junk, so the number reached neither speech nor
+    # the assistant's history. Split across deltas it is rejoined and flows too.
+    for deltas, want in ((["keep it under <5"], "keep it under <5"),
+                         (["keep it under <", "5 items."], "keep it under <5 items."),
+                         (["love it <3"], "love it <3"),
+                         (["x<y holds."], "x<y holds.")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in deltas:
+            await h.text(d)
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == want, (deltas, h.spoken())
+
+
 # ------------------------------------------------------------------ unglue
 
 def test_unglue_sentences_table():
@@ -625,6 +642,7 @@ def test_unglue_sentences_table():
         "at statichost.eu and nvd.nist.gov",
         "about 3.5 percent",
         "the U.S.Army and a Ph.D.Student",
+        "It runs on Node.JS and ASP.NET",  # a run of capitals is a name, not a sentence
         "e.g.This one",
         "low chance of rain. Sounds like",
         "rain.\n\nSounds like",
@@ -637,6 +655,8 @@ def test_unglue_sentences_table():
     assert unglue_sentences("Sounds like", before="chance of rain") == "Sounds like"
     assert unglue_sentences(" Sounds like", before="chance of rain.") == " Sounds like"
     assert unglue_sentences("S.", before="the U.") == "S."         # U.S. across deltas
+    assert unglue_sentences(".S", before="the U") == ".S"         # ...however it splits
+    assert unglue_sentences('"Then', before='said "no.') == '" Then'  # a closer astride the seam
     assert unglue_sentences("Then", before='said "no."') == " Then"
 
 
@@ -659,6 +679,29 @@ async def test_glued_sentence_in_one_delta_is_spaced_in_place():
     await h.text("CPU load is under one percent.I'll keep watching.")
     await h.feed(LLMFullResponseEndFrame())
     assert h.spoken() == "CPU load is under one percent. I'll keep watching.", repr(h.spoken())
+
+
+async def test_an_initialism_split_across_deltas_stays_whole():
+    # The initial's dot is only an initial's when the letter before it is in view,
+    # and the stream splits wherever it likes: "The U" + ".S" + ". Army" spoke as
+    # "the U. S. Army", with pipecat's sentence matcher then free to cut after "U.".
+    # The tail the guard keeps is the STREAM's, so a one-character delta in the
+    # middle ("S") does not lose the letter before it either.
+    for deltas in (["The U", ".S", ". Army is large."],
+                   ["In the U", ".", "S", ".", " Army."]):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in deltas:
+            await h.text(d)
+        await h.feed(LLMFullResponseEndFrame())
+        assert "U.S. Army" in h.spoken() and ". S" not in h.spoken(), (deltas, h.spoken())
+    # A run of capitals behind the dot is a name; one capital starting a word is a sentence.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    for d in ["It runs on Node", ".JS and ASP", ".NET", ".Sounds fine."]:
+        await h.text(d)
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "It runs on Node.JS and ASP.NET. Sounds fine.", repr(h.spoken())
 
 
 def test_unglued_text_is_what_the_tts_can_split():

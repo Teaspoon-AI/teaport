@@ -153,8 +153,30 @@ async def test_wordlevel_survives_frames_without_trailing_spaces():
     print(f"  PASS spaceless word frames -> exact {e.heard_text!r} (beat est, not collapsed)")
 
 
+async def test_a_barged_one_word_reply_is_heard_whole_or_not_at_all():
+    # "Understood." cut at ~40% with no per-word frame to say otherwise: the estimate
+    # decides, and a word is heard or it is not. "Under" reached the LLM context as
+    # what the assistant said (HeardContextCorrector) while any long single token took
+    # the character path meant for a script that writes without spaces.
+    from teaport_brain.transcript_ledger import _prefix
+    assert _prefix("Understood.", 0.43) == ""
+    assert _prefix("Understood.", 0.6) == "Understood."
+    assert _prefix("Okay, understood.", 0.43) == "Okay,"
+    assert _prefix("\u6211\u6765\u67e5\u4e00\u4e0b\u5929\u6c14\u60c5\u51b5\u8bf7", 0.5) == \
+        "\u6211\u6765\u67e5\u4e00\u4e0b"   # a spaceless script: by characters
+    e = await feed([
+        (LLMFullResponseStartFrame(), 0.0), (LLMTextFrame("Understood."), 0.0),
+        (LLMFullResponseEndFrame(), 0.0),
+        (TTSStartedFrame(), 1.0), (audio(0.7), 1.0), (BotStartedSpeakingFrame(), 1.1),
+        (InterruptionFrame(), 1.4),  # ~0.3 s of 0.7 s
+    ])
+    assert e.interrupted and e.heard_text == "", repr(e.heard_text)
+    print(f"  PASS one-word reply cut early -> heard {e.heard_text!r}, not a fragment")
+
+
 async def main():
     for fn in [test_pts_filter_keeps_played_words,
+               test_a_barged_one_word_reply_is_heard_whole_or_not_at_all,
                test_wordlevel_overrides_estimate,
                test_wordlevel_survives_frames_without_trailing_spaces,
                test_fallback_to_estimate_without_word_frames,
