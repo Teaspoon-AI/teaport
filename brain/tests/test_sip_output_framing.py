@@ -74,6 +74,15 @@ from teaport_brain.sip_transport import (  # noqa: E402
     make_sip_params,
 )
 
+# How long to let the pipeline start before calling it hung. pipecat's run_test defaults
+# to 1.0 s, which is a DESKTOP budget: a bare pipeline takes 1.26 s to start on the
+# appliance (Jetson Orin Nano, measured 2026-09-06 with the engine resident), so both
+# tests below failed there with a bare TimeoutError while passing everywhere else --
+# on the one platform that actually ships. Generous rather than tuned: this bounds a
+# HANG, and the tests' own assertions are what measure timing. Nothing here is
+# start-latency-sensitive, so there is no accuracy to trade away.
+_START_TIMEOUT_S = 20.0
+
 
 class _RecordingSerializer(SipProtocolSerializer):
     """The real serializer plus a log of every frame the transport handed it. The log
@@ -167,6 +176,7 @@ async def test_every_audio_datagram_is_built_by_the_serializer():
         out,
         frames_to_send=[TTSAudioRawFrame(
             speech, sample_rate=PIPELINE_SAMPLE_RATE, num_channels=1)],
+        start_timeout=_START_TIMEOUT_S,
     )
     elapsed = time.monotonic() - started
     await wire.stop()
@@ -267,7 +277,8 @@ async def test_barge_in_reaches_the_serializer_and_drops_the_partial_frame():
     # A stranded part-frame, as a mid-utterance barge-in leaves behind.
     out._audio_send_buffer.extend(b"\xff" * (BYTES_PER_FRAME // 2))
 
-    await run_test(out, frames_to_send=[InterruptionFrame()])
+    await run_test(out, frames_to_send=[InterruptionFrame()],
+                   start_timeout=_START_TIMEOUT_S)
     await wire.stop()
 
     assert any(isinstance(f, InterruptionFrame) for f in wire.serializer.seen), (

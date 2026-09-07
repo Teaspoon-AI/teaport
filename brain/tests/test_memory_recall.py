@@ -66,13 +66,16 @@ class _Sink(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-def _make_source(steps):
-    """Source that, once the pipeline starts, runs a list of (delay, frame) steps."""
+def _make_source(steps, started):
+    """Source that, once the pipeline starts, runs a list of (delay, frame) steps.
+
+    `started` is set when the StartFrame arrives, which is what _drive waits on."""
     class _Src(FrameProcessor):
         async def process_frame(self, frame: Frame, direction: FrameDirection):
             await super().process_frame(frame, direction)
             await self.push_frame(frame, direction)
             if isinstance(frame, StartFrame):
+                started.set()
                 self.create_task(self._go())
 
         async def _go(self):
@@ -83,14 +86,27 @@ def _make_source(steps):
 
 
 async def _drive(mr, steps, settle=0.6):
-    task = PipelineTask(Pipeline([_make_source(steps), mr, _Sink()]))
+    """Run `steps` through `mr`, then cancel. `settle` is measured from the StartFrame.
+
+    Waiting for the start rather than sleeping a flat 0.6 s from launch is not a
+    refinement: starting a pipeline costs 1.26 s on the appliance (Jetson Orin Nano,
+    measured 2026-09-06) against near-zero on a desktop, so the flat sleep cancelled the
+    pipeline BEFORE its StartFrame had even arrived. No step ever ran, nothing was
+    injected, and all three scenarios failed there with an empty context -- reading
+    exactly like a MemoryRecall regression on the one platform that ships. `settle` now
+    budgets only what it is named for: the steps and the searches they start."""
+    started = asyncio.Event()
+    task = PipelineTask(Pipeline([_make_source(steps, started), mr, _Sink()]))
     run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
-    await asyncio.sleep(settle)
-    await task.cancel()
     try:
-        await asyncio.wait_for(run, timeout=5)
-    except Exception:
-        pass
+        await asyncio.wait_for(started.wait(), timeout=30)
+        await asyncio.sleep(settle)
+    finally:
+        await task.cancel()
+        try:
+            await asyncio.wait_for(run, timeout=10)
+        except Exception:
+            pass
 
 
 async def scenario_single_flight():
