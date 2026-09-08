@@ -26,7 +26,7 @@ Configure in `~/.openclaw/openclaw.json`:
     "provider": "teaport",
     "mode": "realtime",
     "transport": "gateway-relay",
-    "brain": "none",                        // the teaport brain orchestrates — don't double-respond
+    "brain": "agent-consult",               // required — see the note below
     "providers": { "teaport": {
       "url": "ws://127.0.0.1:7861/talk",    // the teaport brain's /talk WS
       "voice": "af_heart",                   // optional: a voice id the engine provides
@@ -39,6 +39,27 @@ Configure in `~/.openclaw/openclaw.json`:
 The plugin appends `voice`, `language`, and `token` to the brain WebSocket URL
 as query parameters for each session. The `token` value can also come from the
 `TEAPORT_GATEWAY_TOKEN` environment variable.
+
+### Why `brain` must be `"agent-consult"`
+
+`brain` is OpenClaw's *tool/agent strategy for realtime sessions* — how the session
+reaches tools and the agent. It does **not** decide who speaks: the realtime provider
+(teaport) owns speech either way, so `"agent-consult"` cannot make OpenClaw
+double-respond.
+
+Two things require it:
+
+- **`talk.client.create` rejects anything else.** It uses an explicit `brain` param when
+  given and otherwise falls back to this config value, so a Talk UI client — which sends
+  none — inherits whatever is set here. With `"none"`, every session fails at creation
+  with `talk.client.create only supports brain="agent-consult"`.
+- **It is the path this plugin uses.** The brain's `ask_openclaw` arrives as an
+  `openclaw_agent_consult` tool call, which `provider.js` hands to the relay's in-process
+  agent-consult machinery (working notices, then a final `submitToolResult` back to the
+  brain). With no agent strategy, a consult has nothing to reach.
+
+This was documented as `"none"` until 2026-09-08, on the reasoning that the teaport brain
+orchestrates so OpenClaw should stay quiet. That confuses `brain` with response ownership.
 
 ## Tests
 
