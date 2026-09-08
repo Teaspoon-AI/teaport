@@ -25,15 +25,25 @@ Notable transitive dependencies of `pipecat-ai`:
 | Component | Why it is here | License |
 |---|---|---|
 | onnxruntime | runs Silero VAD + Smart Turn v3 in the brain process | MIT |
-| transformers | `WhisperFeatureExtractor` for Smart Turn v3 | Apache-2.0 |
 | soxr | resampling — **LGPL-2.1-or-later** (see below) | LGPL-2.1-or-later |
+| resampy | pipecat's other resampler (`ResampyResampler`) | ISC |
+| numba | JIT for resampy's kernels; a direct pipecat dependency too | BSD-2-Clause |
+| llvmlite | numba's LLVM binding (compiled) | BSD-2-Clause |
+| nltk | sentence tokenizer behind pipecat's text aggregation (`utils/string.py`) | Apache-2.0 |
+| loudness | ITU-R BS.1770 loudness measurement for the VAD's volume gate (pipecat ≥ 1.8.0; replaced pyloudnorm + scipy) | MIT |
 | onnx model weights | Silero VAD + smart-turn-v3, shipped inside the pipecat wheel | see pipecat |
+
+This list is the unconditional closure of `pipecat-ai[websocket]` in `brain/uv.lock`,
+not everything pipecat can pull: `transformers` used to be listed here for Smart Turn's
+`WhisperFeatureExtractor` and is in neither the lock nor the venv — pipecat only
+requires it under the `local-smart-turn` extra, which the note below says not to install.
 
 Notes:
 
 - The brain is torch-free. Do **not** install the pipecat `local-smart-turn`
   extra — it pulls in torch, torchaudio, and coremltools. The install uses
-  `pipecat-ai[openai,websocket]`.
+  `pipecat-ai[websocket]` (no `openai` extra: the OpenAI LLM service the brain uses is
+  a BASE dependency — see the note in `brain/pyproject.toml`).
 - The installer installs the `espeak-ng` system package (GPL-3.0) for the
   engine. The brain does not run espeak-ng, and no GPL code links into the
   software in this repository. espeak-ng runs as a separate program.

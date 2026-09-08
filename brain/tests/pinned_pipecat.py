@@ -14,9 +14,10 @@
 # rather than remembered.
 #
 # (This note used to add "that release is not on the public index". It was true when
-# written and is not any more — 1.7.0 publishes to PyPI, so `uv venv --python 3.12` plus
-# `uv pip install -e ./brain` gets a dev box onto the exact pin. See brain/tests/README.md.
-# The guard still earns its keep: it is what catches the box that skipped that step.)
+# written and is not any more — every pin since publishes to PyPI, so `uv sync --locked
+# --project brain` gets a dev box onto the exact pin. See brain/tests/README.md; install
+# from the LOCK, not from a fresh resolve of the loose constraints. The guard still earns
+# its keep: it is what catches the box that skipped that step.)
 #
 # FAILS LOUD, never open. Both fallbacks here used to `return`, which disabled the check
 # in exactly the workflow the error message below tells you to use: copied to /tmp/btests
@@ -45,7 +46,7 @@ _PYPROJECT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pyp
 # from the manifest (see above). pyproject.toml remains the source of truth and wins
 # whenever it can be read; this exists so a detached copy still refuses rather than
 # silently passing. Keep in step with brain/pyproject.toml.
-_EXPECTED_FALLBACK = "1.7.0"
+_EXPECTED_FALLBACK = "1.8.1"
 
 
 def _pinned_version() -> str:
@@ -58,7 +59,7 @@ def _pinned_version() -> str:
     except (OSError, KeyError, tomllib.TOMLDecodeError):
         return _EXPECTED_FALLBACK
     # tomllib, not a regex: the previous pattern required an extras bracket
-    # (pipecat-ai\[[^\]]*\]==), so dropping "[websocket]" or writing "pipecat-ai == 1.7.0"
+    # (pipecat-ai\[[^\]]*\]==), so dropping "[websocket]" or writing "pipecat-ai == 1.8.1"
     # made it match nothing and the check quietly stopped enforcing anything.
     for dep in deps:
         name, sep, version = dep.partition("==")
@@ -71,9 +72,16 @@ def require_pinned():
     """Raise unless the installed pipecat matches the pin. Call at import time."""
     want, have = _pinned_version(), pipecat.__version__
     if have != want:
+        # Both routes, because the header above and this message used to disagree —
+        # exactly the drift this file exists to stop. Off-box is the normal one now
+        # (every pin since 1.7.0 publishes to PyPI); the appliance one is for a box
+        # where the deployed venv is the thing under test.
         raise SystemExit(
             f"\nWRONG PIPECAT: installed {have}, this suite is only meaningful against "
-            f"{want} (brain/pyproject.toml).\nRun it on the appliance:\n"
+            f"{want} (brain/pyproject.toml).\nBuild the pinned venv from the lock:\n"
+            f"  uv sync --locked --project brain --python 3.12 && "
+            f"uv run --project brain python -m pytest brain/tests/test_suite.py -q\n"
+            f"...or run it on the appliance, against the deployed venv:\n"
             f"  scp tests/*.py teaspoon@<box>:/tmp/btests/ && "
             f"/opt/teaport/venv/bin/python3 /tmp/btests/<test>.py\n"
         )

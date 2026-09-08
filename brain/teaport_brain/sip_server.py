@@ -163,6 +163,10 @@ async def run(sock_path: str):
     # The call_id is load-bearing: without it a `disconnected` cannot tell whether it
     # is about the pipeline we are actually running (see on_call_state).
     active = {"call": None}
+    # Teardowns started from inside the pipeline's own finish (see _bring_up's
+    # on_pipeline_finished). Held only so the event loop keeps a strong reference until
+    # they run — a bare create_task() result may be collected mid-flight.
+    teardowns: set = set()
     # The in-flight bring-up, if any: {"task", "call_id"}. Building the pipeline and
     # greeting is SLOW (model construction plus greet()'s STT poll), so it runs as a
     # task rather than inline in the receive loop — see on_call_state.
@@ -298,6 +302,46 @@ async def run(sock_path: str):
             transport,
             input_processors=[HalfDuplexInputGate()] if HALF_DUPLEX else None,
         )
+
+        @session.task.event_handler("on_pipeline_finished")
+        async def on_pipeline_finished(_task, frame):
+            """The pipeline ended and the CALLER did not: hang them up.
+
+            A per-call pipeline can end without any call-control event behind it —
+            agent_session ends it when the STT, the TTS or the output transport can no
+            longer do its job (_end_session_when_unusable), pipecat ends it when the
+            start/setup timeout fires, and the idle timeout can cancel it.
+            None of those reach the gateway; the socket is persistent and the call stays
+            up, so without this the caller is left on a line with no brain behind it —
+            no audio, no hangup, and no further `confirmed` or `disconnected` ever
+            coming, which is the same dead end brain/formal/SipCall.tla's NoWrongTeardown
+            was written about.
+
+            The guard is the ordinary case: our own teardown clears active["call"]
+            BEFORE it cancels, so a pipeline finishing under cancel_active_call (or one
+            belonging to a superseded call) finds nothing here and returns.
+
+            `frame` is the terminal frame (End, Stop or Cancel) and is taken because
+            pipecat PASSES it — `_call_event_handler("on_pipeline_finished", frame)`
+            calls every handler as `handler(worker, frame)`, and a handler of the wrong
+            arity does not raise where anyone would see it: BaseObject._run_handler
+            catches the TypeError and logs one line, so the handler simply never runs
+            and the caller is left on the dead line this exists to prevent."""
+            call = active["call"]
+            if call is None or call[0] != call_id:
+                return
+            logger.error(f"the pipeline for call {call_id} ended on its own on {frame} "
+                         "(a service was written off, or a start/idle timeout fired) — "
+                         "hanging the caller up rather than leaving them on a dead line")
+            await transport.send_control({"type": "call.hangup"})
+            # As a TASK, not inline: this handler is awaited BY the runner task, and
+            # cancel_active_call waits on that same task — inline it would wait on
+            # itself and only get past on the 5s timeout.
+            t = asyncio.create_task(
+                cancel_active_call("pipeline ended under the call", call_id=call_id))
+            teardowns.add(t)
+            t.add_done_callback(teardowns.discard)
+
         runner_task = asyncio.create_task(
             PipelineRunner(handle_sigint=False).run(session.task)
         )

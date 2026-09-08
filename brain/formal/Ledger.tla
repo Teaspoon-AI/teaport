@@ -311,9 +311,10 @@ LlmEnd(r) ==
     /\ UNCHANGED <<order, synth, pq, window, played, interrupts>>
 
 \* An interrupted completion still ends: base_llm.py process_frame pushes
-\* LLMFullResponseEndFrame in a finally (pipecat 1.7.0, lines 571-573), AFTER the
-\* InterruptionFrame has gone through -- and the ledger takes the partial text as a
-\* new _pending_gen. No more text follows, so no TTS ever starts for it.
+\* LLMFullResponseEndFrame in a finally (pipecat 1.8.1,
+\* services/openai/base_llm.py:611-613), AFTER the InterruptionFrame has gone
+\* through -- and the ledger takes the partial text as a new _pending_gen. No more
+\* text follows, so no TTS ever starts for it.
 LlmCancelEnd(r) ==
     /\ llm[r] = "aborted"
     /\ llm' = [llm EXCEPT ![r] = "cancelled"]

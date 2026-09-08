@@ -1,6 +1,6 @@
 #
-# Unit test: the ledger through the PRODUCTION sightings -- what it sees as pipecat
-# 1.7.0's TTS service and output transport actually present frames, which the other
+# Unit test: the ledger through the PRODUCTION sightings -- what it sees as the pinned
+# pipecat's TTS service and output transport actually present frames, which the other
 # ledger scripts (hermetic, no processor identity) leave out.
 #
 # Three things only the live pipeline shows, and this file drives all of them:

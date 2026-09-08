@@ -1,7 +1,7 @@
 #
 # Regression test: a reply's TTSStoppedFrame ends "bot speaking" when its audio ends.
 #
-# pipecat 1.7.0's output transport ends bot-speaking on the TTSStoppedFrame it finds
+# The pinned pipecat's output transport ends bot-speaking on the TTSStoppedFrame it finds
 # queued behind the last audio chunk -- or, when no such frame ever comes, on its
 # BOT_VAD_STOP_FALLBACK_SECS (3 s) idle timeout. EngineTTSService never asked for stop
 # frames (push_stop_frames defaults to False), so on the appliance every reply ended

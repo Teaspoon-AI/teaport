@@ -191,8 +191,11 @@ class _FakeTask:
 
 def _session(available, slot_busy):
     task = _FakeTask()
+    # tts/llm are carried by AgentSession but untouched by greet(), which is all this
+    # file drives; passed rather than defaulted so the constructor keeps saying that a
+    # real session has all three services.
     return AgentSession(task=task, context=None, stt=_FakeStt(available, slot_busy),
-                        ledger=None, followup_gate=None), task
+                        tts=None, llm=None, ledger=None, followup_gate=None), task
 
 
 async def test_a_held_slot_says_busy():

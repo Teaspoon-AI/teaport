@@ -38,19 +38,40 @@ fi
 
 # The interpreter is load-bearing: brain/tests/pinned_pipecat.py exists because the
 # pipeline asserts on pipecat internals, and a python with the wrong pipecat imports
-# cleanly and then fails somewhere deep in a call. Prefer the checkout venv that
-# brain/tests/README.md builds (uv venv .venv + uv pip install -e ./brain), then the
-# appliance venv. SIP_TEST_PYTHON overrides both.
+# cleanly and then fails somewhere deep in a call. This rig runs the BRAIN, not the
+# tests, so require_pinned() is not reached on its own — so we call it ourselves,
+# below. The order here is only a PREFERENCE, and preferring is not guarding: every
+# candidate can be stale. Prefer brain/.venv, which is what `uv sync --locked --project
+# brain` builds (brain/tests/README.md) and therefore the locked closure; then the
+# repo-root .venv, which the older `uv venv .venv` flow left on many boxes and which
+# a pin bump does NOT update; then the appliance venv. SIP_TEST_PYTHON overrides all
+# (and is how you deliberately run against the DEPLOYED /opt/teaport/venv on the
+# appliance, where $BRAIN is ~/teaport-src/brain and $BRAIN/.venv is the hand-built dev
+# venv brain/tests/README.md tells you to create — which the bundle deploy never
+# refreshes, so it outranks the venv the service actually runs).
 PY=${SIP_TEST_PYTHON:-}
 if [ -z "$PY" ]; then
-  for _cand in "$(dirname -- "$BRAIN")/.venv/bin/python" /opt/teaport/venv/bin/python; do
+  for _cand in "$BRAIN/.venv/bin/python" "$(dirname -- "$BRAIN")/.venv/bin/python" \
+               /opt/teaport/venv/bin/python; do
     if [ -x "$_cand" ]; then PY=$_cand; break; fi
   done
   unset _cand
 fi
 if [ -z "$PY" ]; then
-  echo "no venv python found: neither $(dirname -- "$BRAIN")/.venv nor /opt/teaport/venv." >&2
+  echo "no venv python found: neither $BRAIN/.venv, $(dirname -- "$BRAIN")/.venv nor /opt/teaport/venv." >&2
   echo "Build one per brain/tests/README.md, or set SIP_TEST_PYTHON." >&2
+  exit 1
+fi
+
+# The refusal the paragraph above used to only describe. Whichever interpreter won —
+# including one handed in through SIP_TEST_PYTHON, which skips the ordering entirely —
+# it must be on the pin, because these runs assert on live pipecat behaviour the same
+# way brain/tests/ does. require_pinned() raises SystemExit with its own WRONG PIPECAT
+# message, so all this has to do is not swallow the exit code.
+if ! "$PY" -c "import sys; sys.path.insert(0, '$BRAIN/tests'); \
+import pinned_pipecat; pinned_pipecat.require_pinned()"; then
+  echo "refusing to run the SIP rig against $PY — see brain/tests/pinned_pipecat.py." >&2
+  echo "Build the pinned venv per brain/tests/README.md, or point SIP_TEST_PYTHON at one." >&2
   exit 1
 fi
 

@@ -69,6 +69,23 @@ _EMPTY_FINAL_RUN = 5
 _CONNECT_ATTEMPTS = 4
 _CONNECT_RETRY_S = 0.4
 
+# What ONE attempt costs against a host that accepts the connection (or blackholes the
+# SYN) and then never finishes the handshake: the websockets library's default
+# open_timeout. Not a setting — recorded so the budget below is derived rather than
+# guessed, and so a future `websockets.connect(open_timeout=...)` has one place to move.
+_CONNECT_OPEN_TIMEOUT_S = 10.0
+
+# The worst-case wall time start() can spend inside _connect_websocket, and therefore
+# how long a StartFrame can sit in this service before it reaches the next processor.
+# pipecat 1.8.0 put a 20 s ceiling on that trip (PipelineTask.start_timeout_secs) and
+# TEARS THE PIPELINE DOWN when it is passed, which would turn the deliberate
+# "let the pipeline start so the brain can speak a warning" path below into a dead
+# session. agent_session.py sizes the task's start budget from this. 41.2 s at the
+# current constants — every attempt timing out, which needs a host that is reachable,
+# rejecting in a way _is_slot_busy recognises, and slow about it.
+CONNECT_BUDGET_S = (_CONNECT_ATTEMPTS * _CONNECT_OPEN_TIMEOUT_S
+                    + (_CONNECT_ATTEMPTS - 1) * _CONNECT_RETRY_S)
+
 
 try:
     import websockets

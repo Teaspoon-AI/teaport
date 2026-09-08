@@ -38,7 +38,7 @@ from types import SimpleNamespace
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # Refuse to run against the wrong pipecat (this also imports the package first, for
-# HF_HUB_OFFLINE) -- the frame shapes below are 1.7.0's.
+# HF_HUB_OFFLINE) -- the frame shapes below are the pinned pipecat's.
 from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 

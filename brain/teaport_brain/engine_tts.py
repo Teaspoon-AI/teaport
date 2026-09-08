@@ -262,22 +262,45 @@ class EngineTTSService(TTSService):
             # what gives playout-paced per-word TTSTextFrames; True would emit one unpaced
             # lump at synthesis end.)
             push_start_frame=True,
-            # Push a TTSStoppedFrame once a context's audio is fully enqueued (pipecat
-            # 1.7.0 on_turn_context_completed). The output transport ends bot-speaking on
-            # that frame, which it queues behind the last chunk; with no stop frame it
-            # falls back to its BOT_VAD_STOP_FALLBACK_SECS (3 s) idle timeout, so every
-            # reply used to be followed by 3 s of "bot speaking" nobody could hear
-            # (journal 2026-09-04: BotStoppedSpeaking = audio end + 2.9..3.0 s on 8/8
-            # replies; `based on TTSStoppedFrame` never once). That tail is what the
-            # assistant aggregator waits out before running the post-tool-call
-            # completion (3 s of dead air after every tool filler), what keeps the
-            # 2-word barge-in guard armed past the audio, and what the follow-up gate
-            # reads as "still talking". stop_frame_timeout_s below remains the sweep
+            # Push a TTSStoppedFrame once a context's audio is fully enqueued
+            # (on_turn_context_completed, pipecat >= 1.7.0). The output transport ends
+            # bot-speaking on that frame, which it queues behind the last chunk; with
+            # no stop frame it falls back to its BOT_VAD_STOP_FALLBACK_SECS (3 s) idle
+            # timeout, so every reply used to be followed by 3 s of "bot speaking"
+            # nobody could hear (journal 2026-09-04: BotStoppedSpeaking = audio
+            # end + 2.9..3.0 s on 8/8 replies; `based on TTSStoppedFrame` never once).
+            # That tail is what the assistant aggregator waits out before running
+            # the post-tool-call completion (3 s of dead air after every tool
+            # filler), what keeps the 2-word barge-in guard armed past the audio,
+            # and what the follow-up gate reads as "still talking".
+            # stop_frame_timeout_s below remains the sweep
             # for a context that never yielded audio (nothing synthesizable): pipecat
             # appends no stop frame for it, so only the timeout reclaims it, and the
             # transport ignores a stop frame that follows no audio.
             push_stop_frames=True,
             stop_frame_timeout_s=_STOP_FRAME_TIMEOUT_S,
+            # Do NOT let a run of silent contexts write this service off. pipecat
+            # 1.8.0 added a counter (default 3) that reports a PERMANENT error on the
+            # third consecutive context that completes with no audio: is_usable goes
+            # False, _synthesize_text then skips run_tts for good ("service is no
+            # longer usable, not speaking"), and make_tts builds a fresh service only
+            # per SESSION — so the bot would be mute for the REST OF THE CALL.
+            #
+            # That counter is aimed at a provider that accepts requests and stays
+            # silent (an unknown voice ID), which is a config error and really is
+            # permanent. Ours are not: BOTH zero-audio paths below — "nothing
+            # synthesizable" and "every clause failed" — are per-utterance and
+            # self-healing, and the one that matters (CUDA OOM / an engine restart)
+            # clears on its own within seconds. Under 1.7.0 the identical outage
+            # recovered on the next successful clause; 0 keeps that.
+            #
+            # 0 does not hide anything: pipecat still reports every silent context as a
+            # (non-permanent) ErrorFrame, and both paths below already say so
+            # themselves. What it opts out of is the VERDICT, not the reporting — and
+            # that verdict now ends the session (agent_session's
+            # _end_session_when_unusable), which is why a recoverable outage must not
+            # reach it.
+            max_consecutive_zero_audio_contexts=0,
             settings=TTSSettings(model="engine-tts", voice=voice,
                                  language=self._espeak_lang),
             **kwargs,

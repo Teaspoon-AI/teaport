@@ -76,7 +76,8 @@ time. Only retiring **at** the read satisfies both.
 ### What was changed
 
 `FollowupTrigger` (`followup_gate.py`) implements `retireOnRead`. Two placement facts
-pin it — both verified against pipecat 1.7.0 and both easy to get wrong:
+pin it — both verified against pipecat 1.7.0 and re-verified at 1.8.1, and both easy
+to get wrong:
 
 - It sits **directly below the LLM**. `LLMTextFrame` is consumed by `TTSService`
   (`push_text_frames=False`), so it never reaches `FollowupGate`'s position after
@@ -303,8 +304,9 @@ gapless chaining inside one `BotStartedSpeaking` window, a reply path with no
 `TTSStartedFrame` and no `context_id` (`_ensure_bot`'s docstring), and — under `Split` —
 a reply re-created under a second context id mid-turn. Synthesis is sequential per the
 TTS service; playout lags it arbitrarily. A cancelled completion still ends: pipecat
-1.7.0 `base_llm.py:571-573` pushes `LLMFullResponseEndFrame` in a `finally`, after the
-`InterruptionFrame`, and the ledger of that time took the partial text as a new `_pending_gen`.
+1.8.1 `services/openai/base_llm.py:611-613` pushes `LLMFullResponseEndFrame` in a
+`finally`, after the `InterruptionFrame`, and the ledger of that time took the partial
+text as a new `_pending_gen`.
 
 Two designs, selected by `MODE`. `asWritten` is the ledger at PR #13 and fails every
 property; its rows are kept failing, pinning the counterexamples. `windowHead` was the
@@ -483,7 +485,7 @@ and the file's. `Ledger.tla` keeps the two rejected designs and their counterexa
 this module has the same environment with the facts the redesign rests on spelled out:
 
 - The TTS re-pushes a response's `LLMFullResponseEndFrame` — the same frame, same id —
-  once the response's context has drained (pipecat 1.7.0,
+  once the response's context has drained (pipecat 1.8.1,
   `tts_service._maybe_reset_word_timestamps`). Sighted a second time, below the TTS, it
   names the response the context spoke and says its synthesis is over. It comes only if
   the End reached the TTS before the drain; a context that drains on the stop-frame

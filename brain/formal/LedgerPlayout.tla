@@ -10,7 +10,7 @@
 (* the redesign rests on spelled out:                                       *)
 (*                                                                          *)
 (*   - The TTS re-pushes a response's LLMFullResponseEndFrame, the SAME     *)
-(*     frame, once the response's context has drained (pipecat 1.7.0,       *)
+(*     frame, once the response's context has drained (pipecat 1.8.1,       *)
 (*     tts_service._maybe_reset_word_timestamps). Its second sighting names *)
 (*     the response the context spoke and says its synthesis is over. It    *)
 (*     comes only if the End had reached the TTS before the drain: a        *)

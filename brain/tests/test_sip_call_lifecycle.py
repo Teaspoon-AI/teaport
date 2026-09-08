@@ -45,6 +45,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong pipecat
 
+from pipecat.frames.frames import EndFrame  # noqa: E402
+
 from teaport_brain import sip_server  # noqa: E402
 from teaport_brain.sip_serializer import encode_control  # noqa: E402
 from teaport_brain.sip_transport import SipConnection  # noqa: E402
@@ -102,6 +104,32 @@ class _FakeTask:
     def __init__(self):
         self.cancelled = False
         self.done = asyncio.Event()
+        self._handlers = {}
+
+    def event_handler(self, name):
+        """PipelineTask's decorator API — sip_server registers on_pipeline_finished."""
+        def register(fn):
+            self._handlers.setdefault(name, []).append(fn)
+            return fn
+        return register
+
+    async def finish(self, frame=None):
+        """The pipeline ending on its OWN, with no cancel behind it.
+
+        What processor_unusable_policy=END produces when a service is written off, and
+        what a start/setup timeout or the idle timeout produce. pipecat calls the
+        handlers as the worker finishes and the runner returns after them, so the fake
+        does the same.
+
+        The FRAME is not decoration. pipecat dispatches this as
+        `handler(worker, frame)` (BaseObject._call_event_handler -> _run_handler), and
+        a handler of the wrong arity raises a TypeError that _run_handler CATCHES and
+        logs — so the handler silently never runs. A fake that called `fn(self)` passed
+        against exactly that bug: the hangup below was asserted, and on a real call it
+        would never have been sent. Pass what pipecat passes."""
+        for fn in self._handlers.get("on_pipeline_finished", []):
+            await fn(self, frame if frame is not None else EndFrame())
+        self.done.set()
 
     async def cancel(self):
         self.cancelled = True
@@ -149,12 +177,15 @@ class _Harness:
         self._pending = []
         # (was_on_the_event_loop_thread,) per reclaim, newest last.
         self.reclaims = []
+        # Control messages the brain sent the gateway, in order (call.hangup, ...).
+        self.controls = []
 
     async def start(self):
         _FakeSession.built = []
         _FakeSession.greeted = []
         _FakeSession.by_id = {}
         self.reclaims = []
+        self.controls = []
         self._patch()
         self.run_task = asyncio.create_task(sip_server.run(self.path))
         loop = asyncio.get_running_loop()
@@ -186,12 +217,14 @@ class _Harness:
                 await task.done.wait()      # the pipeline runs until its task is cancelled
         sip_server.PipelineRunner = _Runner
 
+        controls = self.controls
+
         class _Transport:
             def __init__(self, connection, params):
                 pass
 
             async def send_control(self, msg):
-                return
+                controls.append(msg)
         sip_server.SipGatewayTransport = _Transport
 
     def restore(self):
@@ -309,6 +342,35 @@ async def test_a_finished_call_reclaims_its_memory_off_the_loop():
         assert h.reclaims == [False], (
             "the reclaim ran ON the event loop thread — gc + malloc_trim there stalls "
             "the receive loop, which is also the caller-audio path")
+    finally:
+        await h.stop()
+
+
+async def test_a_pipeline_that_ends_on_its_own_hangs_the_caller_up():
+    """A pipeline can end with no call-control event behind it, and the caller does not
+    know. pipecat 1.8.0 ends it when a processor can no longer do its job — an STT that
+    gave up reconnecting, a TTS written off — and a start/setup or idle timeout does the
+    same. The socket is persistent, so none of that reaches the gateway: without a
+    hangup the caller sits on a live line with no brain, which is the dead end
+    NoWrongTeardown was written about, reached from the other direction.
+
+    Also pins that the teardown still runs: the handler fires INSIDE the runner task
+    that cancel_active_call waits on, so it has to hand that off rather than await it —
+    a reclaim that never arrives means it awaited itself and only escaped on the 5s
+    timeout."""
+    h = _Harness()
+    try:
+        await h.start()
+        await h.call_state("A", "confirmed")
+        assert await wait_until(lambda: "A" in _FakeSession.greeted), "call A never greeted"
+        await _FakeSession.by_id["A"].task.finish()
+        assert await wait_until(
+            lambda: any(m.get("type") == "call.hangup" for m in h.controls)), (
+            "the pipeline ended and the caller was left connected to nothing: no "
+            "call.hangup reached the gateway")
+        assert await wait_until(lambda: len(h.reclaims) == 1), (
+            "the call was never torn down after its pipeline ended — the STT slot and "
+            "the call's memory stay held")
     finally:
         await h.stop()
 
