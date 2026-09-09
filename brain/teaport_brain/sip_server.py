@@ -69,14 +69,35 @@ from teaport_brain.sip_transport import (
 )
 
 
-# --- DIAGNOSTIC: half-duplex input gate (echo-hypothesis test) ------------------
+# --- FALLBACK: half-duplex input gate (pre-AEC echo containment) ----------------
 # Telephony has no client-side echo cancellation (unlike the OpenClaw Talk client
 # the WS path relies on), so the bot's own audio echoes back down the line and
 # retriggers the VAD/STT (the bot fights itself → rough conversation). This gate
 # DROPS caller audio while the bot is speaking, plus a tail covering the gateway's
-# bounded (~1 s) playout backlog. It is NOT the real fix — that's an echo canceller
-# in the teaport-sip bridge (pjmedia AEC), keeping the brain transport-agnostic —
-# but it isolates whether echo is the cause. Kill switch: SIP_HALF_DUPLEX=0.
+# bounded (~1 s) playout backlog. It was NEVER the real fix — that's an echo canceller
+# in the teaport-sip bridge (pjmedia AEC), keeping the brain transport-agnostic — and
+# as of 2026-09-09 that canceller exists and runs WebRTC on both boxes, so the gate is
+# now the fallback for a bridge whose AEC would not initialise, not the default.
+#
+# DEFAULT OFF, changed 2026-09-09, because the safe direction inverted. While no bridge
+# cancelled echo, ON was the conservative choice: better a bot that cannot be interrupted
+# than one that fights itself. Now the risk is the other one, and it is silent — the gate
+# drops the caller's mic for the whole of every reply plus the tail, so there is NO
+# barge-in, and nothing in the journal says the call went that way.
+#
+# The 18-minute call of 2026-09-09 is the case for off. It recorded 37 barge-in cuts,
+# twelve of them before a single word was heard — which the gate would have reduced to
+# zero, and that would have been the wrong outcome twice over. Those cuts ARE the user
+# interrupting: with the gate on, a reply that ran thirty-seven seconds runs all
+# thirty-seven, and "Okay, stop." is dropped by the gate rather than heard. And the same
+# cuts are the evidence for the endpointing and consult-delivery defects (#22, #26);
+# suppressed, they leave a clean-looking ledger over a phone bot nobody can interrupt.
+#
+# Turn it back ON (SIP_HALF_DUPLEX=1) only when the gateway logs an AEC fallback —
+# "webrtc EC create failed ... falling back to default sw EC", or aec=false. The brain
+# is deliberately transport-agnostic and cannot see the gateway's AEC state, so this
+# stays a manual knob. If AEC is merely weak rather than absent, reach for a longer
+# aec_tail_ms in teaport-sip.conf before reaching for this.
 #
 # Both knobs go through env.py rather than a hand-rolled parse and a bare cast, because
 # both are read at IMPORT time out of /etc/teaport/brain.env, which installer repairs
@@ -95,7 +116,7 @@ from teaport_brain.sip_transport import (
 #   starts, and systemd/teaport-sip-brain.service.in's Restart=always + RestartSec=5
 #   crash-loop it forever, with no way to clear it short of hand-editing the file —
 #   re-running the installer will not. env_num warns and falls back instead.
-HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", True)
+HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", False)
 _HD_TAIL_S = env_num("SIP_HALF_DUPLEX_TAIL_S", "0.8", float)
 
 
