@@ -57,6 +57,7 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
+from teaport_brain import audio_dump
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import SipProtocolSerializer
@@ -326,9 +327,18 @@ async def run(sock_path: str):
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
         # override: a per-call pipeline uses PipelineTask's default, exactly like the
         # OpenClaw per-connection pipeline.
+        # The audio tap goes FIRST, so it records what the transport delivered rather
+        # than what survived the gate — the question it exists to answer is about the
+        # bytes arriving, and a capture taken downstream of a processor that can drop
+        # frames would beg it. Off unless TEAPORT_AUDIO_DUMP names a directory.
+        input_procs = []
+        if audio_dump.ENABLED:
+            input_procs.append(audio_dump.CallerAudioTap(call_id))
+        if HALF_DUPLEX:
+            input_procs.append(HalfDuplexInputGate())
         session = build_agent_session(
             transport,
-            input_processors=[HalfDuplexInputGate()] if HALF_DUPLEX else None,
+            input_processors=input_procs or None,
         )
 
         @session.task.event_handler("on_pipeline_finished")
