@@ -298,16 +298,16 @@ class TeaportSTTService(WebsocketSTTService):
         # aggregator, exactly as the strategy expects).
         if self._commit_on_stop and isinstance(frame, VADUserStoppedSpeakingFrame):
             # The VAD path won the race, so the backstop has nothing left to guard.
-            self._cancel_stranded_commit()
+            await self._cancel_stranded_commit()
             await self._send_commit(final=True)
 
     # ---- stranded-segment backstop -----------------------------------------
     # See _STRANDED_INTERIM_SECS for why this exists and why it is armed off interim
     # activity rather than off any turn frame.
 
-    def _arm_stranded_commit(self):
+    async def _arm_stranded_commit(self):
         """(Re)start the quiet timer for the segment currently streaming interims."""
-        self._cancel_stranded_commit()
+        await self._cancel_stranded_commit()
         coro = self._stranded_commit_after_quiet()
         try:
             self._stranded_task = self.create_task(coro)
@@ -325,10 +325,18 @@ class TeaportSTTService(WebsocketSTTService):
                 logger.debug(f"{self}: stranded-segment backstop unavailable ({e}); "
                              "a missed VAD stop will lose its turn")
 
-    def _cancel_stranded_commit(self):
+    async def _cancel_stranded_commit(self):
+        # AWAITED. BaseObject.cancel_task is `async def`, and calling it bare returned an
+        # un-awaited coroutine that cancelled NOTHING: every re-arm left the previous timer
+        # running, so a segment that streamed N deltas accumulated N live timers and they
+        # all fired at once (live 2026-09-09 20:50:57.958 — six identical commits in the
+        # same millisecond). Each one forces a final on the engine, and a stale commit
+        # landing inside the NEXT utterance closes it early, which is a fragment. It also
+        # inflated every backstop count measured that day. The only visible symptom was one
+        # RuntimeWarning line: "coroutine 'BaseObject.cancel_task' was never awaited".
         if self._stranded_task is not None:
             task, self._stranded_task = self._stranded_task, None
-            self.cancel_task(task)
+            await self.cancel_task(task)
 
     async def _stranded_commit_after_quiet(self):
         await asyncio.sleep(_STRANDED_INTERIM_SECS)
@@ -457,7 +465,7 @@ class TeaportSTTService(WebsocketSTTService):
             # reconnect plus 1 after is not 5 finals of the same microphone.
             self._empty_finals = 0
             # The buffer it would have committed is gone, and the socket with it.
-            self._cancel_stranded_commit()
+            await self._cancel_stranded_commit()
 
     # ---- transcripts out ---------------------------------------------------
 
@@ -492,7 +500,7 @@ class TeaportSTTService(WebsocketSTTService):
                 )
             )
             # Every delta re-arms: while the user is still talking this can never fire.
-            self._arm_stranded_commit()
+            await self._arm_stranded_commit()
 
         elif mtype == "transcription.done":
             # Authoritative per-utterance text; engine resets after this. Mark it
@@ -526,7 +534,7 @@ class TeaportSTTService(WebsocketSTTService):
             # out. .strip() because a final of " " is truthy but wordless, and pushing it
             # commits a user turn whose content is whitespace.
             # The segment closed, however it was committed — the backstop is done.
-            self._cancel_stranded_commit()
+            await self._cancel_stranded_commit()
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
             if text and not engine_text:

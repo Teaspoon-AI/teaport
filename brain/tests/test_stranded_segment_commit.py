@@ -60,7 +60,9 @@ class Recorder(TeaportSTTService):
     def create_task(self, coro, name=None):
         return asyncio.get_running_loop().create_task(coro)
 
-    def cancel_task(self, task, timeout=None):
+    async def cancel_task(self, task, timeout=None):
+        # async, like pipecat's BaseObject.cancel_task — the bug this file now pins was
+        # calling that bare, so nothing was ever cancelled.
         task.cancel()
 
     async def _send_commit(self, final: bool = True):
@@ -79,6 +81,24 @@ async def test_a_stranded_segment_is_committed_by_the_backstop():
     assert stt.commits == 1, (
         "a segment that streamed interims and then went quiet with no VAD stop was "
         "never committed — this is the turn the model is never asked about")
+
+
+async def test_re_arming_leaves_exactly_one_timer():
+    """Live 2026-09-09 20:50:57.958: six identical commits in the same millisecond.
+
+    _cancel_stranded_commit awaits BaseObject.cancel_task, which is `async def`; calling
+    it bare returned an un-awaited coroutine and cancelled nothing, so every delta left
+    its predecessor running and a segment accumulated one live timer per delta. Each
+    fires a commit, and a stale commit landing inside the NEXT utterance closes it early
+    -- a fragment. Ten deltas must still produce exactly one commit."""
+    stt = Recorder()
+    for _ in range(10):
+        await _delta(stt, "word ")
+        await asyncio.sleep(QUIET / 4)
+    await asyncio.sleep(QUIET * 3)
+    assert stt.commits == 1, (
+        f"{stt.commits} commits from one stalled segment; every re-arm must cancel its "
+        "predecessor or they all fire together and fragment the next utterance")
 
 
 async def test_a_still_talking_user_never_trips_it():
@@ -110,7 +130,7 @@ async def test_the_vad_stop_disarms_it():
     # turn pays a second commit ~1.5s later against a segment that is already closed.
     stt = Recorder()
     await _delta(stt, "Stop there")
-    stt._cancel_stranded_commit()          # what process_frame does on the VAD stop
+    await stt._cancel_stranded_commit()    # what process_frame does on the VAD stop
     await stt._send_commit(final=True)     # ...before committing itself
     await asyncio.sleep(QUIET * 3)
     assert stt.commits == 1, f"expected exactly the VAD commit, got {stt.commits}"
