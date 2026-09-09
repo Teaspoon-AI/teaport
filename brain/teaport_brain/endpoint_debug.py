@@ -52,9 +52,16 @@ from pipecat.frames.frames import (
 from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.env import env_flag
+from teaport_brain.env import env_flag, env_num
 
 ENABLED = env_flag("TEAPORT_ENDPOINT_DEBUG", False)
+
+# Per-frame confidence census (see _dbg_sample). 20 buckets = 0.05 resolution, which is
+# finer than any threshold anyone would actually set. Silero frames are 512 samples at
+# 16 kHz = 32 ms, so 500 frames is ~16 s of audio — frequent enough to get several dumps
+# from a short call, rare enough that the census costs one log line per sixteen seconds.
+_DIST_BUCKETS = 20
+_DIST_EVERY = env_num("TEAPORT_ENDPOINT_DIST_EVERY", "500", int)
 
 
 class InstrumentedSileroVAD(SileroVADAnalyzer):
@@ -66,6 +73,77 @@ class InstrumentedSileroVAD(SileroVADAnalyzer):
         super().__init__(*args, **kwargs)
         self._dbg_prev = VADState.QUIET
         self._dbg_conf = 0.0
+        # Per-frame confidence census — see _dbg_sample. Two histograms of 20 x 0.05
+        # buckets, split on the volume gate, plus a frame counter driving the dump.
+        self._dbg_loud = [0] * _DIST_BUCKETS
+        self._dbg_quiet = [0] * _DIST_BUCKETS
+        self._dbg_frames = 0
+        # Frames the census could not place — a NaN from a failing probe, say. Counted
+        # rather than dropped: silently shrinking the sample is how the last broken
+        # instrument hid, and a census with a hole in it is worse than none.
+        self._dbg_dropped = 0
+
+    def _dbg_sample(self, conf: float, volume: float) -> None:
+        """Record ONE frame, and dump the census every _DIST_EVERY frames.
+
+        Why per-frame and not per-transition: a transition is only logged when the gate
+        is crossed, so the sample is truncated BY the gate being measured. Three rounds
+        of tuning read the dips as median 0.59 (through a 0.70 gate), then 0.26 (through
+        0.35), then still-below-0.15 — each number an artifact of where the gate sat, and
+        each one motivating the next move on evidence that could not see past itself.
+        A census of every frame is the only thing that shows the real distribution, and
+        therefore the only thing that can set this gate once instead of iteratively.
+
+        Split on the volume gate because that is the population that matters: the flicker
+        is confidence dropping WHILE the audio is loud enough to be speech (216/216 and
+        138/138 of the SPEAKING->STOPPING transitions on 2026-09-09), so `loud` is the
+        distribution the confidence threshold is actually deciding on, and `quiet` is the
+        control showing what real silence looks like.
+
+        O(1) per frame: this runs in the VAD executor on the hot audio path, so it is one
+        bucket increment, and the dump is amortised over _DIST_EVERY frames.
+        """
+        buckets = self._dbg_loud if volume >= self._params.min_volume else self._dbg_quiet
+        try:
+            i = int(conf * _DIST_BUCKETS)
+        except (TypeError, ValueError):   # NaN, or not a number at all
+            self._dbg_dropped += 1
+            return
+        buckets[min(max(i, 0), _DIST_BUCKETS - 1)] += 1
+        self._dbg_frames += 1
+        if self._dbg_frames % _DIST_EVERY == 0:
+            self._dbg_dump()
+
+    def _dbg_dump(self) -> None:
+        def pct(hist, q):
+            n = sum(hist)
+            if not n:
+                return float("nan")
+            target, run = n * q, 0
+            for i, c in enumerate(hist):
+                run += c
+                if run >= target:
+                    return (i + 0.5) / _DIST_BUCKETS
+            return 1.0
+        try:
+            loud, quiet = self._dbg_loud, self._dbg_quiet
+            nl, nq = sum(loud), sum(quiet)
+            # The gate's cost, stated directly: how much of LOUD audio — i.e. audio the
+            # volume gate already calls speech — this confidence threshold is rejecting.
+            below = sum(c for i, c in enumerate(loud)
+                        if (i + 0.5) / _DIST_BUCKETS < self._params.confidence)
+            logger.info(
+                f"[VAD-DIST] loud n={nl} p10={pct(loud, .10):.2f} p50={pct(loud, .50):.2f} "
+                f"p90={pct(loud, .90):.2f} | quiet n={nq} p50={pct(quiet, .50):.2f} "
+                f"p90={pct(quiet, .90):.2f} | conf gate={self._params.confidence} "
+                f"rejects {100 * below / nl if nl else 0:.0f}% of loud frames"
+                + (f" | DROPPED {self._dbg_dropped} unplaceable frames"
+                   if self._dbg_dropped else "")
+            )
+            logger.info("[VAD-DIST] loud histogram " + " ".join(
+                f"{(i / _DIST_BUCKETS):.2f}:{c}" for i, c in enumerate(loud) if c))
+        except Exception:  # noqa: BLE001
+            pass  # a census must never break the audio path
 
     def voice_confidence(self, buffer: bytes) -> float:
         c = super().voice_confidence(buffer)
@@ -94,6 +172,15 @@ class InstrumentedSileroVAD(SileroVADAnalyzer):
         except Exception:  # noqa: BLE001
             self._dbg_conf = float("nan")
         return c
+
+    def _get_smoothed_volume(self, audio) -> float:
+        # _run_analyzer calls voice_confidence() then this, on the SAME frame, so
+        # _dbg_conf is this frame's confidence and the pair is coherent. Hooking here
+        # rather than overriding _run_analyzer keeps the census out of the VAD's own
+        # state machine — nothing about the decision changes, only what is recorded.
+        v = super()._get_smoothed_volume(audio)
+        self._dbg_sample(self._dbg_conf, v)
+        return v
 
     async def analyze_audio(self, buffer: bytes) -> VADState:
         state = await super().analyze_audio(buffer)
