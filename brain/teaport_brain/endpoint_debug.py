@@ -33,6 +33,7 @@
 #
 import time
 
+import numpy as np
 from loguru import logger
 
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -68,12 +69,30 @@ class InstrumentedSileroVAD(SileroVADAnalyzer):
 
     def voice_confidence(self, buffer: bytes) -> float:
         c = super().voice_confidence(buffer)
-        # c can be a numpy scalar/array — keep a plain float for logging so a
-        # format error can never propagate out of the audio path.
+        # c can be a numpy scalar/array — keep a plain float for logging so a format
+        # error can never propagate out of the audio path.
+        #
+        # .item(), not float(). SileroVADAnalyzer returns `self._model(...)[0]`, which is
+        # a shape-(1,) array, and numpy 1.25 deprecated then 2.x REMOVED float() on any
+        # array with ndim > 0: "only 0-dimensional arrays can be converted to Python
+        # scalars". So on numpy 2.5 (both the box and the lockfile) the old float() raised
+        # TypeError on EVERY frame and the except wrote 0.0 — this instrument reported a
+        # constant conf=0.00 through the whole call of 2026-09-09 17:33, while the VAD was
+        # plainly reaching SPEAKING, which requires confidence >= 0.7. The one field the
+        # tool exists to show was the one field it never showed. .item() accepts a 0-d
+        # array, a shape-(1,) array and a plain scalar alike.
+        #
+        # NaN, not 0.0, when it still fails: 0.0 is a VALID-looking confidence, so a broken
+        # probe read as "Silero says no voice" and hid itself for as long as anyone cared
+        # to look. "nan" in the log is unmistakably an instrument fault, not a measurement.
+        # Broad, like the sibling catch in analyze_audio: this runs inside the VAD
+        # executor, so anything escaping here kills the transport audio task and with it
+        # ALL transcription. A diagnostic must never be able to do that, and np.asarray
+        # will run __array__ on whatever it is handed.
         try:
-            self._dbg_conf = float(c)
-        except (TypeError, ValueError):
-            self._dbg_conf = 0.0
+            self._dbg_conf = np.asarray(c).item()
+        except Exception:  # noqa: BLE001
+            self._dbg_conf = float("nan")
         return c
 
     async def analyze_audio(self, buffer: bytes) -> VADState:
