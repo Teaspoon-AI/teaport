@@ -15,12 +15,29 @@ from loguru import logger
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
 # Endpointing silence, the VAD's: how long the user must pause before Silero VAD
-# reports them stopped -- which is what asks Smart Turn for its verdict. History: 0.8
-# was conservative, 0.5 trimmed ~0.3s off it; now 0.2. This floor IS the dominant fixed
-# latency on every turn (the VAD model itself is ~1ms/frame), and 0.2 is pipecat's
-# recommended VAD default, the one its built-in STT p99 latencies assume -- so it also
-# silences the turn strategy's stop_secs warning. Tune via ENDPOINT_STOP_SECS.
-ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.2"))
+# reports them stopped -- which is what asks Smart Turn for its verdict. This floor IS
+# the dominant fixed latency on every turn (the VAD model itself is ~1ms/frame).
+# History: 0.8 was conservative, 0.5 trimmed ~0.3s off it, f23503b cut it to 0.2, and
+# 2026-09-09 put it back to 0.5.
+#
+# 0.2 is pipecat's recommended VAD default -- but that recommendation assumes Smart Turn
+# is doing the semantic work of deciding whether the user is finished, so that asking
+# early is safe. Measured on a live SIP call 2026-09-09, it is not: the model scored
+# "How would a DGX" at 0.9759 and 0.9685, and a bare "Hey," at 0.9605, while the one
+# utterance it called INCOMPLETE was "compare again." at 0.0303. Its output is close to
+# uncorrelated with whether the phrase is actually finished, on this audio. 33 of the
+# 37 verdicts on the preceding call were COMPLETE.
+#
+# With that premise gone, the floor has to do the job by itself: at 0.5 the ~0.2s breath
+# before the next word never asks the question at all, and the user's sentence survives.
+# See SMARTTURN_COMPLETE_THRESHOLD below for why the semantic knob cannot substitute.
+#
+# The likely root cause is upstream of this file and not fixed here: Smart Turn v3 judges
+# the waveform, and this is 8 kHz telephony band upsampled to 16 kHz, which is not what it
+# was trained on. If that is ever addressed, 0.2 becomes safe again and ~0.3s comes off
+# every turn -- so revisit this together with the analyzer, not alone.
+# Tune via ENDPOINT_STOP_SECS.
+ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 
 # Smart Turn's OWN silence limit -- pipecat's SmartTurnParams.stop_secs -- is not a
 # floor but a CEILING: BaseSmartTurn.append_audio force-completes the turn once this
@@ -41,7 +58,17 @@ SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 # LOWER = the classifier lets go EASIER / snappier endpointing, at the cost of more
 # mid-thought cutoffs; higher = more patient. ENDPOINT_STOP_SECS is when the question
 # is asked, SMARTTURN_STOP_SECS how long a "no" is honoured; this is the *semantic*
-# eagerness. Tune via SMARTTURN_COMPLETE_THRESHOLD.
+# eagerness.
+#
+# It is also, on telephony audio, close to INERT -- know this before reaching for it.
+# The probabilities are bimodal and extreme (2026-09-09, thr raised 0.5 -> 0.7 as an
+# experiment): five of six decisions landed at 0.911-0.976 and the sixth at 0.030, so
+# the raise changed exactly zero verdicts. Sparing the mid-phrase cuts would need a
+# threshold above 0.976, at which point almost nothing is ever COMPLETE and every turn
+# falls through to SMARTTURN_STOP_SECS -- that is not tuning the classifier, it is
+# disabling it and paying a flat second for it. The knob only bites where the model is
+# uncertain, and here it is confidently wrong instead. ENDPOINT_STOP_SECS is the lever
+# that works; see its note. Tune via SMARTTURN_COMPLETE_THRESHOLD.
 SMARTTURN_COMPLETE_THRESHOLD = float(os.getenv("SMARTTURN_COMPLETE_THRESHOLD", "0.5"))
 
 # Silero VAD gates. These were tightened to 0.8 / 0.75 to reject ambient noise,
