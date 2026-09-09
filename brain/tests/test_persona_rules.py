@@ -40,6 +40,31 @@ def test_web_addresses_are_never_read_aloud():
     assert "name the source instead" in VOICE_OVERLAY
 
 
+def test_a_list_shaped_answer_has_somewhere_to_go():
+    # Live 2026-09-09 (18-minute SIP call): the overlay already said "no markdown, lists,
+    # or emojis" and the model wrote a restaurant menu as bullets anyway. Forbidding the
+    # shape without offering another one leaves the model nowhere to put a list, so the
+    # rule now names what to do instead. tts_text strips the marks that still arrive;
+    # only the prompt can keep the shape conversational.
+    assert "say the two or three items that matter as a sentence" in VOICE_OVERLAY
+    assert "Never recite more than three items" in VOICE_OVERLAY
+
+
+def test_brevity_is_given_its_reason():
+    # Eight replies over fifteen seconds on that call, one assistant turn of thirty-seven,
+    # and twelve replies cut before a single word was heard. "Be brief" loses to
+    # helpfulness; "you will be talked over and lost" is a cost the model can weigh.
+    assert "talked over and lost" in VOICE_OVERLAY
+    assert "the voice reads those marks aloud" in VOICE_OVERLAY
+
+
+def test_the_markdown_identity_text_is_not_a_style_example():
+    # Identity is loaded live from the OpenClaw workspace (SOUL/IDENTITY/USER/MEMORY.md),
+    # which is markdown by nature -- 3322 chars of headings and bullets on that call. The
+    # model reads a formatted document, then is told not to write one; this says so.
+    assert "never copy its formatting into speech" in VOICE_OVERLAY
+
+
 def test_the_overlay_still_follows_the_persona():
     prompt = build_system_prompt("IDENTITY LINE")
     assert prompt.startswith("IDENTITY LINE\n\n")
