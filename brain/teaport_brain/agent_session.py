@@ -52,6 +52,7 @@ from teaport_brain.endpointing import (
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
     EagerSmartTurnAnalyzer,
+    keep_barge_in_reachable,
 )
 from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
@@ -573,6 +574,16 @@ def build_agent_session(transport, *, voice: str | None = None,
             ),
         ),
     )
+    # Barge-in is a user turn START, and pipecat will not start one while a turn is
+    # already open — so a turn left open by a finalization refused mid-flight makes the
+    # bot uninterruptible for as long as the user keeps talking, which is exactly as
+    # long as someone being talked over does. See endpointing.py for the whole path.
+    #
+    # The private reach is the point rather than an accident: the controller is built
+    # INSIDE the aggregator (no injection point), and there is nowhere else that owns
+    # both the refusal and the frame that lifts it. It raises AttributeError here, at
+    # session build, if a pipecat bump moves any of it.
+    keep_barge_in_reachable(context_aggregator.user()._user_turn_controller)
 
     # The ledger reads the LLM stream at the TTS's sighting (the text the TTS is
     # actually handed, after the guard) and tells the thinking bed's audio, pushed
