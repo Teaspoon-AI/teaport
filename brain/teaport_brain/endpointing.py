@@ -108,7 +108,26 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
 
     def _predict_endpoint(self, audio_array):
         result = super()._predict_endpoint(audio_array)
-        result["prediction"] = 1 if result["probability"] > self._complete_threshold else 0
+        p = result["probability"]
+        prediction = 1 if p > self._complete_threshold else 0
+        # The NUMBER, not just the verdict. pipecat logs "End of Turn result: COMPLETE"
+        # and puts the probability behind logger.trace, so a live journal shows every
+        # decision and none of the evidence — and the one knob that moves these
+        # decisions (SMARTTURN_COMPLETE_THRESHOLD) could only ever be guessed at.
+        # Live 2026-09-09: "How would a DGX" was judged COMPLETE and answered as a
+        # question; the threshold sat at pipecat's stock 0.5 with no idea whether that
+        # utterance scored 0.51 or 0.99, which is the difference between a threshold
+        # that would have saved it and one that could not.
+        #
+        # `margin` is what a re-threshold has to cross to change THIS decision, so a
+        # journal of a bad call sizes the change directly: every mid-phrase cut with a
+        # small positive margin is one a higher threshold would have kept open.
+        logger.debug(
+            f"smart-turn p={p:.4f} thr={self._complete_threshold:.2f} "
+            f"-> {'COMPLETE' if prediction else 'INCOMPLETE'} "
+            f"(margin {p - self._complete_threshold:+.4f})"
+        )
+        result["prediction"] = prediction
         return result
 
 
