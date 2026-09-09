@@ -176,8 +176,15 @@ async def run(sock_path: str):
     params = make_sip_params(serializer)
     connection = SipConnection(sock, serializer)
 
-    logger.info(f"half-duplex input gate: {'ON' if HALF_DUPLEX else 'off'} "
-                f"(tail {_HD_TAIL_S}s) — diagnostic; real fix is AEC in the bridge")
+    # ON is the line worth noticing in a journal: it means the caller cannot barge in
+    # for the whole of every reply, which is otherwise invisible. Say what that costs.
+    logger.info(
+        f"half-duplex input gate: ON (tail {_HD_TAIL_S}s) — NO barge-in; the caller's "
+        f"mic is dropped while the bot speaks. Fallback for a bridge without AEC; "
+        f"unset SIP_HALF_DUPLEX to restore barge-in"
+        if HALF_DUPLEX else
+        "half-duplex input gate: off — barge-in live; the bridge cancels echo (AEC)"
+    )
 
     # Single active call in protocol v0. Holds (call_id, session, runner_task,
     # transport) for the currently-running per-call pipeline, or None between calls.
