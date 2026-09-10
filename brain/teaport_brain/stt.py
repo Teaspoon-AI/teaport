@@ -31,6 +31,7 @@
 import asyncio
 import base64
 import json
+import time
 from typing import AsyncGenerator, Optional
 
 from loguru import logger
@@ -215,6 +216,11 @@ class TeaportSTTService(WebsocketSTTService):
         self._empty_finals = 0
         # Backstop for a segment whose VAD stop never came — see _STRANDED_INTERIM_SECS.
         self._stranded_task = None
+        # Per-segment accounting for the commit/final boundary — see _log_segment.
+        self._seg_bytes = 0        # audio appended since the last final
+        self._seg_interims = 0     # interims the engine sent back for it
+        self._commit_at = None     # monotonic time of the commit awaiting a done
+        self._commit_why = ""      # what triggered it: vad-stop | backstop | other
         # Latches the one debug line if the backstop cannot arm at all (no TaskManager).
         self._stranded_unavailable = False
         # _receive_task is created only on a SUCCESSFUL connect; initialize it here
@@ -273,6 +279,7 @@ class TeaportSTTService(WebsocketSTTService):
         restarts the clock, so the reported span is last audio chunk -> final
         transcript) and stopped on the final (mirrors GladiaSTTService)."""
         await self.start_processing_metrics()
+        self._seg_bytes += len(audio)
         if self._websocket:
             payload = base64.b64encode(audio).decode("ascii")
             try:
@@ -299,7 +306,7 @@ class TeaportSTTService(WebsocketSTTService):
         if self._commit_on_stop and isinstance(frame, VADUserStoppedSpeakingFrame):
             # The VAD path won the race, so the backstop has nothing left to guard.
             await self._cancel_stranded_commit()
-            await self._send_commit(final=True)
+            await self._send_commit(final=True, why="vad-stop")
 
     # ---- stranded-segment backstop -----------------------------------------
     # See _STRANDED_INTERIM_SECS for why this exists and why it is armed off interim
@@ -351,9 +358,51 @@ class TeaportSTTService(WebsocketSTTService):
             f"VAD stop never came; committing {self._interim_buffer.strip()[:60]!r} "
             "myself so the turn is answered late rather than lost"
         )
-        await self._send_commit(final=True)
+        await self._send_commit(final=True, why="backstop")
 
-    async def _send_commit(self, final: bool = True):
+    def _log_segment(self, msg: dict) -> None:
+        """One line per segment, at the seam between what we sent and what came back.
+
+        This is the BOUNDARY line: everything left of it is the brain's doing, everything
+        right of it is the engine's. Live 2026-09-10 05:57:44 the caller spoke for 1.2 s
+        with Silero at conf 0.89 against a 0.15 gate and volume 0.75 -- a full
+        QUIET->STARTING->SPEAKING->STOPPING->QUIET cycle -- and the pipeline produced no
+        transcript at all; they waited ~2.5 s, tried again, and the retry transcribed in
+        197 ms. Nothing in the log said whether the brain failed to commit that audio or
+        the engine returned nothing for it, so the fault could not be placed.
+
+        Now it can: bytes appended, interims received, what triggered the commit and how
+        long the engine took to answer it. `EMPTY` means the engine was handed audio and
+        returned no words -- that is an ENGINE-side result, and this line is the evidence
+        to hand over with it. `no-commit` means the done arrived without us asking, i.e.
+        the engine closed the segment on its own.
+        """
+        # `or 16000`, not `max(..., 1)`: sample_rate is 0 until the StartFrame sets it,
+        # and dividing by 1 turns a one-second segment into "16000.00s audio" — a line
+        # that is worse than no line, because it reads as a fault in itself.
+        secs = self._seg_bytes / 2 / (self.sample_rate or 16000)
+        engine_text = (msg.get("text") or "").strip()
+        lat = f"{time.monotonic() - self._commit_at:.2f}s" if self._commit_at else "no-commit"
+        verdict = f"{len(engine_text)} chars" if engine_text else "EMPTY"
+        line = (f"{self}: segment {secs:.2f}s audio, {self._seg_interims} interims, "
+                f"commit={self._commit_why} -> done in {lat}: {verdict}")
+        # An empty final on a segment the engine DID stream interims for is the shape
+        # worth noticing: it had words a moment ago and returned none.
+        if not engine_text and self._seg_interims:
+            logger.warning(line + " — engine streamed interims then returned no text")
+        elif not engine_text and secs > 0.3:
+            logger.warning(line + " — audio in, no words out")
+        else:
+            logger.debug(line)
+        self._seg_bytes = 0
+        self._seg_interims = 0
+        self._commit_at = None
+        self._commit_why = ""
+
+    async def _send_commit(self, final: bool = True, why: str = "other"):
+        """Force a final. `why` is recorded so the segment line says which path fired."""
+        self._commit_at = time.monotonic()
+        self._commit_why = why
         if self._websocket:
             try:
                 await self._websocket.send(
@@ -499,6 +548,7 @@ class TeaportSTTService(WebsocketSTTService):
                     result=msg,
                 )
             )
+            self._seg_interims += 1
             # Every delta re-arms: while the user is still talking this can never fire.
             await self._arm_stranded_commit()
 
@@ -535,6 +585,7 @@ class TeaportSTTService(WebsocketSTTService):
             # commits a user turn whose content is whitespace.
             # The segment closed, however it was committed — the backstop is done.
             await self._cancel_stranded_commit()
+            self._log_segment(msg)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
             if text and not engine_text:

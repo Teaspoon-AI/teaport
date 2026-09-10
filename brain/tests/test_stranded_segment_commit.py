@@ -65,8 +65,15 @@ class Recorder(TeaportSTTService):
         # calling that bare, so nothing was ever cancelled.
         task.cancel()
 
-    async def _send_commit(self, final: bool = True):
+    async def _send_commit(self, final: bool = True, why: str = "other"):
+        # Signature must track the real one. It gained `why` on 2026-09-10 and this stub
+        # did not, so the backstop's call raised TypeError inside its timer task, where
+        # asyncio swallowed it -- the commit simply never happened and the test read as
+        # "the backstop stopped working". Third time a stub drifting from the class it
+        # stands for has produced a mystery: see the sync cancel_task and the writable
+        # sample_rate.
         self.commits += 1
+        self.why = why
 
 
 async def _delta(stt, text):
