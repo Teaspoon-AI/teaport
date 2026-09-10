@@ -67,6 +67,7 @@ from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    InterimTranscriptionFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -87,6 +88,15 @@ _TRACE_TYPES = (
     TTSStartedFrame, TTSStoppedFrame, TTSTextFrame, TTSSpeakFrame, BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame, InterruptionFrame, LLMFullResponseStartFrame,
     LLMFullResponseEndFrame, LLMTextFrame, TranscriptionFrame,
+    # Interims too, for the double-talk investigation (2026-09-09). The finals were
+    # already traced and told us they are 18x rarer while the bot speaks; only the
+    # interims say WHERE that loss is. An interim flowing with no final behind it means
+    # the engine is receiving audio and never closing the segment -- a brain-side fix
+    # (commit during double-talk). No interim at all means the audio is not reaching the
+    # engine despite the tap proving it reached the pipeline, which is a different bug.
+    # Cumulative and frequent, so this is deliberately behind LEDGER_TRACE=1 and the
+    # formatter truncates to 40 chars like every other traced text frame.
+    InterimTranscriptionFrame,
 )
 
 # Fallback speaking rate when synthesized audio length isn't fully known yet
