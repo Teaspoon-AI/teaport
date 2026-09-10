@@ -99,6 +99,19 @@ _STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
 # currently paper over with `await asyncio.sleep(0.3)`, while staying well inside
 # greet()'s 12s tri-state resolution window so a genuinely busy engine still gets the
 # spoken warning promptly.
+# STREAMING BACKEND ONLY: how long to wait after the VAD stop before drawing the segment
+# boundary, so the model's trailing deltas are in.
+#
+# Voxtral Realtime transcribes on a deliberate delay -- transcription_delay_ms in
+# tekken.json, 480 ms as shipped -- plus the time to generate those last tokens. Cutting
+# at the VAD stop takes the end off every utterance and gives it to the next segment.
+#
+# This is real latency added to the RESPONSE (the final gates the LLM turn); it is NOT
+# added to barge-in, which triggers on interims and those arrive in ~0.03 s. 0.7 is the
+# 480 ms delay with slack for generation; too low resurrects the split, too high just
+# makes replies later.
+_STREAM_TAIL_SECS = env_num("TEAPORT_STREAM_TAIL_SECS", "0.7", float)
+
 _CONNECT_ATTEMPTS = 4
 _CONNECT_RETRY_S = 0.4
 
@@ -230,6 +243,7 @@ class TeaportSTTService(WebsocketSTTService):
         # frame sequence either way.
         self._streaming = streaming_backend
         self._gen_started = False
+        self._boundary_task = None
 
         # Running transcript for the current utterance (deltas are append-only).
         self._interim_buffer: str = ""
@@ -432,11 +446,20 @@ class TeaportSTTService(WebsocketSTTService):
         self._commit_at = time.monotonic()
         self._commit_why = why
         if self._streaming:
-            # Nothing to ask for: generation is already running and the deltas that
-            # would answer this commit have already arrived. Sending final=True here
-            # would close the stream for the rest of the CALL, not end a segment.
-            # So the segment boundary is drawn locally, from what has streamed in.
-            await self._synthesize_final()
+            # Nothing to ask for: generation is already running, and sending final=True
+            # here would close the stream for the rest of the CALL rather than end a
+            # segment. So the boundary is drawn locally -- but NOT yet.
+            #
+            # The model transcribes with a deliberate delay (transcription_delay_ms in
+            # tekken.json, 480 ms as shipped), so at the VAD stop the deltas for the end
+            # of the utterance have not arrived. Snapshotting immediately cuts the tail
+            # off every segment and hands it to the NEXT one. Live 2026-09-10 22:14:
+            #
+            #   'Hey, can you'  /  'hear me? Hey, can you hear'  /  'me?'
+            #
+            # -- one question split across three turns, each carrying the previous
+            # one's ending. So wait out the delay before drawing the line.
+            await self._schedule_stream_boundary()
             return
         if self._websocket:
             try:
@@ -447,6 +470,31 @@ class TeaportSTTService(WebsocketSTTService):
                 # Lost commit = lost turn (no final transcript), but raising here
                 # would kill the whole pipeline. The receive task owns reconnection.
                 logger.warning(f"{self}: commit dropped, send failed: {e}")
+
+    async def _schedule_stream_boundary(self):
+        """Draw the segment boundary once the model's trailing deltas have landed.
+
+        Scheduled rather than awaited inline: _send_commit runs from process_frame, and
+        sleeping there would stall the frame pipeline for the whole grace period.
+
+        A later commit supersedes an earlier one -- if the caller pauses and resumes,
+        the boundary belongs where they actually stopped, not where they first did.
+        """
+        await self._cancel_stream_boundary()
+        self._boundary_task = self.create_task(self._boundary_after_delay())
+
+    async def _cancel_stream_boundary(self):
+        task, self._boundary_task = self._boundary_task, None
+        if task:
+            # cancel_task is `async def` on BaseObject. Calling it bare returns a
+            # coroutine and cancels nothing, which is how a previous timer in this file
+            # ended up firing six commits in one millisecond.
+            await self.cancel_task(task)
+
+    async def _boundary_after_delay(self):
+        await asyncio.sleep(_STREAM_TAIL_SECS)
+        self._boundary_task = None
+        await self._synthesize_final()
 
     async def _synthesize_final(self):
         """Draw a segment boundary from what has streamed in, and feed it through the
@@ -476,6 +524,9 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _disconnect(self):
         await super()._disconnect()  # base sets _disconnecting (suppresses reconnect)
+        # A boundary scheduled but not yet fired would push a transcript into a session
+        # that has ended.
+        await self._cancel_stream_boundary()
         try:
             if self._receive_task:
                 await self.cancel_task(self._receive_task)

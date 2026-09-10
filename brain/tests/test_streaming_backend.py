@@ -55,7 +55,25 @@ def _svc(streaming):
     s._commit_at = None
     s._commit_why = ""
     s._seg_interims = 0
+    s._boundary_task = None
     s.handled = []
+    s.scheduled = []
+
+    # create_task/cancel_task come from BaseObject; stand in for them so the boundary
+    # timer can be driven deterministically instead of slept through.
+    def create_task(coro):
+        t = asyncio.get_event_loop().create_task(coro)
+        s.scheduled.append(t)
+        return t
+    s.create_task = create_task
+
+    async def cancel_task(t, timeout=None):
+        t.cancel()
+        try:
+            await t
+        except (asyncio.CancelledError, Exception):     # noqa: BLE001
+            pass
+    s.cancel_task = cancel_task
 
     async def handle(msg):
         s.handled.append(msg)
@@ -88,18 +106,47 @@ async def test_streaming_never_sends_a_segment_commit():
     await _audio(s, 2)
     s._interim_buffer = "Stop."
     await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+    await asyncio.sleep(0.02)
     finals = [c for c in s._websocket.commits() if c["final"] is True]
     assert not finals, (
         "a commit(final=True) went to the server — on vLLM that ends the session and "
         "every later segment comes back empty")
 
 
+async def test_the_segment_boundary_waits_for_the_trailing_deltas():
+    """The live bug, 2026-09-10 22:14. The model transcribes on a 480 ms delay, so at
+    the VAD stop the end of the utterance has not arrived yet. Cutting immediately gave
+    'Hey, can you' / 'hear me? Hey, can you hear' / 'me?' -- one question split over
+    three turns, each carrying the previous one's tail."""
+    import teaport_brain.stt as stt_mod
+    real, stt_mod._STREAM_TAIL_SECS = stt_mod._STREAM_TAIL_SECS, 0.05
+    try:
+        s = _svc(True)
+        s.start_processing_metrics = lambda: asyncio.sleep(0)
+        await _audio(s, 1)
+        s._interim_buffer = "Hey, can you"
+        await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+        assert not s.handled, (
+            "the boundary was drawn at the VAD stop — the trailing deltas have not "
+            "arrived yet and the tail of this utterance will land in the next segment")
+        s._interim_buffer += " hear me?"        # the late deltas
+        await asyncio.sleep(0.12)
+        assert len(s.handled) == 1, s.handled
+        assert s.handled[0]["text"] == "Hey, can you hear me?", s.handled[0]
+    finally:
+        stt_mod._STREAM_TAIL_SECS = real
+
+
 async def test_the_segment_boundary_is_drawn_from_the_interim_buffer():
+    import teaport_brain.stt as stt_mod
+    real, stt_mod._STREAM_TAIL_SECS = stt_mod._STREAM_TAIL_SECS, 0.02
     s = _svc(True)
     s.start_processing_metrics = lambda: asyncio.sleep(0)
     await _audio(s, 1)
     s._interim_buffer = "  Okay, stop.  "
     await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+    await asyncio.sleep(0.08)
+    stt_mod._STREAM_TAIL_SECS = real
     assert len(s.handled) == 1, s.handled
     msg = s.handled[0]
     assert msg["type"] == "transcription.done"
@@ -113,8 +160,12 @@ async def test_the_synthesised_final_carries_its_text_for_the_segment_log():
     empty-final run detector into warning about a working system."""
     s = _svc(True)
     s.start_processing_metrics = lambda: asyncio.sleep(0)
+    import teaport_brain.stt as stt_mod
+    real, stt_mod._STREAM_TAIL_SECS = stt_mod._STREAM_TAIL_SECS, 0.02
     s._interim_buffer = "Try it again."
     await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+    await asyncio.sleep(0.08)
+    stt_mod._STREAM_TAIL_SECS = real
     assert s.handled[0]["text"] == "Try it again."
 
 
