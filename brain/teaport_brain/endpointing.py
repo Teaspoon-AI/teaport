@@ -329,8 +329,16 @@ class NarrowbandSileroMixin:
         if a.size % 2:
             a = a[:-1]
         half = a.reshape(-1, 2).mean(axis=1).astype(np.int16)
-        prev, self.sample_rate = self.sample_rate, 8000
+        # _sample_rate, not sample_rate: the latter is a READ-ONLY property on
+        # pipecat's VADAnalyzer, so assigning it raises. Deployed 2026-09-10 and it
+        # threw once per audio frame -- 3285 times in one call -- which killed the VAD
+        # entirely: no state transitions, no census, and above all no VAD stop, so the
+        # stt backstop ended 12 of 12 turns at 1.5s each and the caller felt it as a
+        # latency regression. The exception was swallowed into an ErrorFrame by the
+        # aggregator rather than crashing anything, which is why it read as "slow"
+        # instead of "broken".
+        prev, self._sample_rate = self._sample_rate, 8000
         try:
             return super().voice_confidence(half.tobytes())
         finally:
-            self.sample_rate = prev
+            self._sample_rate = prev

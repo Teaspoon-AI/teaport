@@ -31,11 +31,22 @@ from teaport_brain.endpointing import NarrowbandSileroMixin  # noqa: E402
 
 
 class _FakeSilero:
-    """Stands in for SileroVADAnalyzer: records what the model was actually given."""
+    """Stands in for SileroVADAnalyzer: records what the model was actually given.
+
+    `sample_rate` is a READ-ONLY property here because it is one on pipecat's
+    VADAnalyzer. The first version of this stub made it a plain attribute, so the mixin
+    could assign to it and every test passed -- while the real class raised once per
+    audio frame in production and took the whole VAD down with it. A stub that is easier
+    to satisfy than the class it stands for tests nothing.
+    """
 
     def __init__(self):
-        self.sample_rate = 16000
+        self._sample_rate = 16000
         self.seen = []
+
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
 
     def voice_confidence(self, buffer):
         self.seen.append((len(buffer) // 2, self.sample_rate))
@@ -93,6 +104,27 @@ def test_decimation_lowpasses_rather_than_dropping_samples():
     assert out_of_band < in_band * 0.7, (
         f"6 kHz survived decimation at {out_of_band:.0f} against {in_band:.0f} for "
         "500 Hz — the lowpass is doing nothing and out-of-band energy is aliasing down")
+
+
+def test_the_mixin_matches_the_REAL_analyzer_contract():
+    """Pin the assumption against pipecat itself, not against the stub.
+
+    The stub can drift from the class it stands for -- that is exactly how the read-only
+    `sample_rate` property got past five green tests and then raised once per audio
+    frame in production. This asserts the two facts the mixin depends on directly on
+    pipecat's own class: that `sample_rate` is a property with no setter (so assigning
+    it is a bug), and that `_sample_rate` is the backing field the mixin may swap.
+    """
+    from pipecat.audio.vad.vad_analyzer import VADAnalyzer
+
+    prop = getattr(VADAnalyzer, "sample_rate", None)
+    assert isinstance(prop, property), "sample_rate stopped being a property"
+    assert prop.fset is None, (
+        "sample_rate GAINED a setter — the mixin may now assign it directly, and the "
+        "_sample_rate workaround (with this test) can go")
+    assert "_sample_rate" in VADAnalyzer.__init__.__code__.co_names, (
+        "VADAnalyzer no longer backs sample_rate with _sample_rate; the mixin's swap "
+        "has nothing to write to and will silently stop converting the rate")
 
 
 def test_an_odd_or_tiny_frame_does_not_crash():
