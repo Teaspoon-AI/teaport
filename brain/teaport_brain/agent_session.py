@@ -46,12 +46,14 @@ from teaport_brain.captions import (
 )
 from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
+    EagerSmartTurnAnalyzer,
     INTERRUPT_MIN_WORDS,
+    NarrowbandSileroMixin,
     SMARTTURN_COMPLETE_THRESHOLD,
     SMARTTURN_STOP_SECS,
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
-    EagerSmartTurnAnalyzer,
+    VAD_SAMPLE_RATE,
     keep_barge_in_reachable,
 )
 from teaport_brain import endpoint_debug
@@ -86,8 +88,15 @@ from teaport_brain.turn_timing import TurnTimer
 def _vad_cls():
     # Opt-in (TEAPORT_ENDPOINT_DEBUG=1): instrumented VAD logs volume/confidence
     # per state transition; otherwise the stock analyzer.
-    return (endpoint_debug.InstrumentedSileroVAD if endpoint_debug.ENABLED
+    base = (endpoint_debug.InstrumentedSileroVAD if endpoint_debug.ENABLED
             else SileroVADAnalyzer)
+    # Opt-in (VAD_SAMPLE_RATE=8000): run Silero on the true narrowband signal rather
+    # than the gateway's upsample of it. Composed rather than hardcoded so it stacks
+    # with the debug analyzer instead of excluding it — the two answer different
+    # questions and the session that needs one usually wants the other.
+    if VAD_SAMPLE_RATE == 8000:
+        return type("NarrowbandSileroVAD", (NarrowbandSileroMixin, base), {})
+    return base
 
 
 # Agent-first experiment (TEAPORT_AGENT_FIRST=1): the sandboxed OpenClaw agent owns

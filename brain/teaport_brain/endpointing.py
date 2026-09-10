@@ -281,3 +281,56 @@ def keep_barge_in_reachable(controller) -> None:
     controller._trigger_user_turn_inference_triggered = _inference
     controller._trigger_user_turn_stop = _stop
     controller.process_frame = _process_frame
+
+
+# --- Silero's inference rate -----------------------------------------------------
+# Silero VAD v5 runs at 8 kHz or 16 kHz and is a WAVEFORM model: what it sees is the
+# spectrum, not an abstraction of it. On this SIP path the media is G.711 mu-law at
+# 8 kHz — verified in the SDP, where the carrier's own offer is
+# "m=audio 31720 RTP/AVP 0 18 101" (PCMU, G729, telephone-event) with no wideband codec
+# in it at all, so an inbound call cannot be anything else. pjmedia decodes that and
+# resamples to 16 kHz for our port, and everything downstream is handed "16 kHz" audio
+# with no energy whatever above 4 kHz.
+#
+# That is not the signal Silero was trained on, and it is the leading explanation for
+# the one thing no threshold could fix: measured 2026-09-09 over a full call, speech sits
+# at p50 0.88 while ~8% of genuine speech frames collapse into the same 0.00-0.05 band as
+# silence, so no gate above zero separates them (VAD_CONFIDENCE 0.70 -> 0.35 -> 0.15
+# changed the flicker rate by nothing).
+#
+# VAD_SAMPLE_RATE=8000 hands Silero the TRUE narrowband signal instead. Decimating back
+# to 8 kHz discards no information when the source was 8 kHz to begin with — it undoes
+# the gateway's upsampling rather than degrading anything — and 512 samples at 16 kHz
+# decimate to exactly the 256 Silero wants at 8 kHz, so pipecat's buffering is untouched.
+#
+# Off by default: it is a real behaviour change to the VAD and it is only correct while
+# the carrier is narrowband. On a genuinely wideband trunk it would throw away the top
+# half of the band, and the pair-averaging below (a crude half-band filter, kept cheap
+# because it runs per frame in the VAD executor) would not fully prevent aliasing.
+# Revisit this together with the SDP offer if a wideband carrier ever lands.
+VAD_SAMPLE_RATE = int(os.getenv("VAD_SAMPLE_RATE", "16000"))
+
+
+class NarrowbandSileroMixin:
+    """Run Silero at 8 kHz on audio the gateway upsampled from 8 kHz.
+
+    Mixed in ahead of SileroVADAnalyzer so `super()` still reaches the real model; the
+    analyzer keeps its 16 kHz identity (pipecat's frame budget and every other rate in
+    the pipeline are unchanged) and only the model's input is converted.
+    """
+
+    def voice_confidence(self, buffer) -> float:
+        import numpy as np
+        a = np.frombuffer(buffer, dtype=np.int16)
+        if a.size < 2:
+            return super().voice_confidence(buffer)
+        # Average adjacent pairs, then keep one of each: decimation with a cheap
+        # half-band lowpass in front of it, rather than dropping samples outright.
+        if a.size % 2:
+            a = a[:-1]
+        half = a.reshape(-1, 2).mean(axis=1).astype(np.int16)
+        prev, self.sample_rate = self.sample_rate, 8000
+        try:
+            return super().voice_confidence(half.tobytes())
+        finally:
+            self.sample_rate = prev
