@@ -492,4 +492,17 @@ def make_tts(voice: str | None = None, language: str | None = None):
 
 
 def make_stt() -> TeaportSTTService:
-    return TeaportSTTService(url=TEAPORT_URL)
+    """The incumbent engine by default; the streaming backend when asked for.
+
+    TEAPORT_STT_BACKEND=streaming points the same service at vLLM serving
+    Voxtral-Mini-4B-Realtime (see stt.py for why `final` cannot mean the same thing on
+    both). Kept as one env switch so a call can be made on either backend without a
+    deploy, and so reverting is deleting a line.
+    """
+    streaming = (os.getenv("TEAPORT_STT_BACKEND", "") or "").strip().lower() == "streaming"
+    if not streaming:
+        return TeaportSTTService(url=TEAPORT_URL)
+    url = os.getenv("TEAPORT_STT_URL", "ws://127.0.0.1:8100/v1/realtime")
+    model = os.getenv("TEAPORT_STT_MODEL", "voxtral-realtime")
+    logger.info(f"STT backend: streaming (vLLM) at {url}, model {model}")
+    return TeaportSTTService(url=url, model=model, streaming_backend=True)

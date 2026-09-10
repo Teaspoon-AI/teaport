@@ -197,6 +197,7 @@ class TeaportSTTService(WebsocketSTTService):
         language: Language = Language.EN,
         commit_on_user_stopped_speaking: bool = True,
         ttfs_p99_latency: float = TEAPORT_TTFS_P99,
+        streaming_backend: bool = False,
         **kwargs,
     ):
         super().__init__(
@@ -209,6 +210,26 @@ class TeaportSTTService(WebsocketSTTService):
         self._model = model
         self._language = language
         self._commit_on_stop = commit_on_user_stopped_speaking
+
+        # STREAMING BACKEND (vLLM serving Voxtral-Mini-4B-Realtime).
+        #
+        # Same events and the same field names as our engine, but `final` on a commit
+        # means the OPPOSITE thing, so the two are not interchangeable by URL:
+        #
+        #   our engine   commit(final=True)  -> "transcribe the buffer now", returns a
+        #                                       transcription.done per segment
+        #   vLLM         commit(final=False) -> START generating; deltas then stream for
+        #                                       as long as audio keeps arriving
+        #                commit(final=True)  -> end-of-stream sentinel; the session is
+        #                                       over and nothing more is transcribed
+        #
+        # So there is no per-segment commit to send. Generation is started once, deltas
+        # flow continuously, and a "final" is something we synthesise at the VAD stop by
+        # snapshotting the interim buffer -- which _handle_message already falls back to
+        # when a done carries no text, and already clears. Downstream sees the identical
+        # frame sequence either way.
+        self._streaming = streaming_backend
+        self._gen_started = False
 
         # Running transcript for the current utterance (deltas are append-only).
         self._interim_buffer: str = ""
@@ -286,6 +307,13 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._websocket.send(
                     json.dumps({"type": "input_audio_buffer.append", "audio": payload})
                 )
+                if self._streaming and not self._gen_started:
+                    # One commit for the whole call, once there is audio to work on:
+                    # this STARTS generation. Everything after it streams.
+                    self._gen_started = True
+                    await self._websocket.send(json.dumps(
+                        {"type": "input_audio_buffer.commit", "final": False}))
+                    logger.info(f"{self}: streaming backend — generation started")
             except (websockets.exceptions.ConnectionClosed, OSError) as e:
                 # Connection died under us — drop the chunk. The receive task
                 # owns reconnection; raising here would kill the pipeline task.
@@ -403,6 +431,13 @@ class TeaportSTTService(WebsocketSTTService):
         """Force a final. `why` is recorded so the segment line says which path fired."""
         self._commit_at = time.monotonic()
         self._commit_why = why
+        if self._streaming:
+            # Nothing to ask for: generation is already running and the deltas that
+            # would answer this commit have already arrived. Sending final=True here
+            # would close the stream for the rest of the CALL, not end a segment.
+            # So the segment boundary is drawn locally, from what has streamed in.
+            await self._synthesize_final()
+            return
         if self._websocket:
             try:
                 await self._websocket.send(
@@ -412,6 +447,19 @@ class TeaportSTTService(WebsocketSTTService):
                 # Lost commit = lost turn (no final transcript), but raising here
                 # would kill the whole pipeline. The receive task owns reconnection.
                 logger.warning(f"{self}: commit dropped, send failed: {e}")
+
+    async def _synthesize_final(self):
+        """Draw a segment boundary from what has streamed in, and feed it through the
+        ordinary final path so nothing downstream can tell the difference.
+
+        text is passed explicitly rather than left empty: _handle_message would fall
+        back to the interim buffer anyway, but _log_segment reads the message, and an
+        empty one would log every healthy streaming segment as "EMPTY -- audio in, no
+        words out" and trip the empty-final run detector.
+        """
+        text = self._interim_buffer.strip()
+        await self._handle_message({"type": "transcription.done", "text": text,
+                                    "streaming_boundary": True})
 
     # ---- connection (WebsocketSTTService contract) -------------------------
 
@@ -440,6 +488,10 @@ class TeaportSTTService(WebsocketSTTService):
     async def _connect_websocket(self):
         if self._websocket:
             return
+        # A reconnect is a new session, so generation has to be started again on the
+        # next audio chunk — otherwise the stream is silently dead for the rest of the
+        # call and every segment finalises as empty.
+        self._gen_started = False
         logger.debug(f"{self}: connecting to the engine at {self._url}")
         for attempt in range(_CONNECT_ATTEMPTS):
             try:
