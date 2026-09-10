@@ -473,7 +473,22 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
             if not getattr(fut, "working", False):
                 # Never acked — the relay didn't take it; run the CLI agent instead
                 # (still async w.r.t. the turn, which already ended).
+                #
+                # Logged on both sides because this branch used to return in silence.
+                # Every other outcome below says what happened; a consult that took
+                # THIS one left no trace at all. Live 2026-09-10: two consults produced
+                # zero ask_openclaw(async) lines while the caller heard "I haven't heard
+                # back yet", and the real cause — DuckDuckGo serving a bot-detection
+                # challenge to the box, so every web_search 500'd and the consult burned
+                # its budget retrying — took a dig through the gateway journal to find.
+                # One line here would have pointed straight at it.
+                logger.info(
+                    f"ask_openclaw(async): relay never acked in "
+                    f"{_NATIVE_CONSULT_ACK_TIMEOUT:.0f}s; falling back to the CLI agent")
                 reply = await oc.agent_consult(request)
+                logger.info(
+                    "ask_openclaw(async): CLI consult "
+                    + (f"answered ({len(reply)} chars)" if reply else "returned NOTHING"))
                 await deliver(reply or None)
                 return
             result = await asyncio.wait_for(fut, timeout=_ASYNC_CONSULT_TIMEOUT)
