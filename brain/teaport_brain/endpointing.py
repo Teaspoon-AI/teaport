@@ -49,10 +49,18 @@ ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 # ENDPOINT_STOP_SECS, harmless at 0.5 + 0.5 and broken at 0.2: an INCOMPLETE verdict
 # was overridden one audio chunk later, so the "mid-thought protection now rests on
 # Smart Turn" that the cut to 0.2 claimed did not exist. This is how long an
-# INCOMPLETE verdict keeps the turn open, counted from the start of the silence: the
-# user pauses mid-sentence, the model says "not done", and they have until here to
-# resume before the turn commits anyway. 1.0 is the protection the old 0.5 + 0.5 gave.
-# Tune via SMARTTURN_STOP_SECS.
+# INCOMPLETE verdict keeps the turn open, counted from the VAD STOP -- not from the
+# end of speech. The analyzer's silence clock runs on the `is_speech` flag the strategy
+# hands it, which is the VAD's, and the VAD reports speaking until ENDPOINT_STOP_SECS
+# of silence has passed; so the caller's pause is ENDPOINT_STOP_SECS + this before the
+# turn commits anyway (0.35 + 1.0 = 1.35 s live, and the journal says so: "End of Turn
+# complete due to stop_secs. Silence in ms: 1000.0" lands 1.00 s after every [EP]
+# VAD-STOP it follows). Measured 2026-09-10 over three calls: 20 INCOMPLETE verdicts, 12
+# were right (the caller resumed, 0.22-0.92 s after the VAD stop) and 8 fell through to
+# this ceiling with the same text they had at the verdict -- the full second bought
+# nothing on those. Lowering it trades the two longest resumptions (0.82 and 0.92 s:
+# mid-sentence pauses of ~1.2 s, both genuine) against 0.3-0.5 s on each fallthrough;
+# that trade has not been made. Tune via SMARTTURN_STOP_SECS.
 SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
