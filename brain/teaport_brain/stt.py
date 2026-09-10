@@ -641,7 +641,20 @@ class TeaportSTTService(WebsocketSTTService):
         if mtype == "transcription.delta":
             # Append-only token piece → grow the running utterance buffer and
             # emit it as the cumulative interim hypothesis.
-            self._interim_buffer += msg.get("delta", "")
+            piece = msg.get("delta", "")
+            self._interim_buffer += piece
+            # The streaming backend emits a delta per AUDIO FRAME -- 12.5 a second,
+            # blank ones through silence (210 of them across one 16.9 s segment). Each
+            # pushed frame re-arms the aggregator's user_turn_stop_timeout, so the turn
+            # could never stop and the model was never asked: live 2026-09-10 22:20,
+            # "SILENT TURN: 12s after user-stopped and no audio. reached=['nothing']"
+            # while the caller said "Hello?" four times into a bot that had gone deaf.
+            #
+            # The text still accumulates above -- spacing between words depends on it --
+            # but a delta that carries no word is not a hypothesis and must not be
+            # announced as one.
+            if self._streaming and not piece.strip():
+                return
             await self.push_frame(
                 InterimTranscriptionFrame(
                     self._interim_buffer,

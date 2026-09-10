@@ -195,6 +195,51 @@ async def test_a_reconnect_restarts_generation():
         f"generation was not restarted after a reconnect: {commits}")
 
 
+async def test_blank_deltas_are_not_announced_as_hypotheses():
+    """The streaming model emits a delta per audio frame -- 12.5 a second, blank ones
+    through silence. Each pushed InterimTranscriptionFrame re-arms the aggregator's
+    user_turn_stop_timeout, so the turn can never stop and the model is never asked.
+    Live 2026-09-10 22:20: 210 interims across one 16.9 s segment, then
+    "SILENT TURN ... reached=['nothing']" while the caller said "Hello?" four times."""
+    s = _svc(True)
+    pushed = []
+
+    async def push(frame, direction=None):
+        pushed.append(frame)
+    s.push_frame = push
+    s._user_id = "u"
+    s._language = None
+    s._arm_stranded_commit = lambda: asyncio.sleep(0)
+
+    for piece in ("", " ", "\n", "Hello", " there"):
+        await TeaportSTTService._handle_message(
+            s, {"type": "transcription.delta", "delta": piece})
+
+    assert len(pushed) == 2, (
+        f"{len(pushed)} interim frames pushed for 5 deltas, 3 of them blank — every "
+        "blank one re-arms the turn-stop timeout and starves the turn")
+    assert s._interim_buffer == " \nHello there", repr(s._interim_buffer)
+    assert pushed[-1].text == " \nHello there", pushed[-1].text
+
+
+async def test_the_incumbent_still_announces_every_delta():
+    """Our engine only sends a delta when it has text, so filtering there would be
+    a behaviour change with no cause."""
+    s = _svc(False)
+    pushed = []
+
+    async def push(frame, direction=None):
+        pushed.append(frame)
+    s.push_frame = push
+    s._user_id = "u"
+    s._language = None
+    s._arm_stranded_commit = lambda: asyncio.sleep(0)
+    for piece in ("", "Hi"):
+        await TeaportSTTService._handle_message(
+            s, {"type": "transcription.delta", "delta": piece})
+    assert len(pushed) == 2, f"incumbent path changed: {len(pushed)} frames for 2 deltas"
+
+
 def main():
     async def run_all():
         for name, fn in sorted(globals().items()):
