@@ -62,6 +62,7 @@ from teaport_brain import llm_text_guard
 from teaport_brain import raw_llm_capture
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
+from teaport_brain.env import env_num
 from teaport_brain.followup_gate import FollowupGate, FollowupTrigger
 from teaport_brain.heard_context import HeardContextCorrector
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
@@ -210,16 +211,32 @@ _DELIVERY_ATTEMPTS = 3
 # How long one attempt waits for the model to start answering from the trigger before
 # treating the turn as flushed. Generous: this covers the queue plus a cold completion.
 _DELIVERY_START_TIMEOUT = 20.0
+# How long to wait for the ledger to chart the reply we just caused, before giving up on
+# knowing whether it was heard. Covers a full long delivery plus its barge-in.
+_DELIVERY_HEARD_TIMEOUT = 45.0
+# Below this heard fraction the answer did not land and is worth saying again.
+#
+# The trade runs both ways and neither end is free. Too high and a caller who heard most
+# of it hears the whole thing again — the repeat-recital failure the retirement logic
+# already exists to prevent. Too low and answers are lost exactly as they were live
+# 2026-09-10 17:13 (heard~0%, retired as delivered, asked for three more times). A third
+# is the line: below it the caller has a fragment, not an answer.
+#
+# env_num, not a bare float(): this lives in /etc/teaport/brain.env, which installer
+# repairs preserve verbatim, so `TEAPORT_FOLLOWUP_MIN_HEARD=` from a bare cast would
+# raise at IMPORT time and crash-loop the brain. See env.py.
+_MIN_HEARD = env_num("TEAPORT_FOLLOWUP_MIN_HEARD", "0.3", float)
 
 
-def _make_consult_followup(task, context, gate, retirer):
+def _make_consult_followup(task, context, gate, retirer, ledger):
     """Follow-up injector for the ASYNC ask_openclaw path. When a background consult
     finishes, append its answer to the context and run the LLM so the bot SPEAKS it
     as an unprompted turn, reattached to what the user asked. A failed/empty consult
     yields a brief 'couldn't get it' turn instead of silence. Bound per-session to
     this task + context; `gate` holds the turn until neither side is mid-speech and
     `retirer` (FollowupTrigger) takes the one-shot trigger back out of the context
-    once the model has actually answered from it."""
+    once the model has actually answered from it, and `ledger` says whether the caller
+    heard the answer — a different question from whether the model gave one."""
     async def speak_followup(request, text, tool_call_id=None):
         # Wait for a clear moment: don't step on the user mid-utterance OR the
         # assistant mid-answer about something else. (Gives up after max_wait so a
@@ -319,24 +336,71 @@ def _make_consult_followup(task, context, gate, retirer):
                                   "was already given to the user. Nothing further is "
                                   "needed.")
 
+        # _retire replaces the trigger's content in place, so a retry has to put the
+        # real instruction back; keep the original to restore.
+        live_trigger = trigger["content"]
+
         for attempt in range(_DELIVERY_ATTEMPTS):
-            # Arm BEFORE queueing: the completion can start while queue_frames is still
-            # awaiting, and an unarmed trigger read is exactly the double-recital case.
+            # Arm BOTH before queueing: the completion can start while queue_frames is
+            # still awaiting, and an unarmed trigger read is exactly the double-recital
+            # case. next_assistant() fires on the next utterance charted, and the gate
+            # above guarantees no assistant turn is in flight, so nothing stale can
+            # satisfy it.
+            spoken = ledger.next_assistant()
             shot = retirer.arm(_retire)
             await task.queue_frames([LLMRunFrame()])
             try:
                 await asyncio.wait_for(shot.fired.wait(),
                                        timeout=_DELIVERY_START_TIMEOUT)
-                return
             except asyncio.TimeoutError:
                 # Nothing answered from the trigger — a barge-in flushed the queued
                 # LLMRunFrame. The trigger is still live and still accurate, so wait for
                 # the next clear moment and queue the turn again.
                 retirer.disarm(shot)
+                spoken.cancel()
                 if attempt + 1 < _DELIVERY_ATTEMPTS:
                     logger.info("consult follow-up: turn was flushed before the model "
                                 f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
                     await gate.wait_until_idle(turn_free=True)
+                continue
+
+            # The model answered from the trigger. Whether the CALLER heard it is a
+            # separate question, and the one that decides if this worked: a delivery
+            # barged over before any of it played is indistinguishable, from here, from
+            # one that was never sent.
+            try:
+                said = await asyncio.wait_for(asyncio.shield(spoken),
+                                              timeout=_DELIVERY_HEARD_TIMEOUT)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # The ledger never charted it. Not knowing is not grounds to say it
+                # again — an unnecessary repeat is worse than an unverified delivery.
+                spoken.cancel()
+                logger.info("consult follow-up: delivered, but the ledger charted no "
+                            "reply to check — leaving it as delivered")
+                return
+            if said.heard_fraction >= _MIN_HEARD:
+                return
+
+            # Spoken into a barge-in and lost. The answer never reached the caller, so
+            # the trigger goes back and we wait for a genuinely clear moment. The
+            # HeardContextCorrector has already removed the unheard reply from the
+            # context (or pipecat committed none), so the retry reads as a first telling.
+            if attempt + 1 < _DELIVERY_ATTEMPTS:
+                trigger["content"] = live_trigger
+                logger.info(
+                    f"consult follow-up: answered but heard~{said.heard_fraction*100:.0f}%"
+                    f" — the caller did not get it, retrying "
+                    f"({attempt + 2}/{_DELIVERY_ATTEMPTS})")
+                await gate.wait_until_idle(turn_free=True)
+            else:
+                # Out of attempts, but the trigger was already retired at the read, so
+                # there is nothing live to clean up and the post-loop notice below would
+                # say "unread", which is the wrong story.
+                logger.warning(
+                    f"consult follow-up: answered but heard~{said.heard_fraction*100:.0f}%"
+                    f" on the last of {_DELIVERY_ATTEMPTS} attempts — the answer never "
+                    "reached the caller (it survives in the tool result)")
+                return
         # Out of attempts. Retire it anyway: a live "tell the user now" is a standing
         # order the next unrelated turn would execute, which is worse than a lost answer
         # (the answer itself survives in the rewritten tool result, so "what did the
@@ -733,7 +797,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
                    followup=None if AGENT_FIRST
                    else _make_consult_followup(task, context, followup_gate,
-                                               followup_trigger),
+                                               followup_trigger, ledger),
                    # Lets the consult narrator fit its progress lines into a gap
                    # rather than talking over the user (see _consult_progress).
                    gate=followup_gate)

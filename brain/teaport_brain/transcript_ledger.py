@@ -54,6 +54,7 @@
 # drives nothing.
 #
 
+import asyncio
 import os
 import re
 from collections import OrderedDict, deque
@@ -226,6 +227,11 @@ class TranscriptLedger(BaseObserver):
     def __init__(self, tts=None, output=None):
         super().__init__()
         self.events: List[Utterance] = []
+        # Futures handed out by next_assistant(), resolved by _add. The consult
+        # follow-up injector is the caller: it can tell that the model ANSWERED from
+        # its trigger, but not whether the caller HEARD the answer, and only the
+        # ledger knows that (heard_fraction). See next_assistant.
+        self._assistant_waiters: List[asyncio.Future] = []
         self._tts = tts
         self._output = output
         self._user_start: Optional[float] = None
@@ -843,12 +849,36 @@ class TranscriptLedger(BaseObserver):
                             interrupted=interrupted, heard_fraction=frac,
                             heard_text=heard_text))
 
+    def next_assistant(self) -> "asyncio.Future":
+        """A future resolved with the next assistant utterance charted.
+
+        Exists for the consult follow-up injector. Its delivery loop can tell that a
+        completion READ its trigger, and used to treat that as success — but a reply
+        the caller was talking over never reaches them. Live 2026-09-10 17:13: the
+        follow-up was delivered into a 10 ms race with the caller starting to speak,
+        cut 84 ms into playout at heard~0%, and retired as delivered; the caller then
+        asked for the same answer three more times. `heard_fraction` is the only
+        signal that separates those two outcomes and it is charted here.
+
+        Resolved by _add, so it fires on the NEXT utterance only — arm it before
+        queueing the turn. Sound because the injector queues only through a gate that
+        guarantees no assistant turn is in flight, so nothing stale can satisfy it.
+        """
+        fut = asyncio.get_running_loop().create_future()
+        self._assistant_waiters.append(fut)
+        return fut
+
     def _add(self, u: Utterance):
         for e in self.events:
             if e.speaker != u.speaker and u.t_start < e.t_end and e.t_start < u.t_end:
                 u.overlap = True
                 e.overlap = True
         self.events.append(u)
+        if u.speaker == "assistant" and self._assistant_waiters:
+            waiters, self._assistant_waiters = self._assistant_waiters, []
+            for fut in waiters:
+                if not fut.done():          # a caller that timed out cancelled its own
+                    fut.set_result(u)
         self._log(u)
 
     def _log(self, u: Utterance):

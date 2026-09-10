@@ -109,12 +109,44 @@ class _Gate:
         return True
 
 
-async def _deliver(text, read_on_attempt=1):
+class _Utterance:
+    def __init__(self, heard_fraction):
+        self.speaker = "assistant"
+        self.heard_fraction = heard_fraction
+
+
+class _Ledger:
+    """Stands in for TranscriptLedger, which tells the injector whether the caller
+    actually HEARD the answer the model gave.
+
+    `heard` may be a single fraction or one per attempt. Resolution is deferred a tick
+    rather than returned already-done, because the real ledger resolves from _add when
+    the reply settles — a future that is complete before the turn even runs would let a
+    broken delivery loop pass. See test_followup_heard.py, which pins this against the
+    real ledger rather than against this stub."""
+
+    def __init__(self, heard=1.0):
+        self._heard = heard if isinstance(heard, list) else [heard]
+        self.handed = 0
+
+    def next_assistant(self):
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        frac = self._heard[min(self.handed, len(self._heard) - 1)]
+        self.handed += 1
+        if frac is not None:            # None == the ledger never charts a reply
+            loop.call_soon(
+                lambda: fut.done() or fut.set_result(_Utterance(frac)))
+        return fut
+
+
+async def _deliver(text, read_on_attempt=1, heard=1.0):
     ctx = _Context()
     retirer = _Retirer()
     task = _Task(ctx, retirer, read_on_attempt)
     gate = _Gate()
-    await _make_consult_followup(task, ctx, gate, retirer)(REQUEST, text, CALL_ID)
+    ledger = _Ledger(heard)
+    await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, text, CALL_ID)
     return ctx, task, retirer, gate
 
 
