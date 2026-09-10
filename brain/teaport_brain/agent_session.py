@@ -34,9 +34,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregatorParams,
 )
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
-from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
-    TurnAnalyzerUserTurnStopStrategy,
-)
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from teaport_brain.captions import (
@@ -48,6 +45,7 @@ from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
     EagerSmartTurnAnalyzer,
     INTERRUPT_MIN_WORDS,
+    LateStartTurnStopStrategy,
     NarrowbandSileroMixin,
     SMARTTURN_COMPLETE_THRESHOLD,
     SMARTTURN_STOP_SECS,
@@ -680,7 +678,10 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # sound, defeating the guard.
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[
-                    TurnAnalyzerUserTurnStopStrategy(
+                    # The stock TurnAnalyzerUserTurnStopStrategy, keeping its verdict
+                    # across the late turn start every barge-in has here -- see
+                    # endpointing.py.
+                    LateStartTurnStopStrategy(
                         turn_analyzer=EagerSmartTurnAnalyzer(
                             complete_threshold=SMARTTURN_COMPLETE_THRESHOLD,
                             # The CEILING on an INCOMPLETE verdict, not the VAD's

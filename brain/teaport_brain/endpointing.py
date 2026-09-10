@@ -13,6 +13,9 @@ import os
 from loguru import logger
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+    TurnAnalyzerUserTurnStopStrategy,
+)
 
 # Endpointing silence, the VAD's: how long the user must pause before Silero VAD
 # reports them stopped -- which is what asks Smart Turn for its verdict. This floor IS
@@ -156,6 +159,48 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
         )
         result["prediction"] = prediction
         return result
+
+
+class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
+    """The stock stop strategy, minus a reset that costs every barge-in 0.45 s.
+
+    A turn on this brain starts from a TRANSCRIPT (MinWordsUserTurnStartStrategy is
+    the only start strategy), and while the bot is speaking the transcriber returns
+    nothing for the caller's words until the VAD stop flushes the segment
+    (teagram-engine#7: the model does not hear one voice through another). So every
+    successful barge-in
+    has the same shape: VAD stop, verdict, THEN the interim that opens the turn,
+    ~0.2 s later, then the final.
+
+    pipecat resets the stop strategy at every turn start (handle_user_turn_started
+    -> _reset), which is right when the start precedes the stop -- the state is the
+    previous turn's -- and wrong here: it throws away the VAD stop and the COMPLETE
+    verdict the analyzer had just reached FOR THIS UTTERANCE. The final that follows
+    then lands in the strategy's "transcript without VAD" fallback, which waits out
+    the STT safety net (ttfs_p99 - stop_secs = 0.8 - 0.35 = 0.45 s) before it will
+    commit. Measured live 2026-09-10: 7 of 58 turn commits sat 0.65-0.71 s after the
+    VAD stop instead of ~0.24 s, and every one was an "Okay, stop." / "Stop." spoken
+    over the bot -- the turns where the caller is already waiting on us.
+
+    The rule: if the user is silent and the VAD stop for this utterance has already
+    been seen, the pending verdict is about this utterance, so a turn opening now
+    keeps it and the final commits at once. A VAD start in between clears the verdict
+    on its own (_discard_pending_end_of_turn), so a stale one cannot survive into a
+    new utterance. An INCOMPLETE verdict is kept just the same, and the analyzer's
+    silence ceiling (SMARTTURN_STOP_SECS) ends the turn as it always did.
+    """
+
+    async def handle_user_turn_started(self):
+        if self._vad_stopped and not self._vad_user_speaking:
+            logger.debug(
+                f"{self}: turn opened after its own VAD stop -- keeping the end-of-turn "
+                f"verdict (complete={self._turn_complete}) instead of resetting"
+            )
+            # What _reset() would have cleared besides the verdict. The previous turn's
+            # stop already cleared it, so this is belt-and-braces, not a behaviour.
+            self._text = ""
+            return
+        await super().handle_user_turn_started()
 
 
 # Every barge-in in this brain is a USER TURN START: MinWordsUserTurnStartStrategy
