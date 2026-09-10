@@ -43,18 +43,18 @@ agent_session._DELIVERY_START_TIMEOUT = 0.05
 agent_session._DELIVERY_HEARD_TIMEOUT = 0.05
 
 
-async def _deliver(heard, read_on_attempt=1, text=ANSWER):
+async def _deliver(heard, read_on_attempt=1, text=ANSWER, cut=True):
     ctx = _Context()
     retirer = _Retirer()
     task = _Task(ctx, retirer, read_on_attempt)
-    gate = _Gate()
+    gate = _Gate(cut=cut)
     ledger = _Ledger(heard)
     await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, text, CALL_ID)
     return ctx, task, retirer, gate, ledger
 
 
 async def test_a_delivery_the_caller_heard_is_not_repeated():
-    _ctx, task, _r, _g, _l = await _deliver(1.0)
+    _ctx, task, _r, _g, _l = await _deliver(1.0, cut=False)
     assert task.attempts == 1, (
         f"queued {task.attempts} turns for an answer that was fully heard — repeating a "
         "delivery the caller already got is the recital bug this must not reintroduce")
@@ -62,7 +62,7 @@ async def test_a_delivery_the_caller_heard_is_not_repeated():
 
 async def test_an_answer_barged_over_at_zero_percent_is_said_again():
     """The live failure. heard~0% means the caller got nothing at all."""
-    _ctx, task, _r, gate, _l = await _deliver([0.0, 1.0])
+    _ctx, task, _r, gate, _l = await _deliver([0.0, 1.0], cut=[True, False])
     assert task.attempts == 2, (
         f"queued {task.attempts} turn(s) — an answer cut before any of it played was "
         "retired as delivered, which is exactly how the caller lost it live")
@@ -84,7 +84,6 @@ async def test_the_retry_trigger_lands_AFTER_the_barge_in_question():
     """
     ctx = _Context()
     retirer = _Retirer()
-    gate = _Gate()
     ledger = _Ledger([0.0, 1.0])
 
     class _BargingGate(_Gate):
@@ -96,7 +95,7 @@ async def test_the_retry_trigger_lands_AFTER_the_barge_in_question():
                 ctx.add_message({"role": "user", "content": "What's 2 plus 2?"})
             return await super().wait_until_idle(max_wait, turn_free=turn_free)
 
-    gate = _BargingGate()
+    gate = _BargingGate(cut=[True, False])
     task = _Task(ctx, retirer)
     await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, ANSWER, CALL_ID)
 
@@ -113,10 +112,9 @@ async def test_only_one_trigger_is_ever_live():
     recites the answer a second time (NoRepeatRecital)."""
     ctx = _Context()
     retirer = _Retirer()
-    gate = _Gate()
     task = _Task(ctx, retirer)
-    await _make_consult_followup(task, ctx, gate, retirer, _Ledger([0.0, 1.0]))(
-        REQUEST, ANSWER, CALL_ID)
+    await _make_consult_followup(task, ctx, _Gate(cut=[True, False]), retirer,
+                                 _Ledger([0.0, 1.0]))(REQUEST, ANSWER, CALL_ID)
     live = [m for m in ctx.messages
             if m.get("role") == "user" and "Tell the user now" in str(m.get("content"))]
     assert len(live) <= 1, (
@@ -161,7 +159,7 @@ async def test_a_flushed_turn_still_retries_on_its_own_terms():
     """The pre-existing path must survive: read_on_attempt=2 is a barge-in eating the
     queued turn before any completion reads it, which is a different failure from one
     that was read and not heard."""
-    _ctx, task, _r, _g, ledger = await _deliver(1.0, read_on_attempt=2)
+    _ctx, task, _r, _g, ledger = await _deliver(1.0, read_on_attempt=2, cut=False)
     assert task.attempts == 2, "a flushed turn must still be re-queued"
     assert ledger.handed == 2, (
         "the heard-waiter must be armed once per attempt, and cancelled with the "

@@ -366,6 +366,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
             # above guarantees no assistant turn is in flight, so nothing stale can
             # satisfy it.
             spoken = ledger.next_assistant()
+            watch = gate.watch_delivery()
             shot = retirer.arm(_retire)
             await task.queue_frames([LLMRunFrame()])
             try:
@@ -377,6 +378,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 # the next clear moment and queue the turn again.
                 retirer.disarm(shot)
                 spoken.cancel()
+                gate.drop_delivery(watch)
                 if attempt + 1 < _DELIVERY_ATTEMPTS:
                     logger.info("consult follow-up: turn was flushed before the model "
                                 f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
@@ -391,15 +393,33 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
             # separate question, and the one that decides if this worked: a delivery
             # barged over before any of it played is indistinguishable, from here, from
             # one that was never sent.
+            #
+            # Completion comes from the transport (gate.watch_delivery), not the ledger.
+            # The ledger charts a CUT immediately but does not chart a reply that simply
+            # finished until the bot next speaks, so waiting on it left every quiet
+            # delivery to time out — see Delivery in followup_gate.py.
             try:
-                said = await asyncio.wait_for(asyncio.shield(spoken),
-                                              timeout=_DELIVERY_HEARD_TIMEOUT)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
-                # The ledger never charted it. Not knowing is not grounds to say it
-                # again — an unnecessary repeat is worse than an unverified delivery.
+                await asyncio.wait_for(watch.done.wait(),
+                                       timeout=_DELIVERY_HEARD_TIMEOUT)
+            except asyncio.TimeoutError:
                 spoken.cancel()
-                logger.info("consult follow-up: delivered, but the ledger charted no "
-                            "reply to check — leaving it as delivered")
+                logger.info("consult follow-up: delivered, but it never finished nor "
+                            "was cut within the window — leaving it as delivered")
+                return
+            if not watch.interrupted:
+                spoken.cancel()
+                return                          # played to the end
+
+            # Cut. How much landed is the ledger's to say, and it charts a cut at the
+            # interruption, so this resolves promptly or not at all.
+            try:
+                said = await asyncio.wait_for(asyncio.shield(spoken), timeout=5.0)
+            except (asyncio.TimeoutError, asyncio.CancelledError):
+                # Not knowing is not grounds to say it again — an unnecessary repeat is
+                # worse than an unverified delivery.
+                spoken.cancel()
+                logger.info("consult follow-up: cut, but the ledger charted no reply to "
+                            "measure — leaving it as delivered")
                 return
             if said.heard_fraction >= _MIN_HEARD:
                 return
