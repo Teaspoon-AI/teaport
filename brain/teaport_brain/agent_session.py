@@ -304,10 +304,37 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # The tag matters because this message OUTLIVES the turn: without it the rest
         # of the session reads a request the user never made, and the model starts
         # attributing it to them.
-        trigger = {
-            "role": "user",
-            "content": f"[automated system notice, not spoken by the user]\n{content}"}
-        context.add_message(trigger)
+        _TAG = "[automated system notice, not spoken by the user]"
+        _SPENT = (f"{_TAG}\nAn earlier background task finished and its outcome was "
+                  "already given to the user. Nothing further is needed.")
+
+        # The trigger is RE-POSTED per attempt, not restored in place, because being the
+        # last message is the whole reason it works. A retry follows a barge-in, so by
+        # then the caller's new question is at the tail and a trigger buried above it is
+        # not the turn the model answers — it re-answers the barge-in.
+        #
+        # Live 2026-09-10 17:36, the first shape of this bug: the toy-store answer was
+        # cut at 14% heard, the retry re-ran with "What's 2 plus 2? What color is a
+        # lemon?" sitting at the tail, and the bot said "Four, and lemons are yellow" a
+        # SECOND time while the toy-store answer was never delivered at all. Same reason
+        # the trigger is a user message and not a system one, one message later.
+        #
+        # _post_trigger retires any earlier copy first: exactly one may ever be live, or
+        # a later turn reads the stale one and recites the answer twice.
+        posted: dict = {}
+
+        def _retire():
+            msg = posted.get("msg")
+            if msg is not None:
+                msg["content"] = _SPENT
+
+        def _post_trigger():
+            _retire()
+            msg = {"role": "user", "content": f"{_TAG}\n{content}"}
+            context.add_message(msg)
+            posted["msg"] = msg
+
+        _post_trigger()
         logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
                     f"tool result {'rewritten' if rewrote else 'not found'})")
 
@@ -329,16 +356,8 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # instead is not enough either: a barge-in between the read and the retirement
         # leaves the trigger live for the next turn to recite a second time (MODE =
         # "gateOnOwn" violates NoRepeatRecital). Only retiring AT the read satisfies
-        # both, which is what FollowupTrigger does.
-        def _retire():
-            trigger["content"] = ("[automated system notice, not spoken by the user]\n"
-                                  "An earlier background task finished and its outcome "
-                                  "was already given to the user. Nothing further is "
-                                  "needed.")
-
-        # _retire replaces the trigger's content in place, so a retry has to put the
-        # real instruction back; keep the original to restore.
-        live_trigger = trigger["content"]
+        # both, which is what FollowupTrigger does. _retire is defined with the posting
+        # helper above, so it always neutralises the copy that is currently live.
 
         for attempt in range(_DELIVERY_ATTEMPTS):
             # Arm BOTH before queueing: the completion can start while queue_frames is
@@ -362,6 +381,10 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                     logger.info("consult follow-up: turn was flushed before the model "
                                 f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
                     await gate.wait_until_idle(turn_free=True)
+                    # Whatever flushed the turn was a barge-in, so the caller's question
+                    # is now the tail message and the still-live trigger is buried above
+                    # it. Re-post so the retry is a turn the model answers.
+                    _post_trigger()
                 continue
 
             # The model answered from the trigger. Whether the CALLER heard it is a
@@ -386,12 +409,14 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
             # HeardContextCorrector has already removed the unheard reply from the
             # context (or pipecat committed none), so the retry reads as a first telling.
             if attempt + 1 < _DELIVERY_ATTEMPTS:
-                trigger["content"] = live_trigger
                 logger.info(
                     f"consult follow-up: answered but heard~{said.heard_fraction*100:.0f}%"
                     f" — the caller did not get it, retrying "
                     f"({attempt + 2}/{_DELIVERY_ATTEMPTS})")
                 await gate.wait_until_idle(turn_free=True)
+                # After the gate, not before: the caller's barge-in question lands in
+                # the context while we wait, and the trigger has to end up after it.
+                _post_trigger()
             else:
                 # Out of attempts, but the trigger was already retired at the read, so
                 # there is nothing live to clean up and the post-loop notice below would

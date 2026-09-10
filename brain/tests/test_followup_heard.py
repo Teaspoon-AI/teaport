@@ -73,6 +73,57 @@ async def test_an_answer_barged_over_at_zero_percent_is_said_again():
     assert gate.idle_waits >= 2, "each retry must wait for its own clear moment"
 
 
+async def test_the_retry_trigger_lands_AFTER_the_barge_in_question():
+    """The live regression, 2026-09-10 17:36.
+
+    A retry only ever happens because the caller talked over the answer, so by the time
+    it runs their question is the tail message. Restoring the trigger in place leaves it
+    buried above that, and a buried trigger is not the turn the model answers — it
+    re-answers the barge-in. Live, the bot said "Four, and lemons are yellow" twice and
+    the toy-store answer it was supposed to deliver never arrived.
+    """
+    ctx = _Context()
+    retirer = _Retirer()
+    gate = _Gate()
+    ledger = _Ledger([0.0, 1.0])
+
+    class _BargingGate(_Gate):
+        """The caller cuts in and asks something else while we wait for a clear moment
+        — which is where it lands live: the barge-in that killed the delivery is what
+        the retry is waiting out, so their question is committed before it re-queues."""
+        async def wait_until_idle(self, max_wait=None, *, turn_free=False):
+            if self.idle_waits >= 1:
+                ctx.add_message({"role": "user", "content": "What's 2 plus 2?"})
+            return await super().wait_until_idle(max_wait, turn_free=turn_free)
+
+    gate = _BargingGate()
+    task = _Task(ctx, retirer)
+    await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, ANSWER, CALL_ID)
+
+    assert task.attempts == 2, f"expected a retry, got {task.attempts} attempt(s)"
+    handed = task.at_run[-1]
+    assert handed["role"] == "user" and ANSWER in handed["content"], (
+        f"the retry's tail message was {handed.get('content','')[:60]!r} — the model "
+        "answers the LAST message, so a trigger buried above the barge-in makes it "
+        "repeat the barge-in answer instead of delivering the consult")
+
+
+async def test_only_one_trigger_is_ever_live():
+    """Re-posting must retire the earlier copy, or a later turn reads the stale one and
+    recites the answer a second time (NoRepeatRecital)."""
+    ctx = _Context()
+    retirer = _Retirer()
+    gate = _Gate()
+    task = _Task(ctx, retirer)
+    await _make_consult_followup(task, ctx, gate, retirer, _Ledger([0.0, 1.0]))(
+        REQUEST, ANSWER, CALL_ID)
+    live = [m for m in ctx.messages
+            if m.get("role") == "user" and "Tell the user now" in str(m.get("content"))]
+    assert len(live) <= 1, (
+        f"{len(live)} live triggers left in the context — each is a standing order the "
+        "next empty turn will execute")
+
+
 async def test_a_mostly_heard_answer_is_left_alone():
     """Above the line the caller has the answer; saying it again is the worse failure."""
     _ctx, task, _r, _g, _l = await _deliver(0.6)
