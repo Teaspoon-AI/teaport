@@ -114,14 +114,21 @@ _STREAM_TAIL_SECS = env_num("TEAPORT_STREAM_TAIL_SECS", "0.7", float)
 
 # Caller-path makeup gain, in dB, applied to the audio sent to the TRANSCRIBER only
 # (not to VAD or endpointing, which read the frame upstream of this and are unaffected).
-# The SIP bridge's echo canceller attenuates the caller's own voice during double-talk:
-# measured 2026-09-11, caller speech under bot playout is ~4 dB quieter within a call than
-# the same caller in the clear, and the segments the engine returns EMPTY are the quietest
-# of all. A flat makeup gain recovers the quiet barge-in "stop"s the engine was dropping:
-# batch-decoding the corpus at +6 dB recovered 4 of 12 dropped double-talk clips and 3 of 4
-# dropped clean clips and lost NONE that were already read (n=205). It does not reach the
-# residual double-talk misses that survive +12 dB with headroom to spare -- those are the
-# model's, not level (see teagram-engine#7).
+# Caller speech spoken over the bot is quiet: measured 2026-09-11, ~4 dB quieter within a
+# call than the same caller in the clear, and the segments the engine returns EMPTY are
+# the quietest of all (-34 dBFS). A flat makeup gain recovers the quiet barge-in "stop"s
+# the engine was dropping: batch-decoding the corpus at +6 dB recovered 4 of 12 dropped
+# double-talk clips and 3 of 4 dropped clean clips and lost NONE already read (n=205). It
+# does not reach the residual misses that survive +12 dB with headroom to spare -- those
+# are the model's, not level (see teagram-engine#7).
+#
+# The quiet is NOT mainly the bridge's echo canceller, contrary to the first read of this:
+# an offline test through the exact pjmedia WebRTC AEC (2026-09-11) showed the bridge's
+# conservative setting pulls near-end down only ~1 dB and never silences it -- only the
+# aggressive setting, which the bridge does not use, both attenuates hard and drops words.
+# So the ~4 dB is mostly genuine soft over-talk (people speak quietly while listening),
+# plus double-talk gating a clean offline mix cannot model. This gain compensates the
+# quiet whatever its cause; lowering aec_aggressiveness is not the lever.
 #
 # Off (0.0) by default and threaded from the FRONT-END, not read from the shared brain.env:
 # the OpenClaw Talk path does its own client-side echo cancellation and must not get this,
