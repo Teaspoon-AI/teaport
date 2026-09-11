@@ -9,7 +9,7 @@
 # the final then lands in the strategy's "transcript without VAD" fallback and waits out
 # the STT safety net (ttfs_p99 - stop_secs = 0.45 s) before the turn commits.
 #
-# Live 2026-09-10 (three calls, 58 commits): 7 commits at 0.65-0.71 s after the VAD stop
+# Live 2026-09-10 (three calls, 58 commits): 6 commits at 0.64-0.71 s after the VAD stop
 # instead of ~0.24 s, every one an "Okay, stop." / "Stop." over the bot. The other two
 # late bands in that log (INCOMPLETE -> 1.0 s ceiling; an empty second segment -> the
 # same 0.45 s safety net) are different mechanisms and are not what this pins.

@@ -189,7 +189,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     verdict the analyzer had just reached FOR THIS UTTERANCE. The final that follows
     then lands in the strategy's "transcript without VAD" fallback, which waits out
     the STT safety net (ttfs_p99 - stop_secs = 0.8 - 0.35 = 0.45 s) before it will
-    commit. Measured live 2026-09-10: 7 of 58 turn commits sat 0.65-0.71 s after the
+    commit. Measured live 2026-09-10: 6 of 58 turn commits sat 0.64-0.71 s after the
     VAD stop instead of ~0.24 s, and every one was an "Okay, stop." / "Stop." spoken
     over the bot -- the turns where the caller is already waiting on us.
 
