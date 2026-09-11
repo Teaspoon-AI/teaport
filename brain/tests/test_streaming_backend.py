@@ -56,6 +56,7 @@ def _svc(streaming):
     s._commit_why = ""
     s._seg_interims = 0
     s._boundary_task = None
+    s._makeup_scale = 1.0           # run_stt calls _apply_makeup; 1.0 is the no-op path
     s.handled = []
     s.scheduled = []
 

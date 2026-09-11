@@ -616,7 +616,8 @@ def _end_session_when_unusable(service, what: str, task):
 def build_agent_session(transport, *, voice: str | None = None,
                         language: str | None = None,
                         input_processors: list | None = None,
-                        cancel_on_idle_timeout: bool | None = None) -> AgentSession:
+                        cancel_on_idle_timeout: bool | None = None,
+                        stt_makeup_db: float = 0.0) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -645,7 +646,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         )
     )
 
-    stt = make_stt()
+    stt = make_stt(makeup_db=stt_makeup_db)
     llm = make_llm()
     tts = make_tts(voice=voice, language=language)
 

@@ -38,6 +38,7 @@ import json
 import time
 from typing import AsyncGenerator, Optional
 
+import numpy as np
 from loguru import logger
 
 from pipecat.frames.frames import (
@@ -110,6 +111,23 @@ _STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
 # 480 ms delay with slack for generation; too low resurrects the split, too high just
 # makes replies later.
 _STREAM_TAIL_SECS = env_num("TEAPORT_STREAM_TAIL_SECS", "0.7", float)
+
+# Caller-path makeup gain, in dB, applied to the audio sent to the TRANSCRIBER only
+# (not to VAD or endpointing, which read the frame upstream of this and are unaffected).
+# The SIP bridge's echo canceller attenuates the caller's own voice during double-talk:
+# measured 2026-09-11, caller speech under bot playout is ~4 dB quieter within a call than
+# the same caller in the clear, and the segments the engine returns EMPTY are the quietest
+# of all. A flat makeup gain recovers the quiet barge-in "stop"s the engine was dropping:
+# batch-decoding the corpus at +6 dB recovered 4 of 12 dropped double-talk clips and 3 of 4
+# dropped clean clips and lost NONE that were already read (n=205). It does not reach the
+# residual double-talk misses that survive +12 dB with headroom to spare -- those are the
+# model's, not level (see teagram-engine#7).
+#
+# Off (0.0) by default and threaded from the FRONT-END, not read from the shared brain.env:
+# the OpenClaw Talk path does its own client-side echo cancellation and must not get this,
+# and both brains read the same env file, so only sip_server passes a non-zero value.
+# A fixed gain with a hard clip, deliberately simple; a level-targeting AGC is the v2 if a
+# flat boost proves too blunt (it pushes already-loud audio toward the clip guard).
 
 # Retry budget for a connect the engine REJECTS because its single STT slot is still
 # held (see _connect_websocket). Sized to cover the hand-off window both front-ends
@@ -215,6 +233,7 @@ class TeaportSTTService(WebsocketSTTService):
         commit_on_user_stopped_speaking: bool = True,
         ttfs_p99_latency: float = TEAPORT_TTFS_P99,
         streaming_backend: bool = False,
+        makeup_db: float = 0.0,
         **kwargs,
     ):
         super().__init__(
@@ -226,6 +245,9 @@ class TeaportSTTService(WebsocketSTTService):
         self._url = url
         self._model = model
         self._language = language
+        # Precompute the linear scale once; 0 dB -> 1.0 -> the fast no-op path below.
+        self._makeup_db = makeup_db
+        self._makeup_scale = float(10.0 ** (makeup_db / 20.0)) if makeup_db else 1.0
         self._commit_on_stop = commit_on_user_stopped_speaking
 
         # STREAMING BACKEND (vLLM serving Voxtral-Mini-4B-Realtime).
@@ -310,6 +332,19 @@ class TeaportSTTService(WebsocketSTTService):
 
     # ---- audio in ----------------------------------------------------------
 
+    def _apply_makeup(self, audio: bytes) -> bytes:
+        """Scale PCM16 by the makeup gain, hard-clipping to int16 range. No-op at 0 dB.
+
+        Int32 intermediate so the multiply cannot wrap before the clip. An odd trailing
+        byte (never seen from a 20 ms frame, but the contract is bytes) is left as-is."""
+        if self._makeup_scale == 1.0 or len(audio) < 2:
+            return audio
+        n = len(audio) // 2
+        x = np.frombuffer(audio, dtype="<i2", count=n).astype(np.int32)
+        x = np.clip(np.rint(x * self._makeup_scale), -32768, 32767).astype("<i2")
+        tail = audio[2 * n:]
+        return x.tobytes() + tail
+
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Optional[Frame], None]:
         """Forward one chunk of PCM16 audio to the engine. Transcripts arrive
         asynchronously via _receive_messages, so we just yield None here.
@@ -318,6 +353,7 @@ class TeaportSTTService(WebsocketSTTService):
         restarts the clock, so the reported span is last audio chunk -> final
         transcript) and stopped on the final (mirrors GladiaSTTService)."""
         await self.start_processing_metrics()
+        audio = self._apply_makeup(audio)
         self._seg_bytes += len(audio)
         if self._websocket:
             payload = base64.b64encode(audio).decode("ascii")

@@ -83,6 +83,12 @@ Turn-taking (each is explained at length where it is read, in
 - `SIP_HALF_DUPLEX` — drop the caller's mic while the bot speaks (default
   **off** since the bridge cancels echo itself; on means **no barge-in**).
   `SIP_HALF_DUPLEX_TAIL_S` is the tail after the bot stops (default **0.8**).
+- `SIP_STT_MAKEUP_DB` — makeup gain (dB) added to the caller signal the transcriber
+  sees, to undo the level the bridge's echo canceller removes from the caller during
+  double-talk (default **0** = off; **6** recovered the quiet barge-in "stop"s the
+  engine was dropping, with no regressions on 205 clips). SIP only; VAD and endpointing
+  are upstream of it and unaffected. The OpenClaw path does its own echo cancellation
+  and never sees this even though it shares this file.
 - `TEAPORT_STRANDED_INTERIM_SECS` — commit a segment ourselves after this much
   interim quiet with no VAD stop (default **1.5**), so a missed stop loses a
   second rather than the turn.
