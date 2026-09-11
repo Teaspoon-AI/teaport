@@ -184,15 +184,51 @@ async def test_the_REAL_ledger_resolves_the_waiter():
     led._add(Utterance("user", "unrelated", 0.0, 1.0))
     assert not fut.done(), "a user utterance resolved the assistant waiter"
 
+    # the reply's turn opens AFTER the arm, as the injector guarantees by arming
+    # before it queues the LLMRunFrame
+    turn = led._open_turn(1.0, None)
     led._add(Utterance("assistant", "About those pastries", 1.0, 2.0,
-                       heard_fraction=0.0, heard_text=""))
+                       heard_fraction=0.0, heard_text=""), turn_seq=turn["seq"])
     assert fut.done(), (
         "TranscriptLedger._add no longer resolves next_assistant() — every consult "
         "delivery will now wait out the heard timeout and report 'unknown'")
     assert fut.result().heard_fraction == 0.0, fut.result()
 
     # and it is one-shot: the next utterance must not need a waiter to exist
-    led._add(Utterance("assistant", "another", 2.0, 3.0))
+    turn2 = led._open_turn(2.0, None)
+    led._add(Utterance("assistant", "another", 2.0, 3.0), turn_seq=turn2["seq"])
+
+
+async def test_a_reply_charted_late_does_not_satisfy_the_waiter():
+    """Live 2026-09-11 14:23, the second report of the same lost answer.
+
+    The ledger charts a reply that simply FINISHED late — at the next bot activity —
+    so when the caller barged in over the pastry answer, the interruption charted the
+    previous, fully heard "Seventeen." first and the cut answer second. The waiter
+    took "Seventeen." (heard~100%), the injector returned as delivered, and the caller
+    never got the answer. A waiter must only accept a reply whose turn opened after
+    the waiter was armed.
+    """
+    from teaport_brain.transcript_ledger import TranscriptLedger, Utterance
+
+    led = TranscriptLedger()
+    stale = led._open_turn(0.0, None)          # "Seventeen.": finished, not yet charted
+    fut = led.next_assistant()                 # the injector arms, then queues its turn
+    ours = led._open_turn(5.0, None)           # the pastry answer's turn opens
+
+    # the interruption charts the stale one first...
+    led._add(Utterance("assistant", "Seventeen.", 0.0, 1.2,
+                       heard_fraction=1.0, heard_text="Seventeen."), turn_seq=stale["seq"])
+    assert not fut.done(), (
+        "a reply whose turn opened BEFORE the waiter was armed satisfied it — this is "
+        "the 2026-09-11 lost pastry answer")
+
+    # ...and then ours, cut at 0%
+    led._add(Utterance("assistant", "Sure thing—on Burnet Road", 5.0, 5.0,
+                       interrupted=True, heard_fraction=0.0, heard_text=""),
+             turn_seq=ours["seq"])
+    assert fut.done() and fut.result().heard_fraction == 0.0, (
+        "the waiter did not resolve on the injector's own reply")
 
 
 def main():

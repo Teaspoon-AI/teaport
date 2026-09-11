@@ -406,7 +406,8 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 return
             if not watch.interrupted:
                 spoken.cancel()
-                return                          # played to the end
+                logger.info("consult follow-up: delivered and played to the end")
+                return
 
             # Cut. How much landed is the ledger's to say, and it charts a cut at the
             # interruption, so this resolves promptly or not at all.
@@ -420,6 +421,12 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                             "measure — leaving it as delivered")
                 return
             if said.heard_fraction >= _MIN_HEARD:
+                # Every exit from this loop says what it decided. The 2026-09-11 loss
+                # went through here in silence: a stale, fully heard reply satisfied the
+                # waiter (see TranscriptLedger.next_assistant) and nothing in the journal
+                # showed the check had run at all.
+                logger.info(f"consult follow-up: cut at heard~{said.heard_fraction*100:.0f}%"
+                            f" — enough of it landed, leaving it as delivered")
                 return
 
             # Spoken into a barge-in and lost. The answer never reached the caller, so
