@@ -29,7 +29,10 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 # "How would a DGX" at 0.9759 and 0.9685, and a bare "Hey," at 0.9605, while the one
 # utterance it called INCOMPLETE was "compare again." at 0.0303. Its output is close to
 # uncorrelated with whether the phrase is actually finished, on this audio. 33 of the
-# 37 verdicts on the preceding call were COMPLETE.
+# 37 verdicts on the preceding call were COMPLETE. (Re-measured 2026-09-10 at threshold
+# 0.5 over three calls: INCOMPLETE was right 12 times in 20, so it carries some signal
+# after all -- see SMARTTURN_STOP_SECS for what that is worth. COMPLETE is still handed
+# out to plainly unfinished phrases, which is what the floor below guards against.)
 #
 # With that premise gone, the floor has to do the job by itself: at 0.5 the ~0.2s breath
 # before the next word never asks the question at all, and the user's sentence survives.

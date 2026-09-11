@@ -233,24 +233,19 @@ async def test_a_turn_that_opens_while_the_user_speaks_still_resets():
         assert rig.stopped_at - t_final < PROMPT_SECS
 
 
-async def main():
-    tests = [
-        test_the_brain_strategy_commits_on_the_final,
-        test_the_stock_strategy_still_waits_the_safety_net,
-        test_an_incomplete_verdict_is_kept_too_and_the_ceiling_still_ends_the_turn,
-        test_a_turn_that_opens_while_the_user_speaks_still_resets,
-    ]
-    failed = 0
-    for t in tests:
-        try:
-            await t()
-            print(f"PASS  {t.__name__}")
-        except AssertionError as e:
-            failed += 1
-            print(f"FAIL  {t.__name__}: {e}")
-    print("ALL PASS" if not failed else f"{failed} FAILED")
-    return failed
+def main():
+    # Discovered, not listed: a test added below and left off a hand-kept list would
+    # silently never run, which is how five gate tests once reported ALL PASS on nine.
+    tests = [v for k, v in sorted(globals().items())
+             if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
+
+    async def run():
+        for fn in tests:
+            await fn()
+            print(f"  ok {fn.__name__}")
+    asyncio.run(run())
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main()))
+    main()
+    print("ALL PASS")

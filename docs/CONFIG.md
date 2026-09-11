@@ -65,6 +65,45 @@ Boolean settings accept `0`/`false`/`no`/`off` and `1`/`true`/`yes`/`on`. An
 empty value means *unset* — the default applies. A flag that is off says so in
 the journal at startup.
 
+Turn-taking (each is explained at length where it is read, in
+`brain/teaport_brain/endpointing.py`):
+
+- `ENDPOINT_STOP_SECS` — silence before the VAD reports the caller stopped
+  (default **0.5**). The dominant fixed latency on every turn; lower is
+  snappier and cuts more mid-sentence pauses.
+- `SMARTTURN_STOP_SECS` — how long a Smart Turn *"not done"* verdict holds the
+  turn open, counted **from the VAD stop** (default **1.0**).
+- `SMARTTURN_COMPLETE_THRESHOLD` — the end-of-turn probability that counts as
+  done (default **0.5**). Near-inert on telephony audio; see the source.
+- `TEAPORT_INTERRUPT_MIN_WORDS` — transcribed words needed to interrupt the bot
+  (default **2**; **1** makes every word a barge-in, backchannels included).
+- `VAD_CONFIDENCE`, `VAD_MIN_VOLUME` — Silero's gates (defaults **0.7** / **0.6**).
+- `VAD_SAMPLE_RATE` — set **8000** to run Silero on the true narrowband signal
+  when the trunk is G.711 (default **16000**, the gateway's upsample).
+- `SIP_HALF_DUPLEX` — drop the caller's mic while the bot speaks (default
+  **off** since the bridge cancels echo itself; on means **no barge-in**).
+  `SIP_HALF_DUPLEX_TAIL_S` is the tail after the bot stops (default **0.8**).
+- `TEAPORT_STRANDED_INTERIM_SECS` — commit a segment ourselves after this much
+  interim quiet with no VAD stop (default **1.5**), so a missed stop loses a
+  second rather than the turn.
+- `TEAPORT_FOLLOWUP_MIN_HEARD` — fraction of a delegated answer the caller must
+  have heard before it counts as delivered (default **0.3**); below it, the
+  answer is said again at the next quiet moment.
+
+Diagnostics, all off by default:
+
+- `TEAPORT_ENDPOINT_DEBUG` — VAD state transitions, Smart Turn verdicts and the
+  turn-commit / first-audio timing bubbles in the journal.
+  `TEAPORT_ENDPOINT_DIST_EVERY` sets the per-frame confidence census interval
+  (default **500** frames, ~16 s).
+- `LEDGER_TRACE` — trace every frame the transcript ledger sees.
+- `TEAPORT_AUDIO_DUMP` — a directory; every call writes the caller PCM the brain
+  received plus a sidecar of bot-playout offsets. `TEAPORT_AUDIO_DUMP_MAX_SECS`
+  caps the recording (default **600**).
+- `TEAPORT_STT_BACKEND=streaming` — experimental: point the STT service at vLLM
+  serving Voxtral Realtime (`TEAPORT_STT_URL`, `TEAPORT_STT_MODEL`,
+  `TEAPORT_STREAM_TAIL_SECS`). The incumbent engine is the default.
+
 ## SIP telephony (opt-in)
 
 A teaport box is a local voice assistant by default; **SIP telephony is off

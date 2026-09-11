@@ -26,6 +26,10 @@
 #     commit on VADUserStoppedSpeakingFrame (Pipecat VAD endpointing) by default.
 #     The engine resets its text after each done, so done.text is per-utterance
 #     and we reset our buffer on it.
+#   - streaming_backend=True (services.make_stt, TEAPORT_STT_BACKEND=streaming) speaks
+#     the same protocol to vLLM serving Voxtral Realtime, where `final` on a commit
+#     means the opposite thing: see the constructor. Experimental; the incumbent
+#     engine is the default.
 #
 
 import asyncio
@@ -94,11 +98,6 @@ _EMPTY_FINAL_RUN = 5
 # import-time ValueError and a Restart=always crash-loop nothing but a hand-edit clears.
 _STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
 
-# Retry budget for a connect the engine REJECTS because its single STT slot is still
-# held (see _connect_websocket). Sized to cover the hand-off window both front-ends
-# currently paper over with `await asyncio.sleep(0.3)`, while staying well inside
-# greet()'s 12s tri-state resolution window so a genuinely busy engine still gets the
-# spoken warning promptly.
 # STREAMING BACKEND ONLY: how long to wait after the VAD stop before drawing the segment
 # boundary, so the model's trailing deltas are in.
 #
@@ -112,6 +111,11 @@ _STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
 # makes replies later.
 _STREAM_TAIL_SECS = env_num("TEAPORT_STREAM_TAIL_SECS", "0.7", float)
 
+# Retry budget for a connect the engine REJECTS because its single STT slot is still
+# held (see _connect_websocket). Sized to cover the hand-off window both front-ends
+# currently paper over with `await asyncio.sleep(0.3)`, while staying well inside
+# greet()'s 12s tri-state resolution window so a genuinely busy engine still gets the
+# spoken warning promptly.
 _CONNECT_ATTEMPTS = 4
 _CONNECT_RETRY_S = 0.4
 
