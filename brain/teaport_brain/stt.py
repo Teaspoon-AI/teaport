@@ -26,6 +26,10 @@
 #     commit on VADUserStoppedSpeakingFrame (Pipecat VAD endpointing) by default.
 #     The engine resets its text after each done, so done.text is per-utterance
 #     and we reset our buffer on it.
+#   - streaming_backend=True (services.make_stt, TEAPORT_STT_BACKEND=streaming) speaks
+#     the same protocol to vLLM serving Voxtral Realtime, where `final` on a commit
+#     means the opposite thing: see the constructor. Experimental; the incumbent
+#     engine is the default.
 #
 
 import asyncio
@@ -34,6 +38,7 @@ import json
 import time
 from typing import AsyncGenerator, Optional
 
+import numpy as np
 from loguru import logger
 
 from pipecat.frames.frames import (
@@ -93,6 +98,43 @@ _EMPTY_FINAL_RUN = 5
 # installer repairs preserve verbatim, so one operator typo would otherwise be an
 # import-time ValueError and a Restart=always crash-loop nothing but a hand-edit clears.
 _STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
+
+# STREAMING BACKEND ONLY: how long to wait after the VAD stop before drawing the segment
+# boundary, so the model's trailing deltas are in.
+#
+# Voxtral Realtime transcribes on a deliberate delay -- transcription_delay_ms in
+# tekken.json, 480 ms as shipped -- plus the time to generate those last tokens. Cutting
+# at the VAD stop takes the end off every utterance and gives it to the next segment.
+#
+# This is real latency added to the RESPONSE (the final gates the LLM turn); it is NOT
+# added to barge-in, which triggers on interims and those arrive in ~0.03 s. 0.7 is the
+# 480 ms delay with slack for generation; too low resurrects the split, too high just
+# makes replies later.
+_STREAM_TAIL_SECS = env_num("TEAPORT_STREAM_TAIL_SECS", "0.7", float)
+
+# Caller-path makeup gain, in dB, applied to the audio sent to the TRANSCRIBER only
+# (not to VAD or endpointing, which read the frame upstream of this and are unaffected).
+# Caller speech spoken over the bot is quiet: measured 2026-09-11, ~4 dB quieter within a
+# call than the same caller in the clear, and the segments the engine returns EMPTY are
+# the quietest of all (-34 dBFS). A flat makeup gain recovers the quiet barge-in "stop"s
+# the engine was dropping: batch-decoding the corpus at +6 dB recovered 4 of 12 dropped
+# double-talk clips and 3 of 4 dropped clean clips and lost NONE already read (n=205). It
+# does not reach the residual misses that survive +12 dB with headroom to spare -- those
+# are the model's, not level (see teagram-engine#7).
+#
+# The quiet is NOT mainly the bridge's echo canceller, contrary to the first read of this:
+# an offline test through the exact pjmedia WebRTC AEC (2026-09-11) showed the bridge's
+# conservative setting pulls near-end down only ~1 dB and never silences it -- only the
+# aggressive setting, which the bridge does not use, both attenuates hard and drops words.
+# So the ~4 dB is mostly genuine soft over-talk (people speak quietly while listening),
+# plus double-talk gating a clean offline mix cannot model. This gain compensates the
+# quiet whatever its cause; lowering aec_aggressiveness is not the lever.
+#
+# Off (0.0) by default and threaded from the FRONT-END, not read from the shared brain.env:
+# the OpenClaw Talk path does its own client-side echo cancellation and must not get this,
+# and both brains read the same env file, so only sip_server passes a non-zero value.
+# A fixed gain with a hard clip, deliberately simple; a level-targeting AGC is the v2 if a
+# flat boost proves too blunt (it pushes already-loud audio toward the clip guard).
 
 # Retry budget for a connect the engine REJECTS because its single STT slot is still
 # held (see _connect_websocket). Sized to cover the hand-off window both front-ends
@@ -197,6 +239,8 @@ class TeaportSTTService(WebsocketSTTService):
         language: Language = Language.EN,
         commit_on_user_stopped_speaking: bool = True,
         ttfs_p99_latency: float = TEAPORT_TTFS_P99,
+        streaming_backend: bool = False,
+        makeup_db: float = 0.0,
         **kwargs,
     ):
         super().__init__(
@@ -208,7 +252,31 @@ class TeaportSTTService(WebsocketSTTService):
         self._url = url
         self._model = model
         self._language = language
+        # Precompute the linear scale once; 0 dB -> 1.0 -> the fast no-op path below.
+        self._makeup_db = makeup_db
+        self._makeup_scale = float(10.0 ** (makeup_db / 20.0)) if makeup_db else 1.0
         self._commit_on_stop = commit_on_user_stopped_speaking
+
+        # STREAMING BACKEND (vLLM serving Voxtral-Mini-4B-Realtime).
+        #
+        # Same events and the same field names as our engine, but `final` on a commit
+        # means the OPPOSITE thing, so the two are not interchangeable by URL:
+        #
+        #   our engine   commit(final=True)  -> "transcribe the buffer now", returns a
+        #                                       transcription.done per segment
+        #   vLLM         commit(final=False) -> START generating; deltas then stream for
+        #                                       as long as audio keeps arriving
+        #                commit(final=True)  -> end-of-stream sentinel; the session is
+        #                                       over and nothing more is transcribed
+        #
+        # So there is no per-segment commit to send. Generation is started once, deltas
+        # flow continuously, and a "final" is something we synthesise at the VAD stop by
+        # snapshotting the interim buffer -- which _handle_message already falls back to
+        # when a done carries no text, and already clears. Downstream sees the identical
+        # frame sequence either way.
+        self._streaming = streaming_backend
+        self._gen_started = False
+        self._boundary_task = None
 
         # Running transcript for the current utterance (deltas are append-only).
         self._interim_buffer: str = ""
@@ -271,6 +339,19 @@ class TeaportSTTService(WebsocketSTTService):
 
     # ---- audio in ----------------------------------------------------------
 
+    def _apply_makeup(self, audio: bytes) -> bytes:
+        """Scale PCM16 by the makeup gain, hard-clipping to int16 range. No-op at 0 dB.
+
+        Int32 intermediate so the multiply cannot wrap before the clip. An odd trailing
+        byte (never seen from a 20 ms frame, but the contract is bytes) is left as-is."""
+        if self._makeup_scale == 1.0 or len(audio) < 2:
+            return audio
+        n = len(audio) // 2
+        x = np.frombuffer(audio, dtype="<i2", count=n).astype(np.int32)
+        x = np.clip(np.rint(x * self._makeup_scale), -32768, 32767).astype("<i2")
+        tail = audio[2 * n:]
+        return x.tobytes() + tail
+
     async def run_stt(self, audio: bytes) -> AsyncGenerator[Optional[Frame], None]:
         """Forward one chunk of PCM16 audio to the engine. Transcripts arrive
         asynchronously via _receive_messages, so we just yield None here.
@@ -279,6 +360,7 @@ class TeaportSTTService(WebsocketSTTService):
         restarts the clock, so the reported span is last audio chunk -> final
         transcript) and stopped on the final (mirrors GladiaSTTService)."""
         await self.start_processing_metrics()
+        audio = self._apply_makeup(audio)
         self._seg_bytes += len(audio)
         if self._websocket:
             payload = base64.b64encode(audio).decode("ascii")
@@ -286,6 +368,13 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._websocket.send(
                     json.dumps({"type": "input_audio_buffer.append", "audio": payload})
                 )
+                if self._streaming and not self._gen_started:
+                    # One commit for the whole call, once there is audio to work on:
+                    # this STARTS generation. Everything after it streams.
+                    self._gen_started = True
+                    await self._websocket.send(json.dumps(
+                        {"type": "input_audio_buffer.commit", "final": False}))
+                    logger.info(f"{self}: streaming backend — generation started")
             except (websockets.exceptions.ConnectionClosed, OSError) as e:
                 # Connection died under us — drop the chunk. The receive task
                 # owns reconnection; raising here would kill the pipeline task.
@@ -350,6 +439,14 @@ class TeaportSTTService(WebsocketSTTService):
         self._stranded_task = None
         if not self._interim_buffer.strip():
             return  # the segment closed on its own; nothing stranded
+        # KNOWN EDGE, left as-is deliberately: this fires 1.5 s after the last interim,
+        # so an engine that STALLS its interims mid-utterance (STT-vs-TTS GPU contention
+        # has lagged them past 1.5 s during long replies) gets a forced commit while the
+        # user is still talking, cutting the phrase. The obvious guard -- don't fire
+        # while VAD reports SPEAKING -- would disable this backstop in the very case it
+        # exists for: a MISSED VAD stop leaves VAD stuck in SPEAKING. The two failure
+        # modes route through the same timer, so the guard trades one for the other. The
+        # 1.5 s wait is the compromise; revisit with the GPU-contention work, not alone.
         # WARNING, not debug: reaching here means the VAD stop that should have closed
         # this segment never arrived, which is a fault in the audio/VAD path that this
         # only papers over. Silence here would hide it exactly as it was hidden before.
@@ -388,9 +485,20 @@ class TeaportSTTService(WebsocketSTTService):
                 f"commit={self._commit_why} -> done in {lat}: {verdict}")
         # An empty final on a segment the engine DID stream interims for is the shape
         # worth noticing: it had words a moment ago and returned none.
+        #
+        # `secs` counts ALL audio since the last final -- run_stt streams every chunk,
+        # silence included -- so it is > 0.3 on essentially every segment and cannot be
+        # the warn condition on its own: it would fire "audio in, no words out" at
+        # WARNING for a cough, a door, or the engine's ~15 s buffer auto-commit during
+        # any quiet stretch, drowning the once-per-run empty-final counter just below
+        # (which exists for exactly those). Gate the wordless warning on a VAD-STOP
+        # commit instead: VAD reporting speech-then-silence is the only evidence there
+        # was an utterance to transcribe, so an empty final there is a real miss (the
+        # double-talk drop this whole surface is about); a backstop or auto-commit
+        # empty is ordinary and logs at debug.
         if not engine_text and self._seg_interims:
             logger.warning(line + " — engine streamed interims then returned no text")
-        elif not engine_text and secs > 0.3:
+        elif not engine_text and self._commit_why == "vad-stop" and secs > 0.3:
             logger.warning(line + " — audio in, no words out")
         else:
             logger.debug(line)
@@ -403,6 +511,22 @@ class TeaportSTTService(WebsocketSTTService):
         """Force a final. `why` is recorded so the segment line says which path fired."""
         self._commit_at = time.monotonic()
         self._commit_why = why
+        if self._streaming:
+            # Nothing to ask for: generation is already running, and sending final=True
+            # here would close the stream for the rest of the CALL rather than end a
+            # segment. So the boundary is drawn locally -- but NOT yet.
+            #
+            # The model transcribes with a deliberate delay (transcription_delay_ms in
+            # tekken.json, 480 ms as shipped), so at the VAD stop the deltas for the end
+            # of the utterance have not arrived. Snapshotting immediately cuts the tail
+            # off every segment and hands it to the NEXT one. Live 2026-09-10 22:14:
+            #
+            #   'Hey, can you'  /  'hear me? Hey, can you hear'  /  'me?'
+            #
+            # -- one question split across three turns, each carrying the previous
+            # one's ending. So wait out the delay before drawing the line.
+            await self._schedule_stream_boundary()
+            return
         if self._websocket:
             try:
                 await self._websocket.send(
@@ -412,6 +536,44 @@ class TeaportSTTService(WebsocketSTTService):
                 # Lost commit = lost turn (no final transcript), but raising here
                 # would kill the whole pipeline. The receive task owns reconnection.
                 logger.warning(f"{self}: commit dropped, send failed: {e}")
+
+    async def _schedule_stream_boundary(self):
+        """Draw the segment boundary once the model's trailing deltas have landed.
+
+        Scheduled rather than awaited inline: _send_commit runs from process_frame, and
+        sleeping there would stall the frame pipeline for the whole grace period.
+
+        A later commit supersedes an earlier one -- if the caller pauses and resumes,
+        the boundary belongs where they actually stopped, not where they first did.
+        """
+        await self._cancel_stream_boundary()
+        self._boundary_task = self.create_task(self._boundary_after_delay())
+
+    async def _cancel_stream_boundary(self):
+        task, self._boundary_task = self._boundary_task, None
+        if task:
+            # cancel_task is `async def` on BaseObject. Calling it bare returns a
+            # coroutine and cancels nothing, which is how a previous timer in this file
+            # ended up firing six commits in one millisecond.
+            await self.cancel_task(task)
+
+    async def _boundary_after_delay(self):
+        await asyncio.sleep(_STREAM_TAIL_SECS)
+        self._boundary_task = None
+        await self._synthesize_final()
+
+    async def _synthesize_final(self):
+        """Draw a segment boundary from what has streamed in, and feed it through the
+        ordinary final path so nothing downstream can tell the difference.
+
+        text is passed explicitly rather than left empty: _handle_message would fall
+        back to the interim buffer anyway, but _log_segment reads the message, and an
+        empty one would log every healthy streaming segment as "EMPTY -- audio in, no
+        words out" and trip the empty-final run detector.
+        """
+        text = self._interim_buffer.strip()
+        await self._handle_message({"type": "transcription.done", "text": text,
+                                    "streaming_boundary": True})
 
     # ---- connection (WebsocketSTTService contract) -------------------------
 
@@ -428,6 +590,9 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _disconnect(self):
         await super()._disconnect()  # base sets _disconnecting (suppresses reconnect)
+        # A boundary scheduled but not yet fired would push a transcript into a session
+        # that has ended.
+        await self._cancel_stream_boundary()
         try:
             if self._receive_task:
                 await self.cancel_task(self._receive_task)
@@ -440,6 +605,10 @@ class TeaportSTTService(WebsocketSTTService):
     async def _connect_websocket(self):
         if self._websocket:
             return
+        # A reconnect is a new session, so generation has to be started again on the
+        # next audio chunk — otherwise the stream is silently dead for the rest of the
+        # call and every segment finalises as empty.
+        self._gen_started = False
         logger.debug(f"{self}: connecting to the engine at {self._url}")
         for attempt in range(_CONNECT_ATTEMPTS):
             try:
@@ -538,7 +707,20 @@ class TeaportSTTService(WebsocketSTTService):
         if mtype == "transcription.delta":
             # Append-only token piece → grow the running utterance buffer and
             # emit it as the cumulative interim hypothesis.
-            self._interim_buffer += msg.get("delta", "")
+            piece = msg.get("delta", "")
+            self._interim_buffer += piece
+            # The streaming backend emits a delta per AUDIO FRAME -- 12.5 a second,
+            # blank ones through silence (210 of them across one 16.9 s segment). Each
+            # pushed frame re-arms the aggregator's user_turn_stop_timeout, so the turn
+            # could never stop and the model was never asked: live 2026-09-10 22:20,
+            # "SILENT TURN: 12s after user-stopped and no audio. reached=['nothing']"
+            # while the caller said "Hello?" four times into a bot that had gone deaf.
+            #
+            # The text still accumulates above -- spacing between words depends on it --
+            # but a delta that carries no word is not a hypothesis and must not be
+            # announced as one.
+            if self._streaming and not piece.strip():
+                return
             await self.push_frame(
                 InterimTranscriptionFrame(
                     self._interim_buffer,

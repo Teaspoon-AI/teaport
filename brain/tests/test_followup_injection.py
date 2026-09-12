@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from teaport_brain import agent_session  # noqa: E402
 from teaport_brain.agent_session import _make_consult_followup  # noqa: E402
+from teaport_brain import followup_gate as fg  # noqa: E402
 from teaport_brain.followup_gate import OneShot  # noqa: E402
 
 # Don't sit through the real 20s flush timeout in the retry tests.
@@ -101,20 +102,73 @@ class _Task:
 
 
 class _Gate:
-    def __init__(self):
+    """Stands in for FollowupGate. `cut` is whether the reply this gate is watching
+    gets barged over — the real gate decides that from BotStopped/Interruption frames,
+    and settles the watch either way. A stub that never settled would let the injector
+    sit on its timeout and call every delivery unverified, which is the bug the real
+    watch exists to fix."""
+
+    def __init__(self, cut=False):
         self.idle_waits = 0
+        self._cut = cut if isinstance(cut, list) else [cut]
+        self.watched = 0
+        self.dropped = 0
 
     async def wait_until_idle(self, max_wait=None, *, turn_free=False):
         self.idle_waits += 1
         return True
 
+    def watch_delivery(self):
+        d = fg.Delivery()
+        cut = self._cut[min(self.watched, len(self._cut) - 1)]
+        self.watched += 1
+        d.spoke = True
+        if cut is not None:                 # None == neither finishes nor is cut
+            asyncio.get_running_loop().call_soon(d._settle, bool(cut))
+        return d
 
-async def _deliver(text, read_on_attempt=1):
+    def drop_delivery(self, d):
+        self.dropped += 1
+
+
+class _Utterance:
+    def __init__(self, heard_fraction):
+        self.speaker = "assistant"
+        self.heard_fraction = heard_fraction
+
+
+class _Ledger:
+    """Stands in for TranscriptLedger, which tells the injector whether the caller
+    actually HEARD the answer the model gave.
+
+    `heard` may be a single fraction or one per attempt. Resolution is deferred a tick
+    rather than returned already-done, because the real ledger resolves from _add when
+    the reply settles — a future that is complete before the turn even runs would let a
+    broken delivery loop pass. See test_followup_heard.py, which pins this against the
+    real ledger rather than against this stub."""
+
+    def __init__(self, heard=1.0):
+        self._heard = heard if isinstance(heard, list) else [heard]
+        self.handed = 0
+
+    def next_assistant(self):
+        loop = asyncio.get_running_loop()
+        fut = loop.create_future()
+        frac = self._heard[min(self.handed, len(self._heard) - 1)]
+        self.handed += 1
+        if frac is not None:            # None == the ledger never charts a reply
+            loop.call_soon(
+                lambda: fut.done() or fut.set_result(_Utterance(frac)))
+        return fut
+
+
+async def _deliver(text, read_on_attempt=1, heard=1.0, cut=False):
     ctx = _Context()
     retirer = _Retirer()
     task = _Task(ctx, retirer, read_on_attempt)
-    gate = _Gate()
-    await _make_consult_followup(task, ctx, gate, retirer)(REQUEST, text, CALL_ID)
+    gate = _Gate(cut=cut)
+    ledger = _Ledger(heard)
+    await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, text, CALL_ID)
     return ctx, task, retirer, gate
 
 

@@ -34,6 +34,11 @@
 # Off unless TEAPORT_AUDIO_DUMP is set. It records the CALLER side only — that is what
 # the STT consumes, and it is the side in question.
 #
+# What the recordings settled (2026-09-10): the bytes are fine. Double-talk regions cut
+# from these captures transcribe cleanly on an independent ASR (Deepgram), and come
+# back empty from our engine on an idle box and from the same model under vLLM in full
+# bf16. The loss is the model family's, not the audio path's — teagram-engine#7.
+#
 import os
 import wave
 

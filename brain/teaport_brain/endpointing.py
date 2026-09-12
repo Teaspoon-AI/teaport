@@ -13,6 +13,9 @@ import os
 from loguru import logger
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+    TurnAnalyzerUserTurnStopStrategy,
+)
 
 # Endpointing silence, the VAD's: how long the user must pause before Silero VAD
 # reports them stopped -- which is what asks Smart Turn for its verdict. This floor IS
@@ -26,7 +29,10 @@ from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnal
 # "How would a DGX" at 0.9759 and 0.9685, and a bare "Hey," at 0.9605, while the one
 # utterance it called INCOMPLETE was "compare again." at 0.0303. Its output is close to
 # uncorrelated with whether the phrase is actually finished, on this audio. 33 of the
-# 37 verdicts on the preceding call were COMPLETE.
+# 37 verdicts on the preceding call were COMPLETE. (Re-measured 2026-09-10 at threshold
+# 0.5 over three calls: INCOMPLETE was right 12 times in 20, so it carries some signal
+# after all -- see SMARTTURN_STOP_SECS for what that is worth. COMPLETE is still handed
+# out to plainly unfinished phrases, which is what the floor below guards against.)
 #
 # With that premise gone, the floor has to do the job by itself: at 0.5 the ~0.2s breath
 # before the next word never asks the question at all, and the user's sentence survives.
@@ -46,10 +52,18 @@ ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 # ENDPOINT_STOP_SECS, harmless at 0.5 + 0.5 and broken at 0.2: an INCOMPLETE verdict
 # was overridden one audio chunk later, so the "mid-thought protection now rests on
 # Smart Turn" that the cut to 0.2 claimed did not exist. This is how long an
-# INCOMPLETE verdict keeps the turn open, counted from the start of the silence: the
-# user pauses mid-sentence, the model says "not done", and they have until here to
-# resume before the turn commits anyway. 1.0 is the protection the old 0.5 + 0.5 gave.
-# Tune via SMARTTURN_STOP_SECS.
+# INCOMPLETE verdict keeps the turn open, counted from the VAD STOP -- not from the
+# end of speech. The analyzer's silence clock runs on the `is_speech` flag the strategy
+# hands it, which is the VAD's, and the VAD reports speaking until ENDPOINT_STOP_SECS
+# of silence has passed; so the caller's pause is ENDPOINT_STOP_SECS + this before the
+# turn commits anyway (0.35 + 1.0 = 1.35 s live, and the journal says so: "End of Turn
+# complete due to stop_secs. Silence in ms: 1000.0" lands 1.00 s after every [EP]
+# VAD-STOP it follows). Measured 2026-09-10 over three calls: 20 INCOMPLETE verdicts, 12
+# were right (the caller resumed, 0.22-0.92 s after the VAD stop) and 8 fell through to
+# this ceiling with the same text they had at the verdict -- the full second bought
+# nothing on those. Lowering it trades the two longest resumptions (0.82 and 0.92 s:
+# mid-sentence pauses of ~1.2 s, both genuine) against 0.3-0.5 s on each fallthrough;
+# that trade has not been made. Tune via SMARTTURN_STOP_SECS.
 SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
@@ -156,6 +170,48 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
         )
         result["prediction"] = prediction
         return result
+
+
+class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
+    """The stock stop strategy, minus a reset that costs every barge-in 0.45 s.
+
+    A turn on this brain starts from a TRANSCRIPT (MinWordsUserTurnStartStrategy is
+    the only start strategy), and while the bot is speaking the transcriber returns
+    nothing for the caller's words until the VAD stop flushes the segment
+    (teagram-engine#7: the model does not hear one voice through another). So every
+    successful barge-in
+    has the same shape: VAD stop, verdict, THEN the interim that opens the turn,
+    ~0.2 s later, then the final.
+
+    pipecat resets the stop strategy at every turn start (handle_user_turn_started
+    -> _reset), which is right when the start precedes the stop -- the state is the
+    previous turn's -- and wrong here: it throws away the VAD stop and the COMPLETE
+    verdict the analyzer had just reached FOR THIS UTTERANCE. The final that follows
+    then lands in the strategy's "transcript without VAD" fallback, which waits out
+    the STT safety net (ttfs_p99 - stop_secs = 0.8 - 0.35 = 0.45 s) before it will
+    commit. Measured live 2026-09-10: 6 of 58 turn commits sat 0.64-0.71 s after the
+    VAD stop instead of ~0.24 s, and every one was an "Okay, stop." / "Stop." spoken
+    over the bot -- the turns where the caller is already waiting on us.
+
+    The rule: if the user is silent and the VAD stop for this utterance has already
+    been seen, the pending verdict is about this utterance, so a turn opening now
+    keeps it and the final commits at once. A VAD start in between clears the verdict
+    on its own (_discard_pending_end_of_turn), so a stale one cannot survive into a
+    new utterance. An INCOMPLETE verdict is kept just the same, and the analyzer's
+    silence ceiling (SMARTTURN_STOP_SECS) ends the turn as it always did.
+    """
+
+    async def handle_user_turn_started(self):
+        if self._vad_stopped and not self._vad_user_speaking:
+            logger.debug(
+                f"{self}: turn opened after its own VAD stop -- keeping the end-of-turn "
+                f"verdict (complete={self._turn_complete}) instead of resetting"
+            )
+            # What _reset() would have cleared besides the verdict. The previous turn's
+            # stop already cleared it, so this is belt-and-braces, not a behaviour.
+            self._text = ""
+            return
+        await super().handle_user_turn_started()
 
 
 # Every barge-in in this brain is a USER TURN START: MinWordsUserTurnStartStrategy
@@ -272,6 +328,14 @@ def keep_barge_in_reachable(controller) -> None:
         # that cleared _user_speaking, and the stop strategies have already seen it.
         owed = turn["owed"]
         if owed and controller._user_turn and not controller._user_speaking:
+            # Re-applied at the first quiet frame, AFTER the stop strategies ran on it.
+            # If Smart Turn just returned a FRESH incomplete (the user resumed
+            # mid-thought and paused again), this closes the turn anyway and the
+            # aggregator runs the resumed words as their own turn -- a continuation
+            # split off. Accepted rather than waiting for the SMARTTURN_STOP_SECS
+            # ceiling, because Smart Turn is near-inert on this audio (bimodal and
+            # confidently wrong; see endpointing.py's threshold note), so the case is
+            # rare; revisit here if Smart Turn ever carries real signal.
             turn["owed"] = None
             logger.debug(f"{controller}: re-applying the turn finalization refused "
                          "while the user was speaking — an open turn takes no barge-in")
