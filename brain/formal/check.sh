@@ -40,6 +40,13 @@ run Followup.tla fu_turnAware_interject        "(expected: holds)"
 run Followup.tla fu_turnAware_deadair          "(expected: holds)"
 run Followup.tla fu_turnAware_all              "(expected: holds)"
 echo
+echo "UserTurn.tla — whether the user can interrupt the bot at all"
+echo "  (the precondition Ledger/LedgerPlayout's Interrupt action takes for granted)"
+run UserTurn.tla ut_asWritten_nostrandedturn    "(expected: FAILS)"
+run UserTurn.tla ut_asWritten_nomissedbargein         "(expected: FAILS)"
+run UserTurn.tla ut_retryOnQuiet_nostrandedturn "(expected: holds)"
+run UserTurn.tla ut_retryOnQuiet_nomissedbargein      "(expected: holds)"
+echo
 echo "SttSlot.tla — arbitration of the engine's single STT slot"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS)"
 run SttSlot.tla  stt_retryWhileBusy  "(expected: holds)"

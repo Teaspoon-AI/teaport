@@ -61,7 +61,32 @@ VOICE_OVERLAY = (
     "milliseconds' not '28.7 ms', 'megabytes' not 'MB'. Round awkward "
     "decimals and expand abbreviations. Never read out a web address or URL — "
     "name the source instead ('on the NIST site', 'from Anthropic'). "
-    "Answer in one or two short spoken sentences: no markdown, lists, or emojis. "
+    # DELIVERY LENGTH AND SHAPE. This was one clause ("Answer in one or two short spoken
+    # sentences: no markdown, lists, or emojis") buried at the end of the tool paragraph,
+    # and the model ignored both halves. Live 2026-09-09, one 18-minute SIP call: 19 of
+    # 220 synth texts opened with a bullet, eight replies ran past fifteen seconds, one
+    # assistant turn ran thirty-seven, and the user's own words in the ledger were
+    # "Soliloquy.", "Okay, stop.", "You're rambling." and "They're useless."
+    #
+    # So the rule now names the MECHANISM (the synth pronounces the marks), gives the
+    # list-shaped answer somewhere to go instead of nowhere, and gives brevity a reason
+    # the model can weigh against helpfulness — an over-long answer is not merely verbose
+    # here, it gets barged over and lost, and on that call twelve replies were cut before
+    # a single word of them was heard. tts_text._LIST_MARKER strips the marks that arrive
+    # anyway; this is the half that keeps the SHAPE conversational, which no strip can.
+    #
+    # The last sentence is about prompt dilution: identity is loaded live from the
+    # OpenClaw workspace (SOUL/IDENTITY/USER/MEMORY.md), which is markdown by nature —
+    # 3322 chars of headings and bullets on that call — so the model reads a formatted
+    # document and then, a page later, is told not to write one.
+    "Answer in one or two short spoken sentences. You are speaking, not writing: never "
+    "use markdown, headings, bullet points, numbered lists, or emojis — the voice reads "
+    "those marks aloud. When the answer is list-shaped, say the two or three items that "
+    "matter as a sentence and offer the rest, like 'they've got pastries, sandwiches and "
+    "a daily soup — want me to go through any of those?'. Never recite more than three "
+    "items unless the user asks you to. A long answer gets talked over and lost, so stop "
+    "at the useful part and let them ask for more. The identity text above is written "
+    "for the screen; never copy its formatting into speech. "
     # Theory-of-mind grounding: DESCRIPTIVE (model the listener's perception), not
     # the deontic "never reveal the unheard part" that spiraled the model into
     # refusals. Stops the model answering "what did you say?" from a RETAINED tool

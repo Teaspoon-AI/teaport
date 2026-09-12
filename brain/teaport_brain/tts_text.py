@@ -123,14 +123,62 @@ def fold_unspeakable(text: str) -> str:
     return text
 
 
+# Structural markdown the model writes despite the persona forbidding it: a line-leading
+# bullet ("- ", "* ", "• "), an ordered-list number ("1. ", "2) "), or a heading ("## ").
+# Live 2026-09-09, one 18-minute SIP call: 19 of the 220 texts handed to the synth opened
+# with a bullet. A restaurant menu and a six-item call summary went out one list item per
+# utterance, each starting with a hyphen the engine has to pronounce or swallow, and the
+# reply read as a document being recited rather than an answer being spoken.
+#
+# Line-anchored, and therefore HERE and not in fold_unspeakable: the guard folds
+# PER-DELTA, and a delta boundary falls wherever the provider likes ("\n", then "-",
+# then " "), so a line-anchored match there would depend on the stream's chunking —
+# precisely the defect llm_text_guard's _HOLDBACK exists to prevent. This normalizer
+# always sees a whole assembled chunk, so the anchor means what it says. "**" is the
+# other kind and stays in the shared table: it is never speech wherever it lands.
+#
+# Hyphen-minus only, never the en/em dash: "Pastries – cookies" is mid-sentence
+# punctuation that _CLAUSE_SPLIT relies on as a clause seam, and a dash rule that
+# reached inside a line would eat it.
+_LIST_MARKER = re.compile(r"(?m)^[ \t]*(?:[-*+•·]|#{1,6}|\d{1,3}[.)])[ \t]+")
+
+# What a line break becomes once its marker is gone. The bullet was carrying the pause
+# between items, so an item seam speaks as a comma — unless the line already ended in
+# punctuation that pauses on its own, where a second mark is audible ("daily soups.,
+# pastries"). Closing quotes and brackets ride on that punctuation and are looked past,
+# so "(seasonal flavors)" still earns a comma while "soups." does not.
+_LINE_BREAK = re.compile(r"[ \t]*\n[ \t\n]*")
+_PAUSING = ".!?,;:—–"
+_CLOSERS = ")]}\"'”’"
+
+
+def _fold_line_breaks(text: str) -> str:
+    """Speak a line break as the pause its layout implied — see _LINE_BREAK."""
+    if "\n" not in text:
+        return text
+    out, pos = [], 0
+    for m in _LINE_BREAK.finditer(text):
+        head = text[pos:m.start()]
+        out.append(head)
+        tail = head.rstrip().rstrip(_CLOSERS)
+        out.append("" if not tail else (" " if tail[-1] in _PAUSING else ", "))
+        pos = m.end()
+    out.append(text[pos:])
+    return "".join(out)
+
+
 def _normalize_for_tts(text: str) -> str:
     """Strip punctuation that has no phonemes but derails the synth. The LLM sometimes
     emits ellipses (unicode U+2026 or "...") and non-breaking spaces (U+00A0); the
     sentence splitter isolates those into punctuation-only chunks, and the engine TTS then
     fails the whole clause ("did not receive a valid HTTP response") and emits 0.0s
     audio. Fold the unspeakable family -> plain equivalents and ellipses/dot-runs -> a
-    comma pause."""
+    comma pause, and flatten list layout into speech (see _LIST_MARKER)."""
     text = fold_unspeakable(text)
+    # Markers first, then the seams they leave: a marker still attached to its line would
+    # otherwise be the last character _fold_line_breaks inspects for a pause.
+    text = _LIST_MARKER.sub("", text)
+    text = _fold_line_breaks(text)
     # A whole run of ellipses/dot-runs -> ONE comma pause. The run must be matched as a
     # unit: "a... ... b" folded per-item gives "a, , b", and the trailing \s* is what
     # absorbs the space llm_text_guard's own ellipsis-run fold leaves behind, so text

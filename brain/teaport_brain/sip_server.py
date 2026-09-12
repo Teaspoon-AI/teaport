@@ -57,6 +57,7 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
+from teaport_brain import audio_dump
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import SipProtocolSerializer
@@ -69,14 +70,35 @@ from teaport_brain.sip_transport import (
 )
 
 
-# --- DIAGNOSTIC: half-duplex input gate (echo-hypothesis test) ------------------
+# --- FALLBACK: half-duplex input gate (pre-AEC echo containment) ----------------
 # Telephony has no client-side echo cancellation (unlike the OpenClaw Talk client
 # the WS path relies on), so the bot's own audio echoes back down the line and
 # retriggers the VAD/STT (the bot fights itself → rough conversation). This gate
 # DROPS caller audio while the bot is speaking, plus a tail covering the gateway's
-# bounded (~1 s) playout backlog. It is NOT the real fix — that's an echo canceller
-# in the teaport-sip bridge (pjmedia AEC), keeping the brain transport-agnostic —
-# but it isolates whether echo is the cause. Kill switch: SIP_HALF_DUPLEX=0.
+# bounded (~1 s) playout backlog. It was NEVER the real fix — that's an echo canceller
+# in the teaport-sip bridge (pjmedia AEC), keeping the brain transport-agnostic — and
+# as of 2026-09-09 that canceller exists and runs WebRTC on both boxes, so the gate is
+# now the fallback for a bridge whose AEC would not initialise, not the default.
+#
+# DEFAULT OFF, changed 2026-09-09, because the safe direction inverted. While no bridge
+# cancelled echo, ON was the conservative choice: better a bot that cannot be interrupted
+# than one that fights itself. Now the risk is the other one, and it is silent — the gate
+# drops the caller's mic for the whole of every reply plus the tail, so there is NO
+# barge-in, and nothing in the journal says the call went that way.
+#
+# The 18-minute call of 2026-09-09 is the case for off. It recorded 37 barge-in cuts,
+# twelve of them before a single word was heard — which the gate would have reduced to
+# zero, and that would have been the wrong outcome twice over. Those cuts ARE the user
+# interrupting: with the gate on, a reply that ran thirty-seven seconds runs all
+# thirty-seven, and "Okay, stop." is dropped by the gate rather than heard. And the same
+# cuts are the evidence for the endpointing and consult-delivery defects (#22, #26);
+# suppressed, they leave a clean-looking ledger over a phone bot nobody can interrupt.
+#
+# Turn it back ON (SIP_HALF_DUPLEX=1) only when the gateway logs an AEC fallback —
+# "webrtc EC create failed ... falling back to default sw EC", or aec=false. The brain
+# is deliberately transport-agnostic and cannot see the gateway's AEC state, so this
+# stays a manual knob. If AEC is merely weak rather than absent, reach for a longer
+# aec_tail_ms in teaport-sip.conf before reaching for this.
 #
 # Both knobs go through env.py rather than a hand-rolled parse and a bare cast, because
 # both are read at IMPORT time out of /etc/teaport/brain.env, which installer repairs
@@ -95,7 +117,7 @@ from teaport_brain.sip_transport import (
 #   starts, and systemd/teaport-sip-brain.service.in's Restart=always + RestartSec=5
 #   crash-loop it forever, with no way to clear it short of hand-editing the file —
 #   re-running the installer will not. env_num warns and falls back instead.
-HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", True)
+HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", False)
 _HD_TAIL_S = env_num("SIP_HALF_DUPLEX_TAIL_S", "0.8", float)
 
 
@@ -155,8 +177,15 @@ async def run(sock_path: str):
     params = make_sip_params(serializer)
     connection = SipConnection(sock, serializer)
 
-    logger.info(f"half-duplex input gate: {'ON' if HALF_DUPLEX else 'off'} "
-                f"(tail {_HD_TAIL_S}s) — diagnostic; real fix is AEC in the bridge")
+    # ON is the line worth noticing in a journal: it means the caller cannot barge in
+    # for the whole of every reply, which is otherwise invisible. Say what that costs.
+    logger.info(
+        f"half-duplex input gate: ON (tail {_HD_TAIL_S}s) — NO barge-in; the caller's "
+        f"mic is dropped while the bot speaks. Fallback for a bridge without AEC; "
+        f"unset SIP_HALF_DUPLEX to restore barge-in"
+        if HALF_DUPLEX else
+        "half-duplex input gate: off — barge-in live; the bridge cancels echo (AEC)"
+    )
 
     # Single active call in protocol v0. Holds (call_id, session, runner_task,
     # transport) for the currently-running per-call pipeline, or None between calls.
@@ -298,9 +327,18 @@ async def run(sock_path: str):
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
         # override: a per-call pipeline uses PipelineTask's default, exactly like the
         # OpenClaw per-connection pipeline.
+        # The audio tap goes FIRST, so it records what the transport delivered rather
+        # than what survived the gate — the question it exists to answer is about the
+        # bytes arriving, and a capture taken downstream of a processor that can drop
+        # frames would beg it. Off unless TEAPORT_AUDIO_DUMP names a directory.
+        input_procs = []
+        if audio_dump.ENABLED:
+            input_procs.append(audio_dump.CallerAudioTap(call_id))
+        if HALF_DUPLEX:
+            input_procs.append(HalfDuplexInputGate())
         session = build_agent_session(
             transport,
-            input_processors=[HalfDuplexInputGate()] if HALF_DUPLEX else None,
+            input_processors=input_procs or None,
         )
 
         @session.task.event_handler("on_pipeline_finished")

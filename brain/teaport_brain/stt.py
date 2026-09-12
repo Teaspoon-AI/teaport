@@ -31,6 +31,7 @@
 import asyncio
 import base64
 import json
+import time
 from typing import AsyncGenerator, Optional
 
 from loguru import logger
@@ -51,6 +52,8 @@ from pipecat.services.stt_service import WebsocketSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from teaport_brain.env import env_num
+
 # P99 latency from speech end to final transcript (broadcast to downstream turn
 # strategies). The engine's realtime STT targets <500 ms delta delay; ~0.8 s end-to-end p99
 # is a conservative default — override per deployment.
@@ -60,6 +63,36 @@ TEAPORT_TTFS_P99 = 0.8
 # to catch a dead microphone inside one exchange, high enough that ordinary VAD triggers
 # on room noise never reach it.
 _EMPTY_FINAL_RUN = 5
+
+# The stranded-segment backstop. This service has exactly ONE path to a final: a commit
+# sent when VADUserStoppedSpeakingFrame arrives (see process_frame). That makes a missed
+# VAD stop unrecoverable, and silently so -- the turn started from an interim, owns no
+# text, and TurnAnalyzerUserTurnStopStrategy cannot fire without text, so it hangs until
+# the aggregator's 5 s user_turn_stop_timeout force-stops it with an empty aggregation and
+# the model is never asked. The engine's own buffer auto-commit would close the segment
+# eventually, but at ~15 s it is far outside that 5 s window, so the words are always lost.
+#
+# Live 2026-09-09 17:17:43, mid-Hamlet: the caller said "Stop there", the interim started
+# the turn and cut the bot correctly, no final ever arrived, and the turn force-stopped at
+# 5.006 s ("User stopped speaking (strategy: None)") -> SILENT TURN reached=['nothing'].
+# The barge-in worked perfectly and the reply was still lost.
+#
+# So: if a segment has streamed interims and then gone quiet for this long without a final,
+# commit it ourselves. Armed off INTERIM ACTIVITY and nothing else -- deliberately not off
+# a turn-stop frame, which is the coupling process_frame's comment rejects as a deadlock
+# (that frame only fires after the turn is judged complete, which itself waits on this
+# final). A still-talking user keeps interims coming and keeps re-arming it, so this can
+# only fire on a segment that really has stalled.
+#
+# 1.5 s: comfortably past the widest interim gap observed on the wire (~0.6 s) and past the
+# VAD's own ENDPOINT_STOP_SECS commit, so the normal path always wins the race and this
+# costs nothing when VAD is healthy; and far enough inside the 5 s turn timeout that the
+# forced final still lands in time to be answered. The failure it converts is "no answer,
+# no explanation" into "an answer about a second late".
+# env_num, not a bare float(): this is read at import out of /etc/teaport/brain.env, which
+# installer repairs preserve verbatim, so one operator typo would otherwise be an
+# import-time ValueError and a Restart=always crash-loop nothing but a hand-edit clears.
+_STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
 
 # Retry budget for a connect the engine REJECTS because its single STT slot is still
 # held (see _connect_websocket). Sized to cover the hand-off window both front-ends
@@ -181,6 +214,15 @@ class TeaportSTTService(WebsocketSTTService):
         self._interim_buffer: str = ""
         # Consecutive finals that carried no words at all — see _handle_message.
         self._empty_finals = 0
+        # Backstop for a segment whose VAD stop never came — see _STRANDED_INTERIM_SECS.
+        self._stranded_task = None
+        # Per-segment accounting for the commit/final boundary — see _log_segment.
+        self._seg_bytes = 0        # audio appended since the last final
+        self._seg_interims = 0     # interims the engine sent back for it
+        self._commit_at = None     # monotonic time of the commit awaiting a done
+        self._commit_why = ""      # what triggered it: vad-stop | backstop | other
+        # Latches the one debug line if the backstop cannot arm at all (no TaskManager).
+        self._stranded_unavailable = False
         # _receive_task is created only on a SUCCESSFUL connect; initialize it here
         # so a failed/503 connect doesn't AttributeError during _disconnect teardown.
         self._receive_task = None
@@ -237,6 +279,7 @@ class TeaportSTTService(WebsocketSTTService):
         restarts the clock, so the reported span is last audio chunk -> final
         transcript) and stopped on the final (mirrors GladiaSTTService)."""
         await self.start_processing_metrics()
+        self._seg_bytes += len(audio)
         if self._websocket:
             payload = base64.b64encode(audio).decode("ascii")
             try:
@@ -261,9 +304,105 @@ class TeaportSTTService(WebsocketSTTService):
         # (fragments from mid-utterance pauses are re-aggregated by the LLM
         # aggregator, exactly as the strategy expects).
         if self._commit_on_stop and isinstance(frame, VADUserStoppedSpeakingFrame):
-            await self._send_commit(final=True)
+            # The VAD path won the race, so the backstop has nothing left to guard.
+            await self._cancel_stranded_commit()
+            await self._send_commit(final=True, why="vad-stop")
 
-    async def _send_commit(self, final: bool = True):
+    # ---- stranded-segment backstop -----------------------------------------
+    # See _STRANDED_INTERIM_SECS for why this exists and why it is armed off interim
+    # activity rather than off any turn frame.
+
+    async def _arm_stranded_commit(self):
+        """(Re)start the quiet timer for the segment currently streaming interims."""
+        await self._cancel_stranded_commit()
+        coro = self._stranded_commit_after_quiet()
+        try:
+            self._stranded_task = self.create_task(coro)
+        except Exception as e:
+            # A backstop that cannot arm must never take the transcript path down with
+            # it — this runs inside _handle_message, on every delta, and raising here
+            # would kill the receive loop and with it ALL transcription, trading a rare
+            # lost turn for a call that hears nothing. create_task needs the TaskManager
+            # that setup() installs, so this is reachable whenever _handle_message runs
+            # outside a started pipeline. Closed explicitly, or the un-awaited coroutine
+            # warns on every delta.
+            coro.close()
+            if not self._stranded_unavailable:
+                self._stranded_unavailable = True
+                logger.debug(f"{self}: stranded-segment backstop unavailable ({e}); "
+                             "a missed VAD stop will lose its turn")
+
+    async def _cancel_stranded_commit(self):
+        # AWAITED. BaseObject.cancel_task is `async def`, and calling it bare returned an
+        # un-awaited coroutine that cancelled NOTHING: every re-arm left the previous timer
+        # running, so a segment that streamed N deltas accumulated N live timers and they
+        # all fired at once (live 2026-09-09 20:50:57.958 — six identical commits in the
+        # same millisecond). Each one forces a final on the engine, and a stale commit
+        # landing inside the NEXT utterance closes it early, which is a fragment. It also
+        # inflated every backstop count measured that day. The only visible symptom was one
+        # RuntimeWarning line: "coroutine 'BaseObject.cancel_task' was never awaited".
+        if self._stranded_task is not None:
+            task, self._stranded_task = self._stranded_task, None
+            await self.cancel_task(task)
+
+    async def _stranded_commit_after_quiet(self):
+        await asyncio.sleep(_STRANDED_INTERIM_SECS)
+        self._stranded_task = None
+        if not self._interim_buffer.strip():
+            return  # the segment closed on its own; nothing stranded
+        # WARNING, not debug: reaching here means the VAD stop that should have closed
+        # this segment never arrived, which is a fault in the audio/VAD path that this
+        # only papers over. Silence here would hide it exactly as it was hidden before.
+        logger.warning(
+            f"{self}: no final after {_STRANDED_INTERIM_SECS}s of interim quiet — the "
+            f"VAD stop never came; committing {self._interim_buffer.strip()[:60]!r} "
+            "myself so the turn is answered late rather than lost"
+        )
+        await self._send_commit(final=True, why="backstop")
+
+    def _log_segment(self, msg: dict) -> None:
+        """One line per segment, at the seam between what we sent and what came back.
+
+        This is the BOUNDARY line: everything left of it is the brain's doing, everything
+        right of it is the engine's. Live 2026-09-10 05:57:44 the caller spoke for 1.2 s
+        with Silero at conf 0.89 against a 0.15 gate and volume 0.75 -- a full
+        QUIET->STARTING->SPEAKING->STOPPING->QUIET cycle -- and the pipeline produced no
+        transcript at all; they waited ~2.5 s, tried again, and the retry transcribed in
+        197 ms. Nothing in the log said whether the brain failed to commit that audio or
+        the engine returned nothing for it, so the fault could not be placed.
+
+        Now it can: bytes appended, interims received, what triggered the commit and how
+        long the engine took to answer it. `EMPTY` means the engine was handed audio and
+        returned no words -- that is an ENGINE-side result, and this line is the evidence
+        to hand over with it. `no-commit` means the done arrived without us asking, i.e.
+        the engine closed the segment on its own.
+        """
+        # `or 16000`, not `max(..., 1)`: sample_rate is 0 until the StartFrame sets it,
+        # and dividing by 1 turns a one-second segment into "16000.00s audio" — a line
+        # that is worse than no line, because it reads as a fault in itself.
+        secs = self._seg_bytes / 2 / (self.sample_rate or 16000)
+        engine_text = (msg.get("text") or "").strip()
+        lat = f"{time.monotonic() - self._commit_at:.2f}s" if self._commit_at else "no-commit"
+        verdict = f"{len(engine_text)} chars" if engine_text else "EMPTY"
+        line = (f"{self}: segment {secs:.2f}s audio, {self._seg_interims} interims, "
+                f"commit={self._commit_why} -> done in {lat}: {verdict}")
+        # An empty final on a segment the engine DID stream interims for is the shape
+        # worth noticing: it had words a moment ago and returned none.
+        if not engine_text and self._seg_interims:
+            logger.warning(line + " — engine streamed interims then returned no text")
+        elif not engine_text and secs > 0.3:
+            logger.warning(line + " — audio in, no words out")
+        else:
+            logger.debug(line)
+        self._seg_bytes = 0
+        self._seg_interims = 0
+        self._commit_at = None
+        self._commit_why = ""
+
+    async def _send_commit(self, final: bool = True, why: str = "other"):
+        """Force a final. `why` is recorded so the segment line says which path fired."""
+        self._commit_at = time.monotonic()
+        self._commit_why = why
         if self._websocket:
             try:
                 await self._websocket.send(
@@ -374,6 +513,8 @@ class TeaportSTTService(WebsocketSTTService):
             # Per-session, like the buffer beside it: a run of 4 empty finals before a
             # reconnect plus 1 after is not 5 finals of the same microphone.
             self._empty_finals = 0
+            # The buffer it would have committed is gone, and the socket with it.
+            await self._cancel_stranded_commit()
 
     # ---- transcripts out ---------------------------------------------------
 
@@ -407,6 +548,9 @@ class TeaportSTTService(WebsocketSTTService):
                     result=msg,
                 )
             )
+            self._seg_interims += 1
+            # Every delta re-arms: while the user is still talking this can never fire.
+            await self._arm_stranded_commit()
 
         elif mtype == "transcription.done":
             # Authoritative per-utterance text; engine resets after this. Mark it
@@ -439,6 +583,9 @@ class TeaportSTTService(WebsocketSTTService):
             # warning could never reach its run — the two halves of this hunk cancelled
             # out. .strip() because a final of " " is truthy but wordless, and pushing it
             # commits a user turn whose content is whitespace.
+            # The segment closed, however it was committed — the backstop is done.
+            await self._cancel_stranded_commit()
+            self._log_segment(msg)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
             if text and not engine_text:

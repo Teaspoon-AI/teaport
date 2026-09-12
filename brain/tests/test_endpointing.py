@@ -200,15 +200,26 @@ async def test_smart_turns_silence_limit_is_a_ceiling_on_an_incomplete_verdict()
     audio chunk before it was committed anyway -- the "sole guard" was no guard.
     The brain keeps the two apart: the VAD's ENDPOINT_STOP_SECS asks the question,
     SMARTTURN_STOP_SECS is how long a "not done" is honoured."""
-    # The premise: at the old coupling, 500ms of silence commits over the veto.
+    # The silence has to clear the floor being tested, or the premise arm is vacuous:
+    # a hard-coded 400ms demonstrated the old coupling only while ENDPOINT_STOP_SECS was
+    # below 0.4, and silently stopped demonstrating anything when 2026-09-09 raised the
+    # floor to 0.5 (it then asserted a force-complete that correctly did not happen).
+    # Deriving it keeps both arms meaningful at any floor: past the floor, short of the
+    # ceiling. At the old 0.2 this is still exactly 400ms.
+    silence_ms = int(ENDPOINT_STOP_SECS * 1000) + 200
+    assert silence_ms < SMARTTURN_STOP_SECS * 1000, (
+        f"the probe silence ({silence_ms}ms) must sit between ENDPOINT_STOP_SECS and "
+        f"SMARTTURN_STOP_SECS, or the second arm tests the ceiling firing, not surviving")
+    # The premise: at the old coupling, silence past the floor commits over the veto.
     assert await run_turn(100, analyzer_cls=AlwaysIncompleteSmartTurn,
-                          stop_secs=ENDPOINT_STOP_SECS, silence_ms_after_stop=400), (
+                          stop_secs=ENDPOINT_STOP_SECS, silence_ms_after_stop=silence_ms), (
         "stop_secs did not force-complete over an INCOMPLETE verdict; the ceiling "
         "semantics this split rests on have changed")
     # The fix: at the brain's ceiling the veto survives the same silence.
     assert not await run_turn(100, analyzer_cls=AlwaysIncompleteSmartTurn,
-                              stop_secs=SMARTTURN_STOP_SECS, silence_ms_after_stop=400), (
-        f"an INCOMPLETE verdict was overridden within 500ms of silence at "
+                              stop_secs=SMARTTURN_STOP_SECS,
+                              silence_ms_after_stop=silence_ms), (
+        f"an INCOMPLETE verdict was overridden within {silence_ms}ms of silence at "
         f"SMARTTURN_STOP_SECS={SMARTTURN_STOP_SECS}")
     assert SMARTTURN_STOP_SECS >= ENDPOINT_STOP_SECS + 0.5, (
         "SMARTTURN_STOP_SECS must leave an INCOMPLETE verdict real room past the VAD "

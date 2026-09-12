@@ -467,6 +467,11 @@ the window was opened by the filler. That review item folds into `:222`.
   `SipCall.tla`. The PR's comment says a re-created context keeps its id; pipecat pins
   that only while `context_id == _turn_context_id`, which `TTSSpeakFrame` nulls. The model
   makes the assumption explicit rather than settling it.
+- **`Interrupt` is an environment action.** Its only precondition is that there is
+  something to interrupt; nothing here models whether the user can actually obtain one.
+  That was an unexamined axiom until it failed live on 2026-09-09, and it is now
+  discharged by `UserTurn.tla` rather than assumed. The same applies to
+  `LedgerPlayout.tla` and to `Followup.tla`'s `UserStart`.
 - **`NoPhantomFullHeard` allows "queued".** The chained branch charts a turn complete
   while its tail may still be at the transport; a barge-in that flushes it is then
   misrecorded as heard. Residual, and pre-existing.
@@ -603,7 +608,130 @@ corrects the newest turn (`_end_drained`).
 - **Scale.** One reply and one filler is 3k states; two replies 258k (365k before the
   End-ordering fact pruned the stale-End interleavings) and about two minutes.
 
+## `UserTurn.tla` — whether the user can interrupt the bot at all
+
+Every other model here takes barge-in as a **free environment action**. `Ledger.tla:378`
+and `LedgerPlayout.tla` both write
+
+```tla
+Interrupt ==                                       \* the user barges in
+    /\ interrupts < MaxInterrupts
+    /\ window \/ Synthesizing \/ Streaming
+```
+
+— a bounding counter and "there is something to interrupt", nothing else — and
+`Followup.tla`'s `UserStart` is the same shape. They model what happens *after* an
+interruption and assume one is always available. Not one of them has a variable for the
+user turn, and the user turn is the only thing that produces an interruption.
+
+That assumption failed in production on 2026-09-09: the bot kept speaking over the user
+and stayed uninterruptible for as long as they went on trying. This module is the
+assumption's discharge — the one place `Interrupt`'s enabling condition is a conclusion
+rather than an axiom.
+
+Barge-in in this brain is a user turn START and nothing else: `MinWordsUserTurnStartStrategy`
+counts the words, the aggregator broadcasts the `InterruptionFrame` from
+`on_user_turn_started`. So two guards in pipecat's `UserTurnController` decide it between
+them, and each is right on its own:
+
+| | |
+|---|---|
+| `_trigger_user_turn_start` | *"Prevent two consecutive user turn starts"* — refuses while a turn is open |
+| `_trigger_user_turn_stop` | *"Never finalize while the user is audibly speaking"* — refuses a stop signal that has gone stale |
+
+Together they make **an open turn an uninterruptible one**, and the only exit is the 5 s
+`user_turn_stop_timeout` — an *inactivity* timer that every VAD frame, every transcript
+and every audio frame re-arms. Recovery therefore requires the user to stop speaking, and
+continuing to speak is what holds it shut.
+
+It gets in through `trigger_user_turn_stopped()`, which is two events across the second
+guard:
+
+```python
+await self.trigger_user_turn_inference_triggered()   # push_aggregation() -> the LLM runs
+await self.trigger_user_turn_finalized(...)          # <- refused if _user_speaking
+```
+
+The first awaits through `push_aggregation()` → `push_context_frame()` → `push_frame()`
+across the whole pipeline below the aggregator; when the trigger came from the stop
+strategy's own `_timeout_handler` **task**, the aggregator's input task is free to run a
+queued `VADUserStartedSpeakingFrame` in that gap. `Resume` is that gap, and it is the
+only interleaving the model needs.
+
+| MODE | | `NoStrandedTurn` | `NoMissedBargeIn` |
+|---|---|---|---|
+| `asWritten` | stock pipecat — identical on 1.5.0, 1.7.0 and 1.8.1 | ✗ | ✗ |
+| `retryOnQuiet` | `keep_barge_in_reachable`: a finalization refused **after its inference ran** is re-applied at the user's next quiet moment | ✓ | ✓ |
+
+`NoStrandedTurn` is the state itself — a turn whose inference has already run, still open
+once the user has fallen quiet. `NoMissedBargeIn` is what the user experiences, and its
+counterexample is nine states with nothing exotic in it:
+
+```
+VadStart     the user speaks
+Interject    >= INTERRUPT_MIN_WORDS: the turn opens, the bot is cut. Barge-in worked.
+VadStop      they pause
+Inference    the stop strategy concludes; the words go to the context, the LLM is asked
+Resume       they resume INSIDE that await
+Finalize     refused: "never finalize while the user is audibly speaking".
+             The turn stays open with its inference already spent.
+BotStart     the reply that inference produced starts playing
+Interject    >= INTERRUPT_MIN_WORDS over the bot -> _trigger_user_turn_start returns
+             early because a turn is open. No interruption: the barge-in is missed.
+```
+
+Everything after `Finalize` is stable: every further `Interject` re-arms the watchdog,
+so `ForceStop` never becomes enabled, and the bot cannot be cut until the user stops
+speaking for long enough that `Arm` fires.
+
+### What was changed
+
+`endpointing.py`'s `keep_barge_in_reachable` wraps the one controller the session builds.
+It does **not** widen the guard — a refusal with no inference behind it is still honoured,
+which is the case the guard exists for and is pinned by
+`test_a_refusal_with_no_inference_behind_it_is_still_honoured`. It only says that once the
+inference *has* run, the turn's content is already spent: refusing the finalize cannot
+un-ask the question, only strand the turn. So that decision is re-applied at the user's
+next quiet moment — `ENDPOINT_STOP_SECS`, against the watchdog's unreachable 5 s.
+
+This is not a pipecat regression. The controller is byte-identical across 1.5.0, 1.7.0 and
+1.8.1, so the hazard has been here since the initial release; what changed was exposure.
+`e983f90` deleted `LatchedTurnStopStrategy`, whose overrides were the only thing that
+re-attempted a lost stop — the three bugs it worked around were fixed in 1.6.0/1.7.0, this
+fourth one lives in the *controller* rather than the strategy and was never covered.
+`f23503b` then cut `ENDPOINT_STOP_SECS` 0.5 → 0.2, multiplying the VAD edges per utterance,
+and 1.8.1's rolling volume window holds `speaking` ~0.35 s longer past the end of speech.
+
+### Known limits of this model
+
+- **`Inference` requires `~userSpeaking`**, which the controller does not: the guard is on
+  the second await only. It is a fact about the *strategy* — both of its conclusion points
+  run with VAD quiet. Without it TLC finds a two-step "the user simply never stopped"
+  trace the implementation cannot produce, and the counterexample stops being a bug report.
+  The cost is one excluded entry: `_timeout_handler` already running when the resume's
+  `_discard_pending_end_of_turn()` tries to cancel it, which reaches the same state one
+  step earlier.
+- **`BotStart` waits for `~stopInFlight`.** An LLM round trip plus synthesis against two
+  awaits — an ordering fact, stated rather than modelled, as with `LlmStart` in
+  `LedgerPlayout.tla`.
+- **A VAD frozen in SPEAKING is out of scope, and out of the fix's scope too.**
+  `SIP_HALF_DUPLEX` left on, or a desynced gateway AEC feeding the bot's own audio back
+  in, pins `userSpeaking` forever: no `VadStop` ever arrives, so nothing re-applies the
+  finalization and nothing arms the watchdog. Those kill barge-in on their own, upstream
+  of all of this, and both have their own kill switch. Modelling them here would only
+  make this module look like it covered them.
+- **Durations are out of scope**, as everywhere here. That the watchdog is 5 s and the
+  retry fires within `ENDPOINT_STOP_SECS` is the reason one is unreachable and the other
+  is not; the model only distinguishes reachable from absorbing.
+- **Scale.** 47 distinct states, well under a second.
+
 ## Worth modeling next
+
+`UserTurn.tla` was never on this list, and that is the most useful thing this list has
+told us. Everything below is a consequence a model already reaches; the barge-in
+precondition was a *premise* five models shared, and a shared premise is invisible to
+every one of them. Worth asking of each new entry: is this a step the machine takes, or
+something the machine is assumed to be handed?
 
 1. **Spoken notices in `LedgerPlayout.tla`.** The two `TTSSpeakFrame` call sites that
    still default to `append_to_context=True` (`llm_error_speaker.py:81`,

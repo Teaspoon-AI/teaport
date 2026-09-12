@@ -4,19 +4,40 @@
 # Extracted from gateway_server.py; the constants + analyzer live together because
 # they ARE the policy: ENDPOINT_STOP_SECS is the VAD's silence floor, SMARTTURN_STOP_SECS
 # the ceiling on honouring Smart Turn's "not done", the Smart Turn threshold the
-# semantic eagerness.
+# semantic eagerness, INTERRUPT_MIN_WORDS how much speech counts as a barge-in — and
+# keep_barge_in_reachable at the bottom, which is what stops an open user turn from
+# swallowing every barge-in there is.
 #
 import os
+
+from loguru import logger
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
 # Endpointing silence, the VAD's: how long the user must pause before Silero VAD
-# reports them stopped -- which is what asks Smart Turn for its verdict. History: 0.8
-# was conservative, 0.5 trimmed ~0.3s off it; now 0.2. This floor IS the dominant fixed
-# latency on every turn (the VAD model itself is ~1ms/frame), and 0.2 is pipecat's
-# recommended VAD default, the one its built-in STT p99 latencies assume -- so it also
-# silences the turn strategy's stop_secs warning. Tune via ENDPOINT_STOP_SECS.
-ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.2"))
+# reports them stopped -- which is what asks Smart Turn for its verdict. This floor IS
+# the dominant fixed latency on every turn (the VAD model itself is ~1ms/frame).
+# History: 0.8 was conservative, 0.5 trimmed ~0.3s off it, f23503b cut it to 0.2, and
+# 2026-09-09 put it back to 0.5.
+#
+# 0.2 is pipecat's recommended VAD default -- but that recommendation assumes Smart Turn
+# is doing the semantic work of deciding whether the user is finished, so that asking
+# early is safe. Measured on a live SIP call 2026-09-09, it is not: the model scored
+# "How would a DGX" at 0.9759 and 0.9685, and a bare "Hey," at 0.9605, while the one
+# utterance it called INCOMPLETE was "compare again." at 0.0303. Its output is close to
+# uncorrelated with whether the phrase is actually finished, on this audio. 33 of the
+# 37 verdicts on the preceding call were COMPLETE.
+#
+# With that premise gone, the floor has to do the job by itself: at 0.5 the ~0.2s breath
+# before the next word never asks the question at all, and the user's sentence survives.
+# See SMARTTURN_COMPLETE_THRESHOLD below for why the semantic knob cannot substitute.
+#
+# The likely root cause is upstream of this file and not fixed here: Smart Turn v3 judges
+# the waveform, and this is 8 kHz telephony band upsampled to 16 kHz, which is not what it
+# was trained on. If that is ever addressed, 0.2 becomes safe again and ~0.3s comes off
+# every turn -- so revisit this together with the analyzer, not alone.
+# Tune via ENDPOINT_STOP_SECS.
+ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 
 # Smart Turn's OWN silence limit -- pipecat's SmartTurnParams.stop_secs -- is not a
 # floor but a CEILING: BaseSmartTurn.append_audio force-completes the turn once this
@@ -37,7 +58,17 @@ SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 # LOWER = the classifier lets go EASIER / snappier endpointing, at the cost of more
 # mid-thought cutoffs; higher = more patient. ENDPOINT_STOP_SECS is when the question
 # is asked, SMARTTURN_STOP_SECS how long a "no" is honoured; this is the *semantic*
-# eagerness. Tune via SMARTTURN_COMPLETE_THRESHOLD.
+# eagerness.
+#
+# It is also, on telephony audio, close to INERT -- know this before reaching for it.
+# The probabilities are bimodal and extreme (2026-09-09, thr raised 0.5 -> 0.7 as an
+# experiment): five of six decisions landed at 0.911-0.976 and the sixth at 0.030, so
+# the raise changed exactly zero verdicts. Sparing the mid-phrase cuts would need a
+# threshold above 0.976, at which point almost nothing is ever COMPLETE and every turn
+# falls through to SMARTTURN_STOP_SECS -- that is not tuning the classifier, it is
+# disabling it and paying a flat second for it. The knob only bites where the model is
+# uncertain, and here it is confidently wrong instead. ENDPOINT_STOP_SECS is the lever
+# that works; see its note. Tune via SMARTTURN_COMPLETE_THRESHOLD.
 SMARTTURN_COMPLETE_THRESHOLD = float(os.getenv("SMARTTURN_COMPLETE_THRESHOLD", "0.5"))
 
 # Silero VAD gates. These were tightened to 0.8 / 0.75 to reject ambient noise,
@@ -104,5 +135,210 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
 
     def _predict_endpoint(self, audio_array):
         result = super()._predict_endpoint(audio_array)
-        result["prediction"] = 1 if result["probability"] > self._complete_threshold else 0
+        p = result["probability"]
+        prediction = 1 if p > self._complete_threshold else 0
+        # The NUMBER, not just the verdict. pipecat logs "End of Turn result: COMPLETE"
+        # and puts the probability behind logger.trace, so a live journal shows every
+        # decision and none of the evidence — and the one knob that moves these
+        # decisions (SMARTTURN_COMPLETE_THRESHOLD) could only ever be guessed at.
+        # Live 2026-09-09: "How would a DGX" was judged COMPLETE and answered as a
+        # question; the threshold sat at pipecat's stock 0.5 with no idea whether that
+        # utterance scored 0.51 or 0.99, which is the difference between a threshold
+        # that would have saved it and one that could not.
+        #
+        # `margin` is what a re-threshold has to cross to change THIS decision, so a
+        # journal of a bad call sizes the change directly: every mid-phrase cut with a
+        # small positive margin is one a higher threshold would have kept open.
+        logger.debug(
+            f"smart-turn p={p:.4f} thr={self._complete_threshold:.2f} "
+            f"-> {'COMPLETE' if prediction else 'INCOMPLETE'} "
+            f"(margin {p - self._complete_threshold:+.4f})"
+        )
+        result["prediction"] = prediction
         return result
+
+
+# Every barge-in in this brain is a USER TURN START: MinWordsUserTurnStartStrategy
+# counts the words, the aggregator broadcasts the interruption from
+# on_user_turn_started, and there is no other path. So anything that stops a turn
+# from starting stops the bot from being interruptible — and pipecat's controller
+# refuses to start one while a turn is already open (user_turn_controller.py,
+# "Prevent two consecutive user turn starts").
+#
+# It also refuses to CLOSE one while VAD says the user is audibly speaking ("Never
+# finalize while the user is audibly speaking"), which is right for the case it was
+# written for: a latent stop signal — an LLM end-of-turn verdict that resolves after
+# the user resumed — is stale by the time it lands, and the turn should stay open so
+# the next inference re-evaluates.
+#
+# The two together make `user turn open AND user speaking` an ABSORBING STATE for
+# barge-in, and the only way out is the 5s user_turn_stop_timeout — an INACTIVITY
+# timer that any VAD frame, any transcript and any audio re-arms. So the recovery
+# path needs the user to STOP talking, which is the opposite of what someone does
+# when the bot is not responding to them: continuing to speak, or repeating the
+# request, holds the turn open instead of clearing it. Measured here: 52
+# interjections over 8s, every one >= INTERRUPT_MIN_WORDS, every one logged by the
+# strategy as `should_trigger=True`, and not one interruption. Six seconds of
+# complete silence clears it. See tests/test_barge_in_survives_an_open_turn.py and formal/UserTurn.tla.
+#
+# How the turn comes to be open while the bot talks is the other half.
+# BaseUserTurnStopStrategy.trigger_user_turn_stopped() is TWO events:
+#
+#     await self.trigger_user_turn_inference_triggered()   # -> push_aggregation()
+#     await self.trigger_user_turn_finalized(...)          # <- refused here
+#
+# The first is gated on the turn being open, the second on the user being quiet, and
+# the first awaits all the way through push_aggregation() -> push_context_frame() ->
+# push_frame() across the whole pipeline below the aggregator. When the trigger came
+# from the stop strategy's own _timeout_handler TASK, the aggregator's input task is
+# free to process a queued VADUserStartedSpeakingFrame in that gap. Inference has
+# then run — the user's words are in the context and the LLM is answering them —
+# while the finalize is refused and the turn stays open. The bot starts speaking with
+# barge-in already dead.
+#
+# This is not a pipecat regression: the controller is byte-identical on 1.5.0, 1.7.0
+# and 1.8.1 (only a comment character moved), so the hazard has been here since the
+# initial release. What changed is exposure — e983f90 deleted LatchedTurnStopStrategy,
+# whose overrides were the only thing that re-attempted a lost stop; f23503b cut
+# ENDPOINT_STOP_SECS 0.5 -> 0.2, multiplying the VAD edges per utterance; and 1.8.1's
+# rolling volume window holds `speaking` ~0.35s longer past the end of speech.
+#
+# The fix below is the smallest one that is TRUE rather than merely effective. It does
+# not weaken the guard: a refusal with no inference behind it is still honoured, which
+# is the case the guard exists for. It only says that once the inference HAS run, the
+# turn's content is already spent — refusing the finalize cannot un-ask the question,
+# it can only strand the turn — so that decision is re-applied at the user's very next
+# quiet moment (~ENDPOINT_STOP_SECS, against the watchdog's unreachable 5s) instead of
+# being dropped. That is the guarantee the deleted latch used to give by accident,
+# restored at the level the failure is actually at.
+def keep_barge_in_reachable(controller) -> None:
+    """Re-apply a turn finalization that was refused after its inference had run.
+
+    Wraps ONE UserTurnController instance (not the class): the brain builds one per
+    session, and a class-level patch would reach every pipecat user in the process.
+
+    Deliberately NOT defensive about the private names it binds. If a future pipecat
+    renames _trigger_user_turn_start / _trigger_user_turn_inference_triggered /
+    _trigger_user_turn_stop / _user_turn / _user_speaking, this raises AttributeError
+    at session build — loudly, on the first call, in CI — which is the outcome to
+    want. Silently doing nothing would restore a bug whose whole signature is that
+    nothing is logged when it happens.
+
+    Known limit: the re-attempt rides the frame that reports the user quiet, so it
+    needs VAD to report a stop at all. It does NOT rescue a VAD frozen in SPEAKING —
+    SIP_HALF_DUPLEX left on, or a desynced gateway AEC feeding the bot's own audio
+    back in. Those kill barge-in on their own, upstream of any of this, and papering
+    over them here would only hide them.
+    """
+    trigger_start = controller._trigger_user_turn_start
+    trigger_inference = controller._trigger_user_turn_inference_triggered
+    trigger_stop = controller._trigger_user_turn_stop
+    process_frame = controller.process_frame
+
+    # inference: this turn's words have already been pushed to the context and the LLM
+    # asked. owed: (strategy, params) of a finalization the controller refused after
+    # that, to be re-applied at the next quiet moment.
+    turn = {"inference": False, "owed": None}
+
+    async def _start(strategy, params):
+        was_open = controller._user_turn
+        await trigger_start(strategy, params)
+        # Only on a turn that actually STARTED. The controller drops a start while one
+        # is open, and clearing here on that no-op would forget the owed finalization
+        # of the very turn that is stuck.
+        if not was_open and controller._user_turn:
+            turn["inference"], turn["owed"] = False, None
+
+    async def _inference(strategy):
+        was_open = controller._user_turn
+        await trigger_inference(strategy)
+        if was_open:
+            turn["inference"] = True
+
+    async def _stop(strategy, params):
+        was_open = controller._user_turn
+        await trigger_stop(strategy, params)
+        # Still open after a stop that had a turn to close = refused. `_user_speaking`
+        # is the only reason the controller has for that.
+        refused = was_open and controller._user_turn
+        if refused and turn["inference"]:
+            turn["owed"] = (strategy, params)
+        elif not controller._user_turn:
+            turn["owed"] = None
+
+    async def _process_frame(frame):
+        await process_frame(frame)
+        # AFTER pipecat's own handling: this frame may be the VADUserStoppedSpeaking
+        # that cleared _user_speaking, and the stop strategies have already seen it.
+        owed = turn["owed"]
+        if owed and controller._user_turn and not controller._user_speaking:
+            turn["owed"] = None
+            logger.debug(f"{controller}: re-applying the turn finalization refused "
+                         "while the user was speaking — an open turn takes no barge-in")
+            await trigger_stop(*owed)
+
+    controller._trigger_user_turn_start = _start
+    controller._trigger_user_turn_inference_triggered = _inference
+    controller._trigger_user_turn_stop = _stop
+    controller.process_frame = _process_frame
+
+
+# --- Silero's inference rate -----------------------------------------------------
+# Silero VAD v5 runs at 8 kHz or 16 kHz and is a WAVEFORM model: what it sees is the
+# spectrum, not an abstraction of it. On this SIP path the media is G.711 mu-law at
+# 8 kHz — verified in the SDP, where the carrier's own offer is
+# "m=audio 31720 RTP/AVP 0 18 101" (PCMU, G729, telephone-event) with no wideband codec
+# in it at all, so an inbound call cannot be anything else. pjmedia decodes that and
+# resamples to 16 kHz for our port, and everything downstream is handed "16 kHz" audio
+# with no energy whatever above 4 kHz.
+#
+# That is not the signal Silero was trained on, and it is the leading explanation for
+# the one thing no threshold could fix: measured 2026-09-09 over a full call, speech sits
+# at p50 0.88 while ~8% of genuine speech frames collapse into the same 0.00-0.05 band as
+# silence, so no gate above zero separates them (VAD_CONFIDENCE 0.70 -> 0.35 -> 0.15
+# changed the flicker rate by nothing).
+#
+# VAD_SAMPLE_RATE=8000 hands Silero the TRUE narrowband signal instead. Decimating back
+# to 8 kHz discards no information when the source was 8 kHz to begin with — it undoes
+# the gateway's upsampling rather than degrading anything — and 512 samples at 16 kHz
+# decimate to exactly the 256 Silero wants at 8 kHz, so pipecat's buffering is untouched.
+#
+# Off by default: it is a real behaviour change to the VAD and it is only correct while
+# the carrier is narrowband. On a genuinely wideband trunk it would throw away the top
+# half of the band, and the pair-averaging below (a crude half-band filter, kept cheap
+# because it runs per frame in the VAD executor) would not fully prevent aliasing.
+# Revisit this together with the SDP offer if a wideband carrier ever lands.
+VAD_SAMPLE_RATE = int(os.getenv("VAD_SAMPLE_RATE", "16000"))
+
+
+class NarrowbandSileroMixin:
+    """Run Silero at 8 kHz on audio the gateway upsampled from 8 kHz.
+
+    Mixed in ahead of SileroVADAnalyzer so `super()` still reaches the real model; the
+    analyzer keeps its 16 kHz identity (pipecat's frame budget and every other rate in
+    the pipeline are unchanged) and only the model's input is converted.
+    """
+
+    def voice_confidence(self, buffer) -> float:
+        import numpy as np
+        a = np.frombuffer(buffer, dtype=np.int16)
+        if a.size < 2:
+            return super().voice_confidence(buffer)
+        # Average adjacent pairs, then keep one of each: decimation with a cheap
+        # half-band lowpass in front of it, rather than dropping samples outright.
+        if a.size % 2:
+            a = a[:-1]
+        half = a.reshape(-1, 2).mean(axis=1).astype(np.int16)
+        # _sample_rate, not sample_rate: the latter is a READ-ONLY property on
+        # pipecat's VADAnalyzer, so assigning it raises. Deployed 2026-09-10 and it
+        # threw once per audio frame -- 3285 times in one call -- which killed the VAD
+        # entirely: no state transitions, no census, and above all no VAD stop, so the
+        # stt backstop ended 12 of 12 turns at 1.5s each and the caller felt it as a
+        # latency regression. The exception was swallowed into an ErrorFrame by the
+        # aggregator rather than crashing anything, which is why it read as "slow"
+        # instead of "broken".
+        prev, self._sample_rate = self._sample_rate, 8000
+        try:
+            return super().voice_confidence(half.tobytes())
+        finally:
+            self._sample_rate = prev
