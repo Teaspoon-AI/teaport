@@ -439,6 +439,14 @@ class TeaportSTTService(WebsocketSTTService):
         self._stranded_task = None
         if not self._interim_buffer.strip():
             return  # the segment closed on its own; nothing stranded
+        # KNOWN EDGE, left as-is deliberately: this fires 1.5 s after the last interim,
+        # so an engine that STALLS its interims mid-utterance (STT-vs-TTS GPU contention
+        # has lagged them past 1.5 s during long replies) gets a forced commit while the
+        # user is still talking, cutting the phrase. The obvious guard -- don't fire
+        # while VAD reports SPEAKING -- would disable this backstop in the very case it
+        # exists for: a MISSED VAD stop leaves VAD stuck in SPEAKING. The two failure
+        # modes route through the same timer, so the guard trades one for the other. The
+        # 1.5 s wait is the compromise; revisit with the GPU-contention work, not alone.
         # WARNING, not debug: reaching here means the VAD stop that should have closed
         # this segment never arrived, which is a fault in the audio/VAD path that this
         # only papers over. Silence here would hide it exactly as it was hidden before.
@@ -477,9 +485,20 @@ class TeaportSTTService(WebsocketSTTService):
                 f"commit={self._commit_why} -> done in {lat}: {verdict}")
         # An empty final on a segment the engine DID stream interims for is the shape
         # worth noticing: it had words a moment ago and returned none.
+        #
+        # `secs` counts ALL audio since the last final -- run_stt streams every chunk,
+        # silence included -- so it is > 0.3 on essentially every segment and cannot be
+        # the warn condition on its own: it would fire "audio in, no words out" at
+        # WARNING for a cough, a door, or the engine's ~15 s buffer auto-commit during
+        # any quiet stretch, drowning the once-per-run empty-final counter just below
+        # (which exists for exactly those). Gate the wordless warning on a VAD-STOP
+        # commit instead: VAD reporting speech-then-silence is the only evidence there
+        # was an utterance to transcribe, so an empty final there is a real miss (the
+        # double-talk drop this whole surface is about); a backstop or auto-commit
+        # empty is ordinary and logs at debug.
         if not engine_text and self._seg_interims:
             logger.warning(line + " — engine streamed interims then returned no text")
-        elif not engine_text and secs > 0.3:
+        elif not engine_text and self._commit_why == "vad-stop" and secs > 0.3:
             logger.warning(line + " — audio in, no words out")
         else:
             logger.debug(line)

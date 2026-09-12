@@ -95,6 +95,12 @@ def _vad_cls():
     # questions and the session that needs one usually wants the other.
     if VAD_SAMPLE_RATE == 8000:
         return type("NarrowbandSileroVAD", (NarrowbandSileroMixin, base), {})
+    if VAD_SAMPLE_RATE != 16000:
+        # Only 8000 selects the narrowband mixin; 16000 is the stock rate. Anything
+        # else is a typo (a bare 800, say) that would otherwise silently run the stock
+        # analyzer with no hint the setting did nothing.
+        logger.warning(f"VAD_SAMPLE_RATE={VAD_SAMPLE_RATE} is neither 16000 (stock) nor "
+                       "8000 (narrowband); using the stock 16 kHz analyzer")
     return base
 
 

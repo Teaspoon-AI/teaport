@@ -328,6 +328,14 @@ def keep_barge_in_reachable(controller) -> None:
         # that cleared _user_speaking, and the stop strategies have already seen it.
         owed = turn["owed"]
         if owed and controller._user_turn and not controller._user_speaking:
+            # Re-applied at the first quiet frame, AFTER the stop strategies ran on it.
+            # If Smart Turn just returned a FRESH incomplete (the user resumed
+            # mid-thought and paused again), this closes the turn anyway and the
+            # aggregator runs the resumed words as their own turn -- a continuation
+            # split off. Accepted rather than waiting for the SMARTTURN_STOP_SECS
+            # ceiling, because Smart Turn is near-inert on this audio (bimodal and
+            # confidently wrong; see endpointing.py's threshold note), so the case is
+            # rare; revisit here if Smart Turn ever carries real signal.
             turn["owed"] = None
             logger.debug(f"{controller}: re-applying the turn finalization refused "
                          "while the user was speaking — an open turn takes no barge-in")
