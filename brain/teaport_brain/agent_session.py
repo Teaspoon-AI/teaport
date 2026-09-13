@@ -215,9 +215,14 @@ _DELIVERY_ATTEMPTS = 3
 # How long one attempt waits for the model to start answering from the trigger before
 # treating the turn as flushed. Generous: this covers the queue plus a cold completion.
 _DELIVERY_START_TIMEOUT = 20.0
-# How long to wait for the ledger to chart the reply we just caused, before giving up on
-# knowing whether it was heard. Covers a full long delivery plus its barge-in.
+# How long to wait for the transport to report the reply we just caused as finished or
+# cut (FollowupGate.watch_delivery), before giving up on knowing whether it was heard.
+# Covers a full long delivery plus its barge-in.
 _DELIVERY_HEARD_TIMEOUT = 45.0
+# Once the transport says the reply was CUT, how long to wait for the ledger to chart it
+# with the fraction that played. Short on purpose: the ledger charts a cut at the
+# interruption itself, so this resolves promptly or not at all.
+_DELIVERY_CHART_TIMEOUT = 5.0
 # Below this heard fraction the answer did not land and is worth saying again.
 #
 # The trade runs both ways and neither end is free. Too high and a caller who heard most
@@ -416,13 +421,15 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 return
 
             # Cut. How much landed is the ledger's to say, and it charts a cut at the
-            # interruption, so this resolves promptly or not at all.
+            # interruption, so this resolves promptly or not at all. No shield: wait_for
+            # cancels the waiter itself on timeout, and the injector's own cancellation
+            # (session teardown) has to propagate through here, as the gate promises --
+            # a shield would only force this to catch CancelledError and swallow it.
             try:
-                said = await asyncio.wait_for(asyncio.shield(spoken), timeout=5.0)
-            except (asyncio.TimeoutError, asyncio.CancelledError):
+                said = await asyncio.wait_for(spoken, timeout=_DELIVERY_CHART_TIMEOUT)
+            except asyncio.TimeoutError:
                 # Not knowing is not grounds to say it again — an unnecessary repeat is
                 # worse than an unverified delivery.
-                spoken.cancel()
                 logger.info("consult follow-up: cut, but the ledger charted no reply to "
                             "measure — leaving it as delivered")
                 return

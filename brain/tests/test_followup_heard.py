@@ -41,6 +41,7 @@ from test_followup_injection import (  # noqa: E402
 
 agent_session._DELIVERY_START_TIMEOUT = 0.05
 agent_session._DELIVERY_HEARD_TIMEOUT = 0.05
+agent_session._DELIVERY_CHART_TIMEOUT = 0.05
 
 
 async def _deliver(heard, read_on_attempt=1, text=ANSWER, cut=True):
