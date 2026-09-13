@@ -1,11 +1,11 @@
 #
 # Unit test: the caller-path makeup gain applied to the audio sent to the transcriber.
 #
-# The SIP bridge's echo canceller attenuates the caller's own voice during double-talk
-# (measured 2026-09-11: ~4 dB within-call, and the segments the engine drops are the
-# quietest). A flat makeup gain on the audio the STT sees recovers the quiet barge-in
-# "stop"s. This pins the transform: correct scale, hard clip, no-op at 0 dB, and that it
-# is applied to what run_stt sends and NOT to what VAD/endpointing upstream would read.
+# A caller speaking over the bot is quiet (measured 2026-09-11: ~4 dB within-call, and
+# the segments the engine drops are the quietest; the bridge's echo canceller is not the
+# cause -- see stt.py). A flat makeup gain on the audio the STT sees recovers the quiet
+# barge-in "stop"s. This pins the transform: correct scale, hard clip, no-op at 0 dB, and
+# that it is applied to what run_stt sends and NOT to what VAD/endpointing upstream read.
 #
 # Run: python test_stt_makeup_gain.py   (or via pytest test_suite.py)
 #
