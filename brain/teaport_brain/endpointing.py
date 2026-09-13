@@ -207,8 +207,13 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                 f"{self}: turn opened after its own VAD stop -- keeping the end-of-turn "
                 f"verdict (complete={self._turn_complete}) instead of resetting"
             )
-            # What _reset() would have cleared besides the verdict. The previous turn's
-            # stop already cleared it, so this is belt-and-braces, not a behaviour.
+            # What _reset() would have cleared besides the verdict -- and it is
+            # load-bearing, not belt-and-braces: the stock strategy sets _text from
+            # EVERY final TranscriptionFrame, turn or no turn, so a sub-threshold final
+            # between turns (a one-word "Stop." under the 2-word barge-in guard) leaves
+            # it populated, and on this path nothing else clears it before the p99 timer
+            # or the analyzer's silence ceiling can read it and commit the new turn on
+            # its interim alone, ahead of the final.
             self._text = ""
             return
         await super().handle_user_turn_started()
