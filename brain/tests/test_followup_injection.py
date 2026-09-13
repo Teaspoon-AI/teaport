@@ -169,11 +169,11 @@ async def _deliver(text, read_on_attempt=1, heard=1.0, cut=False):
     gate = _Gate(cut=cut)
     ledger = _Ledger(heard)
     await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, text, CALL_ID)
-    return ctx, task, retirer, gate
+    return ctx, task, retirer, gate, ledger
 
 
 async def test_the_instruction_is_a_user_turn_not_a_system_message():
-    _, task, _r, _g = await _deliver(ANSWER)
+    _, task, _r, _g, _l = await _deliver(ANSWER)
     assert task.frames, "the follow-up must actually run the LLM"
     last = task.at_run[-1]
     assert last["role"] == "user", (
@@ -185,7 +185,7 @@ async def test_the_instruction_is_a_user_turn_not_a_system_message():
 
 async def test_the_trigger_does_not_outlive_its_turn():
     """A standing 'Tell the user now...' gets re-executed on the next empty turn."""
-    ctx, _t, _r, _g = await _deliver(ANSWER)
+    ctx, _t, _r, _g, _l = await _deliver(ANSWER)
     after = ctx.messages[-1]["content"]
     assert "Tell the user now" not in after, (
         "the delivery instruction is still in the context — the model will recite the "
@@ -195,7 +195,7 @@ async def test_the_trigger_does_not_outlive_its_turn():
 
 
 async def test_the_placeholder_tool_result_is_rewritten():
-    ctx, _t, _r, _g = await _deliver(ANSWER)
+    ctx, _t, _r, _g, _l = await _deliver(ANSWER)
     tool = [m for m in ctx.messages if m.get("role") == "tool"][0]
     body = json.loads(tool["content"])
     assert body["status"] == "complete", body
@@ -211,7 +211,7 @@ async def test_web_addresses_leave_the_delivery_and_the_record():
     aloud, 48 s of it, the overlay rule notwithstanding."""
     with_urls = ("Top story: Chromium sandbox RCE at https://nvd.nist.gov/vuln/detail/"
                  "CVE-2026-85046, then Fermat at https://www.anthropic.com/research/fermat.")
-    ctx, task, _r, _g = await _deliver(with_urls)
+    ctx, task, _r, _g, _l = await _deliver(with_urls)
     trigger = task.at_run[-1]["content"]
     assert "http" not in trigger and "www." not in trigger, trigger
     assert "Chromium sandbox RCE" in trigger and "Fermat" in trigger, trigger
@@ -224,7 +224,7 @@ async def test_web_addresses_leave_the_delivery_and_the_record():
 
 async def test_a_consult_that_never_reported_is_not_called_a_failure():
     """It can die on teardown AFTER the action landed, so asserting failure can lie."""
-    ctx, task, _r, _g = await _deliver(None)
+    ctx, task, _r, _g, _l = await _deliver(None)
     tool = [m for m in ctx.messages if m.get("role") == "tool"][0]
     assert json.loads(tool["content"])["status"] == "unknown"
     assert ctx.messages[-1]["role"] == "user"
@@ -252,7 +252,7 @@ async def test_a_consult_that_never_reported_is_not_called_a_failure():
 
 async def test_a_flushed_turn_does_not_retire_the_trigger_unread():
     """The TLC counterexample. The answer must survive a barge-in that eats the turn."""
-    ctx, task, retirer, gate = await _deliver(ANSWER, read_on_attempt=2)
+    ctx, task, retirer, gate, _l = await _deliver(ANSWER, read_on_attempt=2)
     assert task.attempts == 2, (
         f"queued {task.attempts} turn(s) — a turn flushed before the model read it must "
         f"be re-queued, not counted as delivered")
@@ -268,7 +268,7 @@ async def test_a_flushed_turn_does_not_retire_the_trigger_unread():
 async def test_the_trigger_is_retired_at_the_read_not_after_it():
     """Between reading the trigger and retiring it, a second completion must not be
     able to read it too — that is the bot reciting the same answer twice."""
-    ctx, task, retirer, _g = await _deliver(ANSWER)
+    ctx, task, retirer, _g, _l = await _deliver(ANSWER)
     assert not retirer.armed, (
         "a one-shot is still armed after delivery — it would fire on an unrelated "
         "later turn")
@@ -280,7 +280,7 @@ async def test_the_trigger_is_retired_at_the_read_not_after_it():
 
 async def test_an_undeliverable_answer_is_not_left_as_a_standing_order():
     """If no turn ever reads it, give up — but do NOT leave the instruction live."""
-    ctx, task, retirer, _g = await _deliver(ANSWER, read_on_attempt=99)
+    ctx, task, retirer, _g, _l = await _deliver(ANSWER, read_on_attempt=99)
     assert task.attempts == agent_session._DELIVERY_ATTEMPTS, task.attempts
     assert not retirer.armed, "left an armed one-shot behind after giving up"
     after = ctx.messages[-1]["content"]

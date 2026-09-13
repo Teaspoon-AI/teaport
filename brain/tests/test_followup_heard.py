@@ -36,7 +36,7 @@ from teaport_brain import agent_session  # noqa: E402
 from teaport_brain.agent_session import _make_consult_followup  # noqa: E402
 
 from test_followup_injection import (  # noqa: E402
-    ANSWER, CALL_ID, REQUEST, _Context, _Gate, _Ledger, _Retirer, _Task,
+    ANSWER, CALL_ID, REQUEST, _Context, _Gate, _Ledger, _Retirer, _Task, _deliver,
 )
 
 agent_session._DELIVERY_START_TIMEOUT = 0.05
@@ -44,18 +44,8 @@ agent_session._DELIVERY_HEARD_TIMEOUT = 0.05
 agent_session._DELIVERY_CHART_TIMEOUT = 0.05
 
 
-async def _deliver(heard, read_on_attempt=1, text=ANSWER, cut=True):
-    ctx = _Context()
-    retirer = _Retirer()
-    task = _Task(ctx, retirer, read_on_attempt)
-    gate = _Gate(cut=cut)
-    ledger = _Ledger(heard)
-    await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, text, CALL_ID)
-    return ctx, task, retirer, gate, ledger
-
-
 async def test_a_delivery_the_caller_heard_is_not_repeated():
-    _ctx, task, _r, _g, _l = await _deliver(1.0, cut=False)
+    _ctx, task, _r, _g, _l = await _deliver(ANSWER, heard=1.0)
     assert task.attempts == 1, (
         f"queued {task.attempts} turns for an answer that was fully heard — repeating a "
         "delivery the caller already got is the recital bug this must not reintroduce")
@@ -63,7 +53,7 @@ async def test_a_delivery_the_caller_heard_is_not_repeated():
 
 async def test_an_answer_barged_over_at_zero_percent_is_said_again():
     """The live failure. heard~0% means the caller got nothing at all."""
-    _ctx, task, _r, gate, _l = await _deliver([0.0, 1.0], cut=[True, False])
+    _ctx, task, _r, gate, _l = await _deliver(ANSWER, heard=[0.0, 1.0], cut=[True, False])
     assert task.attempts == 2, (
         f"queued {task.attempts} turn(s) — an answer cut before any of it played was "
         "retired as delivered, which is exactly how the caller lost it live")
@@ -125,20 +115,20 @@ async def test_only_one_trigger_is_ever_live():
 
 async def test_a_mostly_heard_answer_is_left_alone():
     """Above the line the caller has the answer; saying it again is the worse failure."""
-    _ctx, task, _r, _g, _l = await _deliver(0.6)
+    _ctx, task, _r, _g, _l = await _deliver(ANSWER, heard=0.6, cut=True)
     assert task.attempts == 1, f"repeated an answer heard at 60% ({task.attempts} turns)"
 
 
 async def test_the_threshold_is_where_it_says_it_is():
     below, above = agent_session._MIN_HEARD - 0.01, agent_session._MIN_HEARD
-    _c, t_below, _r, _g, _l = await _deliver([below, 1.0])
-    _c, t_above, _r, _g, _l = await _deliver(above)
+    _c, t_below, _r, _g, _l = await _deliver(ANSWER, heard=[below, 1.0], cut=True)
+    _c, t_above, _r, _g, _l = await _deliver(ANSWER, heard=above, cut=True)
     assert t_below.attempts == 2, "just below the threshold must retry"
     assert t_above.attempts == 1, "at the threshold must not"
 
 
 async def test_it_stops_after_the_attempt_budget():
-    ctx, task, _r, _g, _l = await _deliver([0.0] * 6)
+    ctx, task, _r, _g, _l = await _deliver(ANSWER, heard=[0.0] * 6, cut=True)
     assert task.attempts == agent_session._DELIVERY_ATTEMPTS, (
         f"{task.attempts} attempts for a budget of {agent_session._DELIVERY_ATTEMPTS}")
     after = ctx.messages[-1]["content"]
@@ -150,7 +140,7 @@ async def test_it_stops_after_the_attempt_budget():
 async def test_an_uncharted_reply_is_not_repeated():
     """If the ledger never charts the reply we cannot tell, and not knowing is not
     grounds to say it twice."""
-    _ctx, task, _r, _g, _l = await _deliver(None)
+    _ctx, task, _r, _g, _l = await _deliver(ANSWER, heard=None, cut=True)
     assert task.attempts == 1, (
         "repeated a delivery whose outcome was unknown — an unnecessary repeat is worse "
         "than an unverified delivery")
@@ -160,7 +150,7 @@ async def test_a_flushed_turn_still_retries_on_its_own_terms():
     """The pre-existing path must survive: read_on_attempt=2 is a barge-in eating the
     queued turn before any completion reads it, which is a different failure from one
     that was read and not heard."""
-    _ctx, task, _r, _g, ledger = await _deliver(1.0, read_on_attempt=2, cut=False)
+    _ctx, task, _r, _g, ledger = await _deliver(ANSWER, read_on_attempt=2, heard=1.0)
     assert task.attempts == 2, "a flushed turn must still be re-queued"
     assert ledger.handed == 2, (
         "the heard-waiter must be armed once per attempt, and cancelled with the "
