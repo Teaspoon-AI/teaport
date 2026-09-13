@@ -397,42 +397,60 @@ class TeaportSTTService(WebsocketSTTService):
             await self._cancel_stranded_commit()
             await self._send_commit(final=True, why="vad-stop")
 
+    # ---- one-shot timers ---------------------------------------------------
+    # The stranded-segment backstop and the streaming segment boundary are both
+    # resettable one-shot timers, and both go through the two helpers here so the rules
+    # each one learned the hard way are written once:
+    #
+    #   * cancel_task is `async def` on BaseObject and is AWAITED. Called bare it returns
+    #     an un-awaited coroutine that cancels NOTHING: every re-arm left the previous
+    #     timer running, so a segment that streamed N deltas accumulated N live timers
+    #     and they all fired at once (live 2026-09-09 20:50:57.958 — six identical
+    #     commits in the same millisecond). Each one forces a final on the engine, and a
+    #     stale commit landing inside the NEXT utterance closes it early, which is a
+    #     fragment. It also inflated every backstop count measured that day. The only
+    #     visible symptom was one RuntimeWarning line: "coroutine
+    #     'BaseObject.cancel_task' was never awaited".
+    #   * create_task needs the TaskManager that setup() installs, so it can raise when
+    #     the caller runs outside a started pipeline. A timer that cannot arm must never
+    #     take the transcript path down with it — the backstop is armed inside
+    #     _handle_message on every delta, and raising there kills the receive loop and
+    #     with it ALL transcription, trading a rare lost turn for a call that hears
+    #     nothing. So the failure is handed back to the caller to decide, and the
+    #     un-awaited coroutine is closed rather than left to warn on every delta.
+
+    async def _restart_timer(self, attr: str, coro) -> Optional[Exception]:
+        """Cancel the timer task held in `self.<attr>`, if any, and start `coro` in its
+        place. Returns the exception when no task could be created (coro closed)."""
+        await self._cancel_timer(attr)
+        try:
+            setattr(self, attr, self.create_task(coro))
+        except Exception as e:
+            coro.close()
+            return e
+        return None
+
+    async def _cancel_timer(self, attr: str) -> None:
+        task = getattr(self, attr)
+        setattr(self, attr, None)
+        if task is not None:
+            await self.cancel_task(task)
+
     # ---- stranded-segment backstop -----------------------------------------
     # See _STRANDED_INTERIM_SECS for why this exists and why it is armed off interim
     # activity rather than off any turn frame.
 
     async def _arm_stranded_commit(self):
         """(Re)start the quiet timer for the segment currently streaming interims."""
-        await self._cancel_stranded_commit()
-        coro = self._stranded_commit_after_quiet()
-        try:
-            self._stranded_task = self.create_task(coro)
-        except Exception as e:
-            # A backstop that cannot arm must never take the transcript path down with
-            # it — this runs inside _handle_message, on every delta, and raising here
-            # would kill the receive loop and with it ALL transcription, trading a rare
-            # lost turn for a call that hears nothing. create_task needs the TaskManager
-            # that setup() installs, so this is reachable whenever _handle_message runs
-            # outside a started pipeline. Closed explicitly, or the un-awaited coroutine
-            # warns on every delta.
-            coro.close()
-            if not self._stranded_unavailable:
-                self._stranded_unavailable = True
-                logger.debug(f"{self}: stranded-segment backstop unavailable ({e}); "
-                             "a missed VAD stop will lose its turn")
+        err = await self._restart_timer("_stranded_task",
+                                        self._stranded_commit_after_quiet())
+        if err is not None and not self._stranded_unavailable:
+            self._stranded_unavailable = True
+            logger.debug(f"{self}: stranded-segment backstop unavailable ({err}); "
+                         "a missed VAD stop will lose its turn")
 
     async def _cancel_stranded_commit(self):
-        # AWAITED. BaseObject.cancel_task is `async def`, and calling it bare returned an
-        # un-awaited coroutine that cancelled NOTHING: every re-arm left the previous timer
-        # running, so a segment that streamed N deltas accumulated N live timers and they
-        # all fired at once (live 2026-09-09 20:50:57.958 — six identical commits in the
-        # same millisecond). Each one forces a final on the engine, and a stale commit
-        # landing inside the NEXT utterance closes it early, which is a fragment. It also
-        # inflated every backstop count measured that day. The only visible symptom was one
-        # RuntimeWarning line: "coroutine 'BaseObject.cancel_task' was never awaited".
-        if self._stranded_task is not None:
-            task, self._stranded_task = self._stranded_task, None
-            await self.cancel_task(task)
+        await self._cancel_timer("_stranded_task")
 
     async def _stranded_commit_after_quiet(self):
         await asyncio.sleep(_STRANDED_INTERIM_SECS)
@@ -546,16 +564,15 @@ class TeaportSTTService(WebsocketSTTService):
         A later commit supersedes an earlier one -- if the caller pauses and resumes,
         the boundary belongs where they actually stopped, not where they first did.
         """
-        await self._cancel_stream_boundary()
-        self._boundary_task = self.create_task(self._boundary_after_delay())
+        err = await self._restart_timer("_boundary_task", self._boundary_after_delay())
+        if err is not None:
+            # A boundary drawn now, tail lost, beats a segment that never closes.
+            logger.warning(f"{self}: could not schedule the segment boundary ({err}); "
+                           "drawing it now")
+            await self._synthesize_final()
 
     async def _cancel_stream_boundary(self):
-        task, self._boundary_task = self._boundary_task, None
-        if task:
-            # cancel_task is `async def` on BaseObject. Calling it bare returns a
-            # coroutine and cancels nothing, which is how a previous timer in this file
-            # ended up firing six commits in one millisecond.
-            await self.cancel_task(task)
+        await self._cancel_timer("_boundary_task")
 
     async def _boundary_after_delay(self):
         await asyncio.sleep(_STREAM_TAIL_SECS)
