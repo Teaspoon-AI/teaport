@@ -21,28 +21,27 @@ require_pinned()
 
 import numpy as np  # noqa: E402
 
+from stt_harness import WireRecorder  # noqa: E402
 from teaport_brain.stt import TeaportSTTService  # noqa: E402
 
 
 class Sender(TeaportSTTService):
-    """Captures the audio run_stt would put on the wire, instead of sending it."""
+    """A real service whose socket is a recorder, so what a test asserts on is what
+    run_stt actually sent -- not the transform re-applied by the test."""
 
     def __init__(self, makeup_db=0.0):
         super().__init__(url="ws://127.0.0.1:1/none", makeup_db=makeup_db)
-        self.sent = []
+        self._websocket = WireRecorder()
 
     async def start_processing_metrics(self):
         pass
 
     async def _send_via(self, audio):
-        # Drive run_stt with no websocket; capture what it accounted as sent.
-        self._websocket = None
+        """Drive run_stt with `audio`; return (bytes on the wire, bytes accounted)."""
         before = self._seg_bytes
         async for _ in self.run_stt(audio):
             pass
-        # run_stt applies the gain, then accounts len(audio) into _seg_bytes; recover the
-        # gained bytes by re-applying the pure transform (the method under test).
-        return self._apply_makeup(audio), self._seg_bytes - before
+        return self._websocket.audio(), self._seg_bytes - before
 
 
 def _pcm(samples):

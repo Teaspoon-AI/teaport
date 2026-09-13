@@ -20,78 +20,62 @@
 # Run: python test_streaming_backend.py   (or via the suite)
 #
 import asyncio
-import json
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import teaport_brain  # noqa: E402, F401
+from stt_harness import WireRecorder  # noqa: E402
 from teaport_brain.stt import TeaportSTTService  # noqa: E402
 
 
-class _WS:
-    def __init__(self):
-        self.sent = []
+class Recorder(TeaportSTTService):
+    """A real service (see stt_harness): a recording socket, the boundary timer as a
+    plain asyncio task, and the frames and synthesised finals captured."""
 
-    async def send(self, raw):
-        self.sent.append(json.loads(raw))
+    def __init__(self, streaming):
+        super().__init__(url="ws://127.0.0.1:1/none", streaming_backend=streaming)
+        self._websocket = WireRecorder()
+        self.handled = []
+        self.pushed = []
 
-    def types(self):
-        return [m["type"] for m in self.sent]
+    async def start_processing_metrics(self):
+        pass
 
-    def commits(self):
-        return [m for m in self.sent if m["type"] == "input_audio_buffer.commit"]
+    async def push_frame(self, frame, direction=None):
+        self.pushed.append(frame)
+
+    # create_task/cancel_task come from BaseObject and need the task manager setup()
+    # installs; outside a pipeline they are plain asyncio tasks, so the boundary timer
+    # can be driven deterministically instead of slept through.
+    def create_task(self, coro, name=None):
+        return asyncio.get_running_loop().create_task(coro)
+
+    async def cancel_task(self, task, timeout=None):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    async def _handle_message(self, msg):
+        self.handled.append(msg)
+        self._interim_buffer = ""          # the real handler clears it; mirror that
 
 
 def _svc(streaming):
-    s = TeaportSTTService.__new__(TeaportSTTService)
-    s._name = "TeaportSTTService#test"      # BaseObject.__str__ reads this; run_stt logs
-    s._streaming = streaming
-    s._gen_started = False
-    s._websocket = _WS()
-    s._interim_buffer = ""
-    s._seg_bytes = 0
-    s._commit_at = None
-    s._commit_why = ""
-    s._seg_interims = 0
-    s._boundary_task = None
-    s._makeup_scale = 1.0           # run_stt calls _apply_makeup; 1.0 is the no-op path
-    s.handled = []
-    s.scheduled = []
-
-    # create_task/cancel_task come from BaseObject; stand in for them so the boundary
-    # timer can be driven deterministically instead of slept through.
-    def create_task(coro):
-        t = asyncio.get_event_loop().create_task(coro)
-        s.scheduled.append(t)
-        return t
-    s.create_task = create_task
-
-    async def cancel_task(t, timeout=None):
-        t.cancel()
-        try:
-            await t
-        except (asyncio.CancelledError, Exception):     # noqa: BLE001
-            pass
-    s.cancel_task = cancel_task
-
-    async def handle(msg):
-        s.handled.append(msg)
-        s._interim_buffer = ""          # the real handler clears it; mirror that
-    s._handle_message = handle
-    return s
+    return Recorder(streaming)
 
 
 async def _audio(s, n=3):
     for _ in range(n):
-        async for _f in TeaportSTTService.run_stt(s, b"\x11\x22" * 160):
+        async for _f in s.run_stt(b"\x11\x22" * 160):
             pass
 
 
 async def test_streaming_starts_generation_once_and_only_once():
     s = _svc(True)
-    s.start_processing_metrics = lambda: asyncio.sleep(0)
     await _audio(s, 4)
     commits = s._websocket.commits()
     assert len(commits) == 1, f"{len(commits)} commits sent; generation starts ONCE"
@@ -103,10 +87,9 @@ async def test_streaming_starts_generation_once_and_only_once():
 async def test_streaming_never_sends_a_segment_commit():
     """The VAD stop must not reach the wire: it would close the stream for the call."""
     s = _svc(True)
-    s.start_processing_metrics = lambda: asyncio.sleep(0)
     await _audio(s, 2)
     s._interim_buffer = "Stop."
-    await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+    await s._send_commit(final=True, why="vad-stop")
     await asyncio.sleep(0.02)
     finals = [c for c in s._websocket.commits() if c["final"] is True]
     assert not finals, (
@@ -123,10 +106,9 @@ async def test_the_segment_boundary_waits_for_the_trailing_deltas():
     real, stt_mod._STREAM_TAIL_SECS = stt_mod._STREAM_TAIL_SECS, 0.05
     try:
         s = _svc(True)
-        s.start_processing_metrics = lambda: asyncio.sleep(0)
         await _audio(s, 1)
         s._interim_buffer = "Hey, can you"
-        await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+        await s._send_commit(final=True, why="vad-stop")
         assert not s.handled, (
             "the boundary was drawn at the VAD stop — the trailing deltas have not "
             "arrived yet and the tail of this utterance will land in the next segment")
@@ -142,10 +124,9 @@ async def test_the_segment_boundary_is_drawn_from_the_interim_buffer():
     import teaport_brain.stt as stt_mod
     real, stt_mod._STREAM_TAIL_SECS = stt_mod._STREAM_TAIL_SECS, 0.02
     s = _svc(True)
-    s.start_processing_metrics = lambda: asyncio.sleep(0)
     await _audio(s, 1)
     s._interim_buffer = "  Okay, stop.  "
-    await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+    await s._send_commit(final=True, why="vad-stop")
     await asyncio.sleep(0.08)
     stt_mod._STREAM_TAIL_SECS = real
     assert len(s.handled) == 1, s.handled
@@ -159,11 +140,10 @@ async def test_the_synthesised_final_carries_its_text_for_the_segment_log():
     healthy streaming segment as 'EMPTY -- audio in, no words out' and drive the
     empty-final run detector into warning about a working system."""
     s = _svc(True)
-    s.start_processing_metrics = lambda: asyncio.sleep(0)
     import teaport_brain.stt as stt_mod
     real, stt_mod._STREAM_TAIL_SECS = stt_mod._STREAM_TAIL_SECS, 0.02
     s._interim_buffer = "Try it again."
-    await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+    await s._send_commit(final=True, why="vad-stop")
     await asyncio.sleep(0.08)
     stt_mod._STREAM_TAIL_SECS = real
     assert s.handled[0]["text"] == "Try it again."
@@ -171,10 +151,9 @@ async def test_the_synthesised_final_carries_its_text_for_the_segment_log():
 
 async def test_the_incumbent_path_is_untouched():
     s = _svc(False)
-    s.start_processing_metrics = lambda: asyncio.sleep(0)
     await _audio(s, 3)
     assert not s._websocket.commits(), "streaming logic leaked into the incumbent path"
-    await TeaportSTTService._send_commit(s, final=True, why="vad-stop")
+    await s._send_commit(final=True, why="vad-stop")
     commits = s._websocket.commits()
     assert len(commits) == 1 and commits[0]["final"] is True, (
         f"the incumbent must still get its per-segment commit(final=True): {commits}")
@@ -184,10 +163,9 @@ async def test_the_incumbent_path_is_untouched():
 async def test_a_reconnect_restarts_generation():
     """A new session needs a new start commit, or the stream is dead for the call."""
     s = _svc(True)
-    s.start_processing_metrics = lambda: asyncio.sleep(0)
     await _audio(s, 2)
     assert s._gen_started is True
-    s._websocket = _WS()                    # reconnected
+    s._websocket = WireRecorder()                    # reconnected
     s._gen_started = False                  # exactly what _connect_websocket resets
     await _audio(s, 2)
     commits = s._websocket.commits()
@@ -202,19 +180,13 @@ async def test_blank_deltas_are_not_announced_as_hypotheses():
     Live 2026-09-10 22:20: 210 interims across one 16.9 s segment, then
     "SILENT TURN ... reached=['nothing']" while the caller said "Hello?" four times."""
     s = _svc(True)
-    pushed = []
-
-    async def push(frame, direction=None):
-        pushed.append(frame)
-    s.push_frame = push
-    s._user_id = "u"
-    s._language = None
     s._arm_stranded_commit = lambda: asyncio.sleep(0)
 
     for piece in ("", " ", "\n", "Hello", " there"):
         await TeaportSTTService._handle_message(
             s, {"type": "transcription.delta", "delta": piece})
 
+    pushed = s.pushed
     assert len(pushed) == 2, (
         f"{len(pushed)} interim frames pushed for 5 deltas, 3 of them blank — every "
         "blank one re-arms the turn-stop timeout and starves the turn")
@@ -226,17 +198,11 @@ async def test_the_incumbent_still_announces_every_delta():
     """Our engine only sends a delta when it has text, so filtering there would be
     a behaviour change with no cause."""
     s = _svc(False)
-    pushed = []
-
-    async def push(frame, direction=None):
-        pushed.append(frame)
-    s.push_frame = push
-    s._user_id = "u"
-    s._language = None
     s._arm_stranded_commit = lambda: asyncio.sleep(0)
     for piece in ("", "Hi"):
         await TeaportSTTService._handle_message(
             s, {"type": "transcription.delta", "delta": piece})
+    pushed = s.pushed
     assert len(pushed) == 2, f"incumbent path changed: {len(pushed)} frames for 2 deltas"
 
 
