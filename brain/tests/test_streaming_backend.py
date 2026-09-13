@@ -152,7 +152,6 @@ async def test_the_segment_boundary_is_drawn_from_the_interim_buffer():
     msg = s.handled[0]
     assert msg["type"] == "transcription.done"
     assert msg["text"] == "Okay, stop.", msg
-    assert msg.get("streaming_boundary") is True
 
 
 async def test_the_synthesised_final_carries_its_text_for_the_segment_log():

@@ -252,8 +252,8 @@ class TeaportSTTService(WebsocketSTTService):
         self._url = url
         self._model = model
         self._language = language
-        # Precompute the linear scale once; 0 dB -> 1.0 -> the fast no-op path below.
-        self._makeup_db = makeup_db
+        # Only the linear scale is kept, precomputed once; 0 dB -> 1.0 -> the fast no-op
+        # path in _apply_makeup.
         self._makeup_scale = float(10.0 ** (makeup_db / 20.0)) if makeup_db else 1.0
         self._commit_on_stop = commit_on_user_stopped_speaking
 
@@ -572,8 +572,7 @@ class TeaportSTTService(WebsocketSTTService):
         words out" and trip the empty-final run detector.
         """
         text = self._interim_buffer.strip()
-        await self._handle_message({"type": "transcription.done", "text": text,
-                                    "streaming_boundary": True})
+        await self._handle_message({"type": "transcription.done", "text": text})
 
     # ---- connection (WebsocketSTTService contract) -------------------------
 

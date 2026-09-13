@@ -502,7 +502,7 @@ def make_stt(makeup_db: float = 0.0) -> TeaportSTTService:
     front-end rather than read from env here, because both brains share brain.env and
     only the SIP one should apply it.
     """
-    streaming = (os.getenv("TEAPORT_STT_BACKEND", "") or "").strip().lower() == "streaming"
+    streaming = os.getenv("TEAPORT_STT_BACKEND", "").strip().lower() == "streaming"
     if not streaming:
         return TeaportSTTService(url=TEAPORT_URL, makeup_db=makeup_db)
     url = os.getenv("TEAPORT_STT_URL", "ws://127.0.0.1:8100/v1/realtime")
