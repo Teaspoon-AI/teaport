@@ -120,6 +120,16 @@ from teaport_brain.sip_transport import (
 HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", False)
 _HD_TAIL_S = env_num("SIP_HALF_DUPLEX_TAIL_S", "0.8", float)
 
+# Caller-path makeup gain (dB) applied to the audio the transcriber sees, to recover the
+# quiet speech a caller produces over the bot (~4 dB down within a call, and the segments
+# the engine drops are the quietest). The bridge's echo canceller is NOT the cause; the
+# rationale, the measurements and that correction live in one place, above _apply_makeup
+# in stt.py. SIP-only, and read HERE rather than in make_stt so the OpenClaw brain --
+# which shares this brain.env but does its own client-side AEC -- never picks it up.
+# 0 = off. Measured 2026-09-11: +6 dB recovered the quiet barge-in "stop"s the engine was
+# dropping with no regressions on 205 clips. Default off pending a live call to confirm.
+STT_MAKEUP_DB = env_num("SIP_STT_MAKEUP_DB", "0", float)
+
 
 class HalfDuplexInputGate(FrameProcessor):
     """Swallow caller InputAudioRawFrames while the bot is speaking (+ a tail), so
@@ -186,6 +196,9 @@ async def run(sock_path: str):
         if HALF_DUPLEX else
         "half-duplex input gate: off — barge-in live; the bridge cancels echo (AEC)"
     )
+    if STT_MAKEUP_DB:
+        logger.info(f"STT makeup gain: +{STT_MAKEUP_DB:g} dB on the caller signal into the "
+                    "transcriber, recovering quiet speech over the bot -- see stt.py")
 
     # Single active call in protocol v0. Holds (call_id, session, runner_task,
     # transport) for the currently-running per-call pipeline, or None between calls.
@@ -339,6 +352,7 @@ async def run(sock_path: str):
         session = build_agent_session(
             transport,
             input_processors=input_procs or None,
+            stt_makeup_db=STT_MAKEUP_DB,
         )
 
         @session.task.event_handler("on_pipeline_finished")

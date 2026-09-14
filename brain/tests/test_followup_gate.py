@@ -33,6 +33,8 @@ from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     FunctionCallResultProperties,
@@ -179,6 +181,67 @@ async def test_a_pause_shorter_than_the_quiet_window_is_not_a_window():
     gate = _gate(quiet_secs=0.3)
     assert not await gate.wait_until_idle(max_wait=0.1)
     assert await gate.wait_until_idle(max_wait=1.0)         # the same gate, given room
+
+
+
+# --- watching a delivery to completion -----------------------------------------
+#
+# The follow-up injector needs to know whether the caller got the answer. It used to
+# ask the ledger, which charts a CUT immediately but does not chart a reply that simply
+# FINISHED until the bot next speaks: _window_closed advances playout from a layout
+# anchored on BotStartedSpeaking, ~0.2s after the audio really starts, so the estimate
+# overshoots the end and the last fraction is never accounted.
+#
+# Live 2026-09-10 17:37: a 27.9s delivery played in full and the injector sat on the
+# ledger for its whole 45s timeout before reporting "unknown". Completion now comes from
+# the transport's own frames, which are prompt and mean what they say.
+
+
+async def test_a_delivery_that_finishes_settles_as_not_interrupted():
+    gate = _gate()
+    d = gate.watch_delivery()
+    await _feed(gate, BotStartedSpeakingFrame())
+    assert not d.done.is_set(), "settled while the bot was still speaking"
+    await _feed(gate, BotStoppedSpeakingFrame())
+    assert d.done.is_set(), (
+        "a reply that played to the end never settled — the injector waits out its "
+        "whole timeout and calls every quiet delivery unverified")
+    assert not d.interrupted
+
+
+async def test_a_delivery_that_is_cut_settles_as_interrupted():
+    gate = _gate()
+    d = gate.watch_delivery()
+    await _feed(gate, BotStartedSpeakingFrame(), InterruptionFrame())
+    assert d.done.is_set() and d.interrupted, "a barged-over reply must read as cut"
+
+
+async def test_a_delivery_cut_before_it_speaks_still_settles():
+    """An interruption between queueing and the first audio: the caller heard none of
+    it, and nothing later will start or stop it."""
+    gate = _gate()
+    d = gate.watch_delivery()
+    await _feed(gate, InterruptionFrame())
+    assert d.done.is_set() and d.interrupted
+
+
+async def test_someone_elses_bot_turn_does_not_settle_our_watch():
+    """BotStopped for a reply that is not ours (ours has not started) must not be read
+    as our delivery finishing."""
+    gate = _gate()
+    d = gate.watch_delivery()
+    await _feed(gate, BotStoppedSpeakingFrame())
+    assert not d.done.is_set(), (
+        "a BotStopped from a turn our reply never started settled it anyway — the "
+        "injector would call an undelivered answer delivered")
+
+
+async def test_a_dropped_watch_is_forgotten():
+    gate = _gate()
+    d = gate.watch_delivery()
+    gate.drop_delivery(d)
+    await _feed(gate, BotStartedSpeakingFrame(), BotStoppedSpeakingFrame())
+    assert not d.done.is_set(), "a dropped watch still settled"
 
 
 def main():

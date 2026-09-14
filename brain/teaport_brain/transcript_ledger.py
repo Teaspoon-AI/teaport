@@ -54,6 +54,7 @@
 # drives nothing.
 #
 
+import asyncio
 import os
 import re
 from collections import OrderedDict, deque
@@ -226,6 +227,12 @@ class TranscriptLedger(BaseObserver):
     def __init__(self, tts=None, output=None):
         super().__init__()
         self.events: List[Utterance] = []
+        # Futures handed out by next_assistant(), resolved by _add. The consult
+        # follow-up injector is the caller: it can tell that the model ANSWERED from
+        # its trigger, but not whether the caller HEARD the answer, and only the
+        # ledger knows that (heard_fraction). See next_assistant.
+        self._assistant_waiters: List[tuple] = []   # (future, min_turn_seq)
+        self._turn_seq = 0
         self._tts = tts
         self._output = output
         self._user_start: Optional[float] = None
@@ -616,7 +623,9 @@ class TranscriptLedger(BaseObserver):
         elif (self._gen is not None and self._gen["turn"] is None
               and "".join(self._gen["parts"]).strip()):
             entry = self._gen  # live: the entry completes on the response end
+        self._turn_seq += 1
         turn = {"ctx": fctx, "entry": entry,  # entry None: anonymous, charts nothing
+                "seq": self._turn_seq,  # opening order; next_assistant() keys on it
                 "t_open": t,          # when the ledger saw the turn begin
                 "audio_start": None,  # when its first chunk started playing
                 "last_end": None,     # when its last played-out chunk ended
@@ -841,14 +850,49 @@ class TranscriptLedger(BaseObserver):
             logger.warning(f"LEDGER assistant reply was never played: {intended[:60]!r}")
         self._add(Utterance("assistant", intended, t_start, t_end,
                             interrupted=interrupted, heard_fraction=frac,
-                            heard_text=heard_text))
+                            heard_text=heard_text), turn_seq=turn["seq"])
 
-    def _add(self, u: Utterance):
+    def next_assistant(self) -> "asyncio.Future":
+        """A future resolved with the next assistant utterance charted.
+
+        Exists for the consult follow-up injector. Its delivery loop can tell that a
+        completion READ its trigger, and used to treat that as success — but a reply
+        the caller was talking over never reaches them. Live 2026-09-10 17:13: the
+        follow-up was delivered into a 10 ms race with the caller starting to speak,
+        cut 84 ms into playout at heard~0%, and retired as delivered; the caller then
+        asked for the same answer three more times. `heard_fraction` is the only
+        signal that separates those two outcomes and it is charted here.
+
+        Resolves only for a reply whose turn OPENED after this was armed — arm it
+        before queueing the turn. "The next utterance charted" was the first version,
+        and it was wrong: the ledger charts a reply that simply finished LATE, at the
+        next bot activity, so on 2026-09-11 14:23 the interruption that cut the pastry
+        answer at 0% heard first charted the previous, fully heard "Seventeen." one
+        line above it; the waiter took that, the injector read heard~100% and returned
+        as delivered, and the caller never got the answer — the second time this
+        exact failure was reported. The gate's "no assistant turn in flight" only
+        means none is PLAYING; a finished-but-uncharted one is still in the ledger.
+        """
+        fut = asyncio.get_running_loop().create_future()
+        self._assistant_waiters.append((fut, self._turn_seq + 1))
+        return fut
+
+    def _add(self, u: Utterance, turn_seq: Optional[int] = None):
         for e in self.events:
             if e.speaker != u.speaker and u.t_start < e.t_end and e.t_start < u.t_end:
                 u.overlap = True
                 e.overlap = True
         self.events.append(u)
+        if u.speaker == "assistant" and self._assistant_waiters:
+            keep = []
+            for fut, min_seq in self._assistant_waiters:
+                if fut.done():              # a caller that timed out cancelled its own
+                    continue
+                if turn_seq is not None and turn_seq >= min_seq:
+                    fut.set_result(u)
+                else:
+                    keep.append((fut, min_seq))   # a stale reply charted late: not ours
+            self._assistant_waiters = keep
         self._log(u)
 
     def _log(self, u: Utterance):

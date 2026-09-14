@@ -112,6 +112,40 @@ class FollowupTrigger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class Delivery:
+    """One reply being watched from the moment it is queued until it settles.
+
+    The follow-up injector needs to know whether the caller got the answer, and the
+    two outcomes have very different signals. A reply that is CUT is charted by the
+    ledger straight away, with the fraction that played. A reply that finishes is not
+    charted until something else happens: _window_closed advances playout from a layout
+    anchored on BotStartedSpeaking, which lands ~0.2s after the audio really starts, so
+    the estimate overshoots the end and the last fraction of a second is never
+    accounted. The turn stays open until the NEXT BotStoppedSpeaking, which never comes
+    while the caller is silent.
+
+    Live 2026-09-10 17:37: a 27.9s delivery played in full, and the injector sat on the
+    ledger for the whole 45s timeout before reporting "unknown". Harmless for the
+    ledger's own consumer -- a fully heard turn has nothing to correct -- but it left
+    the heard check inert on the quiet path, which is the common one.
+
+    So completion comes from the transport's own frames, which are prompt and mean
+    exactly what they say, and the ledger is consulted only for the fraction, only when
+    there was a cut.
+    """
+
+    __slots__ = ("spoke", "interrupted", "done")
+
+    def __init__(self):
+        self.spoke = False
+        self.interrupted = False
+        self.done = asyncio.Event()
+
+    def _settle(self, interrupted: bool) -> None:
+        self.interrupted = interrupted
+        self.done.set()
+
+
 class FollowupGate(FrameProcessor):
     """Tracks whether the user is speaking, the bot is speaking, or the LLM is
     mid-response -- and, separately, whether a TURN is still in flight -- and lets
@@ -152,6 +186,31 @@ class FollowupGate(FrameProcessor):
         # Set == idle AND no turn in flight: what the follow-up injector waits for.
         self._clear = asyncio.Event()
         self._clear.set()
+        # Replies being watched to completion — see Delivery and watch_delivery.
+        self._deliveries: list = []
+
+    def watch_delivery(self) -> Delivery:
+        """Watch the reply about to be queued, until it finishes playing or is cut.
+
+        Arm it BEFORE queueing the turn: an interruption can land between the queue
+        and the first audio, and that reply was never heard either.
+        """
+        d = Delivery()
+        self._deliveries.append(d)
+        return d
+
+    def drop_delivery(self, d: Delivery) -> None:
+        """Stop watching a reply that will never come — its turn was flushed before any
+        completion read the trigger, so nothing will start or cut it."""
+        if d in self._deliveries:
+            self._deliveries.remove(d)
+
+    def _settle_deliveries(self, interrupted: bool, *, only_if_spoke: bool = False):
+        for d in list(self._deliveries):
+            if only_if_spoke and not d.spoke:
+                continue        # not our reply yet: the transport is still draining
+            d._settle(interrupted)
+            self._deliveries.remove(d)
 
     def _refresh(self):
         busy = self._user or self._bot or self._llm
@@ -176,9 +235,15 @@ class FollowupGate(FrameProcessor):
             self._refresh()
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._bot = True
+            for d in self._deliveries:
+                d.spoke = True
             self._refresh()
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot = False
+            # The transport stops speaking once its queue has drained, so a watched
+            # reply that had started is now fully played. One that has not started yet
+            # belongs to a later turn and keeps waiting.
+            self._settle_deliveries(interrupted=False, only_if_spoke=True)
             self._refresh()
         elif isinstance(frame, LLMFullResponseStartFrame):
             self._llm = True
@@ -207,6 +272,9 @@ class FollowupGate(FrameProcessor):
             # discards any end frame the TTS service was holding.
             self._llm = False
             self._turn = False
+            # Every watched reply is cut — including one queued but not yet speaking,
+            # which the caller heard none of.
+            self._settle_deliveries(interrupted=True)
             self._refresh()
         elif isinstance(frame, FunctionCallInProgressFrame):
             # The end frame is NOT guaranteed to arrive: for a completion that

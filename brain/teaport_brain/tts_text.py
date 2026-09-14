@@ -140,6 +140,12 @@ def fold_unspeakable(text: str) -> str:
 # Hyphen-minus only, never the en/em dash: "Pastries – cookies" is mid-sentence
 # punctuation that _CLAUSE_SPLIT relies on as a clause seam, and a dash rule that
 # reached inside a line would eat it.
+# KNOWN false positive: a LINE that begins with a bare number and a period ("42. That's
+# the count.") loses the number, because it looks exactly like an ordered-list item. Live
+# this is harmless -- pipecat's sentence splitter hands this normalizer "42." with no
+# trailing space, so `[ \t]+` fails to match -- but a whole string fed to
+# split_clauses_ramp (a spoken warning, a consult delivery) is exposed. The list case is
+# far more common than a sentence opening with a number, so the rule stays; noting the shape.
 _LIST_MARKER = re.compile(r"(?m)^[ \t]*(?:[-*+•·]|#{1,6}|\d{1,3}[.)])[ \t]+")
 
 # What a line break becomes once its marker is gone. The bullet was carrying the pause
