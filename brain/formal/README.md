@@ -18,8 +18,18 @@ TLC needs Java 11+ and `tla2tools.jar`
 ([tlaplus releases](https://github.com/tlaplus/tlaplus/releases)):
 
 ```sh
+TLA_TOOLS=/path/to/tla2tools.jar ./check.sh
+```
+
+`check.sh` runs every row and **gates**: it exits nonzero if any row misses the
+expectation in its last column — an `expected: holds` design that is violated, an
+`expected: FAILS <Prop>` design that holds or that fails on a *different* invariant
+than the one it names, or a row with no verdict at all. Run a single row by hand with,
+for example:
+
+```sh
 java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
-     -nowarning -workers auto -config retireOnRead.cfg Followup.tla
+     -nowarning -workers auto -config fu_retireOnRead.cfg Followup.tla
 ```
 
 ## `Followup.tla` — the async `ask_openclaw` follow-up
@@ -48,10 +58,13 @@ The as-written design violates **both**: the trigger can be retired before anyth
 read it, *and* — on a different interleaving — stay live long enough for two
 completions to read it. The two live incidents it caused were one bug, not two.
 
-Each failing row in `check.sh` therefore checks exactly **one** property. A rejected
-design often breaks several, and TLC reports whichever its search reaches first, which
-varies with the seed; a row checking several at once prints a different name run to run
-and is worthless as a gate.
+Each failing row in `check.sh` **must name** the one property it is kept to demonstrate
+(a nameless `FAILS` is rejected), and the gate insists that named property is the one
+that fell. A rejected design often
+breaks several, and TLC reports whichever its search reaches first (seed-dependent), so
+naming pins the intended counterexample: a guard invariant (`TypeOK`, …) breaking
+instead — which would otherwise mask the real one — is caught as a wrong-property
+mismatch, not waved through.
 
 `asWritten` fails in 8 steps, and the trace needs nothing exotic — just the user
 speaking shortly after a consult lands:
