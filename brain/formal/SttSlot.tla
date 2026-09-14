@@ -79,9 +79,11 @@ Teardown(s) ==
     /\ pc' = [pc EXCEPT ![s] = "done"]
     /\ holder' = IF holder = s THEN NoOne ELSE holder
     \* A session that never held the slot (evicted while settling) has nothing for
-    \* the engine to free -- and its teardown must not CLEAR a close already in
-    \* flight for whoever did. That needs three same-front-end sessions to reach,
-    \* which is why the configs use {g1, g2, g3}.
+    \* the engine to free -- and its teardown must NOT clear a close already in
+    \* flight for whoever did. The old `closing' = (holder = s)` did exactly that,
+    \* a spurious EngineFreesSlot. Reachable with two same-front-end sessions
+    \* (probe ~(\E s: pc[s]="teardown" /\ holder # s /\ closing) is violated at
+    \* {g1, g2}); the configs run three for extra arbiter coverage.
     /\ closing' = (closing \/ (holder = s))
     /\ UNCHANGED falseBusy
 
