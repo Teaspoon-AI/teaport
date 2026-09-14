@@ -78,7 +78,11 @@ Teardown(s) ==
     /\ pc[s] = "teardown"
     /\ pc' = [pc EXCEPT ![s] = "done"]
     /\ holder' = IF holder = s THEN NoOne ELSE holder
-    /\ closing' = (holder = s)
+    \* A session that never held the slot (evicted while settling) has nothing for
+    \* the engine to free -- and its teardown must not CLEAR a close already in
+    \* flight for whoever did. That needs three same-front-end sessions to reach,
+    \* which is why the configs use {g1, g2, g3}.
+    /\ closing' = (closing \/ (holder = s))
     /\ UNCHANGED falseBusy
 
 \* The engine processes the close and frees the slot. Unbounded but finite:

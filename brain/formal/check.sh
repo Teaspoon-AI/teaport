@@ -2,15 +2,19 @@
 # Run every model in this directory. Needs Java 11+ and tla2tools.jar:
 #   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh
 #
-# Each line prints the design being checked and whether it holds. The FAILING rows
-# are intentional: they are the designs we rejected, kept so the counterexamples
-# stay reproducible. Only the rows marked (expected: holds) must hold.
+# Each row prints the design checked and its verdict, and is GATED against the
+# expectation in the last column: this script exits nonzero if any row misses it in
+# either direction -- an "expected: holds" design that is violated, or an
+# "expected: FAILS" design that stopped failing (a lost counterexample) -- or if TLC
+# produced no verdict at all. The FAILING rows are intentional: they are the designs
+# we rejected, kept so their counterexamples stay reproducible.
 #
 # One property per failing row, deliberately. A rejected design often violates more
 # than one, and TLC reports whichever its search reaches first — which varies with the
 # seed, so a row checking several at once prints a different name run to run and is
 # useless as a gate.
 set -u
+fails=0            # rows whose verdict did not match the expectation they declare
 JAR="${TLA_TOOLS:-tla2tools.jar}"
 [ -f "$JAR" ] || { echo "tla2tools.jar not found; set TLA_TOOLS=/path/to/tla2tools.jar" >&2; exit 2; }
 cd "$(dirname "$0")"
@@ -19,9 +23,36 @@ run() {  # run <module> <config> <expectation>
   printf '  %-12s %-32s %-26s ' "$1" "$2" "$3"
   out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -nowarning -workers auto \
           -config "$2.cfg" "$1" 2>&1)
-  if grep -qi "no error has been found" <<<"$out"; then echo "holds"
-  elif grep -q "is violated" <<<"$out"; then grep -oE "Invariant [A-Za-z]+ is violated" <<<"$out" | head -1
-  else echo "ERROR (not a verdict): $(grep -m1 -E "Error|error|Exception" <<<"$out")"; fi
+
+  # The verdict TLC actually produced, and a human label for it.
+  if grep -qi "no error has been found" <<<"$out"; then
+    verdict=holds; label=holds
+  elif grep -qE "is violated|were violated" <<<"$out"; then
+    verdict=fails
+    label=$(grep -oE "(Invariant|Property) [A-Za-z]+ is violated" <<<"$out" | head -1)
+    [ -n "$label" ] || label="a property is violated"
+  else
+    verdict=error; label="ERROR (not a verdict): $(grep -m1 -E "Error|error|Exception" <<<"$out")"
+  fi
+  printf '%s' "$label"
+
+  # What the row declares it expects: the operative word in its expectation column.
+  case "$3" in
+    *FAILS*) expect=fails ;;
+    *holds*) expect=holds ;;
+    *)       expect=bad ;;
+  esac
+
+  # Gate in BOTH directions.
+  if [ "$expect" = bad ]; then
+    printf '   <-- BAD EXPECTATION (needs holds/FAILS)\n'; fails=$((fails + 1))
+  elif [ "$verdict" = error ]; then
+    printf '   <-- NO VERDICT\n'; fails=$((fails + 1))
+  elif [ "$verdict" != "$expect" ]; then
+    printf '   <-- MISMATCH (expected %s)\n' "$expect"; fails=$((fails + 1))
+  else
+    printf '\n'
+  fi
 }
 
 echo "Followup.tla — retiring the consult follow-up's one-shot trigger"
@@ -94,3 +125,11 @@ run LedgerPlayout.tla lph_phantom      "(expected: holds — hermetic wiring)"
 run LedgerPlayout.tla lph_once         "(expected: holds — hermetic wiring, two replies)"
 run LedgerPlayout.tla lph_wrongText    "(expected: holds — hermetic wiring, two replies)"
 run LedgerPlayout.tla lph_premature    "(expected: FAILS — hermetic wiring takes ended as synthesized)"
+
+echo
+if [ "$fails" -eq 0 ]; then
+  echo "OK -- every row met its declared expectation."
+else
+  echo "FAIL -- $fails row(s) did not meet expectation (see the <-- markers above)."
+  exit 1
+fi

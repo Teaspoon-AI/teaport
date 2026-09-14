@@ -29,3 +29,6 @@ brain/teaport_brain/assets/
 
 # OS
 .DS_Store
+
+# TLC model-checker scratch: check.sh writes per-run state graphs and checkpoints here.
+brain/formal/states/
