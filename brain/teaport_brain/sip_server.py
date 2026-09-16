@@ -58,7 +58,7 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
-from teaport_brain import audio_dump
+from teaport_brain import agent_backend, audio_dump
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import SipProtocolSerializer
@@ -517,6 +517,7 @@ def main():
     parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),
                         help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()
+    logger.info(agent_backend.startup_line())
     logger.info("Priming TTS service...")
     make_tts()  # warm the engine TTS client once at startup
     asyncio.run(run(args.socket))

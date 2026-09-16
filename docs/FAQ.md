@@ -13,8 +13,12 @@
   repository are MIT. The engine is a separate component with its own license
   terms — see the license shown at install time. The installer downloads the
   engine for you.
-- **Can I run it without NemoClaw?** Yes — voice-only. Install NemoClaw later
-  and run the installer again to add the agent.
+- **Can I run it without NemoClaw?** Yes — voice-only. The installer writes
+  `TEAPORT_AGENT=none`: the brain keeps its local tools (time, host status,
+  voices) and reads its persona from `~/.config/teaport/persona.md`; web search,
+  memory and the desktop-agent consult need a gateway and are simply not
+  offered. Install NemoClaw or OpenClaw later and run the installer again to
+  add the agent.
 - **Can it answer phone calls?** Yes, over SIP — but it is **opt-in**. A fresh
   box is a local voice assistant only; nothing binds a SIP port until you run
   `teaport sip configure` and point it at your trunk/SBC. See

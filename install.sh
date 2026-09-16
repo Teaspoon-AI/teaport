@@ -900,11 +900,29 @@ phase_services() {
   write_env "$ETC/engine.env" \
     "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=240" "TTS_CTX=192" \
     "VOX_REQUIRE_DICT_G2P=1"
+  # TEAPORT_AGENT tells the brain what this fork already knows: with a gateway (host
+  # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and reads
+  # the workspace persona; voice-only it advertises the local tools alone and reads
+  # TEAPORT_PERSONA_FILE. Before this the brain assumed a gateway on every box and a
+  # voice-only one spent every turn on tools and a recall that had nothing to answer.
+  #
+  # Asymmetric on purpose. A detected gateway is positive evidence and is written plain,
+  # so installing OpenClaw later and re-running is all it takes to turn the tools on. NOT
+  # detecting one is not evidence of anything: detect_agent looks in $HOME, and a repair
+  # run as root or as another account (both supported — see write_env) sees a different
+  # home, would write `none`, and the next restart would silently strip a working box of
+  # its tools. So the voice-only path only SEEDS `none` — a first install gets it, an
+  # existing value (the installer's or the config page's) survives, and a box that truly
+  # loses its gateway is switched on the page.
+  local agent=("?TEAPORT_AGENT=none")
+  if [ -n "$AGENT_MODE" ]; then
+    agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT")
+  fi
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \
     "${LLM_URL_SEED}LLM_BASE_URL=$LLM_BASE_URL" "${LLM_MODEL_SEED}LLM_MODEL=$LLM_MODEL" \
     "TEAPORT_URL=ws://127.0.0.1:$ENGINE_PORT/v1/realtime" \
-    "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT" \
+    "${agent[@]}" \
     "TEAPORT_PERSONA_FILE=$SECRETS/persona.md" \
     "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1"
 

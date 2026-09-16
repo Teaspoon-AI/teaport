@@ -16,10 +16,19 @@
 #                   (offline theory-of-mind evals lifted grounding 4/21 -> 14/21);
 #                   preserve its wording, don't reword casually.
 #
+# The tools paragraph of the overlay comes in two versions, chosen by TEAPORT_AGENT
+# (agent_backend.py): with a gateway it names web_search / search_memory / ask_openclaw
+# and how to use them; without one it names only the local tools and says plainly what
+# the assistant cannot do, so the model does not promise a lookup it cannot make. The
+# delivery paragraphs are shared verbatim. Without a gateway the persona comes from
+# TEAPORT_PERSONA_FILE and the OpenClaw workspace is never read.
+#
 # Splitting persona out of the old monolithic SYSTEM_PROMPT is what lets OpenClaw
 # own identity while Pipecat keeps the tuned voice mechanics.
 #
 import os
+
+from teaport_brain.agent_backend import HAS_AGENT
 
 # --- identity (OpenClaw owns this at runtime; this is only the offline fallback).
 FALLBACK_PERSONA = (
@@ -31,7 +40,8 @@ FALLBACK_PERSONA = (
 
 # --- voice-surface mechanics (tools + delivery + heard-grounding). Moved verbatim
 #     from the old monolithic SYSTEM_PROMPT; the heard-grounding paragraph is tuned.
-VOICE_OVERLAY = (
+#     Composed below as tools paragraph + _DELIVERY; VOICE_OVERLAY is the gateway one.
+_TOOLS_WITH_AGENT = (
     "You have tools — use them instead of guessing: get_host_status (this "
     "machine's live free memory, CPU load, decode speed), get_current_time, "
     "web_search (search the web for anything current, factual, or that you don't "
@@ -55,6 +65,28 @@ VOICE_OVERLAY = (
     "ahead' or 'start' — say it is still in progress; you will be told the moment "
     "it completes. For everything else, just chat normally and helpfully — you "
     "are a capable conversational assistant, not only a tool caller. "
+)
+
+# The voice-only box: the same local tools, and an honest statement of what is not
+# there. Named so the model says "I can't look that up" instead of the ack it would
+# otherwise give before a search that never happens.
+_TOOLS_LOCAL = (
+    "You have tools — use them instead of guessing: get_host_status (this "
+    "machine's live free memory, CPU load, decode speed), get_current_time, and "
+    "list_voices / switch_voice (your speaking voices). If the user starts speaking "
+    "a different language, switch_voice to a voice for that language and reply in "
+    "it from then on; switch back the same way if they return to the previous "
+    "language. When the user asks about your status or the time, call the matching "
+    "tool directly; these are quick, so no preamble — just call silently. Never say "
+    "a tool's name or write any <function> text in your reply. You cannot search "
+    "the web, open a web page, or recall earlier conversations: if the user asks "
+    "for something you would need to look up, say so plainly and help with what "
+    "you know rather than guessing or promising to check. For everything else, just "
+    "chat normally and helpfully — you are a capable conversational assistant, not "
+    "only a tool caller. "
+)
+
+_DELIVERY = (
     "Your words are spoken aloud, so write them as they should be SAID, not "
     "written: spell out numbers, dates, times, units, and symbols. Say 'ten "
     "ten PM' not '10:10 PM', 'June tenth' not 'June 10', 'about twenty-nine "
@@ -101,6 +133,15 @@ VOICE_OVERLAY = (
     "interruption."
 )
 
+VOICE_OVERLAY = _TOOLS_WITH_AGENT + _DELIVERY
+VOICE_OVERLAY_LOCAL = _TOOLS_LOCAL + _DELIVERY
+
+
+def voice_overlay() -> str:
+    """The overlay for this box: gateway tools named only where there is a gateway."""
+    return VOICE_OVERLAY if HAS_AGENT else VOICE_OVERLAY_LOCAL
+
+
 # Shared source of truth for identity. The OpenClaw text agent should read the same
 # file (e.g. symlinked from its workspace AGENTS.md) so both surfaces are one agent.
 PERSONA_FILE = os.getenv(
@@ -146,10 +187,11 @@ def load_workspace_context() -> str:
 
 
 def load_persona() -> str:
-    """The shared identity + context text. Prefers the live OpenClaw workspace
-    files (the same ones the text agent reads); falls back to TEAPORT_PERSONA_FILE,
-    then the baked-in FALLBACK_PERSONA, so the voice loop never hard-fails."""
-    ws = load_workspace_context()
+    """The shared identity + context text. With a gateway, prefers the live OpenClaw
+    workspace files (the same ones the text agent reads); without one there is no
+    workspace and TEAPORT_PERSONA_FILE is the source. Falls back to the baked-in
+    FALLBACK_PERSONA, so the voice loop never hard-fails."""
+    ws = load_workspace_context() if HAS_AGENT else ""
     if ws:
         return ws
     try:
@@ -166,4 +208,4 @@ def build_system_prompt(persona: str | None = None) -> str:
     """Compose the voice system prompt: shared identity + voice-only overlay.
     Pass a persona (e.g. fetched at session start) or leave None to load it."""
     base = (persona or "").strip() or load_persona()
-    return base + "\n\n" + VOICE_OVERLAY
+    return base + "\n\n" + voice_overlay()
