@@ -97,6 +97,13 @@ teaport-brain = "teaport_brain.gateway_server:main"
 where = ["."]
 include = ["teaport_brain*"]
 
+# Non-.py files the wheel must carry. With pyproject-only config setuptools includes
+# package data only when listed here (no MANIFEST.in, no setuptools-scm), so an
+# /opt/teaport/venv install would otherwise ship the code without its schema — and
+# without assets/typing.wav, which thinking_sound.py only resynthesizes on a miss.
+[tool.setuptools.package-data]
+teaport_brain = ["config_schema.toml", "assets/*.wav"]
+
 [tool.pytest.ini_options]
 # The tests/test_*.py files are standalone scripts (each has a __main__ that exits
 # nonzero on failure), NOT pytest natives — test_suite.py is the gate and runs them
