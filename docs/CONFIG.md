@@ -99,8 +99,7 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | Setting | Default | Description |
 |---|---|---|
 | `ENDPOINT_STOP_SECS` | **0.5** s (≥ 0.1) | Silence before the VAD reports the caller stopped. The dominant fixed latency on every turn; lower is snappier and cuts more mid-sentence pauses. |
-| `SMARTTURN_STOP_SECS` | **1.0** s (≥ 0) | How long a Smart Turn "not done" verdict holds the turn open, counted from the VAD stop. With TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated while this runs, so it can be raised (more patience for mid-sentence pauses) by up to the LLM's own latency at no cost to the turns that fall through. |
-| `TEAPORT_SPECULATIVE_REPLY` | **off** | Ask the LLM as soon as the final transcript lands on a turn Smart Turn has not concluded on (an INCOMPLETE verdict waiting out SMARTTURN_STOP_SECS), and use that reply if the turn then commits with exactly that text. Off: the request waits for the commit. On: those turns answer up to the LLM's latency sooner, and a turn the caller resumes has spent one wasted request — every outcome logs a [SPEC] line with the running hit/miss tally. |
+| `SMARTTURN_STOP_SECS` | **1.0** s (≥ 0) | How long a Smart Turn "not done" verdict holds the turn open, counted from the VAD stop. |
 | `SMARTTURN_COMPLETE_THRESHOLD` | **0.5** (0–1) | The end-of-turn probability that counts as done. Near-inert on telephony audio. |
 | `VAD_CONFIDENCE` | **0.7** (0–1) | Silero's speech-probability gate. |
 | `VAD_MIN_VOLUME` | **0.6** (0–1) | Silero's volume gate. |
@@ -108,7 +107,6 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | `TEAPORT_INTERRUPT_MIN_WORDS` | **2** (≥ 1) | Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. |
 | `TEAPORT_STRANDED_INTERIM_SECS` | **1.5** s (≥ 0.2) | Commit a segment ourselves after this much interim quiet with no VAD stop, so a missed stop loses a second rather than the turn. |
 | `HEARD_MODE` | `truncate` | How the context records a reply the caller only partly heard: truncate it to what was heard, or keep it whole with a note. One of `truncate`, `note`. |
-| `TEAPORT_SPECULATIVE_REPLY` | **off** | Open the LLM request when a final transcript lands and endpointing is still deciding, so the model's head start is the time the turn took to commit. The reply is used only if nothing touched the context in between; otherwise the ordinary request is made. Costs a wasted request on turns where the caller resumes; every outcome logs a [SPEC] line. |
 | `TEAPORT_SILENT_TURN_SECS` | **12** s (≥ 1) | How long a committed turn may produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted. |
 
 ## Agent consult and follow-ups
