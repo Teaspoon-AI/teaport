@@ -89,6 +89,12 @@ run UserTurn.tla ut_asWritten_nomissedbargein         "(expected: FAILS NoMissed
 run UserTurn.tla ut_retryOnQuiet_nostrandedturn "(expected: holds)"
 run UserTurn.tla ut_retryOnQuiet_nomissedbargein      "(expected: holds)"
 echo
+echo "UserTurn.tla — the speculative reply (SPEC): asked under the ceiling, adopted at the commit"
+run UserTurn.tla ut_spec_byContext_nostrandedturn  "(expected: holds)"
+run UserTurn.tla ut_spec_byContext_nomissedbargein "(expected: holds)"
+run UserTurn.tla ut_spec_byContext_nostalereply    "(expected: holds)"
+run UserTurn.tla ut_spec_byText_nostalereply       "(expected: FAILS NoStaleReply)"
+echo
 echo "SttSlot.tla — arbitration of the engine's single STT slot"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS NoFalseBusy)"
 run SttSlot.tla  stt_retryWhileBusy  "(expected: holds)"

@@ -715,6 +715,47 @@ fourth one lives in the *controller* rather than the strategy and was never cove
 `f23503b` then cut `ENDPOINT_STOP_SECS` 0.5 → 0.2, multiplying the VAD edges per utterance,
 and 1.8.1's rolling volume window holds `speaking` ~0.35 s longer past the end of speech.
 
+### The speculative reply (`SPEC`)
+
+`speculate.py` (`TEAPORT_SPECULATIVE_REPLY`, off by default) asks the LLM the moment a
+final transcript lands on a turn the stop strategy has *not* concluded on — Smart Turn said
+INCOMPLETE and `SMARTTURN_STOP_SECS` is running — against a snapshot of the context with
+that text as the user message. At the commit the LLM service is offered that stream instead
+of opening its own. It is a second machine riding on this one, so it is modelled here rather
+than on its own: `SpecStart` reads `userTurn` and writes nothing the controller's guards
+read, and whether that leaves barge-in intact is a question for TLC, not a promise.
+
+The property it adds is `NoStaleReply`: a speculated reply is spoken only for the context it
+was asked against. The text being right is not enough. Between the snapshot and the commit
+the context has other writers — `MemoryRecall.add_message` at the final, the consult
+follow-up's `_post_trigger`, `HeardContextCorrector._reconcile` on the very
+`LLMContextFrame` that carries the commit — and `CtxChange` is any of them.
+
+| SPEC | promotes when | `NoStrandedTurn` | `NoMissedBargeIn` | `NoStaleReply` |
+|---|---|---|---|---|
+| `off` | — (the four MODE rows above, unchanged: 47 states) | | | |
+| `byText` | the committed text is what was asked | ✓ | ✓ | ✗ |
+| `byContext` | the whole context equals the snapshot — `Speculator.take` | ✓ | ✓ | ✓ |
+
+The `byText` counterexample is seven states and needs no barge-in at all:
+
+```
+VadStart     the user speaks
+Interject    the turn opens
+VadStop      they pause; Smart Turn says INCOMPLETE, the ceiling starts
+SpecStart    the final lands, the stop does not fire: the LLM is asked now
+CtxChange    a memory note lands (or the cut reply is truncated at the commit)
+Inference    the ceiling ends the turn; the text is what was asked, so byText
+             adopts the stream -- a reply the model produced without the note
+```
+
+`byContext` closes it by construction — `specGen = gen` is the equality check on
+`context.messages` — and the two barge-in rows hold with it on because nothing in
+`SpecStart`/`CtxChange` touches `userTurn`, `userSpeaking` or `stopInFlight`. A resume
+(`VadStart`) and a new turn (`Interject`) both close the speculation, which is why `byText`
+never fails on the *text*: every live speculation's text is the committed one, and the
+whole difference between the two designs is what else the context holds.
+
 ### Known limits of this model
 
 - **`Inference` requires `~userSpeaking`**, which the controller does not: the guard is on
@@ -735,8 +776,16 @@ and 1.8.1's rolling volume window holds `speaking` ~0.35 s longer past the end o
   make this module look like it covered them.
 - **Durations are out of scope**, as everywhere here. That the watchdog is 5 s and the
   retry fires within `ENDPOINT_STOP_SECS` is the reason one is unreachable and the other
-  is not; the model only distinguishes reachable from absorbing.
-- **Scale.** 47 distinct states, well under a second.
+  is not; the model only distinguishes reachable from absorbing. The same goes for the
+  speculation: whether it is worth anything is the ceiling against the final's latency
+  and the LLM's (measured in `speculate.py`), and the model says nothing about that —
+  only that a stale reply is never spoken and barge-in is as it was.
+- **`CtxChange` is a free action** bounded by `MaxCtxWrites`, not the three writers it
+  stands for. Their timing relative to the snapshot differs (the memory note precedes
+  it in the pipeline order; the corrector runs at the commit) and the model does not
+  say which of them a miss will come from — `[SPEC] miss reason=ctx-changed` in the
+  journal does.
+- **Scale.** 47 distinct states with `SPEC = "off"`, 315 with it on; well under a second.
 
 ## Worth modeling next
 

@@ -47,11 +47,34 @@
 (* MODE = "retryOnQuiet" -- keep_barge_in_reachable: a finalization refused *)
 (*                          after its inference ran is re-applied at the    *)
 (*                          user's next quiet moment.                       *)
+(*                                                                          *)
+(* The speculative reply (speculate.py, TEAPORT_SPECULATIVE_REPLY). When a  *)
+(* final lands and the stop strategy does not conclude on it -- the verdict  *)
+(* was INCOMPLETE and the ceiling is running -- the LLM is asked NOW, out of *)
+(* band, against a snapshot of the context with that text as the user       *)
+(* message. At the commit the LLM service is offered that stream instead of *)
+(* opening its own. The controller's state is never touched: `SpecStart`    *)
+(* reads userTurn and writes nothing the guards read, which is why the two  *)
+(* barge-in properties are re-checked with it on rather than assumed.       *)
+(*                                                                          *)
+(* What the speculation must not do is speak a reply generated against a    *)
+(* context the commit no longer has. Between the snapshot and the commit,   *)
+(* other components write the context: MemoryRecall's note at the final,    *)
+(* the consult follow-up's trigger, HeardContextCorrector's truncation of   *)
+(* the cut reply on the LLMContextFrame itself. `CtxChange` is any of them. *)
+(*                                                                          *)
+(* SPEC = "off"       -- no speculation; the four MODE rows are unchanged.  *)
+(* SPEC = "byText"    -- promote when the committed TEXT is what was asked. *)
+(*                       Rejected: NoStaleReply falls.                      *)
+(* SPEC = "byContext" -- promote only when the WHOLE context equals the     *)
+(*                       snapshot (what speculate.py does).                 *)
 (***************************************************************************)
 EXTENDS Naturals
 
 CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space finite
-          MODE
+          MODE,
+          SPEC,
+          MaxCtxWrites     \* bound on context writes under a live speculation
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -64,13 +87,19 @@ VARIABLES
     stopInFlight,    \* between trigger_user_turn_stopped()'s two awaits
     owed,            \* retryOnQuiet: a refused finalization waiting for quiet
     turns,
-    \* --- monitor ---
-    missedBargeIn    \* the user spoke over the bot and got no interruption, at a
+    \* --- the speculative reply ---
+    spec,            \* a speculation is live (opened, not yet adopted or closed)
+    specGen,         \* the context generation it was asked against
+    gen,             \* the context generation: bumped by every other writer
+    \* --- monitors ---
+    missedBargeIn,   \* the user spoke over the bot and got no interruption, at a
                      \* moment when they had already had a quiet one since the
                      \* inference: the wedge, not the ordinary in-turn delay
+    staleReply       \* a reply asked against a context the commit no longer has
+                     \* was handed to the pipeline
 
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-          stopInFlight, owed, turns, missedBargeIn>>
+          stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
 
 Init ==
     /\ userTurn = FALSE
@@ -81,7 +110,11 @@ Init ==
     /\ stopInFlight = FALSE
     /\ owed = FALSE
     /\ turns = 0
+    /\ spec = FALSE
+    /\ specGen = 0
+    /\ gen = 0
     /\ missedBargeIn = FALSE
+    /\ staleReply = FALSE
 
 (***************************************************************************)
 (* VAD. Both edges re-arm the stop watchdog, which is the whole reason it   *)
@@ -98,7 +131,9 @@ VadStart ==
     /\ ~userSpeaking /\ ~stopInFlight
     /\ userSpeaking' = TRUE
     /\ watchdog' = FALSE                       \* the inactivity timer is reset
-    /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns, missedBargeIn>>
+    /\ spec' = FALSE                           \* the caller resumed: the text will differ
+    /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
+                   specGen, gen, missedBargeIn, staleReply>>
 
 \* The user falls quiet. In retryOnQuiet the owed finalization is applied HERE,
 \* inside the same process_frame() call that cleared _user_speaking -- so it is
@@ -112,7 +147,8 @@ VadStop ==
               /\ owed' = FALSE
               /\ inference' = FALSE
          ELSE UNCHANGED <<userTurn, owed, inference>>
-    /\ UNCHANGED <<botSpeaking, stopInFlight, turns, missedBargeIn>>
+    /\ UNCHANGED <<botSpeaking, stopInFlight, turns, spec, specGen, gen,
+                   missedBargeIn, staleReply>>
 
 (***************************************************************************)
 (* The turn.                                                               *)
@@ -131,15 +167,43 @@ Interject ==
               \* before that, an open turn is the ordinary state of someone still
               \* talking, and refusing a second start is correct.
               /\ missedBargeIn' = (missedBargeIn \/ (inference /\ ~owed /\ botSpeaking))
-              /\ UNCHANGED <<userTurn, botSpeaking, inference, turns>>
+              /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec>>
          ELSE \* A turn starts, and with it the interruption: the bot is cut.
               /\ userTurn' = TRUE
               /\ botSpeaking' = FALSE
               /\ inference' = FALSE
               /\ turns' = turns + 1
+              /\ spec' = FALSE               \* a new turn: whatever was asked is not this
               /\ UNCHANGED missedBargeIn
     /\ watchdog' = FALSE
-    /\ UNCHANGED <<userSpeaking, stopInFlight, owed>>
+    /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, gen, staleReply>>
+
+(***************************************************************************)
+(* The speculative reply.                                                  *)
+(***************************************************************************)
+
+\* A final landed and the stop strategy did not conclude on it: the LLM is asked now,
+\* against the context as it is. Enabled exactly where the strategy hook fires --
+\* an open turn, VAD quiet, no inference yet -- and touches nothing the controller's
+\* guards read. Single-flight: a second final supersedes, which is this same step
+\* from a state where `spec` was already TRUE (the old one is closed).
+SpecStart ==
+    /\ SPEC /= "off"
+    /\ userTurn /\ ~userSpeaking /\ ~inference /\ ~stopInFlight
+    /\ spec' = TRUE
+    /\ specGen' = gen
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, gen, missedBargeIn, staleReply>>
+
+\* Something else writes the context while a speculation is live. Not a design
+\* choice, a fact about the pipeline: MemoryRecall.add_message at the final, the
+\* consult follow-up's _post_trigger, HeardContextCorrector._reconcile on the very
+\* LLMContextFrame that carries the commit. Bounded only to keep the state finite.
+CtxChange ==
+    /\ spec /\ gen < MaxCtxWrites
+    /\ gen' = gen + 1
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, spec, specGen, missedBargeIn, staleReply>>
 
 \* trigger_user_turn_stopped(), first await: the stop strategy has decided, the
 \* aggregation is pushed and the LLM is asked. The controller gates this on the turn
@@ -150,12 +214,23 @@ Interject ==
 \* silence while _vad_user_speaking is False). Without it TLC finds a two-step
 \* "the user simply never stopped" trace that the implementation cannot produce, and
 \* the counterexample stops being a bug report. See README, Known limits.
+\*
+\* With a speculation live this is also the commit that decides its fate: the LLM
+\* service is offered the stream (Speculator.take). byText adopts it whenever the
+\* text is what was asked -- which every live speculation's is, since a resume or a
+\* new turn already closed it -- so a context written in between is adopted with it.
+\* byContext adopts only when nothing else wrote the context (specGen = gen); the
+\* speculation is otherwise closed and the ordinary request made, the same state
+\* minus the monitor. Either way the speculation is over.
 Inference ==
     /\ userTurn /\ ~stopInFlight /\ ~inference /\ ~userSpeaking
     /\ inference' = TRUE
     /\ stopInFlight' = TRUE
     /\ watchdog' = FALSE                       \* _trigger_user_turn_inference_triggered
-    /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, missedBargeIn>>
+    /\ spec' = FALSE
+    /\ staleReply' = (staleReply \/ (spec /\ SPEC = "byText" /\ specGen /= gen))
+    /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, gen,
+                   missedBargeIn>>
 
 \* The gap between the two awaits: push_aggregation()'s trip across the pipeline,
 \* during which the aggregator's input task can run a queued VAD start. This is
@@ -165,7 +240,8 @@ Resume ==
     /\ ~userSpeaking
     /\ userSpeaking' = TRUE
     /\ watchdog' = FALSE
-    /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns, missedBargeIn>>
+    /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
+                   spec, specGen, gen, missedBargeIn, staleReply>>
 
 \* trigger_user_turn_stopped(), second await.
 Finalize ==
@@ -179,7 +255,8 @@ Finalize ==
          ELSE /\ userTurn' = FALSE
               /\ inference' = FALSE
               /\ owed' = FALSE
-    /\ UNCHANGED <<userSpeaking, watchdog, botSpeaking, turns, missedBargeIn>>
+    /\ UNCHANGED <<userSpeaking, watchdog, botSpeaking, turns, spec, specGen, gen,
+                   missedBargeIn, staleReply>>
 
 \* The reply the inference produced reaches the transport. It cannot overtake the
 \* finalize in practice -- an LLM round trip plus synthesis against two awaits --
@@ -189,13 +266,13 @@ BotStart ==
     /\ inference /\ ~stopInFlight /\ ~botSpeaking
     /\ botSpeaking' = TRUE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
-                   owed, turns, missedBargeIn>>
+                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
 
 BotStop ==
     /\ botSpeaking
     /\ botSpeaking' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
-                   owed, turns, missedBargeIn>>
+                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)
@@ -207,7 +284,7 @@ Arm ==
     /\ ~watchdog /\ ~userSpeaking
     /\ watchdog' = TRUE
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, inference, stopInFlight,
-                   owed, turns, missedBargeIn>>
+                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
 
 ForceStop ==
     /\ watchdog /\ userTurn /\ ~userSpeaking
@@ -215,13 +292,15 @@ ForceStop ==
     /\ inference' = FALSE
     /\ owed' = FALSE
     /\ watchdog' = FALSE
-    /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, missedBargeIn>>
+    /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, spec, specGen, gen,
+                   missedBargeIn, staleReply>>
 
 Next ==
     \/ VadStart \/ VadStop \/ Interject
     \/ Inference \/ Resume \/ Finalize
     \/ BotStart \/ BotStop
     \/ Arm \/ ForceStop
+    \/ SpecStart \/ CtxChange
 
 Spec == Init /\ [][Next]_vars
 
@@ -241,9 +320,18 @@ NoStrandedTurn == ~(userTurn /\ inference /\ ~userSpeaking /\ ~stopInFlight)
 \* is the wedge rather than the ordinary wait for a turn to close.
 NoMissedBargeIn == ~missedBargeIn
 
+\* A speculated reply is only ever spoken for the context it was asked against. The
+\* text being right is not enough: a memory note or a truncated previous reply that
+\* landed after the snapshot is context the model never saw.
+NoStaleReply == ~staleReply
+
 TypeOK ==
     /\ userTurn \in BOOLEAN /\ userSpeaking \in BOOLEAN /\ watchdog \in BOOLEAN
     /\ botSpeaking \in BOOLEAN /\ inference \in BOOLEAN /\ stopInFlight \in BOOLEAN
     /\ owed \in BOOLEAN /\ missedBargeIn \in BOOLEAN
     /\ turns \in 0..MaxTurns
+    /\ spec \in BOOLEAN /\ staleReply \in BOOLEAN
+    /\ specGen \in 0..MaxCtxWrites /\ gen \in 0..MaxCtxWrites
+    /\ SPEC \in {"off", "byText", "byContext"}
+    /\ (SPEC = "off" => ~spec)
 =============================================================================
