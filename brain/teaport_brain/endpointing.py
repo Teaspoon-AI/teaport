@@ -63,7 +63,9 @@ ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 # this ceiling with the same text they had at the verdict -- the full second bought
 # nothing on those. Lowering it trades the two longest resumptions (0.82 and 0.92 s:
 # mid-sentence pauses of ~1.2 s, both genuine) against 0.3-0.5 s on each fallthrough;
-# that trade has not been made. Tune via SMARTTURN_STOP_SECS.
+# that trade has not been made. With TEAPORT_SPECULATIVE_REPLY on (speculate.py) the
+# LLM is asked on the final, under this wait, so a fallthrough no longer pays the round
+# trip after it -- that is what makes raising this affordable. Tune via SMARTTURN_STOP_SECS.
 SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
@@ -199,9 +201,45 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     on its own (_discard_pending_end_of_turn), so a stale one cannot survive into a
     new utterance. An INCOMPLETE verdict is kept just the same, and the analyzer's
     silence ceiling (SMARTTURN_STOP_SECS) ends the turn as it always did.
+
+    It is also where the speculative reply is triggered (speculate.py, off unless
+    TEAPORT_SPECULATIVE_REPLY is set): this strategy is the one place that sees a final
+    land AND knows whether the turn concluded on it. A final the stop did not fire on --
+    the verdict was INCOMPLETE and the ceiling is running, or the VAD stop has not come
+    yet -- is text the LLM could already be working on. A final the stop DID fire on is
+    followed by the real request within the same call, so nothing is speculated.
     """
 
+    def __init__(self, *, speculator=None, **kwargs):
+        super().__init__(**kwargs)
+        self.speculator = speculator
+        self._inferences = 0
+
+    async def trigger_user_turn_inference_triggered(self):
+        # Every path that commits the turn passes here (trigger_user_turn_stopped is
+        # inference + finalize), so a count taken around a final says whether it fired.
+        self._inferences += 1
+        await super().trigger_user_turn_inference_triggered()
+
+    async def _handle_transcription(self, frame):
+        before = self._inferences
+        await super()._handle_transcription(frame)
+        if (self.speculator is not None and frame.finalized
+                and self._inferences == before and not self._vad_user_speaking):
+            await self.speculator.start(
+                "verdict INCOMPLETE, ceiling running" if self._vad_stopped
+                else "no VAD stop yet")
+
+    async def _handle_vad_user_started_speaking(self, frame):
+        await super()._handle_vad_user_started_speaking(frame)
+        if self.speculator is not None:
+            # The caller resumed: whatever they add, the committed text will not be
+            # what was asked. Stop the stream now rather than at the mismatch.
+            await self.speculator.cancel("resumed")
+
     async def handle_user_turn_started(self):
+        if self.speculator is not None:
+            await self.speculator.cancel("new-turn")
         if self._vad_stopped and not self._vad_user_speaking:
             logger.debug(
                 f"{self}: turn opened after its own VAD stop -- keeping the end-of-turn "
