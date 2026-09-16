@@ -52,6 +52,10 @@ UNITS = ("teaport-engine", "teaport-brain", "teaport-sip", "teaport-sip-brain",
          "teaport-discord-bridge")
 MAX_BYTES = 64 * 1024
 BACKUPS = 5
+# Only backups THIS code named are ever pruned. Operators keep their own beside
+# them (brain.env.bak-gptoss, brain.env.bak-20260901-154338-stopsecs on the dev
+# box) and those are not ours to rotate out.
+BACKUP_RE = re.compile(r"\.bak-\d{8}-\d{6}(-\d+)?$")
 # What a line may be: blank, a comment, or KEY=value. The KEY=value shape MUST be
 # exactly what config_ui._KV_RE accepts (leading whitespace, an `export `, spaces
 # around `=`): the UI preserves every line it did not touch verbatim, so a line
@@ -90,8 +94,8 @@ def write(name: str, content: str) -> str:
 
 def _backup(path: str, mode: int, uid: int, gid: int) -> None:
     """Copy `path` to path.bak-<stamp>; two saves in one second (the page PUTs
-    each store separately) get distinct names, and only the newest BACKUPS
-    survive."""
+    each store separately) get distinct names, and only the newest BACKUPS of
+    the ones with that exact shape survive."""
     stamp = time.strftime("%Y%m%d-%H%M%S")
     backup = f"{path}.bak-{stamp}"
     n = 1
@@ -102,8 +106,9 @@ def _backup(path: str, mode: int, uid: int, gid: int) -> None:
         dst.write(src.read())
     os.chmod(backup, mode)
     os.chown(backup, uid, gid)
-    prefix = os.path.basename(path) + ".bak-"
-    older = sorted(f for f in os.listdir(os.path.dirname(path)) if f.startswith(prefix))
+    base = os.path.basename(path)
+    older = sorted(f for f in os.listdir(os.path.dirname(path))
+                   if f.startswith(base + ".bak-") and BACKUP_RE.search(f))
     for name in older[:-BACKUPS]:
         os.unlink(os.path.join(os.path.dirname(path), name))
 

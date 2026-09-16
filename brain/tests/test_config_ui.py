@@ -264,6 +264,23 @@ def test_apply_helper_rejects_junk():
         raise AssertionError("accepted unit sshd")
 
 
+def test_apply_helper_backup_ring_spares_operator_backups():
+    from teaport_brain import config_apply
+    etc = tempfile.mkdtemp(prefix="teaport-apply-")
+    config_apply.ETC = etc
+    mine = ["brain.env.bak-20260805", "brain.env.bak-gptoss", "brain.env.bak-20260901-154338-stopsecs"]
+    for name in mine + ["brain.env"]:
+        with open(os.path.join(etc, name), "w") as f:
+            f.write("A=1\n")
+    for i in range(config_apply.BACKUPS + 3):
+        config_apply.write("brain.env", f"A={i}\n")
+    names = sorted(os.listdir(etc))
+    ours = [n for n in names if config_apply.BACKUP_RE.search(n)]
+    assert len(ours) == config_apply.BACKUPS, names
+    assert all(n in names for n in mine), names
+    assert open(os.path.join(etc, "brain.env")).read() == f"A={config_apply.BACKUPS + 2}\n"
+
+
 def test_unreadable_store_is_reported_not_fatal():
     client, etc, home, calls = setup()
     if os.geteuid() == 0:
@@ -304,6 +321,7 @@ def test_secret_file_pending_for_startup_readers():
 def main() -> int:
     for fn in (test_env_roundtrip, test_get_masks_secrets_and_requires_token, test_put_validation,
                test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
+               test_apply_helper_backup_ring_spares_operator_backups,
                test_unreadable_store_is_reported_not_fatal, test_secret_file_pending_for_startup_readers):
         fn()
         print("ok", fn.__name__)
