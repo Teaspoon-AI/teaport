@@ -102,7 +102,7 @@ include = ["teaport_brain*"]
 # /opt/teaport/venv install would otherwise ship the code without its schema — and
 # without assets/typing.wav, which thinking_sound.py only resynthesizes on a miss.
 [tool.setuptools.package-data]
-teaport_brain = ["config_schema.toml", "assets/*.wav"]
+teaport_brain = ["config_schema.toml", "assets/*.wav", "static/*"]
 
 [tool.pytest.ini_options]
 # The tests/test_*.py files are standalone scripts (each has a __main__ that exits

@@ -886,6 +886,27 @@ phase_services() {
   SUDO systemctl enable teaport-engine.service teaport-brain.service
   SUDO systemctl restart teaport-engine.service teaport-brain.service
   if [ -n "$SANDBOX" ]; then SUDO systemctl enable --now teaport-sandbox-recover.service; fi
+  install_config_sudoers
+}
+
+# The config page (http://<box>:$BRAIN_PORT/config, on the brain) writes the env files
+# above and restarts teaport-* units. The env files are root:$RUN_USER 0640 and a restart
+# is systemctl, so the brain — which runs as $RUN_USER — cannot do either itself. This
+# is the one line that lets it, through one module that only ever touches those files
+# and units (brain/teaport_brain/config_apply.py); everything after the module name is
+# that module's argv. The file is validated with visudo before it lands: a malformed
+# sudoers.d entry locks sudo for everyone, which on a headless box is a reinstall.
+install_config_sudoers() {
+  local f=/etc/sudoers.d/teaport-config tmp
+  tmp="$(mktemp)"
+  printf '%s\n' \
+    "# teaport: the config page writes /etc/teaport/*.env and restarts teaport-* units" \
+    "# through this one module and nothing else. See brain/teaport_brain/config_apply.py." \
+    "$RUN_USER ALL=(root) NOPASSWD: $PREFIX/venv/bin/python -m teaport_brain.config_apply *" > "$tmp"
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] install %s\n' "$f"; rm -f "$tmp"; return; fi
+  if ! SUDO visudo -cf "$tmp" >/dev/null; then rm -f "$tmp"; die "generated $f does not pass visudo — not installed"; fi
+  SUDO install -m 0440 -o root -g root "$tmp" "$f"
+  rm -f "$tmp"
 }
 
 # Caddy isn't in the stock Ubuntu repos — add its official Cloudsmith apt repo (idempotent),
