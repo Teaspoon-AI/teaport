@@ -44,6 +44,7 @@ from teaport_brain.agent_session import (
     build_agent_session,
     slot_active,
 )
+from teaport_brain import config_ui
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
@@ -117,6 +118,10 @@ async def run_relay_bot(websocket: WebSocket):
 
 
 app = FastAPI()
+# The config page + its JSON routes ride this app rather than a process of their
+# own: on the 8 GB box a second Python service is memory the engine reserve
+# wants. They share /talk's GATEWAY_TOKEN. See config_ui.py.
+app.include_router(config_ui.router)
 
 
 @app.get("/health")

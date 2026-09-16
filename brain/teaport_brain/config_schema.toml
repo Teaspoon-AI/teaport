@@ -1,0 +1,1510 @@
+# teaport configuration schema — the ONE table the config UI and the
+# docs/CONFIG.md generator read. Drafted 2026-09-16 from the actual read sites
+# in brain/teaport_brain/, install.sh, systemd/, cli/teaport and
+# bridge/discord/index.js.
+#
+# A setting is not configurable until it has a row here. Adding an os.getenv()
+# read without a row is the drift this file exists to stop.
+#
+# Fields per [[settings]] row:
+#   name      the env var (or conf key for the sip store)
+#   store     which file it lives in (see [stores])
+#   group     section of the UI / docs (see [groups])
+#   type      string | url | ws_url | path | dir | int | float | flag | enum | json | secret | snowflake
+#   default   as the CODE parses it; absent = required or "unset means off"
+#   required  true only for the handful the box cannot start without
+#   read      "startup" = module-level constant fixed at ExecStart
+#             "session" = read inside a per-session factory — the hot-reload candidates
+#             "unit"    = consumed by the systemd unit's ExecStart, not by the process
+#   tier      setup | tuning | diag | installer   (installer = read-only in the UI)
+#   services  override of the store's services when only one reads it
+#   unit      s | ms | dB | chars | frames | port | tokens
+#   min/max   numeric bounds the UI enforces (code may or may not clamp)
+#   values    enum values ("" allowed)
+#   file      for secrets: the file the UI writes instead of the env var
+#   accepts   for flags whose parser is NOT env_flag (LEDGER_TRACE)
+#   help      one or two sentences; the docs generator copies it verbatim
+#   note      operator-facing caveat, rendered after help
+#   consumer  when a library, not our code, reads it (glibc, huggingface_hub)
+#   source    file:line of the read, for the next person auditing this table
+
+schema_version = 1
+
+# ---------------------------------------------------------------- stores
+
+[stores.engine_env]
+path = "/etc/teaport/engine.env"
+owner = "installer"
+services = ["teaport-engine"]
+apply = "systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; both brains lose their engine session."
+
+[stores.brain_env]
+path = "/etc/teaport/brain.env"
+owner = "installer+operator"
+services = ["teaport-brain", "teaport-sip-brain"]
+apply = "Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: restart teaport-sip AND teaport-sip-brain together — a brain-only relaunch desyncs the gateway echo canceller."
+
+[stores.sip_conf]
+path = "~/.config/teaport/teaport-sip.conf"
+owner = "teaport sip configure"
+services = ["teaport-sip"]
+format = "keyvalue"
+mode = "600"
+apply = "Re-run `teaport sip configure --yes …` so the change is test-registered before it is written; then restart teaport-sip and teaport-sip-brain together."
+
+[stores.bridge_env]
+path = "/etc/teaport/bridge.env"
+owner = "installer"
+services = ["teaport-discord-bridge"]
+apply = "systemctl restart teaport-discord-bridge."
+
+[stores.secrets]
+path = "~/.config/teaport"
+owner = "operator"
+services = []
+apply = "Read at the moment of use; the process env var of the same name shadows the file."
+
+# ---------------------------------------------------------------- groups (UI/docs order)
+
+[[groups]]
+id = "llm"
+title = "Language model"
+
+[[groups]]
+id = "engine"
+title = "Speech engine connection"
+
+[[groups]]
+id = "tts_chunking"
+title = "TTS clause chunking"
+blurb = "First-audio latency versus seam quality. Each is explained at length in engine_tts.py."
+
+[[groups]]
+id = "turn_taking"
+title = "Turn-taking"
+blurb = "Each is explained at length where it is read, in endpointing.py."
+
+[[groups]]
+id = "agent"
+title = "Agent consult and follow-ups"
+
+[[groups]]
+id = "sip_brain"
+title = "SIP brain"
+blurb = "Read only by teaport-sip-brain; the Talk brain ignores them."
+
+[[groups]]
+id = "diag"
+title = "Diagnostics"
+blurb = "All off by default; log-only."
+
+[[groups]]
+id = "installer"
+title = "Installer-owned"
+blurb = "Written by install.sh. Shown read-only."
+
+[[groups]]
+id = "engine_service"
+title = "Speech engine service"
+
+[[groups]]
+id = "sip"
+title = "SIP gateway"
+blurb = "Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on."
+
+[[groups]]
+id = "bridge"
+title = "Discord bridge"
+
+# ================================================================ brain.env
+
+# ---- llm
+
+[[settings]]
+name = "LLM_BASE_URL"
+store = "brain_env"
+group = "llm"
+type = "url"
+required = true
+read = "session"
+tier = "setup"
+help = "Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server."
+note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL)."
+source = "services.py:445"
+
+[[settings]]
+name = "LLM_API_KEY"
+store = "brain_env"
+group = "llm"
+type = "secret"
+file = "~/.config/teaport/llm_key"
+read = "session"
+tier = "setup"
+help = "The key for that endpoint. A local server that ignores auth still needs a placeholder such as sk-local."
+note = "Prefer the file; the env var, if set, wins over it."
+source = "services.py:62"
+
+[[settings]]
+name = "LLM_MODEL"
+store = "brain_env"
+group = "llm"
+type = "string"
+default = "gpt-oss-120b"
+read = "session"
+tier = "setup"
+help = "The served model name."
+note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL)."
+source = "services.py:456"
+
+[[settings]]
+name = "LLM_REASONING_EFFORT"
+store = "brain_env"
+group = "llm"
+type = "enum"
+values = ["low", "medium", "high", ""]
+default = "low"
+read = "session"
+tier = "setup"
+help = "Reasoning effort for models that support it. Set \"\" to disable for models that do not."
+note = "low cuts gpt-oss's hidden chain-of-thought ~10x before the first spoken token. Also sets the LLM_MAX_TOKENS default."
+source = "services.py:40"
+
+[[settings]]
+name = "LLM_MAX_TOKENS"
+store = "brain_env"
+group = "llm"
+type = "int"
+unit = "tokens"
+min = 0
+default_by = { LLM_REASONING_EFFORT = { low = 1024, medium = 3072, high = 8192, "" = 4096 } }
+read = "session"
+tier = "tuning"
+help = "Completion cap. A credit-metered gateway reserves against the model's ceiling and refuses the request when the balance cannot cover it, however short the answer. Reasoning tokens bill as completion tokens. 0 = no cap, correct for a local or un-metered endpoint."
+source = "services.py:132"
+
+[[settings]]
+name = "LLM_TIMEOUT_SECS"
+store = "brain_env"
+group = "llm"
+type = "float"
+unit = "s"
+min = 1
+default = 20
+read = "session"
+tier = "tuning"
+help = "How long one completion attempt may take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this. Raise it for a slow local llama.cpp box."
+note = "Without it the OpenAI SDK waits 600 s with no error, no log line and no audio."
+source = "services.py:176"
+
+[[settings]]
+name = "LLM_EXTRA_BODY"
+store = "brain_env"
+group = "llm"
+type = "json"
+read = "session"
+tier = "tuning"
+help = "Optional JSON object merged into the request extra_body. OpenRouter routing example: {\"provider\":{\"order\":[\"Groq\"],\"allow_fallbacks\":true}}."
+source = "services.py:52"
+
+[[settings]]
+name = "TEAPORT_LLM_TEXT_GUARD"
+store = "brain_env"
+group = "llm"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse."
+source = "llm_text_guard.py:105"
+
+[[settings]]
+name = "TEAPORT_LLM_GUARD_RECOVERY"
+store = "brain_env"
+group = "llm"
+type = "string"
+default = ""
+read = "session"
+tier = "tuning"
+help = "The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment."
+source = "llm_text_guard.py:247"
+
+[[settings]]
+name = "TEAPORT_LLM_ERROR_SPEECH"
+store = "brain_env"
+group = "llm"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Say a short line out loud when the model call fails, instead of leaving the room silent."
+source = "llm_error_speaker.py:50"
+
+[[settings]]
+name = "TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE"
+store = "brain_env"
+group = "llm"
+type = "float"
+unit = "s"
+min = 0
+default = 30
+read = "startup"
+tier = "tuning"
+help = "Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn."
+source = "llm_error_speaker.py:57"
+
+[[settings]]
+name = "TEAPORT_RAW_LLM_CAPTURE"
+store = "brain_env"
+group = "llm"
+type = "flag"
+default = true
+read = "startup"
+tier = "diag"
+help = "Log a completion verbatim when it degenerates. Healthy turns log nothing."
+source = "raw_llm_capture.py:54"
+
+# ---- engine connection
+
+[[settings]]
+name = "TEAPORT_URL"
+store = "brain_env"
+group = "engine"
+type = "ws_url"
+default = "ws://127.0.0.1:8000/v1/realtime"
+read = "startup"
+tier = "installer"
+help = "The engine realtime speech-to-text WebSocket. The installer derives it from ENGINE_PORT."
+note = "A wrong value is the bot saying \"speech recognition isn't available\"."
+source = "services.py:27"
+
+[[settings]]
+name = "ENGINE_TTS_URL"
+store = "brain_env"
+group = "engine"
+type = "ws_url"
+default = "ws://127.0.0.1:8000/v1/tts"
+read = "startup"
+tier = "installer"
+help = "The engine text-to-speech base; the stream URL derives from it."
+source = "engine_tts.py:48"
+
+[[settings]]
+name = "ENGINE_TTS_STREAM_URL"
+store = "brain_env"
+group = "engine"
+type = "ws_url"
+default = "<ENGINE_TTS_URL base>/v1/audio/speech/stream"
+read = "startup"
+tier = "installer"
+help = "Only set to override the derivation from ENGINE_TTS_URL."
+source = "engine_tts.py:49"
+
+[[settings]]
+name = "TTS_VOICE"
+store = "brain_env"
+group = "engine"
+type = "string"
+default = "af_heart"
+read = "session"
+tier = "setup"
+help = "Kokoro voice id. A per-session choice from OpenClaw wins over this."
+source = "services.py:488"
+
+[[settings]]
+name = "TTS_LANGUAGE"
+store = "brain_env"
+group = "engine"
+type = "string"
+read = "session"
+tier = "setup"
+help = "Kokoro language. A per-session choice from OpenClaw wins over this; unset = the engine default."
+source = "services.py:489"
+
+[[settings]]
+name = "TTS_REMOTE_TIMEOUT"
+store = "brain_env"
+group = "engine"
+type = "float"
+unit = "s"
+min = 1
+default = 20
+read = "startup"
+tier = "tuning"
+help = "Per-request receive timeout on the TTS stream. A clause synthesizes in ~0.2–0.5 s; 20 s covers a stuck engine without hanging a reply."
+source = "engine_tts.py:50"
+
+[[settings]]
+name = "TTS_CONNECT_RETRIES"
+store = "brain_env"
+group = "engine"
+type = "int"
+min = 1
+default = 3
+read = "startup"
+tier = "tuning"
+help = "Connect attempts while the engine drains synth a barge-in abandoned (~1.5 s on an Orin Nano). Measured: 0/3 clauses survive with one attempt, 3/3 with three."
+note = "The code clamps to at least 1; 0 or 1 both mean a single attempt."
+source = "engine_tts.py:66"
+
+[[settings]]
+name = "TTS_CONNECT_BACKOFF"
+store = "brain_env"
+group = "engine"
+type = "float"
+unit = "s"
+min = 0
+default = 0.6
+read = "startup"
+tier = "tuning"
+help = "Gap between those connect attempts."
+source = "engine_tts.py:67"
+
+[[settings]]
+name = "TTS_STOP_FRAME_TIMEOUT_S"
+store = "brain_env"
+group = "engine"
+type = "float"
+unit = "s"
+min = 1
+default = 15
+read = "startup"
+tier = "tuning"
+help = "Pipecat's stop-frame timeout. Its 3 s default trips in normal CPU-backend operation; 15 s covers the worst cap-sized chunk at CPU RTF ~0.6."
+source = "engine_tts.py:89"
+
+[[settings]]
+name = "TEAPORT_STT_BACKEND"
+store = "brain_env"
+group = "engine"
+type = "enum"
+values = ["", "streaming"]
+default = ""
+read = "session"
+tier = "diag"
+help = "Experimental: streaming points the STT service at vLLM serving Voxtral Realtime. The incumbent engine is the default."
+source = "services.py:505"
+
+[[settings]]
+name = "TEAPORT_STT_URL"
+store = "brain_env"
+group = "engine"
+type = "ws_url"
+default = "ws://127.0.0.1:8100/v1/realtime"
+read = "session"
+tier = "diag"
+help = "Only with TEAPORT_STT_BACKEND=streaming."
+source = "services.py:508"
+
+[[settings]]
+name = "TEAPORT_STT_MODEL"
+store = "brain_env"
+group = "engine"
+type = "string"
+default = "voxtral-realtime"
+read = "session"
+tier = "diag"
+help = "Only with TEAPORT_STT_BACKEND=streaming."
+source = "services.py:509"
+
+[[settings]]
+name = "TEAPORT_STREAM_TAIL_SECS"
+store = "brain_env"
+group = "engine"
+type = "float"
+unit = "s"
+min = 0
+default = 0.7
+read = "startup"
+tier = "diag"
+help = "Only with the streaming backend."
+source = "stt.py:113"
+
+# ---- tts chunking
+
+[[settings]]
+name = "TTS_SENTENCE_SOFT_MAX"
+store = "brain_env"
+group = "tts_chunking"
+type = "int"
+unit = "chars"
+min = 0
+default = 80
+read = "startup"
+tier = "tuning"
+help = "A sentence longer than this is split at clause boundaries before synthesis; the engine synthesizes a chunk whole before any of it plays, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it). 0 disables the split."
+source = "engine_tts.py:116"
+
+[[settings]]
+name = "TTS_FIRST_CLAUSE_CHARS"
+store = "brain_env"
+group = "tts_chunking"
+type = "int"
+unit = "chars"
+min = 8
+default = 32
+read = "startup"
+tier = "tuning"
+help = "Size of the first chunk — the one the caller waits on."
+source = "engine_tts.py:99"
+
+[[settings]]
+name = "TTS_CLAUSE_GROWTH"
+store = "brain_env"
+group = "tts_chunking"
+type = "float"
+min = 1.0
+max = 1.67
+default = 1.5
+read = "startup"
+tier = "tuning"
+help = "Each chunk may grow this many times the previous. Must stay below 1/RTF (~1.67 at the measured CPU RTF 0.6) or a chunk's synth outruns the previous chunk's playout and playback stalls at the seam."
+source = "engine_tts.py:104"
+
+[[settings]]
+name = "TTS_CLAUSE_CAP"
+store = "brain_env"
+group = "tts_chunking"
+type = "int"
+unit = "chars"
+min = 8
+default = 200
+read = "startup"
+tier = "tuning"
+help = "The largest ramped chunk."
+source = "engine_tts.py:105"
+
+[[settings]]
+name = "TTS_CLAUSE_HARD_MAX"
+store = "brain_env"
+group = "tts_chunking"
+type = "int"
+unit = "chars"
+min = 8
+max = 450
+default = 350
+read = "startup"
+tier = "tuning"
+help = "Last-resort mid-sentence word break so a run-on cannot overflow the engine's ~512-token utterance limit and crash the synth."
+source = "engine_tts.py:109"
+
+[[settings]]
+name = "TTS_SEAM_KEEP_LEAD"
+store = "brain_env"
+group = "tts_chunking"
+type = "float"
+unit = "s"
+min = 0
+default = 0.05
+read = "startup"
+tier = "tuning"
+help = "Near-silence kept before a chunk's first sound."
+source = "engine_tts.py:117"
+
+[[settings]]
+name = "TTS_SEAM_KEEP_TRAIL"
+store = "brain_env"
+group = "tts_chunking"
+type = "float"
+unit = "s"
+min = 0
+default = 0.25
+read = "startup"
+tier = "tuning"
+help = "Near-silence kept after a chunk's last sound. With the lead this lands a seam near a sentence's natural ~320 ms comma pause instead of the ~793 ms a naive concat gives."
+source = "engine_tts.py:118"
+
+[[settings]]
+name = "TTS_USER_SPEECH_HOLD_MAX_S"
+store = "brain_env"
+group = "tts_chunking"
+type = "float"
+unit = "s"
+min = 0
+default = 3.0
+read = "startup"
+tier = "tuning"
+help = "While VAD says the user is speaking, the next clause is held back to free the GPU for barge-in transcription. This caps the hold so sustained noise cannot stall the reply."
+source = "engine_tts.py:129"
+
+[[settings]]
+name = "TTS_CAPTION_LEAD_SECS"
+store = "brain_env"
+group = "tts_chunking"
+type = "float"
+unit = "s"
+min = 0
+default = 0.2
+read = "startup"
+tier = "tuning"
+help = "Caption lead shared by the TTS word timestamps and the heard-word ledger. One knob so the two cannot drift."
+source = "tts_text.py:322"
+
+# ---- turn-taking
+
+[[settings]]
+name = "ENDPOINT_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0.1
+default = 0.5
+read = "startup"
+tier = "setup"
+help = "Silence before the VAD reports the caller stopped. The dominant fixed latency on every turn; lower is snappier and cuts more mid-sentence pauses."
+source = "endpointing.py:46"
+
+[[settings]]
+name = "SMARTTURN_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+default = 1.0
+read = "startup"
+tier = "tuning"
+help = "How long a Smart Turn \"not done\" verdict holds the turn open, counted from the VAD stop."
+source = "endpointing.py:67"
+
+
+[[settings]]
+name = "SMARTTURN_COMPLETE_THRESHOLD"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+min = 0
+max = 1
+default = 0.5
+read = "startup"
+tier = "tuning"
+help = "The end-of-turn probability that counts as done. Near-inert on telephony audio."
+source = "endpointing.py:86"
+
+[[settings]]
+name = "VAD_CONFIDENCE"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+min = 0
+max = 1
+default = 0.7
+read = "startup"
+tier = "tuning"
+help = "Silero's speech-probability gate."
+source = "endpointing.py:120"
+
+[[settings]]
+name = "VAD_MIN_VOLUME"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+min = 0
+max = 1
+default = 0.6
+read = "startup"
+tier = "tuning"
+help = "Silero's volume gate."
+source = "endpointing.py:121"
+
+[[settings]]
+name = "VAD_SAMPLE_RATE"
+store = "brain_env"
+group = "turn_taking"
+type = "enum"
+values = ["16000", "8000"]
+default = "16000"
+read = "startup"
+tier = "tuning"
+help = "8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample."
+source = "endpointing.py:380"
+
+[[settings]]
+name = "TEAPORT_INTERRUPT_MIN_WORDS"
+store = "brain_env"
+group = "turn_taking"
+type = "int"
+min = 1
+default = 2
+read = "startup"
+tier = "setup"
+help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included."
+source = "endpointing.py:135"
+
+[[settings]]
+name = "TEAPORT_STRANDED_INTERIM_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0.2
+default = 1.5
+read = "startup"
+tier = "tuning"
+help = "Commit a segment ourselves after this much interim quiet with no VAD stop, so a missed stop loses a second rather than the turn."
+source = "stt.py:100"
+
+[[settings]]
+name = "HEARD_MODE"
+store = "brain_env"
+group = "turn_taking"
+type = "enum"
+values = ["truncate", "note"]
+default = "truncate"
+read = "startup"
+tier = "tuning"
+help = "How the context records a reply the caller only partly heard: truncate it to what was heard, or keep it whole with a note."
+source = "heard_context.py:30"
+
+[[settings]]
+name = "TEAPORT_SILENT_TURN_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 1
+default = 12
+read = "startup"
+tier = "diag"
+help = "How long a committed turn may produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted."
+source = "turn_timing.py:35"
+
+# ---- agent consult
+
+[[settings]]
+name = "OPENCLAW_GATEWAY_URL"
+store = "brain_env"
+group = "agent"
+type = "url"
+default = "http://127.0.0.1:18789"
+read = "startup"
+tier = "installer"
+help = "The co-resident gateway for shared persona and memory recall. The installer sets it from the gateway port."
+source = "openclaw_client.py:31"
+
+[[settings]]
+name = "OPENCLAW_GATEWAY_TOKEN"
+store = "brain_env"
+group = "agent"
+type = "secret"
+file = "~/.config/teaport/openclaw_token"
+read = "session"
+tier = "setup"
+help = "Bearer token for that gateway."
+note = "Prefer the file; the env var, if set, wins over it."
+source = "openclaw_client.py:93"
+
+[[settings]]
+name = "OPENCLAW_AGENT_ID"
+store = "brain_env"
+group = "agent"
+type = "string"
+default = "main"
+read = "startup"
+tier = "tuning"
+help = "The agent consulted."
+source = "openclaw_client.py:75"
+
+[[settings]]
+name = "OPENCLAW_BIN"
+store = "brain_env"
+group = "agent"
+type = "path"
+read = "startup"
+tier = "installer"
+help = "The openclaw CLI used as the consult fallback. Auto-detected; the host may have none when OpenClaw runs only inside the sandbox."
+source = "openclaw_client.py:62"
+
+[[settings]]
+name = "TEAPORT_AGENT_FIRST"
+store = "brain_env"
+group = "agent"
+type = "flag"
+default = false
+read = "startup"
+tier = "setup"
+help = "Agent-first routing: install the strict router directive and drop the \"I'll work on that\" ack."
+source = "tools.py:45"
+
+[[settings]]
+name = "TEAPORT_RECALL_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 0.1
+default = 1.5
+read = "startup"
+tier = "tuning"
+help = "Memory-recall budget. Never awaited on the frame path, so a generous value adds no turn latency; 1.5 s clears a cold embedder (~1.14 s measured on-box)."
+source = "openclaw_client.py:47"
+
+[[settings]]
+name = "TEAPORT_CONSULT_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 5
+default = 45
+read = "startup"
+tier = "tuning"
+help = "CLI consult ceiling. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts."
+source = "openclaw_client.py:80"
+
+[[settings]]
+name = "TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 0.2
+default = 1.5
+read = "startup"
+tier = "tuning"
+help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
+source = "tools.py:308"
+
+[[settings]]
+name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 5
+default = 45
+read = "startup"
+tier = "tuning"
+help = "How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves."
+source = "tools.py:303"
+
+[[settings]]
+name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 5
+default = 55
+read = "startup"
+tier = "tuning"
+help = "The function-call timeout for ask_openclaw. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
+source = "tools.py:313"
+
+[[settings]]
+name = "TEAPORT_ASYNC_CONSULT_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 5
+default = 180
+read = "startup"
+tier = "tuning"
+help = "Async consult ceiling. The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or an honest \"couldn't get it\" past this."
+source = "tools.py:317"
+
+[[settings]]
+name = "TEAPORT_FOLLOWUP_QUIET_S"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 0
+default = 0.7
+read = "startup"
+tier = "tuning"
+help = "How long the conversation must stay quiet before a follow-up window counts; rejects mid-thought pauses and between-turn gaps."
+source = "followup_gate.py:43"
+
+[[settings]]
+name = "TEAPORT_FOLLOWUP_MAX_WAIT_S"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 1
+default = 60
+read = "startup"
+tier = "tuning"
+help = "Ceiling on holding a follow-up for a gap; past this, speak anyway."
+source = "followup_gate.py:45"
+
+[[settings]]
+name = "TEAPORT_FOLLOWUP_MIN_HEARD"
+store = "brain_env"
+group = "agent"
+type = "float"
+min = 0
+max = 1
+default = 0.3
+read = "startup"
+tier = "tuning"
+help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
+source = "agent_session.py:237"
+
+[[settings]]
+name = "TEAPORT_THINKING_SOUND"
+store = "brain_env"
+group = "agent"
+type = "flag"
+default = true
+read = "startup"
+tier = "setup"
+help = "The typing bed during a long agent consult."
+source = "thinking_sound.py:44"
+
+[[settings]]
+name = "TEAPORT_THINKING_GRACE_S"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 0
+default = 1.5
+read = "startup"
+tier = "tuning"
+help = "Silence before the bed starts."
+source = "thinking_sound.py:48"
+
+[[settings]]
+name = "TEAPORT_THINKING_GAIN"
+store = "brain_env"
+group = "agent"
+type = "float"
+min = 0
+max = 1
+default = 0.8
+read = "startup"
+tier = "tuning"
+help = "Bed level; 1.0 is the synthesized peak."
+source = "thinking_sound.py:49"
+
+[[settings]]
+name = "TEAPORT_THINKING_MAX_S"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 1
+default = 60
+read = "startup"
+tier = "tuning"
+help = "Hard cap on the bed. Keep it above TEAPORT_ASK_OPENCLAW_TIMEOUT."
+source = "thinking_sound.py:50"
+
+[[settings]]
+name = "TEAPORT_PERSONA_FILE"
+store = "brain_env"
+group = "agent"
+type = "path"
+default = "~/.config/teaport/persona.md"
+read = "startup"
+tier = "installer"
+help = "Fallback persona when the gateway's is not reachable. The installer points it at the secrets dir."
+source = "persona.py:106"
+
+[[settings]]
+name = "OPENCLAW_WORKSPACE"
+store = "brain_env"
+group = "agent"
+type = "dir"
+default = "~/.openclaw/workspace"
+read = "startup"
+tier = "installer"
+help = "The OpenClaw workspace whose persona files the voice brain shares."
+source = "persona.py:120"
+
+[[settings]]
+name = "TEAPORT_WORKSPACE_FILES"
+store = "brain_env"
+group = "agent"
+type = "string"
+default = "SOUL.md,IDENTITY.md,USER.md,MEMORY.md"
+read = "startup"
+tier = "tuning"
+help = "Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design."
+source = "persona.py:124"
+
+[[settings]]
+name = "OPENCLAW_MEMORY_DIR"
+store = "brain_env"
+group = "agent"
+type = "dir"
+default = "~/.openclaw/workspace/memory"
+read = "startup"
+tier = "installer"
+help = "The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it."
+source = "openclaw_client.py:87"
+
+[[settings]]
+name = "TEAPORT_THINKING_WAV"
+store = "brain_env"
+group = "agent"
+type = "path"
+default = "<package>/assets/typing.wav"
+read = "startup"
+tier = "tuning"
+help = "Your own 24 kHz mono wav for the thinking bed; the default is synthesized and cached next to the code."
+source = "thinking_sound.py:52"
+
+# ---- sip brain
+
+[[settings]]
+name = "SIP_HALF_DUPLEX"
+store = "brain_env"
+group = "sip_brain"
+services = ["teaport-sip-brain"]
+type = "flag"
+default = false
+read = "startup"
+tier = "tuning"
+help = "Drop the caller's mic while the bot speaks. On means no barge-in."
+note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
+source = "sip_server.py:120"
+
+[[settings]]
+name = "SIP_HALF_DUPLEX_TAIL_S"
+store = "brain_env"
+group = "sip_brain"
+services = ["teaport-sip-brain"]
+type = "float"
+unit = "s"
+min = 0
+default = 0.8
+read = "startup"
+tier = "tuning"
+help = "The tail after the bot stops, when half-duplex is on."
+source = "sip_server.py:121"
+
+[[settings]]
+name = "SIP_STT_MAKEUP_DB"
+store = "brain_env"
+group = "sip_brain"
+services = ["teaport-sip-brain"]
+type = "float"
+unit = "dB"
+min = 0
+max = 20
+default = 0
+read = "startup"
+tier = "setup"
+help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
+source = "sip_server.py:131"
+
+[[settings]]
+name = "TEAPORT_SIP_SOCKET"
+store = "brain_env"
+group = "sip_brain"
+services = ["teaport-sip-brain"]
+type = "path"
+read = "startup"
+tier = "installer"
+help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
+source = "sip_server.py:480"
+
+# ---- diagnostics
+
+[[settings]]
+name = "TEAPORT_ENDPOINT_DEBUG"
+store = "brain_env"
+group = "diag"
+type = "flag"
+default = false
+read = "startup"
+tier = "diag"
+help = "VAD state transitions, Smart Turn verdicts and the turn-commit / first-audio timing bubbles in the journal."
+source = "endpoint_debug.py:57"
+
+[[settings]]
+name = "TEAPORT_ENDPOINT_DIST_EVERY"
+store = "brain_env"
+group = "diag"
+type = "int"
+unit = "frames"
+min = 1
+default = 500
+read = "startup"
+tier = "diag"
+help = "The per-frame confidence census interval (500 frames ≈ 16 s)."
+source = "endpoint_debug.py:64"
+
+[[settings]]
+name = "LEDGER_TRACE"
+store = "brain_env"
+group = "diag"
+type = "flag"
+default = false
+accepts = ["1"]
+read = "startup"
+tier = "diag"
+help = "Trace every frame the transcript ledger sees."
+note = "Parsed as == \"1\", not through env_flag: true/yes/on are silently off. Write 1."
+source = "transcript_ledger.py:87"
+
+[[settings]]
+name = "TEAPORT_TRACE"
+store = "brain_env"
+group = "diag"
+type = "flag"
+default = false
+read = "startup"
+tier = "diag"
+help = "Keep the [CAP] caption-pipeline and [WTS] word-timestamp traces in the journal."
+source = "captions.py:61"
+
+[[settings]]
+name = "TEAPORT_AUDIO_DUMP"
+store = "brain_env"
+group = "diag"
+type = "dir"
+read = "startup"
+tier = "diag"
+help = "A directory; every call writes the caller PCM the brain received plus a sidecar of bot-playout offsets. Empty = off."
+source = "audio_dump.py:59"
+
+[[settings]]
+name = "TEAPORT_AUDIO_DUMP_MAX_SECS"
+store = "brain_env"
+group = "diag"
+type = "float"
+unit = "s"
+min = 1
+default = 600
+read = "startup"
+tier = "diag"
+help = "Caps the recording."
+source = "audio_dump.py:65"
+
+[[settings]]
+name = "TEAPORT_CAPTION_USER_HOLD_S"
+store = "brain_env"
+group = "diag"
+type = "float"
+unit = "s"
+min = 0
+default = 1.2
+read = "startup"
+tier = "tuning"
+help = "Gap after the user's last interim before assistant partials may render again; prevents the doubled assistant bubble in the Talk UI."
+source = "captions.py:70"
+
+[[settings]]
+name = "ENGINE_LOG"
+store = "brain_env"
+group = "diag"
+type = "path"
+default = "~/teaport-engine.log"
+read = "startup"
+tier = "installer"
+help = "The engine's serve log, where the tools read decode ms/step."
+source = "tools.py:48"
+
+# ---- installer-owned
+
+[[settings]]
+name = "BRAIN_PORT"
+store = "brain_env"
+group = "installer"
+type = "int"
+unit = "port"
+min = 1
+max = 65535
+default = 7861
+read = "unit"
+tier = "installer"
+help = "Passed as --port by the unit. Changing it means re-rendering the plugin config, bridge.env and Caddy."
+source = "systemd/teaport-brain.service.in"
+
+[[settings]]
+name = "GATEWAY_PORT"
+store = "brain_env"
+group = "installer"
+type = "int"
+unit = "port"
+min = 1
+max = 65535
+default = 7861
+read = "startup"
+tier = "installer"
+help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
+source = "gateway_server.py:55"
+
+[[settings]]
+name = "GATEWAY_TOKEN"
+store = "brain_env"
+group = "installer"
+type = "secret"
+default = ""
+read = "startup"
+tier = "installer"
+help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup."
+note = "Mirrored into the plugin config by install.sh. Never change one side alone."
+source = "gateway_server.py:62"
+
+[[settings]]
+name = "MALLOC_ARENA_MAX"
+store = "brain_env"
+consumer = "glibc"
+group = "installer"
+type = "int"
+min = 1
+default = 2
+read = "startup"
+tier = "installer"
+help = "glibc arena cap; part of the memory budget."
+source = "install.sh:867"
+
+[[settings]]
+name = "HF_HUB_OFFLINE"
+store = "brain_env"
+consumer = "huggingface_hub"
+group = "installer"
+type = "enum"
+values = ["1"]
+default = "1"
+read = "startup"
+tier = "installer"
+help = "Never fetch from the Hub on the appliance. Also set by the package at import."
+source = "__init__.py:27"
+
+# ================================================================ engine.env
+
+[[settings]]
+name = "KOKORO_RESERVE_FPT"
+store = "engine_env"
+group = "engine_service"
+type = "enum"
+values = ["6", "12"]
+read = "startup"
+tier = "installer"
+help = "The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device."
+note = "The engine's own default (50) OOMs an 8 GB box. The installer derives this from whether an agent is present and rewrites it on every run, so it is not editable here: re-run install.sh to change what is resident."
+source = "install.sh:865"
+
+[[settings]]
+name = "ENGINE_PORT"
+store = "engine_env"
+group = "engine_service"
+type = "int"
+unit = "port"
+min = 1
+max = 65535
+default = 8000
+read = "unit"
+tier = "installer"
+help = "--serve. TEAPORT_URL and ENGINE_TTS_URL in brain.env must follow it."
+source = "systemd/teaport-engine.service.in"
+
+[[settings]]
+name = "ENGINE_DELAY"
+store = "engine_env"
+group = "engine_service"
+type = "int"
+default = 240
+read = "unit"
+tier = "installer"
+help = "--delay to the engine binary."
+source = "systemd/teaport-engine.service.in"
+
+[[settings]]
+name = "TTS_CTX"
+store = "engine_env"
+group = "engine_service"
+type = "int"
+default = 192
+read = "unit"
+tier = "installer"
+help = "--tts-ctx to the engine binary."
+source = "systemd/teaport-engine.service.in"
+
+[[settings]]
+name = "VOX_REQUIRE_DICT_G2P"
+store = "engine_env"
+group = "engine_service"
+type = "enum"
+values = ["1"]
+default = "1"
+read = "startup"
+tier = "installer"
+help = "Refuse to serve if the en-us G2P dict failed to load, rather than degrade silently to espeak-only prosody. Engine ≤ 1.3 ignores it."
+source = "install.sh:866"
+
+# ================================================================ teaport-sip.conf
+
+[[settings]]
+name = "registrar_uri"
+store = "sip_conf"
+group = "sip"
+type = "string"
+tier = "setup"
+help = "The registrar / SBC, as sip:host."
+source = "cli/teaport:165"
+
+[[settings]]
+name = "id_uri"
+store = "sip_conf"
+group = "sip"
+type = "string"
+tier = "setup"
+help = "sip:user@domain."
+source = "cli/teaport:163"
+
+[[settings]]
+name = "username"
+store = "sip_conf"
+group = "sip"
+type = "string"
+tier = "setup"
+help = "Auth username."
+source = "cli/teaport:167"
+
+[[settings]]
+name = "password"
+store = "sip_conf"
+group = "sip"
+type = "secret"
+tier = "setup"
+help = "Auth password. Lives in the mode-600 conf itself."
+source = "cli/teaport:168"
+
+[[settings]]
+name = "register"
+store = "sip_conf"
+group = "sip"
+type = "flag"
+default = true
+tier = "installer"
+help = ""
+source = "cli/teaport:164"
+
+[[settings]]
+name = "realm"
+store = "sip_conf"
+group = "sip"
+type = "string"
+default = "*"
+tier = "installer"
+help = ""
+source = "cli/teaport:166"
+
+[[settings]]
+name = "reg_timeout"
+store = "sip_conf"
+group = "sip"
+type = "int"
+unit = "s"
+min = 30
+default = 300
+tier = "tuning"
+help = "Registration refresh interval."
+source = "cli/teaport:169"
+
+[[settings]]
+name = "bind_addr"
+store = "sip_conf"
+group = "sip"
+type = "string"
+default = "0.0.0.0"
+tier = "installer"
+help = ""
+source = "cli/teaport:161"
+
+[[settings]]
+name = "sip_port"
+store = "sip_conf"
+group = "sip"
+type = "int"
+unit = "port"
+min = 1
+max = 65535
+tier = "installer"
+help = "The wizard test-registers on a throwaway port, never :5060 while a gateway runs."
+source = "cli/teaport:162"
+
+[[settings]]
+name = "uds_path"
+store = "sip_conf"
+group = "sip"
+type = "path"
+tier = "installer"
+help = "Must match the sip-brain's --socket."
+source = "cli/teaport:170"
+
+[[settings]]
+name = "auto_answer"
+store = "sip_conf"
+group = "sip"
+type = "flag"
+default = true
+tier = "setup"
+help = "Answer inbound calls."
+source = "cli/teaport:171"
+
+[[settings]]
+name = "aec"
+store = "sip_conf"
+group = "sip"
+type = "flag"
+default = true
+tier = "tuning"
+help = "The gateway's echo canceller. Keep it on; the sip-brain's makeup gain assumes it."
+source = "cli/teaport:172"
+
+[[settings]]
+name = "aec_tail_ms"
+store = "sip_conf"
+group = "sip"
+type = "int"
+unit = "ms"
+min = 0
+default = 256
+tier = "tuning"
+help = "Echo canceller tail."
+source = "cli/teaport:173"
+
+[[settings]]
+name = "log_level"
+store = "sip_conf"
+group = "sip"
+type = "int"
+min = 0
+max = 6
+default = 3
+tier = "diag"
+help = "pjsua log level."
+source = "cli/teaport:174"
+
+[[settings]]
+name = "app_log_level"
+store = "sip_conf"
+group = "sip"
+type = "int"
+min = 0
+max = 6
+default = 3
+tier = "diag"
+help = "Gateway app log level."
+source = "cli/teaport:175"
+
+# ================================================================ bridge.env
+
+[[settings]]
+name = "BRIDGE_GUILD_ID"
+store = "bridge_env"
+group = "bridge"
+type = "snowflake"
+required = true
+tier = "setup"
+help = "The Discord guild. The unit stays inert until this and BRIDGE_FOLLOW_USER_ID are set."
+source = "bridge/discord/index.js:45"
+
+[[settings]]
+name = "BRIDGE_FOLLOW_USER_ID"
+store = "bridge_env"
+group = "bridge"
+type = "snowflake"
+required = true
+tier = "setup"
+help = "The user whose voice channel the bot follows."
+source = "bridge/discord/index.js:46"
+
+[[settings]]
+name = "BRIDGE_JOIN_CHANNEL_ID"
+store = "bridge_env"
+group = "bridge"
+type = "snowflake"
+tier = "tuning"
+help = "Force a voice channel instead of following the user."
+source = "bridge/discord/index.js:55"
+
+[[settings]]
+name = "BRAIN_URL"
+store = "bridge_env"
+group = "bridge"
+type = "ws_url"
+default = "ws://127.0.0.1:7861/talk"
+tier = "installer"
+help = "Derived from BRAIN_PORT."
+source = "bridge/discord/index.js:54"
+
+[[settings]]
+name = "TEAPORT_VOICE"
+store = "bridge_env"
+group = "bridge"
+type = "string"
+tier = "setup"
+help = "TTS voice for bridge sessions; unset = the brain's TTS_VOICE."
+source = "bridge/discord/index.js:56"
+
+[[settings]]
+name = "BRIDGE_PRIME_MS"
+store = "bridge_env"
+group = "bridge"
+type = "int"
+unit = "ms"
+min = 0
+default = 40
+tier = "tuning"
+help = "Downlink prime."
+source = "bridge/discord/index.js:70"
+
+[[settings]]
+name = "DISCORD_BOT_TOKEN_FILE"
+store = "bridge_env"
+group = "bridge"
+type = "path"
+default = "~/.config/teaport/discord_bot_token"
+tier = "installer"
+help = "Where the bot token is read from."
+source = "bridge/discord/index.js:58"
+
+[[settings]]
+name = "DISCORD_BOT_TOKEN"
+store = "bridge_env"
+group = "bridge"
+type = "secret"
+file = "~/.config/teaport/discord_bot_token"
+read = "startup"
+tier = "setup"
+help = "The bot token."
+note = "Prefer the file; the env var, if set, wins over it. Read once at login: a new token needs the bridge restarted."
+source = "bridge/discord/index.js:75"
+
+# ---------------------------------------------------------------- cross-row constraints
+# kind = "sum_lt": a < b + c ... ; "lt": a < b ; "le_chain": a ≤ b ≤ c ; "follows": changing a requires rewriting b…
+
+[[constraints]]
+kind = "sum_lt"
+lhs = ["TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT", "TEAPORT_NATIVE_CONSULT_TIMEOUT"]
+rhs = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
+message = "TEAPORT_ASK_OPENCLAW_TIMEOUT must exceed the ack + native consult timeouts, or pipecat drops the late answer."
+
+[[constraints]]
+kind = "lt"
+lhs = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
+rhs = "TEAPORT_THINKING_MAX_S"
+message = "TEAPORT_THINKING_MAX_S should stay above TEAPORT_ASK_OPENCLAW_TIMEOUT so the bed outlasts the consult."
+
+[[constraints]]
+kind = "le_chain"
+names = ["TTS_FIRST_CLAUSE_CHARS", "TTS_CLAUSE_CAP", "TTS_CLAUSE_HARD_MAX"]
+message = "First clause ≤ clause cap ≤ hard max."
+
+[[constraints]]
+kind = "follows"
+lhs = "ENGINE_PORT"
+rhs = ["TEAPORT_URL", "ENGINE_TTS_URL"]
+message = "Changing ENGINE_PORT means rewriting TEAPORT_URL and ENGINE_TTS_URL in brain.env."
+
+[[constraints]]
+kind = "follows"
+lhs = "BRAIN_PORT"
+rhs = ["BRAIN_URL"]
+message = "Changing BRAIN_PORT means rewriting BRAIN_URL in bridge.env, the plugin config and Caddy."
+
+[[constraints]]
+kind = "follows"
+lhs = "GATEWAY_TOKEN"
+rhs = []
+message = "GATEWAY_TOKEN is mirrored into the plugin config by install.sh; change both or neither."

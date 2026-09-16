@@ -1,0 +1,572 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Teaport configuration</title>
+<meta name="description" content="Settings for this Teaport box.">
+<meta name="robots" content="noindex, nofollow">
+<meta name="theme-color" content="#137a6f">
+<link rel="icon" href="/config/logo.svg" type="image/svg+xml">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400..900;1,9..40,400..900&family=Montserrat:wght@700&display=swap" rel="stylesheet">
+<style>
+  /* The same aliases TeaportLayout.astro declares on the marketing site, with
+     the design-system tokens it points at resolved to their light values, so
+     this page and teaspoon.tech/teaport read as one product. */
+  :root {
+    --bg: #F4F2EC; --surface: #fbfaf6; --surface-2: #efece3;
+    --text: #020617; --muted: #475569; --faint: #64748B;
+    --border: #E2E8F0; --border-strong: #CBD5E1;
+    --accent: #0891B2; --accent-ink: #0E7490; --accent-wash: hsl(191.6 91.4% 36.5% / .12);
+    --mint: #82FFB6; --openclaw: #EA580C;
+    --ok-ink: #178347; --ok-bg: #E8FBC6; --err-ink: #B91C1C; --err-bg: #FEE2E2; --info-bg: #D9E8FF;
+    --btn-primary-bg: #023176; --btn-primary-fg: #FFFFFF; --btn-height: 48px;
+    --btn-ghost-hover-bg: var(--surface-2); --btn-ghost-active-bg: var(--border);
+    --control-radius: 8px;
+    --mono: ui-monospace, "SF Mono", "SFMono-Regular", Menlo, Consolas, monospace;
+    --sans: "DM Sans", system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, sans-serif;
+    --display: "Montserrat", "DM Sans", system-ui, sans-serif;
+    --shadow: 0 1px 2px rgba(28,27,24,.05), 0 18px 40px -24px rgba(28,27,24,.28);
+    --maxw: 1536px; --maxw-prose: 960px;
+    --nav-h: 81px;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; scroll-padding-top: calc(var(--nav-h) + 16px); }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } * { transition: none !important; } }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: var(--sans); line-height: 1.7; letter-spacing: 0.01em; -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: var(--maxw); margin: 0 auto; padding: 0 24px; }
+  @media (min-width: 640px) { .wrap { padding: 0 32px; } }
+  @media (min-width: 1024px) { .wrap { padding: 0 48px; } }
+  a { color: var(--accent-ink); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  .mono { font-family: var(--mono); }
+  .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); border: 0; }
+  .eyebrow { font-size: 14px; letter-spacing: .12em; text-transform: uppercase; color: var(--accent); font-weight: 700; }
+  h1 { font-family: var(--display); font-weight: 700; font-size: clamp(36px, 5vw, 60px); line-height: 1.05; letter-spacing: -0.01em; margin: 16px 0 0; text-wrap: balance; }
+  h2 { font-family: var(--display); font-weight: 700; font-size: clamp(26px, 3vw, 34px); line-height: 1.1; letter-spacing: -0.01em; margin: 0; }
+  h3 { font-family: var(--sans); font-weight: 600; font-size: clamp(18px, 2vw, 24px); line-height: 1.4; letter-spacing: -0.01em; margin: 0; }
+  .lede { font-size: clamp(17px, 2.2vw, 20px); color: var(--muted); max-width: 54rem; margin: 22px 0 0; }
+
+  /* nav — the Teaport header band: sticky, solid, 48px logo, 16px padding. */
+  .nav { border-bottom: 1px solid var(--border); background: var(--bg); position: sticky; top: 0; z-index: 10; }
+  .navbar { display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 16px 0; }
+  .brand-lockup { display: flex; align-items: flex-end; gap: 10px; min-width: 0; }
+  .brand-logo { height: 48px; width: auto; display: block; }
+  .brand-byline { font-size: 13px; line-height: 1; color: var(--faint); white-space: nowrap; padding: 1px 0 3px 10px; border-left: 1px solid var(--border); }
+  .services { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+  @media (max-width: 639px) { .navbar { flex-wrap: wrap; } .services { justify-content: flex-start; width: 100%; } }
+  .svc { font-family: var(--mono); font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border-strong); background: var(--surface); color: var(--muted); display: inline-flex; align-items: center; gap: 6px; }
+  .svc::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--border-strong); }
+  .svc.active::before { background: var(--ok-ink); }
+  .svc.failed::before, .svc.inactive::before { background: var(--err-ink); }
+  .svc.stale { border-color: var(--openclaw); color: var(--openclaw); }
+
+  /* buttons — .btn-primary / .btn-ghost from the site, plus a compact size for rows. */
+  .btn-primary, .btn-ghost {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    font-family: var(--sans); font-size: 16px; font-weight: 700; cursor: pointer; white-space: nowrap;
+    height: var(--btn-height); padding: 12px 32px; border-radius: var(--control-radius); border: 1px solid transparent;
+    text-decoration: none; transition: box-shadow .3s cubic-bezier(.4,0,.2,1), background-color .2s ease, transform .05s ease;
+  }
+  .btn-primary { background: var(--btn-primary-bg); color: var(--btn-primary-fg); }
+  .btn-primary:hover { box-shadow: 0 10px 24px rgba(2,49,118,.22); }
+  .btn-primary:active { transform: translateY(1px); }
+  .btn-primary[disabled], .btn-ghost[disabled] { opacity: .6; cursor: default; box-shadow: none; }
+  .btn-ghost { color: var(--text); background: transparent; }
+  .btn-ghost .btn-label { text-decoration: underline; text-decoration-thickness: 1px; text-underline-offset: 4px; }
+  .btn-ghost:hover { background: var(--btn-ghost-hover-bg); }
+  .btn-ghost:hover .btn-label { text-decoration: none; }
+  .btn-ghost:active { background: var(--btn-ghost-active-bg); }
+  .btn-sm { height: 36px; padding: 6px 16px; font-size: 14px; }
+
+  /* page grid: sticky group index beside the settings column. */
+  .page { display: grid; grid-template-columns: 240px minmax(0, var(--maxw-prose)); gap: 48px; padding: 48px 0 160px; align-items: start; }
+  @media (max-width: 899px) { .page { grid-template-columns: minmax(0, 1fr); gap: 24px; } .index { display: none; } }
+  .index { position: sticky; top: calc(var(--nav-h) + 24px); }
+  .index a { display: block; padding: 6px 10px; border-radius: 6px; color: var(--muted); font-size: 15px; }
+  .index a:hover { background: color-mix(in srgb, var(--text) 7%, transparent); text-decoration: none; }
+  .index a.current { color: var(--text); font-weight: 600; background: var(--accent-wash); }
+  .index .store-label { font-family: var(--mono); font-size: 12px; color: var(--faint); margin: 18px 10px 4px; letter-spacing: .04em; }
+  .index .store-label:first-child { margin-top: 0; }
+
+  header.intro { margin-bottom: 40px; }
+  .toolbar { display: flex; gap: 12px; align-items: center; margin-top: 28px; flex-wrap: wrap; }
+  .search { flex: 1 1 280px; height: var(--btn-height); font: inherit; font-size: 16px; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--text); }
+  .search:focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px var(--accent-wash); }
+  .toggle { display: inline-flex; align-items: center; gap: 8px; font-size: 15px; color: var(--muted); cursor: pointer; user-select: none; }
+  .toggle input { width: 18px; height: 18px; accent-color: var(--accent); }
+
+  /* banners */
+  .banner { border: 1px solid var(--border-strong); background: var(--surface); border-radius: 12px; padding: 18px 22px; margin: 24px 0 0; display: flex; gap: 16px; align-items: center; flex-wrap: wrap; box-shadow: var(--shadow); }
+  .banner.warn { border-color: var(--openclaw); background: color-mix(in srgb, var(--openclaw) 8%, var(--surface)); }
+  .banner.err { border-color: var(--err-ink); background: var(--err-bg); }
+  .banner.ok { border-color: var(--ok-ink); background: var(--ok-bg); }
+  .banner p { margin: 0; flex: 1 1 320px; }
+  .banner .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+  .banner code { font-family: var(--mono); font-size: 14px; background: color-mix(in srgb, var(--text) 6%, transparent); padding: 1px 6px; border-radius: 4px; }
+
+  /* groups and rows */
+  section.group { margin-top: 56px; scroll-margin-top: calc(var(--nav-h) + 16px); }
+  section.group:first-of-type { margin-top: 0; }
+  .group-head { display: flex; align-items: baseline; gap: 14px; flex-wrap: wrap; border-bottom: 1px solid var(--border-strong); padding-bottom: 12px; }
+  .group-head .file { font-family: var(--mono); font-size: 13px; color: var(--faint); }
+  .group-blurb { color: var(--muted); margin: 12px 0 0; max-width: 54rem; }
+  .group-tools { margin: 14px 0 0; display: flex; gap: 16px; flex-wrap: wrap; }
+  .row { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 420px); gap: 8px 32px; padding: 22px 0; border-bottom: 1px solid var(--border); align-items: start; }
+  @media (max-width: 1099px) { .row { grid-template-columns: minmax(0, 1fr); gap: 10px; } }
+  .row.hidden { display: none; }
+  .row-head { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .row-head label { font-family: var(--mono); font-size: 15px; font-weight: 600; color: var(--text); }
+  .badge { font-family: var(--mono); font-size: 12px; color: var(--muted); background: var(--surface-2); padding: 2px 8px; border-radius: 999px; white-space: nowrap; }
+  .badge.tier-tuning { color: var(--accent-ink); background: var(--accent-wash); }
+  .badge.tier-diag { color: var(--faint); background: transparent; border: 1px dashed var(--border-strong); }
+  .badge.tier-installer { color: var(--faint); }
+  .badge.changed { color: var(--openclaw); background: color-mix(in srgb, var(--openclaw) 12%, transparent); }
+  .help { margin: 6px 0 0; color: var(--muted); font-size: 15px; line-height: 1.6; max-width: 62ch; }
+  .note { margin: 6px 0 0; color: var(--faint); font-size: 14px; line-height: 1.5; max-width: 62ch; }
+  .source { font-family: var(--mono); font-size: 12px; color: var(--faint); }
+  .control { display: flex; flex-direction: column; gap: 6px; }
+  .control input[type=text], .control input[type=password], .control input[type=number], .control select, .control textarea {
+    font: inherit; font-size: 16px; color: var(--text); background: var(--surface);
+    border: 1px solid var(--border-strong); border-radius: var(--control-radius);
+    height: var(--btn-height); padding: 0 16px; width: 100%;
+  }
+  .control textarea { height: auto; min-height: 96px; padding: 12px 16px; font-family: var(--mono); font-size: 14px; resize: vertical; }
+  .control input[type=number] { max-width: 220px; font-family: var(--mono); }
+  .control select { max-width: 320px; appearance: none; background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'><path d='M1 1l5 5 5-5' fill='none' stroke='%23475569' stroke-width='1.6'/></svg>"); background-repeat: no-repeat; background-position: right 14px center; padding-right: 40px; }
+  .control :is(input, select, textarea):focus { border-color: var(--accent); outline: none; box-shadow: 0 0 0 2px var(--accent-wash); }
+  .control :is(input, select, textarea)[disabled] { background: var(--surface-2); color: var(--faint); cursor: not-allowed; }
+  .row.changed .control :is(input, select, textarea) { border-color: var(--openclaw); }
+  .row.invalid .control :is(input, select, textarea) { border-color: var(--err-ink); }
+  .field-err { color: var(--err-ink); font-size: 14px; margin: 0; }
+  .with-unit { display: flex; align-items: center; gap: 10px; }
+  .with-unit .unit { font-family: var(--mono); font-size: 13px; color: var(--faint); }
+  .readonly { font-family: var(--mono); font-size: 15px; color: var(--muted); padding: 12px 0; word-break: break-all; }
+  .readonly .lock { color: var(--faint); font-size: 13px; font-family: var(--sans); margin-left: 8px; }
+  .secret-state { font-size: 14px; color: var(--muted); }
+  .secret-state.set { color: var(--ok-ink); }
+
+  /* save bar */
+  .savebar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; background: var(--surface); border-top: 1px solid var(--border-strong); box-shadow: 0 -12px 40px -24px rgba(28,27,24,.5); transform: translateY(110%); transition: transform .25s cubic-bezier(.4,0,.2,1); }
+  .savebar.show { transform: none; }
+  .savebar .inner { display: flex; align-items: center; gap: 16px; padding: 16px 0; flex-wrap: wrap; }
+  .savebar .count { font-weight: 600; flex: 1 1 200px; }
+  .savebar .count small { font-weight: 400; color: var(--muted); display: block; font-size: 14px; }
+
+  .empty { color: var(--faint); padding: 24px 0; }
+  .gate { max-width: 520px; margin: 64px auto; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 16px; padding: 32px; box-shadow: var(--shadow); }
+  .gate p { color: var(--muted); }
+  .gate form { display: flex; gap: 12px; margin-top: 20px; flex-wrap: wrap; }
+  .gate input { flex: 1 1 240px; }
+  footer.foot { border-top: 1px solid var(--border); margin-top: 80px; padding: 32px 0 48px; color: var(--faint); font-size: 14px; }
+  footer.foot .mono { font-size: 13px; }
+  dialog { border: 1px solid var(--border-strong); border-radius: 16px; padding: 28px 32px; max-width: 560px; background: var(--surface); box-shadow: var(--shadow); color: var(--text); }
+  dialog::backdrop { background: rgba(2, 6, 23, .35); }
+  dialog ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); }
+  dialog .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; flex-wrap: wrap; }
+</style>
+</head>
+<body>
+<header class="nav">
+  <div class="wrap navbar">
+    <div class="brand-lockup">
+      <a href="/config" aria-label="Teaport configuration"><img src="/config/logo.svg" alt="Teaport" class="brand-logo" width="86" height="48"></a>
+      <span class="brand-byline">configuration</span>
+    </div>
+    <div class="services" id="services" aria-live="polite"></div>
+  </div>
+</header>
+
+<main class="wrap" id="main">
+  <div class="gate" id="gate" hidden>
+    <h3>This box asks for its token</h3>
+    <p>The same <span class="mono">GATEWAY_TOKEN</span> the Talk plugin uses — it is in <span class="mono">/etc/teaport/brain.env</span> on the box.</p>
+    <form id="gateform">
+      <input type="password" id="tokeninput" class="search" placeholder="token" autocomplete="off" aria-label="token">
+      <button type="submit" class="btn-primary">Open</button>
+    </form>
+    <p class="field-err" id="gateerr" hidden>That token was not accepted.</p>
+  </div>
+
+  <div class="page" id="page" hidden>
+    <nav class="index" id="index" aria-label="Sections"></nav>
+    <div>
+      <header class="intro">
+        <div class="eyebrow">This box</div>
+        <h1>Configuration</h1>
+        <p class="lede">A change is written to the box the moment you save. It takes effect when the service that reads it restarts — nothing here hot-reloads, and the page says which service is waiting.</p>
+        <div class="toolbar">
+          <input type="search" id="search" class="search" placeholder="Find a setting — name or words from its description" aria-label="Find a setting">
+          <label class="toggle"><input type="checkbox" id="showtuning"> Show tuning &amp; diagnostics</label>
+        </div>
+        <div id="banners"></div>
+      </header>
+      <div id="groups"></div>
+      <footer class="foot">
+        Rendered from <span class="mono">config_schema.toml</span> — the same table <span class="mono">docs/CONFIG.md</span> is generated from. Every setting is explained at length where it is read; the <span class="mono">file:line</span> under each one is that place.
+      </footer>
+    </div>
+  </div>
+</main>
+
+<div class="savebar" id="savebar">
+  <div class="wrap inner">
+    <div class="count"><span id="count">0 changes</span><small id="countfiles"></small></div>
+    <button class="btn-ghost" id="discard"><span class="btn-label">Discard</span></button>
+    <button class="btn-primary" id="save">Save to box</button>
+  </div>
+</div>
+
+<dialog id="dlg">
+  <h3 id="dlgtitle"></h3>
+  <ul id="dlglist"></ul>
+  <div class="actions">
+    <button class="btn-ghost" id="dlgcancel"><span class="btn-label">Cancel</span></button>
+    <button class="btn-primary" id="dlgok">Save anyway</button>
+  </div>
+</dialog>
+
+<script>
+(() => {
+  'use strict';
+  const $ = (s, el = document) => el.querySelector(s);
+  const h = (tag, attrs = {}, ...kids) => {
+    const el = document.createElement(tag);
+    for (const [k, v] of Object.entries(attrs)) {
+      if (k === 'class') el.className = v;
+      else if (k === 'html') el.innerHTML = v;
+      else if (k.startsWith('on')) el.addEventListener(k.slice(2), v);
+      else if (v !== null && v !== undefined && v !== false) el.setAttribute(k, v === true ? '' : v);
+    }
+    for (const kid of kids.flat()) if (kid !== null && kid !== undefined) el.append(kid.nodeType ? kid : document.createTextNode(kid));
+    return el;
+  };
+
+  // ---- auth: ?token= once, then localStorage, then the gate.
+  let token = '';
+  try {
+    const url = new URL(location.href);
+    if (url.searchParams.has('token')) {
+      token = url.searchParams.get('token');
+      localStorage.setItem('teaport.token', token);
+      url.searchParams.delete('token');
+      history.replaceState(null, '', url.pathname + url.search + url.hash);
+    } else {
+      token = localStorage.getItem('teaport.token') || '';
+    }
+  } catch (e) { /* storage may be unavailable; the gate still works per load */ }
+
+  const api = async (path, opts = {}) => {
+    const res = await fetch(path, {
+      ...opts,
+      headers: { 'content-type': 'application/json', ...(token ? { authorization: 'Bearer ' + token } : {}), ...(opts.headers || {}) },
+    });
+    if (res.status === 401) throw Object.assign(new Error('unauthorized'), { status: 401 });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok && res.status !== 400) throw Object.assign(new Error(body.detail || res.statusText), { status: res.status, body });
+    return { status: res.status, body };
+  };
+
+  // ---- state
+  let data = null;               // last GET /api/config
+  let rowsByName = {};
+  let edits = {};                // name -> text | null (null = unset)
+  const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'sip', 'teaport-sip-brain': 'sip-brain', 'teaport-discord-bridge': 'bridge' };
+  const STORE_LABEL = { engine_env: 'engine.env', brain_env: 'brain.env', bridge_env: 'bridge.env', sip_conf: 'teaport-sip.conf', secrets: '~/.config/teaport' };
+  const FLAG_ON = new Set(['1', 'true', 'yes', 'on', 'y']);
+
+  const original = (name) => {
+    const row = rowsByName[name];
+    const store = data.values[row.store] || {};
+    return Object.prototype.hasOwnProperty.call(store, name) ? store[name] : null;
+  };
+  const current = (name) => Object.prototype.hasOwnProperty.call(edits, name) ? edits[name] : original(name);
+  const setEdit = (name, value) => {
+    if (value === original(name)) delete edits[name]; else edits[name] = value;
+    const row = $(`.row[data-name="${name}"]`);
+    row.classList.toggle('changed', name in edits);
+    row.classList.remove('invalid');
+    const err = $('.field-err', row); if (err) err.remove();
+    refreshSavebar();
+  };
+
+  // ---- rendering
+  const defaultText = (row) => {
+    if (row.default_by) {
+      const [key, table] = Object.entries(row.default_by)[0];
+      return 'by ' + key + ': ' + Object.entries(table).map(([k, v]) => `${v} @ ${k === '' ? '""' : k}`).join(', ');
+    }
+    if (row.required) return 'required';
+    if (row.type === 'secret') return row.file ? 'file ' + row.file : '';
+    if (!('default' in row)) return 'unset';
+    if (row.type === 'flag') return row.default ? 'on' : 'off';
+    if (row.default === '') return '""';
+    let s = String(row.default);
+    if (row.unit && (row.type === 'int' || row.type === 'float')) s += ' ' + row.unit;
+    return s;
+  };
+
+  const control = (row, writable) => {
+    const name = row.name;
+    const val = current(name);
+    const ro = !writable || row.tier === 'installer';
+    if (row.type === 'secret') {
+      const isSet = !!(data.secrets || {})[name];
+      const input = h('input', { type: 'password', autocomplete: 'new-password', placeholder: isSet ? 'set — type to replace' : 'not set', disabled: ro,
+        oninput: (e) => setEdit(name, e.target.value === '' ? original(name) : e.target.value) });
+      return [input, h('span', { class: 'secret-state' + (isSet ? ' set' : '') }, isSet ? 'A value is stored on the box. It is never shown here.' : 'No value stored.')];
+    }
+    if (ro) {
+      return [h('div', { class: 'readonly' }, val === null ? h('span', { style: 'color:var(--faint)' }, 'unset (default)') : val, h('span', { class: 'lock' }, row.tier === 'installer' ? 'set by the installer' : 'read-only here'))];
+    }
+    if (row.type === 'flag') {
+      const sel = h('select', { onchange: (e) => setEdit(name, e.target.value === '' ? null : e.target.value) });
+      const accepts = row.accepts || null;
+      const onWord = accepts ? accepts[0] : '1';
+      const offWord = accepts ? (accepts.includes('0') ? '0' : null) : '0';
+      sel.append(h('option', { value: '' }, `default (${row.default ? 'on' : 'off'})`));
+      sel.append(h('option', { value: onWord }, 'on'));
+      if (offWord !== null) sel.append(h('option', { value: offWord }, 'off'));
+      if (val === null) sel.value = '';
+      else if (FLAG_ON.has(val.toLowerCase())) sel.value = onWord;
+      else sel.value = offWord === null ? '' : offWord;
+      return [sel];
+    }
+    if (row.type === 'enum') {
+      const sel = h('select', { onchange: (e) => setEdit(name, e.target.value === '__default__' ? null : e.target.value) });
+      const d = 'default' in row ? (row.default === '' ? '""' : row.default) : 'unset';
+      sel.append(h('option', { value: '__default__' }, `default (${d})`));
+      for (const v of row.values) sel.append(h('option', { value: v }, v === '' ? '"" (empty)' : v));
+      sel.value = val === null ? '__default__' : val;
+      return [sel];
+    }
+    if (row.type === 'int' || row.type === 'float') {
+      const input = h('input', { type: 'number', inputmode: 'decimal', step: row.type === 'int' ? '1' : 'any', min: row.min, max: row.max, value: val ?? '', placeholder: 'default' in row ? String(row.default) : '',
+        oninput: (e) => setEdit(name, e.target.value === '' ? null : e.target.value) });
+      return [h('div', { class: 'with-unit' }, input, row.unit ? h('span', { class: 'unit' }, row.unit) : null)];
+    }
+    if (row.type === 'json') {
+      return [h('textarea', { spellcheck: 'false', placeholder: '{ … }', oninput: (e) => setEdit(name, e.target.value.trim() === '' ? null : e.target.value) }, val ?? '')];
+    }
+    return [h('input', { type: 'text', spellcheck: 'false', autocomplete: 'off', value: val ?? '', placeholder: 'default' in row ? String(row.default) : (row.required ? 'required' : ''),
+      oninput: (e) => setEdit(name, e.target.value === '' ? null : e.target.value) })];
+  };
+
+  const renderRow = (row, writable) => {
+    const badges = [h('span', { class: 'badge' }, defaultText(row))];
+    if (row.tier === 'tuning') badges.push(h('span', { class: 'badge tier-tuning' }, 'tuning'));
+    if (row.tier === 'diag') badges.push(h('span', { class: 'badge tier-diag' }, 'diagnostic'));
+    if (row.tier === 'installer') badges.push(h('span', { class: 'badge tier-installer' }, 'installer'));
+    if (row.read === 'session') badges.push(h('span', { class: 'badge', title: 'read again for every new session' }, 'per session'));
+    const id = 'f-' + row.name;
+    const el = h('div', { class: 'row', 'data-name': row.name, 'data-tier': row.tier, 'data-text': (row.name + ' ' + (row.help || '') + ' ' + (row.note || '')).toLowerCase() },
+      h('div', {},
+        h('div', { class: 'row-head' }, h('label', { for: id }, row.name), ...badges),
+        row.help ? h('p', { class: 'help' }, row.help) : null,
+        row.note ? h('p', { class: 'note' }, row.note) : null,
+        row.source ? h('div', { class: 'source' }, row.source) : null),
+      h('div', { class: 'control' }, ...control(row, writable)));
+    const first = $('input, select, textarea', el); if (first) first.id = id;
+    if (row.name in edits) el.classList.add('changed');
+    return el;
+  };
+
+  const render = () => {
+    rowsByName = Object.fromEntries(data.schema.settings.map((r) => [r.name, r]));
+    const groupsEl = $('#groups'); groupsEl.replaceChildren();
+    const index = $('#index'); index.replaceChildren();
+    const byGroup = {};
+    for (const r of data.schema.settings) (byGroup[r.group] ||= []).push(r);
+    let lastStore = null;
+    for (const g of data.schema.groups) {
+      const rows = byGroup[g.id] || [];
+      if (!rows.length) continue;
+      const store = rows[0].store;
+      const writable = data.writable.includes(store);
+      if (store !== lastStore) { index.append(h('div', { class: 'store-label' }, STORE_LABEL[store] || store)); lastStore = store; }
+      index.append(h('a', { href: '#g-' + g.id, 'data-group': g.id }, g.title));
+      const sec = h('section', { class: 'group', id: 'g-' + g.id, 'data-store': store },
+        h('div', { class: 'group-head' }, h('h2', {}, g.title), h('span', { class: 'file' }, data.schema.stores[store].path)),
+        g.blurb ? h('p', { class: 'group-blurb' }, g.blurb) : null,
+        !writable ? h('p', { class: 'group-blurb' }, 'Read-only here: ', h('span', { class: 'mono' }, data.schema.stores[store].apply)) : null,
+        ...rows.map((r) => renderRow(r, writable)));
+      groupsEl.append(sec);
+    }
+    applyFilter();
+    renderServices();
+    renderBanners();
+    refreshSavebar();
+  };
+
+  const renderServices = () => {
+    const el = $('#services'); el.replaceChildren();
+    for (const [unit, state] of Object.entries(data.services || {})) {
+      const stale = !!(data.pending || {})[unit];
+      el.append(h('span', { class: 'svc ' + state + (stale ? ' stale' : ''), title: unit + ': ' + state + (stale ? ' — config changed since it started' : '') }, UNIT_LABEL[unit] || unit));
+    }
+  };
+
+  const renderBanners = (extra) => {
+    const el = $('#banners'); el.replaceChildren();
+    if (extra) el.append(extra);
+    const pending = Object.entries(data.pending || {});
+    if (pending.length) {
+      const which = pending.map(([u, stores]) => `${UNIT_LABEL[u] || u} (${stores.map((s) => STORE_LABEL[s] || s).join(', ')})`).join(', ');
+      const actions = h('div', { class: 'actions' });
+      for (const [unit] of pending) {
+        actions.append(h('button', { class: 'btn-primary btn-sm', onclick: () => restart(unit) }, 'Restart ' + (UNIT_LABEL[unit] || unit)));
+      }
+      el.append(h('div', { class: 'banner warn' }, h('p', {}, h('strong', {}, 'Waiting for a restart: '), which + '. The file changed after the service started, so it is still running on the old values.'), actions));
+      const sipPair = pending.some(([u]) => u === 'teaport-sip-brain');
+      if (sipPair) el.append(h('div', { class: 'banner' }, h('p', {}, 'The SIP brain and the SIP gateway share an echo canceller: restart ', h('code', {}, 'teaport-sip'), ' too, or the gateway keeps cancelling against a brain that is gone and the caller goes quiet.')));
+    }
+    if (!data.auth) el.append(h('div', { class: 'banner err' }, h('p', {}, h('code', {}, 'GATEWAY_TOKEN'), ' is not set: this page, and the voice line, are open to anyone who can reach the port. It is set by the installer; re-run ', h('code', {}, 'install.sh'), '.')));
+  };
+
+  // ---- filter
+  const applyFilter = () => {
+    const q = $('#search').value.trim().toLowerCase();
+    const showAll = $('#showtuning').checked;
+    for (const sec of document.querySelectorAll('section.group')) {
+      let visible = 0;
+      for (const row of sec.querySelectorAll('.row')) {
+        const tierOk = showAll || q || row.dataset.tier === 'setup' || row.classList.contains('changed');
+        const textOk = !q || row.dataset.text.includes(q);
+        const show = tierOk && textOk;
+        row.classList.toggle('hidden', !show);
+        if (show) visible++;
+      }
+      const hiddenCount = sec.querySelectorAll('.row.hidden').length;
+      let foot = $('.group-tools', sec);
+      if (!foot) { foot = h('div', { class: 'group-tools' }); sec.append(foot); }
+      foot.replaceChildren();
+      if (!q && !showAll && hiddenCount) foot.append(h('a', { href: '#', onclick: (e) => { e.preventDefault(); $('#showtuning').checked = true; applyFilter(); } }, `Show ${hiddenCount} more (tuning, diagnostics, installer)`));
+      sec.hidden = visible === 0 && !!q;
+    }
+    try { localStorage.setItem('teaport.showtuning', showAll ? '1' : ''); } catch (e) { /* fine */ }
+  };
+  $('#search').addEventListener('input', applyFilter);
+  $('#showtuning').addEventListener('change', applyFilter);
+
+  // index highlight while scrolling
+  const io = new IntersectionObserver((entries) => {
+    for (const en of entries) if (en.isIntersecting) {
+      document.querySelectorAll('.index a').forEach((a) => a.classList.toggle('current', a.dataset.group === en.target.id.slice(2)));
+    }
+  }, { rootMargin: '-90px 0px -70% 0px' });
+
+  // ---- save
+  const refreshSavebar = () => {
+    const names = Object.keys(edits);
+    const bar = $('#savebar');
+    bar.classList.toggle('show', names.length > 0);
+    $('#count').textContent = names.length === 1 ? '1 change' : names.length + ' changes';
+    const stores = [...new Set(names.map((n) => rowsByName[n].type === 'secret' ? 'secrets' : rowsByName[n].store))];
+    $('#countfiles').textContent = stores.map((s) => STORE_LABEL[s] || s).join(' · ');
+  };
+
+  $('#discard').addEventListener('click', () => { edits = {}; render(); });
+
+  const showErrors = (errors) => {
+    for (const [name, msg] of Object.entries(errors)) {
+      const row = $(`.row[data-name="${name}"]`);
+      if (!row) continue;
+      row.classList.add('invalid'); row.classList.remove('hidden');
+      const old = $('.field-err', row); if (old) old.remove();
+      $('.control', row).append(h('p', { class: 'field-err' }, msg));
+    }
+    const first = $('.row.invalid'); if (first) first.scrollIntoView({ block: 'center' });
+  };
+
+  const confirmConstraints = (messages) => new Promise((resolve) => {
+    const dlg = $('#dlg');
+    $('#dlgtitle').textContent = 'These values contradict each other';
+    $('#dlglist').replaceChildren(...messages.map((m) => h('li', {}, m)));
+    const done = (v) => { dlg.close(); resolve(v); };
+    $('#dlgok').onclick = () => done(true);
+    $('#dlgcancel').onclick = () => done(false);
+    dlg.onclose = () => resolve(false);
+    dlg.showModal();
+  });
+
+  const save = async () => {
+    const btn = $('#save'); btn.disabled = true;
+    try {
+      const byStore = {};
+      for (const [name, value] of Object.entries(edits)) (byStore[rowsByName[name].store] ||= {})[name] = value;
+      let force = false;
+      for (const [store, values] of Object.entries(byStore)) {
+        let res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store, values, force }) });
+        if (res.status === 400 && res.body.constraints) {
+          if (!(await confirmConstraints(res.body.constraints))) return;
+          force = true;
+          res = await api('/api/config', { method: 'PUT', body: JSON.stringify({ store, values, force }) });
+        }
+        if (res.status === 400) { showErrors(res.body.errors || { _: res.body.detail || 'rejected' }); return; }
+        for (const name of Object.keys(values)) delete edits[name];
+      }
+      await load(h('div', { class: 'banner ok' }, h('p', {}, 'Saved. The services below are waiting for a restart to pick it up.')));
+    } catch (e) {
+      renderBanners(h('div', { class: 'banner err' }, h('p', {}, 'Save failed: ' + e.message)));
+    } finally { btn.disabled = false; }
+  };
+  $('#save').addEventListener('click', save);
+
+  // ---- restart
+  const restart = async (unit) => {
+    try {
+      await api('/api/restart', { method: 'POST', body: JSON.stringify({ unit }) });
+    } catch (e) { renderBanners(h('div', { class: 'banner err' }, h('p', {}, 'Restart failed: ' + e.message))); return; }
+    renderBanners(h('div', { class: 'banner' }, h('p', {}, `Restarting ${UNIT_LABEL[unit] || unit} in a moment…`)));
+    const deadline = Date.now() + 90000;
+    await new Promise((r) => setTimeout(r, 4000));
+    while (Date.now() < deadline) {
+      try {
+        const res = await fetch('/health', { cache: 'no-store' });
+        if (res.ok) { await load(h('div', { class: 'banner ok' }, h('p', {}, `${UNIT_LABEL[unit] || unit} restarted.`))); return; }
+      } catch (e) { /* brain down; keep polling */ }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    renderBanners(h('div', { class: 'banner err' }, h('p', {}, 'Still no answer from the brain after 90 s — check ', h('code', {}, 'journalctl -u ' + unit), ' on the box.')));
+  };
+
+  // ---- load
+  const load = async (banner) => {
+    try {
+      const res = await api('/api/config');
+      data = res.body;
+      $('#gate').hidden = true; $('#page').hidden = false;
+      render();
+      if (banner) renderBanners(banner);
+      document.querySelectorAll('section.group').forEach((s) => io.observe(s));
+    } catch (e) {
+      if (e.status === 401) {
+        $('#page').hidden = true; $('#gate').hidden = false;
+        $('#gateerr').hidden = !token;
+        $('#tokeninput').focus();
+      } else {
+        $('#gate').hidden = true; $('#page').hidden = false;
+        renderBanners(h('div', { class: 'banner err' }, h('p', {}, 'Could not load the configuration: ' + e.message)));
+      }
+    }
+  };
+  $('#gateform').addEventListener('submit', (e) => {
+    e.preventDefault();
+    token = $('#tokeninput').value.trim();
+    try { localStorage.setItem('teaport.token', token); } catch (err) { /* fine */ }
+    load();
+  });
+  try { $('#showtuning').checked = localStorage.getItem('teaport.showtuning') === '1'; } catch (e) { /* fine */ }
+  window.addEventListener('beforeunload', (e) => { if (Object.keys(edits).length) { e.preventDefault(); e.returnValue = ''; } });
+  load();
+})();
+</script>
+</body>
+</html>
