@@ -13,6 +13,7 @@ import os
 from loguru import logger
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
@@ -204,16 +205,35 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
 
     It is also where the speculative reply is triggered (speculate.py, off unless
     TEAPORT_SPECULATIVE_REPLY is set): this strategy is the one place that sees a final
-    land AND knows whether the turn concluded on it. A final the stop did not fire on --
-    the verdict was INCOMPLETE and the ceiling is running, or the VAD stop has not come
-    yet -- is text the LLM could already be working on. A final the stop DID fire on is
-    followed by the real request within the same call, so nothing is speculated.
+    land AND knows whether the turn concluded on it. A final the stop did not fire on
+    while the caller is quiet -- the verdict was INCOMPLETE and the ceiling is running,
+    or no VAD stop has come and the fallback timer is waiting -- is text the LLM could
+    already be working on. A final the stop DID fire on is followed by the real request
+    within the same call, so nothing is speculated. The question is asked at two
+    moments, because the final and the VAD stop come in either order: at the final, when
+    the VAD stop preceded it; and at the VAD stop, when the engine's segmenter closed
+    the final first (it finalizes on shorter silences than the 0.5 s VAD floor, so this
+    is the common order on the appliance) -- the verdict is only known now, and an
+    INCOMPLETE one with a finalized transcript in hand is exactly the wait the
+    speculation exists for.
+
+    One final is left alone: the one that OPENS the turn over the bot (the "Okay, stop."
+    barge-in under the 2-word guard). The interruption it caused was broadcast in this
+    same controller call and has not reached the pipeline, so neither the ledger's cut
+    nor the assistant aggregator's commit of the cut reply is in the context yet; a
+    snapshot taken now is the context minus the truncation the corrector will make at
+    the commit, i.e. a guaranteed ctx-changed miss and a billed request for nothing.
     """
 
     def __init__(self, *, speculator=None, **kwargs):
         super().__init__(**kwargs)
         self.speculator = speculator
         self._inferences = 0
+        self._bot_speaking = False
+        # Set by handle_user_turn_started, cleared when the frame that caused it has
+        # been fully processed: the controller notifies the strategies of the turn start
+        # BEFORE it hands them the frame, within the same process_frame call.
+        self._turn_opened_by_frame = False
 
     async def trigger_user_turn_inference_triggered(self):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
@@ -221,14 +241,46 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._inferences += 1
         await super().trigger_user_turn_inference_triggered()
 
+    async def process_frame(self, frame):
+        if isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+        try:
+            return await super().process_frame(frame)
+        finally:
+            self._turn_opened_by_frame = False
+
+    async def _maybe_speculate(self, before: int, why: str):
+        """Ask for a speculation if the frame just handled left a finalized transcript
+        in hand with the caller quiet and the turn not concluded. `before` is the
+        inference count taken ahead of the frame: unchanged means the stop did not fire
+        on it (a commit refused by the controller still counts as fired, and is not
+        ours to pre-empt)."""
+        if self.speculator is None or self._inferences != before:
+            return
+        if not self._transcript_finalized or self._vad_user_speaking:
+            return
+        if self._turn_opened_by_frame and self._bot_speaking:
+            logger.debug(f"{self}: no speculation on the final that opened the turn over "
+                         "the bot -- its interruption has not reached the context yet")
+            return
+        await self.speculator.start(why)
+
     async def _handle_transcription(self, frame):
         before = self._inferences
         await super()._handle_transcription(frame)
-        if (self.speculator is not None and frame.finalized
-                and self._inferences == before and not self._vad_user_speaking):
-            await self.speculator.start(
-                "verdict INCOMPLETE, ceiling running" if self._vad_stopped
+        if frame.finalized:
+            await self._maybe_speculate(
+                before, "verdict INCOMPLETE, ceiling running" if self._vad_stopped
                 else "no VAD stop yet")
+
+    async def _handle_vad_user_stopped_speaking(self, frame):
+        before = self._inferences
+        await super()._handle_vad_user_stopped_speaking(frame)
+        # The final came first and the verdict has just been reached; if it was
+        # INCOMPLETE the ceiling is now running on text the stop did not fire on.
+        await self._maybe_speculate(before, "final before the VAD stop, verdict INCOMPLETE")
 
     async def _handle_vad_user_started_speaking(self, frame):
         await super()._handle_vad_user_started_speaking(frame)
@@ -237,7 +289,16 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             # what was asked. Stop the stream now rather than at the mismatch.
             await self.speculator.cancel("resumed")
 
+    async def cleanup(self):
+        # The session is over: a speculation still streaming would keep reading (and
+        # billing) a completion nothing can adopt. This is the only teardown that
+        # awaits the HTTP close, since the loop goes with the session.
+        if self.speculator is not None:
+            await self.speculator.close()
+        await super().cleanup()
+
     async def handle_user_turn_started(self):
+        self._turn_opened_by_frame = True
         if self.speculator is not None:
             await self.speculator.cancel("new-turn")
         if self._vad_stopped and not self._vad_user_speaking:

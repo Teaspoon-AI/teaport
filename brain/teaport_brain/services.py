@@ -420,10 +420,11 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 return adopted
         return await self._open_stream(context)
 
-    # Paired with the above: this marks the boundary between "the request never got a
-    # response" and "the response arrived but consuming it stalled". Without it both
-    # look identical from the journal — a "Generating chat from context" line and
-    # nothing after it.
+    # Paired with _process_context's CANCELLED line: this marks the boundary between
+    # "the request never got a response" and "the response arrived but consuming it
+    # stalled". Without it both look identical from the journal — a "Generating chat
+    # from context" line and nothing after it. Both the ordinary request and the
+    # speculation open their stream here.
     #
     # The stream is also renumbered on the way past — see _sequential_tool_call_indices.
     async def _open_stream(self, context):

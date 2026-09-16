@@ -58,10 +58,14 @@
 (* barge-in properties are re-checked with it on rather than assumed.       *)
 (*                                                                          *)
 (* What the speculation must not do is speak a reply generated against a    *)
-(* context the commit no longer has. Between the snapshot and the commit,   *)
-(* other components write the context: MemoryRecall's note at the final,    *)
-(* the consult follow-up's trigger, HeardContextCorrector's truncation of   *)
-(* the cut reply on the LLMContextFrame itself. `CtxChange` is any of them. *)
+(* context the commit no longer has. Between the snapshot and the commit    *)
+(* the context can have other writers -- HeardContextCorrector's truncation *)
+(* of the cut reply on the LLMContextFrame itself was one, and the first    *)
+(* miss seen live, until speculate.py moved it ahead of the snapshot; the   *)
+(* consult follow-up's trigger and MemoryRecall's note are NOT ones (the    *)
+(* follow-up posts only with the turn free, the note is injected before the *)
+(* aggregator sees the final). `CtxChange` is any writer at all: what the   *)
+(* code prevents today is not what the machine prevents.                    *)
 (*                                                                          *)
 (* SPEC = "off"       -- no speculation; the four MODE rows are unchanged.  *)
 (* SPEC = "byText"    -- promote when the committed TEXT is what was asked. *)
@@ -195,10 +199,10 @@ SpecStart ==
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, gen, missedBargeIn, staleReply>>
 
-\* Something else writes the context while a speculation is live. Not a design
-\* choice, a fact about the pipeline: MemoryRecall.add_message at the final, the
-\* consult follow-up's _post_trigger, HeardContextCorrector._reconcile on the very
-\* LLMContextFrame that carries the commit. Bounded only to keep the state finite.
+\* Something else writes the context while a speculation is live. A free action,
+\* deliberately: HeardContextCorrector._reconcile on the very LLMContextFrame that
+\* carries the commit was such a writer until it was moved ahead of the snapshot, and
+\* nothing in the pipeline stops the next one. Bounded only to keep the state finite.
 CtxChange ==
     /\ spec /\ gen < MaxCtxWrites
     /\ gen' = gen + 1
@@ -286,14 +290,19 @@ Arm ==
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
 
+\* The watchdog's stop is a commit too: _trigger_user_turn_stop pushes the
+\* aggregation, which reaches get_chat_completions and Speculator.take, so a live
+\* speculation is decided here exactly as at Inference.
 ForceStop ==
     /\ watchdog /\ userTurn /\ ~userSpeaking
     /\ userTurn' = FALSE
     /\ inference' = FALSE
     /\ owed' = FALSE
     /\ watchdog' = FALSE
-    /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, spec, specGen, gen,
-                   missedBargeIn, staleReply>>
+    /\ spec' = FALSE
+    /\ staleReply' = (staleReply \/ (spec /\ SPEC = "byText" /\ specGen /= gen))
+    /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, gen,
+                   missedBargeIn>>
 
 Next ==
     \/ VadStart \/ VadStop \/ Interject

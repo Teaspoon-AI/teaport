@@ -9,7 +9,12 @@
 # The read-site regex mirrors the helper shapes in teaport_brain/env.py plus the
 # bare os.getenv / os.environ forms; a new helper needs adding here too.
 #
-# Run: python test_config_schema.py   (or via pytest)
+# Every row's `source` ("file.py:N") is checked too: the named line must be the read
+# site (the setting's name, quoted). Lines move under every edit above them and the
+# pointer is only ever fixed by hand for the setting being touched -- 17 of 113 were
+# stale when this check was added. `--fix` rewrites the stale ones in place.
+#
+# Run: python test_config_schema.py [--fix]   (or via pytest)
 #
 import collections
 import os
@@ -41,7 +46,48 @@ def env_reads_in_code() -> set[str]:
     return found - NOT_SETTINGS
 
 
-def main() -> int:
+SOURCE_RE = re.compile(r"(.+?):(\d+)$")
+
+
+def source_drift(rows) -> list[tuple[dict, str, int | None]]:
+    """(row, file, correct line) for every row whose source points at the wrong line
+    of a Python module; the correct line is None when the read site is not found."""
+    stale = []
+    for r in rows:
+        m = SOURCE_RE.fullmatch(r["source"])
+        if not m or not m.group(1).endswith(".py"):
+            continue
+        path, n = PKG / m.group(1), int(m.group(2))
+        if not path.exists():
+            stale.append((r, m.group(1), None))
+            continue
+        lines = path.read_text().splitlines()
+        quoted = f'"{r["name"]}"'
+        if 0 < n <= len(lines) and quoted in lines[n - 1]:
+            continue
+        hits = [i + 1 for i, line in enumerate(lines) if quoted in line]
+        stale.append((r, m.group(1), hits[0] if hits else None))
+    return stale
+
+
+def fix_sources(stale) -> int:
+    """Rewrite each stale row's source line in place -- located from the row's own
+    `name =` line, not by the old value, which another row may legitimately hold."""
+    lines = SCHEMA.read_text().splitlines(keepends=True)
+    fixed = 0
+    for r, path, n in stale:
+        if n is None:
+            continue
+        at = lines.index(f'name = "{r["name"]}"\n')
+        while not lines[at].startswith("source = "):
+            at += 1
+        lines[at] = f'source = "{path}:{n}"\n'
+        fixed += 1
+    SCHEMA.write_text("".join(lines))
+    return fixed
+
+
+def main(argv=()) -> int:
     schema = tomllib.load(open(SCHEMA, "rb"))
     rows = schema["settings"]
     names = [r["name"] for r in rows]
@@ -95,6 +141,15 @@ def main() -> int:
     for n in sorted(brain_rows - code):
         problems.append(f"schema row, never read by the brain: {n}")
 
+    stale = source_drift(rows)
+    if stale and "--fix" in argv:
+        print(f"fixed {fix_sources(stale)} stale source line(s) in {SCHEMA.name}")
+        stale = [t for t in stale if t[2] is None]
+    for r, path, n in stale:
+        problems.append(f"{r['name']}: source {r['source']} is not the read site"
+                        + (f" (it is {path}:{n}; --fix rewrites it)" if n else
+                           " (no read site found)"))
+
     for p in problems:
         print("FAIL", p)
     print(f"{len(rows)} rows, {len(code)} env reads in code, {len(problems)} problems")
@@ -102,4 +157,4 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(main(sys.argv[1:]))

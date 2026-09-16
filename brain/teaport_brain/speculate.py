@@ -18,18 +18,27 @@
 # What makes it safe:
 #   * The context is never touched. The speculation runs on a deep copy; the aggregator
 #     writes the user message and the ledger charts the reply on the ordinary path.
-#   * Promotion is on WHOLE-CONTEXT equality, not on the text. A memory note, a consult
-#     follow-up -- anything that wrote the context between snapshot and commit -- makes
-#     the reply stale, and a stale reply is a miss. brain/formal/UserTurn.tla
-#     (SPEC = "byText") is the counterexample for promoting on text alone. The one such
-#     writer that is OURS and runs at the commit, the heard-context corrector, is run
-#     before the snapshot instead so its rewrite is inside it (see Speculator).
+#   * Promotion is on WHOLE-CONTEXT equality, not on the text. Anything that wrote the
+#     context between snapshot and commit makes the reply stale, and a stale reply is a
+#     miss. brain/formal/UserTurn.tla (SPEC = "byText") is the counterexample for
+#     promoting on text alone. Which writers can land in that window is narrower than
+#     it looks: MemoryRecall's note is injected on the final BEFORE the aggregator sees
+#     it, so it is always inside the snapshot; the consult follow-up posts only with the
+#     turn free, and a speculation only exists inside an open turn. The one writer that
+#     is OURS and ran at the commit, the heard-context corrector, is run before the
+#     snapshot instead so its rewrite is inside it (see Speculator). The equality check
+#     stays whole-context regardless, because nothing in the machine prevents a new
+#     writer, and the check is what makes a new one a miss rather than a wrong reply.
 #   * Replay is at the CHUNK level, below base_llm's parser. A speculated tool call is
 #     buffered as deltas and parsed and dispatched by _process_context only once the real
 #     turn adopts the stream; nothing executes early.
 #   * Single-flight: a new final supersedes the speculation, a VAD start (the caller
 #     resumed) cancels it -- the text will differ, so the tokens are wasted either way and
-#     stopping the stream stops the bill.
+#     stopping the stream stops the bill. The session's end closes it too (the strategy's
+#     cleanup): a stream nothing will adopt must not keep billing after the hangup.
+#   * Nothing waits on a stale stream's teardown. A miss and a cancel hand the HTTP
+#     close to a background task and return: the ordinary request (or the VAD start
+#     being handled) is on the turn's critical path, the close is not.
 #
 # What it does NOT do: speculate on interims. Measured the same day, the interim at the
 # VAD stop equalled the final on 0 of 34 SIP turns -- the engine's deltas lag speech by
@@ -147,7 +156,8 @@ class Speculator:
 
     start() is called by the stop strategy when a final lands and the turn does not
     conclude on it; take() by the LLM service when the turn does commit; cancel() by the
-    strategy when the caller resumes or a new turn opens.
+    strategy when the caller resumes or a new turn opens; close() by the strategy's
+    cleanup at the session's end.
 
     Reaches into the aggregator's controller for `_user_turn`, deliberately undefended:
     a speculation for a final that opened no turn (a one-word garble under the barge-in
@@ -169,14 +179,27 @@ class Speculator:
         # differently; it is idempotent (it tracks the ledger events it has consumed).
         self._before_snapshot = before_snapshot
         self._current: _Speculation | None = None
-        # Strong refs: the loop holds tasks weakly, and a reader whose speculation
-        # nothing else references any more would be destroyed pending, mid-read.
+        # Strong refs, for the readers and the detached closes: the loop holds tasks
+        # weakly, and a reader whose speculation nothing else references any more would
+        # be destroyed pending, mid-read.
         self._tasks: set[asyncio.Task] = set()
         self.hits = 0
         self.misses = 0
 
     def _tally(self) -> str:
         return f"hits={self.hits} misses={self.misses}"
+
+    def _spawn(self, coro) -> asyncio.Task:
+        task = asyncio.create_task(coro)
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        return task
+
+    def _release(self, spec: _Speculation):
+        """Tear the stale stream down off the critical path. cancel() runs inside the
+        aggregator's handling of the VAD start and a miss in take() runs ahead of the
+        ordinary request; neither should wait on a provider closing a socket."""
+        self._spawn(spec.close())
 
     async def start(self, why: str = "") -> bool:
         if not self._controller._user_turn:
@@ -193,9 +216,7 @@ class Speculator:
         snapshot = copy.deepcopy(ctx.messages) + [{"role": "user", "content": text}]
         request = LLMContext(list(snapshot), tools=ctx.tools, tool_choice=ctx.tool_choice)
         spec = _Speculation(snapshot, ctx.tools, text)
-        spec.task = asyncio.create_task(spec.run(self._llm, request))
-        self._tasks.add(spec.task)
-        spec.task.add_done_callback(self._tasks.discard)
+        spec.task = self._spawn(spec.run(self._llm, request))
         self._current = spec
         logger.info(f"[SPEC] start {text[:60]!r}{f' ({why})' if why else ''}")
         return True
@@ -207,7 +228,16 @@ class Speculator:
         self.misses += 1
         logger.info(f"[SPEC] miss reason={reason} after {time.monotonic() - spec.started:.2f}s "
                     f"{spec.text[:40]!r} {self._tally()}")
-        await spec.close()
+        self._release(spec)
+
+    async def close(self):
+        """The session is ending: stop whatever is live and wait for every teardown.
+        Awaited, unlike cancel(): the loop is about to go away with the session, and a
+        detached close would be the "Task was destroyed but it is pending" it leaves."""
+        await self.cancel("session-end")
+        pending, self._tasks = set(self._tasks), set()
+        if pending:
+            await asyncio.gather(*pending, return_exceptions=True)
 
     async def take(self, context: LLMContext):
         """The stream for `context` if the live speculation was asked exactly that,
@@ -218,16 +248,27 @@ class Speculator:
         live = context.messages
         if spec.done and spec.error is not None:
             reason = f"spec-failed ({type(spec.error).__name__})"
+        elif spec.done and not spec.chunks:
+            # A 200 with nothing in it (a router hiccup, a provider that closed the body
+            # at once). Adopting it would be a turn with no reply, where the ordinary
+            # request would most likely have got one.
+            reason = "empty"
         elif context.tools is not spec.tools:
             reason = "tools-changed"
+        elif not live or not isinstance(live[-1], dict) or live[-1].get("role") != "user":
+            # Not the aggregator's commit at all: a tool-result re-run, an LLMRunFrame
+            # on a context whose tail is not the caller's words. The reply it produces
+            # will write the context, so the speculation is stale either way -- but the
+            # journal should not call that a text or context mismatch.
+            reason = "other-request"
         elif live != spec.messages:
-            reason = "ctx-changed" if live and live[-1] == spec.messages[-1] else "text-differs"
+            reason = "ctx-changed" if live[-1] == spec.messages[-1] else "text-differs"
         else:
             reason = None
         if reason is not None:
             self.misses += 1
             logger.info(f"[SPEC] miss reason={reason} {spec.text[:40]!r} {self._tally()}")
-            await spec.close()
+            self._release(spec)
             return None
         self.hits += 1
         lead = time.monotonic() - spec.started

@@ -4,10 +4,13 @@
 # Two halves. The Speculator itself, against the real BoundedOpenAILLMService with its
 # stream-opening seam faked: a hit hands the buffered-then-live chunks to the service's
 # ordinary path and opens no second request; a context that changed under the snapshot,
-# a text that grew, a cancelled or failed speculation each fall back to a fresh request.
-# Then the trigger, against a real UserTurnController: LateStartTurnStopStrategy asks
-# for a speculation on a final the turn did not conclude on (INCOMPLETE verdict), not on
-# one it did (COMPLETE), and cancels it when the caller resumes or a new turn opens.
+# a text that grew, a cancelled, failed or empty speculation each fall back to a fresh
+# request; a stale stream's teardown never sits on the turn's path; the session's end
+# closes what is live. Then the trigger, against a real UserTurnController:
+# LateStartTurnStopStrategy asks for a speculation on a final the turn did not conclude
+# on (INCOMPLETE verdict) -- at the final when the VAD stop came first, at the VAD stop
+# when the final did -- not on one it did (COMPLETE), not on the final that opened the
+# turn over the bot, and cancels it when the caller resumes or a new turn opens.
 #
 # Run: python test_speculative_reply.py  (or via pytest test_suite.py)
 #
@@ -26,7 +29,9 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
     BaseSmartTurn,
     SmartTurnParams,
 )
+from loguru import logger  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
+    BotStartedSpeakingFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
     TranscriptionFrame,
@@ -58,9 +63,10 @@ _END = object()
 class FakeStream:
     """What _open_stream hands back: chunks fed by the test, closed by the consumer."""
 
-    def __init__(self):
+    def __init__(self, close_gate: asyncio.Event | None = None):
         self.q: asyncio.Queue = asyncio.Queue()
         self.closed = False
+        self.close_gate = close_gate  # when set, close() blocks until it is released
 
     def feed(self, *chunks):
         for c in chunks:
@@ -80,6 +86,8 @@ class FakeStream:
             yield item
 
     async def close(self):
+        if self.close_gate is not None:
+            await self.close_gate.wait()
         self.closed = True
 
 
@@ -96,7 +104,7 @@ class FakeAggregator:
         return " ".join(self.parts)
 
 
-def _llm(opened, fail=False):
+def _llm(opened, fail=False, close_gate=None):
     """A real BoundedOpenAILLMService whose request-opening seam records and fakes."""
     llm = BoundedOpenAILLMService(
         api_key="test", base_url="http://127.0.0.1:9/v1",
@@ -107,7 +115,7 @@ def _llm(opened, fail=False):
         opened.append(context)
         if fail:
             raise RuntimeError("provider down")
-        return FakeStream()
+        return FakeStream(close_gate)
 
     llm._open_stream = open_stream
     return llm
@@ -123,11 +131,27 @@ async def _drain(stream, n):
     return [await it.__anext__() for _ in range(n)], it
 
 
-def _rig(parts=("what time is it",), turn_open=True, fail=False):
+class _SpecLines:
+    """The [SPEC] journal lines, which are the feature's only account of itself."""
+
+    def __init__(self):
+        self.lines: list[str] = []
+
+    def __enter__(self):
+        self._id = logger.add(lambda m: self.lines.append(m.record["message"]),
+                              filter=lambda r: r["message"].startswith("[SPEC]"),
+                              format="{message}")
+        return self
+
+    def __exit__(self, *exc):
+        logger.remove(self._id)
+
+
+def _rig(parts=("what time is it",), turn_open=True, fail=False, close_gate=None):
     opened = []
     ctx = LLMContext([{"role": "system", "content": "be brief"}])
     agg = FakeAggregator(ctx, parts, turn_open=turn_open)
-    llm = _llm(opened, fail=fail)
+    llm = _llm(opened, fail=fail, close_gate=close_gate)
     spec = Speculator(llm=llm, aggregator=agg)
     llm.speculator = spec
     return ctx, agg, llm, spec, opened
@@ -181,6 +205,7 @@ async def test_a_context_written_after_the_snapshot_is_a_miss():
     assert len(opened) == 2, "a miss opens the ordinary request"
     assert opened[1] is ctx
     assert spec.misses == 1 and spec.hits == 0
+    await _settle()
     assert real.closed, "the stale speculation's stream is released"
     assert out is not None
 
@@ -226,6 +251,7 @@ async def test_cancel_releases_the_stream_and_the_commit_asks_fresh():
     await _settle()
     real = spec._current._stream
     await spec.cancel("resumed")
+    await _settle()
     assert real.closed and spec.misses == 1
     ctx.add_message({"role": "user", "content": "what time is it"})
     await llm.get_chat_completions(ctx)
@@ -242,6 +268,7 @@ async def test_a_new_speculation_supersedes_the_old_one():
     await spec.start()
     await _settle()
     assert first.closed and len(opened) == 2 and spec.misses == 1
+    assert spec._current._stream is not first
     ctx.add_message({"role": "user", "content": "hello there"})
     out = await llm.get_chat_completions(ctx)
     assert len(opened) == 2 and spec.hits == 1
@@ -286,6 +313,82 @@ async def test_a_speculation_in_flight_is_adopted_before_its_first_chunk():
     await out.close()
 
 
+async def test_an_empty_completed_speculation_is_a_miss():
+    """A 200 whose body closed at once: nothing buffered, no error. Adopting it would be
+    a turn that says nothing; the ordinary request is made instead."""
+    ctx, agg, llm, spec, opened = _rig()
+    await spec.start()
+    await _settle()
+    spec._current._stream.end()
+    await _settle()
+    assert spec._current.done and spec._current.chunks == [] and spec._current.error is None
+    ctx.add_message({"role": "user", "content": "what time is it"})
+    with _SpecLines() as journal:
+        out = await llm.get_chat_completions(ctx)
+    assert len(opened) == 2 and spec.misses == 1 and out is not None
+    assert any("reason=empty" in line for line in journal.lines), journal.lines
+
+
+async def test_a_request_that_is_not_the_commit_is_named_as_such():
+    """A tool-result re-run (or an LLMRunFrame on a context whose tail is not the
+    caller's words) while a speculation is live: the speculation is over -- the reply
+    will write the context -- but the journal must not call it a text mismatch."""
+    ctx, agg, llm, spec, opened = _rig()
+    await spec.start()
+    await _settle()
+    ctx.add_message({"role": "tool", "tool_call_id": "c1", "content": "{}"})
+    with _SpecLines() as journal:
+        out = await llm.get_chat_completions(ctx)
+    assert len(opened) == 2 and spec.misses == 1 and out is not None
+    assert any("reason=other-request" in line for line in journal.lines), journal.lines
+    assert not any("text-differs" in line for line in journal.lines)
+
+
+async def test_a_stale_stream_is_released_off_the_turn_path():
+    """The provider is slow to close its socket. A cancel (the aggregator's VAD-start
+    handling) and a miss (ahead of the ordinary request) both return without waiting
+    for it; the close completes on its own."""
+    gate = asyncio.Event()
+    ctx, agg, llm, spec, opened = _rig(close_gate=gate)
+    await spec.start()
+    await _settle()
+    first = spec._current._stream
+    await asyncio.wait_for(spec.cancel("resumed"), timeout=0.5)
+    assert not first.closed, "the close is still pending -- and cancel() has returned"
+
+    await spec.start()
+    await _settle()
+    second = spec._current._stream
+    ctx.add_message({"role": "user", "content": "what time is it, please"})
+    out = await asyncio.wait_for(llm.get_chat_completions(ctx), timeout=0.5)
+    assert out is not None and len(opened) == 3, "the ordinary request was opened"
+    assert not second.closed, "without waiting on the stale stream's teardown"
+
+    gate.set()
+    await _settle()
+    assert first.closed and second.closed, "both closes completed in the background"
+
+
+async def test_close_at_session_end_stops_a_live_speculation_and_waits_for_its_teardown():
+    gate = asyncio.Event()
+    ctx, agg, llm, spec, opened = _rig(close_gate=gate)
+    await spec.start()
+    await _settle()
+    live = spec._current
+    stream, reader = live._stream, live.task
+    closing = asyncio.ensure_future(spec.close())
+    await _settle()
+    assert not closing.done(), "close() waits for the HTTP teardown, unlike cancel()"
+    assert reader.done(), "but the reader is already stopped"
+    gate.set()
+    await asyncio.wait_for(closing, timeout=0.5)
+    assert stream.closed and spec._current is None and spec.misses == 1
+    assert not spec._tasks, "nothing is left pending for the loop to complain about"
+    with _SpecLines() as journal:
+        await spec.close()
+    assert journal.lines == [], "a second close has nothing to do and says nothing"
+
+
 # ---------------------------------------------------------------- the trigger
 
 SAMPLE_RATE = 16000
@@ -321,6 +424,10 @@ class RecordingSpeculator:
         if self.live:
             self.calls.append(("cancel", reason))
             self.live = False
+
+    async def close(self):
+        await self.cancel("session-end")
+        self.calls.append(("close",))
 
 
 class Rig:
@@ -422,6 +529,109 @@ async def test_a_final_while_the_caller_is_still_audible_speculates_nothing():
         final.finalized = True
         await c.process_frame(final)
         assert rig.speculator.calls == []
+
+
+async def test_a_final_that_beat_the_vad_stop_speculates_at_the_stop():
+    """The engine's segmenter finalizes on shorter silences than the VAD floor, so on
+    the appliance the final usually lands BEFORE the VAD stop. The verdict is only
+    reached at the stop; an INCOMPLETE one then has a finalized transcript in hand and
+    the ceiling running -- the exact wait the feature is for. This was silently inert
+    (no speculation, no [SPEC] line) before the trigger was added at the stop."""
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        c = rig.controller
+        await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(400)
+        await c.process_frame(InterimTranscriptionFrame(UTTERANCE, "u", "t", None))
+        final = TranscriptionFrame(UTTERANCE, "u", "t", None)
+        final.finalized = True
+        await c.process_frame(final)
+        assert rig.speculator.calls == [], "still audible: nothing yet"
+        await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+        assert rig.inferences == 0
+        assert rig.speculator.calls == [("start", "final before the VAD stop, verdict INCOMPLETE")]
+        await rig.settle(SMARTTURN_STOP_SECS + 0.5)
+        assert rig.stopped and rig.inferences == 1, "the ceiling still ends the turn"
+
+
+async def test_a_final_that_beat_a_complete_verdict_commits_at_the_stop_and_speculates_nothing():
+    rig = Rig(Complete)
+    async with running_controller(rig.controller):
+        c = rig.controller
+        await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(400)
+        await c.process_frame(InterimTranscriptionFrame(UTTERANCE, "u", "t", None))
+        final = TranscriptionFrame(UTTERANCE, "u", "t", None)
+        final.finalized = True
+        await c.process_frame(final)
+        await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+        assert rig.inferences == 1, "COMPLETE at the stop, final in hand: commits now"
+        assert rig.speculator.calls == []
+
+
+async def _barge_in(rig, interim, final_text):
+    """The barge-in shape on this brain: the bot is speaking, the transcriber returns
+    nothing until the VAD stop flushes the segment, then the interim, then the final."""
+    c = rig.controller
+    await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+    await rig.audio(400)
+    await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+    await rig.audio(200)
+    if interim is not None:
+        await c.process_frame(InterimTranscriptionFrame(interim, "u", "t", None))
+    final = TranscriptionFrame(final_text, "u", "t", None)
+    final.finalized = True
+    await c.process_frame(final)
+
+
+async def test_the_final_that_opens_the_turn_over_the_bot_speculates_nothing():
+    """'Okay, stop.' spoken over the bot: the interim is one word, under the guard, so
+    the FINAL opens the turn -- and broadcasts the interruption -- in the same
+    controller call that would speculate on it. The cut reply is not in the context
+    yet, so the snapshot would be missing the truncation the commit makes: a
+    guaranteed ctx-changed miss, one billed request per such barge-in."""
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.controller.process_frame(BotStartedSpeakingFrame())
+        assert INTERRUPT_MIN_WORDS == 2
+        await _barge_in(rig, "Okay", "Okay, stop.")
+        assert rig.controller._user_turn, "the final opened the turn"
+        assert rig.inferences == 0, "INCOMPLETE was kept across the late start"
+        assert rig.speculator.calls == []
+
+
+async def test_a_final_that_opens_the_turn_with_the_bot_quiet_speculates():
+    """The same shape with nothing to interrupt: the context is stable, so the
+    speculation is worth having."""
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await _barge_in(rig, None, "Okay, stop.")
+        assert rig.controller._user_turn
+        assert rig.speculator.calls == [("start", "verdict INCOMPLETE, ceiling running")]
+
+
+async def test_the_next_final_after_the_opening_one_speculates():
+    """The skip is for the one frame that opened the turn; a second final on the same
+    turn (the caller went on) is the ordinary case again."""
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        c = rig.controller
+        await c.process_frame(BotStartedSpeakingFrame())
+        await _barge_in(rig, "Okay", "Okay, stop.")
+        assert rig.speculator.calls == []
+        final = TranscriptionFrame("Okay, stop. And tell me a story.", "u", "t", None)
+        final.finalized = True
+        await c.process_frame(final)
+        assert rig.speculator.calls == [("start", "verdict INCOMPLETE, ceiling running")]
+
+
+async def test_the_session_end_closes_the_speculator():
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.utterance()
+        assert rig.speculator.live
+    assert rig.speculator.calls[-2:] == [("cancel", "session-end"), ("close",)]
+    assert not rig.speculator.live
 
 
 async def test_a_new_turn_cancels_a_speculation_left_from_the_last():

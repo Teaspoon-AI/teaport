@@ -727,12 +727,14 @@ read, and whether that leaves barge-in intact is a question for TLC, not a promi
 
 The property it adds is `NoStaleReply`: a speculated reply is spoken only for the context it
 was asked against. The text being right is not enough. Between the snapshot and the commit
-the context has other writers — `MemoryRecall.add_message` at the final, the consult
-follow-up's `_post_trigger`, `HeardContextCorrector._reconcile` on the very
-`LLMContextFrame` that carries the commit — and `CtxChange` is any of them. (The
-corrector was the first miss seen live, so `speculate.py` now runs it *before* the
-snapshot; the model keeps it as a writer because nothing in the machine prevents a
-new one.)
+the context can have other writers, and `CtxChange` is any of them. In the code as it
+stands there is no known one: `HeardContextCorrector._reconcile` on the very
+`LLMContextFrame` that carries the commit was the first miss seen live, so `speculate.py`
+now runs it *before* the snapshot; `MemoryRecall`'s note is injected before the aggregator
+sees the final, so it is always inside the snapshot; the consult follow-up posts only with
+the turn free, and a speculation only exists inside an open turn. The model keeps
+`CtxChange` as a free action because nothing in the machine prevents the next writer, and
+the whole-context check is what turns one into a miss instead of a wrong reply.
 
 | SPEC | promotes when | `NoStrandedTurn` | `NoMissedBargeIn` | `NoStaleReply` |
 |---|---|---|---|---|
@@ -747,9 +749,11 @@ VadStart     the user speaks
 Interject    the turn opens
 VadStop      they pause; Smart Turn says INCOMPLETE, the ceiling starts
 SpecStart    the final lands, the stop does not fire: the LLM is asked now
-CtxChange    a memory note lands (or the cut reply is truncated at the commit)
+CtxChange    something writes the context (the corrector's truncation of the cut
+             reply, before it was moved ahead of the snapshot)
 Inference    the ceiling ends the turn; the text is what was asked, so byText
-             adopts the stream -- a reply the model produced without the note
+             adopts the stream -- a reply the model produced against a context
+             the commit no longer has
 ```
 
 `byContext` closes it by construction — `specGen = gen` is the equality check on
@@ -757,7 +761,9 @@ Inference    the ceiling ends the turn; the text is what was asked, so byText
 `SpecStart`/`CtxChange` touches `userTurn`, `userSpeaking` or `stopInFlight`. A resume
 (`VadStart`) and a new turn (`Interject`) both close the speculation, which is why `byText`
 never fails on the *text*: every live speculation's text is the committed one, and the
-whole difference between the two designs is what else the context holds.
+whole difference between the two designs is what else the context holds. The commit is
+`Inference` or `ForceStop` — the watchdog's stop pushes the aggregation too, so it reaches
+`Speculator.take` and decides the speculation the same way.
 
 ### Known limits of this model
 
@@ -783,12 +789,12 @@ whole difference between the two designs is what else the context holds.
   speculation: whether it is worth anything is the ceiling against the final's latency
   and the LLM's (measured in `speculate.py`), and the model says nothing about that —
   only that a stale reply is never spoken and barge-in is as it was.
-- **`CtxChange` is a free action** bounded by `MaxCtxWrites`, not the three writers it
-  stands for. Their timing relative to the snapshot differs (the memory note precedes
-  it in the pipeline order; the corrector runs at the commit) and the model does not
-  say which of them a miss will come from — `[SPEC] miss reason=ctx-changed` in the
-  journal does.
-- **Scale.** 47 distinct states with `SPEC = "off"`, 315 with it on; well under a second.
+- **`CtxChange` is a free action** bounded by `MaxCtxWrites`, not a list of writers.
+  The model does not say which component a miss will come from — `[SPEC] miss
+  reason=ctx-changed` in the journal does — and it does not know that the code's known
+  writers all land outside the window today (see above); it checks the design that
+  stays right when one does not.
+- **Scale.** 47 distinct states with `SPEC = "off"`, 291 with it on; well under a second.
 
 ## Worth modeling next
 

@@ -130,7 +130,7 @@ read = "session"
 tier = "setup"
 help = "Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server."
 note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL)."
-source = "services.py:445"
+source = "services.py:461"
 
 [[settings]]
 name = "LLM_API_KEY"
@@ -154,7 +154,7 @@ read = "session"
 tier = "setup"
 help = "The served model name."
 note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL)."
-source = "services.py:456"
+source = "services.py:472"
 
 [[settings]]
 name = "LLM_REASONING_EFFORT"
@@ -308,7 +308,7 @@ default = "af_heart"
 read = "session"
 tier = "setup"
 help = "Kokoro voice id. A per-session choice from OpenClaw wins over this."
-source = "services.py:488"
+source = "services.py:504"
 
 [[settings]]
 name = "TTS_LANGUAGE"
@@ -318,7 +318,7 @@ type = "string"
 read = "session"
 tier = "setup"
 help = "Kokoro language. A per-session choice from OpenClaw wins over this; unset = the engine default."
-source = "services.py:489"
+source = "services.py:505"
 
 [[settings]]
 name = "TTS_REMOTE_TIMEOUT"
@@ -382,7 +382,7 @@ default = ""
 read = "session"
 tier = "diag"
 help = "Experimental: streaming points the STT service at vLLM serving Voxtral Realtime. The incumbent engine is the default."
-source = "services.py:505"
+source = "services.py:521"
 
 [[settings]]
 name = "TEAPORT_STT_URL"
@@ -393,7 +393,7 @@ default = "ws://127.0.0.1:8100/v1/realtime"
 read = "session"
 tier = "diag"
 help = "Only with TEAPORT_STT_BACKEND=streaming."
-source = "services.py:508"
+source = "services.py:524"
 
 [[settings]]
 name = "TEAPORT_STT_MODEL"
@@ -404,7 +404,7 @@ default = "voxtral-realtime"
 read = "session"
 tier = "diag"
 help = "Only with TEAPORT_STT_BACKEND=streaming."
-source = "services.py:509"
+source = "services.py:525"
 
 [[settings]]
 name = "TEAPORT_STREAM_TAIL_SECS"
@@ -552,7 +552,7 @@ default = 0.5
 read = "startup"
 tier = "setup"
 help = "Silence before the VAD reports the caller stopped. The dominant fixed latency on every turn; lower is snappier and cuts more mid-sentence pauses."
-source = "endpointing.py:46"
+source = "endpointing.py:47"
 
 [[settings]]
 name = "SMARTTURN_STOP_SECS"
@@ -565,7 +565,7 @@ default = 1.0
 read = "startup"
 tier = "tuning"
 help = "How long a Smart Turn \"not done\" verdict holds the turn open, counted from the VAD stop. With TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated while this runs, so it can be raised (more patience for mid-sentence pauses) by up to the LLM's own latency at no cost to the turns that fall through."
-source = "endpointing.py:69"
+source = "endpointing.py:70"
 
 [[settings]]
 name = "TEAPORT_SPECULATIVE_REPLY"
@@ -576,7 +576,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "Ask the LLM as soon as the final transcript lands on a turn Smart Turn has not concluded on (an INCOMPLETE verdict waiting out SMARTTURN_STOP_SECS), and use that reply if the turn then commits with exactly that text and nothing else touched the context. Off: the request waits for the commit. On: those turns answer up to the LLM's latency sooner, and a turn the caller resumes has spent one wasted request — every outcome logs a [SPEC] line with the running hit/miss tally."
-source = "speculate.py:52"
+source = "speculate.py:62"
 
 [[settings]]
 name = "SMARTTURN_COMPLETE_THRESHOLD"
@@ -589,7 +589,7 @@ default = 0.5
 read = "startup"
 tier = "tuning"
 help = "The end-of-turn probability that counts as done. Near-inert on telephony audio."
-source = "endpointing.py:86"
+source = "endpointing.py:89"
 
 [[settings]]
 name = "VAD_CONFIDENCE"
@@ -602,7 +602,7 @@ default = 0.7
 read = "startup"
 tier = "tuning"
 help = "Silero's speech-probability gate."
-source = "endpointing.py:120"
+source = "endpointing.py:123"
 
 [[settings]]
 name = "VAD_MIN_VOLUME"
@@ -615,7 +615,7 @@ default = 0.6
 read = "startup"
 tier = "tuning"
 help = "Silero's volume gate."
-source = "endpointing.py:121"
+source = "endpointing.py:124"
 
 [[settings]]
 name = "VAD_SAMPLE_RATE"
@@ -627,7 +627,7 @@ default = "16000"
 read = "startup"
 tier = "tuning"
 help = "8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample."
-source = "endpointing.py:380"
+source = "endpointing.py:479"
 
 [[settings]]
 name = "TEAPORT_INTERRUPT_MIN_WORDS"
@@ -639,7 +639,7 @@ default = 2
 read = "startup"
 tier = "setup"
 help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included."
-source = "endpointing.py:135"
+source = "endpointing.py:138"
 
 [[settings]]
 name = "TEAPORT_STRANDED_INTERIM_SECS"
@@ -851,7 +851,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:237"
+source = "agent_session.py:238"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -912,7 +912,7 @@ default = "~/.config/teaport/persona.md"
 read = "startup"
 tier = "installer"
 help = "Fallback persona when the gateway's is not reachable. The installer points it at the secrets dir."
-source = "persona.py:106"
+source = "persona.py:107"
 
 [[settings]]
 name = "OPENCLAW_WORKSPACE"
@@ -1138,7 +1138,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:55"
+source = "gateway_server.py:56"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1150,7 +1150,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:62"
+source = "gateway_server.py:63"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"
