@@ -715,14 +715,6 @@ def build_agent_session(transport, *, voice: str | None = None,
             ),
         ),
     )
-    if speculate.ENABLED:
-        # Ask the LLM on a final the turn did not conclude on; the service adopts the
-        # stream at the commit if the context is still what was asked. See speculate.py.
-        speculator = speculate.Speculator(llm=llm, aggregator=context_aggregator.user())
-        stop_strategy.speculator = speculator
-        llm.speculator = speculator
-        logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
-                    "on a final the turn has not concluded on")
     # Barge-in is a user turn START, and pipecat will not start one while a turn is
     # already open — so a turn left open by a finalization refused mid-flight makes the
     # bot uninterruptible for as long as the user keeps talking, which is exactly as
@@ -742,6 +734,17 @@ def build_agent_session(transport, *, voice: str | None = None,
     transport_output = transport.output()
     ledger = TranscriptLedger(tts=tts, output=transport_output)
     heard_corrector = HeardContextCorrector(ledger, context)
+    if speculate.ENABLED:
+        # Ask the LLM on a final the turn did not conclude on; the service adopts the
+        # stream at the commit if the context is still what was asked. The corrector's
+        # rewrite of a cut reply is applied before the snapshot so it cannot be what
+        # changed in between. See speculate.py.
+        speculator = speculate.Speculator(llm=llm, aggregator=context_aggregator.user(),
+                                          before_snapshot=heard_corrector._reconcile)
+        stop_strategy.speculator = speculator
+        llm.speculator = speculator
+        logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
+                    "on a final the turn has not concluded on")
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
     # Opt-in live endpointing probe (TEAPORT_ENDPOINT_DEBUG=1): two taps sharing

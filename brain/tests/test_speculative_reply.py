@@ -185,6 +185,32 @@ async def test_a_context_written_after_the_snapshot_is_a_miss():
     assert out is not None
 
 
+async def test_the_before_snapshot_hook_puts_its_write_inside_the_snapshot():
+    """HeardContextCorrector rewrites a cut reply on the LLMContextFrame, i.e. at the
+    commit -- after a snapshot taken at the final. Live 2026-09-16 that was the one
+    ctx-changed miss. Wired as before_snapshot, its rewrite is what the model is asked
+    against, and the same rewrite at the commit changes nothing: a hit."""
+    ctx, agg, llm, spec, opened = _rig()
+    ctx.add_message({"role": "assistant", "content": "a long reply that was cut"})
+
+    def reconcile():
+        # Idempotent, like the corrector: truncate once, then nothing to do.
+        last = ctx.messages[-1]
+        if last["role"] == "assistant" and last["content"] != "a long":
+            last["content"] = "a long"
+
+    spec._before_snapshot = reconcile
+    await spec.start()
+    await _settle()
+    assert opened[0].messages[1] == {"role": "assistant", "content": "a long"}, \
+        "the speculation was asked against the reconciled context"
+    reconcile()  # the corrector runs again at the commit, as it does live
+    ctx.add_message({"role": "user", "content": "what time is it"})
+    out = await llm.get_chat_completions(ctx)
+    assert spec.hits == 1 and len(opened) == 1
+    await out.close()
+
+
 async def test_text_that_grew_is_a_miss():
     ctx, agg, llm, spec, opened = _rig(parts=("how would a DGX",))
     await spec.start()

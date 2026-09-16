@@ -19,10 +19,11 @@
 #   * The context is never touched. The speculation runs on a deep copy; the aggregator
 #     writes the user message and the ledger charts the reply on the ordinary path.
 #   * Promotion is on WHOLE-CONTEXT equality, not on the text. A memory note, a consult
-#     follow-up, the heard-context corrector's truncation of a cut reply -- anything that
-#     wrote the context between snapshot and commit -- makes the reply stale, and a stale
-#     reply is a miss. brain/formal/UserTurn.tla (SPEC = "byText") is the counterexample
-#     for promoting on text alone.
+#     follow-up -- anything that wrote the context between snapshot and commit -- makes
+#     the reply stale, and a stale reply is a miss. brain/formal/UserTurn.tla
+#     (SPEC = "byText") is the counterexample for promoting on text alone. The one such
+#     writer that is OURS and runs at the commit, the heard-context corrector, is run
+#     before the snapshot instead so its rewrite is inside it (see Speculator).
 #   * Replay is at the CHUNK level, below base_llm's parser. A speculated tool call is
 #     buffered as deltas and parsed and dispatched by _process_context only once the real
 #     turn adopts the stream; nothing executes early.
@@ -155,10 +156,18 @@ class Speculator:
     letting the guard silently lapse into a billed request per garble.
     """
 
-    def __init__(self, *, llm, aggregator):
+    def __init__(self, *, llm, aggregator, before_snapshot=None):
         self._llm = llm
         self._agg = aggregator
         self._controller = aggregator._user_turn_controller
+        # HeardContextCorrector._reconcile, when wired: it rewrites the previous reply to
+        # what was heard on the LLMContextFrame -- i.e. at the commit, AFTER a snapshot
+        # taken at the final. Live 2026-09-16, first call with the feature on: the one
+        # ctx-changed miss was exactly that ("spoken reply -> heard 'Got it'" landing
+        # between a 0.62 s head start and the commit). The cut it records happened at the
+        # barge-in, before the final, so applying it here is applying it earlier, not
+        # differently; it is idempotent (it tracks the ledger events it has consumed).
+        self._before_snapshot = before_snapshot
         self._current: _Speculation | None = None
         # Strong refs: the loop holds tasks weakly, and a reader whose speculation
         # nothing else references any more would be destroyed pending, mid-read.
@@ -176,6 +185,8 @@ class Speculator:
         if not text:
             return False
         await self.cancel("superseded")
+        if self._before_snapshot is not None:
+            self._before_snapshot()
         ctx = self._agg.context
         # Deep, not shallow: the follow-up injector retires its trigger by rewriting a
         # message IN PLACE, which a shallow copy would share and equality would miss.

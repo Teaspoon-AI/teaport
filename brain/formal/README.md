@@ -729,7 +729,10 @@ The property it adds is `NoStaleReply`: a speculated reply is spoken only for th
 was asked against. The text being right is not enough. Between the snapshot and the commit
 the context has other writers — `MemoryRecall.add_message` at the final, the consult
 follow-up's `_post_trigger`, `HeardContextCorrector._reconcile` on the very
-`LLMContextFrame` that carries the commit — and `CtxChange` is any of them.
+`LLMContextFrame` that carries the commit — and `CtxChange` is any of them. (The
+corrector was the first miss seen live, so `speculate.py` now runs it *before* the
+snapshot; the model keeps it as a writer because nothing in the machine prevents a
+new one.)
 
 | SPEC | promotes when | `NoStrandedTurn` | `NoMissedBargeIn` | `NoStaleReply` |
 |---|---|---|---|---|
