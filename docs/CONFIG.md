@@ -43,9 +43,9 @@ In `/etc/teaport/brain.env`.
 
 | Setting | Default | Description |
 |---|---|---|
-| `LLM_BASE_URL` | **required** | Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server. |
+| `LLM_BASE_URL` | **required** | Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL). |
 | `LLM_API_KEY` | file `~/.config/teaport/llm_key` | The key for that endpoint. A local server that ignores auth still needs a placeholder such as sk-local. Prefer the file; the env var, if set, wins over it. |
-| `LLM_MODEL` | `gpt-oss-120b` | The served model name. |
+| `LLM_MODEL` | `gpt-oss-120b` | The served model name. A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL). |
 | `LLM_REASONING_EFFORT` | `low` | Reasoning effort for models that support it. Set "" to disable for models that do not. One of `low`, `medium`, `high`, `""`. low cuts gpt-oss's hidden chain-of-thought ~10x before the first spoken token. Also sets the LLM_MAX_TOKENS default. |
 | `LLM_MAX_TOKENS` | by `LLM_REASONING_EFFORT`: 1024 at `low`, 3072 at `medium`, 8192 at `high`, 4096 at `""` | Completion cap. A credit-metered gateway reserves against the model's ceiling and refuses the request when the balance cannot cover it, however short the answer. Reasoning tokens bill as completion tokens. 0 = no cap, correct for a local or un-metered endpoint. |
 | `LLM_TIMEOUT_SECS` | **20** s (≥ 1) | How long one completion attempt may take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this. Raise it for a slow local llama.cpp box. Without it the OpenAI SDK waits 600 s with no error, no log line and no audio. |
@@ -183,7 +183,7 @@ In `/etc/teaport/engine.env`.
 
 | Setting | Default | Description |
 |---|---|---|
-| `KOKORO_RESERVE_FPT` | — | The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device. One of `6`, `12`. The engine's own default (50) OOMs an 8 GB box; the installer always sets this. Other values only with the advanced unlock. |
+| `KOKORO_RESERVE_FPT` | — | The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device. One of `6`, `12`. The engine's own default (50) OOMs an 8 GB box. The installer derives this from whether an agent is present and rewrites it on every run, so it is not editable here: re-run install.sh to change what is resident. *Set by the installer.* |
 | `ENGINE_PORT` | **8000** port (1–65535) | --serve. TEAPORT_URL and ENGINE_TTS_URL in brain.env must follow it. *Set by the installer.* |
 | `ENGINE_DELAY` | **240** | --delay to the engine binary. *Set by the installer.* |
 | `TTS_CTX` | **192** | --tts-ctx to the engine binary. *Set by the installer.* |
@@ -224,7 +224,7 @@ In `/etc/teaport/bridge.env`.
 | `TEAPORT_VOICE` | — | TTS voice for bridge sessions; unset = the brain's TTS_VOICE. |
 | `BRIDGE_PRIME_MS` | **40** ms (≥ 0) | Downlink prime. |
 | `DISCORD_BOT_TOKEN_FILE` | `~/.config/teaport/discord_bot_token` | Where the bot token is read from. *Set by the installer.* |
-| `DISCORD_BOT_TOKEN` | file `~/.config/teaport/discord_bot_token` | The bot token. Prefer the file; the env var, if set, wins over it. |
+| `DISCORD_BOT_TOKEN` | file `~/.config/teaport/discord_bot_token` | The bot token. Prefer the file; the env var, if set, wins over it. Read once at login: a new token needs the bridge restarted. |
 
 ## Settings that constrain each other
 

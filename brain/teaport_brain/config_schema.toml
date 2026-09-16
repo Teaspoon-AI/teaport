@@ -1,7 +1,7 @@
-# teaport configuration schema — the ONE table the config UI, `teaport doctor`
-# and the docs/CONFIG.md generator read. Drafted 2026-09-16 from the actual read
-# sites in brain/teaport_brain/, install.sh, systemd/, cli/teaport and
-# bridge/discord/index.js (docs/CONFIG_SCHEMA.md is the human-readable draft).
+# teaport configuration schema — the ONE table the config UI and the
+# docs/CONFIG.md generator read. Drafted 2026-09-16 from the actual read sites
+# in brain/teaport_brain/, install.sh, systemd/, cli/teaport and
+# bridge/discord/index.js.
 #
 # A setting is not configurable until it has a row here. Adding an os.getenv()
 # read without a row is the drift this file exists to stop.
@@ -129,6 +129,7 @@ required = true
 read = "session"
 tier = "setup"
 help = "Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server."
+note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL)."
 source = "services.py:445"
 
 [[settings]]
@@ -152,6 +153,7 @@ default = "gpt-oss-120b"
 read = "session"
 tier = "setup"
 help = "The served model name."
+note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL)."
 source = "services.py:456"
 
 [[settings]]
@@ -1175,9 +1177,9 @@ group = "engine_service"
 type = "enum"
 values = ["6", "12"]
 read = "startup"
-tier = "setup"
+tier = "installer"
 help = "The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device."
-note = "The engine's own default (50) OOMs an 8 GB box; the installer always sets this. Other values only with the advanced unlock."
+note = "The engine's own default (50) OOMs an 8 GB box. The installer derives this from whether an agent is present and rewrites it on every run, so it is not editable here: re-run install.sh to change what is resident."
 source = "install.sh:865"
 
 [[settings]]
@@ -1463,9 +1465,10 @@ store = "bridge_env"
 group = "bridge"
 type = "secret"
 file = "~/.config/teaport/discord_bot_token"
+read = "startup"
 tier = "setup"
 help = "The bot token."
-note = "Prefer the file; the env var, if set, wins over it."
+note = "Prefer the file; the env var, if set, wins over it. Read once at login: a new token needs the bridge restarted."
 source = "bridge/discord/index.js:75"
 
 # ---------------------------------------------------------------- cross-row constraints

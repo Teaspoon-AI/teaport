@@ -407,6 +407,16 @@ To install a pre-uv tag, run the install.sh that shipped with that tag."
   # ship the teaport operator CLI on PATH (repo root = the parent of the brain dir)
   local cli; cli="$(dirname "$src")/cli/teaport"
   if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
+  # The config page's privileged helper, as a ROOT-OWNED copy outside $PREFIX. The venv
+  # (chown -R $RUN_USER above, populated by an unprivileged uv sync) is the run user's to
+  # rewrite, so the sudoers line in install_config_sudoers must not trust anything in it —
+  # not its python, not its copy of this module. It trusts this file and /usr/bin/python3.
+  local helper="$src/teaport_brain/config_apply.py"
+  if [ -f "$helper" ]; then
+    log "install config helper -> $CONFIG_HELPER"
+    SUDO install -d -m 0755 -o root -g root "$(dirname "$CONFIG_HELPER")"
+    SUDO install -m 0755 -o root -g root "$helper" "$CONFIG_HELPER"
+  fi
 }
 
 # Which agent hosts the realtime-voice plugin: "nemoclaw" (OpenClaw inside NVIDIA's docker
@@ -678,16 +688,24 @@ JSON
 }
 
 # LLM config gathered by phase_credentials, consumed by phase_services (brain.env).
-LLM_BASE_URL=""; LLM_MODEL=""
+# LLM_URL_SEED / LLM_MODEL_SEED are "?" when the operator gave no endpoint / model (no env
+# var, no prompt answer) and the value is only the default: written as a write_env seed,
+# so a repair keeps whatever the config page set rather than snapping back to the default.
+# An explicit answer is written plain, and wins.
+LLM_BASE_URL=""; LLM_MODEL=""; LLM_URL_SEED="?"; LLM_MODEL_SEED="?"
 phase_credentials() {
   log "credentials -> $SECRETS (secrets never baked into units)"
   run mkdir -p "$SECRETS"; run chmod 700 "$SECRETS"
   # Bring-your-own OpenAI-compatible LLM (item-2 model): endpoint + key + model.
   LLM_BASE_URL="${TEAPORT_LLM_BASE_URL:-}"; LLM_MODEL="${TEAPORT_LLM_MODEL:-gpt-oss-120b}"
+  [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
+  [ -n "${TEAPORT_LLM_MODEL:-}" ] && LLM_MODEL_SEED=""
   local key="${TEAPORT_LLM_API_KEY:-}"
   if [ -z "$LLM_BASE_URL" ] && [ -t 0 ] && [ "$DRY_RUN" != 1 ]; then
     read -r -p 'LLM base URL (OpenAI-compatible, e.g. https://api.groq.com/openai/v1): ' LLM_BASE_URL
     read -r -p 'LLM model [gpt-oss-120b]: ' m; [ -n "$m" ] && LLM_MODEL="$m"
+    [ -n "$LLM_BASE_URL" ] && LLM_URL_SEED=""
+    [ -n "$m" ] && LLM_MODEL_SEED=""
     read -r -s -p 'LLM API key (blank for a local keyless server): ' key; echo
   fi
   [ -z "$LLM_BASE_URL" ] && LLM_BASE_URL="http://127.0.0.1:8182/v1"   # local default when unattended
@@ -738,9 +756,15 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # "installed fine" and quietly sounded different, with nothing in the output saying why.
   # Comments and blank lines are not preserved: the file is generated, and re-emitting a
   # user's comment against a value we may have just changed would be worse than dropping it.
+  #
+  # A line given as `?KEY=value` is a SEED: written on a first install, but an existing
+  # KEY in the file wins over it on a repair. That is for the values the config page
+  # (http://<box>:$BRAIN_PORT/config) lets the operator change and the installer merely
+  # defaults — LLM_BASE_URL/LLM_MODEL when nobody answered the prompt or set the env var.
+  # Without it the documented repair action put the box back on the local LLM endpoint
+  # with nothing in the page saying why. An explicit answer is passed plain, and wins.
   local path="$1"; shift
-  local keep=() managed=" " line
-  for line in "$@"; do managed="$managed${line%%=*} "; done
+  local keep=() ours=() managed=" " existing_keys=" " line
   # The read must not silently degrade to a clobber. Usually the file is group-readable by
   # RUN_USER (write_env's own chgrp/chmod 640) — but a first install under plain sudo leaves
   # it root:root, and TEAPORT_USER may differ from whoever runs the repair. The rewrite
@@ -758,6 +782,18 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # `|| [ -n "$line" ]`: without it, read's non-zero at EOF drops a final line that lacks a
   # trailing newline — silently deleting that operator setting.
   while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in ''|'#'*) ;; *=*) existing_keys="$existing_keys${line%%=*} " ;; esac
+  done <<< "$existing"
+  # Which of our lines are written this run: every plain one, and a seed whose key the
+  # file does not already hold. A seed that IS in the file drops out here, so the loop
+  # below carries the file's line the way it carries any operator setting.
+  for line in "$@"; do
+    case "$line" in
+      '?'*) line="${line#?}"; case "$existing_keys" in *" ${line%%=*} "*) continue ;; esac ;;
+    esac
+    ours+=("$line"); managed="$managed${line%%=*} "
+  done
+  while IFS= read -r line || [ -n "$line" ]; do
     case "$line" in
       ''|'#'*) continue ;;
       *=*) case "$managed" in *" ${line%%=*} "*) ;; *) keep+=("$line") ;; esac ;;
@@ -770,7 +806,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
     # usage_footer) — show secret-bearing managed keys and preserved operator lines by NAME
     # only, never the value.
     printf '  [dry-run] write %s:\n' "$path"
-    for line in "$@"; do
+    for line in "${ours[@]}"; do
       case "${line%%=*}" in
         *TOKEN|*KEY|*SECRET|*PASSWORD) printf '    %s=<redacted>\n' "${line%%=*}" ;;
         *) printf '    %s\n' "$line" ;;
@@ -782,7 +818,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # Name the carried keys: a preserved-but-broken operator setting is invisible otherwise,
   # and "repair ran fine" + a box that still misbehaves points here.
   if [ ${#keep[@]} -gt 0 ]; then log "preserving ${#keep[@]} operator setting(s) in $path: ${keep[*]%%=*}"; fi
-  { printf '%s\n' "$@"
+  { printf '%s\n' "${ours[@]}"
     if [ ${#keep[@]} -gt 0 ]; then printf '%s\n' "${keep[@]}"; fi
   } | SUDO tee "$path" >/dev/null
   SUDO chmod 640 "$path"; SUDO chgrp "$RUN_USER" "$path" 2>/dev/null || true
@@ -866,7 +902,7 @@ phase_services() {
     "VOX_REQUIRE_DICT_G2P=1"
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \
-    "LLM_BASE_URL=$LLM_BASE_URL" "LLM_MODEL=$LLM_MODEL" \
+    "${LLM_URL_SEED}LLM_BASE_URL=$LLM_BASE_URL" "${LLM_MODEL_SEED}LLM_MODEL=$LLM_MODEL" \
     "TEAPORT_URL=ws://127.0.0.1:$ENGINE_PORT/v1/realtime" \
     "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT" \
     "TEAPORT_PERSONA_FILE=$SECRETS/persona.md" \
@@ -892,17 +928,26 @@ phase_services() {
 # The config page (http://<box>:$BRAIN_PORT/config, on the brain) writes the env files
 # above and restarts teaport-* units. The env files are root:$RUN_USER 0640 and a restart
 # is systemctl, so the brain — which runs as $RUN_USER — cannot do either itself. This
-# is the one line that lets it, through one module that only ever touches those files
-# and units (brain/teaport_brain/config_apply.py); everything after the module name is
-# that module's argv. The file is validated with visudo before it lands: a malformed
-# sudoers.d entry locks sudo for everyone, which on a headless box is a reinstall.
+# is the one line that lets it, through one script that only ever touches those files
+# and units: the root-owned copy of brain/teaport_brain/config_apply.py that phase_brain
+# installs at $CONFIG_HELPER, run by the system python. Both are outside $PREFIX on
+# purpose — the run user owns the venv, so a line trusting the venv's interpreter or
+# module would be `NOPASSWD: ALL` with extra steps. Everything after the script path is
+# its argv. The file is validated with visudo before it lands: a malformed sudoers.d
+# entry locks sudo for everyone, which on a headless box is a reinstall.
+CONFIG_HELPER=/usr/local/lib/teaport/config_apply.py
 install_config_sudoers() {
   local f=/etc/sudoers.d/teaport-config tmp
+  if [ "$DRY_RUN" != 1 ] && [ ! -f "$CONFIG_HELPER" ]; then
+    warn "$CONFIG_HELPER missing (brain source predates the config page?) — sudoers line not installed"
+    return
+  fi
+  [ -x /usr/bin/python3 ] || [ "$DRY_RUN" = 1 ] || die "/usr/bin/python3 missing — the config helper runs on the system python"
   tmp="$(mktemp)"
   printf '%s\n' \
     "# teaport: the config page writes /etc/teaport/*.env and restarts teaport-* units" \
-    "# through this one module and nothing else. See brain/teaport_brain/config_apply.py." \
-    "$RUN_USER ALL=(root) NOPASSWD: $PREFIX/venv/bin/python -m teaport_brain.config_apply *" > "$tmp"
+    "# through this one root-owned script and nothing else. See brain/teaport_brain/config_apply.py." \
+    "$RUN_USER ALL=(root) NOPASSWD: /usr/bin/python3 $CONFIG_HELPER *" > "$tmp"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] install %s\n' "$f"; rm -f "$tmp"; return; fi
   if ! SUDO visudo -cf "$tmp" >/dev/null; then rm -f "$tmp"; die "generated $f does not pass visudo — not installed"; fi
   SUDO install -m 0440 -o root -g root "$tmp" "$f"

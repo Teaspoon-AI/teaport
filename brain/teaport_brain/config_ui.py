@@ -23,16 +23,24 @@ returned: the API says whether one is set, and accepts a new value.
 "Pending": a store file newer than a unit's ActiveEnterTimestamp means that
 unit runs on stale config. That is the whole restart story — nothing hot-reloads
 — and it is computed from systemd's own clock, so it is right even for a save
-made by hand or by another brain.
+made by hand or by another brain. A secret file counts too, for the units that
+read it once at startup (the Discord bridge; the brains read the LLM key per
+session, so a rotated key needs no restart there).
+
+A secret that is ALSO set in its env file is a trap: every reader prefers the
+env var, so a new file value would change nothing and the page would still say
+"Saved". Writing a secret therefore drops the env-file copy of the same name
+(that store's units then show as pending, which is true — their process env
+still holds the old value until they restart).
 """
 from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
-import sys
-import time
+from datetime import datetime, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -42,6 +50,15 @@ from loguru import logger
 from teaport_brain import config_schema
 
 ETC_DIR = "/etc/teaport"
+# The root-owned copy of config_apply.py the sudoers line trusts (install.sh
+# install_config_sudoers). NOT sys.executable / the package's own copy: the venv
+# belongs to the run user, so trusting it would be trusting the brain itself.
+APPLY_HELPER = "/usr/local/lib/teaport/config_apply.py"
+SYSTEM_PYTHON = "/usr/bin/python3"
+# Keys an operator may have added to an env file by hand that look like
+# credentials; masked from the page like the schema's secrets (same glob as
+# install.sh's dry-run transcript). A schema row that is not a secret is shown.
+_SECRET_LOOKING = re.compile(r".*(TOKEN|KEY|SECRET|PASSWORD)$", re.IGNORECASE)
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STORE_FILES = {"engine_env": "engine.env", "brain_env": "brain.env", "bridge_env": "bridge.env"}
 SIP_CONF = "~/.config/teaport/teaport-sip.conf"
@@ -144,16 +161,25 @@ def _store_path(store: str) -> str:
     raise HTTPException(status_code=400, detail=f"unknown store {store!r}")
 
 
-def _read_text(path: str) -> str:
+def _read_text(path: str) -> str | None:
+    """The file's text; "" when it does not exist; None when it exists but
+    cannot be read (a root:root brain.env after a plain-sudo first install —
+    install.sh write_env documents the case). One unreadable store must not
+    take the whole page down."""
     try:
         with open(path, encoding="utf-8") as f:
             return f.read()
     except FileNotFoundError:
         return ""
+    except OSError as e:
+        logger.warning(f"config: cannot read {path}: {e}")
+        return None
 
 
-def _secret_is_set(row: dict) -> bool:
-    if os.getenv(row["name"]):
+def _secret_is_set(row: dict, store_values: dict[str, str]) -> bool:
+    """Set in the process env, in the row's store (an env-file copy, or the
+    sip conf's password, which has no file), or in its secret file."""
+    if os.getenv(row["name"]) or store_values.get(row["name"]):
         return True
     path = row.get("file")
     if not path:
@@ -164,14 +190,36 @@ def _secret_is_set(row: dict) -> bool:
         return False
 
 
+def _is_hidden(name: str, rows: dict[str, dict]) -> bool:
+    """Never hand a secret to the page — a schema secret, or a hand-added key
+    whose name says credential (the schema decides for the names it knows)."""
+    if name in rows:
+        return rows[name]["type"] == "secret"
+    return bool(_SECRET_LOOKING.match(name))
+
+
 def _validate(row: dict, value: str) -> str | None:
-    """None when `value` is an acceptable text for this row; else the reason."""
+    """None when `value` is an acceptable text for this row; else the reason.
+    Check with the normalized text (see _normalize) — a json row is compacted
+    to one line first, everything else must already be one."""
     t = row["type"]
     if value == "":
         # An explicit empty is only meaningful where the code distinguishes it.
         if t == "enum" and "" in row.get("values", []):
             return None
         return "empty — clear the field to unset it instead"
+    if t == "json":
+        try:
+            if not isinstance(json.loads(value), dict):
+                return "must be a JSON object"
+        except ValueError as e:
+            return f"not valid JSON: {e}"
+        return None
+    # An env-file value is one line. quote() does not escape newlines, and a
+    # value that spans lines would be refused by config_apply after validation
+    # had already passed — a 500 with no field named instead of this 400.
+    if "\n" in value or "\r" in value:
+        return "must be a single line"
     if t == "int":
         if not re.fullmatch(r"[+-]?\d+", value):
             return "must be a whole number"
@@ -181,22 +229,17 @@ def _validate(row: dict, value: str) -> str | None:
             n = float(value)
         except ValueError:
             return "must be a number"
+        if not math.isfinite(n):
+            return "must be a finite number"
     elif t == "enum":
         return None if value in row["values"] else f"must be one of {', '.join(repr(v) for v in row['values'])}"
     elif t == "flag":
         ok = row.get("accepts") or FLAG_WORDS
         return None if value.lower() in ok else f"must be one of {', '.join(sorted(ok))}"
-    elif t == "json":
-        try:
-            if not isinstance(json.loads(value), dict):
-                return "must be a JSON object"
-        except ValueError as e:
-            return f"not valid JSON: {e}"
-        return None
     elif t == "url":
-        return None if re.match(r"https?://\S+$", value) else "must start with http:// or https://"
+        return None if re.fullmatch(r"https?://\S+", value) else "must start with http:// or https://"
     elif t == "ws_url":
-        return None if re.match(r"wss?://\S+$", value) else "must start with ws:// or wss://"
+        return None if re.fullmatch(r"wss?://\S+", value) else "must start with ws:// or wss://"
     elif t == "snowflake":
         return None if value.isdigit() else "must be a Discord id (digits only)"
     else:
@@ -207,6 +250,18 @@ def _validate(row: dict, value: str) -> str | None:
     if hi is not None and n > hi:
         return f"must be at most {hi}"
     return None
+
+
+def _normalize(row: dict, value: str) -> str:
+    """The text that goes in the file. A json row is what the page's textarea
+    holds — pretty-printed pastes included — compacted to one line; the JSON
+    is unchanged. Everything else is written as typed."""
+    if row["type"] == "json" and value:
+        try:
+            return json.dumps(json.loads(value), separators=(",", ":"))
+        except ValueError:
+            return value  # _validate names the problem
+    return value
 
 
 def _effective(rows: dict[str, dict], values: dict[str, str]) -> dict[str, float]:
@@ -271,9 +326,9 @@ async def _run(*argv: str, stdin: str | None = None) -> tuple[int, str, str]:
 
 
 async def _privileged(action: str, target: str, stdin: str | None = None) -> None:
-    """config_apply under sudo. Replaced in tests."""
-    rc, out, err = await _run("sudo", "-n", sys.executable, "-m", "teaport_brain.config_apply",
-                              action, target, stdin=stdin)
+    """config_apply under sudo — the root-owned copy, on the system python,
+    byte-for-byte the command the sudoers line names. Replaced in tests."""
+    rc, out, err = await _run("sudo", "-n", SYSTEM_PYTHON, APPLY_HELPER, action, target, stdin=stdin)
     if rc != 0:
         detail = (err or out).strip().splitlines()[-1:] or ["unknown error"]
         logger.warning(f"config_apply {action} {target} failed rc={rc}: {detail[0]}")
@@ -282,28 +337,48 @@ async def _privileged(action: str, target: str, stdin: str | None = None) -> Non
 
 async def _unit_states(units: list[str]) -> dict[str, dict[str, Any]]:
     """{unit: {state, active_since}} from systemctl show; active_since is a
-    wall-clock float or None."""
+    wall-clock float or None.
+
+    The realtime stamp, not the monotonic one: a file mtime is the wall clock
+    at the moment of the write, and systemd's realtime stamp is the wall clock
+    at the moment of activation — the same frame. Reconstructing it from the
+    monotonic stamp is off by every clock step in between (NTP settling after
+    a boot without an RTC battery, which is every Jetson), and BOOTTIME vs
+    MONOTONIC differ by suspend on top. `--timestamp=us+utc` is the one fixed,
+    locale-proof spelling systemd 249 (Ubuntu 22.04 / JetPack 6) offers:
+    `Fri 2026-09-11 13:00:47.411058 UTC`; `unix` only arrived in 251."""
     if not units:
         return {}
-    rc, out, _ = await _run("systemctl", "show", "-p", "Id,ActiveState,ActiveEnterTimestampMonotonic",
-                            "--", *units)
+    rc, out, _ = await _run("systemctl", "show", "--timestamp=us+utc",
+                            "-p", "Id,ActiveState,ActiveEnterTimestamp", "--", *units)
     states: dict[str, dict[str, Any]] = {u: {"state": "unknown", "active_since": None} for u in units}
     if rc != 0:
         return states
-    try:
-        boot_wall = time.time() - time.clock_gettime(time.CLOCK_BOOTTIME)
-    except (AttributeError, OSError):
-        boot_wall = None
     for block in out.strip().split("\n\n"):
         props = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
         unit = props.get("Id", "").removesuffix(".service")
         if unit not in states:
             continue
         states[unit]["state"] = props.get("ActiveState", "unknown")
-        mono = props.get("ActiveEnterTimestampMonotonic", "0")
-        if boot_wall is not None and mono.isdigit() and int(mono) > 0:
-            states[unit]["active_since"] = boot_wall + int(mono) / 1e6
+        states[unit]["active_since"] = _parse_stamp(props.get("ActiveEnterTimestamp", ""))
     return states
+
+
+def _parse_stamp(stamp: str) -> float | None:
+    """`Fri 2026-09-11 13:00:47.411058 UTC` → epoch seconds; None for `n/a`
+    (a unit that never activated) or anything else."""
+    try:
+        _, rest = stamp.split(" ", 1)
+        return datetime.strptime(rest, "%Y-%m-%d %H:%M:%S.%f UTC").replace(tzinfo=timezone.utc).timestamp()
+    except ValueError:
+        return None
+
+
+def _mtime(path: str) -> float | None:
+    try:
+        return os.stat(path).st_mtime
+    except OSError:
+        return None
 
 
 # ------------------------------------------------------------------ routes
@@ -325,32 +400,41 @@ async def get_config(request: Request):
     rows = _rows()
 
     values: dict[str, dict[str, str]] = {}
+    parsed: dict[str, dict[str, str]] = {}
     mtimes: dict[str, float | None] = {}
+    unreadable: list[str] = []
     for store in list(STORE_FILES) + ["sip_conf"]:
         path = _store_path(store)
         text = await asyncio.to_thread(_read_text, path)
-        parsed = parse_env(text)
-        # Never hand a secret to the page, even one someone put in the env file.
-        values[store] = {k: v for k, v in parsed.items()
-                         if not (k in rows and rows[k]["type"] == "secret")}
-        try:
-            mtimes[store] = os.stat(path).st_mtime
-        except OSError:
-            mtimes[store] = None
+        if text is None:
+            unreadable.append(store)
+            text = ""
+        parsed[store] = parse_env(text)
+        values[store] = {k: v for k, v in parsed[store].items() if not _is_hidden(k, rows)}
+        mtimes[store] = _mtime(path)
 
-    secrets = {name: _secret_is_set(row) for name, row in rows.items() if row["type"] == "secret"}
+    secrets = {name: _secret_is_set(row, parsed.get(row["store"], {}))
+               for name, row in rows.items() if row["type"] == "secret"}
 
     units = sorted({u for st in schema["stores"].values() for u in st["services"]})
     states = await _unit_states(units)
     pending: dict[str, list[str]] = {}
+
+    def _stale(mtime: float | None, unit: str) -> bool:
+        since = states.get(unit, {}).get("active_since")
+        return mtime is not None and since is not None and mtime > since
+
     for store, st in schema["stores"].items():
-        m = mtimes.get(store)
-        if m is None:
-            continue
         for unit in st["services"]:
-            since = states.get(unit, {}).get("active_since")
-            if since is not None and m > since:
+            if _stale(mtimes.get(store), unit):
                 pending.setdefault(unit, []).append(store)
+    # A secret file read once at startup is config that unit runs stale on too.
+    for name, row in rows.items():
+        if row["type"] != "secret" or not row.get("file") or row.get("read") != "startup":
+            continue
+        for unit in row.get("services") or schema["stores"][row["store"]]["services"]:
+            if _stale(_mtime(os.path.expanduser(row["file"])), unit):
+                pending.setdefault(unit, []).append(name)
 
     return {
         "schema": {"groups": schema["groups"], "stores": schema["stores"],
@@ -360,7 +444,8 @@ async def get_config(request: Request):
         "services": {u: s["state"] for u, s in states.items()},
         "pending": pending,
         "auth": bool(_token()),
-        "writable": list(STORE_FILES),
+        "writable": [s for s in STORE_FILES if s not in unreadable],
+        "unreadable": unreadable,
     }
 
 
@@ -395,13 +480,14 @@ async def put_config(request: Request):
             errors[name] = "must be text"
             continue
         if row["type"] == "secret":
-            if not value.strip() or "\n" in value:
+            if not value.strip() or "\n" in value or "\r" in value:
                 errors[name] = "must be one non-empty line"
             elif not row.get("file"):
                 errors[name] = "has no secret file"
             else:
                 secret_updates[name] = value.strip()
             continue
+        value = _normalize(row, value)
         err = _validate(row, value)
         if err:
             errors[name] = err
@@ -412,7 +498,14 @@ async def put_config(request: Request):
 
     path = _store_path(store)
     current = await asyncio.to_thread(_read_text, path)
+    if current is None:
+        raise HTTPException(status_code=500, detail=f"{STORE_FILES[store]} is not readable by the brain")
     merged = parse_env(current)
+    # The env-file copy of a secret shadows its file for every reader: a new
+    # file value must take the copy with it, or the save changes nothing.
+    superseded = [n for n in secret_updates if n in merged]
+    for n in superseded:
+        env_updates[n] = None
     for k, v in env_updates.items():
         if v is None:
             merged.pop(k, None)
@@ -432,8 +525,10 @@ async def put_config(request: Request):
         await asyncio.to_thread(_write_secret, spath, value)
         logger.info(f"config: secret {name} written to {spath}")
 
-    return {"ok": True, "written": sorted(env_updates), "secrets": sorted(secret_updates),
-            "warnings": failed}
+    if superseded:
+        logger.info(f"config: {STORE_FILES[store]} copy of {', '.join(superseded)} dropped — the file wins now")
+    return {"ok": True, "written": sorted(n for n in env_updates if n not in superseded),
+            "secrets": sorted(secret_updates), "superseded": superseded, "warnings": failed}
 
 
 def _write_secret(path: str, value: str) -> None:

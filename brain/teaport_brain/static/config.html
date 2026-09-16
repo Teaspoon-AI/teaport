@@ -418,7 +418,7 @@
     if (extra) el.append(extra);
     const pending = Object.entries(data.pending || {});
     if (pending.length) {
-      const which = pending.map(([u, stores]) => `${UNIT_LABEL[u] || u} (${stores.map((s) => STORE_LABEL[s]).join(', ')})`).join(', ');
+      const which = pending.map(([u, stores]) => `${UNIT_LABEL[u] || u} (${stores.map((s) => STORE_LABEL[s] || s).join(', ')})`).join(', ');
       const actions = h('div', { class: 'actions' });
       for (const [unit] of pending) {
         actions.append(h('button', { class: 'btn-primary btn-sm', onclick: () => restart(unit) }, 'Restart ' + (UNIT_LABEL[unit] || unit)));

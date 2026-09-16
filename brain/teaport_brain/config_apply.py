@@ -6,27 +6,35 @@ is systemctl. Rather than widen the brain's privileges, config_ui.py shells out
 to THIS module under sudo for exactly those two actions, and install.sh installs
 the one sudoers line that allows it:
 
-    <run-user> ALL=(root) NOPASSWD: <prefix>/venv/bin/python -m teaport_brain.config_apply *
+    <run-user> ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/lib/teaport/config_apply.py *
 
-Everything after the module name is argv to THIS code, which only ever touches
-the files and units named below. sudo's env_reset strips PYTHONPATH, so the
-module resolving is the installed one, not a checkout on the caller's path.
+install.sh copies this file to /usr/local/lib/teaport/ as root:root 0755 — NOT
+the copy inside $PREFIX/venv. The venv, its bin/python and every module in it
+are owned by the run user (install.sh chowns the prefix so uv can populate it),
+so a sudoers line that trusted the venv's interpreter or the venv's copy of
+this module would let the run user edit either and run anything as root. The
+system python and a root-owned script are the two things that user cannot
+touch. Everything after the script path is argv to THIS code, which only ever
+touches the files and units named below. sudo's env_reset strips PYTHONPATH,
+and python puts the script's own (root-owned) directory first on sys.path.
 
-    python -m teaport_brain.config_apply write brain.env   < new-content
-    python -m teaport_brain.config_apply restart teaport-brain
+    python3 config_apply.py write brain.env   < new-content
+    python3 config_apply.py restart teaport-brain
 
-write: keeps a timestamped .bak beside the file (the way operators already do
-by hand on the box), writes a temp file in the same directory with the original
-owner and mode, and renames it into place, so a crash mid-write leaves the old
-file intact. The content is checked line-by-line: only KEY=value, comments and
-blank lines — a stray shell line cannot reach an EnvironmentFile through here.
+write: keeps a .bak beside the file (a bounded ring of BACKUPS, newest last —
+the files carry tokens, so they must not pile up in /etc), writes a temp file
+in the same directory with the original owner and mode, and renames it into
+place, so a crash mid-write leaves the old file intact. The content is checked
+line-by-line: only KEY=value, comments and blank lines — a stray shell line
+cannot reach an EnvironmentFile through here.
 
 restart: `systemd-run --on-active=2 systemctl restart <unit>`. Deferred and
 detached because the brain restarting ITSELF from a request handler would be
 killed before the HTTP response left the socket; two seconds is enough for the
 reply, and the transient timer unit survives the brain's exit.
 
-Stdlib only, never imports the rest of the package: it runs as root.
+Stdlib only, never imports the rest of the package: it runs as root, from
+outside the package, on whatever python3 the OS ships (3.8+).
 """
 from __future__ import annotations
 
@@ -43,7 +51,12 @@ FILES = ("engine.env", "brain.env", "bridge.env")
 UNITS = ("teaport-engine", "teaport-brain", "teaport-sip", "teaport-sip-brain",
          "teaport-discord-bridge")
 MAX_BYTES = 64 * 1024
-LINE_RE = re.compile(r"^(?:\s*(?:#.*)?|[A-Za-z_][A-Za-z0-9_]*=.*)$")
+BACKUPS = 5
+# What a line may be: blank, a comment, or KEY=value. The KEY=value shape MUST be
+# exactly what config_ui._KV_RE accepts (leading whitespace, an `export `, spaces
+# around `=`): the UI preserves every line it did not touch verbatim, so a line
+# its parser reads but this check refuses would make the whole file unsaveable.
+LINE_RE = re.compile(r"^(?:\s*(?:#.*)?|\s*(?:export\s+)?[A-Za-z_][A-Za-z0-9_]*\s*=.*)$")
 
 
 def write(name: str, content: str) -> str:
@@ -61,11 +74,7 @@ def write(name: str, content: str) -> str:
     if os.path.exists(path):
         st = os.stat(path)
         mode, uid, gid = stat.S_IMODE(st.st_mode), st.st_uid, st.st_gid
-        backup = f"{path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
-        with open(path, "rb") as src, open(backup, "wb") as dst:
-            dst.write(src.read())
-        os.chmod(backup, mode)
-        os.chown(backup, uid, gid)
+        _backup(path, mode, uid, gid)
     fd, tmp = tempfile.mkstemp(prefix=f".{name}.", dir=ETC)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -77,6 +86,26 @@ def write(name: str, content: str) -> str:
         os.unlink(tmp)
         raise
     return path
+
+
+def _backup(path: str, mode: int, uid: int, gid: int) -> None:
+    """Copy `path` to path.bak-<stamp>; two saves in one second (the page PUTs
+    each store separately) get distinct names, and only the newest BACKUPS
+    survive."""
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = f"{path}.bak-{stamp}"
+    n = 1
+    while os.path.exists(backup):
+        n += 1
+        backup = f"{path}.bak-{stamp}-{n}"
+    with open(path, "rb") as src, open(backup, "wb") as dst:
+        dst.write(src.read())
+    os.chmod(backup, mode)
+    os.chown(backup, uid, gid)
+    prefix = os.path.basename(path) + ".bak-"
+    older = sorted(f for f in os.listdir(os.path.dirname(path)) if f.startswith(prefix))
+    for name in older[:-BACKUPS]:
+        os.unlink(os.path.join(os.path.dirname(path), name))
 
 
 def restart(unit: str) -> None:
