@@ -58,6 +58,7 @@ from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard
 from teaport_brain import raw_llm_capture
+from teaport_brain import speculate
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.env import env_num
@@ -683,6 +684,18 @@ def build_agent_session(transport, *, voice: str | None = None,
     # register_tools is deferred until after the PipelineTask exists: the async
     # ask_openclaw path needs a follow-up injector bound to THIS task + context.
 
+    # The stock TurnAnalyzerUserTurnStopStrategy, keeping its verdict across the late
+    # turn start every barge-in has here -- see endpointing.py. Named because the
+    # speculative reply hooks onto it below.
+    stop_strategy = LateStartTurnStopStrategy(
+        turn_analyzer=EagerSmartTurnAnalyzer(
+            complete_threshold=SMARTTURN_COMPLETE_THRESHOLD,
+            # The CEILING on an INCOMPLETE verdict, not the VAD's floor -- see
+            # endpointing.py.
+            params=SmartTurnParams(stop_secs=SMARTTURN_STOP_SECS),
+        )
+    )
+
     # Barge-in is the whole point of this surface (the OpenClaw Talk client does its
     # own echo cancellation), so we do NOT mute the user while the bot speaks —
     # smart-turn endpointing handles turn-taking instead.
@@ -698,19 +711,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # [VAD, Transcription] start — VAD-start would interrupt on any
                 # sound, defeating the guard.
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
-                stop=[
-                    # The stock TurnAnalyzerUserTurnStopStrategy, keeping its verdict
-                    # across the late turn start every barge-in has here -- see
-                    # endpointing.py.
-                    LateStartTurnStopStrategy(
-                        turn_analyzer=EagerSmartTurnAnalyzer(
-                            complete_threshold=SMARTTURN_COMPLETE_THRESHOLD,
-                            # The CEILING on an INCOMPLETE verdict, not the VAD's
-                            # floor -- see endpointing.py.
-                            params=SmartTurnParams(stop_secs=SMARTTURN_STOP_SECS),
-                        )
-                    )
-                ]
+                stop=[stop_strategy],
             ),
         ),
     )
@@ -733,6 +734,17 @@ def build_agent_session(transport, *, voice: str | None = None,
     transport_output = transport.output()
     ledger = TranscriptLedger(tts=tts, output=transport_output)
     heard_corrector = HeardContextCorrector(ledger, context)
+    if speculate.ENABLED:
+        # Ask the LLM on a final the turn did not conclude on; the service adopts the
+        # stream at the commit if the context is still what was asked. The corrector's
+        # rewrite of a cut reply is applied before the snapshot so it cannot be what
+        # changed in between. See speculate.py.
+        speculator = speculate.Speculator(llm=llm, aggregator=context_aggregator.user(),
+                                          before_snapshot=heard_corrector._reconcile)
+        stop_strategy.speculator = speculator
+        llm.speculator = speculator
+        logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
+                    "on a final the turn has not concluded on")
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
     # Opt-in live endpointing probe (TEAPORT_ENDPOINT_DEBUG=1): two taps sharing

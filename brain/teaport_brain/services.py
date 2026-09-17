@@ -405,13 +405,29 @@ class BoundedOpenAILLMService(OpenAILLMService):
             # splits all three.
             logger.info(f"{self}: completion finished in {time.monotonic() - started:.1f}s")
 
-    # Paired with the above: this marks the boundary between "the request never got a
-    # response" and "the response arrived but consuming it stalled". Without it both
-    # look identical from the journal — a "Generating chat from context" line and
-    # nothing after it.
+    # A speculate.Speculator when TEAPORT_SPECULATIVE_REPLY is on (agent_session sets it);
+    # None otherwise, and get_chat_completions is then exactly _open_stream.
+    speculator = None
+
+    async def get_chat_completions(self, context):
+        # A speculation opened for this very context, if there is one, is the stream --
+        # its buffered chunks replay first, then it continues live. The request-building
+        # path below is what the speculation itself went through, so the two are the
+        # same request either way; only WHEN it was opened differs.
+        if self.speculator is not None:
+            adopted = await self.speculator.take(context)
+            if adopted is not None:
+                return adopted
+        return await self._open_stream(context)
+
+    # Paired with _process_context's CANCELLED line: this marks the boundary between
+    # "the request never got a response" and "the response arrived but consuming it
+    # stalled". Without it both look identical from the journal — a "Generating chat
+    # from context" line and nothing after it. Both the ordinary request and the
+    # speculation open their stream here.
     #
     # The stream is also renumbered on the way past — see _sequential_tool_call_indices.
-    async def get_chat_completions(self, context):
+    async def _open_stream(self, context):
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
         # _RenumberedStream, not the bare generator — see the class docstring: a

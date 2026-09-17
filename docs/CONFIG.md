@@ -99,7 +99,8 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | Setting | Default | Description |
 |---|---|---|
 | `ENDPOINT_STOP_SECS` | **0.5** s (≥ 0.1) | Silence before the VAD reports the caller stopped. The dominant fixed latency on every turn; lower is snappier and cuts more mid-sentence pauses. |
-| `SMARTTURN_STOP_SECS` | **1.0** s (≥ 0) | How long a Smart Turn "not done" verdict holds the turn open, counted from the VAD stop. |
+| `SMARTTURN_STOP_SECS` | **1.0** s (≥ 0) | How long a Smart Turn "not done" verdict holds the turn open, counted from the VAD stop. With TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated while this runs, so it can be raised (more patience for mid-sentence pauses) by up to the LLM's own latency at no cost to the turns that fall through. |
+| `TEAPORT_SPECULATIVE_REPLY` | **off** | Ask the LLM as soon as the final transcript lands on a turn Smart Turn has not concluded on (an INCOMPLETE verdict waiting out SMARTTURN_STOP_SECS), and use that reply if the turn then commits with exactly that text and nothing else touched the context. Off: the request waits for the commit. On: those turns answer up to the LLM's latency sooner, and a turn the caller resumes has spent one wasted request — every outcome logs a [SPEC] line with the running hit/miss tally. |
 | `SMARTTURN_COMPLETE_THRESHOLD` | **0.5** (0–1) | The end-of-turn probability that counts as done. Near-inert on telephony audio. |
 | `VAD_CONFIDENCE` | **0.7** (0–1) | Silero's speech-probability gate. |
 | `VAD_MIN_VOLUME` | **0.6** (0–1) | Silero's volume gate. |
