@@ -226,13 +226,21 @@ CtxChange ==
 \* byContext adopts only when nothing else wrote the context (specGen = gen); the
 \* speculation is otherwise closed and the ordinary request made, the same state
 \* minus the monitor. Either way the speculation is over.
+\*
+\* The adoption rule is written once so that both rows check the same thing: a
+\* reply is stale when it is ADOPTED against a moved context. byContext is not
+\* exempt by fiat -- if its equality test ever let a moved context through, TLC
+\* would see it here.
+Adopt == spec /\ (SPEC = "byText" \/ specGen = gen)
+Stale == Adopt /\ specGen /= gen
+
 Inference ==
     /\ userTurn /\ ~stopInFlight /\ ~inference /\ ~userSpeaking
     /\ inference' = TRUE
     /\ stopInFlight' = TRUE
     /\ watchdog' = FALSE                       \* _trigger_user_turn_inference_triggered
     /\ spec' = FALSE
-    /\ staleReply' = (staleReply \/ (spec /\ SPEC = "byText" /\ specGen /= gen))
+    /\ staleReply' = (staleReply \/ Stale)
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, gen,
                    missedBargeIn>>
 
@@ -300,7 +308,7 @@ ForceStop ==
     /\ owed' = FALSE
     /\ watchdog' = FALSE
     /\ spec' = FALSE
-    /\ staleReply' = (staleReply \/ (spec /\ SPEC = "byText" /\ specGen /= gen))
+    /\ staleReply' = (staleReply \/ Stale)
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, gen,
                    missedBargeIn>>
 

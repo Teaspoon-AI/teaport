@@ -756,8 +756,11 @@ Inference    the ceiling ends the turn; the text is what was asked, so byText
              the commit no longer has
 ```
 
-`byContext` closes it by construction — `specGen = gen` is the equality check on
-`context.messages` — and the two barge-in rows hold with it on because nothing in
+`byContext` closes it: `specGen = gen` is the equality check on `context.messages`.
+The adoption rule is one definition (`Adopt`) shared by both designs, and `staleReply`
+is raised whenever an adopted reply's generation is not the commit's — so the byContext
+row is a real check of the equality rule, not exempt by fiat (drop the `specGen = gen`
+conjunct from `Adopt` and the row falls). The two barge-in rows hold with it on because nothing in
 `SpecStart`/`CtxChange` touches `userTurn`, `userSpeaking` or `stopInFlight`. A resume
 (`VadStart`) and a new turn (`Interject`) both close the speculation, which is why `byText`
 never fails on the *text*: every live speculation's text is the committed one, and the
