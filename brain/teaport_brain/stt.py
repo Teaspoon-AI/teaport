@@ -516,8 +516,16 @@ class TeaportSTTService(WebsocketSTTService):
             # is owed for this stop any more.
             if self._commit_pending:
                 logger.debug(f"{self}: caller resumed -- the held segment stays open")
-            self._commit_pending = False
-            await self._cancel_hold_expiry()
+                self._commit_pending = False
+                await self._cancel_hold_expiry()
+                # The hold stood the backstop down; the segment's words are back in its
+                # care. Their own deltas would re-arm it -- unless the resumed speech
+                # decodes to nothing (over the bot, teagram-engine#7) AND its stop is
+                # missed, which is the one shape that would strand words the old
+                # commit-at-the-stop had already banked. brain/formal/SttCommit.tla
+                # (NoStrandedSegment) is where that shape was found.
+                if self._interim_buffer.strip():
+                    await self._arm_stranded_commit()
         elif isinstance(frame, TurnVerdictFrame):
             await self._handle_verdict(frame)
         elif isinstance(frame, BotStartedSpeakingFrame):
@@ -722,11 +730,15 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _send_commit(self, final: bool = True, why: str = "other"):
         """Force a final. `why` is recorded so the segment line says which path fired."""
+        # The hold's timer first: cancelling a live task is the one await in here that
+        # can actually suspend, and the bookkeeping below must be atomic with the send
+        # -- a VAD stop landing between "pending = False" and the commit going out would
+        # arm a hold this commit then never clears. Whatever sent it, the stop this
+        # segment was waiting on is answered.
+        await self._cancel_hold_expiry()
         self._commit_at = time.monotonic()
         self._commit_why = why
-        # Whatever sent it, the stop this segment was waiting on is answered.
         self._commit_pending = False
-        await self._cancel_hold_expiry()
         if self._streaming:
             # Nothing to ask for: generation is already running, and sending final=True
             # here would close the stream for the rest of the CALL rather than end a

@@ -725,6 +725,15 @@ of opening its own. It is a second machine riding on this one, so it is modelled
 than on its own: `SpecStart` reads `userTurn` and writes nothing the controller's guards
 read, and whether that leaves barge-in intact is a question for TLC, not a promise.
 
+The premise — a final in hand while the ceiling runs — is only true with
+`TEAPORT_STT_COMMIT_ON=vad-stop`, the STT committing at the VAD stop before the verdict
+exists. Under the default `verdict` (#43, `SttCommit.tla` below) the STT holds its segment
+open through that same wait, no final lands before the commit, and `SpecStart` is
+unreachable in the code. The rows below are unaffected: `SpecStart` is a free action, so
+the model checks a superset of what either configuration can do, and the properties are
+safety properties. They describe `vad-stop`; under `verdict` the speculation is inert and
+`agent_session` says so at startup.
+
 The property it adds is `NoStaleReply`: a speculated reply is spoken only for the context it
 was asked against. The text being right is not enough. Between the snapshot and the commit
 the context can have other writers, and `CtxChange` is any of them. In the code as it
@@ -798,6 +807,85 @@ whole difference between the two designs is what else the context holds. The com
   writers all land outside the window today (see above); it checks the design that
   stays right when one does not.
 - **Scale.** 47 distinct states with `SPEC = "off"`, 291 with it on; well under a second.
+
+## `SttCommit.tla` — when the STT closes the engine's transcript segment (#43)
+
+A commit to the engine is irreversible: `finish()` right-pads and redecodes the buffer,
+then resets the stream. `stt.py` sent one on every `VADUserStoppedSpeakingFrame`, before
+Smart Turn had answered — so a breath the model would have called INCOMPLETE split the
+caller's sentence into two decodes that never saw each other (`"Hey, what's"` +
+`"Time is here."`, measured 2026-09-18 at `ENDPOINT_STOP_SECS=0.2`, 4 of 4 runs). The
+pipecat turn stayed open, as the verdict said it should; the segment under it was gone.
+
+The fix has the stop strategy answer every VAD stop with a `TurnVerdictFrame` pushed
+*upstream* — the model's verdict, and the silence ceiling's when an INCOMPLETE one falls
+through — and the STT commit on a complete one, holding the segment open on an incomplete
+one. That is a new concurrent protocol: two processors, two FIFO queues in opposite
+directions (a verdict can arrive after the VAD *start* that followed its stop), and two
+timer tasks — the hold's expiry, and the stranded backstop that now has to stand down while
+a segment is held and stand back up when it is released. This module is that protocol,
+with two faults in the environment: a verdict lost in flight (`LoseVerdict`) and a VAD stop
+the VAD never reports (`VadStopMissed`, the fault the backstop exists for).
+
+| MODE | | `NoSplitOnIncomplete` | `NoStrandedSegment` | `NoDoubleAnswer` | `NoStaleClose` |
+|---|---|---|---|---|---|
+| `vadStop` | commit at the raw VAD stop (until #43) | ✗ | ✓ | ✓ | ✓ |
+| `verdict` | `TEAPORT_STT_COMMIT_ON=verdict`, as shipped | ✓ | ✓ | ✓ | ✓ |
+
+`NoSplitOnIncomplete` is the bug, and `vadStop` fails it in five steps with nothing exotic:
+
+```
+VadStart     the caller speaks
+VadStop      they pause; the STT commits -- the segment is closed, unjudged
+StratStart
+StratStop    the model says INCOMPLETE; the ceiling starts
+VadStart     they resume inside it: the model was right, the sentence is two decodes
+```
+
+The other three are what the old design did right and the new one has to keep doing:
+
+- **`NoStrandedSegment`** — words in the segment, the caller quiet, and no action that will
+  close them: no timer that can fire, no frame in flight, no ceiling counting. It is written
+  with `ENABLED Backstop` / `ENABLED HoldExpire` rather than the armed flags, because a
+  model whose expiry never fires must not pass on the strength of `hold = TRUE`. This is
+  the property the hold threatens, since the hold is what stands the backstop down.
+- **`NoDoubleAnswer`** — one VAD stop, at most one commit answering it. A second one closes
+  an empty segment, pays the engine's fixed `finish()`, and logs an EMPTY final.
+- **`NoStaleClose`** — a verdict never closes the segment once the caller has audibly
+  resumed: the STT already knows that pause was not the end, and the words belong in this
+  segment. Holds by queue order plus one cleared flag (`_commit_pending`); it is here so the
+  flag cannot quietly stop being cleared.
+
+### What the model found
+
+Writing `NoStrandedSegment` found a state the first cut of the code could reach and the old
+code could not: a stop is held, the segment's words lag in from the engine (the backstop
+stands down, correctly), the caller resumes (the hold is released), and their next stop is
+*missed*. Nothing owns the words — the old code had already banked them at the first stop.
+`stt.py` now puts the backstop back on duty at the resume when the held segment has words
+(`VadStart`'s `backstop' = backstop \/ (pending /\ segSpeech)`); drop that conjunct and the
+row falls in ten states. Every other load-bearing piece was checked the same way, by
+mutation: the expiry's timing fact (dropping it fells `NoSplitOnIncomplete`), the expiry
+itself (`NoStrandedSegment`), the flag a resume clears (`NoStaleClose`), and the backstop's
+two guards together (`NoSplitOnIncomplete`; either alone suffices, the code keeps both).
+
+### Known limits of this model
+
+- **Durations are out of scope**, as everywhere here, and two timing facts are stated as
+  enabling conditions. `HoldExpire` is enabled only once no verdict can still be on its way
+  — none in flight, no stop the strategy has yet to process, no ceiling counting — which is
+  the claim that `SMARTTURN_STOP_SECS + 0.5 s` outlasts all three. `Backstop` can fire
+  whenever the segment has words and no stop has claimed them, including while the caller
+  is still talking: that is the known edge `stt.py` documents (stalled interims), kept.
+- **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
+  once (the flush is the barge-in, teagram-engine#7); it is the `vadStop` design applied to
+  one stop, and the verdict that follows is ignored exactly as a stale one is.
+- **The session-wide fallback is not modelled.** A session in which no verdict ever reaches
+  the STT falls back to `vad-stop` at its first expiry; that is a policy on repeated faults,
+  and `MaxLost = 1` never reaches it.
+- **The final is not modelled.** The segment closes at the commit; what the engine returns,
+  and how the turn commits on it, is `UserTurn.tla`'s `Inference` and the tests'.
+- **Scale.** 1,423 distinct states under `verdict`, 3,081 under `vadStop`; under a second.
 
 ## Worth modeling next
 

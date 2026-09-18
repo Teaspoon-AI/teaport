@@ -261,7 +261,9 @@ async def test_a_vad_start_cancels_the_holds_expiry():
     await vad_start(s)
     assert s._hold_task is None
     await asyncio.sleep(CEILING + stt_mod._HOLD_SLACK_SECS + 0.05)
-    assert s._websocket.commits() == [], "the expiry fired into a resumed utterance"
+    # (The backstop, back on duty for the held words, may fire in this quiet -- that is
+    # a missed-stop commit and a different test. The HOLD's timer must not.)
+    assert "hold-expired" not in s.commit_whys(), "the expiry fired into a resumed utterance"
 
 
 async def test_the_stranded_backstop_stands_down_while_a_segment_is_held():
@@ -283,6 +285,26 @@ async def test_the_stranded_backstop_stands_down_while_a_segment_is_held():
     assert s._stranded_task is not None, "the backstop must re-arm once the hold is released"
     await asyncio.sleep(QUIET * 3)
     assert s.commit_whys() == ["backstop"]
+
+
+async def test_a_resume_puts_the_backstop_back_on_a_held_segments_words():
+    """The hold stands the backstop down. If the caller resumes and their new speech
+    decodes to nothing (spoken over the bot) and its VAD stop is then missed, the held
+    words must still be committed -- the old code had banked them at the first stop."""
+    s = Recorder()
+    await delta(s, "so I was")
+    await vad_stop(s)
+    await verdict(s, False)
+    assert s._stranded_task is None
+    await vad_start(s)                     # resumed; no deltas follow, no stop follows
+    assert s._stranded_task is not None, "the held words are nobody's once the hold lifts"
+    await asyncio.sleep(QUIET * 3)
+    assert s.commit_whys() == ["backstop"]
+    # ...and a resume into an EMPTY held segment arms nothing: no words, nothing to lose.
+    s = Recorder()
+    await vad_stop(s)
+    await vad_start(s)
+    assert s._stranded_task is None
 
 
 async def test_vad_stop_mode_is_the_old_behaviour():
