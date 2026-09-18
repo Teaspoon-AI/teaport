@@ -30,7 +30,16 @@ Environment=SIP_HALF_DUPLEX=0
 # rather than in 4 KiB blocks after the fact.
 ExecStart=@PREFIX@/venv/bin/python -u -m teaport_brain.sip_server --socket @SIP_UDS@
 Restart=always
-RestartSec=5
+# PartOf=/Upholds= on the gateway unit (teaport-sip.service) propagate every restart
+# job we run into a forced gateway restart+re-REGISTER — that propagation bypasses the
+# gateway's OWN Restart=/RestartSec= backoff entirely, since it is a directly-triggered
+# job, not routed through it (man systemd.unit). So our own crash-loop cadence is what
+# throttles the pair against the SBC's rate limiter; it must match the gateway's floor,
+# not race ahead of it with a flat 5 s. Same RestartSec=/RestartSteps=/RestartMaxDelaySec=
+# as teaport-sip.service, for the same reason.
+RestartSec=15
+RestartSteps=6
+RestartMaxDelaySec=120
 
 [Install]
 WantedBy=multi-user.target

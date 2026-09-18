@@ -44,6 +44,7 @@
 import argparse
 import asyncio
 import os
+import socket
 import time
 
 from loguru import logger
@@ -188,16 +189,17 @@ _GATEWAY_POLL_S = 0.5
 async def _connect_when_listening(sock_path: str):
     """connect_seqpacket, retried until the gateway is listening or _GATEWAY_WAIT_S is up.
 
-    Only the two 'not there yet' errors are retried: no socket file, or a file nobody
-    is accepting on. A peer-uid PermissionError is a different gateway, not a slow
-    one, and is raised at once.
+    Only the 'not there yet' errors are retried: no socket file, a file nobody is
+    accepting on, or a connect that timed out because the accept backlog was briefly
+    saturated. A peer-uid PermissionError is a different gateway, not a slow one, and
+    is raised at once.
     """
     deadline = time.monotonic() + _GATEWAY_WAIT_S
     waited = False
     while True:
         try:
             return connect_seqpacket(sock_path)
-        except (FileNotFoundError, ConnectionRefusedError) as e:
+        except (FileNotFoundError, ConnectionRefusedError, socket.timeout) as e:
             if time.monotonic() >= deadline:
                 logger.error(f"gateway not listening at {sock_path} after {_GATEWAY_WAIT_S:g}s ({e!r})")
                 raise
