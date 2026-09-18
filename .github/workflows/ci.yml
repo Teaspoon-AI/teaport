@@ -87,6 +87,48 @@ jobs:
         working-directory: plugin
         run: npm test
 
+  formal:
+    # brain/formal/check.sh model-checks every row in brain/formal/*.tla and gates on
+    # the expectation each row declares (see the script's header) -- an "expected:
+    # holds" design that TLC finds a counterexample for, an "expected: FAILS <Prop>"
+    # design that no longer fails (a lost counterexample) or now fails on a different
+    # invariant, or a row with no verdict at all, all fail the job. Nothing ran this
+    # automatically before now (8d3530a deferred it; #36), so a spec/cfg edit that
+    # silently loses a counterexample was invisible until someone ran it by hand.
+    #
+    # Pinned to v1.7.4 (TLC 2.19, rev 5a47802) -- the exact jar every verdict in the
+    # suite was established against -- by tag + sha256 rather than "latest", so a new
+    # tlaplus release can't change a verdict here without a deliberate re-pin (and a
+    # local re-run of the 56-row suite to confirm it first). Job name is plain
+    # `formal` (no matrix) so a future branch-protection rule can name it directly,
+    # same as the `brain (<runner>)` note above.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30 # shared runner pays cold JVM starts x56 the local desktop didn't; see download retry below
+    env:
+      TLA_TAG: v1.7.4
+      TLA_SHA256: 936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "11" # TLC needs 11+; matches the desktop the suite was verified on
+      - name: Cache tla2tools.jar
+        id: cache-tla
+        uses: actions/cache@v4
+        with:
+          path: tla2tools.jar
+          key: tla2tools-${{ env.TLA_TAG }}
+      - name: Download tla2tools.jar (pinned)
+        if: steps.cache-tla.outputs.cache-hit != 'true'
+        run: |
+          curl -fsSL --retry 3 --retry-connrefused -C - -o tla2tools.jar \
+            "https://github.com/tlaplus/tlaplus/releases/download/${TLA_TAG}/tla2tools.jar"
+      - name: Verify tla2tools.jar checksum
+        run: echo "${TLA_SHA256}  tla2tools.jar" | sha256sum -c
+      - name: Model-check every row
+        run: TLA_TOOLS="$PWD/tla2tools.jar" brain/formal/check.sh
+
   installer:
     runs-on: ubuntu-latest
     steps:
