@@ -264,14 +264,21 @@ sip_last_reg() {
 # `200 OK` match read that as still registered.
 sip_reg_ok() { [ -n "$1" ] && printf '%s' "$1" | grep -qE 'REGISTERED.*code=200'; }
 
+# A TERMINAL rejection, as opposed to the routine 401/Unauthorized digest challenge
+# every authenticated REGISTER gets before it re-sends with credentials and lands a
+# 200 OK (see sip_probe_register). Without this, a healthy trunk's intermediate 401
+# line reads as failure well before the 200 OK a moment later logs it as registered.
+sip_reg_failed() { [ -n "$1" ] && printf '%s' "$1" | grep -qiE '\b403\b|forbidden|registration failed|register failed'; }
+
 # Poll sip_last_reg for a 200 for up to $1 seconds. Returns 0 once registered, 1 on
-# a logged failure or the timeout.
+# a logged terminal failure or the timeout. An intermediate line that is neither (e.g.
+# a 401 digest challenge) is not a verdict — keep polling for the 200 OK that follows.
 sip_wait_registered() {
   local secs="${1:-20}" i reg
   for i in $(seq 1 "$((secs * 2))"); do
     reg="$(sip_last_reg)"
     if sip_reg_ok "$reg"; then printf '  %s %s\n' "$(c "$GREEN" registered)" "${reg#*\[reg\] }"; return 0; fi
-    if [ -n "$reg" ]; then printf '  %s %s\n' "$(c "$RED" 'NOT registered')" "${reg#*\[reg\] }"; return 1; fi
+    if sip_reg_failed "$reg"; then printf '  %s %s\n' "$(c "$RED" 'NOT registered')" "${reg#*\[reg\] }"; return 1; fi
     sleep 0.5
   done
   printf '  %s no registration logged within %ss — check: teaport logs sip\n' "$(c "$YEL" 'timeout')" "$secs"
