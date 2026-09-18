@@ -9,11 +9,13 @@
 # swallowing every barge-in there is.
 #
 import os
+from dataclasses import dataclass
 
 from loguru import logger
 
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame, BotStoppedSpeakingFrame, SystemFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
@@ -43,7 +45,16 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 # the waveform, and this is 8 kHz telephony band upsampled to 16 kHz, which is not what it
 # was trained on. If that is ever addressed, 0.2 becomes safe again and ~0.3s comes off
 # every turn -- so revisit this together with the analyzer, not alone.
-# Tune via ENDPOINT_STOP_SECS.
+#
+# Half of what the floor was guarding is gone since #43, though: the STT's commit now
+# follows the VERDICT (TEAPORT_STT_COMMIT_ON, stt.py), so an INCOMPLETE answer at a
+# breath keeps the engine's segment open along with the pipecat turn, and the caller's
+# next words join the same decode instead of starting a context-free one. What the floor
+# still guards is the other half: a COMPLETE answer to an unfinished phrase, which
+# commits at once whatever the floor. Where the verdicts are trustworthy (wideband
+# audio: the Talk client, where a 350 ms mid-phrase pause drew INCOMPLETE at
+# p=0.04-0.17 on 4 of 4 runs), 0.2 is safe now; on telephony it is not, for the reason
+# above. Tune via ENDPOINT_STOP_SECS.
 ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 
 # Smart Turn's OWN silence limit -- pipecat's SmartTurnParams.stop_secs -- is not a
@@ -64,9 +75,13 @@ ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 # this ceiling with the same text they had at the verdict -- the full second bought
 # nothing on those. Lowering it trades the two longest resumptions (0.82 and 0.92 s:
 # mid-sentence pauses of ~1.2 s, both genuine) against 0.3-0.5 s on each fallthrough;
-# that trade has not been made. With TEAPORT_SPECULATIVE_REPLY on (speculate.py) the
-# LLM is asked on the final, under this wait, so a fallthrough no longer pays the round
-# trip after it -- that is what makes raising this affordable. Tune via SMARTTURN_STOP_SECS.
+# that trade has not been made. With TEAPORT_SPECULATIVE_REPLY on (speculate.py) and
+# TEAPORT_STT_COMMIT_ON=vad-stop the LLM is asked on the final, under this wait, so a
+# fallthrough no longer pays the round trip after it -- that is what makes raising this
+# affordable. Under the default TEAPORT_STT_COMMIT_ON=verdict the STT holds its segment
+# open for this same wait (the resumed words then join it), so a fallthrough pays the
+# engine's commit AFTER it and there is no final to speculate on; see stt.py.
+# Tune via SMARTTURN_STOP_SECS.
 SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
@@ -175,6 +190,26 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
         return result
 
 
+@dataclass
+class TurnVerdictFrame(SystemFrame):
+    """Smart Turn's answer to a VAD stop, pushed UPSTREAM by the stop strategy so the
+    STT service can close the engine-side segment on the VERDICT rather than on the
+    raw VAD stop (stt.py, TEAPORT_STT_COMMIT_ON).
+
+    One frame per verdict: at the VAD stop with the model's answer (`source`
+    "verdict"), and again when an INCOMPLETE answer falls through to the analyzer's
+    silence ceiling (`source` "ceiling", always complete). The STT records `source`
+    as the commit's reason on its segment line. The strategy pushes these in either
+    commit mode; in "vad-stop" mode the STT ignores them.
+
+    A SystemFrame like the VAD frames it answers: it rides the input task ahead of the
+    queued audio, so the commit it triggers is not held behind a burst of frames.
+    """
+
+    complete: bool = False
+    source: str = ""
+
+
 class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     """The stock stop strategy, minus a reset that costs every barge-in 0.45 s.
 
@@ -223,6 +258,12 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     nor the assistant aggregator's commit of the cut reply is in the context yet; a
     snapshot taken now is the context minus the truncation the corrector will make at
     the commit, i.e. a guaranteed ctx-changed miss and a billed request for nothing.
+
+    It also reports every end-of-turn verdict UPSTREAM as a TurnVerdictFrame, for the
+    STT service: this is the only object that sees the model's answer at the VAD stop
+    and the analyzer's silence ceiling when an INCOMPLETE answer falls through to it,
+    and the STT's commit -- the thing that closes the engine's segment -- wants to
+    follow those rather than the raw VAD stop (issue #43; see stt.py's process_frame).
     """
 
     def __init__(self, *, speculator=None, **kwargs):
@@ -278,9 +319,25 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     async def _handle_vad_user_stopped_speaking(self, frame):
         before = self._inferences
         await super()._handle_vad_user_stopped_speaking(frame)
+        # The model has answered (super() awaits the inference): tell the STT first,
+        # since its commit is on the turn's critical path and nothing below waits on it.
+        await self._push_verdict(self._turn_complete, "verdict")
         # The final came first and the verdict has just been reached; if it was
         # INCOMPLETE the ceiling is now running on text the stop did not fire on.
         await self._maybe_speculate(before, "final before the VAD stop, verdict INCOMPLETE")
+
+    async def _handle_input_audio(self, frame):
+        complete_before = self._turn_complete
+        await super()._handle_input_audio(frame)
+        # The analyzer's silence ceiling (SMARTTURN_STOP_SECS) just overrode an
+        # INCOMPLETE verdict: the stock handler sets _turn_complete on nothing else
+        # here, and a verdict already COMPLETE has been reported at the VAD stop.
+        if self._turn_complete and not complete_before:
+            await self._push_verdict(True, "ceiling")
+
+    async def _push_verdict(self, complete: bool, source: str):
+        await self.push_frame(TurnVerdictFrame(complete=complete, source=source),
+                              FrameDirection.UPSTREAM)
 
     async def _handle_vad_user_started_speaking(self, frame):
         await super()._handle_vad_user_started_speaking(frame)

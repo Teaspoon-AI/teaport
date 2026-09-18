@@ -49,6 +49,15 @@
 # 21 above). Every outcome logs one [SPEC] line with its reason and running totals, so
 # the waste is a number in the journal. Off by default: TEAPORT_SPECULATIVE_REPLY=1.
 #
+# It needs TEAPORT_STT_COMMIT_ON=vad-stop (stt.py). The premise above -- "the final
+# transcript is in hand for most of the ceiling" -- was true because the STT committed at
+# the VAD stop, before the verdict; since #43 the default commit FOLLOWS the verdict, and
+# an INCOMPLETE one holds the segment open through the ceiling instead (so a caller who
+# resumes keeps one utterance). Under that mode no final lands before the commit, and this
+# module finds nothing to speculate on: agent_session warns at startup when both are set.
+# The two are alternatives for the same second of silence -- spend it generating a reply
+# to text that may be cut short, or spend it keeping the text whole.
+#
 import asyncio
 import copy
 import time

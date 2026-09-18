@@ -745,6 +745,15 @@ def build_agent_session(transport, *, voice: str | None = None,
         llm.speculator = speculator
         logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
                     "on a final the turn has not concluded on")
+        if stt.commit_on != "vad-stop":
+            # Not an error: the turn still commits and answers. Only the head start
+            # never materialises, and a [SPEC] tally of zero would be read as a bug.
+            logger.warning(
+                f"TEAPORT_SPECULATIVE_REPLY is on but TEAPORT_STT_COMMIT_ON="
+                f"{stt.commit_on}: the STT holds its segment open through the "
+                "wait the speculation would use, so no final lands before the commit and "
+                "it will find nothing to do. Set TEAPORT_STT_COMMIT_ON=vad-stop to use it "
+                "(see speculate.py for the trade)")
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
     # Opt-in live endpointing probe (TEAPORT_ENDPOINT_DEBUG=1): two taps sharing
