@@ -37,10 +37,14 @@ RuntimeDirectoryMode=0750
 ExecStart=@SIP_GATEWAY@ @SIP_CONF@
 Restart=always
 # A crash loop must not hammer the registrar: every start is a REGISTER, and an SBC
-# that sees one every 5 s can rate-limit the trunk. Back off 5 s -> 2 min over six
-# restarts (RestartSteps=/RestartMaxDelaySec= need systemd 254; older ones log an
-# "unknown lvalue" warning and keep the flat 5 s).
-RestartSec=5
+# that sees one every few seconds can rate-limit the trunk. RestartSec= is the floor
+# on every systemd — 15 s, a REGISTER rate a registrar tolerates indefinitely, and
+# still a quick return after the one-off crash. On systemd >= 254 the two lines under
+# it stretch that to 2 min over six restarts; older ones (Ubuntu 22.04 ships 249) log
+# an "unknown lvalue" warning for them and keep the flat 15 s, which is what the
+# floor is for. Not StartLimit*: giving up after N failures is the unsupervised
+# state this unit exists to end.
+RestartSec=15
 RestartSteps=6
 RestartMaxDelaySec=120
 

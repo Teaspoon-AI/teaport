@@ -35,6 +35,7 @@ have() { command -v "$1" >/dev/null 2>&1; }
 SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 active()    { local s; s="$(systemctl is-active "$1.service" 2>/dev/null || true)"; printf '%s' "${s:-unknown}"; }
+sip_enabled() { systemctl is-enabled --quiet teaport-sip.service 2>/dev/null; }   # telephony turned on
 installed() { systemctl cat "$1.service" >/dev/null 2>&1; }
 listening() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
 envval()    { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }   # envval <file> <KEY>
@@ -59,9 +60,10 @@ cmd_status() {
   svc_line teaport-engine
   svc_line teaport-brain
   installed teaport-sandbox-recover && svc_line teaport-sandbox-recover
-  # The phone line is part of the box once it is configured; a status that omits it is
-  # how "the box is fine" and "nobody can call in" were both true at once (#41).
-  if installed teaport-sip && [ -f "$SIP_CONF" ]; then svc_line teaport-sip; svc_line teaport-sip-brain; fi
+  # The phone line is part of the box once it is turned on; a status that omits it is
+  # how "the box is fine" and "nobody can call in" were both true at once (#41). Keyed
+  # on the unit being ENABLED, not on the conf: `sip disable` keeps the conf on purpose.
+  if sip_enabled; then svc_line teaport-sip; svc_line teaport-sip-brain; fi
   port_line "$ENGINE_PORT" engine
   port_line "$BRAIN_PORT" "brain /talk"
   have free && printf '  %-28s %s\n' memory "$(free -h | awk 'NR==2{print $3" used, "$7" avail / "$2" total"}')"
@@ -100,30 +102,33 @@ cmd_doctor() {
   done
   listening "$ENGINE_PORT" && ok "engine :$ENGINE_PORT listening" || failc "engine :$ENGINE_PORT not listening (allow ~1min after start)"
   listening "$BRAIN_PORT"  && ok "brain :$BRAIN_PORT listening"  || failc "brain :$BRAIN_PORT not listening"
-  # SIP: only once configured (the conf exists) — an unconfigured box has no line to
-  # check. Both units must be up, AND the trunk must be registered: a gateway that is
-  # "active" but never got its 200 OK is up-but-unreachable, and that is the state
-  # that has actually cost nights (#32). --fix restarts the GATEWAY only: the brain is
-  # bound to it and restarts with it, which is the only safe way to restart either.
-  if [ -f "$SIP_CONF" ]; then
+  # SIP: only once it is turned ON (the unit is enabled) — an unconfigured box has no
+  # line to check, and `sip disable` without --purge keeps the conf while the operator
+  # means the line to be off, so "conf present" alone must NOT make --fix bring it back.
+  # Both units must be up, AND the trunk must be registered: a gateway that is "active"
+  # but never got its 200 OK is up-but-unreachable, and that is the state that has
+  # actually cost nights (#32). --fix restarts the GATEWAY only: the brain is bound to
+  # it and restarts with it, which is the only safe way to restart either.
+  if [ -f "$SIP_CONF" ] && ! installed teaport-sip; then
+    failc "SIP configured ($SIP_CONF) but the units are not installed — re-run install.sh"
+  elif [ -f "$SIP_CONF" ] && ! sip_enabled; then
+    ok "SIP telephony off by choice (conf kept, units disabled — teaport sip configure turns it on)"
+  elif sip_enabled; then
     [ -x "$SIP_GATEWAY" ] && ok "SIP gateway binary" || failc "SIP gateway binary missing ($SIP_GATEWAY)"
-    if ! installed teaport-sip; then
-      failc "SIP configured ($SIP_CONF) but the units are not installed — re-run install.sh"
-    else
-      local sipdown=0
-      for u in teaport-sip teaport-sip-brain; do
-        st="$(active "$u")"
-        if [ "$st" = active ]; then ok "$u active"; else failc "$u is $st"; sipdown=1; fi
-      done
-      local reg; reg="$(sip_last_reg)"
-      if [ "$sipdown" = 0 ] && sip_reg_ok "$reg"; then ok "SIP trunk registered (${reg#*\[reg\] })"
-      elif [ "$sipdown" = 0 ] && [ -z "$reg" ]; then warnc "SIP trunk: no registration logged yet this run (allow ~10s after start)"
-      elif [ "$sipdown" = 0 ]; then failc "SIP trunk NOT registered — last: ${reg#*\[reg\] }"; sipdown=1
-      fi
-      if [ "$sipdown" = 1 ] && [ "$fix" = 1 ]; then
-        warnc "  --fix: systemctl restart teaport-sip (the SIP brain restarts with it)"
-        SUDO systemctl restart teaport-sip.service || true
-      fi
+    [ -f "$SIP_CONF" ] || failc "SIP units enabled but $SIP_CONF is missing — the units will not start (teaport sip configure)"
+    local sipdown=0
+    for u in teaport-sip teaport-sip-brain; do
+      st="$(active "$u")"
+      if [ "$st" = active ]; then ok "$u active"; else failc "$u is $st"; sipdown=1; fi
+    done
+    local reg; reg="$(sip_last_reg)"
+    if [ "$sipdown" = 0 ] && sip_reg_ok "$reg"; then ok "SIP trunk registered (${reg#*\[reg\] })"
+    elif [ "$sipdown" = 0 ] && [ -z "$reg" ]; then warnc "SIP trunk: no registration logged yet this run (allow ~10s after start)"
+    elif [ "$sipdown" = 0 ]; then failc "SIP trunk NOT registered — last: ${reg#*\[reg\] }"; sipdown=1
+    fi
+    if [ "$sipdown" = 1 ] && [ "$fix" = 1 ]; then
+      warnc "  --fix: systemctl restart teaport-sip (the SIP brain restarts with it)"
+      SUDO systemctl restart teaport-sip.service || true
     fi
   fi
   local nc="$HOME/.local/bin/nemoclaw"; have nemoclaw && nc="$(command -v nemoclaw)"
@@ -223,18 +228,21 @@ EOF
   chmod 600 "$dest"
 }
 
-# sip_conf_set <file> <key> <value> — set one key in a gateway .conf in place: the first
-# `key = …` line is rewritten (spaced or not), everything else — comments, order, the
-# other keys — is kept byte for byte, and a missing key is appended. Rewrites through
-# the existing file so its mode (600) survives; a mktemp+mv would hand the password
-# file the default umask.
+# sip_conf_set <file> <key> <value> — set one key in a gateway .conf in place. The
+# gateway's parser is LAST-wins (config.h reads top to bottom and overwrites), so the
+# LAST `key = …` line (spaced or not) is the one rewritten, in place, and any earlier
+# duplicates are dropped — rewriting the first would print the change and change
+# nothing. Everything else — comments, order, the other keys — is kept byte for byte,
+# and a missing key is appended. Rewrites through the existing file so its mode (600)
+# survives; a mktemp+mv would hand the password file the default umask.
 sip_conf_set() {
-  local f="$1" k="$2" v="$3" tmp
+  local f="$1" k="$2" v="$3" tmp n
+  n="$(grep -cE "^[[:space:]]*$k[[:space:]]*=" "$f" 2>/dev/null || true)"; n="${n:-0}"
   tmp="$(mktemp)"
-  awk -v k="$k" -v v="$v" '
-    !done && $0 ~ ("^[ \t]*" k "[ \t]*=") { print k "=" v; done=1; next }
+  awk -v k="$k" -v v="$v" -v n="$n" '
+    $0 ~ ("^[ \t]*" k "[ \t]*=") { if (++seen == n) print k "=" v; next }
     { print }
-    END { if (!done) print k "=" v }' "$f" > "$tmp" && cat "$tmp" > "$f"
+    END { if (n == 0) print k "=" v }' "$f" > "$tmp" && cat "$tmp" > "$f"
   rm -f "$tmp"
 }
 
@@ -247,7 +255,10 @@ sip_last_reg() {
   [ -n "$inv" ] || return 0
   journalctl "_SYSTEMD_INVOCATION_ID=$inv" -o short --no-pager 2>/dev/null | grep -aE '\[reg\]' | tail -1 || true
 }
-sip_reg_ok() { [ -n "$1" ] && printf '%s' "$1" | grep -qE 'REGISTERED.*code=200|200 *OK'; }
+# Only the gateway's own `[reg] REGISTERED code=200` — case matters: a trunk that
+# logs out writes `[reg] unregistered code=200 OK` (call.cpp onRegState), and a loose
+# `200 OK` match read that as still registered.
+sip_reg_ok() { [ -n "$1" ] && printf '%s' "$1" | grep -qE 'REGISTERED.*code=200'; }
 
 # Poll sip_last_reg for a 200 for up to $1 seconds. Returns 0 once registered, 1 on
 # a logged failure or the timeout.
@@ -268,7 +279,7 @@ sip_wait_registered() {
 # gateway's output and returns 1. The conf is the caller's; the socket path is removed.
 sip_probe_register() {
   local testconf="$1" testuds="$2" label="$3" out
-  [ -x "$SIP_GATEWAY" ] || die "SIP gateway binary not found/executable: $SIP_GATEWAY (set TEAPORT_SIP_GATEWAY)"
+  sip_require_gateway
   out="$(mktemp)"
   printf 'test-registering %s (throwaway port %s — :5060 untouched)...\n' "$label" "$(confval "$testconf" sip_port)"
   "$SIP_GATEWAY" "$testconf" >"$out" 2>&1 &
@@ -313,9 +324,16 @@ sip_refuse_hand_launched() {
   exit 1
 }
 
+# Both probes check the binary BEFORE writing a throwaway conf: it holds the password,
+# and a die() on a missing gateway would exit past the rm -f below and leave it in /tmp.
+sip_require_gateway() {
+  [ -x "$SIP_GATEWAY" ] || die "SIP gateway binary not found/executable: $SIP_GATEWAY (set TEAPORT_SIP_GATEWAY)"
+}
+
 # The wizard's probe: emit a throwaway conf from the four answers and run it.
 sip_test_register() {
   local host="$1" domain="$2" user="$3" pass="$4" testconf testuds rc
+  sip_require_gateway
   testconf="$(mktemp)"
   testuds="$(mktemp -u --tmpdir teaport-sip-testreg.XXXXXX.sock)"
   sip_emit_conf "$testconf" 5062 "$testuds" "$host" "$domain" "$user" "$pass"
@@ -327,6 +345,7 @@ sip_test_register() {
 # socket swapped for throwaway ones — so what is tested is what will be installed.
 sip_test_register_conf() {
   local src="$1" testconf testuds rc
+  sip_require_gateway
   testconf="$(mktemp)"
   testuds="$(mktemp -u --tmpdir teaport-sip-testreg.XXXXXX.sock)"
   cat "$src" > "$testconf"
@@ -369,9 +388,22 @@ sip_configure() {
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS" 2>/dev/null || true
   sip_emit_conf "$SIP_CONF" 5060 "$SIP_UDS" "$host" "$domain" "$user" "$pass"
   printf 'wrote %s (mode 600)\n' "$SIP_CONF"
-  SUDO systemctl daemon-reload
-  SUDO systemctl enable --now teaport-sip.service teaport-sip-brain.service
+  sip_turn_on
   printf '%s — telephony is on. Check: teaport sip status\n' "$(c "$GREEN" 'SIP enabled')"
+  sip_wait_registered 20 || true
+}
+
+# Enable the pair and (re)start it. `enable --now` is a no-op on a unit that is already
+# running, so a configure re-run — a password rotation, a new registrar — wrote the conf
+# and then read the OLD invocation's 200 OK as success while the gateway stayed on the
+# old credentials until the next reboot. `restart` starts a stopped unit and restarts a
+# running one, so it is right in both cases, and it gives sip_wait_registered a fresh
+# invocation to read.
+sip_turn_on() {
+  SUDO systemctl daemon-reload
+  SUDO systemctl enable teaport-sip.service teaport-sip-brain.service
+  if [ "$(active teaport-sip)" = active ]; then echo "restarting the running gateway + SIP brain onto the new config..."; fi
+  SUDO systemctl restart teaport-sip.service teaport-sip-brain.service
 }
 
 # sip_adopt_conf <file> — `configure --conf`. The file is the gateway's own key=value
@@ -399,8 +431,7 @@ sip_adopt_conf() {
   sip_conf_set "$SIP_CONF" sip_port 5060
   sip_conf_set "$SIP_CONF" uds_path "$SIP_UDS"
   printf 'installed %s -> %s (mode 600)\n' "$src" "$SIP_CONF"
-  SUDO systemctl daemon-reload
-  SUDO systemctl enable --now teaport-sip.service teaport-sip-brain.service
+  sip_turn_on
   printf '%s — telephony is on.\n' "$(c "$GREEN" 'SIP enabled')"
   sip_wait_registered 20 || true
 }
