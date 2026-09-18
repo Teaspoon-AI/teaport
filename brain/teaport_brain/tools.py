@@ -844,11 +844,14 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None)
             return (lang or "en-us").split("-")[0]
     handlers = dict(_HANDLERS)
     if not HAS_AGENT:
-        # Only what the schema advertises: a handler for an unadvertised tool could
-        # still be reached by a model that hallucinates the name, and it would fail
-        # slowly against a gateway that is not there.
-        advertised = {t.name for t in LOCAL_TOOLS}
-        handlers = {n: h for n, h in handlers.items() if n in advertised}
+        # Drop only the tools that NEED a gateway (a handler for one could still be
+        # reached by a model that hallucinates the name, and it would fail slowly
+        # against a gateway that is not there). Filtering against GATEWAY_TOOLS
+        # rather than requiring membership in LOCAL_TOOLS means a future local-only
+        # _HANDLERS entry is kept by default instead of silently dropped if someone
+        # forgets to also add it to LOCAL_TOOLS.
+        gateway_names = {t.name for t in GATEWAY_TOOLS}
+        handlers = {n: h for n, h in handlers.items() if n not in gateway_names}
     if tts is not None:
         handlers["list_voices"] = functools.partial(_list_voices, tts=tts)
         handlers["switch_voice"] = functools.partial(_switch_voice, tts=tts)

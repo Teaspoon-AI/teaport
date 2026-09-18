@@ -1,20 +1,22 @@
 #
 # teaport — shared persona (Phase 1 of the unified voice + text agent)
 #
-# The voice brain's system prompt is composed as:   persona  +  VOICE_OVERLAY
+# The voice brain's system prompt is composed as:   persona  +  voice_overlay()
 #
-#   persona       — the assistant's IDENTITY / "soul". Single source of truth is a
-#                   shared file (TEAPORT_PERSONA_FILE, default
-#                   ~/.config/teaport/persona.md) that the OpenClaw *text* agent can
-#                   read too, so a user who talks hears the same assistant they text.
-#                   If the file is missing/empty we fall back to FALLBACK_PERSONA so
-#                   the realtime loop never hard-fails on a persona lookup.
-#   VOICE_OVERLAY — delivery-only, voice-surface mechanics that must NOT leak into
-#                   the text agent: which local tools exist, spell-out-numbers,
-#                   one-to-two spoken sentences, and the heard-grounding /
-#                   theory-of-mind paragraph. The overlay text is carefully tuned
-#                   (offline theory-of-mind evals lifted grounding 4/21 -> 14/21);
-#                   preserve its wording, don't reword casually.
+#   persona        — the assistant's IDENTITY / "soul". Single source of truth is a
+#                    shared file (TEAPORT_PERSONA_FILE, default
+#                    ~/.config/teaport/persona.md) that the OpenClaw *text* agent can
+#                    read too, so a user who talks hears the same assistant they text.
+#                    If the file is missing/empty we fall back to FALLBACK_PERSONA so
+#                    the realtime loop never hard-fails on a persona lookup.
+#   voice_overlay() — delivery-only, voice-surface mechanics that must NOT leak into
+#                    the text agent: which local tools exist, spell-out-numbers,
+#                    one-to-two spoken sentences, and the heard-grounding /
+#                    theory-of-mind paragraph. Returns VOICE_OVERLAY (gateway box) or
+#                    VOICE_OVERLAY_LOCAL (voice-only, TEAPORT_AGENT=none) — the tools
+#                    paragraph differs, the rest is shared verbatim. The overlay text
+#                    is carefully tuned (offline theory-of-mind evals lifted grounding
+#                    4/21 -> 14/21); preserve its wording, don't reword casually.
 #
 # The tools paragraph of the overlay comes in two versions, chosen by TEAPORT_AGENT
 # (agent_backend.py): with a gateway it names web_search / search_memory / ask_openclaw
@@ -41,6 +43,25 @@ FALLBACK_PERSONA = (
 # --- voice-surface mechanics (tools + delivery + heard-grounding). Moved verbatim
 #     from the old monolithic SYSTEM_PROMPT; the heard-grounding paragraph is tuned.
 #     Composed below as tools paragraph + _DELIVERY; VOICE_OVERLAY is the gateway one.
+#
+# The three fragments below are shared VERBATIM between _TOOLS_WITH_AGENT and
+# _TOOLS_LOCAL. They used to be duplicated inline in both strings — a later wording
+# fix landing in one and not the other would drift silently, since tests only assert
+# substring presence. Factored out once so there is one place to edit.
+_VOICE_SWITCH_INSTRUCTION = (
+    "list_voices / switch_voice (your "
+    "speaking voices). If the user starts speaking a different language, "
+    "switch_voice to a voice for that language and reply in it from then on; "
+    "switch back the same way if they return to the previous language."
+)
+_NO_TOOL_NAME_INSTRUCTION = (
+    "Never say a tool's name or write any <function> text in your reply."
+)
+_GENERAL_CHAT_CLOSER = (
+    "For everything else, just chat normally and helpfully — you "
+    "are a capable conversational assistant, not only a tool caller. "
+)
+
 _TOOLS_WITH_AGENT = (
     "You have tools — use them instead of guessing: get_host_status (this "
     "machine's live free memory, CPU load, decode speed), get_current_time, "
@@ -48,10 +69,7 @@ _TOOLS_WITH_AGENT = (
     "know), web_fetch (read a specific web page), search_memory (recall what "
     "the user told you before, by voice or text), ask_openclaw (your full desktop "
     "agent — every tool, deeper thinking; for multi-step or open-ended requests "
-    "your quick tools can't handle), and list_voices / switch_voice (your "
-    "speaking voices). If the user starts speaking a different language, "
-    "switch_voice to a voice for that language and reply in it from then on; "
-    "switch back the same way if they return to the previous language. "
+    "your quick tools can't handle), and " + _VOICE_SWITCH_INSTRUCTION + " "
     "When the user asks about your "
     "status or the time, about something recent or factual you'd need to look up, "
     "a web page, or something they told you earlier, call the matching tool "
@@ -59,12 +77,11 @@ _TOOLS_WITH_AGENT = (
     "call silently. A web search, page fetch, or ask_openclaw takes seconds, so "
     "first say one short natural sentence about what you're doing — in your own "
     "words, specific to this request, never a stock phrase — then call the tool "
-    "in the same response. Never say a tool's name or write any <function> text "
-    "in your reply. While an ask_openclaw request is still in progress you do not "
+    "in the same response. " + _NO_TOOL_NAME_INSTRUCTION + " "
+    "While an ask_openclaw request is still in progress you do not "
     "yet know its answer: never guess or make one up, even if the user says 'go "
     "ahead' or 'start' — say it is still in progress; you will be told the moment "
-    "it completes. For everything else, just chat normally and helpfully — you "
-    "are a capable conversational assistant, not only a tool caller. "
+    "it completes. " + _GENERAL_CHAT_CLOSER
 )
 
 # The voice-only box: the same local tools, and an honest statement of what is not
@@ -73,17 +90,13 @@ _TOOLS_WITH_AGENT = (
 _TOOLS_LOCAL = (
     "You have tools — use them instead of guessing: get_host_status (this "
     "machine's live free memory, CPU load, decode speed), get_current_time, and "
-    "list_voices / switch_voice (your speaking voices). If the user starts speaking "
-    "a different language, switch_voice to a voice for that language and reply in "
-    "it from then on; switch back the same way if they return to the previous "
-    "language. When the user asks about your status or the time, call the matching "
-    "tool directly; these are quick, so no preamble — just call silently. Never say "
-    "a tool's name or write any <function> text in your reply. You cannot search "
+    + _VOICE_SWITCH_INSTRUCTION + " "
+    "When the user asks about your status or the time, call the matching "
+    "tool directly; these are quick, so no preamble — just call silently. "
+    + _NO_TOOL_NAME_INSTRUCTION + " You cannot search "
     "the web, open a web page, or recall earlier conversations: if the user asks "
     "for something you would need to look up, say so plainly and help with what "
-    "you know rather than guessing or promising to check. For everything else, just "
-    "chat normally and helpfully — you are a capable conversational assistant, not "
-    "only a tool caller. "
+    "you know rather than guessing or promising to check. " + _GENERAL_CHAT_CLOSER
 )
 
 _DELIVERY = (
