@@ -41,8 +41,10 @@ listening() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
 envval()    { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }   # envval <file> <KEY>
 # confval <file> <key> — the gateway .conf. Its parser takes `key=value` AND `key = value`
 # (a hand-written conf uses the spaced form), so read it the same way, or `sip status`
-# shows `?` for a registrar that is plainly there.
-confval()   { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | sed -E 's/[[:space:]]+$//' | head -1; }
+# shows `?` for a registrar that is plainly there. LAST match, like the parser (config.h
+# overwrites top to bottom): an adopted conf with a duplicated key must show the value
+# the gateway is actually running on, not the one it skipped.
+confval()   { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | sed -E 's/[[:space:]]+$//' | tail -1; }
 
 fetch() {  # fetch <url-or-path> <dest>
   case "$1" in
