@@ -21,13 +21,23 @@
 #   * the ceiling's verdict commits a held segment;
 #   * a VAD stop over the bot's own voice commits at once (that flush is the barge-in),
 #     and the verdict that follows does not commit again;
-#   * a held segment whose verdict never arrives expires into a commit with a warning;
+#   * a held segment whose verdict never arrives expires into a commit with a warning,
+#     a verdict that then arrives is logged as late rather than lost, and the
+#     session-wide fallback to vad-stop is undone by the first verdict that arrives;
+#   * a done the engine sends on its own releases a held segment, and a stop after
+#     such a close commits the tail rather than hold it;
 #   * the stranded backstop stands down while a segment is held, and stands back up
 #     when the caller resumes;
+#   * the commit's cancel of a live hold is awaited, and comes before the bookkeeping;
 #   * vad-stop mode is the old behaviour, verdict frames and all;
 #   * and, over the REAL controller and the REAL LateStartTurnStopStrategy, the frames
 #     the STT relies on are actually produced: the model's at the VAD stop, the
-#     ceiling's when an INCOMPLETE one times out, and nothing on a COMPLETE one.
+#     ceiling's when an INCOMPLETE one times out, and nothing on a COMPLETE one --
+#     including when the stop, or the ceiling, ends the turn INLINE because the final
+#     was already in hand (the flag the push used to read is reset by then), and when
+#     the turn is closed under an INCOMPLETE verdict by something other than the
+#     ceiling (a re-applied stop, the watchdog), which reports the close so the held
+#     segment goes with it.
 #
 # Run: python test_stt_commit_on_verdict.py   (or via pytest test_suite.py)
 #
@@ -45,11 +55,13 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import (  # noqa: E402
     BaseSmartTurn,
     SmartTurnParams,
 )
+from pipecat.clocks.system_clock import SystemClock  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    TranscriptionFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -61,10 +73,11 @@ from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E40
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup  # noqa: E402
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
 from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
+from pipecat.utils.asyncio.task_manager import TaskManager  # noqa: E402
 
 from stt_harness import WireRecorder  # noqa: E402
 from turn_harness import running_controller  # noqa: E402
@@ -98,6 +111,10 @@ class Recorder(TeaportSTTService):
     """The real service with the wire recorded instead of sent; frames captured."""
 
     def __init__(self, **kwargs):
+        # Explicit, not the module default: that is read from TEAPORT_STT_COMMIT_ON at
+        # import, and a box set to vad-stop is one of the places this suite runs.
+        # test_vad_stop_mode_is_the_old_behaviour passes its own.
+        kwargs.setdefault("commit_on", "verdict")
         super().__init__(url="ws://127.0.0.1:1/none", **kwargs)
         self._websocket = WireRecorder()
         self.pushed = []
@@ -221,7 +238,7 @@ async def test_a_held_segment_whose_verdict_never_comes_expires_into_a_commit():
         await verdict(s, False)
         await asyncio.sleep(CEILING + stt_mod._HOLD_SLACK_SECS + 0.05)
         assert s.commit_whys() == ["hold-expired"], "a held segment must not stay open forever"
-        assert any("never reached the STT" in w for w in warnings), "an expiry must be loud"
+        assert any("hold expired" in w for w in warnings), "an expiry must be loud"
     finally:
         logger.remove(sink)
 
@@ -239,6 +256,15 @@ async def test_a_session_that_never_sees_a_verdict_stops_holding():
     assert s.commit_on == "vad-stop", "a session nothing answers must stop holding"
     await vad_stop(s)
     assert s.commit_whys() == ["hold-expired", "vad-stop"]
+    # The wiring answers after all -- a first inference slower than the wait, say --
+    # and the first verdict to land, whatever it says, puts the commit back on the
+    # verdict: the next stop holds.
+    await verdict(s, False)
+    assert s.commit_on == "verdict", "a verdict arriving must undo the fallback"
+    await delta(s, "and hello again")
+    await vad_stop(s)
+    assert s.commit_whys() == ["hold-expired", "vad-stop"] and s._commit_pending is True
+    await s._cancel_hold_expiry()
 
     s = Recorder()
     await delta(s, "hello")
@@ -334,6 +360,165 @@ def test_an_unknown_mode_is_refused():
     except ValueError:
         return
     raise AssertionError("an unknown commit_on must not construct a service that never commits")
+
+
+async def test_a_verdict_that_arrives_after_the_expiry_is_late_not_lost():
+    """The expiry is wall-clock from the VAD stop; the ceiling's verdict is a frame
+    queued behind the audio the aggregator is processing. When the expiry wins, the
+    commit is right and only the blame is wrong: the verdict that then lands must be
+    logged as late against that expiry, not treated as a frame the wiring dropped."""
+    s = Recorder()
+    lines = []
+    sink = logger.add(lambda m: lines.append(m), level="WARNING")
+    try:
+        await delta(s, "hello")
+        await vad_stop(s)
+        await verdict(s, False)
+        await asyncio.sleep(CEILING + stt_mod._HOLD_SLACK_SECS + 0.05)
+        assert s.commit_whys() == ["hold-expired"]
+        await verdict(s, True, source="ceiling")
+        assert s.commit_whys() == ["hold-expired"], "the late verdict must not commit again"
+        assert any("late, not lost" in w for w in lines), "a late verdict must be logged as late"
+        assert s.commit_on == "verdict", "a late verdict is not a broken wiring"
+    finally:
+        logger.remove(sink)
+
+
+async def test_a_done_the_engine_sent_on_its_own_releases_the_hold():
+    """The engine's endpointer closes segments on its own. One that closes the HELD
+    segment has put its words in the final already: the hold has nothing left to keep
+    whole, and the verdict it was waiting for would only close a segment of silence
+    (a finish() decode under the reply, logged as a wordless final)."""
+    s = Recorder()
+    await delta(s, "what time is it")
+    await vad_stop(s)
+    await verdict(s, False)
+    assert s._commit_pending is True and s._hold_task is not None
+    await done(s, "what time is it")          # unasked: no commit of ours in flight
+    assert s._commit_pending is False, "a segment the engine closed itself is not held"
+    assert s._hold_task is None, "nor is its expiry armed"
+    await verdict(s, True, source="ceiling")
+    assert s._websocket.commits() == [], "the ceiling's verdict committed an empty segment"
+    finals = [f.text for f in s.pushed if getattr(f, "finalized", False)]
+    assert finals == ["what time is it"]
+
+
+async def test_a_done_that_answers_our_commit_leaves_a_later_hold_alone():
+    """The counter-case: the done for a commit of OURS can land while a later stop is
+    rightly held (the caller resumed and paused again inside the engine's ~0.8 s
+    finish). That hold stays."""
+    s = Recorder()
+    await delta(s, "hello")
+    await vad_stop(s)
+    await verdict(s, True)                    # commit 1, in flight
+    await vad_start(s)
+    await delta(s, " and")
+    await vad_stop(s)
+    await verdict(s, False)                   # stop 2, held
+    await done(s, "hello")                    # commit 1's answer
+    assert s._commit_pending is True and s._hold_task is not None, (
+        "the done for an earlier commit released a later stop's hold")
+    await verdict(s, True, source="ceiling")
+    assert s.commit_whys() == ["verdict", "ceiling"]
+
+
+async def test_a_stop_after_the_engines_own_close_commits_the_tail_instead_of_holding():
+    """The common order on the appliance: the engine finalizes on a shorter silence
+    than the VAD's floor, so its done lands BEFORE the VAD stop. What the stop finds
+    open is the tail after the engine's cut -- silence, on the ordinary turn -- and a
+    hold over it keeps nothing whole. It commits at once, as the old design did, and
+    the verdicts that follow answer nothing."""
+    s = Recorder()
+    await delta(s, "what time is it")
+    await done(s, "what time is it")
+    await vad_stop(s)
+    assert s.commit_whys() == ["tail"]
+    assert s._commit_pending is False and s._hold_task is None
+    await verdict(s, False)
+    await verdict(s, True, source="ceiling")
+    assert s.commit_whys() == ["tail"], "verdicts for a tail commit must not commit again"
+    # ...but words streaming AFTER the engine's cut are a sentence the engine has split
+    # once already, and the stop for them holds like any other.
+    s = Recorder()
+    await delta(s, "hey, what's")
+    await done(s, "hey, what's")
+    await delta(s, " the time")
+    await vad_stop(s)
+    assert s.commit_whys() == [] and s._commit_pending is True
+    await s._cancel_hold_expiry()
+    # And a close before the caller's NEXT utterance is the previous utterance's.
+    s = Recorder()
+    await delta(s, "hello")
+    await done(s, "hello")
+    await vad_start(s)
+    await vad_stop(s)
+    assert s.commit_whys() == [] and s._commit_pending is True, (
+        "a done before the VAD start belongs to the previous utterance")
+    await s._cancel_hold_expiry()
+
+
+class LiveRecorder(Recorder):
+    """Recorder with pipecat's REAL task helpers: create_task through a TaskManager, and
+    BaseObject's cancel_task, which AWAITS the task it cancels. That await is the one
+    place _send_commit can suspend and the reason its bookkeeping comes after it; the
+    plain Recorder's bare task.cancel() never suspends, so nothing there could catch a
+    reorder. `in_the_gap`, if set, runs once as that await returns: what another task
+    did while the commit was suspended, seen the instant before the commit goes on.
+    (Driven from inside rather than from a second task because a frame handed to
+    process_frame from outside yields in pipecat's own handling before it reaches this
+    service's branch, and the commit resumes first.)"""
+    create_task = TeaportSTTService.create_task
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.in_the_gap = None
+
+    async def cancel_task(self, task, timeout=1.0):
+        await TeaportSTTService.cancel_task(self, task, timeout)
+        hook, self.in_the_gap = self.in_the_gap, None
+        if hook is not None:
+            await hook()
+
+
+async def live_recorder():
+    s = LiveRecorder()
+    clock = SystemClock()
+    clock.start()
+    await s.setup(FrameProcessorSetup(clock=clock, task_manager=TaskManager(),
+                                      pipeline_worker=None, audio_in_sample_rate=SAMPLE_RATE))
+    return s
+
+
+async def test_the_commit_awaits_the_holds_cancel_and_a_resume_in_that_gap_is_kept():
+    """The ceiling's verdict is handled in the aggregator's task and the caller's resume
+    arrives from the transport's, so the two can cross inside the commit. Its one
+    suspension is the cancel of the live hold, and it comes FIRST: a VAD start landing
+    there still finds the stop pending, releases it, and puts the backstop back on the
+    held words. With the bookkeeping ahead of the cancel, or the cancel after the send,
+    the resume finds nothing pending and arms nothing."""
+    s = await live_recorder()
+    await delta(s, "so I was")
+    await vad_stop(s)
+    await verdict(s, False)
+    hold = s._hold_task
+    assert hold is not None and not hold.done()
+    seen = {}
+
+    async def resume_in_the_gap():
+        seen["pending"] = s._commit_pending
+        await vad_start(s)
+
+    s.in_the_gap = resume_in_the_gap
+    await verdict(s, True, source="ceiling")
+    assert hold.cancelled(), "the cancel must be awaited, not fired and forgotten"
+    assert "pending" in seen, "the commit never suspended in the cancel of a live hold"
+    assert seen["pending"] is True, (
+        "the resume must find the stop still pending: the bookkeeping follows the cancel")
+    assert s.commit_whys() == ["ceiling"]
+    assert s._commit_pending is False and s._hold_task is None
+    assert s._stranded_task is not None, (
+        "the resume must have put the backstop back on the held words")
+    await s._cancel_stranded_commit()
 
 
 # ---- the strategy really produces the frames -----------------------------------------
@@ -441,6 +626,70 @@ async def test_a_resumption_gets_a_fresh_verdict_and_no_ceiling_from_the_old_sto
         assert rig.stt._interim_buffer == "hey, what's the time?"
 
 
+async def test_a_complete_verdict_with_the_final_already_in_hand_is_reported_complete():
+    """The common order on the appliance: the engine's segmenter closes the final BEFORE
+    the VAD stop. A COMPLETE verdict then stops the turn inside the stock handler and
+    the controller resets the strategy on the way, so the flag the push used to read is
+    False by the time it is read -- and the STT was told INCOMPLETE for a turn the model
+    had just called done. The verdict is what the turn did."""
+    rig = Rig(Complete)
+    c = rig.controller
+    async with running_controller(c):
+        await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(300)
+        await c.process_frame(InterimTranscriptionFrame("what time is it", "u", "t", None))
+        await c.process_frame(
+            TranscriptionFrame("what time is it", "u", "t", None, finalized=True))
+        await vad_stop(rig.stt)
+        await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS))
+        assert not c._user_turn, "the stop should have ended the turn inline"
+        assert rig.verdicts == [(True, "verdict")]
+        assert rig.stt.commit_whys() == ["verdict"]
+        await rig.audio(int((CEILING + 0.1) * 1000))
+        assert rig.verdicts == [(True, "verdict")], "no ceiling after a COMPLETE verdict"
+
+
+async def test_the_ceiling_that_stops_the_turn_inline_still_reports_itself():
+    """INCOMPLETE at the stop, the final lands under the ceiling, then the ceiling: with
+    text and a final in hand it stops the turn inside the stock handler, the reset lands
+    before the push's comparison, and the ceiling's verdict was never pushed."""
+    rig = Rig(Incomplete)
+    c = rig.controller
+    async with running_controller(c):
+        await rig.utterance("so I was thinking")
+        assert rig.verdicts == [(False, "verdict")]
+        await rig.audio(40)
+        await c.process_frame(
+            TranscriptionFrame("so I was thinking", "u", "t", None, finalized=True))
+        await rig.audio(int((CEILING + 0.1) * 1000))
+        assert not c._user_turn, "the ceiling should have ended the turn inline"
+        assert rig.verdicts == [(False, "verdict"), (True, "ceiling")]
+        assert rig.stt.commit_whys() == ["ceiling"]
+
+
+async def test_a_turn_closed_under_an_incomplete_verdict_closes_the_held_segment():
+    """A turn can end under a running ceiling on something other than the ceiling:
+    keep_barge_in_reachable re-applying a stop the controller refused earlier, or the
+    aggregator's stop watchdog. Both go through the controller's turn stop, which resets
+    the strategy and clears the analyzer -- the ceiling stops counting and its verdict
+    never comes. The strategy reports the close instead, so the STT's held segment
+    closes with the turn rather than waiting out its expiry under a lost-frame warning."""
+    from pipecat.turns.user_stop import UserTurnStoppedParams
+
+    rig = Rig(Incomplete)
+    c = rig.controller
+    async with running_controller(c):
+        await rig.utterance("so I was thinking")
+        assert rig.verdicts == [(False, "verdict")] and rig.stt._commit_pending
+        await c._trigger_user_turn_stop(
+            None, UserTurnStoppedParams(enable_user_speaking_frames=True))
+        assert not c._user_turn
+        assert rig.verdicts == [(False, "verdict"), (True, "turn-stopped")]
+        assert rig.stt.commit_whys() == ["turn-stopped"]
+        await rig.audio(int((CEILING + 0.1) * 1000))
+        assert rig.verdicts[-1] == (True, "turn-stopped"), "no ceiling after the turn closed"
+
+
 # ---- the frame really crosses the pipeline ---------------------------------------------
 
 class WiredSTT(TeaportSTTService):
@@ -449,7 +698,7 @@ class WiredSTT(TeaportSTTService):
     reasons noted."""
 
     def __init__(self):
-        super().__init__(url="ws://127.0.0.1:1/none")
+        super().__init__(url="ws://127.0.0.1:1/none", commit_on="verdict")
         self.whys = []
 
     async def _send_commit(self, final=True, why="other"):

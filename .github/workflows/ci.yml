@@ -99,7 +99,7 @@ jobs:
     # Pinned to v1.7.4 (TLC 2.19, rev 5a47802) -- the exact jar every verdict in the
     # suite was established against -- by tag + sha256 rather than "latest", so a new
     # tlaplus release can't change a verdict here without a deliberate re-pin (and a
-    # local re-run of the 59-row suite to confirm it first). Job name is plain
+    # local re-run of the 60-row suite to confirm it first). Job name is plain
     # `formal` (no matrix) so a future branch-protection rule can name it directly,
     # same as the `brain (<runner>)` note above.
     runs-on: ubuntu-latest

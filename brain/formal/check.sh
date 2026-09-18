@@ -98,7 +98,8 @@ echo
 echo "SttCommit.tla — when the STT closes the engine's transcript segment (#43)"
 run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the commit at the raw VAD stop)"
 run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did right)"
-run SttCommit.tla sc_verdict       "(expected: holds — TEAPORT_STT_COMMIT_ON=verdict, a lost verdict and a missed stop)"
+run SttCommit.tla sc_verdict_silentStop "(expected: FAILS NoOrphanedHold — the first cut: nothing reported when the turn is closed under the ceiling)"
+run SttCommit.tla sc_verdict       "(expected: holds — TEAPORT_STT_COMMIT_ON=verdict, a lost verdict, a missed stop and a turn closed under the ceiling)"
 echo
 echo "SttSlot.tla — arbitration of the engine's single STT slot"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS NoFalseBusy)"

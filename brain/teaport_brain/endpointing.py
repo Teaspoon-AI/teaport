@@ -197,10 +197,14 @@ class TurnVerdictFrame(SystemFrame):
     raw VAD stop (stt.py, TEAPORT_STT_COMMIT_ON).
 
     One frame per verdict: at the VAD stop with the model's answer (`source`
-    "verdict"), and again when an INCOMPLETE answer falls through to the analyzer's
-    silence ceiling (`source` "ceiling", always complete). The STT records `source`
-    as the commit's reason on its segment line. The strategy pushes these in either
-    commit mode; in "vad-stop" mode the STT ignores them.
+    "verdict"); again when an INCOMPLETE answer falls through to the analyzer's
+    silence ceiling (`source` "ceiling", always complete); and once more if the turn
+    is closed under an INCOMPLETE answer by something other than that ceiling --
+    keep_barge_in_reachable re-applying a refused stop, the aggregator's stop
+    watchdog -- because the ceiling stops counting at the turn's end and its verdict
+    would otherwise never come (`source` "turn-stopped", always complete). The STT
+    records `source` as the commit's reason on its segment line. The strategy pushes
+    these in either commit mode; in "vad-stop" mode the STT ignores them.
 
     A SystemFrame like the VAD frames it answers: it rides the input task ahead of the
     queued audio, so the commit it triggers is not held behind a burst of frames.
@@ -264,6 +268,13 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     and the analyzer's silence ceiling when an INCOMPLETE answer falls through to it,
     and the STT's commit -- the thing that closes the engine's segment -- wants to
     follow those rather than the raw VAD stop (issue #43; see stt.py's process_frame).
+    The verdicts are read off what the turn DID, not off `_turn_complete` alone: a
+    COMPLETE answer with a finalized transcript already in hand stops the turn inside
+    the stock handler, and the controller resets this strategy on the way, so the flag
+    reads False again by the time the handler returns -- the inference count is what
+    says the turn was called done. And a turn closed under an INCOMPLETE answer by
+    anything but the ceiling is reported as well (handle_user_turn_stopped), since the
+    reset clears the analyzer and the ceiling's verdict would never come.
     """
 
     def __init__(self, *, speculator=None, **kwargs):
@@ -321,18 +332,34 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         await super()._handle_vad_user_stopped_speaking(frame)
         # The model has answered (super() awaits the inference): tell the STT first,
         # since its commit is on the turn's critical path and nothing below waits on it.
-        await self._push_verdict(self._turn_complete, "verdict")
+        #
+        # Its answer is `_turn_complete` -- unless the stop has just ended the turn
+        # INLINE. With a finalized transcript already in hand (the engine's segmenter
+        # closed the final before the VAD stop: the common order on the appliance) a
+        # COMPLETE verdict fires _maybe_trigger_user_turn_stopped inside super(), the
+        # controller calls handle_user_turn_stopped -> _reset() on the way, and the
+        # flag reads False here for a turn the model has just called done. Nothing
+        # else fires an inference in there, so an inference that did is that COMPLETE;
+        # a stop the controller refused leaves the flag standing. Reading the flag
+        # alone pushed INCOMPLETE for exactly those stops, and the STT held a segment
+        # nothing was ever going to close.
+        complete = self._turn_complete or self._inferences != before
+        await self._push_verdict(complete, "verdict")
         # The final came first and the verdict has just been reached; if it was
         # INCOMPLETE the ceiling is now running on text the stop did not fire on.
         await self._maybe_speculate(before, "final before the VAD stop, verdict INCOMPLETE")
 
     async def _handle_input_audio(self, frame):
+        before = self._inferences
         complete_before = self._turn_complete
         await super()._handle_input_audio(frame)
         # The analyzer's silence ceiling (SMARTTURN_STOP_SECS) just overrode an
         # INCOMPLETE verdict: the stock handler sets _turn_complete on nothing else
-        # here, and a verdict already COMPLETE has been reported at the VAD stop.
-        if self._turn_complete and not complete_before:
+        # here, and a verdict already COMPLETE has been reported at the VAD stop. The
+        # same blind spot as the VAD stop above: with text and a final in hand the
+        # ceiling stops the turn inline and the flag is reset before this line runs,
+        # so the inference it fired is the evidence instead.
+        if not complete_before and (self._turn_complete or self._inferences != before):
             await self._push_verdict(True, "ceiling")
 
     async def _push_verdict(self, complete: bool, source: str):
@@ -373,6 +400,26 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             self._text = ""
             return
         await super().handle_user_turn_started()
+
+    async def handle_user_turn_stopped(self):
+        # The turn is over -- on this strategy's own verdict, or on something else's
+        # say-so: keep_barge_in_reachable re-applying a stop the controller refused
+        # earlier, or the aggregator's stop watchdog. The stock handler resets the
+        # strategy AND clears the analyzer, so an INCOMPLETE verdict's silence ceiling
+        # stops counting here and its verdict is never pushed. The STT holding the
+        # segment for that verdict would then wait out its expiry for nothing -- the
+        # words it holds belong to a turn that has just been closed under them -- and
+        # log the wait as a lost frame. So tell it the turn is done: the segment closes
+        # with the turn. Read BEFORE the reset, which is what the condition needs: the
+        # ceiling is armed exactly when a VAD stop was judged INCOMPLETE and the caller
+        # has not resumed. A turn this strategy ends on its own verdict has
+        # _turn_complete set and pushes nothing here -- that verdict was, or is about
+        # to be, reported by the handler that reached it.
+        if self._vad_stopped and not self._vad_user_speaking and not self._turn_complete:
+            logger.debug(f"{self}: turn closed under an INCOMPLETE verdict -- the ceiling "
+                         "will not fire; closing the STT's held segment with the turn")
+            await self._push_verdict(True, "turn-stopped")
+        await super().handle_user_turn_stopped()
 
 
 # Every barge-in in this brain is a USER TURN START: MinWordsUserTurnStartStrategy
@@ -493,7 +540,10 @@ def keep_barge_in_reachable(controller) -> None:
             # If Smart Turn just returned a FRESH incomplete (the user resumed
             # mid-thought and paused again), this closes the turn anyway and the
             # aggregator runs the resumed words as their own turn -- a continuation
-            # split off. Accepted rather than waiting for the SMARTTURN_STOP_SECS
+            # split off (LateStartTurnStopStrategy.handle_user_turn_stopped reports
+            # this close to the STT, so the segment it was holding for the ceiling's
+            # verdict closes with the turn instead of waiting out its expiry).
+            # Accepted rather than waiting for the SMARTTURN_STOP_SECS
             # ceiling, because Smart Turn is near-inert on this audio (bimodal and
             # confidently wrong; see endpointing.py's threshold note), so the case is
             # rare; revisit here if Smart Turn ever carries real signal.

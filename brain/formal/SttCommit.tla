@@ -22,6 +22,19 @@
 (*                 the hold (the words join the segment); a timer expires   *)
 (*                 the hold if no verdict ever comes.                       *)
 (*                                                                          *)
+(* TURNSTOP selects what the strategy does when the turn is closed under a  *)
+(* running ceiling by something other than the ceiling -- the controller    *)
+(* re-applying a stop it refused earlier (keep_barge_in_reachable), or its  *)
+(* stop watchdog. The controller resets the strategy and clears the         *)
+(* analyzer either way, so the ceiling stops counting and its verdict never *)
+(* comes:                                                                   *)
+(*                                                                          *)
+(*   "silent"   -- nothing pushed. The first cut of #43: the STT held the   *)
+(*                 segment to its expiry and logged a lost frame.           *)
+(*   "verdict"  -- a completing verdict pushed at the close                 *)
+(*                 (handle_user_turn_stopped), so the held segment closes   *)
+(*                 with the turn. As shipped.                               *)
+(*                                                                          *)
 (* The machine is two processors talking through pipeline queues in         *)
 (* opposite directions. VAD edges reach the STT first (it is the first      *)
 (* processor after the transport) and the strategy later, through the       *)
@@ -49,7 +62,8 @@ EXTENDS Naturals, Sequences
 CONSTANTS MODE,        \* "vadStop" | "verdict"
           MaxStops,    \* bound on VAD stops the caller makes
           MaxLost,     \* bound on verdict frames the fault drops
-          MaxMissed    \* bound on VAD stops the VAD fails to report
+          MaxMissed,   \* bound on VAD stops the VAD fails to report
+          TURNSTOP     \* "silent" | "verdict": the strategy at a turn closed under its ceiling
 
 VARIABLES
     \* --- the VAD, as the transport reports it ---
@@ -60,6 +74,7 @@ VARIABLES
     \* --- LateStartTurnStopStrategy + BaseSmartTurn ---
     stratSpeaking,  \* _vad_user_speaking
     ceilingArmed,   \* an INCOMPLETE verdict's silence clock is running
+    stratStops,     \* VAD stops the strategy has processed (numbers its verdicts)
     \* --- TeaportSTTService and the engine's open segment ---
     spoke,          \* audio has been fed since the last commit
     segSpeech,      \* the segment holds words: the engine streamed interims for it
@@ -68,6 +83,7 @@ VARIABLES
     backstop,       \* the stranded backstop is armed
     \* --- bounds ---
     stops, lost, missed,
+    lostHere,       \* a verdict for the CURRENT stop was lost in flight
     \* --- monitors ---
     closedUnjudged, \* the segment was closed for a stop the strategy has not called done
     answered,       \* a commit has answered the current VAD stop
@@ -76,17 +92,17 @@ VARIABLES
     doubleAnswer,   \* two commits answered one VAD stop
     staleClose      \* a verdict closed the segment after the caller had resumed
 
-vars == <<userSpeaking, toStrategy, toStt, stratSpeaking, ceilingArmed, spoke,
-          segSpeech, pending, hold, backstop, stops, lost, missed,
+vars == <<userSpeaking, toStrategy, toStt, stratSpeaking, ceilingArmed, stratStops,
+          spoke, segSpeech, pending, hold, backstop, stops, lost, missed, lostHere,
           closedUnjudged, answered, split, doubleAnswer, staleClose>>
 
 Init ==
     /\ userSpeaking = FALSE
     /\ toStrategy = <<>> /\ toStt = <<>>
-    /\ stratSpeaking = FALSE /\ ceilingArmed = FALSE
+    /\ stratSpeaking = FALSE /\ ceilingArmed = FALSE /\ stratStops = 0
     /\ spoke = FALSE /\ segSpeech = FALSE
     /\ pending = FALSE /\ hold = FALSE /\ backstop = FALSE
-    /\ stops = 0 /\ lost = 0 /\ missed = 0
+    /\ stops = 0 /\ lost = 0 /\ missed = 0 /\ lostHere = FALSE
     /\ closedUnjudged = FALSE /\ answered = FALSE
     /\ split = FALSE /\ doubleAnswer = FALSE /\ staleClose = FALSE
 
@@ -123,8 +139,9 @@ VadStart ==
     /\ pending' = FALSE
     /\ hold' = FALSE
     /\ split' = (split \/ (closedUnjudged /\ ceilingArmed))
-    /\ UNCHANGED <<toStt, stratSpeaking, ceilingArmed, segSpeech, stops, lost,
-                   missed, closedUnjudged, answered, doubleAnswer, staleClose>>
+    /\ UNCHANGED <<toStt, stratSpeaking, ceilingArmed, stratStops, segSpeech, stops,
+                   lost, missed, lostHere, closedUnjudged, answered, doubleAnswer,
+                   staleClose>>
 
 \* The caller falls quiet and the VAD says so. The backstop's premise -- that this
 \* frame never comes -- is gone whichever path commits. vadStop commits here, before
@@ -133,6 +150,7 @@ VadStop ==
     /\ userSpeaking /\ stops < MaxStops
     /\ userSpeaking' = FALSE
     /\ stops' = stops + 1
+    /\ lostHere' = FALSE
     /\ toStrategy' = Append(toStrategy, "stop")
     /\ IF MODE = "vadStop"
          THEN /\ Commit
@@ -144,7 +162,7 @@ VadStop ==
               /\ closedUnjudged' = FALSE
               /\ answered' = FALSE
               /\ UNCHANGED <<spoke, segSpeech>>
-    /\ UNCHANGED <<toStt, stratSpeaking, ceilingArmed, lost, missed, split,
+    /\ UNCHANGED <<toStt, stratSpeaking, ceilingArmed, stratStops, lost, missed, split,
                    doubleAnswer, staleClose>>
 
 \* The caller falls quiet and the VAD does NOT say so. Nobody sees it: not the STT,
@@ -154,9 +172,9 @@ VadStopMissed ==
     /\ userSpeaking /\ missed < MaxMissed
     /\ userSpeaking' = FALSE
     /\ missed' = missed + 1
-    /\ UNCHANGED <<toStrategy, toStt, stratSpeaking, ceilingArmed, spoke, segSpeech,
-                   pending, hold, backstop, stops, lost, closedUnjudged, answered,
-                   split, doubleAnswer, staleClose>>
+    /\ UNCHANGED <<toStrategy, toStt, stratSpeaking, ceilingArmed, stratStops, spoke,
+                   segSpeech, pending, hold, backstop, stops, lost, lostHere,
+                   closedUnjudged, answered, split, doubleAnswer, staleClose>>
 
 \* The engine streams an interim for the audio it was fed -- during the speech or,
 \* since its deltas lag, after the stop. Each one re-arms the backstop, UNLESS the
@@ -167,8 +185,8 @@ Delta ==
     /\ segSpeech' = TRUE
     /\ backstop' = (backstop \/ ~pending)
     /\ UNCHANGED <<userSpeaking, toStrategy, toStt, stratSpeaking, ceilingArmed,
-                   spoke, pending, hold, stops, lost, missed, closedUnjudged,
-                   answered, split, doubleAnswer, staleClose>>
+                   stratStops, spoke, pending, hold, stops, lost, missed, lostHere,
+                   closedUnjudged, answered, split, doubleAnswer, staleClose>>
 
 (***************************************************************************)
 (* The stop strategy.                                                      *)
@@ -181,24 +199,26 @@ StratStart ==
     /\ toStrategy' = Tail(toStrategy)
     /\ stratSpeaking' = TRUE
     /\ ceilingArmed' = FALSE
-    /\ UNCHANGED <<userSpeaking, toStt, spoke, segSpeech, pending, hold, backstop,
-                   stops, lost, missed, closedUnjudged, answered, split, doubleAnswer, staleClose>>
+    /\ UNCHANGED <<userSpeaking, toStt, stratStops, spoke, segSpeech, pending, hold,
+                   backstop, stops, lost, missed, lostHere, closedUnjudged, answered,
+                   split, doubleAnswer, staleClose>>
 
 \* _handle_vad_user_stopped_speaking: the model runs and answers -- the answer is the
-\* environment's choice -- and the verdict is pushed upstream. INCOMPLETE leaves the
-\* analyzer's speech buffer live, so its silence ceiling starts counting; COMPLETE
-\* clears it. A COMPLETE verdict also vindicates a segment already closed under this
-\* stop: the model agrees the caller was done.
+\* environment's choice -- and the verdict is pushed upstream, numbered with the stop
+\* it answers. INCOMPLETE leaves the analyzer's speech buffer live, so its silence
+\* ceiling starts counting; COMPLETE clears it. A COMPLETE verdict also vindicates a
+\* segment already closed under this stop: the model agrees the caller was done.
 StratStop ==
     /\ toStrategy /= <<>> /\ Head(toStrategy) = "stop"
     /\ toStrategy' = Tail(toStrategy)
     /\ stratSpeaking' = FALSE
+    /\ stratStops' = stratStops + 1
     /\ \E v \in {"complete", "incomplete"}:
-         /\ toStt' = Append(toStt, v)
+         /\ toStt' = Append(toStt, [v |-> v, n |-> stratStops + 1])
          /\ ceilingArmed' = (v = "incomplete")
          /\ closedUnjudged' = (closedUnjudged /\ v = "incomplete")
     /\ UNCHANGED <<userSpeaking, spoke, segSpeech, pending, hold, backstop, stops,
-                   lost, missed, answered, split, doubleAnswer, staleClose>>
+                   lost, missed, lostHere, answered, split, doubleAnswer, staleClose>>
 
 \* BaseSmartTurn.append_audio: SMARTTURN_STOP_SECS of silence since the stop overrides
 \* the INCOMPLETE verdict; _handle_input_audio sees _turn_complete flip and pushes the
@@ -207,19 +227,40 @@ StratStop ==
 Ceiling ==
     /\ ceilingArmed /\ ~stratSpeaking
     /\ ceilingArmed' = FALSE
-    /\ toStt' = Append(toStt, "ceiling")
+    /\ toStt' = Append(toStt, [v |-> "ceiling", n |-> stratStops])
     /\ closedUnjudged' = FALSE
-    /\ UNCHANGED <<userSpeaking, toStrategy, stratSpeaking, spoke, segSpeech, pending,
-                   hold, backstop, stops, lost, missed, answered, split, doubleAnswer, staleClose>>
+    /\ UNCHANGED <<userSpeaking, toStrategy, stratSpeaking, stratStops, spoke, segSpeech,
+                   pending, hold, backstop, stops, lost, missed, lostHere, answered,
+                   split, doubleAnswer, staleClose>>
 
-\* The fault: a verdict that never reaches the STT.
+\* The controller closes the turn under a running ceiling on something other than the
+\* ceiling: keep_barge_in_reachable re-applying a stop it refused earlier, or the stop
+\* watchdog. handle_user_turn_stopped -> _reset() + analyzer.clear(): the ceiling stops
+\* counting and its verdict will never come. TURNSTOP = "verdict" is the strategy
+\* reporting the close first, so a held segment closes with the turn; "silent" is the
+\* first cut, which reported nothing. The split this can cause (a caller who resumes
+\* after it) is the one keep_barge_in_reachable accepts, and the monitor is disarmed
+\* with the ceiling here on purpose.
+TurnStop ==
+    /\ ceilingArmed /\ ~stratSpeaking
+    /\ ceilingArmed' = FALSE
+    /\ toStt' = IF TURNSTOP = "verdict"
+                  THEN Append(toStt, [v |-> "stopped", n |-> stratStops])
+                  ELSE toStt
+    /\ UNCHANGED <<userSpeaking, toStrategy, stratSpeaking, stratStops, spoke, segSpeech,
+                   pending, hold, backstop, stops, lost, missed, lostHere, closedUnjudged,
+                   answered, split, doubleAnswer, staleClose>>
+
+\* The fault: a verdict that never reaches the STT. Noted against the stop it was for,
+\* if that is the current one -- an earlier stop's, still in flight, excuses nothing.
 LoseVerdict ==
     /\ toStt /= <<>> /\ lost < MaxLost
     /\ toStt' = Tail(toStt)
     /\ lost' = lost + 1
-    /\ UNCHANGED <<userSpeaking, toStrategy, stratSpeaking, ceilingArmed, spoke,
-                   segSpeech, pending, hold, backstop, stops, missed, closedUnjudged,
-                   answered, split, doubleAnswer, staleClose>>
+    /\ lostHere' = (lostHere \/ Head(toStt).n = stops)
+    /\ UNCHANGED <<userSpeaking, toStrategy, stratSpeaking, ceilingArmed, stratStops,
+                   spoke, segSpeech, pending, hold, backstop, stops, missed,
+                   closedUnjudged, answered, split, doubleAnswer, staleClose>>
 
 (***************************************************************************)
 (* The STT.                                                                *)
@@ -232,15 +273,15 @@ LoseVerdict ==
 Verdict ==
     /\ toStt /= <<>>
     /\ toStt' = Tail(toStt)
-    /\ IF ~pending \/ Head(toStt) = "incomplete"
+    /\ IF ~pending \/ Head(toStt).v = "incomplete"
          THEN UNCHANGED <<spoke, segSpeech, pending, hold, backstop, answered,
                           doubleAnswer, staleClose>>
          ELSE /\ Commit
               /\ answered' = TRUE
               /\ doubleAnswer' = (doubleAnswer \/ answered)
               /\ staleClose' = (staleClose \/ userSpeaking)
-    /\ UNCHANGED <<userSpeaking, toStrategy, stratSpeaking, ceilingArmed, stops, lost,
-                   missed, closedUnjudged, split>>
+    /\ UNCHANGED <<userSpeaking, toStrategy, stratSpeaking, ceilingArmed, stratStops,
+                   stops, lost, missed, lostHere, closedUnjudged, split>>
 
 \* _commit_when_hold_expires. TIMING FACT, stated: the expiry outlasts every verdict
 \* that is still coming -- one in flight, one for a stop the strategy has not
@@ -259,8 +300,8 @@ HoldExpire ==
     \* which the timing fact above rules out. Written this way rather than as FALSE so
     \* that dropping the fact makes the row fall instead of the monitor lie.
     /\ closedUnjudged' = ceilingArmed
-    /\ UNCHANGED <<userSpeaking, toStrategy, toStt, stratSpeaking, ceilingArmed, stops,
-                   lost, missed, split, staleClose>>
+    /\ UNCHANGED <<userSpeaking, toStrategy, toStt, stratSpeaking, ceilingArmed,
+                   stratStops, stops, lost, missed, lostHere, split, staleClose>>
 
 \* _stranded_commit_after_quiet: 1.5 s after the last interim, the segment still
 \* holding words and no VAD stop having claimed them. It answers no stop -- it is for
@@ -272,12 +313,13 @@ Backstop ==
     \* nobody has judged. The guard above (stt.py's fire-time check) makes this a
     \* no-op; it is here so that removing the guard makes NoSplitOnIncomplete fall.
     /\ closedUnjudged' = (closedUnjudged \/ pending)
-    /\ UNCHANGED <<userSpeaking, toStrategy, toStt, stratSpeaking, ceilingArmed, stops,
-                   lost, missed, answered, split, doubleAnswer, staleClose>>
+    /\ UNCHANGED <<userSpeaking, toStrategy, toStt, stratSpeaking, ceilingArmed,
+                   stratStops, stops, lost, missed, lostHere, answered, split,
+                   doubleAnswer, staleClose>>
 
 Next ==
     \/ VadStart \/ VadStop \/ VadStopMissed \/ Delta
-    \/ StratStart \/ StratStop \/ Ceiling \/ LoseVerdict
+    \/ StratStart \/ StratStop \/ Ceiling \/ TurnStop \/ LoseVerdict
     \/ Verdict \/ HoldExpire \/ Backstop
 
 Spec == Init /\ [][Next]_vars
@@ -324,15 +366,28 @@ NoStaleClose == ~staleClose
 \* the expiry never fires into a segment nothing holds.
 HoldIffPending == hold = pending
 
+\* A held segment always has a verdict on its way -- one in flight, a stop the strategy
+\* has yet to process, or a ceiling counting -- unless a verdict for THIS stop was lost.
+\* The expiry is the backstop for that loss and for nothing else: a design that leaves
+\* a hold with no verdict coming has made the expiry its normal way out, and none of
+\* the properties above can see it (the expiry keeps the segment from stranding and
+\* answers the stop exactly once). It is also what makes HoldExpire's timing fact a
+\* checked one: with this holding, the expiry is reachable only after a loss.
+VerdictComing == toStt /= <<>> \/ toStrategy /= <<>> \/ (ceilingArmed /\ ~stratSpeaking)
+
+NoOrphanedHold == pending => (VerdictComing \/ lostHere)
+
 TypeOK ==
     /\ userSpeaking \in BOOLEAN /\ stratSpeaking \in BOOLEAN
     /\ ceilingArmed \in BOOLEAN /\ spoke \in BOOLEAN /\ segSpeech \in BOOLEAN
+    /\ stratStops \in 0..MaxStops /\ lostHere \in BOOLEAN
     /\ pending \in BOOLEAN /\ hold \in BOOLEAN /\ backstop \in BOOLEAN
     /\ closedUnjudged \in BOOLEAN /\ answered \in BOOLEAN
     /\ split \in BOOLEAN /\ doubleAnswer \in BOOLEAN /\ staleClose \in BOOLEAN
     /\ stops \in 0..MaxStops /\ lost \in 0..MaxLost /\ missed \in 0..MaxMissed
     /\ \A i \in 1..Len(toStrategy): toStrategy[i] \in {"start", "stop"}
-    /\ \A i \in 1..Len(toStt): toStt[i] \in {"complete", "incomplete", "ceiling"}
-    /\ MODE \in {"vadStop", "verdict"}
+    /\ \A i \in 1..Len(toStt):
+         toStt[i] \in [v: {"complete", "incomplete", "ceiling", "stopped"}, n: 1..MaxStops]
+    /\ MODE \in {"vadStop", "verdict"} /\ TURNSTOP \in {"silent", "verdict"}
     /\ (MODE = "vadStop" => ~pending /\ ~hold)
 =============================================================================

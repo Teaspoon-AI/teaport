@@ -825,12 +825,16 @@ directions (a verdict can arrive after the VAD *start* that followed its stop), 
 timer tasks — the hold's expiry, and the stranded backstop that now has to stand down while
 a segment is held and stand back up when it is released. This module is that protocol,
 with two faults in the environment: a verdict lost in flight (`LoseVerdict`) and a VAD stop
-the VAD never reports (`VadStopMissed`, the fault the backstop exists for).
+the VAD never reports (`VadStopMissed`, the fault the backstop exists for). A third
+environment action closes the turn under a running ceiling on something other than the
+ceiling (`TurnStop`: the controller re-applying a stop it refused earlier, or its stop
+watchdog); what the strategy does then is `TURNSTOP`.
 
-| MODE | | `NoSplitOnIncomplete` | `NoStrandedSegment` | `NoDoubleAnswer` | `NoStaleClose` |
-|---|---|---|---|---|---|
-| `vadStop` | commit at the raw VAD stop (until #43) | ✗ | ✓ | ✓ | ✓ |
-| `verdict` | `TEAPORT_STT_COMMIT_ON=verdict`, as shipped | ✓ | ✓ | ✓ | ✓ |
+| MODE | | `NoSplitOnIncomplete` | `NoStrandedSegment` | `NoDoubleAnswer` | `NoStaleClose` | `NoOrphanedHold` |
+|---|---|---|---|---|---|---|
+| `vadStop` | commit at the raw VAD stop (until #43) | ✗ | ✓ | ✓ | ✓ | — |
+| `verdict`, `TURNSTOP = "silent"` | the first cut: nothing reported when the turn is closed under the ceiling | ✓ | ✓ | ✓ | ✓ | ✗ |
+| `verdict`, `TURNSTOP = "verdict"` | `TEAPORT_STT_COMMIT_ON=verdict`, as shipped | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 `NoSplitOnIncomplete` is the bug, and `vadStop` fails it in five steps with nothing exotic:
 
@@ -855,6 +859,13 @@ The other three are what the old design did right and the new one has to keep do
   resumed: the STT already knows that pause was not the end, and the words belong in this
   segment. Holds by queue order plus one cleared flag (`_commit_pending`); it is here so the
   flag cannot quietly stop being cleared.
+- **`NoOrphanedHold`** — a held segment always has a verdict on its way: one in flight, a
+  stop the strategy has yet to process, or a ceiling counting — unless a verdict for *this*
+  stop was lost. The expiry is the backstop for that loss and for nothing else. A design
+  that leaves a hold with no verdict coming has made the expiry its normal way out, and
+  none of the three above can see that: the expiry keeps the segment from stranding and
+  answers the stop exactly once. It is also what turns `HoldExpire`'s stated timing fact
+  into a checked one — with this holding, the expiry is reachable only after a loss.
 
 ### What the model found
 
@@ -869,23 +880,55 @@ mutation: the expiry's timing fact (dropping it fells `NoSplitOnIncomplete`), th
 itself (`NoStrandedSegment`), the flag a resume clears (`NoStaleClose`), and the backstop's
 two guards together (`NoSplitOnIncomplete`; either alone suffices, the code keeps both).
 
+The review of the code (PR #45) then found the state the model could not reach: a turn
+closed under a running ceiling. The stock strategy is reset and its analyzer cleared at
+every turn stop, whichever path closes the turn, and three paths close it under an
+INCOMPLETE verdict's ceiling — the ceiling itself with a final in hand (it fires the stop
+inline, and the flag the push compared was already reset by the time it was read); the same
+inline stop at the VAD stop for a COMPLETE verdict with the final already in hand (reported
+as INCOMPLETE, for the same reason); and `keep_barge_in_reachable` re-applying a refused
+stop right after the strategies handled the VAD stop. In every case the STT held the
+segment to its expiry and logged a lost frame. The model had `HoldExpire` enabled only once
+no verdict could still be coming — the timing fact, *stated* — so it could not represent a
+hold that nothing would ever answer, and every row passed. `TurnStop` and `NoOrphanedHold`
+are what was missing: with `TURNSTOP = "silent"` the row falls in seven states
+(`VadStart`, `VadStop`, `StratStart`, `StratStop` incomplete, `TurnStop`, the INCOMPLETE
+delivered — pending, nothing in flight, no ceiling, nothing lost), and with the strategy
+reporting the close it holds. The two inline cases are the same hole entered from the
+strategy's own handlers; the code closes it by reading what the turn did (the inference
+count) rather than the flag, and the model does not distinguish them from `TurnStop`.
+
 ### Known limits of this model
 
 - **Durations are out of scope**, as everywhere here, and two timing facts are stated as
   enabling conditions. `HoldExpire` is enabled only once no verdict can still be on its way
   — none in flight, no stop the strategy has yet to process, no ceiling counting — which is
-  the claim that `SMARTTURN_STOP_SECS + 0.5 s` outlasts all three. `Backstop` can fire
-  whenever the segment has words and no stop has claimed them, including while the caller
-  is still talking: that is the known edge `stt.py` documents (stalled interims), kept.
+  the claim that `SMARTTURN_STOP_SECS + 1.0 s` outlasts all three (`NoOrphanedHold` checks
+  that such a state is only ever reached after a loss; the number itself is a guess, and
+  `stt.py` logs how late a verdict that missed its expiry was, which is what to size it
+  from). `Backstop` can fire whenever the segment has words and no stop has claimed them,
+  including while the caller is still talking: that is the known edge `stt.py` documents
+  (stalled interims), kept.
 - **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
   once (the flush is the barge-in, teagram-engine#7); it is the `vadStop` design applied to
   one stop, and the verdict that follows is ignored exactly as a stale one is.
 - **The session-wide fallback is not modelled.** A session in which no verdict ever reaches
-  the STT falls back to `vad-stop` at its first expiry; that is a policy on repeated faults,
-  and `MaxLost = 1` never reaches it.
+  the STT falls back to `vad-stop` at its first expiry, and back onto the verdict at the
+  first verdict that arrives; that is a policy on repeated faults, and `MaxLost = 1` never
+  reaches it.
+- **The engine's own segment close is not modelled.** Its endpointer finalizes on shorter
+  silences than the VAD's floor, so its done commonly lands before the VAD stop; `stt.py`
+  commits the tail at that stop rather than hold it, and releases a hold when such a done
+  lands under one. Both are one processor's local rule on a final, and the final is not
+  modelled (below).
+- **The turn-stop split is accepted, not checked.** `TurnStop` closes a segment the model
+  called INCOMPLETE, and a caller who then resumes is split — the continuation
+  `keep_barge_in_reachable` documents and accepts. The `NoSplitOnIncomplete` monitor is
+  disarmed with the ceiling at that close, deliberately.
 - **The final is not modelled.** The segment closes at the commit; what the engine returns,
   and how the turn commits on it, is `UserTurn.tla`'s `Inference` and the tests'.
-- **Scale.** 1,423 distinct states under `verdict`, 3,081 under `vadStop`; under a second.
+- **Scale.** 2,279 distinct states under `verdict`, 5,217 under `vadStop`; about a second
+  each.
 
 ## Worth modeling next
 
