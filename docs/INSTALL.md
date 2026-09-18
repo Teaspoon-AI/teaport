@@ -33,9 +33,11 @@ downloads. You bring your own Jetson and your own LLM.
   ```
 
   The wizard asks for your registrar host, domain, username and password,
-  test-registers, and — only if that succeeds — enables the line. Manage it with
-  `teaport sip status` and `teaport sip disable`. The local assistant and the
-  phone line share one speech slot; see **docs/CONFIG.md → SIP telephony** for
-  how that works and how to dedicate a box to the phone.
+  test-registers, and — only if that succeeds — enables the line (`--conf FILE`
+  adopts a gateway `.conf` you already have). From then on the line comes back on
+  its own after a reboot or a crash. Manage it with `teaport sip status`,
+  `teaport sip restart`, `teaport sip aec on|off` and `teaport sip disable`. The
+  local assistant and the phone line share one speech slot; see **docs/CONFIG.md
+  → SIP telephony** for how that works and how to dedicate a box to the phone.
 
 TODO: expand each step; add troubleshooting, uninstall, and update paths.

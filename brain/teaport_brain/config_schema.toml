@@ -42,7 +42,7 @@ apply = "systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the 
 path = "/etc/teaport/brain.env"
 owner = "installer+operator"
 services = ["teaport-brain", "teaport-sip-brain"]
-apply = "Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: restart teaport-sip AND teaport-sip-brain together — a brain-only relaunch desyncs the gateway echo canceller."
+apply = "Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: `teaport sip restart` — the gateway and the SIP brain together; a brain-only relaunch desyncs the gateway echo canceller."
 
 [stores.sip_conf]
 path = "~/.config/teaport/teaport-sip.conf"
@@ -50,7 +50,7 @@ owner = "teaport sip configure"
 services = ["teaport-sip"]
 format = "keyvalue"
 mode = "600"
-apply = "Re-run `teaport sip configure --yes …` so the change is test-registered before it is written; then restart teaport-sip and teaport-sip-brain together."
+apply = "Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on|off` flips the echo canceller and restarts the pair for you."
 
 [stores.bridge_env]
 path = "/etc/teaport/bridge.env"
@@ -971,7 +971,7 @@ read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
 note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
-source = "sip_server.py:120"
+source = "sip_server.py:121"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -985,7 +985,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:121"
+source = "sip_server.py:122"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1000,7 +1000,7 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:131"
+source = "sip_server.py:132"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1011,7 +1011,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:480"
+source = "sip_server.py:517"
 
 # ---- diagnostics
 
