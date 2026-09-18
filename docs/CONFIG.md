@@ -30,8 +30,8 @@ column of the schema names the file and line.
 | File | Read by | To apply a change |
 |---|---|---|
 | `/etc/teaport/engine.env` | `teaport-engine` | systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; both brains lose their engine session. |
-| `/etc/teaport/brain.env` | `teaport-brain`, `teaport-sip-brain` | Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: restart teaport-sip AND teaport-sip-brain together — a brain-only relaunch desyncs the gateway echo canceller. |
-| `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Re-run `teaport sip configure --yes …` so the change is test-registered before it is written; then restart teaport-sip and teaport-sip-brain together. |
+| `/etc/teaport/brain.env` | `teaport-brain`, `teaport-sip-brain` | Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: `teaport sip restart` — the gateway and the SIP brain together; a brain-only relaunch desyncs the gateway echo canceller. |
+| `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on\|off` flips the echo canceller and restarts the pair for you. |
 | `/etc/teaport/bridge.env` | `teaport-discord-bridge` | systemctl restart teaport-discord-bridge. |
 
 Nothing hot-reloads: every value is fixed when its service starts, so a change
@@ -258,12 +258,44 @@ It test-registers against your trunk (briefly, on a throwaway port — never
 `:5060`, so a running gateway is untouched) and only on a `200 OK` writes
 `~/.config/teaport/teaport-sip.conf` (mode `600`, holds the SIP password) and
 enables both units. On a failed register it writes nothing and leaves telephony
-off. `teaport sip status` shows the units, whether the config exists, and the
-last registration; `teaport sip disable [--purge]` turns it back off.
+off. `teaport sip status` shows the units, the config, and this run's
+registration; `teaport sip disable [--purge]` turns it back off.
+
+Already have a gateway `.conf` — from a box that ran `teaport-sip` by hand, or
+carried over from another one? Adopt it instead of retyping it:
+
+```
+teaport sip configure --conf ~/my-trunk.conf
+```
+
+It goes through the same test-register, then is installed as-is except for the
+two keys the units own (`sip_port` → 5060, `uds_path` → the socket the SIP brain
+is started with). If a hand-launched gateway or SIP brain is still running, the
+command refuses and tells you what to stop: the unit it is about to enable needs
+`:5060` and the socket.
+
+Once configured, the line **survives reboots and crashes on its own**: both units
+are `enabled`, the gateway restarts with a backoff that will not hammer the
+registrar, and the SIP brain is bound to the gateway — stopped, started and
+restarted *with* it, never alone. That coupling is deliberate: the gateway's
+echo canceller references the brain's playout, and a brain relaunched under a
+running gateway leaves the canceller eating the caller's speech. So the day-2
+commands all work on the pair:
+
+```
+teaport sip restart            # gateway + SIP brain together, then waits for the 200 OK
+teaport sip aec off            # A/B the echo canceller: flips aec= in the conf, restarts the pair
+teaport sip aec on
+teaport sip aec                # show the current setting
+teaport logs sip -f            # the gateway's journal (sip-brain for the brain's)
+teaport doctor                 # includes the pair + whether the trunk is registered
+```
 
 The `.conf` is the gateway's own `key=value` format (`registrar_uri`, `id_uri`,
 `username`, `password`, `uds_path`, `aec`, `auto_answer`, …). Editing it by hand
-is fine; restart `teaport-sip` afterwards.
+is fine; `teaport sip restart` afterwards. Nothing about the line lives in
+`/tmp`: the conf is in `~/.config/teaport`, the socket in `/run/teaport` (created
+by the unit), the logs in journald.
 
 ## One engine, one STT slot
 

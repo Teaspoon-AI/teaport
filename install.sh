@@ -1106,7 +1106,7 @@ phase_sip() {
   # `teaport sip configure` registers a trunk, writes that config, then enables both. A
   # re-run on an already-configured box re-renders the units but leaves their enabled
   # state alone, so repairing never silently turns telephony off.
-  log "sip telephony: units installed but inert — run 'teaport sip configure' to register a SIP trunk and start it"
+  log "sip telephony: units installed but inert — run 'teaport sip configure' (or --conf FILE for an existing gateway .conf) to register a SIP trunk and start it"
 }
 
 phase_verify() {

@@ -8,6 +8,8 @@
 [Unit]
 Description=teaport SIP brain (voice pipeline over the SIP gateway)
 After=teaport-sip.service teaport-engine.service
+# BindsTo + the gateway's Upholds= on us: stopped with it, started with it, restarted
+# with it — never relaunched on its own under a running gateway (see teaport-sip.service).
 BindsTo=teaport-sip.service
 ConditionPathExists=@SIP_CONF@
 
@@ -21,7 +23,11 @@ Environment=SIP_HALF_DUPLEX=0
 # @SIP_UDS@ is in the gateway unit's RuntimeDirectory (/run/teaport, mode 0750, owned by
 # @USER@ — NOT world-writable /tmp). BindsTo the gateway guarantees that dir/socket exists
 # while we run; connect_seqpacket also verifies the peer's uid (SO_PEERCRED) as a backstop.
-ExecStart=@PREFIX@/venv/bin/python -m teaport_brain.sip_server --socket @SIP_UDS@
+# After= only orders us behind the gateway's fork, not its bind — the brain itself waits
+# (bounded) for the socket to appear, so this start does not race PJSUA2's init.
+# -u: stdout unbuffered, so the brain's own print()s reach journald as they happen
+# rather than in 4 KiB blocks after the fact.
+ExecStart=@PREFIX@/venv/bin/python -u -m teaport_brain.sip_server --socket @SIP_UDS@
 Restart=always
 RestartSec=5
 
