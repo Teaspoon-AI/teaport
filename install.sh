@@ -764,7 +764,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # Without it the documented repair action put the box back on the local LLM endpoint
   # with nothing in the page saying why. An explicit answer is passed plain, and wins.
   local path="$1"; shift
-  local keep=() ours=() managed=" " existing_keys=" " line
+  local keep=() ours=() overwritten=() managed=" " existing_keys=" " line
   # The read must not silently degrade to a clobber. Usually the file is group-readable by
   # RUN_USER (write_env's own chgrp/chmod 640) — but a first install under plain sudo leaves
   # it root:root, and TEAPORT_USER may differ from whoever runs the repair. The rewrite
@@ -790,6 +790,15 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   for line in "$@"; do
     case "$line" in
       '?'*) line="${line#?}"; case "$existing_keys" in *" ${line%%=*} "*) continue ;; esac ;;
+      *)
+        # A plain key is OURS unconditionally (see the function header) — but if the file
+        # already held a DIFFERENT value for it, that was an operator or config-page
+        # setting, and overwriting it without a word is the "silently reverted my change"
+        # bug reports look like. grep the old value and, if it differs, name the key below.
+        local _k="${line%%=*}" _old
+        _old="$(printf '%s\n' "$existing" | grep -E "^${_k}=" | tail -1)"
+        if [ -n "$_old" ] && [ "$_old" != "$line" ]; then overwritten+=("$_k"); fi
+        ;;
     esac
     ours+=("$line"); managed="$managed${line%%=*} "
   done
@@ -813,11 +822,16 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
       esac
     done
     if [ ${#keep[@]} -gt 0 ]; then printf '    %s=…   (preserved operator setting)\n' "${keep[@]%%=*}"; fi
+    if [ ${#overwritten[@]} -gt 0 ]; then printf '    %s=…   (changing a previously-set value)\n' "${overwritten[@]}"; fi
     return
   fi
   # Name the carried keys: a preserved-but-broken operator setting is invisible otherwise,
   # and "repair ran fine" + a box that still misbehaves points here.
   if [ ${#keep[@]} -gt 0 ]; then log "preserving ${#keep[@]} operator setting(s) in $path: ${keep[*]%%=*}"; fi
+  # Same for a plain (non-seed) key that already held a DIFFERENT value: that value came
+  # from an operator edit or the config page, and changing it out from under them without
+  # saying so is exactly the "repair silently reverted my setting" failure mode.
+  if [ ${#overwritten[@]} -gt 0 ]; then warn "changing ${#overwritten[@]} previously-set value(s) in $path: ${overwritten[*]}"; fi
   { printf '%s\n' "${ours[@]}"
     if [ ${#keep[@]} -gt 0 ]; then printf '%s\n' "${keep[@]}"; fi
   } | SUDO tee "$path" >/dev/null
@@ -925,6 +939,25 @@ phase_services() {
     "${agent[@]}" \
     "TEAPORT_PERSONA_FILE=$SECRETS/persona.md" \
     "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1"
+
+  # TEAPORT_PERSONA_FILE points here, but nothing else ever creates it: without this a
+  # voice-only box (and a gateway box whose workspace has nothing) reads a file that
+  # does not exist, load_persona() silently falls through to the baked-in
+  # FALLBACK_PERSONA, and the box quietly ships the generic assistant instead of the
+  # editable one docs/FAQ.md says it reads. Seed it once with that same text — never
+  # overwrite an existing file, so an operator's persona edit survives every repair.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] write %s if absent (starter persona text)\n' "$SECRETS/persona.md"
+  elif [ ! -f "$SECRETS/persona.md" ]; then
+    printf '%s\n' \
+      "You are a friendly voice assistant that runs on a small local device: a" \
+      "local speech engine hears the user, a language model thinks, and a local" \
+      "voice speaks. You are warm, concise, and genuinely helpful — the same" \
+      "assistant whether the user reaches you by voice or text." \
+      > "$SECRETS/persona.md"
+    chmod 600 "$SECRETS/persona.md"
+    log "starter persona -> $SECRETS/persona.md (edit it any time; a repair never overwrites it)"
+  fi
 
   render_unit teaport-engine.service.in teaport-engine.service
   render_unit teaport-brain.service.in  teaport-brain.service

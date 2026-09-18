@@ -691,7 +691,7 @@ values = ["openclaw", "none"]
 default = "openclaw"
 read = "startup"
 tier = "setup"
-help = "Which agent, if any, is co-resident. `openclaw`: a gateway (host OpenClaw or a NemoClaw sandbox) provides web_search, web_fetch, search_memory, remember, ask_openclaw, memory recall and the workspace persona. `none`: a voice-only box — those tools are not advertised, recall is not run, and the persona comes from TEAPORT_PERSONA_FILE. The installer sets `openclaw` when it finds a gateway and seeds `none` on a first voice-only install; a value already in the file survives a repair."
+help = "Which agent, if any, is co-resident. `openclaw`: a gateway (host OpenClaw or a NemoClaw sandbox) provides web_search, web_fetch, search_memory, remember, ask_openclaw, memory recall and the workspace persona. `none`: a voice-only box — those tools are not advertised, recall is not run, and the persona comes from TEAPORT_PERSONA_FILE. Asymmetric on repair: a detected gateway is positive evidence, so the installer writes `openclaw` unconditionally (installing a gateway later and re-running is all it takes to turn the tools on) — but NOT finding one is not evidence of anything, so the installer only seeds `none` on a first voice-only install and an existing value survives a repair. To disable agent tooling on a box that still has a working gateway, use the config page, not a hand edit of this file — a repair that still finds the gateway overwrites a hand edit here (and now logs that it did)."
 source = "agent_backend.py:32"
 
 [[settings]]
@@ -925,7 +925,7 @@ default = "~/.config/teaport/persona.md"
 read = "startup"
 tier = "installer"
 help = "The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir."
-source = "persona.py:148"
+source = "persona.py:161"
 
 [[settings]]
 name = "OPENCLAW_WORKSPACE"
@@ -936,7 +936,7 @@ default = "~/.openclaw/workspace"
 read = "startup"
 tier = "installer"
 help = "The OpenClaw workspace whose persona files the voice brain shares."
-source = "persona.py:161"
+source = "persona.py:174"
 
 [[settings]]
 name = "TEAPORT_WORKSPACE_FILES"
@@ -947,7 +947,7 @@ default = "SOUL.md,IDENTITY.md,USER.md,MEMORY.md"
 read = "startup"
 tier = "tuning"
 help = "Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design."
-source = "persona.py:165"
+source = "persona.py:178"
 
 [[settings]]
 name = "OPENCLAW_MEMORY_DIR"
@@ -984,7 +984,7 @@ read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
 note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
-source = "sip_server.py:121"
+source = "sip_server.py:122"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -998,7 +998,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:122"
+source = "sip_server.py:123"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1013,7 +1013,7 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:132"
+source = "sip_server.py:133"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1024,7 +1024,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:517"
+source = "sip_server.py:519"
 
 # ---- diagnostics
 
