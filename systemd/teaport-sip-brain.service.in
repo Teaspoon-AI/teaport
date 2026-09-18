@@ -8,8 +8,9 @@
 [Unit]
 Description=teaport SIP brain (voice pipeline over the SIP gateway)
 After=teaport-sip.service teaport-engine.service
-# BindsTo + the gateway's Upholds= on us: stopped with it, started with it, restarted
-# with it — never relaunched on its own under a running gateway (see teaport-sip.service).
+# BindsTo + the gateway's Upholds= and PartOf= on us: stopped with it, started with it,
+# restarted with it — and it with us, including when Restart= below brings us back
+# from a crash. Never relaunched on our own under a running gateway (see teaport-sip.service).
 BindsTo=teaport-sip.service
 ConditionPathExists=@SIP_CONF@
 

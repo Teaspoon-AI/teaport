@@ -19,10 +19,16 @@ ConditionPathExists=@SIP_CONF@
 # Upholds= starts the brain whenever this unit is up and finds it inactive or failed —
 # the same tie the engine unit keeps on teaport-brain. The brain's own BindsTo= on this
 # unit closes the loop the other way (it stops with us), and a `systemctl restart`
-# here propagates to it, so the pair always restarts TOGETHER: the echo canceller
-# references the brain's playout, and a brain relaunched under a running gateway left
-# the canceller eating the caller's speech (STT decoded 0 chars, live 2026-09-03).
+# here propagates to it. PartOf= closes the last gap: a brain that CRASHES is brought
+# back by its Restart= as a restart job, and PartOf= propagates that job to us, so the
+# pair restarts together on that path too (verified with user units: the gateway pid
+# changes on every brain crash with this line, and never without it). It matters
+# because the echo canceller references the brain's playout, and a brain relaunched
+# under a running gateway left the canceller eating the caller's speech (STT decoded
+# 0 chars, live 2026-09-03). Cost: a brain crash between calls re-registers the trunk
+# (~2 s); a brain crash mid-call already lost the call.
 Upholds=teaport-sip-brain.service
+PartOf=teaport-sip-brain.service
 
 [Service]
 Type=simple

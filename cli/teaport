@@ -43,8 +43,10 @@ envval()    { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }   # envval <file>
 # (a hand-written conf uses the spaced form), so read it the same way, or `sip status`
 # shows `?` for a registrar that is plainly there. LAST match, like the parser (config.h
 # overwrites top to bottom): an adopted conf with a duplicated key must show the value
-# the gateway is actually running on, not the one it skipped.
-confval()   { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | sed -E 's/[[:space:]]+$//' | tail -1; }
+# the gateway is actually running on, not the one it skipped. And cut at the first `#`,
+# also like the parser, so `aec = true   # A/B` reads `true` and a `password= # fill in`
+# reads empty (and fails the adopt-time key check) instead of passing as a value.
+confval()   { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | sed -E 's/#.*$//; s/[[:space:]]+$//' | tail -1; }
 
 fetch() {  # fetch <url-or-path> <dest>
   case "$1" in
@@ -428,7 +430,14 @@ sip_adopt_conf() {
     || die "SIP registration failed — nothing installed, units left disabled. Fix $src and retry."
 
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS" 2>/dev/null || true
-  ( umask 077; cat "$src" > "$SIP_CONF" )
+  # Through a temp file (mktemp is 0600): `cat "$src" > "$SIP_CONF"` truncates the target
+  # before reading it, and "re-test the conf I just edited in place" — `--conf` pointed at
+  # $SIP_CONF itself, or a symlink to it — is a natural thing to run. It passed the probe
+  # (that copies to a temp) and then installed an empty conf with no credentials.
+  local staged; staged="$(mktemp)"
+  cat "$src" > "$staged"
+  ( umask 077; cat "$staged" > "$SIP_CONF" )
+  rm -f "$staged"
   chmod 600 "$SIP_CONF"
   sip_conf_set "$SIP_CONF" sip_port 5060
   sip_conf_set "$SIP_CONF" uds_path "$SIP_UDS"
@@ -444,6 +453,9 @@ sip_adopt_conf() {
 sip_restart() {
   [ -f "$SIP_CONF" ] || die "no $SIP_CONF — telephony is not configured (teaport sip configure)"
   installed teaport-sip || die "SIP units not installed — re-run install.sh"
+  # `systemctl restart` STARTS a stopped unit, so on a line turned off with `sip disable`
+  # this would bring it back — while status/doctor, keyed on enabled, still called it off.
+  sip_enabled || die "telephony is off (teaport sip disable) — turn it on with: teaport sip configure"
   echo "restarting teaport-sip + teaport-sip-brain together..."
   SUDO systemctl restart teaport-sip.service teaport-sip-brain.service
   sip_wait_registered 20 || true
@@ -454,6 +466,7 @@ sip_restart() {
 sip_aec() {
   [ -f "$SIP_CONF" ] || die "no $SIP_CONF — telephony is not configured (teaport sip configure)"
   local cur val; cur="$(confval "$SIP_CONF" aec)"
+  case "${1:-}" in on|true|1|off|false|0) sip_enabled || die "telephony is off (teaport sip disable) — turn it on with: teaport sip configure" ;; esac
   case "${1:-}" in
     "")          printf 'aec=%s  aec_tail_ms=%s  (%s)\n' "${cur:-unset}" "$(confval "$SIP_CONF" aec_tail_ms)" "$SIP_CONF"; return 0 ;;
     on|true|1)   val=true ;;
