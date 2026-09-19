@@ -510,6 +510,152 @@ async def test_the_recovery_line_is_allowed_a_new_frame():
     assert forwarded[0].id != sent.id, "recovery text is new; it needs its own frame"
 
 
+# ------------------------------------------- a reply that is only punctuation (#16)
+
+async def test_a_punctuation_only_reply_still_ends_the_turn_audibly():
+    """Live 2026-09-04, three times: the whole reply was '...' or a lone U+2026.
+
+    One marker never trips the counter, the leading-punct strip empties it, and the
+    turn ended in dead air with nothing but the 12 s silent-turn bark — which only
+    logs. The strip is right (an ellipsis has no sound); the silence with no signal
+    is not. The End must speak the recovery line, exactly once, on its own frame."""
+    for reply in (["..."], ["…"], [".", ".", "."], ["…", " "], ["**"]):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for delta in reply:
+            await h.text(delta)
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == RECOVERY_TEXT.lstrip(), (reply, h.spoken())
+        assert split_clauses_ramp(h.spoken()), "recovery line must be synthesizable"
+        assert h.kinds()[-1] == "LLMFullResponseEndFrame", h.kinds()
+        # The line is charted as the assistant's own words, so it takes a fresh frame.
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        assert len(forwarded) == 1
+
+
+async def test_a_reply_with_no_text_at_all_stays_silent():
+    """Start/End with no deltas is a tool-call turn (or #15's empty completion): the
+    guard saw nothing it could have thrown away, so it has nothing to apologise for.
+    Speaking here would talk over every function call. Blank deltas are the same
+    nothing: a newline in front of a tool call is not a reply."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == ""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("\n\n")
+    await h.text(" ")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == ""
+
+
+async def test_punctuation_beside_a_tool_call_is_not_a_vanished_reply():
+    """The tool call IS the answer; base_llm broadcasts FunctionCallsStartedFrame
+    before the End it pushes right after scheduling the handlers. A recovery line here
+    would be spoken over the call and then contradicted by the real reply."""
+    from pipecat.frames.frames import FunctionCallsStartedFrame
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("...")
+    await h.feed(FunctionCallsStartedFrame(function_calls=[]))
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == ""
+    # The completion that follows the tool result is a fresh response.
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("…")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == RECOVERY_TEXT.lstrip(), (h.spoken(), h.kinds())
+
+
+async def test_punctuation_beside_a_cancel_only_call_is_not_a_vanished_reply():
+    """The gap FunctionCallsStartedFrame leaves open: base_llm never broadcasts it for
+    a completion whose ONLY call is the built-in cancel_<tool> (run_function_calls
+    filters it out of user_visible_calls). BoundedOpenAILLMService.run_function_calls
+    broadcasts FunctionCallsDispatchedFrame for every call instead, cancel included —
+    see services.py — and the guard must treat it exactly like a visible tool call."""
+    from teaport_brain.services import FunctionCallsDispatchedFrame
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("...")
+    await h.feed(FunctionCallsDispatchedFrame(function_calls=[]))
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == ""
+    # The completion that follows is judged on its own.
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("…")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == RECOVERY_TEXT.lstrip(), (h.spoken(), h.kinds())
+
+
+async def test_a_barged_punctuation_reply_speaks_nothing():
+    """base_llm pushes an End after a cancelled completion. If the user barged in on a
+    reply that had produced only '...' so far, that End must not answer the barge-in
+    with an apology — the stale-speech class engine_tts documents."""
+    from pipecat.frames.frames import InterruptionFrame
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("...")
+    await h.feed(InterruptionFrame())
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == ""
+    # A held, unpunctuated sentence the barge-in discarded is the same case: received
+    # text, nothing forwarded, nothing to say.
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("Sure, the capital of Peru")
+    await h.feed(InterruptionFrame())
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == ""
+    # And the next response is judged on its own.
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("…")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == RECOVERY_TEXT.lstrip(), (h.spoken(), h.kinds())
+
+
+async def test_a_premature_end_recovery_latches_against_the_real_answer():
+    """The unspeakable-reply End check is subject to the same premature-watchdog
+    reality as the degeneracy trip (test_premature_end_does_not_speak_a_second_
+    recovery_line): the End that follows a lone ellipsis can be engine_tts's
+    watchdog closing a stalled TTS context, not the completion actually finishing.
+    If the check does not latch _tripped, the real answer that resumes in the next
+    segment gets forwarded straight onto the apology it never needed."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text(ELL)                                  # the whole (apparent) reply
+    await h.feed(LLMFullResponseEndFrame())             # premature: watchdog-forced
+    await h.text("The capital of Peru is Lima.")        # same completion, resumes
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == RECOVERY_TEXT.lstrip(), h.spoken()
+    assert "Lima" not in h.spoken(), (
+        "a real answer arriving after a false recovery must be swallowed, "
+        "not glued onto the apology"
+    )
+
+
+async def test_a_reply_that_forwarded_anything_gets_no_recovery_line():
+    """The line is for a reply that vanished, not for one that merely opened with dots
+    (test_a_reply_opening_with_an_ellipsis_loses_no_words) or ended in them."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("Lima")
+    await h.text("...")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == "Lima..."
+    assert RECOVERY_TEXT.strip() not in h.spoken()
+
+
+async def test_a_trip_with_nothing_forwarded_speaks_exactly_one_line():
+    """The trip path already speaks the recovery line when it swallowed everything;
+    the End check must not add a second one on top of it."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text(f"{ELL}{ELL}{ELL}{ELL}{ELL}{ELL}")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken().count(RECOVERY_TEXT.strip()) == 1, h.spoken()
+
+
 def test_the_fold_matches_what_the_engine_rewrites():
     """Fold exactly the characters the engine rewrites in its word timestamps.
 

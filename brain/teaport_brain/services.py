@@ -14,11 +14,14 @@ import asyncio
 import logging
 import os
 import time
+from dataclasses import dataclass
+from typing import Sequence
 
 import httpx
 from loguru import logger
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
+from pipecat.frames.frames import FunctionCallFromLLM, SystemFrame
 from pipecat.services.openai.llm import OpenAILLMService
 
 from teaport_brain.env import env_json, env_num
@@ -348,6 +351,30 @@ class _RenumberedStream:
 _CONNECT_SECS = 5.0
 
 
+@dataclass
+class FunctionCallsDispatchedFrame(SystemFrame):
+    """Broadcast for EVERY function call a completion makes, before any of them runs.
+
+    pipecat's own FunctionCallsStartedFrame — which llm_text_guard listens for to know
+    a tool call is the reply — deliberately excludes the built-in cancel_<tool> call
+    from its broadcast (run_function_calls filters it out of user_visible_calls, since
+    it is an internal mechanism, not a user-facing one). A completion whose ONLY call
+    is a silent cancel therefore never sets that flag, and if it also streamed some
+    leading punctuation, the guard mistakes the cancel for a vanished reply and speaks
+    an apology over it. See BoundedOpenAILLMService.run_function_calls.
+
+    Not a fix applied at the guard: FunctionCallInProgressFrame — broadcast for every
+    call including the cancel tool — arrives too late to help, since base_llm schedules
+    each call with create_task() and never awaits it before its own `finally` pushes
+    LLMFullResponseEndFrame; verified that such a task gets no turn to run until the
+    synchronous push_frame chain from that `finally` already suspends, which it doesn't
+    by the time it reaches the guard. This frame closes the gap instead, by broadcasting
+    synchronously — awaited in full — before any call, visible or not, is scheduled.
+    """
+
+    function_calls: Sequence[FunctionCallFromLLM]
+
+
 class BoundedOpenAILLMService(OpenAILLMService):
     """OpenAILLMService whose timeout actually reaches the socket.
 
@@ -404,6 +431,22 @@ class BoundedOpenAILLMService(OpenAILLMService):
             # that never dispatched (this line, then no "Calling function"). One line
             # splits all three.
             logger.info(f"{self}: completion finished in {time.monotonic() - started:.1f}s")
+
+    async def run_function_calls(self, function_calls):
+        """Broadcast FunctionCallsDispatchedFrame for every call, then dispatch as usual.
+
+        See the frame's docstring for why: base_llm's own FunctionCallsStartedFrame
+        excludes the cancel_<tool> call, so a cancel-only completion never tells
+        llm_text_guard a call happened. This broadcasts BEFORE calling super(), so it
+        reaches the guard well ahead of the LLMFullResponseEndFrame _process_context's
+        `finally` pushes right after this method returns — unlike FunctionCallInProgressFrame,
+        which base_llm broadcasts from inside a task it schedules and never awaits.
+        """
+        if function_calls:
+            await self.broadcast_frame(
+                FunctionCallsDispatchedFrame, function_calls=function_calls
+            )
+        await super().run_function_calls(function_calls)
 
     # A speculate.Speculator when TEAPORT_SPECULATIVE_REPLY is on (agent_session sets it);
     # None otherwise, and get_chat_completions is then exactly _open_stream.

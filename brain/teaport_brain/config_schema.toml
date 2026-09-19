@@ -131,7 +131,7 @@ read = "session"
 tier = "setup"
 help = "Your OpenAI-compatible endpoint: https://api.groq.com/openai/v1, https://api.cerebras.ai/v1, https://openrouter.ai/api/v1, or http://127.0.0.1:8182/v1 for a local server."
 note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_BASE_URL)."
-source = "services.py:461"
+source = "services.py:504"
 
 [[settings]]
 name = "LLM_API_KEY"
@@ -143,7 +143,7 @@ read = "session"
 tier = "setup"
 help = "The key for that endpoint. A local server that ignores auth still needs a placeholder such as sk-local."
 note = "Prefer the file; the env var, if set, wins over it."
-source = "services.py:62"
+source = "services.py:65"
 
 [[settings]]
 name = "LLM_MODEL"
@@ -155,7 +155,7 @@ read = "session"
 tier = "setup"
 help = "The served model name."
 note = "A value set here survives a re-run of install.sh unless that run is given one explicitly (the prompt, or TEAPORT_LLM_MODEL)."
-source = "services.py:472"
+source = "services.py:515"
 
 [[settings]]
 name = "LLM_REASONING_EFFORT"
@@ -168,7 +168,7 @@ read = "session"
 tier = "setup"
 help = "Reasoning effort for models that support it. Set \"\" to disable for models that do not."
 note = "low cuts gpt-oss's hidden chain-of-thought ~10x before the first spoken token. Also sets the LLM_MAX_TOKENS default."
-source = "services.py:40"
+source = "services.py:43"
 
 [[settings]]
 name = "LLM_MAX_TOKENS"
@@ -181,7 +181,7 @@ default_by = { LLM_REASONING_EFFORT = { low = 1024, medium = 3072, high = 8192, 
 read = "session"
 tier = "tuning"
 help = "Completion cap. A credit-metered gateway reserves against the model's ceiling and refuses the request when the balance cannot cover it, however short the answer. Reasoning tokens bill as completion tokens. 0 = no cap, correct for a local or un-metered endpoint."
-source = "services.py:132"
+source = "services.py:135"
 
 [[settings]]
 name = "LLM_TIMEOUT_SECS"
@@ -195,7 +195,7 @@ read = "session"
 tier = "tuning"
 help = "How long one completion attempt may take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this. Raise it for a slow local llama.cpp box."
 note = "Without it the OpenAI SDK waits 600 s with no error, no log line and no audio."
-source = "services.py:176"
+source = "services.py:179"
 
 [[settings]]
 name = "LLM_EXTRA_BODY"
@@ -205,7 +205,7 @@ type = "json"
 read = "session"
 tier = "tuning"
 help = "Optional JSON object merged into the request extra_body. OpenRouter routing example: {\"provider\":{\"order\":[\"Groq\"],\"allow_fallbacks\":true}}."
-source = "services.py:52"
+source = "services.py:55"
 
 [[settings]]
 name = "TEAPORT_LLM_TEXT_GUARD"
@@ -216,7 +216,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse."
-source = "llm_text_guard.py:105"
+source = "llm_text_guard.py:123"
 
 [[settings]]
 name = "TEAPORT_LLM_GUARD_RECOVERY"
@@ -227,7 +227,7 @@ default = ""
 read = "session"
 tier = "tuning"
 help = "The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment."
-source = "llm_text_guard.py:247"
+source = "llm_text_guard.py:265"
 
 [[settings]]
 name = "TEAPORT_LLM_ERROR_SPEECH"
@@ -276,7 +276,7 @@ read = "startup"
 tier = "installer"
 help = "The engine realtime speech-to-text WebSocket. The installer derives it from ENGINE_PORT."
 note = "A wrong value is the bot saying \"speech recognition isn't available\"."
-source = "services.py:27"
+source = "services.py:30"
 
 [[settings]]
 name = "ENGINE_TTS_URL"
@@ -309,7 +309,7 @@ default = "af_heart"
 read = "session"
 tier = "setup"
 help = "Kokoro voice id. A per-session choice from OpenClaw wins over this."
-source = "services.py:504"
+source = "services.py:547"
 
 [[settings]]
 name = "TTS_LANGUAGE"
@@ -319,7 +319,7 @@ type = "string"
 read = "session"
 tier = "setup"
 help = "Kokoro language. A per-session choice from OpenClaw wins over this; unset = the engine default."
-source = "services.py:505"
+source = "services.py:548"
 
 [[settings]]
 name = "TTS_REMOTE_TIMEOUT"
@@ -383,7 +383,7 @@ default = ""
 read = "session"
 tier = "diag"
 help = "Experimental: streaming points the STT service at vLLM serving Voxtral Realtime. The incumbent engine is the default."
-source = "services.py:521"
+source = "services.py:564"
 
 [[settings]]
 name = "TEAPORT_STT_URL"
@@ -394,7 +394,7 @@ default = "ws://127.0.0.1:8100/v1/realtime"
 read = "session"
 tier = "diag"
 help = "Only with TEAPORT_STT_BACKEND=streaming."
-source = "services.py:524"
+source = "services.py:567"
 
 [[settings]]
 name = "TEAPORT_STT_MODEL"
@@ -405,7 +405,7 @@ default = "voxtral-realtime"
 read = "session"
 tier = "diag"
 help = "Only with TEAPORT_STT_BACKEND=streaming."
-source = "services.py:525"
+source = "services.py:568"
 
 [[settings]]
 name = "TEAPORT_STREAM_TAIL_SECS"
