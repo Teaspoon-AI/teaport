@@ -40,6 +40,7 @@ import base64
 import json
 import os
 import time
+from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
 import numpy as np
@@ -64,7 +65,7 @@ from pipecat.services.stt_service import WebsocketSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
-from teaport_brain.endpointing import SMARTTURN_STOP_SECS, TurnVerdictFrame
+from teaport_brain.endpointing import SMARTTURN_STOP_SECS, SegmentDoneFrame, TurnVerdictFrame
 from teaport_brain.env import env_num
 
 # P99 latency from speech end to final transcript (broadcast to downstream turn
@@ -296,8 +297,10 @@ def _is_slot_busy(exc: Exception) -> bool:
     return isinstance(status, int)
 
 
+@dataclass
 class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
-    """A final transcript that an interruption cannot flush.
+    """A final transcript that an interruption cannot flush, stamped with the time of
+    the commit it answers.
 
     TranscriptionFrame is a plain data frame. On InterruptionFrame every processor
     flushes its queued data frames (FrameProcessor._start_interruption ->
@@ -317,7 +320,18 @@ class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
     FrameQueue.reset() keeps such frames, and a task processing one is not
     cancelled (same pattern as pipecat's own FunctionCallResultFrame). Interims
     stay interruptible on purpose — they are disposable hypotheses.
+
+    `committed_at` is the monotonic time the commit this final answers was sent (the
+    done's own arrival when the engine closed the segment unasked). The stop strategy
+    reads it against the caller's latest VAD start: a final committed BEFORE that
+    start is an earlier utterance's, landing late -- the engine's finish takes ~0.7 s,
+    and a caller who speaks in bursts starts the next utterance inside it -- and must
+    not be taken as the transcript of the utterance now under way, or the turn ends
+    on it and the real final then cuts the reply at 0%. See
+    endpointing.LateStartTurnStopStrategy, and SegmentDoneFrame beside it.
     """
+
+    committed_at: Optional[float] = None
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -1080,6 +1094,11 @@ class TeaportSTTService(WebsocketSTTService):
             # flight is the engine closing the segment on its own (its endpointer, or
             # its ~15 s buffer), not the answer to one we sent.
             unasked = self._commit_at is None
+            # The stamp the final and the SegmentDoneFrame below carry (see
+            # FinalTranscriptionFrame): when the segment was committed, or, unasked,
+            # when the engine closed it -- either way, the moment after which the
+            # caller's words are no longer in it.
+            committed_at = time.monotonic() if unasked else self._commit_at
             self._log_segment(msg)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
@@ -1136,8 +1155,15 @@ class TeaportSTTService(WebsocketSTTService):
                         self._language,
                         result=msg,
                         finalized=True,
+                        committed_at=committed_at,
                     )
                 )
+            # Words or none, the segment closed: the stop strategy holds an earlier
+            # utterance's late final back from ending the turn (endpointing.py), and
+            # this is how it learns the current utterance's own segment came to
+            # nothing, so the earlier final is the turn's transcript after all.
+            # Behind the final, never ahead of it -- a data frame, so it queues.
+            await self.push_frame(SegmentDoneFrame(committed_at=committed_at))
             await self.stop_processing_metrics()
 
         elif mtype == "session.created":
