@@ -112,6 +112,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.env import env_flag
+from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.tts_text import (
     MIN_DOT_RUN,
     MIN_REPEAT_CHARS,
@@ -621,11 +622,20 @@ class LLMTextGuard(FrameProcessor):
             # ...and so is a recovery line for it: the End that follows a cancelled
             # completion must not speak into the user's turn either.
             self._answered_otherwise = True
-        elif isinstance(frame, FunctionCallsStartedFrame):
-            # The tool call is the answer. base_llm broadcasts this before the End it
-            # pushes right after scheduling the handlers (see raw_llm_capture), so it
-            # is in hand when the End decides. Whatever punctuation rode along with
-            # the call is not a reply that vanished.
+        elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallsDispatchedFrame)):
+            # The tool call is the answer. FunctionCallsStartedFrame: base_llm broadcasts
+            # it before the End it pushes right after scheduling the handlers (see
+            # raw_llm_capture), so it is in hand when the End decides. Whatever
+            # punctuation rode along with the call is not a reply that vanished.
+            #
+            # FunctionCallsDispatchedFrame: base_llm's own frame above excludes the
+            # built-in cancel_<tool> call (run_function_calls filters it out of
+            # user_visible_calls, since it is not user-facing) — so a completion whose
+            # ONLY call is a silent cancel never broadcasts it. BoundedOpenAILLMService
+            # broadcasts this one for every call, cancel included, before scheduling
+            # any of them — see its run_function_calls override and the frame's own
+            # docstring for why FunctionCallInProgressFrame could not be used instead
+            # (it arrives too late, from a task base_llm schedules but never awaits).
             self._answered_otherwise = True
         elif isinstance(frame, LLMFullResponseEndFrame):
             if not self._tripped:

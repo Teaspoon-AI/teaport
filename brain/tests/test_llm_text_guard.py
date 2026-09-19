@@ -568,6 +568,26 @@ async def test_punctuation_beside_a_tool_call_is_not_a_vanished_reply():
     assert h.spoken() == RECOVERY_TEXT.lstrip(), (h.spoken(), h.kinds())
 
 
+async def test_punctuation_beside_a_cancel_only_call_is_not_a_vanished_reply():
+    """The gap FunctionCallsStartedFrame leaves open: base_llm never broadcasts it for
+    a completion whose ONLY call is the built-in cancel_<tool> (run_function_calls
+    filters it out of user_visible_calls). BoundedOpenAILLMService.run_function_calls
+    broadcasts FunctionCallsDispatchedFrame for every call instead, cancel included —
+    see services.py — and the guard must treat it exactly like a visible tool call."""
+    from teaport_brain.services import FunctionCallsDispatchedFrame
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("...")
+    await h.feed(FunctionCallsDispatchedFrame(function_calls=[]))
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == ""
+    # The completion that follows is judged on its own.
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text("…")
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == RECOVERY_TEXT.lstrip(), (h.spoken(), h.kinds())
+
+
 async def test_a_barged_punctuation_reply_speaks_nothing():
     """base_llm pushes an End after a cancelled completion. If the user barged in on a
     reply that had produced only '...' so far, that End must not answer the barge-in
