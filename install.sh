@@ -795,8 +795,12 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
         # already held a DIFFERENT value for it, that was an operator or config-page
         # setting, and overwriting it without a word is the "silently reverted my change"
         # bug reports look like. grep the old value and, if it differs, name the key below.
+        # `|| true`: under `set -o pipefail` a key the file does not hold makes grep exit 1,
+        # and `set -e` then kills the script inside this assignment with no message at all
+        # — which is every key on a FIRST install (the file is empty), so the installer
+        # died at "systemd units + env files" on any fresh box (and in CI's dry-run).
         local _k="${line%%=*}" _old
-        _old="$(printf '%s\n' "$existing" | grep -E "^${_k}=" | tail -1)"
+        _old="$(printf '%s\n' "$existing" | grep -E "^${_k}=" | tail -1 || true)"
         if [ -n "$_old" ] && [ "$_old" != "$line" ]; then overwritten+=("$_k"); fi
         ;;
     esac
