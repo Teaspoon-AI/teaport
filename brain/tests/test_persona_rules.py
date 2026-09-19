@@ -71,6 +71,14 @@ def test_the_overlay_still_follows_the_persona():
     assert prompt.endswith(VOICE_OVERLAY)
 
 
+def test_the_default_mode_names_the_gateway_tools():
+    # TEAPORT_AGENT is unset here, which is `openclaw`: the tools paragraph names the
+    # gateway tools and how to use them. test_agent_none.py covers the other mode.
+    prompt = build_system_prompt("IDENTITY LINE")
+    for name in ("web_search", "web_fetch", "search_memory", "ask_openclaw"):
+        assert name in prompt, f"the gateway overlay no longer names {name}"
+
+
 def main():
     for k, v in sorted(globals().items()):
         if k.startswith("test_") and callable(v):

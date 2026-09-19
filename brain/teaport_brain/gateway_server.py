@@ -44,7 +44,7 @@ from teaport_brain.agent_session import (
     build_agent_session,
     slot_active,
 )
-from teaport_brain import config_ui
+from teaport_brain import agent_backend, config_ui
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
@@ -170,6 +170,7 @@ def main():
             "the live call. Set GATEWAY_TOKEN (server) + TEAPORT_GATEWAY_TOKEN "
             "(plugin) except on a trusted network."
         )
+    logger.info(agent_backend.startup_line())
     logger.info("Priming TTS service...")
     make_tts()  # warm the engine TTS client once at startup (G2P/synthesis are engine-side)
     logger.info(f"teaport OpenClaw relay server on ws://{args.host}:{args.port}/talk")

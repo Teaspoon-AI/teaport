@@ -57,6 +57,7 @@ from teaport_brain.endpointing import (
 from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard
+from teaport_brain import agent_backend
 from teaport_brain import raw_llm_capture
 from teaport_brain import speculate
 from teaport_brain import thinking_sound
@@ -769,7 +770,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # see the turn begin, and only one of the three may arm it.
         TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
         UserTranscriptEmitter(activity),
-        MemoryRecall(context),  # fire memory_search on interim, inject before the LLM
+        # fire memory_search on interim, inject before the LLM. Only with a gateway:
+        # without one every search returns None after its full timeout, for nothing.
+        MemoryRecall(context) if agent_backend.HAS_AGENT else None,
         context_aggregator.user(),
         heard_corrector,
         # A failed completion must be HEARD, not just logged (see the module). ABOVE the

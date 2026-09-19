@@ -112,10 +112,11 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 
 ## Agent consult and follow-ups
 
-In `/etc/teaport/brain.env`.
+In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; every other row here applies only when it does.
 
 | Setting | Default | Description |
 |---|---|---|
+| `TEAPORT_AGENT` | `openclaw` | Which agent, if any, is co-resident. `openclaw`: a gateway (host OpenClaw or a NemoClaw sandbox) provides web_search, web_fetch, search_memory, remember, ask_openclaw, memory recall and the workspace persona. `none`: a voice-only box — those tools are not advertised, recall is not run, and the persona comes from TEAPORT_PERSONA_FILE. Asymmetric on repair: a detected gateway is positive evidence, so the installer writes `openclaw` unconditionally (installing a gateway later and re-running is all it takes to turn the tools on) — but NOT finding one is not evidence of anything, so the installer only seeds `none` on a first voice-only install and an existing value survives a repair. To disable agent tooling on a box that still has a working gateway, use the config page, not a hand edit of this file — a repair that still finds the gateway overwrites a hand edit here (and now logs that it did). One of `openclaw`, `none`. |
 | `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789` | The co-resident gateway for shared persona and memory recall. The installer sets it from the gateway port. *Set by the installer.* |
 | `OPENCLAW_GATEWAY_TOKEN` | file `~/.config/teaport/openclaw_token` | Bearer token for that gateway. Prefer the file; the env var, if set, wins over it. |
 | `OPENCLAW_AGENT_ID` | `main` | The agent consulted. |
@@ -134,7 +135,7 @@ In `/etc/teaport/brain.env`.
 | `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Silence before the bed starts. |
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the synthesized peak. |
 | `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Hard cap on the bed. Keep it above TEAPORT_ASK_OPENCLAW_TIMEOUT. |
-| `TEAPORT_PERSONA_FILE` | `~/.config/teaport/persona.md` | Fallback persona when the gateway's is not reachable. The installer points it at the secrets dir. *Set by the installer.* |
+| `TEAPORT_PERSONA_FILE` | `~/.config/teaport/persona.md` | The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir. *Set by the installer.* |
 | `OPENCLAW_WORKSPACE` | `~/.openclaw/workspace` | The OpenClaw workspace whose persona files the voice brain shares. *Set by the installer.* |
 | `TEAPORT_WORKSPACE_FILES` | `SOUL.md,IDENTITY.md,USER.md,MEMORY.md` | Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design. |
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |

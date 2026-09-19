@@ -87,6 +87,7 @@ blurb = "Each is explained at length where it is read, in endpointing.py."
 [[groups]]
 id = "agent"
 title = "Agent consult and follow-ups"
+blurb = "TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; every other row here applies only when it does."
 
 [[groups]]
 id = "sip_brain"
@@ -682,6 +683,18 @@ source = "turn_timing.py:35"
 # ---- agent consult
 
 [[settings]]
+name = "TEAPORT_AGENT"
+store = "brain_env"
+group = "agent"
+type = "enum"
+values = ["openclaw", "none"]
+default = "openclaw"
+read = "startup"
+tier = "setup"
+help = "Which agent, if any, is co-resident. `openclaw`: a gateway (host OpenClaw or a NemoClaw sandbox) provides web_search, web_fetch, search_memory, remember, ask_openclaw, memory recall and the workspace persona. `none`: a voice-only box — those tools are not advertised, recall is not run, and the persona comes from TEAPORT_PERSONA_FILE. Asymmetric on repair: a detected gateway is positive evidence, so the installer writes `openclaw` unconditionally (installing a gateway later and re-running is all it takes to turn the tools on) — but NOT finding one is not evidence of anything, so the installer only seeds `none` on a first voice-only install and an existing value survives a repair. To disable agent tooling on a box that still has a working gateway, use the config page, not a hand edit of this file — a repair that still finds the gateway overwrites a hand edit here (and now logs that it did)."
+source = "agent_backend.py:32"
+
+[[settings]]
 name = "OPENCLAW_GATEWAY_URL"
 store = "brain_env"
 group = "agent"
@@ -734,7 +747,7 @@ default = false
 read = "startup"
 tier = "setup"
 help = "Agent-first routing: install the strict router directive and drop the \"I'll work on that\" ack."
-source = "tools.py:45"
+source = "tools.py:49"
 
 [[settings]]
 name = "TEAPORT_RECALL_TIMEOUT"
@@ -773,7 +786,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
-source = "tools.py:308"
+source = "tools.py:318"
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"
@@ -786,7 +799,7 @@ default = 45
 read = "startup"
 tier = "tuning"
 help = "How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves."
-source = "tools.py:303"
+source = "tools.py:313"
 
 [[settings]]
 name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
@@ -799,7 +812,7 @@ default = 55
 read = "startup"
 tier = "tuning"
 help = "The function-call timeout for ask_openclaw. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
-source = "tools.py:313"
+source = "tools.py:323"
 
 [[settings]]
 name = "TEAPORT_ASYNC_CONSULT_TIMEOUT"
@@ -812,7 +825,7 @@ default = 180
 read = "startup"
 tier = "tuning"
 help = "Async consult ceiling. The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or an honest \"couldn't get it\" past this."
-source = "tools.py:317"
+source = "tools.py:327"
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"
@@ -851,7 +864,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:238"
+source = "agent_session.py:239"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -911,8 +924,8 @@ type = "path"
 default = "~/.config/teaport/persona.md"
 read = "startup"
 tier = "installer"
-help = "Fallback persona when the gateway's is not reachable. The installer points it at the secrets dir."
-source = "persona.py:107"
+help = "The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir."
+source = "persona.py:161"
 
 [[settings]]
 name = "OPENCLAW_WORKSPACE"
@@ -923,7 +936,7 @@ default = "~/.openclaw/workspace"
 read = "startup"
 tier = "installer"
 help = "The OpenClaw workspace whose persona files the voice brain shares."
-source = "persona.py:120"
+source = "persona.py:174"
 
 [[settings]]
 name = "TEAPORT_WORKSPACE_FILES"
@@ -934,7 +947,7 @@ default = "SOUL.md,IDENTITY.md,USER.md,MEMORY.md"
 read = "startup"
 tier = "tuning"
 help = "Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design."
-source = "persona.py:124"
+source = "persona.py:178"
 
 [[settings]]
 name = "OPENCLAW_MEMORY_DIR"
@@ -971,7 +984,7 @@ read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
 note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
-source = "sip_server.py:121"
+source = "sip_server.py:122"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -985,7 +998,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:122"
+source = "sip_server.py:123"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1000,7 +1013,7 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:132"
+source = "sip_server.py:133"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1011,7 +1024,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:517"
+source = "sip_server.py:519"
 
 # ---- diagnostics
 
@@ -1108,7 +1121,7 @@ default = "~/teaport-engine.log"
 read = "startup"
 tier = "installer"
 help = "The engine's serve log, where the tools read decode ms/step."
-source = "tools.py:48"
+source = "tools.py:58"
 
 # ---- installer-owned
 

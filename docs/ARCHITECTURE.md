@@ -12,8 +12,12 @@ One appliance, three parts:
   connects your speech, your LLM, and the spoken reply. It owns barge-in, the
   heard-grounding ledger, memory recall, tools, and the persona. It sends
   plain text to the engine. It receives audio and per-word timestamps back.
-- **Plugin** (`plugin/`) — the OpenClaw realtime-voice provider. It connects a
-  NemoClaw agent to the brain's `/talk` WebSocket.
+- **Plugin** (`plugin/`, optional) — the OpenClaw realtime-voice provider,
+  when a gateway is co-resident. It connects a NemoClaw or host OpenClaw agent
+  to the brain's `/talk` WebSocket, and the gateway gives the brain its web
+  search, memory and consult tools. A box without one (`TEAPORT_AGENT=none`,
+  the installer's voice-only path) runs the brain with its local tools alone,
+  fronted by the SIP or Discord bridge instead.
 
 Your voice does not leave the device. The LLM runs where you point it.
 

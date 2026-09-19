@@ -46,6 +46,15 @@ def test_the_advertised_voices_are_exactly_the_accepted_ones():
     )
 
 
+def test_the_default_mode_advertises_the_gateway_tools():
+    # TEAPORT_AGENT unset is `openclaw`; a box that never sets it must be unchanged.
+    # test_agent_none.py pins the other mode.
+    names = {t.name for t in build_tools_schema().standard_tools}
+    assert names == {"get_host_status", "get_current_time", "web_search", "web_fetch",
+                     "search_memory", "remember", "ask_openclaw", "list_voices",
+                     "switch_voice"}, f"advertised {sorted(names)}"
+
+
 def test_the_examples_in_the_description_are_real_ids():
     """The description names af_nova and am_liam; if they are renamed it must follow."""
     description = _voice_param()["description"]
