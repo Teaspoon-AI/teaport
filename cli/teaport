@@ -86,6 +86,7 @@ cmd_doctor() {
   [ -x "$PREFIX/bin/voxtral" ] && ok "engine binary" || failc "engine binary missing ($PREFIX/bin/voxtral)"
   [ -f "$PREFIX/models/voxtral/consolidated.safetensors" ] && ok "STT model" || failc "STT model missing ($PREFIX/models/voxtral)"
   [ -f "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf" ] && ok "Kokoro TTS model" || failc "Kokoro model missing ($PREFIX/models/kokoro)"
+  [ -f "$PREFIX/THIRD_PARTY_NOTICES.txt" ] && ok "engine third-party notices" || failc "engine third-party notices missing ($PREFIX/THIRD_PARTY_NOTICES.txt — re-run install.sh)"
   [ -x "$PREFIX/venv/bin/teaport-brain" ] && ok "brain (teaport-brain)" || failc "brain not installed in $PREFIX/venv"
   have espeak-ng && ok "espeak-ng (engine G2P dep)" || failc "espeak-ng missing — apt install espeak-ng"
   local fpt; fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"

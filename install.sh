@@ -272,6 +272,21 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
   else
     download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.dict" "$g2p_sha"
   fi
+  # THIRD_PARTY_NOTICES.txt — the MIT/BSD/Apache-2.0 attributions (misaki, Marlin, Voxtral,
+  # Kokoro, civetweb, fvad, ggml, …) for the engine binary and the dict above, per the engine
+  # repo's own check-third-party gate. Three docs (this repo's THIRD_PARTY_LICENSES.md, this
+  # manifest's g2p_dict._note, teagram-engine's README) all say this file "ships with the
+  # engine download" — nothing downloaded it until now (#50). Fail-fast like the dict: a box
+  # installed without it is out of compliance with every license it names, silently.
+  local notices_url notices_sha
+  notices_url="$(mget engine.notices.url 2>/dev/null)" || notices_url=""
+  notices_sha="$(mget engine.notices.sha256 2>/dev/null)" || notices_sha=""
+  if [ -z "$notices_url" ] || [ -z "$notices_sha" ]; then
+    local notices_msg="manifest has no engine.notices (url+sha256) — a box installed without THIRD_PARTY_NOTICES.txt has no attribution text for its third-party components; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$notices_msg"; else die "$notices_msg"; fi
+  else
+    download "$notices_url" "$PREFIX/THIRD_PARTY_NOTICES.txt" "$notices_sha"
+  fi
   download "$(mget models.voxtral.url)"            "$PREFIX/models/voxtral/consolidated.safetensors" "$(mget models.voxtral.sha256)"
   download "$(mget models.kokoro.url)"             "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf"     "$(mget models.kokoro.sha256)"
   # tekken.json / params.json ride alongside the voxtral model (manifest models.voxtral.aux.*).
