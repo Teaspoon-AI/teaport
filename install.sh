@@ -764,7 +764,7 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # Without it the documented repair action put the box back on the local LLM endpoint
   # with nothing in the page saying why. An explicit answer is passed plain, and wins.
   local path="$1"; shift
-  local keep=() ours=() managed=" " existing_keys=" " line
+  local keep=() ours=() overwritten=() managed=" " existing_keys=" " line
   # The read must not silently degrade to a clobber. Usually the file is group-readable by
   # RUN_USER (write_env's own chgrp/chmod 640) — but a first install under plain sudo leaves
   # it root:root, and TEAPORT_USER may differ from whoever runs the repair. The rewrite
@@ -790,6 +790,19 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   for line in "$@"; do
     case "$line" in
       '?'*) line="${line#?}"; case "$existing_keys" in *" ${line%%=*} "*) continue ;; esac ;;
+      *)
+        # A plain key is OURS unconditionally (see the function header) — but if the file
+        # already held a DIFFERENT value for it, that was an operator or config-page
+        # setting, and overwriting it without a word is the "silently reverted my change"
+        # bug reports look like. grep the old value and, if it differs, name the key below.
+        # `|| true`: under `set -o pipefail` a key the file does not hold makes grep exit 1,
+        # and `set -e` then kills the script inside this assignment with no message at all
+        # — which is every key on a FIRST install (the file is empty), so the installer
+        # died at "systemd units + env files" on any fresh box (and in CI's dry-run).
+        local _k="${line%%=*}" _old
+        _old="$(printf '%s\n' "$existing" | grep -E "^${_k}=" | tail -1 || true)"
+        if [ -n "$_old" ] && [ "$_old" != "$line" ]; then overwritten+=("$_k"); fi
+        ;;
     esac
     ours+=("$line"); managed="$managed${line%%=*} "
   done
@@ -813,11 +826,16 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
       esac
     done
     if [ ${#keep[@]} -gt 0 ]; then printf '    %s=…   (preserved operator setting)\n' "${keep[@]%%=*}"; fi
+    if [ ${#overwritten[@]} -gt 0 ]; then printf '    %s=…   (changing a previously-set value)\n' "${overwritten[@]}"; fi
     return
   fi
   # Name the carried keys: a preserved-but-broken operator setting is invisible otherwise,
   # and "repair ran fine" + a box that still misbehaves points here.
   if [ ${#keep[@]} -gt 0 ]; then log "preserving ${#keep[@]} operator setting(s) in $path: ${keep[*]%%=*}"; fi
+  # Same for a plain (non-seed) key that already held a DIFFERENT value: that value came
+  # from an operator edit or the config page, and changing it out from under them without
+  # saying so is exactly the "repair silently reverted my setting" failure mode.
+  if [ ${#overwritten[@]} -gt 0 ]; then warn "changing ${#overwritten[@]} previously-set value(s) in $path: ${overwritten[*]}"; fi
   { printf '%s\n' "${ours[@]}"
     if [ ${#keep[@]} -gt 0 ]; then printf '%s\n' "${keep[@]}"; fi
   } | SUDO tee "$path" >/dev/null
@@ -900,13 +918,50 @@ phase_services() {
   write_env "$ETC/engine.env" \
     "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=240" "TTS_CTX=192" \
     "VOX_REQUIRE_DICT_G2P=1"
+  # TEAPORT_AGENT tells the brain what this fork already knows: with a gateway (host
+  # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and reads
+  # the workspace persona; voice-only it advertises the local tools alone and reads
+  # TEAPORT_PERSONA_FILE. Before this the brain assumed a gateway on every box and a
+  # voice-only one spent every turn on tools and a recall that had nothing to answer.
+  #
+  # Asymmetric on purpose. A detected gateway is positive evidence and is written plain,
+  # so installing OpenClaw later and re-running is all it takes to turn the tools on. NOT
+  # detecting one is not evidence of anything: detect_agent looks in $HOME, and a repair
+  # run as root or as another account (both supported — see write_env) sees a different
+  # home, would write `none`, and the next restart would silently strip a working box of
+  # its tools. So the voice-only path only SEEDS `none` — a first install gets it, an
+  # existing value (the installer's or the config page's) survives, and a box that truly
+  # loses its gateway is switched on the page.
+  local agent=("?TEAPORT_AGENT=none")
+  if [ -n "$AGENT_MODE" ]; then
+    agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT")
+  fi
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \
     "${LLM_URL_SEED}LLM_BASE_URL=$LLM_BASE_URL" "${LLM_MODEL_SEED}LLM_MODEL=$LLM_MODEL" \
     "TEAPORT_URL=ws://127.0.0.1:$ENGINE_PORT/v1/realtime" \
-    "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT" \
+    "${agent[@]}" \
     "TEAPORT_PERSONA_FILE=$SECRETS/persona.md" \
     "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1"
+
+  # TEAPORT_PERSONA_FILE points here, but nothing else ever creates it: without this a
+  # voice-only box (and a gateway box whose workspace has nothing) reads a file that
+  # does not exist, load_persona() silently falls through to the baked-in
+  # FALLBACK_PERSONA, and the box quietly ships the generic assistant instead of the
+  # editable one docs/FAQ.md says it reads. Seed it once with that same text — never
+  # overwrite an existing file, so an operator's persona edit survives every repair.
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] write %s if absent (starter persona text)\n' "$SECRETS/persona.md"
+  elif [ ! -f "$SECRETS/persona.md" ]; then
+    printf '%s\n' \
+      "You are a friendly voice assistant that runs on a small local device: a" \
+      "local speech engine hears the user, a language model thinks, and a local" \
+      "voice speaks. You are warm, concise, and genuinely helpful — the same" \
+      "assistant whether the user reaches you by voice or text." \
+      > "$SECRETS/persona.md"
+    chmod 600 "$SECRETS/persona.md"
+    log "starter persona -> $SECRETS/persona.md (edit it any time; a repair never overwrites it)"
+  fi
 
   render_unit teaport-engine.service.in teaport-engine.service
   render_unit teaport-brain.service.in  teaport-brain.service
@@ -1106,7 +1161,7 @@ phase_sip() {
   # `teaport sip configure` registers a trunk, writes that config, then enables both. A
   # re-run on an already-configured box re-renders the units but leaves their enabled
   # state alone, so repairing never silently turns telephony off.
-  log "sip telephony: units installed but inert — run 'teaport sip configure' to register a SIP trunk and start it"
+  log "sip telephony: units installed but inert — run 'teaport sip configure' (or --conf FILE for an existing gateway .conf) to register a SIP trunk and start it"
 }
 
 phase_verify() {

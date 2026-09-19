@@ -23,7 +23,10 @@
 #   - Deltas are APPEND-ONLY token pieces (not revisable). We keep a running
 #     buffer and emit it as the cumulative InterimTranscriptionFrame each time.
 #   - A final (transcription.done) is gated on an explicit commit. We send the
-#     commit on VADUserStoppedSpeakingFrame (Pipecat VAD endpointing) by default.
+#     commit on Smart Turn's VERDICT by default (TEAPORT_STT_COMMIT_ON=verdict: a
+#     COMPLETE answer to the VAD stop commits at once, an INCOMPLETE one holds the
+#     segment open until the turn is judged complete), or on the raw
+#     VADUserStoppedSpeakingFrame (=vad-stop). See process_frame.
 #     The engine resets its text after each done, so done.text is per-utterance
 #     and we reset our buffer on it.
 #   - streaming_backend=True (services.make_stt, TEAPORT_STT_BACKEND=streaming) speaks
@@ -35,6 +38,7 @@
 import asyncio
 import base64
 import json
+import os
 import time
 from typing import AsyncGenerator, Optional
 
@@ -42,6 +46,8 @@ import numpy as np
 from loguru import logger
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
     Frame,
@@ -49,6 +55,7 @@ from pipecat.frames.frames import (
     StartFrame,
     TranscriptionFrame,
     UninterruptibleFrame,
+    VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection
@@ -57,6 +64,7 @@ from pipecat.services.stt_service import WebsocketSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from teaport_brain.endpointing import SMARTTURN_STOP_SECS, TurnVerdictFrame
 from teaport_brain.env import env_num
 
 # P99 latency from speech end to final transcript (broadcast to downstream turn
@@ -69,9 +77,106 @@ TEAPORT_TTFS_P99 = 0.8
 # on room noise never reach it.
 _EMPTY_FINAL_RUN = 5
 
+# What closes the engine-side segment (forces the final): Smart Turn's VERDICT, or the
+# raw VAD stop.
+#
+#   verdict   The stop strategy answers every VAD stop with a TurnVerdictFrame
+#             (endpointing.py). COMPLETE commits at once; INCOMPLETE holds the segment
+#             OPEN -- if the caller resumes, their next words land in the same segment,
+#             and if they do not, the analyzer's silence ceiling (SMARTTURN_STOP_SECS)
+#             sends a second, complete verdict and that commits. The default.
+#   vad-stop  Commit on VADUserStoppedSpeakingFrame itself, before the verdict exists.
+#             What this service did until issue #43.
+#
+# Why the verdict: a commit is irreversible on the engine side -- finish() right-pads
+# and REDECODES the buffer, then resets the stream -- so a commit at a mid-sentence
+# breath does not just split the turn's text, it hands the rest of the sentence to a
+# fresh decoder with no context ("Hey, what's" + "Time is here." / "Time is his.", the
+# second half decoded with no idea what came before; measured 2026-09-18 on real caller
+# audio with a 350 ms pause at a natural dip, 4 of 4 runs at ENDPOINT_STOP_SECS=0.2,
+# one fragment returned EMPTY) and pays the engine's fixed ~0.8 s final-commit cost twice.
+# Smart Turn called every one of those fragments INCOMPLETE and held the pipecat turn
+# open; the segment was already closed by then. ENDPOINT_STOP_SECS sits at 0.5 -- 0.3 s
+# above pipecat's recommended 0.2 on every clean turn -- to keep the raw stop from asking
+# at a breath. With the commit following the verdict, the floor can come down: a
+# COMPLETE verdict at 0.2 s is the same commit 0.3 s sooner, and an INCOMPLETE one costs
+# nothing the ceiling was not already costing.
+#
+# What it trades. A COMPLETE verdict commits when the MODEL has answered, so its
+# inference is now on the commit path instead of hidden under the engine's decode:
+# ~90 ms for Smart Turn v3 on a desktop CPU (measured 2026-09-18), more on the
+# appliance's ARM cores. That is paid back with interest wherever ENDPOINT_STOP_SECS can
+# come down (the Talk client), and not at all where it cannot (telephony, where the
+# model's COMPLETE is unreliable and the 0.5 floor stays). An INCOMPLETE verdict that
+# FALLS THROUGH to the ceiling (the caller really was done) pays the engine's commit
+# AFTER the ceiling instead of under it, ~0.8 s later to the final. And the speculative
+# reply (speculate.py), which asks the LLM on a final the ceiling is still holding, has
+# no final to work with on those turns -- under "verdict" it is inert except for finals
+# the engine closes on its own. What is bought: every INCOMPLETE verdict the caller
+# proves right (12 of 20 on the SIP calls measured 2026-09-10) keeps one utterance and
+# one decode instead of two context-free fragments. An operator who wants the old trade
+# sets vad-stop; both brains read the same brain.env, so a per-front-end choice is a
+# unit-level Environment= override until one is threaded from the front-end like
+# makeup_db.
+#
+# Two things do not wait for a verdict. While the BOT is speaking the VAD stop commits
+# as before: the engine returns nothing for words spoken over the bot until the
+# segment is flushed (teagram-engine#7), so that flush IS the barge-in -- holding it
+# for a verdict would hold "Okay, stop." for up to the ceiling -- and someone talking
+# over the bot is not composing a sentence with breaths in it. And a segment held on an
+# INCOMPLETE verdict is not held forever: if neither the ceiling's verdict nor a VAD
+# start arrives within SMARTTURN_STOP_SECS plus slack of the VAD stop, the hold expires
+# and commits with a warning, because a segment that never closes is a turn that is
+# never answered (the same failure the stranded backstop below exists for). And if NO
+# verdict of any kind has reached the STT by the time its first hold expires, nothing
+# upstream is answering VAD stops -- a stop strategy that is not the brain's, a model
+# that raises before the push, or simply a first inference slower than the wait (a
+# cold ONNX session on a GPU the TTS is using) -- and the service commits at the VAD
+# stop from there UNTIL a verdict does arrive, which puts it back on the verdict. A
+# wiring that never answers costs no turn more than one wait; one that was merely
+# slow costs the turns in between the split-at-the-stop the old design paid on every
+# turn, and its first verdict undoes it.
+#
+# Nor is a hold kept over a segment the engine has closed on its own. Its endpointer
+# finalizes on shorter silences than the VAD's floor, so on the appliance the final
+# commonly lands BEFORE the VAD stop: what is open at the stop is the tail after the
+# engine's cut, and a hold over it keeps nothing whole (the engine has split there
+# already) while the commit that eventually closes it hands the engine a second of
+# silence to decode under the reply. Such a stop commits at once instead (`tail`),
+# and a done that arrives unasked while a segment is held releases the hold.
+_COMMIT_MODES = ("verdict", "vad-stop")
+STT_COMMIT_ON = (os.getenv("TEAPORT_STT_COMMIT_ON") or "verdict").strip().lower()
+if STT_COMMIT_ON not in _COMMIT_MODES:
+    logger.warning(f"TEAPORT_STT_COMMIT_ON={STT_COMMIT_ON!r} is not one of {_COMMIT_MODES}; "
+                   "using verdict")
+    STT_COMMIT_ON = "verdict"
+
+# The commit reasons that followed a VAD stop -- the raw stop, or one of the verdicts
+# that answer it -- as opposed to the backstops. _log_segment's wordless warning is
+# gated on these; see it. "tail" is left out on purpose: it closes what is open after
+# the engine's own close of the utterance (the VAD stop in process_frame), which on
+# the ordinary turn is silence, so an empty final there is the expected result and
+# not a miss.
+_VAD_STOP_COMMITS = frozenset({"vad-stop", "bot-speaking", "verdict", "ceiling",
+                               "turn-stopped", "hold-expired"})
+
+# Slack past the analyzer's ceiling before a held segment is committed anyway. The
+# ceiling is clocked on the audio frames the aggregator processes and its verdict is a
+# frame that crosses four processors' queues to get here: milliseconds on an idle box,
+# but the aggregator's queue backs up behind the model and the TTS under STT-vs-TTS
+# contention, and the expiry is wall-clock from the VAD stop. So the slack is what
+# keeps a LATE verdict from being taken for a lost one -- an expiry that beats it
+# commits correctly and blames the wiring in the journal. 1.0 s is sized to that as a
+# guess, not a measurement: _handle_verdict logs how late a verdict that missed its
+# expiry actually was, and that line is the number to size this from. It has to stay
+# inside the aggregator's 5 s user_turn_stop_timeout (SMARTTURN_STOP_SECS plus this),
+# so that an expiry still answers late rather than never.
+_HOLD_SLACK_SECS = 1.0
+
 # The stranded-segment backstop. This service has exactly ONE path to a final: a commit
-# sent when VADUserStoppedSpeakingFrame arrives (see process_frame). That makes a missed
-# VAD stop unrecoverable, and silently so -- the turn started from an interim, owns no
+# sent when VADUserStoppedSpeakingFrame arrives, or the verdict that answers it (see
+# process_frame). That makes a missed VAD stop unrecoverable, and silently so -- the
+# turn started from an interim, owns no
 # text, and TurnAnalyzerUserTurnStopStrategy cannot fire without text, so it hangs until
 # the aggregator's 5 s user_turn_stop_timeout force-stops it with an empty aggregation and
 # the model is never asked. The engine's own buffer auto-commit would close the segment
@@ -225,9 +330,10 @@ class TeaportSTTService(WebsocketSTTService):
         sample_rate: audio sample rate fed to the engine. the engine expects 16 kHz
             mono PCM16; Pipecat resamples to this for us.
         language: language tag attached to emitted frames.
-        commit_on_user_stopped_speaking: if True, send input_audio_buffer.commit
-            when Pipecat emits VADUserStoppedSpeakingFrame, forcing a per-utterance
-            final. Set False if the engine runs its own VAD and auto-commits.
+        commit_on: what forces the per-utterance final -- "verdict" (Smart Turn's
+            answer to the VAD stop, via TurnVerdictFrame) or "vad-stop" (the raw
+            VADUserStoppedSpeakingFrame). Defaults to TEAPORT_STT_COMMIT_ON; see the
+            note at STT_COMMIT_ON.
     """
 
     def __init__(
@@ -237,7 +343,7 @@ class TeaportSTTService(WebsocketSTTService):
         model: str = "voxtral-mini-realtime",
         sample_rate: int = 16000,
         language: Language = Language.EN,
-        commit_on_user_stopped_speaking: bool = True,
+        commit_on: str = STT_COMMIT_ON,
         ttfs_p99_latency: float = TEAPORT_TTFS_P99,
         streaming_backend: bool = False,
         makeup_db: float = 0.0,
@@ -255,7 +361,33 @@ class TeaportSTTService(WebsocketSTTService):
         # Only the linear scale is kept, precomputed once; 0 dB -> 1.0 -> the fast no-op
         # path in _apply_makeup.
         self._makeup_scale = float(10.0 ** (makeup_db / 20.0)) if makeup_db else 1.0
-        self._commit_on_stop = commit_on_user_stopped_speaking
+        if commit_on not in _COMMIT_MODES:
+            raise ValueError(f"commit_on must be one of {_COMMIT_MODES}, not {commit_on!r}")
+        self._commit_on = commit_on
+        # verdict mode: a VAD stop has been seen for the open segment and the commit that
+        # answers it is deferred to the verdict. Cleared by the commit, whichever path
+        # sends it, and by a VAD start (the caller resumed: the next stop asks again).
+        self._commit_pending = False
+        # The hold's expiry -- see _HOLD_SLACK_SECS -- and what it needs to say: whether
+        # THIS stop got the model's verdict (then it is the ceiling's that is missing),
+        # and whether ANY verdict has ever arrived (then the wiring is known to work).
+        self._hold_task = None
+        self._verdict_seen = False
+        self._verdicts = 0
+        # The session-wide fallback (STT_COMMIT_ON): set when an expiry with no verdict
+        # ever seen switched commit_on to vad-stop, so the first verdict to arrive can
+        # switch it back.
+        self._commit_on_downgraded = False
+        # When the last expiry committed, until a verdict arrives for that stop: the
+        # verdict was late rather than lost, and the journal should say which.
+        self._expired_at = None
+        # The engine closed a segment on its own (a done with no commit of ours in
+        # flight) since the caller last started speaking: the next VAD stop commits the
+        # tail rather than hold it. Cleared at the VAD start.
+        self._closed_unasked = False
+        # Tracked from the transport output's broadcast; a VAD stop over the bot's own
+        # voice does not wait for a verdict (see STT_COMMIT_ON).
+        self._bot_speaking = False
 
         # STREAMING BACKEND (vLLM serving Voxtral-Mini-4B-Realtime).
         #
@@ -304,6 +436,11 @@ class TeaportSTTService(WebsocketSTTService):
         # caller the assistant is "busy with another session" when the engine is simply
         # down sends them to the wrong remedy entirely.
         self._slot_busy = None
+
+    @property
+    def commit_on(self) -> str:
+        """What forces the final: "verdict" or "vad-stop" (see STT_COMMIT_ON)."""
+        return self._commit_on
 
     @property
     def stt_available(self):
@@ -383,19 +520,156 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        # Commit (force a final) when the VAD detects end-of-speech — NOT on
-        # UserStoppedSpeakingFrame. With the Smart Turn turn strategy that turn-
-        # stop frame only fires AFTER the turn is judged complete, which itself
-        # waits for the final transcript — a deadlock that left finalization to
-        # the engine's ~15s buffer auto-commit (multi-second endpointing lag).
-        # VADUserStoppedSpeakingFrame fires promptly at ~stop_secs of silence, so
-        # the engine finalizes right away and Smart Turn decides on a fresh final
-        # (fragments from mid-utterance pauses are re-aggregated by the LLM
-        # aggregator, exactly as the strategy expects).
-        if self._commit_on_stop and isinstance(frame, VADUserStoppedSpeakingFrame):
-            # The VAD path won the race, so the backstop has nothing left to guard.
+        # Commit (force a final) off the VAD's end-of-speech, or off the verdict that
+        # answers it — NOT on UserStoppedSpeakingFrame. With the Smart Turn turn
+        # strategy that turn-stop frame only fires AFTER the turn is judged complete,
+        # which itself waits for the final transcript — a deadlock that left
+        # finalization to the engine's ~15s buffer auto-commit (multi-second
+        # endpointing lag). The VERDICT does not wait on the final: the strategy runs
+        # the model at the VAD stop and answers with a TurnVerdictFrame either way, and
+        # its silence ceiling answers again when an INCOMPLETE one falls through. So
+        # the chain is VAD stop -> verdict -> commit -> final -> turn stop, with no
+        # cycle in it.
+        if isinstance(frame, VADUserStoppedSpeakingFrame):
+            # The VAD stop came, so the backstop's premise (that it never would) is
+            # gone whichever path commits.
             await self._cancel_stranded_commit()
+            # A verdict arriving from here on answers this stop, not the last expiry.
+            self._expired_at = None
+            if self._commit_on == "vad-stop":
+                await self._send_commit(final=True, why="vad-stop")
+            elif self._bot_speaking:
+                # The flush is the barge-in; see STT_COMMIT_ON.
+                await self._send_commit(final=True, why="bot-speaking")
+            elif self._closed_unasked and not self._seg_interims:
+                # The engine closed this utterance's segment on its own before the VAD
+                # stop, and nothing has streamed since: what is open is the tail after
+                # its cut. A hold keeps nothing whole here (the engine has split
+                # already), and holding means the ceiling's verdict commits a second
+                # of silence into the reply's first second -- a finish() decode on the
+                # GPU the TTS is using, logged as a wordless final. Close it now, as
+                # the commit-at-the-stop design did; a tail with words in it (the
+                # engine's deltas lag) comes back as its own final either way. Not
+                # skipped: nothing here can tell a silent tail from one whose words
+                # have not streamed yet, and a commit loses neither.
+                await self._send_commit(final=True, why="tail")
+            else:
+                self._commit_pending = True
+                self._verdict_seen = False
+                await self._arm_hold_expiry()
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            # A new utterance, or the rest of one: whatever the engine closed before it
+            # is not this one's.
+            self._closed_unasked = False
+            # The caller resumed inside a held segment (or before its verdict landed):
+            # their words join it, and the next VAD stop asks the model again. Nothing
+            # is owed for this stop any more.
+            if self._commit_pending:
+                logger.debug(f"{self}: caller resumed -- the held segment stays open")
+                self._commit_pending = False
+                await self._cancel_hold_expiry()
+                # The hold stood the backstop down; the segment's words are back in its
+                # care. Their own deltas would re-arm it -- unless the resumed speech
+                # decodes to nothing (over the bot, teagram-engine#7) AND its stop is
+                # missed, which is the one shape that would strand words the old
+                # commit-at-the-stop had already banked. brain/formal/SttCommit.tla
+                # (NoStrandedSegment) is where that shape was found.
+                if self._interim_buffer.strip():
+                    await self._arm_stranded_commit()
+        elif isinstance(frame, TurnVerdictFrame):
+            await self._handle_verdict(frame)
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+
+    async def _handle_verdict(self, frame: TurnVerdictFrame):
+        """Act on Smart Turn's answer to the VAD stop this segment is waiting on."""
+        self._verdicts += 1
+        if self._commit_on_downgraded:
+            # The wiring answers after all: the expiry that gave up on it had merely
+            # beaten a slow first verdict. Back onto the verdict from here.
+            self._commit_on_downgraded = False
+            self._commit_on = "verdict"
+            logger.info(f"{self}: a verdict ({frame.source}) has reached the STT after "
+                        "all -- the commit follows the verdict from here on "
+                        "(TEAPORT_STT_COMMIT_ON=verdict)")
+        if not self._commit_pending:
+            if self._expired_at is not None:
+                # It answers the stop whose hold has just expired: late, not lost. The
+                # commit went out on time; only the expiry's blame was misplaced.
+                late = time.monotonic() - self._expired_at
+                self._expired_at = None
+                logger.warning(
+                    f"{self}: verdict {frame.source} arrived {late:.2f}s after the hold "
+                    f"expired -- late, not lost: the expiry's slack ({_HOLD_SLACK_SECS}s "
+                    "past the ceiling) did not cover the aggregator's queue here")
+                return
+            # Nothing owed: vad-stop mode, a stop the bot's speech already flushed, a
+            # caller who resumed before the verdict landed, a segment the engine closed
+            # on its own under the hold, or a verdict for a stop this segment never
+            # saw (a reconnect in between).
+            logger.trace(f"{self}: verdict {frame.source} complete={frame.complete} "
+                         "with no commit pending; ignored")
+            return
+        self._verdict_seen = True
+        if frame.complete:
+            await self._send_commit(final=True, why=frame.source)
+        else:
+            logger.debug(f"{self}: verdict INCOMPLETE -- holding the segment open for "
+                         f"the ceiling ({SMARTTURN_STOP_SECS}s) or the caller")
+
+    # ---- the hold's expiry ---------------------------------------------------
+    # See STT_COMMIT_ON: a segment held on an INCOMPLETE verdict must still close if
+    # the ceiling's verdict never reaches us. Armed at the VAD stop (not at the
+    # verdict, so a model verdict that never arrives is covered too), cancelled by the
+    # commit, by a VAD start, and by a done the engine sends on its own (the segment
+    # it held is gone). Same timer discipline as the backstop below.
+
+    async def _arm_hold_expiry(self):
+        err = await self._restart_timer("_hold_task", self._commit_when_hold_expires())
+        if err is not None:
+            logger.warning(f"{self}: cannot arm the hold's expiry ({err}); committing at "
+                           "the VAD stop instead")
             await self._send_commit(final=True, why="vad-stop")
+
+    async def _cancel_hold_expiry(self):
+        await self._cancel_timer("_hold_task")
+
+    async def _commit_when_hold_expires(self):
+        await asyncio.sleep(SMARTTURN_STOP_SECS + _HOLD_SLACK_SECS)
+        self._hold_task = None
+        if not self._commit_pending:
+            return
+        wait = f"{SMARTTURN_STOP_SECS + _HOLD_SLACK_SECS:.1f}s"
+        now = "committing the held segment so the turn is answered late rather than never"
+        # "late or lost": from here the two look the same -- a verdict still queued
+        # behind the aggregator's audio, or one that will never come. If it was late,
+        # its arrival is logged against this expiry (_handle_verdict), and that line is
+        # the one to size _HOLD_SLACK_SECS from.
+        if self._verdict_seen:
+            logger.warning(f"{self}: hold expired -- the ceiling's verdict has not reached "
+                           f"the STT {wait} after a VAD stop the model called INCOMPLETE "
+                           f"(late or lost); {now}")
+        elif self._verdicts:
+            logger.warning(f"{self}: hold expired -- no verdict reached the STT {wait} "
+                           f"after the VAD stop, though earlier ones did (late or lost); "
+                           f"{now}")
+        else:
+            # Not one verdict all session: either nothing upstream answers VAD stops
+            # (not the brain's LateStartTurnStopStrategy, or its model raises before
+            # the push), or the first inference was slower than this wait. Holding
+            # every turn for it would be the worst of both modes, so stop holding --
+            # until a verdict arrives, which is what tells the two apart
+            # (_handle_verdict switches back).
+            logger.warning(f"{self}: hold expired -- no verdict has reached the STT this "
+                           f"session, {wait} after its first held VAD stop; committing at "
+                           "the VAD stop until one does (TEAPORT_STT_COMMIT_ON=vad-stop "
+                           f"for now) and {now}")
+            self._commit_on = "vad-stop"
+            self._commit_on_downgraded = True
+        self._expired_at = time.monotonic()
+        await self._send_commit(final=True, why="hold-expired")
 
     # ---- one-shot timers ---------------------------------------------------
     # The stranded-segment backstop and the streaming segment boundary are both
@@ -442,6 +716,12 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _arm_stranded_commit(self):
         """(Re)start the quiet timer for the segment currently streaming interims."""
+        if self._commit_pending:
+            # The VAD stop this guards against missing HAS come; the segment is held
+            # for its verdict on purpose. Re-arming off the engine's lagging deltas
+            # would fire a second commit into the ceiling's, closing the next
+            # utterance early -- the exact fragment the hold exists to prevent.
+            return
         err = await self._restart_timer("_stranded_task",
                                         self._stranded_commit_after_quiet())
         if err is not None and not self._stranded_unavailable:
@@ -457,6 +737,8 @@ class TeaportSTTService(WebsocketSTTService):
         self._stranded_task = None
         if not self._interim_buffer.strip():
             return  # the segment closed on its own; nothing stranded
+        if self._commit_pending:
+            return  # the VAD stop came after all; the verdict path owns the close
         # KNOWN EDGE, left as-is deliberately: this fires 1.5 s after the last interim,
         # so an engine that STALLS its interims mid-utterance (STT-vs-TTS GPU contention
         # has lagged them past 1.5 s during long replies) gets a forced commit while the
@@ -509,14 +791,15 @@ class TeaportSTTService(WebsocketSTTService):
         # the warn condition on its own: it would fire "audio in, no words out" at
         # WARNING for a cough, a door, or the engine's ~15 s buffer auto-commit during
         # any quiet stretch, drowning the once-per-run empty-final counter just below
-        # (which exists for exactly those). Gate the wordless warning on a VAD-STOP
-        # commit instead: VAD reporting speech-then-silence is the only evidence there
-        # was an utterance to transcribe, so an empty final there is a real miss (the
-        # double-talk drop this whole surface is about); a backstop or auto-commit
+        # (which exists for exactly those). Gate the wordless warning on a commit that
+        # FOLLOWED A VAD STOP instead (_VAD_STOP_COMMITS: the raw stop, or the verdict
+        # that answered it): VAD reporting speech-then-silence is the only evidence
+        # there was an utterance to transcribe, so an empty final there is a real miss
+        # (the double-talk drop this whole surface is about); a backstop or auto-commit
         # empty is ordinary and logs at debug.
         if not engine_text and self._seg_interims:
             logger.warning(line + " — engine streamed interims then returned no text")
-        elif not engine_text and self._commit_why == "vad-stop" and secs > 0.3:
+        elif not engine_text and self._commit_why in _VAD_STOP_COMMITS and secs > 0.3:
             logger.warning(line + " — audio in, no words out")
         else:
             logger.debug(line)
@@ -527,8 +810,15 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _send_commit(self, final: bool = True, why: str = "other"):
         """Force a final. `why` is recorded so the segment line says which path fired."""
+        # The hold's timer first: cancelling a live task is the one await in here that
+        # can actually suspend, and the bookkeeping below must be atomic with the send
+        # -- a VAD stop landing between "pending = False" and the commit going out would
+        # arm a hold this commit then never clears. Whatever sent it, the stop this
+        # segment was waiting on is answered.
+        await self._cancel_hold_expiry()
         self._commit_at = time.monotonic()
         self._commit_why = why
+        self._commit_pending = False
         if self._streaming:
             # Nothing to ask for: generation is already running, and sending final=True
             # here would close the stream for the rest of the CALL rather than end a
@@ -700,6 +990,9 @@ class TeaportSTTService(WebsocketSTTService):
             self._empty_finals = 0
             # The buffer it would have committed is gone, and the socket with it.
             await self._cancel_stranded_commit()
+            self._commit_pending = False
+            self._closed_unasked = False
+            await self._cancel_hold_expiry()
 
     # ---- transcripts out ---------------------------------------------------
 
@@ -783,6 +1076,10 @@ class TeaportSTTService(WebsocketSTTService):
             # commits a user turn whose content is whitespace.
             # The segment closed, however it was committed — the backstop is done.
             await self._cancel_stranded_commit()
+            # Read before _log_segment clears it: a done with no commit of ours in
+            # flight is the engine closing the segment on its own (its endpointer, or
+            # its ~15 s buffer), not the answer to one we sent.
+            unasked = self._commit_at is None
             self._log_segment(msg)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
@@ -790,6 +1087,20 @@ class TeaportSTTService(WebsocketSTTService):
                 logger.debug(f"{self}: empty final — falling back to the interim "
                              f"hypothesis {text[:60]!r} to close the turn")
             self._interim_buffer = ""
+            if unasked:
+                # See the VAD stop in process_frame: the next stop, if none has come
+                # yet, closes the tail rather than hold it. And if a stop is already
+                # holding this segment for its verdict, the hold has nothing left to
+                # keep whole -- the words are in the final pushed below -- and that
+                # verdict would only close a segment of silence: release it, and the
+                # verdict then finds nothing pending. Not for a done that answers a
+                # commit of ours, which can land while a LATER stop is rightly held.
+                self._closed_unasked = True
+                if self._commit_pending:
+                    logger.debug(f"{self}: the engine closed the held segment on its "
+                                 "own; releasing the hold")
+                    self._commit_pending = False
+                    await self._cancel_hold_expiry()
             # A run of finals with nothing in them means the engine is being handed audio
             # it can find no words in. Both are silent from the pipeline's side — no
             # transcript, so no turn, so no reply — and that is indistinguishable from the

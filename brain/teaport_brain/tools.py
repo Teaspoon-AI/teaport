@@ -11,6 +11,9 @@
 # the model to speak around, never an exception into the realtime pipeline. The
 # gateway calls take ~0.5-2s; that's a brief, acceptable pause on a voice turn.
 #
+# The gateway tools exist only when the box has a gateway (TEAPORT_AGENT=openclaw, see
+# agent_backend.py). A voice-only box advertises and registers LOCAL_TOOLS alone.
+#
 
 import asyncio
 import functools
@@ -33,6 +36,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain import openclaw_client as oc
+from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.env import env_flag
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
 
@@ -43,6 +47,12 @@ from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
 # only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while docs/CONFIG.md
 # promised otherwise; env_flag is the documented table.
 AGENT_FIRST = env_flag("TEAPORT_AGENT_FIRST", False)
+# Agent-first routes EVERY turn through ask_openclaw; without a gateway that tool is not
+# registered, so the directive would send every turn to a tool that does not exist.
+if AGENT_FIRST and not HAS_AGENT:
+    logger.warning("TEAPORT_AGENT_FIRST is on but TEAPORT_AGENT=none — ignoring it "
+                   "(agent-first needs a gateway to consult)")
+    AGENT_FIRST = False
 
 # The engine's serve log (decode ms/step lives here). Override per host.
 ENGINE_LOG = os.getenv("ENGINE_LOG", os.path.expanduser("~/teaport-engine.log"))
@@ -669,12 +679,20 @@ async def _switch_voice(params: FunctionCallParams, tts=None):
     await params.result_callback(result)
 
 
+# The tools that read this box directly; what a gateway-less brain advertises.
+LOCAL_TOOLS = [HOST_STATUS, CURRENT_TIME, LIST_VOICES, SWITCH_VOICE]
+# The ones that call the co-resident OpenClaw gateway — advertised only when there is one.
+# Advertising them without it is not harmless: the model is told to use them, calls them,
+# and the caller hears a stall or an "I'll look into that" that goes nowhere.
+GATEWAY_TOOLS = [WEB_SEARCH, WEB_FETCH, SEARCH_MEMORY, REMEMBER, ASK_OPENCLAW]
+
+
 def build_tools_schema() -> ToolsSchema:
-    return ToolsSchema(
-        standard_tools=[HOST_STATUS, CURRENT_TIME, WEB_SEARCH, WEB_FETCH,
-                        SEARCH_MEMORY, REMEMBER, ASK_OPENCLAW,
-                        LIST_VOICES, SWITCH_VOICE]
-    )
+    tools = [HOST_STATUS, CURRENT_TIME]
+    if HAS_AGENT:
+        tools += GATEWAY_TOOLS
+    tools += [LIST_VOICES, SWITCH_VOICE]
+    return ToolsSchema(standard_tools=tools)
 
 
 _HANDLERS = {
@@ -825,10 +843,19 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None)
         def lang_fn():
             return (lang or "en-us").split("-")[0]
     handlers = dict(_HANDLERS)
+    if not HAS_AGENT:
+        # Drop only the tools that NEED a gateway (a handler for one could still be
+        # reached by a model that hallucinates the name, and it would fail slowly
+        # against a gateway that is not there). Filtering against GATEWAY_TOOLS
+        # rather than requiring membership in LOCAL_TOOLS means a future local-only
+        # _HANDLERS entry is kept by default instead of silently dropped if someone
+        # forgets to also add it to LOCAL_TOOLS.
+        gateway_names = {t.name for t in GATEWAY_TOOLS}
+        handlers = {n: h for n, h in handlers.items() if n not in gateway_names}
     if tts is not None:
         handlers["list_voices"] = functools.partial(_list_voices, tts=tts)
         handlers["switch_voice"] = functools.partial(_switch_voice, tts=tts)
-    if followup is not None:
+    if followup is not None and HAS_AGENT:
         handlers["ask_openclaw"] = functools.partial(_ask_openclaw, followup=followup,
                                                       gate=gate)
     for name, handler in handlers.items():

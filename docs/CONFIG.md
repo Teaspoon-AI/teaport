@@ -30,8 +30,8 @@ column of the schema names the file and line.
 | File | Read by | To apply a change |
 |---|---|---|
 | `/etc/teaport/engine.env` | `teaport-engine` | systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; both brains lose their engine session. |
-| `/etc/teaport/brain.env` | `teaport-brain`, `teaport-sip-brain` | Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: restart teaport-sip AND teaport-sip-brain together — a brain-only relaunch desyncs the gateway echo canceller. |
-| `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Re-run `teaport sip configure --yes …` so the change is test-registered before it is written; then restart teaport-sip and teaport-sip-brain together. |
+| `/etc/teaport/brain.env` | `teaport-brain`, `teaport-sip-brain` | Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: `teaport sip restart` — the gateway and the SIP brain together; a brain-only relaunch desyncs the gateway echo canceller. |
+| `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on\|off` flips the echo canceller and restarts the pair for you. |
 | `/etc/teaport/bridge.env` | `teaport-discord-bridge` | systemctl restart teaport-discord-bridge. |
 
 Nothing hot-reloads: every value is fixed when its service starts, so a change
@@ -98,24 +98,26 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 
 | Setting | Default | Description |
 |---|---|---|
-| `ENDPOINT_STOP_SECS` | **0.5** s (≥ 0.1) | Silence before the VAD reports the caller stopped. The dominant fixed latency on every turn; lower is snappier and cuts more mid-sentence pauses. |
-| `SMARTTURN_STOP_SECS` | **1.0** s (≥ 0) | How long a Smart Turn "not done" verdict holds the turn open, counted from the VAD stop. With TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated while this runs, so it can be raised (more patience for mid-sentence pauses) by up to the LLM's own latency at no cost to the turns that fall through. |
-| `TEAPORT_SPECULATIVE_REPLY` | **off** | Ask the LLM as soon as the final transcript lands on a turn Smart Turn has not concluded on (an INCOMPLETE verdict waiting out SMARTTURN_STOP_SECS), and use that reply if the turn then commits with exactly that text and nothing else touched the context. Off: the request waits for the commit. On: those turns answer up to the LLM's latency sooner, and a turn the caller resumes has spent one wasted request — every outcome logs a [SPEC] line with the running hit/miss tally. |
+| `ENDPOINT_STOP_SECS` | **0.5** s (≥ 0.1) | Silence before the VAD reports the caller stopped. The dominant fixed latency on every turn; lower is snappier and cuts more mid-sentence pauses. With TEAPORT_STT_COMMIT_ON=verdict the transcript segment survives a pause Smart Turn calls unfinished, so this can come down toward pipecat's 0.2 where the verdicts are trustworthy (wideband audio); on telephony they are not, and the floor still does the work. |
+| `SMARTTURN_STOP_SECS` | **1.0** s (≥ 0) | How long a Smart Turn "not done" verdict holds the turn open, counted from the VAD stop. With TEAPORT_STT_COMMIT_ON=verdict the transcript segment is held open for the same wait, so a caller who resumes keeps one utterance. With TEAPORT_STT_COMMIT_ON=vad-stop and TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated while this runs, so it can be raised (more patience for mid-sentence pauses) by up to the LLM's own latency at no cost to the turns that fall through. |
+| `TEAPORT_SPECULATIVE_REPLY` | **off** | Ask the LLM as soon as the final transcript lands on a turn Smart Turn has not concluded on (an INCOMPLETE verdict waiting out SMARTTURN_STOP_SECS), and use that reply if the turn then commits with exactly that text and nothing else touched the context. Off: the request waits for the commit. On: those turns answer up to the LLM's latency sooner, and a turn the caller resumes has spent one wasted request — every outcome logs a [SPEC] line with the running hit/miss tally. Needs TEAPORT_STT_COMMIT_ON=vad-stop to have a final to work on: under verdict the segment is held open through that wait and no final lands before the commit. |
 | `SMARTTURN_COMPLETE_THRESHOLD` | **0.5** (0–1) | The end-of-turn probability that counts as done. Near-inert on telephony audio. |
 | `VAD_CONFIDENCE` | **0.7** (0–1) | Silero's speech-probability gate. |
 | `VAD_MIN_VOLUME` | **0.6** (0–1) | Silero's volume gate. |
 | `VAD_SAMPLE_RATE` | `16000` | 8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample. One of `16000`, `8000`. |
 | `TEAPORT_INTERRUPT_MIN_WORDS` | **2** (≥ 1) | Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. |
 | `TEAPORT_STRANDED_INTERIM_SECS` | **1.5** s (≥ 0.2) | Commit a segment ourselves after this much interim quiet with no VAD stop, so a missed stop loses a second rather than the turn. |
+| `TEAPORT_STT_COMMIT_ON` | `verdict` | What closes the transcript segment and forces the final. verdict: Smart Turn's answer to the VAD stop — done commits at once, not-done holds the segment open until the turn is judged complete, so a mid-sentence pause keeps one utterance instead of splitting it into two context-free decodes; the model's inference (~0.1 s) is then on the commit path, which lowering ENDPOINT_STOP_SECS more than pays for where the verdicts are trustworthy. vad-stop: the raw VAD stop, before the verdict exists (the behaviour before issue #43); a turn that falls through SMARTTURN_STOP_SECS gets its final ~0.8 s sooner, and TEAPORT_SPECULATIVE_REPLY needs this. Either way a VAD stop while the bot is speaking commits at once — that flush is the barge-in. One of `verdict`, `vad-stop`. |
 | `HEARD_MODE` | `truncate` | How the context records a reply the caller only partly heard: truncate it to what was heard, or keep it whole with a note. One of `truncate`, `note`. |
 | `TEAPORT_SILENT_TURN_SECS` | **12** s (≥ 1) | How long a committed turn may produce no audio before it is reported in the journal. A turn waiting on an agent consult is not counted. |
 
 ## Agent consult and follow-ups
 
-In `/etc/teaport/brain.env`.
+In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; every other row here applies only when it does.
 
 | Setting | Default | Description |
 |---|---|---|
+| `TEAPORT_AGENT` | `openclaw` | Which agent, if any, is co-resident. `openclaw`: a gateway (host OpenClaw or a NemoClaw sandbox) provides web_search, web_fetch, search_memory, remember, ask_openclaw, memory recall and the workspace persona. `none`: a voice-only box — those tools are not advertised, recall is not run, and the persona comes from TEAPORT_PERSONA_FILE. Asymmetric on repair: a detected gateway is positive evidence, so the installer writes `openclaw` unconditionally (installing a gateway later and re-running is all it takes to turn the tools on) — but NOT finding one is not evidence of anything, so the installer only seeds `none` on a first voice-only install and an existing value survives a repair. To disable agent tooling on a box that still has a working gateway, use the config page, not a hand edit of this file — a repair that still finds the gateway overwrites a hand edit here (and now logs that it did). One of `openclaw`, `none`. |
 | `OPENCLAW_GATEWAY_URL` | `http://127.0.0.1:18789` | The co-resident gateway for shared persona and memory recall. The installer sets it from the gateway port. *Set by the installer.* |
 | `OPENCLAW_GATEWAY_TOKEN` | file `~/.config/teaport/openclaw_token` | Bearer token for that gateway. Prefer the file; the env var, if set, wins over it. |
 | `OPENCLAW_AGENT_ID` | `main` | The agent consulted. |
@@ -134,7 +136,7 @@ In `/etc/teaport/brain.env`.
 | `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Silence before the bed starts. |
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the synthesized peak. |
 | `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Hard cap on the bed. Keep it above TEAPORT_ASK_OPENCLAW_TIMEOUT. |
-| `TEAPORT_PERSONA_FILE` | `~/.config/teaport/persona.md` | Fallback persona when the gateway's is not reachable. The installer points it at the secrets dir. *Set by the installer.* |
+| `TEAPORT_PERSONA_FILE` | `~/.config/teaport/persona.md` | The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir. *Set by the installer.* |
 | `OPENCLAW_WORKSPACE` | `~/.openclaw/workspace` | The OpenClaw workspace whose persona files the voice brain shares. *Set by the installer.* |
 | `TEAPORT_WORKSPACE_FILES` | `SOUL.md,IDENTITY.md,USER.md,MEMORY.md` | Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design. |
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |
@@ -258,12 +260,44 @@ It test-registers against your trunk (briefly, on a throwaway port — never
 `:5060`, so a running gateway is untouched) and only on a `200 OK` writes
 `~/.config/teaport/teaport-sip.conf` (mode `600`, holds the SIP password) and
 enables both units. On a failed register it writes nothing and leaves telephony
-off. `teaport sip status` shows the units, whether the config exists, and the
-last registration; `teaport sip disable [--purge]` turns it back off.
+off. `teaport sip status` shows the units, the config, and this run's
+registration; `teaport sip disable [--purge]` turns it back off.
+
+Already have a gateway `.conf` — from a box that ran `teaport-sip` by hand, or
+carried over from another one? Adopt it instead of retyping it:
+
+```
+teaport sip configure --conf ~/my-trunk.conf
+```
+
+It goes through the same test-register, then is installed as-is except for the
+two keys the units own (`sip_port` → 5060, `uds_path` → the socket the SIP brain
+is started with). If a hand-launched gateway or SIP brain is still running, the
+command refuses and tells you what to stop: the unit it is about to enable needs
+`:5060` and the socket.
+
+Once configured, the line **survives reboots and crashes on its own**: both units
+are `enabled`, the gateway restarts with a backoff that will not hammer the
+registrar, and the SIP brain is bound to the gateway — stopped, started and
+restarted *with* it, never alone. That coupling is deliberate: the gateway's
+echo canceller references the brain's playout, and a brain relaunched under a
+running gateway leaves the canceller eating the caller's speech. So the day-2
+commands all work on the pair:
+
+```
+teaport sip restart            # gateway + SIP brain together, then waits for the 200 OK
+teaport sip aec off            # A/B the echo canceller: flips aec= in the conf, restarts the pair
+teaport sip aec on
+teaport sip aec                # show the current setting
+teaport logs sip -f            # the gateway's journal (sip-brain for the brain's)
+teaport doctor                 # includes the pair + whether the trunk is registered
+```
 
 The `.conf` is the gateway's own `key=value` format (`registrar_uri`, `id_uri`,
 `username`, `password`, `uds_path`, `aec`, `auto_answer`, …). Editing it by hand
-is fine; restart `teaport-sip` afterwards.
+is fine; `teaport sip restart` afterwards. Nothing about the line lives in
+`/tmp`: the conf is in `~/.config/teaport`, the socket in `/run/teaport` (created
+by the unit), the logs in journald.
 
 ## One engine, one STT slot
 

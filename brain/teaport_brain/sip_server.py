@@ -44,6 +44,8 @@
 import argparse
 import asyncio
 import os
+import socket
+import time
 
 from loguru import logger
 
@@ -57,7 +59,7 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
-from teaport_brain import audio_dump
+from teaport_brain import agent_backend, audio_dump
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import SipProtocolSerializer
@@ -171,9 +173,46 @@ class HalfDuplexInputGate(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+# How long to wait for the gateway to bind its socket before giving up. Under systemd
+# the brain unit is After= the gateway unit, but the gateway is Type=simple: it counts
+# as started the moment it is forked, a second or more before PJSUA2 is up and the UDS
+# is listening. Connecting on that first tick raised FileNotFoundError, the unit
+# failed, and Restart= brought it back 5 s later — every boot and every `sip restart`
+# left a traceback in the journal for a socket that was about to appear. (The hand
+# launch script papered over the same gap with a fixed `sleep 6`.) 30 s covers a cold
+# gateway on a loaded box with room to spare; past it the gateway is genuinely absent,
+# and exiting lets the unit's Restart= keep trying at its own pace.
+_GATEWAY_WAIT_S = 30.0
+_GATEWAY_POLL_S = 0.5
+
+
+async def _connect_when_listening(sock_path: str):
+    """connect_seqpacket, retried until the gateway is listening or _GATEWAY_WAIT_S is up.
+
+    Only the 'not there yet' errors are retried: no socket file, a file nobody is
+    accepting on, or a connect that timed out because the accept backlog was briefly
+    saturated. A peer-uid PermissionError is a different gateway, not a slow one, and
+    is raised at once.
+    """
+    deadline = time.monotonic() + _GATEWAY_WAIT_S
+    waited = False
+    while True:
+        try:
+            return connect_seqpacket(sock_path)
+        except (FileNotFoundError, ConnectionRefusedError, socket.timeout) as e:
+            if time.monotonic() >= deadline:
+                logger.error(f"gateway not listening at {sock_path} after {_GATEWAY_WAIT_S:g}s ({e!r})")
+                raise
+            if not waited:
+                logger.info(f"gateway not listening yet ({e.__class__.__name__}) — waiting up to "
+                            f"{_GATEWAY_WAIT_S:g}s for it to bind {sock_path}")
+                waited = True
+            await asyncio.sleep(_GATEWAY_POLL_S)
+
+
 async def run(sock_path: str):
     logger.info(f"connecting to teaport-sip gateway at {sock_path}")
-    sock = connect_seqpacket(sock_path)
+    sock = await _connect_when_listening(sock_path)
     logger.info("connected — the brain is the socket client (gateway is the server)")
 
     # The serializer is shared: the persistent connection uses it to DESERIALIZE
@@ -480,6 +519,7 @@ def main():
     parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),
                         help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()
+    logger.info(agent_backend.startup_line())
     logger.info("Priming TTS service...")
     make_tts()  # warm the engine TTS client once at startup
     asyncio.run(run(args.socket))

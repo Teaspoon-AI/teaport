@@ -5,12 +5,30 @@
 # `teaport sip configure` writes (mode 600) only after a successful test-register — so a
 # default (unconfigured) box never binds a SIP port, and a reboot auto-starts telephony
 # ONLY if it was configured. Rendered by install.sh (@USER@/@SIP_GATEWAY@/@SIP_CONF@).
+#
+# This unit, not a hand launch, is what keeps the phone line up: the appliance ran the
+# gateway and the SIP brain from a shell script against a .conf in /tmp, and every
+# reboot silently took the line offline until someone noticed and re-ran it (#41).
 [Unit]
 Description=teaport SIP gateway (PJSIP trunk -> brain over UDS)
 After=network-online.target teaport-engine.service
 Wants=network-online.target
 # Opt-in gate: no config, no telephony. `teaport sip configure` writes it + enables us.
 ConditionPathExists=@SIP_CONF@
+# The gateway auto-answers, so a gateway without a brain answers calls into dead air.
+# Upholds= starts the brain whenever this unit is up and finds it inactive or failed —
+# the same tie the engine unit keeps on teaport-brain. The brain's own BindsTo= on this
+# unit closes the loop the other way (it stops with us), and a `systemctl restart`
+# here propagates to it. PartOf= closes the last gap: a brain that CRASHES is brought
+# back by its Restart= as a restart job, and PartOf= propagates that job to us, so the
+# pair restarts together on that path too (verified with user units: the gateway pid
+# changes on every brain crash with this line, and never without it). It matters
+# because the echo canceller references the brain's playout, and a brain relaunched
+# under a running gateway left the canceller eating the caller's speech (STT decoded
+# 0 chars, live 2026-09-03). Cost: a brain crash between calls re-registers the trunk
+# (~2 s); a brain crash mid-call already lost the call.
+Upholds=teaport-sip-brain.service
+PartOf=teaport-sip-brain.service
 
 [Service]
 Type=simple
@@ -24,7 +42,17 @@ RuntimeDirectory=teaport
 RuntimeDirectoryMode=0750
 ExecStart=@SIP_GATEWAY@ @SIP_CONF@
 Restart=always
-RestartSec=5
+# A crash loop must not hammer the registrar: every start is a REGISTER, and an SBC
+# that sees one every few seconds can rate-limit the trunk. RestartSec= is the floor
+# on every systemd — 15 s, a REGISTER rate a registrar tolerates indefinitely, and
+# still a quick return after the one-off crash. On systemd >= 254 the two lines under
+# it stretch that to 2 min over six restarts; older ones (Ubuntu 22.04 ships 249) log
+# an "unknown lvalue" warning for them and keep the flat 15 s, which is what the
+# floor is for. Not StartLimit*: giving up after N failures is the unsupervised
+# state this unit exists to end.
+RestartSec=15
+RestartSteps=6
+RestartMaxDelaySec=120
 
 [Install]
 WantedBy=multi-user.target
