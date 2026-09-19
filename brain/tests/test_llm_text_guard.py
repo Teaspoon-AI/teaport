@@ -594,6 +594,26 @@ async def test_a_barged_punctuation_reply_speaks_nothing():
     assert h.spoken() == RECOVERY_TEXT.lstrip(), (h.spoken(), h.kinds())
 
 
+async def test_a_premature_end_recovery_latches_against_the_real_answer():
+    """The unspeakable-reply End check is subject to the same premature-watchdog
+    reality as the degeneracy trip (test_premature_end_does_not_speak_a_second_
+    recovery_line): the End that follows a lone ellipsis can be engine_tts's
+    watchdog closing a stalled TTS context, not the completion actually finishing.
+    If the check does not latch _tripped, the real answer that resumes in the next
+    segment gets forwarded straight onto the apology it never needed."""
+    h = Guard()
+    await h.feed(LLMFullResponseStartFrame())
+    await h.text(ELL)                                  # the whole (apparent) reply
+    await h.feed(LLMFullResponseEndFrame())             # premature: watchdog-forced
+    await h.text("The capital of Peru is Lima.")        # same completion, resumes
+    await h.feed(LLMFullResponseEndFrame())
+    assert h.spoken() == RECOVERY_TEXT.lstrip(), h.spoken()
+    assert "Lima" not in h.spoken(), (
+        "a real answer arriving after a false recovery must be swallowed, "
+        "not glued onto the apology"
+    )
+
+
 async def test_a_reply_that_forwarded_anything_gets_no_recovery_line():
     """The line is for a reply that vanished, not for one that merely opened with dots
     (test_a_reply_opening_with_an_ellipsis_loses_no_words) or ended in them."""

@@ -82,6 +82,14 @@
 # forwarded none of it speaks the same recovery line — unless a barge-in cancelled
 # it, or a tool call was the real answer.
 #
+# That End is subject to the same premature-watchdog reality as the degeneracy trip
+# above (see _reset_log): it is not proof the completion is over, so speaking the
+# recovery line here latches _tripped exactly as a degeneracy trip would. Without the
+# latch, a model that streams a lone ellipsis, stalls past TTS_STOP_FRAME_TIMEOUT_S,
+# then resumes with the real answer would have that answer forwarded straight onto
+# the apology it never needed — swallowing the tail is what "ends the turn honestly"
+# already means for every other trip cause; this one is no different.
+#
 # The upstream generation is not aborted — this is containment, not cancellation.
 # A true drop-and-retry would need the whole response buffered before TTS starts,
 # which the first-audio latency budget rules out.
@@ -664,6 +672,11 @@ class LLMTextGuard(FrameProcessor):
                     f"speaking the recovery line so the turn does not end in silence"
                 )
                 await self._emit(RECOVERY_TEXT, direction)
+                # Latch it like any other trip (see the module header): this End can
+                # be the watchdog's premature one, and a real answer arriving in the
+                # next segment of the SAME completion must be swallowed, not glued
+                # onto an apology that already went out over the speaker.
+                self._tripped = True
             if self._tripped:
                 logger.warning(
                     f"LLMTextGuard: response ended; swallowed {self._swallowed} "
