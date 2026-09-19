@@ -216,7 +216,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse."
-source = "llm_text_guard.py:105"
+source = "llm_text_guard.py:114"
 
 [[settings]]
 name = "TEAPORT_LLM_GUARD_RECOVERY"
@@ -227,7 +227,7 @@ default = ""
 read = "session"
 tier = "tuning"
 help = "The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment."
-source = "llm_text_guard.py:247"
+source = "llm_text_guard.py:256"
 
 [[settings]]
 name = "TEAPORT_LLM_ERROR_SPEECH"

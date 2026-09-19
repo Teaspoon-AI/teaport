@@ -74,6 +74,14 @@
 # the turn honestly and gives the context a clean assistant message instead of a
 # fragment.
 #
+# The same silence has a second, smaller cause: a reply that IS nothing but punctuation
+# — a bare "..." or a lone "…" as the whole answer to a real question (live 2026-09-04,
+# three times). One marker never trips the counter, the leading-punct strip empties it
+# without a trace, and the turn used to end in dead air with nothing but the 12 s
+# silent-turn bark to say so. So at the End, a response that received text and
+# forwarded none of it speaks the same recovery line — unless a barge-in cancelled
+# it, or a tool call was the real answer.
+#
 # The upstream generation is not aborted — this is containment, not cancellation.
 # A true drop-and-retry would need the whole response buffered before TTS starts,
 # which the first-audio latency budget rules out.
@@ -87,6 +95,7 @@ from loguru import logger
 
 from pipecat.frames.frames import (
     Frame,
+    FunctionCallsStartedFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -384,6 +393,13 @@ class LLMTextGuard(FrameProcessor):
         self._sentences = []
         self._open_sent = ""
         self._held = []
+        # UNSPEAKABLE-REPLY state: non-blank chars received this response (every delta,
+        # before any strip), and whether the response was answered some other way — a
+        # barge-in made it stale, or a tool call IS the answer. Together with _forwarded
+        # they decide, at the End, whether the model answered in words and the guard
+        # threw all of them away — see the End handler.
+        self._received = 0
+        self._answered_otherwise = False
 
     def _reset_log(self):
         """Reset the accounting a trip line reports, keeping the trip itself latched.
@@ -533,6 +549,9 @@ class LLMTextGuard(FrameProcessor):
                 return  # swallow: no push
             if not frame.text:
                 return
+            # strip(): a completion whose only content is a newline before its tool
+            # call did not answer in words, and must not be apologised for.
+            self._received += len(frame.text.strip())
             self._counter.feed(frame.text)
             if self._counter.tripped:
                 self._tripped = True
@@ -591,6 +610,15 @@ class LLMTextGuard(FrameProcessor):
             self._pending = ""
             self._pending_frame = None
             self._tail = ""
+            # ...and so is a recovery line for it: the End that follows a cancelled
+            # completion must not speak into the user's turn either.
+            self._answered_otherwise = True
+        elif isinstance(frame, FunctionCallsStartedFrame):
+            # The tool call is the answer. base_llm broadcasts this before the End it
+            # pushes right after scheduling the handlers (see raw_llm_capture), so it
+            # is in hand when the End decides. Whatever punctuation rode along with
+            # the call is not a reply that vanished.
+            self._answered_otherwise = True
         elif isinstance(frame, LLMFullResponseEndFrame):
             if not self._tripped:
                 # Fold-holdback first, so its tail joins the final sentence…
@@ -614,6 +642,28 @@ class LLMTextGuard(FrameProcessor):
                 else:
                     await self._flush_held(direction)
                     self._open_sent = ""
+            if (self._received and not self._forwarded
+                    and not self._answered_otherwise):
+                # The model answered and every character of it was stripped as
+                # unspeakable — a bare "..." or a lone "…" as the whole reply (live
+                # 2026-09-04, three times: an ellipsis as the answer to "What's the
+                # capital of Peru?", a lone U+2026 acknowledging "okay wait"). Too
+                # little for the degeneracy counter (one marker), so no trip, no
+                # recovery line, and the turn ended in silence with no signal until
+                # the silent-turn watchdog barked 12 s later — and it only barks. An
+                # ellipsis has no sound, and when the user ASKED for one silence is
+                # honest; but the guard cannot tell that from a non-answer, and dead
+                # air after a real question is the worse failure, so the turn ends
+                # audibly either way. Not on a cancelled completion (a barge-in made
+                # the whole response stale, apology included) nor on a tool call (the
+                # call is the answer) — _answered_otherwise. And not when tripped: the
+                # trip already spoke it, so _forwarded is non-zero.
+                logger.warning(
+                    f"LLMTextGuard: reply was entirely unspeakable punctuation — "
+                    f"{self._received} chars received, nothing forwarded; "
+                    f"speaking the recovery line so the turn does not end in silence"
+                )
+                await self._emit(RECOVERY_TEXT, direction)
             if self._tripped:
                 logger.warning(
                     f"LLMTextGuard: response ended; swallowed {self._swallowed} "
