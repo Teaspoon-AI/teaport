@@ -929,8 +929,8 @@ the design and the wire:
 |---|---|---|---|---|---|
 | `clock` | `unmarked` | PR #49 as opened: a final placed by clock (`sc_final_clock`) | ✗ | | |
 | `clock` | `marked` | the same on a wire that says which dones answer commits (`sc_final_clock_marked`) | ✗ | | |
-| `stop` | `unmarked` | as shipped, on the wire as it is (`sc_final_stop`, `sc_final_stop_residual`) | ✗ | ✓ | ✓ |
-| `stop` | `marked` | as shipped, with the one-field engine change (`sc_final_stop_marked`) | ✓ | | ✓ |
+| `stop` | `unmarked` | as shipped, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`, `sc_final_stop_residual`) | ✗ | ✓ | ✓ |
+| `stop` | `marked` | as shipped, against the engine that marks its dones — teagram-engine#36, what .234 runs (`sc_final_stop_marked`) | ✓ | | ✓ |
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a
@@ -1019,7 +1019,12 @@ the shape the fix is for, at a small fraction of its old rate.
   answers a commit and a done from the engine's own close are the same message, so the
   STT pairs by order and the engine's close can take a commit's place (`mispaired`).
   `sc_final_stop` keeps the counterexample and `sc_final_stop_residual` proves it is the
-  only one; the engine-side marker is the fix, and `DONES = "marked"` is that engine.
+  only one; the engine-side marker is the fix, and `DONES = "marked"` is that engine:
+  teagram-engine's `transcription.done` carries `"reason": "commit" | "vad"` since the
+  trailing-silence credit (its PR for issue #29), and `stt.py` places a done marked
+  `vad` as the engine's own close whatever the queue holds. On that engine the marked
+  rows are the shipped configuration; against an older one the field is absent and the
+  queue pairs as before, so the unmarked rows still describe it.
 - **One interim per segment.** `Delta` fires once per open segment: further deltas change
   nothing this model reads, and the engine streams none for a new segment until the
   previous finish is done (one worker per session), which is when the STT's buffer

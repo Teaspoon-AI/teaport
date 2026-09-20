@@ -107,9 +107,9 @@ echo
 echo "SttCommit.tla — the final (PR #49): whose utterance a late final is, and when the turn may end on it"
 run SttCommit.tla sc_final_clock         "(expected: FAILS NoStaleTurnEnd — the first cut: finals placed by clock)"
 run SttCommit.tla sc_final_clock_marked  "(expected: FAILS NoStaleTurnEnd — the clock rule falls even on a marked wire)"
-run SttCommit.tla sc_final_stop          "(expected: FAILS NoStaleTurnEnd — as shipped, unmarked wire: the pairing residual)"
-run SttCommit.tla sc_final_stop_residual "(expected: holds — as shipped: every stale end is a mispairing; the turn never strands)"
-run SttCommit.tla sc_final_stop_marked   "(expected: holds — as shipped, with the engine marking its dones)"
+run SttCommit.tla sc_final_stop          "(expected: FAILS NoStaleTurnEnd — an engine before teagram-engine#36, no reason field: the pairing residual)"
+run SttCommit.tla sc_final_stop_residual "(expected: holds — same engine: every stale end is a mispairing; the turn never strands)"
+run SttCommit.tla sc_final_stop_marked   "(expected: holds — as shipped on the engine that marks its dones, teagram-engine#36)"
 echo
 echo "SttSlot.tla — arbitration of the engine's single STT slot"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS NoFalseBusy)"
