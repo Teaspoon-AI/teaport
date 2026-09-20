@@ -40,6 +40,7 @@ import base64
 import json
 import os
 import time
+from collections import deque
 from dataclasses import dataclass
 from typing import AsyncGenerator, Optional
 
@@ -299,8 +300,8 @@ def _is_slot_busy(exc: Exception) -> bool:
 
 @dataclass
 class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
-    """A final transcript that an interruption cannot flush, stamped with the time of
-    the commit it answers.
+    """A final transcript that an interruption cannot flush, stamped with the VAD stop
+    it answers.
 
     TranscriptionFrame is a plain data frame. On InterruptionFrame every processor
     flushes its queued data frames (FrameProcessor._start_interruption ->
@@ -321,17 +322,32 @@ class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
     cancelled (same pattern as pipecat's own FunctionCallResultFrame). Interims
     stay interruptible on purpose — they are disposable hypotheses.
 
-    `committed_at` is the monotonic time the commit this final answers was sent (the
-    done's own arrival when the engine closed the segment unasked). The stop strategy
-    reads it against the caller's latest VAD start: a final committed BEFORE that
-    start is an earlier utterance's, landing late -- the engine's finish takes ~0.7 s,
-    and a caller who speaks in bursts starts the next utterance inside it -- and must
-    not be taken as the transcript of the utterance now under way, or the turn ends
-    on it and the real final then cuts the reply at 0%. See
-    endpointing.LateStartTurnStopStrategy, and SegmentDoneFrame beside it.
+    `stop_n` names the VAD stop this final answers, as a COUNT of
+    VADUserStoppedSpeakingFrames: the number this service had seen when it sent the
+    commit the final answers (see _send_commit), and the stop strategy's own count of
+    the same frames is what it compares against -- both count the one FIFO the frames
+    travel, so the two agree per frame, with no clock read in two places. A final for
+    a stop the strategy has moved past (a later stop, or the caller started again) is
+    an EARLIER utterance's, landing late -- the engine's finish takes ~0.7 s, and a
+    caller who speaks in bursts starts the next utterance inside it -- and must not
+    end the turn: that ended turns on the previous utterance's words and the real
+    final then cut the reply at 0%. A done the engine sent on its own is stamped by
+    _handle_message's rules. The final IS its segment's close; a wordless close is a
+    SegmentDoneFrame instead. See endpointing.LateStartTurnStopStrategy, and
+    brain/formal/SttCommit.tla for the protocol and its properties.
+
+    None (another producer's final) is taken as the stock strategy would.
     """
 
-    committed_at: Optional[float] = None
+    stop_n: Optional[int] = None
+
+
+@dataclass
+class _Commit:
+    """A commit on the wire and not yet answered by a done (see _send_commit)."""
+    n: int        # VAD stops seen at the send: the stamp its final carries
+    at: float     # monotonic time of the send, for the segment line's latency
+    why: str      # what triggered it: vad-stop | verdict | backstop | ...
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -433,8 +449,21 @@ class TeaportSTTService(WebsocketSTTService):
         # Per-segment accounting for the commit/final boundary — see _log_segment.
         self._seg_bytes = 0        # audio appended since the last final
         self._seg_interims = 0     # interims the engine sent back for it
-        self._commit_at = None     # monotonic time of the commit awaiting a done
-        self._commit_why = ""      # what triggered it: vad-stop | backstop | other
+        # Commits sent and not yet answered, oldest first. The engine answers every
+        # final commit with exactly one done, in order (voxtral_websocket.c: one
+        # worker, commits are a counter it drains in turn), so the done at the head of
+        # the wire answers the commit at the head of this queue -- UNLESS the engine
+        # closed a segment on its own in between, whose done is indistinguishable from
+        # a commit's answer on the wire and takes the commit's place here. That is the
+        # one pairing this service cannot get right; SttCommit.tla's unmarked rows are
+        # its counterexample, and a marker on the engine's done is the fix.
+        self._commits: deque = deque()
+        # The stamp of the last commit sent, for a wordless done nothing asked for --
+        # see _handle_message.
+        self._last_commit_n = 0
+        # VADUserStoppedSpeakingFrames seen this session: what a done's stamp counts
+        # (see FinalTranscriptionFrame). The stop strategy counts the same frames.
+        self._vad_stops = 0
         # Latches the one debug line if the backstop cannot arm at all (no TaskManager).
         self._stranded_unavailable = False
         # _receive_task is created only on a SUCCESSFUL connect; initialize it here
@@ -545,6 +574,9 @@ class TeaportSTTService(WebsocketSTTService):
         # the chain is VAD stop -> verdict -> commit -> final -> turn stop, with no
         # cycle in it.
         if isinstance(frame, VADUserStoppedSpeakingFrame):
+            # Counted before anything here can commit, so a commit sent at this stop
+            # is stamped with it.
+            self._vad_stops += 1
             # The VAD stop came, so the backstop's premise (that it never would) is
             # gone whichever path commits.
             await self._cancel_stranded_commit()
@@ -620,9 +652,8 @@ class TeaportSTTService(WebsocketSTTService):
                     "past the ceiling) did not cover the aggregator's queue here")
                 return
             # Nothing owed: vad-stop mode, a stop the bot's speech already flushed, a
-            # caller who resumed before the verdict landed, a segment the engine closed
-            # on its own under the hold, or a verdict for a stop this segment never
-            # saw (a reconnect in between).
+            # caller who resumed before the verdict landed, or a verdict for a stop
+            # this segment never saw (a reconnect in between).
             logger.trace(f"{self}: verdict {frame.source} complete={frame.complete} "
                          "with no commit pending; ignored")
             return
@@ -771,8 +802,10 @@ class TeaportSTTService(WebsocketSTTService):
         )
         await self._send_commit(final=True, why="backstop")
 
-    def _log_segment(self, msg: dict) -> None:
+    def _log_segment(self, msg: dict, commit: Optional[_Commit]) -> None:
         """One line per segment, at the seam between what we sent and what came back.
+        `commit` is the one this done answers, or None when the engine closed the
+        segment on its own.
 
         This is the BOUNDARY line: everything left of it is the brain's doing, everything
         right of it is the engine's. Live 2026-09-10 05:57:44 the caller spoke for 1.2 s
@@ -793,10 +826,11 @@ class TeaportSTTService(WebsocketSTTService):
         # that is worse than no line, because it reads as a fault in itself.
         secs = self._seg_bytes / 2 / (self.sample_rate or 16000)
         engine_text = (msg.get("text") or "").strip()
-        lat = f"{time.monotonic() - self._commit_at:.2f}s" if self._commit_at else "no-commit"
+        lat = f"{time.monotonic() - commit.at:.2f}s" if commit else "no-commit"
+        why = commit.why if commit else ""
         verdict = f"{len(engine_text)} chars" if engine_text else "EMPTY"
         line = (f"{self}: segment {secs:.2f}s audio, {self._seg_interims} interims, "
-                f"commit={self._commit_why} -> done in {lat}: {verdict}")
+                f"commit={why} -> done in {lat}: {verdict}")
         # An empty final on a segment the engine DID stream interims for is the shape
         # worth noticing: it had words a moment ago and returned none.
         #
@@ -813,14 +847,12 @@ class TeaportSTTService(WebsocketSTTService):
         # empty is ordinary and logs at debug.
         if not engine_text and self._seg_interims:
             logger.warning(line + " — engine streamed interims then returned no text")
-        elif not engine_text and self._commit_why in _VAD_STOP_COMMITS and secs > 0.3:
+        elif not engine_text and why in _VAD_STOP_COMMITS and secs > 0.3:
             logger.warning(line + " — audio in, no words out")
         else:
             logger.debug(line)
         self._seg_bytes = 0
         self._seg_interims = 0
-        self._commit_at = None
-        self._commit_why = ""
 
     async def _send_commit(self, final: bool = True, why: str = "other"):
         """Force a final. `why` is recorded so the segment line says which path fired."""
@@ -830,8 +862,8 @@ class TeaportSTTService(WebsocketSTTService):
         # arm a hold this commit then never clears. Whatever sent it, the stop this
         # segment was waiting on is answered.
         await self._cancel_hold_expiry()
-        self._commit_at = time.monotonic()
-        self._commit_why = why
+        commit = _Commit(n=self._vad_stops, at=time.monotonic(), why=why)
+        self._last_commit_n = commit.n
         self._commit_pending = False
         if self._streaming:
             # Nothing to ask for: generation is already running, and sending final=True
@@ -847,6 +879,12 @@ class TeaportSTTService(WebsocketSTTService):
             #
             # -- one question split across three turns, each carrying the previous
             # one's ending. So wait out the delay before drawing the line.
+            #
+            # One boundary at a time: a later commit supersedes the earlier one's
+            # timer, so it takes the earlier one's place here too, or the synthesized
+            # done that answers it would pop the wrong stamp for ever after.
+            self._commits.clear()
+            self._commits.append(commit)
             await self._schedule_stream_boundary()
             return
         if self._websocket:
@@ -857,7 +895,11 @@ class TeaportSTTService(WebsocketSTTService):
             except (websockets.exceptions.ConnectionClosed, OSError) as e:
                 # Lost commit = lost turn (no final transcript), but raising here
                 # would kill the whole pipeline. The receive task owns reconnection.
+                # Not queued: no done is coming for it, and a stamp left waiting here
+                # would be handed to the next done the engine sends on its own.
                 logger.warning(f"{self}: commit dropped, send failed: {e}")
+                return
+            self._commits.append(commit)
 
     async def _schedule_stream_boundary(self):
         """Draw the segment boundary once the model's trailing deltas have landed.
@@ -1002,8 +1044,10 @@ class TeaportSTTService(WebsocketSTTService):
             # Per-session, like the buffer beside it: a run of 4 empty finals before a
             # reconnect plus 1 after is not 5 finals of the same microphone.
             self._empty_finals = 0
-            # The buffer it would have committed is gone, and the socket with it.
+            # The buffer it would have committed is gone, and the socket with it --
+            # and so are the dones its commits were owed.
             await self._cancel_stranded_commit()
+            self._commits.clear()
             self._commit_pending = False
             self._closed_unasked = False
             await self._cancel_hold_expiry()
@@ -1090,36 +1134,51 @@ class TeaportSTTService(WebsocketSTTService):
             # commits a user turn whose content is whitespace.
             # The segment closed, however it was committed — the backstop is done.
             await self._cancel_stranded_commit()
-            # Read before _log_segment clears it: a done with no commit of ours in
-            # flight is the engine closing the segment on its own (its endpointer, or
-            # its ~15 s buffer), not the answer to one we sent.
-            unasked = self._commit_at is None
-            # The stamp the final and the SegmentDoneFrame below carry (see
-            # FinalTranscriptionFrame): when the segment was committed, or, unasked,
-            # when the engine closed it -- either way, the moment after which the
-            # caller's words are no longer in it.
-            committed_at = time.monotonic() if unasked else self._commit_at
-            self._log_segment(msg)
+            # The commit this done answers, oldest first (see _commits). None is the
+            # engine closing the segment on its own (its endpointer; its ~15 s buffer
+            # sends no done), not the answer to one we sent.
+            commit = self._commits.popleft() if self._commits else None
+            unasked = commit is None
+            self._log_segment(msg, commit)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
             if text and not engine_text:
                 logger.debug(f"{self}: empty final — falling back to the interim "
                              f"hypothesis {text[:60]!r} to close the turn")
             self._interim_buffer = ""
+            # The stamp the final (or the SegmentDoneFrame) below carries: the VAD stop
+            # this close answers, for the stop strategy to hold against its own count
+            # (see FinalTranscriptionFrame). A commit's answer is stamped with the
+            # commit's. The engine's own close names no stop, so it is placed by what
+            # this service knows:
+            #   * it carries no words -- the engine's own close is on speech it heard,
+            #     so this is the silent tail a commit of ours closed behind a close
+            #     of the engine's that took the commit's place in the queue (the
+            #     pairing _commits documents): it answers that commit's stop after
+            #     all, and never the stop of an utterance since;
+            #   * otherwise it is the caller's words up to some point before now --
+            #     inside the utterance under way, or an earlier one's whose finish
+            #     ran long: whichever, no stop of ours has been answered by it, so it
+            #     is stamped as the NEXT stop's and answers that only in part. The
+            #     strategy waits for the close the stop itself produces: the rest of
+            #     the words, or the silent tail the stop's commit returns at once.
+            # It does NOT release a segment held for its verdict, though the first
+            # cut did: this close may be the PREVIOUS utterance's, landing under the
+            # hold on the next one (the engine's finish outlasting the caller's next
+            # utterance), and a released hold would leave those words to the engine's
+            # own close, unstamped. Keeping the hold costs the ceiling's commit one
+            # wordless done, which the engine answers without a decode (no audio fed
+            # since its own close: voxtral_websocket.c's "empty commit").
+            if not unasked:
+                stop_n = commit.n
+            elif not text:
+                stop_n = self._last_commit_n
+            else:
+                stop_n = self._vad_stops + 1
             if unasked:
                 # See the VAD stop in process_frame: the next stop, if none has come
-                # yet, closes the tail rather than hold it. And if a stop is already
-                # holding this segment for its verdict, the hold has nothing left to
-                # keep whole -- the words are in the final pushed below -- and that
-                # verdict would only close a segment of silence: release it, and the
-                # verdict then finds nothing pending. Not for a done that answers a
-                # commit of ours, which can land while a LATER stop is rightly held.
+                # yet, closes the tail rather than hold it.
                 self._closed_unasked = True
-                if self._commit_pending:
-                    logger.debug(f"{self}: the engine closed the held segment on its "
-                                 "own; releasing the hold")
-                    self._commit_pending = False
-                    await self._cancel_hold_expiry()
             # A run of finals with nothing in them means the engine is being handed audio
             # it can find no words in. Both are silent from the pipeline's side — no
             # transcript, so no turn, so no reply — and that is indistinguishable from the
@@ -1155,15 +1214,15 @@ class TeaportSTTService(WebsocketSTTService):
                         self._language,
                         result=msg,
                         finalized=True,
-                        committed_at=committed_at,
+                        stop_n=stop_n,
                     )
                 )
-            # Words or none, the segment closed: the stop strategy holds an earlier
-            # utterance's late final back from ending the turn (endpointing.py), and
-            # this is how it learns the current utterance's own segment came to
-            # nothing, so the earlier final is the turn's transcript after all.
-            # Behind the final, never ahead of it -- a data frame, so it queues.
-            await self.push_frame(SegmentDoneFrame(committed_at=committed_at))
+            else:
+                # The segment closed with nothing in it. The stop strategy is waiting
+                # on this stop's close (endpointing.py): this is how it learns the
+                # close came, and that the words it already holds are all the turn
+                # will get. A data frame, so it queues behind the interims it follows.
+                await self.push_frame(SegmentDoneFrame(stop_n=stop_n))
             await self.stop_processing_metrics()
 
         elif mtype == "session.created":

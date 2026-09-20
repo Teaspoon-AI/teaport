@@ -9,7 +9,6 @@
 # swallowing every barge-in there is.
 #
 import os
-import time
 from dataclasses import dataclass
 
 from loguru import logger
@@ -22,7 +21,7 @@ from pipecat.frames.frames import (
     SystemFrame,
     UninterruptibleFrame,
 )
-from pipecat.processors.frame_processor import FrameDirection
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
@@ -223,25 +222,37 @@ class TurnVerdictFrame(SystemFrame):
 
 @dataclass
 class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
-    """The STT's segment closed: one per transcription.done, words or none, pushed
-    DOWNSTREAM by the STT service right behind the FinalTranscriptionFrame the done
-    produced -- or in its place, when the engine found no words.
+    """The STT's segment closed with NO words in it: pushed DOWNSTREAM by the STT
+    service in place of the FinalTranscriptionFrame a done with words produces (a
+    final is its own segment's close).
 
-    `committed_at` is the monotonic time of the commit the done answers (the done's
-    own arrival when the engine closed the segment unasked), the same stamp the final
-    carries. The stop strategy reads it against the caller's latest VAD start
-    (_handle_transcription): a final committed before that start is an EARLIER
-    utterance's, and this frame is how the strategy learns that the current
-    utterance's own segment closed with nothing in it, so that the earlier final is
-    all the turn will ever hold and the turn can end on it.
+    `stop_n` is the VAD stop the close answers, counted as the final's stamp is (see
+    FinalTranscriptionFrame in stt.py). The stop strategy waits for the close of the
+    stop it is on before it ends the turn (LateStartTurnStopStrategy): this frame is
+    how it learns that close came with nothing in it, so the words it already holds
+    -- an earlier utterance's final that landed late -- are all the turn will get.
 
-    A data frame, not a system frame, because it must arrive AFTER the final it
-    follows: a system frame overtakes the queue. Uninterruptible for the same reason
-    the final is (see FinalTranscriptionFrame in stt.py): the turn start that a
-    MinWords interim triggers flushes every interruptible frame queued behind it.
+    A data frame, not a system frame, because it must arrive AFTER the interims and
+    finals it follows: a system frame overtakes the queue. Uninterruptible for the
+    same reason the final is: the turn start that a MinWords interim triggers flushes
+    every interruptible frame queued behind it. Consumed by SegmentDoneSink right
+    below the aggregator; nothing downstream of the turn strategies reads it.
     """
 
-    committed_at: float = 0.0
+    stop_n: int
+
+
+class SegmentDoneSink(FrameProcessor):
+    """Drops SegmentDoneFrames. Sits right after the user aggregator, whose stock
+    process_frame forwards every data frame it does not itself consume: the frame is
+    for the stop strategy (which the aggregator hands it to) and would otherwise ride
+    the queue of every processor down to the transport, one per wordless close."""
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, SegmentDoneFrame):
+            return
+        await self.push_frame(frame, direction)
 
 
 class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
@@ -320,16 +331,34 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     any done can exist. B's final then lands as a new turn, interrupts the reply to A
     before a word of it plays (LEDGER "CUT heard~0%"), and the LLM runs again on A+B,
     1.2-1.5 s later than it needed to. Since 2026-09-16: 38 of 431 replies cut at 0%,
-    ~10 of the SIP path's 24 this shape.
+    ~10 of the SIP path's 24 this shape. The same shape without the second VAD start
+    -- the engine's own endpointer cutting a breath shorter than ENDPOINT_STOP_SECS,
+    its final for the first half landing, the safety net firing on it while the
+    second half's commit is still out -- ends the turn on half a sentence.
 
-    The rule: a final stamped `committed_at` (stt.py) earlier than the caller's latest
-    VAD start answers a commit sent before this utterance began. Its words stay in the
-    turn -- the aggregator has them -- but it neither finalizes the utterance nor
-    stands in as its text; the turn ends on the utterance's OWN final, or, when its
-    segment closes with no words (SegmentDoneFrame with nothing before it), on the
-    earlier final after all, since that is then all the turn holds. The p99 safety net
-    cannot fire on the earlier final either, because it never becomes `_text`. Finals
-    without the stamp (another STT service) are taken as before.
+    The rule: the turn does not end while the latest VAD stop counted here is still
+    OWED its close. The STT stamps every final and every wordless close
+    (SegmentDoneFrame) with the VAD stop it answers, as a count of
+    VADUserStoppedSpeakingFrames (stt.py: FinalTranscriptionFrame); this strategy
+    counts the same frames, notes at each stop that its close is owed, and takes the
+    debt as paid by the close stamped with it -- whenever that lands, the caller
+    quiet or not. Every final's words still go where they always went -- the
+    aggregator has them, and `_text` takes them, as stock -- but neither the verdict,
+    the ceiling, the p99 safety net nor pipecat's fallback for a transcript with no
+    stop in sight can end the turn while a close is owed
+    (_maybe_trigger_user_turn_stopped). A late final of the previous utterance
+    therefore pays that utterance's debt and ends nothing; the turn ends on this
+    utterance's own final, or on its wordless close, which then finalizes whatever
+    `_text` holds -- the earlier final, when the caller's resumption decoded to
+    nothing. The debt survives turn boundaries on purpose: it is a fact about the
+    STT's segment, not the turn, and the turn the controller closes under a running
+    ceiling (its watchdog, keep_barge_in_reachable) leaves the STT holding exactly
+    such a segment -- the half of a sentence the backstop or the engine's own cut
+    had already returned would otherwise open a new turn and end it through the
+    fallback while the other half is still on its way (SttCommit.tla found both).
+    Finals without the stamp (another STT service) pay whatever is owed, as stock.
+    What the STT cannot stamp right, and what the wait costs, is in
+    brain/formal/SttCommit.tla and its README section.
     """
 
     def __init__(self, *, speculator=None, **kwargs):
@@ -341,11 +370,15 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # been fully processed: the controller notifies the strategies of the turn start
         # BEFORE it hands them the frame, within the same process_frame call.
         self._turn_opened_by_frame = False
-        # When the caller last started speaking (monotonic, the clock the STT stamps
-        # its finals with), and the words of a final that answered a commit sent before
-        # that -- held for the case where the current utterance's segment closes empty.
-        self._utt_started_at = 0.0
-        self._earlier_final = ""
+        # VADUserStoppedSpeakingFrames seen: the count the STT stamps its finals with
+        # (see the class note), and the latest of them whose close has not landed --
+        # None once it has. NOT per turn: see the class note. The debt is only
+        # collected once the session's STT has shown it stamps its closes (the first
+        # stamped one latches this): another STT's finals are taken as stock, a
+        # final in hand before the stop included.
+        self._stops = 0
+        self._owed = None
+        self._stamped = False
 
     async def trigger_user_turn_inference_triggered(self):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
@@ -365,24 +398,45 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         finally:
             self._turn_opened_by_frame = False
 
+    def _note_close(self, stop_n: int) -> bool:
+        """The STT closed a segment stamped as answering VAD stop `stop_n`. If that is
+        the stop whose close is owed, the debt is paid -- whether the caller is quiet
+        (this utterance's own close) or has started again (the previous utterance's
+        final, landing late). Any other stamp -- a stop still to come, or one already
+        paid -- changes nothing. Returns whether it paid."""
+        self._stamped = True
+        if stop_n == self._owed:
+            self._owed = None
+            return True
+        logger.debug(f"{self}: segment close for VAD stop {stop_n} does not close "
+                     f"stop {self._owed} (the latest counted: {self._stops}); its "
+                     "words are kept, the turn waits for that close")
+        return False
+
     async def _handle_segment_done(self, frame: SegmentDoneFrame):
-        """The current utterance's segment closed with no words of its own: the earlier
-        final held back in _handle_transcription is all the turn holds, so take it as
-        the transcript now and let the verdict (or the ceiling) end the turn on it."""
-        if frame.committed_at < self._utt_started_at:
-            return  # closes a segment from before the caller's latest start
-        if not self._earlier_final or self._text:
-            return  # nothing held back, or this utterance's own final has landed
-        if not self._vad_stopped:
-            # The engine closed the segment on its own, mid-utterance: the caller is
-            # still talking and their words are still to come. Keep holding.
+        """The segment closed with no words. If it is the owed close, whatever `_text`
+        holds -- the previous utterance's late final, or nothing -- is all the turn
+        will get: finalize it and let the verdict (or the ceiling) end the turn."""
+        if not self._note_close(frame.stop_n):
             return
-        logger.debug(f"{self}: the utterance's segment closed with no words -- the "
-                     f"earlier final {self._earlier_final[:40]!r} is the turn's transcript")
-        self._text = self._earlier_final
-        self._earlier_final = ""
+        if self._text:
+            logger.debug(f"{self}: the utterance's segment closed with no words -- "
+                         f"{self._text[:40]!r} is the turn's transcript")
         self._transcript_finalized = True
         await self._maybe_trigger_user_turn_stopped()
+
+    async def _maybe_trigger_user_turn_stopped(self):
+        # The stock trigger, gated: not while the latest VAD stop counted here is
+        # owed its close. Every path that ends the turn passes here -- the verdict at
+        # the stop (inline, with a final in hand), the ceiling, the p99 safety net's
+        # timer, the final's own arrival and the no-stop fallback's timer -- so this
+        # is the one place the rule in the class note is enforced. The safety net
+        # thereby never fires on a VAD-stop path: this STT always closes the segment
+        # (a commit for every stop, the backstop for a missed one, the hold's expiry
+        # for a lost verdict), and the net exists for STTs that do not.
+        if self._wait_for_transcript and self._stamped and self._owed is not None:
+            return
+        await super()._maybe_trigger_user_turn_stopped()
 
     async def _maybe_speculate(self, before: int, why: str):
         """Ask for a speculation if the frame just handled left a finalized transcript
@@ -401,19 +455,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         await self.speculator.start(why)
 
     async def _handle_transcription(self, frame):
-        committed_at = getattr(frame, "committed_at", None)
-        if frame.finalized and committed_at is not None and committed_at < self._utt_started_at:
-            # Answers a commit sent before the caller's latest start: an earlier
-            # utterance's final, arriving late (see the class note). The aggregator
-            # keeps its words; this utterance is still owed a final of its own.
-            logger.debug(f"{self}: final {frame.text[:40]!r} was committed "
-                         f"{self._utt_started_at - committed_at:.2f}s before the caller's "
-                         "latest start -- kept for the turn, not taken as this "
-                         "utterance's final")
-            self._earlier_final = frame.text
-            return
         if frame.finalized:
-            self._earlier_final = ""
+            stop_n = getattr(frame, "stop_n", None)
+            if stop_n is not None:
+                self._note_close(stop_n)
         before = self._inferences
         await super()._handle_transcription(frame)
         if frame.finalized:
@@ -422,6 +467,12 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                 else "no VAD stop yet")
 
     async def _handle_vad_user_stopped_speaking(self, frame):
+        # Counted before the stock handler runs the model, and owed its close from
+        # here: the STT commits for every stop it sees (or holds and then commits),
+        # and the turn's end waits for what that returns. A close stamped with this
+        # stop cannot have come before it (the STT counts the same frame first).
+        self._stops += 1
+        self._owed = self._stops
         before = self._inferences
         await super()._handle_vad_user_stopped_speaking(frame)
         # The model has answered (super() awaits the inference): tell the STT first,
@@ -461,9 +512,6 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                               FrameDirection.UPSTREAM)
 
     async def _handle_vad_user_started_speaking(self, frame):
-        # Read here, not off frame.timestamp: that is wall-clock, and the STT stamps
-        # its finals with the monotonic clock.
-        self._utt_started_at = time.monotonic()
         await super()._handle_vad_user_started_speaking(frame)
         if self.speculator is not None:
             # The caller resumed: whatever they add, the committed text will not be
@@ -480,11 +528,6 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
 
     async def handle_user_turn_started(self):
         self._turn_opened_by_frame = True
-        # A final held back from the previous turn went out with that turn. (When the
-        # frame opening this turn IS such a final, _handle_transcription runs after
-        # this and holds it again: the controller reports the start before it hands
-        # the strategies the frame.)
-        self._earlier_final = ""
         if self.speculator is not None:
             await self.speculator.cancel("new-turn")
         if self._vad_stopped and not self._vad_user_speaking:
@@ -521,7 +564,6 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             logger.debug(f"{self}: turn closed under an INCOMPLETE verdict -- the ceiling "
                          "will not fire; closing the STT's held segment with the turn")
             await self._push_verdict(True, "turn-stopped")
-        self._earlier_final = ""
         await super().handle_user_turn_stopped()
 
 

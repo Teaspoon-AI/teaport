@@ -49,6 +49,7 @@ from teaport_brain.endpointing import (
     NarrowbandSileroMixin,
     SMARTTURN_COMPLETE_THRESHOLD,
     SMARTTURN_STOP_SECS,
+    SegmentDoneSink,
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
     VAD_SAMPLE_RATE,
@@ -783,6 +784,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         # without one every search returns None after its full timeout, for nothing.
         MemoryRecall(context) if agent_backend.HAS_AGENT else None,
         context_aggregator.user(),
+        # The STT's wordless segment closes are for the stop strategy, which the
+        # aggregator has just handed them to; the stock aggregator forwards every
+        # other data frame, so they are dropped here rather than ride to the transport.
+        SegmentDoneSink(),
         heard_corrector,
         # A failed completion must be HEARD, not just logged (see the module). ABOVE the
         # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a

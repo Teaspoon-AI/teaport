@@ -24,8 +24,9 @@
 #   * a held segment whose verdict never arrives expires into a commit with a warning,
 #     a verdict that then arrives is logged as late rather than lost, and the
 #     session-wide fallback to vad-stop is undone by the first verdict that arrives;
-#   * a done the engine sends on its own releases a held segment, and a stop after
-#     such a close commits the tail rather than hold it;
+#   * a done the engine sends on its own does NOT release a held segment (it may be
+#     the previous utterance's, landing late) -- the ceiling's verdict closes the
+#     silent tail -- and a stop after such a close commits the tail rather than hold it;
 #   * the stranded backstop stands down while a segment is held, and stands back up
 #     when the caller resumes;
 #   * the commit's cancel of a live hold is awaited, and comes before the bookkeeping;
@@ -384,23 +385,29 @@ async def test_a_verdict_that_arrives_after_the_expiry_is_late_not_lost():
         logger.remove(sink)
 
 
-async def test_a_done_the_engine_sent_on_its_own_releases_the_hold():
-    """The engine's endpointer closes segments on its own. One that closes the HELD
-    segment has put its words in the final already: the hold has nothing left to keep
-    whole, and the verdict it was waiting for would only close a segment of silence
-    (a finish() decode under the reply, logged as a wordless final)."""
+async def test_a_done_the_engine_sent_on_its_own_keeps_the_hold():
+    """The engine's endpointer closes segments on its own. One that lands under a
+    hold has USUALLY closed the held segment -- but it can as well be the previous
+    utterance's, its finish outlasting the caller's next utterance (PR #49 review),
+    and the wire does not say which. So the hold stays, and the ceiling's verdict
+    commits: what that closes is the silent tail, which the engine answers without
+    a decode (no audio fed since its own close). The final is stamped as the next
+    stop's -- it answers no stop of ours -- and the tail's wordless done as the
+    ceiling's commit's; the stop strategy ends the turn on the latter."""
     s = Recorder()
     await delta(s, "what time is it")
     await vad_stop(s)
     await verdict(s, False)
     assert s._commit_pending is True and s._hold_task is not None
     await done(s, "what time is it")          # unasked: no commit of ours in flight
-    assert s._commit_pending is False, "a segment the engine closed itself is not held"
-    assert s._hold_task is None, "nor is its expiry armed"
+    assert s._commit_pending is True, "the engine's own close released the hold"
+    assert s._hold_task is not None, "and its expiry"
     await verdict(s, True, source="ceiling")
-    assert s._websocket.commits() == [], "the ceiling's verdict committed an empty segment"
-    finals = [f.text for f in s.pushed if getattr(f, "finalized", False)]
-    assert finals == ["what time is it"]
+    assert s.commit_whys() == ["ceiling"], "the ceiling's verdict must close the tail"
+    await done(s, "")
+    closes = [(type(f).__name__, f.stop_n) for f in s.pushed
+              if type(f).__name__ in ("FinalTranscriptionFrame", "SegmentDoneFrame")]
+    assert closes == [("FinalTranscriptionFrame", 2), ("SegmentDoneFrame", 1)], closes
 
 
 async def test_a_done_that_answers_our_commit_leaves_a_later_hold_alone():
