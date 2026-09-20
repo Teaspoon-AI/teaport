@@ -408,6 +408,13 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         if stop_n == self._owed:
             self._owed = None
             return True
+        if self._owed is None:
+            # Nothing owed: the engine's own close of a segment it opened on noise
+            # (hundreds a day, stamped with the last commit's stop, already paid), or
+            # a close for a stop already answered. Not worth a line each.
+            logger.trace(f"{self}: segment close for VAD stop {stop_n} with no stop owed "
+                         f"(the latest counted: {self._stops})")
+            return False
         logger.debug(f"{self}: segment close for VAD stop {stop_n} does not close "
                      f"stop {self._owed} (the latest counted: {self._stops}); its "
                      "words are kept, the turn waits for that close")

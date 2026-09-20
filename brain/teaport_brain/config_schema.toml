@@ -628,7 +628,7 @@ default = "16000"
 read = "startup"
 tier = "tuning"
 help = "8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample."
-source = "endpointing.py:731"
+source = "endpointing.py:738"
 
 [[settings]]
 name = "TEAPORT_INTERRUPT_MIN_WORDS"
