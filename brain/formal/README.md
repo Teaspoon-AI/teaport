@@ -929,8 +929,8 @@ the design and the wire:
 |---|---|---|---|---|---|
 | `clock` | `unmarked` | PR #49 as opened: a final placed by clock (`sc_final_clock`) | ✗ | | |
 | `clock` | `marked` | the same on a wire that says which dones answer commits (`sc_final_clock_marked`) | ✗ | | |
-| `stop` | `unmarked` | as shipped, on the wire as it is (`sc_final_stop`, `sc_final_stop_residual`) | ✗ | ✓ | ✓ |
-| `stop` | `marked` | as shipped, with the one-field engine change (`sc_final_stop_marked`) | ✓ | | ✓ |
+| `stop` | `unmarked` | as shipped, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`, `sc_final_stop_residual`) | ✗ | ✓ | ✓ |
+| `stop` | `marked` | as shipped, against the engine that marks its dones — teagram-engine#36, what .234 runs (`sc_final_stop_marked`) | ✓ | | ✓ |
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a

@@ -40,6 +40,8 @@ import os
 import sys
 import time
 
+from loguru import logger
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
 
@@ -476,8 +478,8 @@ class Recorder(TeaportSTTService):
         await self.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2),
                                  FrameDirection.DOWNSTREAM)
 
-    async def verdict(self, complete):
-        await self.process_frame(TurnVerdictFrame(complete=complete, source="verdict"),
+    async def verdict(self, complete, source="verdict"):
+        await self.process_frame(TurnVerdictFrame(complete=complete, source=source),
                                  FrameDirection.UPSTREAM)
 
     async def delta(self, text):
@@ -543,6 +545,19 @@ async def test_a_done_the_engine_marks_as_its_own_never_takes_a_commits_place():
     assert s.closes() == [("final", 1)], s.closes()
     assert not s._commits
 
+    # The one drift this side can see: a done marked as a commit's answer with no
+    # commit outstanding. Taken as the engine's own close, and said so.
+    warnings = []
+    sink = logger.add(lambda m: warnings.append(m), level="WARNING")
+    try:
+        s = Recorder()
+        await s.delta(A_TEXT)
+        await s.done(A_TEXT, reason="commit")
+    finally:
+        logger.remove(sink)
+    assert s.closes() == [("final", 1)], s.closes()
+    assert any("no commit outstanding" in w for w in warnings), warnings
+
 
 async def test_an_unasked_close_answers_no_stop_and_keeps_a_hold():
     """The engine's own close, landing after the caller resumed (stop 1's verdict
@@ -586,6 +601,31 @@ async def test_an_unasked_close_with_words_is_stamped_with_the_stop_to_come():
     assert [c["final"] for c in s._websocket.commits()] == [True]
     await s.done("")
     assert s.closes() == [("final", 1), ("done", 1)], s.closes()
+
+
+async def test_a_marking_engines_close_in_the_stops_silence_leaves_the_commit_its_answer():
+    """The ceiling path on the new engine, in the order the turn's end now rides on:
+    the caller's stop is held INCOMPLETE, the engine's own endpointer closes the
+    utterance in the silence (1.5 s of it) before the ceiling's commit goes out, and
+    the commit is answered EMPTY right behind it -- no decode, one worker iteration
+    later. The engine's close is marked vad and stamped as the next stop's; the
+    commit's wordless answer is marked commit and stamped with the stop: the turn
+    ends on that SegmentDoneFrame(1), not on the final. (With the verdict commit
+    beating the engine's close -- the everyday turn -- there is one done, marked
+    commit, with the words.)"""
+    s = Recorder()
+    await s.vad_start()
+    await s.delta(A_TEXT)
+    await s.vad_stop()                       # stop 1
+    await s.verdict(False)                   # INCOMPLETE: held for the ceiling
+    await s.done(A_TEXT, reason="vad")       # the engine's own close, in the silence
+    assert s._commit_pending is True and s._websocket.commits() == []
+    assert s.closes() == [("final", 2)], s.closes()
+    await s.verdict(True, source="ceiling")  # the ceiling: commit 1 goes out
+    assert [c["final"] for c in s._websocket.commits()] == [True]
+    await s.done("", reason="commit")        # its answer: the silent tail, no decode
+    assert s.closes() == [("final", 2), ("done", 1)], s.closes()
+    assert not s._commits
 
 
 async def test_an_unasked_wordless_close_is_stamped_with_the_last_commit():

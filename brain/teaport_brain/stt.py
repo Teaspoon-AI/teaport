@@ -459,7 +459,11 @@ class TeaportSTTService(WebsocketSTTService):
         # commit's place here. That is the one pairing the queue alone cannot get
         # right; SttCommit.tla's unmarked rows are its counterexample, and the
         # "reason" field the engine sends since the trailing-silence credit is the
-        # marker that closes it (_handle_message).
+        # marker that closes it (_handle_message). The marker is trusted: a done
+        # marked "commit" with nothing queued is logged (it cannot happen on a
+        # correct engine), but an engine that labelled a commit's answer "vad"
+        # would leave that commit's stamp queued for the NEXT done to inherit, and
+        # nothing on this side can tell -- that direction is the engine's to keep.
         self._commits: deque = deque()
         # The stamp of the last commit sent, for a wordless done nothing asked for --
         # see _handle_message.
@@ -1149,6 +1153,16 @@ class TeaportSTTService(WebsocketSTTService):
                 commit = None
             else:
                 commit = self._commits.popleft() if self._commits else None
+                if commit is None and msg.get("reason") == "commit":
+                    # Cannot happen on an engine that answers every final commit
+                    # once (teagram-engine#36 does): either a commit this service
+                    # never recorded, or an engine labelling its own closes as
+                    # answers. Taken as the engine's own close, which is what an
+                    # unmatched done is; the drift is named so it is not silent.
+                    logger.warning(f"{self}: a done marked as a commit's answer arrived "
+                                   "with no commit outstanding -- the engine and this "
+                                   "service disagree about what was sent; taken as the "
+                                   "engine's own close")
             unasked = commit is None
             self._log_segment(msg, commit)
             engine_text = (msg.get("text") or "").strip()
