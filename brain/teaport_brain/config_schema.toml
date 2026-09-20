@@ -418,7 +418,7 @@ default = 0.7
 read = "startup"
 tier = "diag"
 help = "Only with the streaming backend."
-source = "stt.py:220"
+source = "stt.py:221"
 
 # ---- tts chunking
 
@@ -653,7 +653,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "Commit a segment ourselves after this much interim quiet with no VAD stop, so a missed stop loses a second rather than the turn."
-source = "stt.py:207"
+source = "stt.py:208"
 
 [[settings]]
 name = "TEAPORT_STT_COMMIT_ON"
@@ -665,7 +665,7 @@ default = "verdict"
 read = "startup"
 tier = "tuning"
 help = "What closes the transcript segment and forces the final. verdict: Smart Turn's answer to the VAD stop — done commits at once, not-done holds the segment open until the turn is judged complete, so a mid-sentence pause keeps one utterance instead of splitting it into two context-free decodes; the model's inference (~0.1 s) is then on the commit path, which lowering ENDPOINT_STOP_SECS more than pays for where the verdicts are trustworthy. vad-stop: the raw VAD stop, before the verdict exists (the behaviour before issue #43); a turn that falls through SMARTTURN_STOP_SECS gets its final ~0.8 s sooner, and TEAPORT_SPECULATIVE_REPLY needs this. Either way a VAD stop while the bot is speaking commits at once — that flush is the barge-in."
-source = "stt.py:150"
+source = "stt.py:151"
 
 [[settings]]
 name = "HEARD_MODE"

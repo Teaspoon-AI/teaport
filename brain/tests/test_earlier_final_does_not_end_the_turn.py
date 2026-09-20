@@ -483,8 +483,11 @@ class Recorder(TeaportSTTService):
     async def delta(self, text):
         await self._handle_message({"type": "transcription.delta", "delta": text})
 
-    async def done(self, text):
-        await self._handle_message({"type": "transcription.done", "text": text})
+    async def done(self, text, reason=None):
+        msg = {"type": "transcription.done", "text": text}
+        if reason is not None:
+            msg["reason"] = reason
+        await self._handle_message(msg)
 
     def closes(self):
         """(kind, stamp) per segment close pushed, in order."""
@@ -513,6 +516,32 @@ async def test_the_stt_stamps_each_final_with_the_stop_its_commit_answered():
     await s.done(A_TEXT)
     await s.done(B_TEXT)
     assert s.closes() == [("final", 1), ("final", 2)], s.closes()
+
+
+async def test_a_done_the_engine_marks_as_its_own_never_takes_a_commits_place():
+    """The pairing residual, closed by the engine's marker: commit 1 is out when the
+    engine's own close of the first half lands. Unmarked, the queue hands that done
+    commit 1's stamp and the commit's real answer -- the rest of the sentence --
+    arrives as nobody's (SttCommit.tla, sc_final_stop). Marked "vad", the close is
+    placed as the next stop's and commit 1's answer keeps its stamp; an unmarked
+    done on the same wire is paired by the queue as before."""
+    s = Recorder()
+    await s.delta("It was the best of")
+    await s.vad_stop()                       # stop 1
+    await s.verdict(True)                    # commit 1 out
+    await s.done("It was the best of", reason="vad")   # the engine's own close, first
+    assert len(s._commits) == 1, "a marked vad close must not pop the commit"
+    await s.done("times.", reason="commit")  # commit 1's real answer
+    assert s.closes() == [("final", 2), ("final", 1)], s.closes()
+    assert not s._commits
+
+    s = Recorder()
+    await s.delta(A_TEXT)
+    await s.vad_stop()
+    await s.verdict(True)
+    await s.done(A_TEXT)                     # no reason: the queue pairs it
+    assert s.closes() == [("final", 1)], s.closes()
+    assert not s._commits
 
 
 async def test_an_unasked_close_answers_no_stop_and_keeps_a_hold():

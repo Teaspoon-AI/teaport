@@ -16,7 +16,8 @@
 #              {"type":"input_audio_buffer.commit","final":true}            (forces a final)
 #   we recv:   {"type":"session.created","id":"sess_...","created":N}
 #              {"type":"transcription.delta","delta":"<piece>","timestamp":1.2}  (append-only)
-#              {"type":"transcription.done","text":"<full utterance>","usage":{...}}
+#              {"type":"transcription.done","text":"<full utterance>","usage":{...},
+#               "reason":"commit"|"vad"}   (reason: engines with the trailing-silence credit)
 #              {"type":"error","error":"...","code":"..."}
 #
 # Key semantics:
@@ -454,9 +455,11 @@ class TeaportSTTService(WebsocketSTTService):
         # worker, commits are a counter it drains in turn), so the done at the head of
         # the wire answers the commit at the head of this queue -- UNLESS the engine
         # closed a segment on its own in between, whose done is indistinguishable from
-        # a commit's answer on the wire and takes the commit's place here. That is the
-        # one pairing this service cannot get right; SttCommit.tla's unmarked rows are
-        # its counterexample, and a marker on the engine's done is the fix.
+        # a commit's answer on an engine that does not mark its dones, and takes the
+        # commit's place here. That is the one pairing the queue alone cannot get
+        # right; SttCommit.tla's unmarked rows are its counterexample, and the
+        # "reason" field the engine sends since the trailing-silence credit is the
+        # marker that closes it (_handle_message).
         self._commits: deque = deque()
         # The stamp of the last commit sent, for a wordless done nothing asked for --
         # see _handle_message.
@@ -1136,8 +1139,16 @@ class TeaportSTTService(WebsocketSTTService):
             await self._cancel_stranded_commit()
             # The commit this done answers, oldest first (see _commits). None is the
             # engine closing the segment on its own (its endpointer; its ~15 s buffer
-            # sends no done), not the answer to one we sent.
-            commit = self._commits.popleft() if self._commits else None
+            # sends no done), not the answer to one we sent. An engine that says which
+            # ("reason": "vad" for its own close, "commit" for ours -- teagram-engine
+            # since the trailing-silence credit) is believed over the queue: its own
+            # close then never takes a commit's place, which is the one pairing the
+            # queue alone cannot get right (SttCommit.tla's unmarked rows). An older
+            # engine sends no reason, and the queue decides as before.
+            if msg.get("reason") == "vad":
+                commit = None
+            else:
+                commit = self._commits.popleft() if self._commits else None
             unasked = commit is None
             self._log_segment(msg, commit)
             engine_text = (msg.get("text") or "").strip()
