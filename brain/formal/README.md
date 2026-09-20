@@ -898,6 +898,98 @@ reporting the close it holds. The two inline cases are the same hole entered fro
 strategy's own handlers; the code closes it by reading what the turn did (the inference
 count) rather than the flag, and the model does not distinguish them from `TurnStop`.
 
+### The final (PR #49): whose utterance a late final is, and when the turn may end on it
+
+PR #49 fixed the turn ending on the *previous* utterance's final. The engine's `finish()`
+takes ~0.7 s, a caller who speaks in bursts starts the next utterance inside it, and the
+stock strategy took every finalized `TranscriptionFrame` as the transcript of the utterance
+it was waiting on: at B's VAD stop the COMPLETE verdict ended the turn on A's words, B's
+final then opened a new turn and its interruption cut the reply to A before a word played
+— 38 of 431 replies since 2026-09-16. The PR as opened left this model alone on the
+strength of two of the limits below as they then read ("the final is not modelled", "the
+engine's own segment close is one processor's local rule on a final"), and those were
+exactly what the change touched: the model passed unchanged against code it no longer
+described, which is the PR #13 failure this file documents. The review found three
+orderings the first cut got wrong, all interleavings of the same two processors plus the
+engine, so the model was extended rather than a new one written.
+
+What was added: the engine's own close (`EngineClose`, its endpointer on a shorter silence
+than the VAD's floor or a breath inside a sentence, bounded by `MaxCloses`), the dones on
+their way back (`fromEngine` — one per commit, in order, and the engine's own closes
+interleaved), the STT's queue of commits awaiting an answer and how a done is paired and
+stamped (`Done`), the interims and finals on the strategy's queue, and the strategy's turn
+itself: `turnOpen`, `_text`, `_transcript_finalized`, `_turn_complete`, the p99 safety
+net as a timer that can fire any time after the stop, pipecat's reset at a turn start
+(`OpenTurn`, with the late-start rule) and the end (`EndTurn`, given priority in `Next`
+because the code ends the turn inside the handler that made it possible). Words are
+tracked by utterance so the monitor can say what was still to come. Two constants select
+the design and the wire:
+
+| `DESIGN` | `DONES` | | `NoStaleTurnEnd` | `StaleOnlyByMispairing` | `NoStrandedTurn` |
+|---|---|---|---|---|---|
+| `clock` | `unmarked` | PR #49 as opened: a final placed by clock (`sc_final_clock`) | ✗ | | |
+| `clock` | `marked` | the same on a wire that says which dones answer commits (`sc_final_clock_marked`) | ✗ | | |
+| `stop` | `unmarked` | as shipped, on the wire as it is (`sc_final_stop`, `sc_final_stop_residual`) | ✗ | ✓ | ✓ |
+| `stop` | `marked` | as shipped, with the one-field engine change (`sc_final_stop_marked`) | ✓ | | ✓ |
+
+`NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
+utterance up to *k* still in the engine's open segment, in a done on its way, or in a
+final queued to the strategy — what lands next opens a new turn on them and cuts the
+reply. `NoStrandedTurn` is its dual, so that the wait the fix introduces cannot become
+the aggregator's 5 s watchdog: a turn the caller has stopped for always has a frame or a
+done in flight, a ceiling or the net counting, a timer that can fire, or the end enabled.
+The five commit properties are checked again under the same environment
+(`sc_final_stop_residual`).
+
+**The `clock` rows fall in nine states**, on the marked wire too, so the fault is the
+rule's own: the engine cuts a breath inside the sentence; the VAD stop for the whole
+sentence puts the segment on hold; the engine's done for the first half lands *after* the
+stop, and the first cut stamped it with its arrival (later than the strategy's read of the
+VAD start) and released the hold on the strength of it. The strategy took the half as the
+utterance under way, ended the turn on it, and the rest of the sentence sat in a segment
+nothing would commit: the COMPLETE verdict found nothing pending. That is the review's
+finding 1 (the arrival stamp) and finding 3 (the engine's split of one utterance) in one
+trace; the clock's other fault — two readings taken at different queue positions, so that
+a commit sent after the STT saw a VAD start can still be stamped before the strategy
+dequeued it — is why the stamp became a *count*.
+
+**The `stop` design was rewritten twice by this model before it held.** The rule as
+first written here gated the turn's end on "the latest stop counted has been answered,
+with the caller quiet since", reset at every turn boundary like the stock state around
+it. With `MaxCloses = 0` the model found the backstop committing half a sentence while
+the caller was still talking (stamp 0: no stop yet), the stop's verdict INCOMPLETE and
+the rest held, the controller closing the turn under the ceiling (`TurnStop`), and the
+backstop's half landing to open a *new* turn and end it through pipecat's fallback for a
+transcript with no VAD stop in sight — 0.3 s later, with the held half still owed. Gating
+that path on the transcript's stamp was the second cut, and with the engine's close on the
+model found its twin: the engine's cut landing after the stop is stamped as the *next*
+stop's, so the stamp gate let it through. What the strategy actually knows in both traces
+is that it counted stop 1 and never saw a close for it; so the shipped rule is that a
+counted stop is *owed* its close until a close stamped with it lands — whoever is
+speaking when it does — and no path ends the turn while a stop is owed: not the verdict,
+the ceiling, the p99 net, nor the fallback, and not across a turn boundary either, since
+the debt is a fact about the STT's segment, not the turn. The STT changed with it: a done
+nothing asked for no longer releases a hold (the first cut's release is what stranded the
+rest above; the ceiling's commit now closes the silent tail, which the engine answers
+without a decode), and its stamp is the next stop's if it carries words, the last
+commit's if it does not. `tests/test_earlier_final_does_not_end_the_turn.py` pins each
+shape.
+
+**The `stop` row on the unmarked wire falls in ten states, on one cause.** The engine
+cuts a breath; the VAD stop holds; the verdict commits *before* the engine's done for the
+first half has landed; the STT, pairing dones with commits by order because the wire does
+not say which is which, hands the commit's stamp to the engine's done; the strategy takes
+the half as the stop's close and ends the turn while the commit's real answer — the rest
+of the sentence — is still on its way. `sc_final_stop_residual` is the statement that this
+is the *only* way the shipped design ends a turn stale: `StaleOnlyByMispairing` holds,
+with the turn never stranding and the five commit properties intact, over the same
+environment. `sc_final_stop_marked` is the statement that a done which says whether it
+answers a client commit (`voxtral_websocket.c`'s `worker_send_done` sends the same message
+for its VAD close and for a commit) closes it entirely. Live, the mispairing needs the
+engine's finish for the first half to outlast the rest of the sentence plus the VAD's
+floor and the model's verdict — the GPU-contended finish — and its cost is one cut reply,
+the shape the fix is for, at a small fraction of its old rate.
+
 ### Known limits of this model
 
 - **Durations are out of scope**, as everywhere here, and two timing facts are stated as
@@ -916,19 +1008,44 @@ count) rather than the flag, and the model does not distinguish them from `TurnS
   the STT falls back to `vad-stop` at its first expiry, and back onto the verdict at the
   first verdict that arrives; that is a policy on repeated faults, and `MaxLost = 1` never
   reaches it.
-- **The engine's own segment close is not modelled.** Its endpointer finalizes on shorter
-  silences than the VAD's floor, so its done commonly lands before the VAD stop; `stt.py`
-  commits the tail at that stop rather than hold it, and releases a hold when such a done
-  lands under one. Both are one processor's local rule on a final, and the final is not
-  modelled (below).
+- **The engine's own close is an environment action with no timing.** It can fire whenever
+  the segment holds speech — the breath inside a sentence, the trailing silence the VAD
+  has not confirmed yet — and its done lands whenever. That is a superset of the engine
+  (`g_vad_trailing_ms` of its VAD's silence, one finish at a time), so the rows hold for
+  it too. Its close is not a split the STT is charged with (`NoSplitOnIncomplete` reads the
+  STT's commits), and it is bounded by `MaxCloses`; the four commit rows run with it off,
+  where their faults (`MaxMissed`, `MaxLost`) keep the state space small.
+- **The wire's pairing is the shipped design's residual, stated as a row.** A done that
+  answers a commit and a done from the engine's own close are the same message, so the
+  STT pairs by order and the engine's close can take a commit's place (`mispaired`).
+  `sc_final_stop` keeps the counterexample and `sc_final_stop_residual` proves it is the
+  only one; the engine-side marker is the fix, and `DONES = "marked"` is that engine.
+- **One interim per segment.** `Delta` fires once per open segment: further deltas change
+  nothing this model reads, and the engine streams none for a new segment until the
+  previous finish is done (one worker per session), which is when the STT's buffer
+  empties. Without it the queue to the strategy is unbounded.
+- **The backstop is bounded** (`MaxBackstops`) because every firing opens a segment the
+  caller can refill; `WayOut` reads its guard rather than the bounded action so the bound
+  cannot fake a stranding.
+- **The no-stop fallback's turn end is modelled; the missed-stop turn is not rescued.** A
+  turn whose VAD stop the VAD never reports is stranded at the strategy (it never sees a
+  stop) and ends on the aggregator's watchdog, as live; `NoStrandedTurn` asks only about
+  stops the strategy saw.
 - **The turn-stop split is accepted, not checked.** `TurnStop` closes a segment the model
   called INCOMPLETE, and a caller who then resumes is split — the continuation
   `keep_barge_in_reachable` documents and accepts. The `NoSplitOnIncomplete` monitor is
-  disarmed with the ceiling at that close, deliberately.
-- **The final is not modelled.** The segment closes at the commit; what the engine returns,
-  and how the turn commits on it, is `UserTurn.tla`'s `Inference` and the tests'.
-- **Scale.** 2,279 distinct states under `verdict`, 5,217 under `vadStop`; about a second
-  each.
+  disarmed with the ceiling at that close, deliberately, and the stale-end monitor is not
+  consulted at it either: what `TurnStop` leaves owed is what the owed-close rule then
+  keeps the *next* turn from ending on.
+- **A commit whose send fails is not modelled.** `stt.py` queues no stamp for it (the first
+  cut left its stamp for the next done to inherit); the turn it strands ends on the
+  watchdog, and the receive task owns the reconnect.
+- **Scale.** The four commit rows: about 70,000 distinct states each with the engine's
+  close off, a few seconds. The five final rows: 2.8 million states and about half a
+  minute each for the two that hold (`MaxStops = 2`, `MaxLost = 1`, `MaxCloses = 1`,
+  `MaxBackstops = 1`, `MaxMissed = 0` — with the missed stop on as well the space passes
+  30 million and the row is not worth its minutes); the three that fall find their trace in
+  under ten states. `check.sh` passes `-deadlock`: the bounds make terminal states ordinary.
 
 ## Worth modeling next
 

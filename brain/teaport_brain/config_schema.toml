@@ -418,7 +418,7 @@ default = 0.7
 read = "startup"
 tier = "diag"
 help = "Only with the streaming backend."
-source = "stt.py:218"
+source = "stt.py:220"
 
 # ---- tts chunking
 
@@ -553,7 +553,7 @@ default = 0.5
 read = "startup"
 tier = "setup"
 help = "Silence before the VAD reports the caller stopped. The dominant fixed latency on every turn; lower is snappier and cuts more mid-sentence pauses. With TEAPORT_STT_COMMIT_ON=verdict the transcript segment survives a pause Smart Turn calls unfinished, so this can come down toward pipecat's 0.2 where the verdicts are trustworthy (wideband audio); on telephony they are not, and the floor still does the work."
-source = "endpointing.py:58"
+source = "endpointing.py:64"
 
 [[settings]]
 name = "SMARTTURN_STOP_SECS"
@@ -566,7 +566,7 @@ default = 1.0
 read = "startup"
 tier = "tuning"
 help = "How long a Smart Turn \"not done\" verdict holds the turn open, counted from the VAD stop. With TEAPORT_STT_COMMIT_ON=verdict the transcript segment is held open for the same wait, so a caller who resumes keeps one utterance. With TEAPORT_STT_COMMIT_ON=vad-stop and TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated while this runs, so it can be raised (more patience for mid-sentence pauses) by up to the LLM's own latency at no cost to the turns that fall through."
-source = "endpointing.py:85"
+source = "endpointing.py:91"
 
 [[settings]]
 name = "TEAPORT_SPECULATIVE_REPLY"
@@ -590,7 +590,7 @@ default = 0.5
 read = "startup"
 tier = "tuning"
 help = "The end-of-turn probability that counts as done. Near-inert on telephony audio."
-source = "endpointing.py:104"
+source = "endpointing.py:110"
 
 [[settings]]
 name = "VAD_CONFIDENCE"
@@ -603,7 +603,7 @@ default = 0.7
 read = "startup"
 tier = "tuning"
 help = "Silero's speech-probability gate."
-source = "endpointing.py:138"
+source = "endpointing.py:144"
 
 [[settings]]
 name = "VAD_MIN_VOLUME"
@@ -616,7 +616,7 @@ default = 0.6
 read = "startup"
 tier = "tuning"
 help = "Silero's volume gate."
-source = "endpointing.py:139"
+source = "endpointing.py:145"
 
 [[settings]]
 name = "VAD_SAMPLE_RATE"
@@ -628,7 +628,7 @@ default = "16000"
 read = "startup"
 tier = "tuning"
 help = "8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample."
-source = "endpointing.py:586"
+source = "endpointing.py:738"
 
 [[settings]]
 name = "TEAPORT_INTERRUPT_MIN_WORDS"
@@ -640,7 +640,7 @@ default = 2
 read = "startup"
 tier = "setup"
 help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included."
-source = "endpointing.py:153"
+source = "endpointing.py:159"
 
 [[settings]]
 name = "TEAPORT_STRANDED_INTERIM_SECS"
@@ -653,7 +653,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "Commit a segment ourselves after this much interim quiet with no VAD stop, so a missed stop loses a second rather than the turn."
-source = "stt.py:205"
+source = "stt.py:207"
 
 [[settings]]
 name = "TEAPORT_STT_COMMIT_ON"
@@ -665,7 +665,7 @@ default = "verdict"
 read = "startup"
 tier = "tuning"
 help = "What closes the transcript segment and forces the final. verdict: Smart Turn's answer to the VAD stop — done commits at once, not-done holds the segment open until the turn is judged complete, so a mid-sentence pause keeps one utterance instead of splitting it into two context-free decodes; the model's inference (~0.1 s) is then on the commit path, which lowering ENDPOINT_STOP_SECS more than pays for where the verdicts are trustworthy. vad-stop: the raw VAD stop, before the verdict exists (the behaviour before issue #43); a turn that falls through SMARTTURN_STOP_SECS gets its final ~0.8 s sooner, and TEAPORT_SPECULATIVE_REPLY needs this. Either way a VAD stop while the bot is speaking commits at once — that flush is the barge-in."
-source = "stt.py:148"
+source = "stt.py:150"
 
 [[settings]]
 name = "HEARD_MODE"
@@ -876,7 +876,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:239"
+source = "agent_session.py:240"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"

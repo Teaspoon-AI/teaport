@@ -24,6 +24,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from loguru import logger  # noqa: E402
 
 import teaport_brain  # noqa: E402, F401
+from stt_harness import WireRecorder  # noqa: E402
+
 from teaport_brain.stt import TeaportSTTService  # noqa: E402
 
 SR = 16000
@@ -32,6 +34,9 @@ SR = 16000
 class Recorder(TeaportSTTService):
     def __init__(self):
         super().__init__(url="ws://127.0.0.1:1/none")
+        # The real _send_commit, recorded instead of sent: the segment line reads the
+        # commit's time and reason off the queue the send fills.
+        self._websocket = WireRecorder()
 
     async def push_frame(self, frame, direction=None):
         pass
@@ -44,11 +49,6 @@ class Recorder(TeaportSTTService):
 
     async def cancel_task(self, task, timeout=None):
         task.cancel()
-
-    async def _send_commit(self, final: bool = True, why: str = "other"):
-        import time
-        self._commit_at = time.monotonic()
-        self._commit_why = why
 
 
 async def _segment(deltas, final_text, seconds=1.0, why="vad-stop"):
@@ -130,7 +130,7 @@ async def test_counters_reset_between_segments():
     await s._handle_message({"type": "transcription.delta", "delta": "one"})
     await s._handle_message({"type": "transcription.done", "text": "one"})
     assert s._seg_bytes == 0 and s._seg_interims == 0, "a segment must not bleed into the next"
-    assert s._commit_at is None and s._commit_why == ""
+    assert not s._commits, "the answered commit must leave the queue with its done"
 
 
 def main():

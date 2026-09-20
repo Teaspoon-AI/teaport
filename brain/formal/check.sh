@@ -24,7 +24,10 @@ cd "$(dirname "$0")"
 
 run() {  # run <module> <config> <expectation>
   printf '  %-12s %-32s %-26s ' "$1" "$2" "$3"
-  out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -nowarning -workers auto \
+  # -deadlock: a state with no successor is not a finding here. The bounds every model
+  # carries (stops, faults, the engine's closes) make terminal states ordinary, and
+  # the properties are invariants over the states reached, not liveness.
+  out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -nowarning -deadlock -workers auto \
           -config "$2.cfg" "$1" 2>&1)
 
   # The verdict TLC actually produced, and a human label for it.
@@ -100,6 +103,13 @@ run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the
 run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did right)"
 run SttCommit.tla sc_verdict_silentStop "(expected: FAILS NoOrphanedHold — the first cut: nothing reported when the turn is closed under the ceiling)"
 run SttCommit.tla sc_verdict       "(expected: holds — TEAPORT_STT_COMMIT_ON=verdict, a lost verdict, a missed stop and a turn closed under the ceiling)"
+echo
+echo "SttCommit.tla — the final (PR #49): whose utterance a late final is, and when the turn may end on it"
+run SttCommit.tla sc_final_clock         "(expected: FAILS NoStaleTurnEnd — the first cut: finals placed by clock)"
+run SttCommit.tla sc_final_clock_marked  "(expected: FAILS NoStaleTurnEnd — the clock rule falls even on a marked wire)"
+run SttCommit.tla sc_final_stop          "(expected: FAILS NoStaleTurnEnd — as shipped, unmarked wire: the pairing residual)"
+run SttCommit.tla sc_final_stop_residual "(expected: holds — as shipped: every stale end is a mispairing; the turn never strands)"
+run SttCommit.tla sc_final_stop_marked   "(expected: holds — as shipped, with the engine marking its dones)"
 echo
 echo "SttSlot.tla — arbitration of the engine's single STT slot"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS NoFalseBusy)"
