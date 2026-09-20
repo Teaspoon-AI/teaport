@@ -86,4 +86,6 @@ to attribute. (Re-check `plugin/package.json` if runtime deps are ever added.)
 ## Engine (separate — not in this repository)
 
 The engine is a separate component with its own license terms. Its attributions
-ship with the engine download, not here.
+(`engine/THIRD_PARTY_NOTICES.txt` in the teagram-engine repo) are published as the
+`engine.notices` asset in the release manifest and installed by `install.sh` to
+`/opt/teaport/THIRD_PARTY_NOTICES.txt`; `teaport doctor` checks it is present.
