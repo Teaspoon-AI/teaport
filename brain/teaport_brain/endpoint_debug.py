@@ -42,6 +42,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    InputAudioRawFrame,
     MetricsFrame,
     OutputTransportMessageUrgentFrame,
     TTSAudioRawFrame,
@@ -50,6 +51,7 @@ from pipecat.frames.frames import (
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.metrics.metrics import TurnMetricsData
+from pipecat.observers.base_observer import BaseObserver, FrameProcessed, FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.env import env_flag, env_num
@@ -302,3 +304,59 @@ class EndpointDebug(FrameProcessor):
                     logger.info(f"[EP] FIRST-AUDIO +{(t - c) * 1000:.0f}ms after commit"
                                 + _withheld(shown))
         await self.push_frame(frame, direction)
+
+
+class VadStopSkew(BaseObserver):
+    """How far ahead of the VAD the STT's send clock was when each VAD stop reached it.
+
+    The STT's trailing-silence hint (stt.py, STT_SILENCE_HINT) places Silero's speech
+    end on the clock of audio it has sent, stop_secs back from where that clock stood
+    when the VADUserStoppedSpeakingFrame arrived. The VAD sits in the user aggregator,
+    downstream, and its stop travels back upstream as a SystemFrame, so the STT's clock
+    has moved on by whatever audio was in flight between the two when the VAD fired:
+    that much of the real silence the hint leaves unclaimed. This logs it per stop --
+    "[EP] VAD-STOP skew +Nms" -- so the loss can be read off a real call instead of
+    argued about. A NEGATIVE number would mean audio the VAD heard that the STT had not
+    sent, which the pipeline's shape makes impossible (send precedes pass-on) and the
+    hint's gap rule guards against anyway; it would be a finding.
+
+    An observer, not a processor, because the two positions are read at two processors:
+    the aggregator's, from the audio it has begun processing when it pushes the stop
+    upstream (that push happens inside the frame that tripped the VAD, so the count is
+    exact), and the STT's, from the audio IT has begun processing when the stop is
+    processed there -- a frame whose send is under way is counted but not yet sent, so
+    the number reads up to one frame (20 ms) high. Debug-only, like everything here.
+    """
+
+    _MAX_PENDING = 64   # stops pushed upstream and never seen at the STT (muted, say)
+
+    def __init__(self, stt: FrameProcessor):
+        super().__init__()
+        self._stt = stt
+        self._heard: dict = {}   # processor id -> InputAudioRawFrame samples begun there
+        self._stops: dict = {}   # VAD-stop frame id -> the VAD's position when it fired
+
+    async def on_push_frame(self, data: FramePushed):
+        f = data.frame
+        if (isinstance(f, VADUserStoppedSpeakingFrame) and data.direction == FrameDirection.UPSTREAM
+                and f.id not in self._stops):
+            # Its first upstream push is the VAD's own; every processor above re-pushes
+            # the same frame and must not overwrite the origin's position.
+            if len(self._stops) >= self._MAX_PENDING:
+                self._stops.clear()
+            self._stops[f.id] = self._heard.get(id(data.source), 0)
+
+    async def on_process_frame(self, data: FrameProcessed):
+        f = data.frame
+        if isinstance(f, InputAudioRawFrame):
+            k = id(data.processor)
+            self._heard[k] = self._heard.get(k, 0) + f.num_frames
+        elif isinstance(f, VADUserStoppedSpeakingFrame) and data.processor is self._stt:
+            at_vad = self._stops.pop(f.id, None)
+            if at_vad is None:
+                return
+            rate = getattr(self._stt, "sample_rate", 0) or 16000
+            ahead = self._heard.get(id(self._stt), 0) - at_vad
+            logger.info(f"[EP] VAD-STOP skew +{ahead * 1000 / rate:.0f}ms: the STT had sent "
+                        f"that much past the VAD's stop position when the stop reached it "
+                        f"(unclaimed by the silence hint; +-20ms)")

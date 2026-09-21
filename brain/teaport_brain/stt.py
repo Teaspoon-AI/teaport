@@ -13,11 +13,14 @@
 #   endpoint:  ws://<host>:<port>/v1/realtime   (no auth)
 #   we send:   {"type":"session.update","model":"..."}                      (handshake; ack-only)
 #              {"type":"input_audio_buffer.append","audio":"<base64 PCM16>"} (mono, 16 kHz)
-#              {"type":"input_audio_buffer.commit","final":true}            (forces a final)
+#              {"type":"input_audio_buffer.commit","final":true,
+#               "trailing_silence_ms":N}   (forces a final; N optional -- see STT_SILENCE_HINT)
 #   we recv:   {"type":"session.created","id":"sess_...","created":N}
 #              {"type":"transcription.delta","delta":"<piece>","timestamp":1.2}  (append-only)
 #              {"type":"transcription.done","text":"<full utterance>","usage":{...},
-#               "reason":"commit"|"vad"}   (reason: engines with the trailing-silence credit)
+#               "reason":"commit"|"vad","credited_ms":N}
+#                     (reason: engines with the trailing-silence credit, teagram-engine#36;
+#                      credited_ms: engines that take the hint, teagram-engine#37)
 #              {"type":"error","error":"...","code":"..."}
 #
 # Key semantics:
@@ -68,7 +71,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
 from teaport_brain.endpointing import SMARTTURN_STOP_SECS, SegmentDoneFrame, TurnVerdictFrame
-from teaport_brain.env import env_num
+from teaport_brain.env import env_flag, env_num
 
 # P99 latency from speech end to final transcript (broadcast to downstream turn
 # strategies). The engine's realtime STT targets <500 ms delta delay; ~0.8 s end-to-end p99
@@ -175,6 +178,48 @@ _VAD_STOP_COMMITS = frozenset({"vad-stop", "bot-speaking", "verdict", "ceiling",
 # inside the aggregator's 5 s user_turn_stop_timeout (SMARTTURN_STOP_SECS plus this),
 # so that an expiry still answers late rather than never.
 _HOLD_SLACK_SECS = 1.0
+
+# The trailing-silence hint on the commit (teagram-engine#37, teaport#53).
+#
+# A final commit costs the engine a fixed pad: it right-pads the audio with 12 tokens
+# (960 ms) of zeros so the delayed decoder can flush the last words, and decodes them.
+# Since teagram-engine#36 it credits trailing silence it has already fed against that
+# pad -- but it counts that silence with its own VAD (fvad, mode 1), which on a phone
+# line hears the noise floor as speech and credited under 80 ms on 37 of 58 commits of
+# the 2026-09-20 18:25 call. Silero, upstream, knows better: the VAD stop this service
+# commits on IS the finding that the last ENDPOINT_STOP_SECS of audio were silence, and
+# every sample sent between that stop and the commit (the verdict's ~170 ms, or the
+# ceiling's second) is silence too. So the commit says how much: `trailing_silence_ms`,
+# the audio sent since Silero's speech end, less a margin. The engine takes the larger
+# of its count and ours, clamped to what it has actually fed; an engine without #37
+# ignores the field. Measured on jetson06 (2026-09-20, teagram-engine PR #39): identical
+# transcripts, the commit-to-done latency of a full-pad commit 662 -> 232 ms.
+#
+# The count is a SAMPLE position, never a wall-clock difference: the VAD stop names
+# the audio (stop_secs of silence, ending at the frame that tripped it), and the
+# service counts what it has sent, so the two are on one clock. Which side of the stop
+# the count errs on is decided by the pipeline's shape, and it is the safe side. The
+# VAD lives in the user aggregator, DOWNSTREAM of this service (pipecat >= 1.0), and
+# run_stt sends a chunk before process_frame passes it on -- so every sample the VAD
+# had heard when it fired the stop was already on the wire, and by the time the stop
+# reaches here (a SystemFrame, upstream, four queues) more have followed. The service
+# therefore places the speech end no earlier than it was, and the hint UNDER-claims by
+# whatever was in flight (a frame or two on an idle box, to be read off
+# endpoint_debug's skew probe on a real call -- unclaimed silence, not a risk). The one
+# way to over-claim is audio that passed the service unsent -- a
+# reconnect buffering it, a dead socket dropping it -- so any such gap since the
+# caller last started speaking withholds the hint for that stop (process_audio_frame).
+#
+# The margin covers what Silero's speech end is not: the decoder's. Its confidence gate
+# drops an unvoiced tail ("s", "f") before the audio does. On the engine an over-claim
+# of K tokens is a (K-1)-token cut into its 8-token buffer (the #28 knee): 80/160/240
+# ms over cost nothing on 30 utterances, 400 ms truncated the last word on 7. 100 ms
+# sits well inside that, on top of the engine's own one-token margin.
+#
+# Off (0/false): the commit carries no field and the engine credits its own count, as
+# before -- the A/B switch, not a fallback the service takes on its own.
+STT_SILENCE_HINT = env_flag("TEAPORT_STT_SILENCE_HINT", True)
+_HINT_MARGIN_MS = env_num("TEAPORT_STT_SILENCE_HINT_MARGIN_MS", "100", int)
 
 # The stranded-segment backstop. This service has exactly ONE path to a final: a commit
 # sent when VADUserStoppedSpeakingFrame arrives, or the verdict that answers it (see
@@ -349,6 +394,7 @@ class _Commit:
     n: int        # VAD stops seen at the send: the stamp its final carries
     at: float     # monotonic time of the send, for the segment line's latency
     why: str      # what triggered it: vad-stop | verdict | backstop | ...
+    hint: Optional[int] = None   # trailing_silence_ms it carried, if any (STT_SILENCE_HINT)
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -450,6 +496,16 @@ class TeaportSTTService(WebsocketSTTService):
         # Per-segment accounting for the commit/final boundary — see _log_segment.
         self._seg_bytes = 0        # audio appended since the last final
         self._seg_interims = 0     # interims the engine sent back for it
+        # The trailing-silence hint (STT_SILENCE_HINT). The audio clock: samples this
+        # service has put on the wire, ever -- positions, so only differences matter,
+        # and a reconnect does not reset it. Where Silero's speech end fell on that
+        # clock for the VAD stop the open segment is waiting on (None: no stop, or a
+        # stop whose count cannot be trusted), and whether audio has passed this
+        # service UNSENT since the caller last started speaking, which is the one
+        # thing that could put the speech end earlier than it was.
+        self._sent_samples = 0
+        self._speech_end = None
+        self._hint_gap = False
         # Commits sent and not yet answered, oldest first. The engine answers every
         # final commit with exactly one done, in order (voxtral_websocket.c: one
         # worker, commits are a counter it drains in turn), so the done at the head of
@@ -555,6 +611,9 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._websocket.send(
                     json.dumps({"type": "input_audio_buffer.append", "audio": payload})
                 )
+                # On the wire: the hint's clock advances (see _hint_gap for the paths
+                # that leave audio behind).
+                self._sent_samples += len(audio) // 2
                 if self._streaming and not self._gen_started:
                     # One commit for the whole call, once there is audio to work on:
                     # this STARTS generation. Everything after it streams.
@@ -567,6 +626,23 @@ class TeaportSTTService(WebsocketSTTService):
                 # owns reconnection; raising here would kill the pipeline task.
                 logger.warning(f"{self}: audio chunk dropped, send failed: {e}")
         yield None
+
+    async def process_audio_frame(self, frame, direction: FrameDirection):
+        """The base class's audio path, watched for audio it does not send.
+
+        Whatever it does with the frame -- buffers it for a reconnect (replayed through
+        here once the socket is back), drops it muted or unusable, or hands it to run_stt
+        which finds no socket or a dead one -- the frame goes on downstream to the VAD
+        regardless. Audio the VAD hears and the engine never got is the one thing that
+        puts Silero's speech end EARLIER on this service's clock than it really was, i.e.
+        the hint's over-claim direction (see STT_SILENCE_HINT). So it is noted here, at
+        the seam, rather than in each path: the sent count did not move, the frame had
+        audio, the hint is off until the caller next starts speaking.
+        """
+        before = self._sent_samples
+        await super().process_audio_frame(frame, direction)
+        if self._sent_samples == before and frame.audio:
+            self._hint_gap = True
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -584,6 +660,17 @@ class TeaportSTTService(WebsocketSTTService):
             # Counted before anything here can commit, so a commit sent at this stop
             # is stamped with it.
             self._vad_stops += 1
+            # Where the caller's speech ended, on the clock of what has been sent: the
+            # stop's own silence window back from here. Everything the VAD heard up to
+            # the frame that tripped it is on the wire already (see STT_SILENCE_HINT) --
+            # unless audio passed this service unsent, in which case the stop is not
+            # placed and its commit carries no hint. Before anything here can commit,
+            # so a commit sent at this stop can carry it.
+            if self._hint_gap:
+                self._speech_end = None
+            else:
+                rate = self.sample_rate or 16000
+                self._speech_end = self._sent_samples - round(frame.stop_secs * rate)
             # The VAD stop came, so the backstop's premise (that it never would) is
             # gone whichever path commits.
             await self._cancel_stranded_commit()
@@ -614,6 +701,11 @@ class TeaportSTTService(WebsocketSTTService):
             # A new utterance, or the rest of one: whatever the engine closed before it
             # is not this one's.
             self._closed_unasked = False
+            # Nor is the last stop's speech end: the caller is talking again, and the
+            # next stop places its own. A gap before this start is behind the speech
+            # end that stop will name, so it is forgiven here.
+            self._speech_end = None
+            self._hint_gap = False
             # The caller resumed inside a held segment (or before its verdict landed):
             # their words join it, and the next VAD stop asks the model again. Nothing
             # is owed for this stop any more.
@@ -836,8 +928,17 @@ class TeaportSTTService(WebsocketSTTService):
         lat = f"{time.monotonic() - commit.at:.2f}s" if commit else "no-commit"
         why = commit.why if commit else ""
         verdict = f"{len(engine_text)} chars" if engine_text else "EMPTY"
+        # What the commit claimed as trailing silence and what the engine credited
+        # against its pad (an engine with teagram-engine#37 reports it): the two numbers
+        # that say whether the hint is doing its work, and the second is the engine's
+        # to explain when it is short of the first (its clamp to the audio it fed).
+        credit = ""
+        if commit and commit.hint is not None:
+            credit = f", hint {commit.hint}ms"
+        if msg.get("credited_ms") is not None:
+            credit += f", credited {msg['credited_ms']}ms"
         line = (f"{self}: segment {secs:.2f}s audio, {self._seg_interims} interims, "
-                f"commit={why} -> done in {lat}: {verdict}")
+                f"commit={why} -> done in {lat}: {verdict}{credit}")
         # An empty final on a segment the engine DID stream interims for is the shape
         # worth noticing: it had words a moment ago and returned none.
         #
@@ -861,6 +962,17 @@ class TeaportSTTService(WebsocketSTTService):
         self._seg_bytes = 0
         self._seg_interims = 0
 
+    def _silence_hint_ms(self) -> Optional[int]:
+        """What the commit going out now may claim as trailing silence, in ms: the
+        audio sent since Silero's speech end, less the margin -- or None when there is
+        no placed speech end to count from, the count is not positive, or the hint is
+        off (see STT_SILENCE_HINT)."""
+        if not STT_SILENCE_HINT or self._speech_end is None:
+            return None
+        rate = self.sample_rate or 16000
+        ms = (self._sent_samples - self._speech_end) * 1000 // rate - _HINT_MARGIN_MS
+        return int(ms) if ms > 0 else None
+
     async def _send_commit(self, final: bool = True, why: str = "other"):
         """Force a final. `why` is recorded so the segment line says which path fired."""
         # The hold's timer first: cancelling a live task is the one await in here that
@@ -869,7 +981,13 @@ class TeaportSTTService(WebsocketSTTService):
         # arm a hold this commit then never clears. Whatever sent it, the stop this
         # segment was waiting on is answered.
         await self._cancel_hold_expiry()
-        commit = _Commit(n=self._vad_stops, at=time.monotonic(), why=why)
+        commit = _Commit(n=self._vad_stops, at=time.monotonic(), why=why,
+                         hint=self._silence_hint_ms())
+        # Whatever this commit claims, the next one starts from a fresh segment and
+        # must place its own speech end. The backstop never has one to take: it fires
+        # on a segment whose stop never came, and a stop that did come has already
+        # committed (clearing this) or is holding (so the backstop stands down).
+        self._speech_end = None
         self._last_commit_n = commit.n
         self._commit_pending = False
         if self._streaming:
@@ -895,10 +1013,11 @@ class TeaportSTTService(WebsocketSTTService):
             await self._schedule_stream_boundary()
             return
         if self._websocket:
+            msg = {"type": "input_audio_buffer.commit", "final": final}
+            if commit.hint is not None:
+                msg["trailing_silence_ms"] = commit.hint
             try:
-                await self._websocket.send(
-                    json.dumps({"type": "input_audio_buffer.commit", "final": final})
-                )
+                await self._websocket.send(json.dumps(msg))
             except (websockets.exceptions.ConnectionClosed, OSError) as e:
                 # Lost commit = lost turn (no final transcript), but raising here
                 # would kill the whole pipeline. The receive task owns reconnection.
@@ -1057,6 +1176,8 @@ class TeaportSTTService(WebsocketSTTService):
             self._commits.clear()
             self._commit_pending = False
             self._closed_unasked = False
+            # The stop this placed was on audio the new session will never hold.
+            self._speech_end = None
             await self._cancel_hold_expiry()
 
     # ---- transcripts out ---------------------------------------------------
