@@ -829,6 +829,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     ] if p is not None])
 
     task_kwargs = {"observers": [ledger]}
+    if endpoint_debug.ENABLED:
+        # What the STT's trailing-silence hint leaves on the table, per VAD stop.
+        task_kwargs["observers"].append(endpoint_debug.VadStopSkew(stt))
     if cancel_on_idle_timeout is not None:
         task_kwargs["cancel_on_idle_timeout"] = cancel_on_idle_timeout
     task = PipelineTask(
