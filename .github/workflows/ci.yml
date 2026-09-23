@@ -64,6 +64,13 @@ jobs:
         run: |
           pip install uv==0.9.24
           uv sync --locked --no-editable --project brain
+      - name: Brain self-check (what install.sh runs before swapping a venv in)
+        # The same gate an appliance install applies to a freshly built venv: import both
+        # front-ends and push audio through Silero VAD + Smart Turn v3, the compiled
+        # extensions (onnxruntime, loudness) a numpy major would break. Here it runs on
+        # the aarch64 leg too, so a lock bump that breaks them on arm fails in CI rather
+        # than in an appliance's install (where it would be caught, but only then).
+        run: uv run --project brain python -m teaport_brain.selfcheck
       - name: Hermetic tests
         # No -k denylist. test_suite.py runs each test_*.py as a subprocess, and a
         # script whose dependency is absent exits appliance.SKIP_EXIT, which the
@@ -141,10 +148,11 @@ jobs:
         run: |
           bash -n install.sh
           bash -n install-bootstrap.sh
+          bash -n cli/teaport
           for f in brain/test/*.sh; do bash -n "$f"; done
       - name: shellcheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh install-bootstrap.sh brain/test/*.sh
+        run: shellcheck install.sh install-bootstrap.sh cli/teaport brain/test/*.sh
       - name: Manifest JSON is valid
         run: |
           for m in manifest/*.json; do
@@ -153,3 +161,7 @@ jobs:
       - name: Installer dry-run (voice-only path)
         # No Jetson, no sandbox, not a TTY: exercises the full dry-run without touching the box.
         run: TEAPORT_ALLOW_NON_JETSON=1 TEAPORT_MANIFEST_URL="$PWD/manifest/stable.json" bash install.sh --dry-run
+      - name: Installer dry-run (--only brain)
+        # The incremental brain update path. Off-appliance it warns that there is no
+        # install to update and shows the plan anyway: stage, self-check, swap, restart.
+        run: bash install.sh --only brain --dry-run

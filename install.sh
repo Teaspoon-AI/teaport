@@ -6,9 +6,19 @@
 # the brain + (optionally) the OpenClaw plugin + systemd units on a JetPack 7.2 /
 # CUDA 13 Jetson Orin, driven by the release manifest.
 #
-#   ./install.sh              install / repair
-#   ./install.sh --dry-run    print what would happen; touch nothing
+#   ./install.sh                   install / repair the whole appliance
+#   ./install.sh --only brain      update just the brain from brain/uv.lock (see below)
+#   ./install.sh --rollback brain  put the previous brain venv back
+#   ./install.sh --dry-run         print what would happen; touch nothing
 #   ./install.sh --help
+#
+# --only brain is how a brain change reaches an appliance that is already installed:
+# `git pull && ./install.sh --only brain` from a checkout, or the one-liner with
+# `--only brain` appended. It builds a NEW venv from brain/uv.lock beside the live one
+# (the brain keeps serving meanwhile), self-checks it, swaps it in, restarts the brain
+# units that were running and checks they come back — rolling back on its own if they
+# do not. No EULA, no system packages, no engine download, no credential prompts, no
+# unit or env rendering: engine, agent, front door, bridge and SIP are left as they are.
 #
 # Env overrides (mainly for dev/testing):
 #   TEAPORT_MANIFEST_URL   manifest URL or local path (default get.teaspoon.tech/manifest/stable.json)
@@ -21,6 +31,7 @@
 #   TEAPORT_ENABLE_BRIDGE=1      install + enable the opt-in Discord voice bridge
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
 #   TEAPORT_BRIDGE_SRC     install the bridge from this local dir instead of cloning
+#   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
 #
 set -euo pipefail
 
@@ -35,18 +46,32 @@ ALLOW_NON_JETSON="${TEAPORT_ALLOW_NON_JETSON:-0}"
 BRAIN_SRC="${TEAPORT_BRAIN_SRC:-}"
 PLUGIN_SRC="${TEAPORT_PLUGIN_SRC:-}"
 BRIDGE_SRC="${TEAPORT_BRIDGE_SRC:-}"
+ALLOW_STALE_SOURCE="${TEAPORT_ALLOW_STALE_SOURCE:-0}"
 DRY_RUN=0
+ONLY=""       # --only <component>: "" = the whole appliance
+ROLLBACK=""   # --rollback <component>
 # Where this script lives — lets a checkout install its own brain/plugin/systemd.
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-for a in "$@"; do
-  case "$a" in
+usage_err() { printf '%s (see --help)\n' "$*" >&2; exit 2; }
+while [ $# -gt 0 ]; do
+  case "$1" in
     --dry-run) DRY_RUN=1 ;;
     --accept-eula) ACCEPT_EULA=1 ;;
+    --only|--rollback)
+      [ $# -ge 2 ] || usage_err "$1 needs a component (brain)"
+      if [ "$1" = --only ]; then ONLY="$2"; else ROLLBACK="$2"; fi; shift ;;
+    --only=*) ONLY="${1#*=}" ;;
+    --rollback=*) ROLLBACK="${1#*=}" ;;
     -h|--help) awk 'NR==1{next} /^#/{sub(/^# ?/,"");print;next} {exit}' "${BASH_SOURCE[0]}"; exit 0 ;;
-    *) printf 'unknown arg: %s (see --help)\n' "$a" >&2; exit 2 ;;
+    *) usage_err "unknown arg: $1" ;;
   esac
+  shift
 done
+# brain is the one component with an incremental path so far; name the rest when they get one.
+case "$ONLY" in ''|brain) ;; *) usage_err "--only: unknown component '$ONLY' (supported: brain)" ;; esac
+case "$ROLLBACK" in ''|brain) ;; *) usage_err "--rollback: unknown component '$ROLLBACK' (supported: brain)" ;; esac
+[ -z "$ONLY" ] || [ -z "$ROLLBACK" ] || usage_err "--only and --rollback are separate runs"
 
 # --- output helpers ----------------------------------------------------------
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
@@ -186,16 +211,7 @@ phase_preflight() {
   fi
   local freegb; freegb="$(df -Pk "$(dirname "$PREFIX")" 2>/dev/null | awk 'NR==2{print int($4/1048576)}')" || true
   [ -n "$freegb" ] && [ "$freegb" -lt 15 ] && warn "only ${freegb}GB free near $PREFIX (need ~15GB for engine + models)"
-  # phase_brain hard-requires brain/uv.lock beside the brain source's pyproject (uv sync
-  # --locked). For a LOCAL source — a checkout install or TEAPORT_BRAIN_SRC — that is
-  # checkable right now, before the EULA gate and the ~15GB engine phase; a pre-uv source
-  # can only be installed by the install.sh that shipped with it. The manifest-clone path
-  # is checked at clone time in phase_brain instead.
-  local early_src="$BRAIN_SRC"
-  if [ -z "$early_src" ] && [ -d "$HERE/brain" ]; then early_src="$HERE/brain"; fi
-  if [ -n "$early_src" ] && [ ! -f "$early_src/uv.lock" ]; then
-    die "no uv.lock in $early_src — this installer only installs brain sources that ship one (a pre-uv source needs its own install.sh)"
-  fi
+  check_brain_source
   have curl || die "curl is required"
   # Look at the status code rather than using -f: the bare host root serves 404 (only /dl,
   # /manifest, /eula exist), so -f would warn "downloads will fail" on every healthy install —
@@ -307,7 +323,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
 # An already-present uv is adopted ONLY at exactly the pinned version: "any uv on PATH"
 # once meant a stale one that could not read this lock revision dying mid-phase_brain —
 # after the EULA and ~15GB of downloads — with an error nobody could map to teaport.
-# Sets $UV to the resolved path for phase_brain.
+# Sets $UV to the resolved path for brain_stage.
 UV=""
 UV_VERSION="0.9.24"
 ensure_uv() {
@@ -340,56 +356,104 @@ ensure_uv() {
   UV="$PREFIX/bin/uv"
 }
 
-phase_brain() {
-  log "brain -> $PREFIX/venv (uv sync --locked, python3.12)"
-  ensure_uv
+# --- brain -------------------------------------------------------------------
+# Every brain install is a NEW venv, built beside the live one, and $PREFIX/venv — the
+# path every unit's ExecStart names — is a symlink to whichever is live:
+#
+#   $PREFIX/venvs/<built-at>-<rev>/   one per install, built by `uv sync --locked`
+#   $PREFIX/venv           -> the live one
+#   $PREFIX/venv.previous  -> the one before it: the rollback target
+#   $PREFIX/venv.pre-uv       a pip-built venv from before the uv migration, moved aside
+#                             by its first uv install and kept as the rollback target
+#
+# Syncing in place is what this replaced, and it had no way back: uv's exact sync
+# tears the live venv down to the lock (a pre-uv venv crosses a numpy MAJOR on its
+# first one), so a result that does not run leaves nothing to return to — and the
+# brain units had to be stopped for the whole sync, not just for a restart.
+#
+# Why a symlink and not `mv venv.new venv`: a venv is not relocatable. uv writes each
+# console script with an absolute shebang to the interpreter it was built for, so a
+# renamed venv's bin/teaport-brain would still name venv.new. Building at the final
+# path and repointing a link never moves one. (The same fact is why the pre-uv venv can
+# only ever run from $PREFIX/venv, and why rolling back to it moves it back there.)
+BRAIN_VENVS="$PREFIX/venvs"
+BRAIN_LINK="$PREFIX/venv"
+BRAIN_PREV="$PREFIX/venv.previous"
+BRAIN_LEGACY="$PREFIX/venv.pre-uv"
+
+# check_brain_source — the brain-source checks that can run before anything is touched.
+#
+# uv.lock: brain_stage hard-requires it beside the source's pyproject (uv sync --locked).
+# For a LOCAL source — a checkout install or TEAPORT_BRAIN_SRC — that is checkable now,
+# before the EULA gate and the ~15GB engine phase; a pre-uv source can only be installed
+# by the install.sh that shipped with it. The manifest clone is checked at clone time.
+#
+# Freshness: a checkout installs whatever it holds, so one that is behind its upstream
+# installs an OLDER brain than the branch it tracks — an update that silently reverts
+# merged work, with nothing failing and nothing logged. Operators' own checkouts do fall
+# behind, so refuse it. An explicit TEAPORT_BRAIN_SRC is the operator's own choice and
+# is not second-guessed; a checkout with no upstream (CI, a detached tag) has nothing
+# to be behind.
+check_brain_source() {
   local src="$BRAIN_SRC"
-  if [ -z "$src" ] && [ -d "$HERE/brain" ]; then src="$HERE/brain"; fi   # installing from a checkout
-  if [ -z "$src" ]; then
-    # production: clone the product repo at the manifest-pinned tag, install its brain/
-    local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
-    work="$STATE/brain-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
-    # Re-run == repair, but `git clone` dies on a non-empty destination — a second run used
-    # to abort right here. The clone is STAGING ONLY (the venv holds a built COPY of the
-    # brain — see --no-editable below), so replace it wholesale: a manifest tag change
-    # re-clones honestly, and nothing at runtime points into the deleted tree.
-    if [ -e "$work" ]; then run rm -rf "$work"; fi
-    run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
-    src="$work/brain"
+  if [ -z "$src" ] && [ -d "$HERE/brain" ]; then src="$HERE/brain"; fi
+  if [ -n "$src" ] && [ ! -f "$src/uv.lock" ]; then
+    die "no uv.lock in $src — this installer only installs brain sources that ship one (a pre-uv source needs its own install.sh)"
   fi
-  # A brain source without uv.lock — a manifest pinned to a pre-uv tag, or an old
-  # TEAPORT_BRAIN_SRC checkout — cannot be installed by this installer: say so crisply here
-  # rather than dying inside uv with an error nobody can map to teaport. Local sources are
-  # caught in phase_preflight, before the EULA gate and the ~15GB engine phase; the
-  # manifest clone only exists from this point. (Skipped under --dry-run: the clone above
-  # did not run, so there is nothing truthful to check.)
-  if [ "$DRY_RUN" != 1 ] && [ ! -f "$src/uv.lock" ]; then
-    die "no uv.lock in $src — this installer only installs brain sources that ship one.
+  [ -z "$BRAIN_SRC" ] && [ -d "$HERE/brain" ] && have git || return 0
+  local up behind
+  up="$(git -C "$HERE" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || return 0
+  # --dry-run touches nothing, .git included: judge against the last fetch.
+  if [ "$DRY_RUN" != 1 ] && ! GIT_TERMINAL_PROMPT=0 timeout 30 git -C "$HERE" fetch --quiet 2>/dev/null; then
+    warn "cannot fetch $up — checking this checkout against the last fetch instead"
+  fi
+  behind="$(git -C "$HERE" rev-list --count "HEAD..$up" 2>/dev/null)" || behind=0
+  if [ "$behind" -gt 0 ]; then
+    local msg="this checkout ($HERE) is $behind commit(s) behind $up — it would install an older brain than $up holds. git pull first"
+    if [ "$ALLOW_STALE_SOURCE" = 1 ]; then warn "$msg (installing anyway: TEAPORT_ALLOW_STALE_SOURCE=1)"
+    elif [ "$DRY_RUN" = 1 ]; then warn "$msg (a real run stops here)"
+    else die "$msg, or set TEAPORT_ALLOW_STALE_SOURCE=1 to install it anyway"; fi
+  fi
+  if [ -n "$(git -C "$HERE" status --porcelain -- brain 2>/dev/null)" ]; then
+    warn "uncommitted changes under $HERE/brain are installed too (the venv's revision is marked -dirty)"
+  fi
+}
+
+# resolve_brain_src — sets SRC_DIR: TEAPORT_BRAIN_SRC, else this checkout's brain/, else
+# a clone of the manifest-pinned tag (production, via the manifest).
+SRC_DIR=""
+resolve_brain_src() {
+  SRC_DIR="$BRAIN_SRC"
+  if [ -z "$SRC_DIR" ] && [ -d "$HERE/brain" ]; then SRC_DIR="$HERE/brain"; fi
+  [ -z "$SRC_DIR" ] || return 0
+  [ -n "$MF" ] || fetch_manifest   # --only brain skips the up-front fetch; only a clone needs it
+  local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
+  work="$STATE/brain-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
+  # Re-run == repair, but `git clone` dies on a non-empty destination — a second run used
+  # to abort right here. The clone is STAGING ONLY (the venv holds a built COPY of the
+  # brain — see --no-editable in brain_stage), so replace it wholesale: a manifest tag
+  # change re-clones honestly, and nothing at runtime points into the deleted tree.
+  if [ -e "$work" ]; then run rm -rf "$work"; fi
+  run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
+  SRC_DIR="$work/brain"
+  # A manifest pinned to a pre-uv tag cannot be installed by this installer: say so
+  # crisply rather than dying inside uv. (Skipped under --dry-run: the clone did not run.)
+  if [ "$DRY_RUN" != 1 ] && [ ! -f "$SRC_DIR/uv.lock" ]; then
+    die "no uv.lock in $SRC_DIR — this installer only installs brain sources that ship one.
 To install a pre-uv tag, run the install.sh that shipped with that tag."
   fi
-  # uv's exact sync is a TEARDOWN of the live venv, not pip's mostly-no-op top-up: every
-  # dist that differs from the lock is removed/replaced while teaport-brain (and, when
-  # telephony is configured, teaport-sip-brain) may still be running out of it — a lazy
-  # import mid-sync (pipecat loaders, onnxruntime providers) then kills a live call, and
-  # Restart= relaunches into a half-built venv. Stop the brain units first: phase_services
-  # restarts teaport-brain unconditionally, and teaport-sip-brain — which phase_sip
-  # deliberately never touches — is restarted right after the sync below.
-  local stopped_sip=0
-  if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] systemctl stop teaport-brain/teaport-sip-brain if running (restarted after the sync)\n'
-  else
-    if systemctl is-active --quiet teaport-sip-brain.service 2>/dev/null; then
-      log "stopping teaport-sip-brain.service for the venv sync (restarted below)"
-      SUDO systemctl stop teaport-sip-brain.service; stopped_sip=1
-    fi
-    if systemctl is-active --quiet teaport-brain.service 2>/dev/null; then
-      log "stopping teaport-brain.service for the venv sync (phase_services restarts it)"
-      SUDO systemctl stop teaport-brain.service
-    fi
-  fi
-  # brain/uv.lock (beside pyproject.toml) pins the FULL transitive closure, so a fresh box
-  # installs the EXACT set recorded at lock time — ending the reinstall drift the hand-pinned
-  # pyproject fought by guesswork (numpy, websockets, ...). Flags:
+}
+
+# brain_stage <src> — build a new venv from <src>/uv.lock under $BRAIN_VENVS, record what
+# it holds, and self-check it — all while the live brain keeps serving. Sets STAGED.
+STAGED=""
+brain_stage() {
+  local src="$1" rev="" lock_sha
+  rev="$(git -C "$src" describe --always --dirty --abbrev=8 2>/dev/null || true)"
+  STAGED="$BRAIN_VENVS/$(date +%Y%m%d-%H%M%S)${rev:+-$rev}"
+  SUDO mkdir -p "$BRAIN_VENVS"; SUDO chown "$RUN_USER" "$PREFIX" "$BRAIN_VENVS"
+  # brain/uv.lock (beside pyproject.toml) pins the FULL transitive closure, so every box
+  # gets the EXACT set recorded at lock time — the set CI tests. Flags:
   #   --locked              install the lock verbatim, and FAIL if it is stale against
   #                         pyproject.toml. (--frozen would install a stale lock silently:
   #                         a bumped dep whose `uv lock` was forgotten would ship to every
@@ -407,26 +471,204 @@ To install a pre-uv tag, run the install.sh that shipped with that tag."
   #                         other installs (a root-run `uv sync`, another project) hardlink from.
   #   --python-preference only-system: use JetPack's python3.12 (phase_sysdeps), NOT a
   #                         downloaded managed CPython, so the ABI matches the platform.
-  # UV_PROJECT_ENVIRONMENT redirects uv's project venv from brain/.venv to $PREFIX/venv.
+  # UV_PROJECT_ENVIRONMENT redirects uv's project venv from brain/.venv to the staged dir.
   # UV_CACHE_DIR pins the wheel cache to ONE shared, disk-accountable location — per-$HOME
   # caches meant a sudo install and an operator repair each grew their own ~0.5GB invisibly,
-  # on a box whose own preflight warns below 15GB free.
-  log "uv sync $src -> $PREFIX/venv"
+  # on a box whose own preflight warns below 15GB free. The cache is also what makes a
+  # fresh venv per install cheap: after the first, a build is a copy, not a download.
+  log "uv sync --locked $src -> $STAGED"
   SUDO mkdir -p "$STATE/uv-cache"; SUDO chown -R "$RUN_USER" "$STATE/uv-cache"
-  run env UV_PROJECT_ENVIRONMENT="$PREFIX/venv" UV_CACHE_DIR="$STATE/uv-cache" \
+  if ! run env UV_PROJECT_ENVIRONMENT="$STAGED" UV_CACHE_DIR="$STATE/uv-cache" \
       "$UV" sync --locked --no-editable --no-dev --link-mode copy \
-      --python 3.12 --python-preference only-system --project "$src"
+      --python 3.12 --python-preference only-system --project "$src"; then
+    rm -rf "$STAGED"
+    die "uv sync failed — nothing was swapped; the live brain is untouched"
+  fi
   # Keep the shared cache from growing without bound across repairs. Non-fatal on purpose.
   run env UV_CACHE_DIR="$STATE/uv-cache" "$UV" cache prune -q || warn "uv cache prune failed (harmless)"
-  if [ "$stopped_sip" = 1 ]; then SUDO systemctl start teaport-sip-brain.service; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] record the build (lock sha256, revision, installed set) + self-check the new venv\n'
+    return 0
+  fi
+  # What this venv was built from and what it held when it was: `teaport doctor` diffs
+  # the live venv against this record, so a later hand `pip install` into it — the drift
+  # the per-install venv exists to end — shows up as drift instead of going unnoticed.
+  # Run from / so `python -` never imports a teaport_brain/ from the operator's cwd.
+  lock_sha="$(sha256sum "$src/uv.lock" | cut -d' ' -f1)"
+  cp "$src/uv.lock" "$STAGED/teaport-uv.lock"
+  (cd / && "$STAGED/bin/python" - "$STAGED/teaport-build.json" "$src" "${rev:-unknown}" "$lock_sha" "$UV_VERSION" <<'PY'
+import datetime, importlib.metadata as md, json, re, sys
+out, src, rev, lock_sha, uv = sys.argv[1:]
+installed = {re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower(): d.version for d in md.distributions()}
+json.dump({"built": datetime.datetime.now().astimezone().isoformat(timespec="seconds"),
+           "source": src, "revision": rev, "uv_lock_sha256": lock_sha, "uv": uv,
+           "installed": dict(sorted(installed.items()))}, open(out, "w"), indent=1)
+PY
+  ) || { rm -rf "$STAGED"; die "could not record the new brain venv's contents"; }
+  # A clean sync proves the lock resolved, not that the result runs here: the likeliest
+  # break is a compiled extension (onnxruntime, loudness) under a numpy major, which only
+  # shows when it runs. The self-check imports both front-ends and pushes audio through
+  # Silero VAD and Smart Turn v3 in the NEW venv, touching no service. A source that
+  # predates the self-check gets the import half of it.
+  local out check=(-m teaport_brain.selfcheck)
+  if [ ! -f "$src/teaport_brain/selfcheck.py" ]; then
+    check=(-c 'import teaport_brain.gateway_server, teaport_brain.sip_server; print("selfcheck ok: import both front-ends")')
+  fi
+  if ! out="$(cd / && "$STAGED/bin/python" "${check[@]}" 2>&1)"; then
+    printf '%s\n' "$out" | tail -n 25 >&2
+    rm -rf "$STAGED"
+    die "the new brain venv failed its self-check (above) — nothing was swapped; the live brain is untouched"
+  fi
+  printf '%s\n' "$out" | grep '^selfcheck' | sed 's/^/  /' || true
+}
+
+# brain_point_at <venv> — make $BRAIN_LINK resolve to <venv>, atomically, and record the
+# one it replaces as $BRAIN_PREV.
+#
+# Done UNDER the running brain units, which brain_swap restarts right after — never
+# stop, swap, start. A stopped brain does not stay stopped: teaport-engine Upholds=
+# teaport-brain, and the SIP gateway upholds its brain, so systemd relaunches each one
+# within a fraction of a second — into whatever the venv path holds mid-swap. (Measured:
+# relaunched 190 ms after the stop, it died on a ModuleNotFoundError. The in-place sync
+# this replaced "stopped the brain for the sync" the same way, and so never did.)
+# Swapping first is safe because a running uv-built brain does not use the link at all:
+# each console script's shebang names its own venv's interpreter, so it keeps running
+# on the venv it started from until the restart. The one exception is the pre-uv venv,
+# which moves out from under its brain here, for the instant before that restart.
+brain_point_at() {
+  local target="$1" old=""
+  if [ -L "$BRAIN_LINK" ]; then
+    old="$(readlink "$BRAIN_LINK")"
+  elif [ -d "$BRAIN_LINK" ]; then
+    # The pre-uv venv: a real directory at the link's path. Move it aside, don't delete
+    # it — until a uv-built venv has proved itself, it is the only way back.
+    [ ! -e "$BRAIN_LEGACY" ] || die "$BRAIN_LEGACY already exists — move it aside and re-run"
+    mv "$BRAIN_LINK" "$BRAIN_LEGACY"; old="$BRAIN_LEGACY"
+    log "pre-uv venv moved to $BRAIN_LEGACY (kept as the rollback target)"
+  fi
+  if [ "$target" = "$BRAIN_LEGACY" ]; then
+    rm -f "$BRAIN_LINK"; mv "$BRAIN_LEGACY" "$BRAIN_LINK"   # it only runs from there (see above)
+  else
+    ln -sfn "$target" "$BRAIN_LINK.tmp"; mv -Tf "$BRAIN_LINK.tmp" "$BRAIN_LINK"
+  fi
+  if [ -n "$old" ] && [ "$old" != "$target" ]; then ln -sfn "$old" "$BRAIN_PREV"; fi
+}
+
+# brain_units — the brain units running right now, which a swap has to restart. The SIP
+# pair goes as a PAIR: the gateway's echo canceller and call state are tied to its
+# brain's, and a SIP brain relaunched under a running gateway eats the caller's speech
+# (teaport-sip.service explains the Upholds=/PartOf= that encode it; `teaport sip
+# restart` restarts it the same way).
+brain_units() {
+  local units=""
+  if systemctl is-active --quiet teaport-brain.service 2>/dev/null; then units="teaport-brain.service"; fi
+  if systemctl is-active --quiet teaport-sip.service 2>/dev/null \
+     || systemctl is-active --quiet teaport-sip-brain.service 2>/dev/null; then
+    units="${units:+$units }teaport-sip.service teaport-sip-brain.service"
+  fi
+  printf '%s' "$units"
+}
+
+# brain_verify <units...> — did the units just restarted on the swapped-in venv come up
+# and STAY up? teaport-brain must answer /health, which it only does once the app has
+# imported everything and bound its port; then every unit must still be active, with no
+# automatic restart, after a settle window — the SIP brain has no port to poll, and a
+# venv it cannot import crash-loops rather than failing its start.
+# Not a live turn: the brain serves one session at a time and a new /talk connection
+# evicts the current one, so a turn driven from here would hang up on a real caller.
+# The pipeline's in-process models were already exercised by brain_stage's self-check.
+brain_verify() {
+  local u i port restarts=() n=0
+  port="$(sed -n 's/^BRAIN_PORT=//p' "$ETC/brain.env" 2>/dev/null | tail -1)"; port="${port:-$BRAIN_PORT}"
+  for u in "$@"; do restarts+=("$(systemctl show -p NRestarts --value "$u" 2>/dev/null || echo 0)"); done
+  for u in "$@"; do
+    [ "$u" = teaport-brain.service ] || continue
+    for i in $(seq 1 45); do
+      if curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null; then break; fi
+      sleep 2
+    done
+    curl -fsS -o /dev/null --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null \
+      || { warn "teaport-brain did not answer http://127.0.0.1:$port/health within 90 s"; return 1; }
+  done
+  sleep 10
+  for u in "$@"; do
+    if ! systemctl is-active --quiet "$u"; then warn "$u is $(systemctl is-active "$u" 2>/dev/null || true) after the swap"; return 1; fi
+    if [ "$(systemctl show -p NRestarts --value "$u" 2>/dev/null || echo 0)" != "${restarts[$n]}" ]; then
+      warn "$u restarted on its own after the swap (crash-looping)"; return 1
+    fi
+    n=$((n + 1))
+  done
+}
+
+# brain_swap <venv> [--auto-rollback] — point the link at <venv>, restart the brain units
+# that were running and verify them. With --auto-rollback, units that do not come back
+# get the previous venv back (same restart, same checks) and the run fails.
+brain_swap() {
+  local target="$1" auto="${2:-}" units
+  units="$(brain_units)"
+  if [ "$DRY_RUN" = 1 ]; then
+    if [ -z "$units" ]; then printf '  [dry-run] %s -> %s (no brain unit running: nothing to restart)\n' "$BRAIN_LINK" "$target"; return 0; fi
+    printf '  [dry-run] %s -> %s; restart + verify %s%s\n' "$BRAIN_LINK" "$target" "$units" \
+      "${auto:+ (back to the previous venv if they do not come up)}"
+    return 0
+  fi
+  brain_point_at "$target"
+  log "brain venv: $BRAIN_LINK -> $target"
+  if [ -z "$units" ]; then return 0; fi   # nothing was running: phase_services / the operator starts it
+  log "restarting $units on it (a call in progress is dropped)"
+  # shellcheck disable=SC2086  # $units is a word list of unit names
+  SUDO systemctl restart $units
+  # shellcheck disable=SC2086
+  if brain_verify $units; then log "brain units back up on $target: $units"; return 0; fi
+  if [ "$auto" != --auto-rollback ]; then
+    die "the brain did not come back on $target — see: journalctl -u teaport-brain -n 50"
+  fi
+  local prev; prev="$(readlink "$BRAIN_PREV" 2>/dev/null || true)"
+  [ -n "$prev" ] || die "the brain did not come back on $target, and there is no previous venv to roll back to — see: journalctl -u teaport-brain -n 50"
+  warn "the brain did not come back on the new venv — rolling back to $prev"
+  brain_point_at "$prev"
+  # The failed venv is kept for inspection but is not a rollback target; the next
+  # successful install prunes it.
+  rm -f "$BRAIN_PREV"
+  # shellcheck disable=SC2086
+  SUDO systemctl restart $units
+  # shellcheck disable=SC2086
+  if brain_verify $units; then
+    die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: journalctl -u teaport-brain -n 50"
+  fi
+  die "rolled back to $prev, but the brain is not healthy there either — see: journalctl -u teaport-brain -n 50"
+}
+
+# brain_prune — keep the live venv and the rollback target; everything else goes.
+# Housekeeping after a swap that already succeeded, so it never fails the run. Falls back
+# to SUDO because a pre-uv venv has usually had `sudo pip install` run into it, leaving
+# parts of it root's — which a plain rm under `set -e` turned into a failed install
+# AFTER the new brain was already live.
+brain_prune() {
+  local cur prev d
+  cur="$(readlink "$BRAIN_LINK" 2>/dev/null || true)"; prev="$(readlink "$BRAIN_PREV" 2>/dev/null || true)"
+  for d in "$BRAIN_VENVS"/* "$BRAIN_LEGACY"; do
+    [ -d "$d" ] && [ ! -L "$d" ] && [ "$d" != "$cur" ] && [ "$d" != "$prev" ] || continue
+    log "removing old brain venv $d"
+    run rm -rf "$d" 2>/dev/null || SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
+  done
+}
+
+phase_brain() {
+  log "brain -> $BRAIN_LINK (uv sync --locked into a staged venv, python3.12)"
+  ensure_uv
+  resolve_brain_src
+  brain_stage "$SRC_DIR"
+  brain_swap "$STAGED" --auto-rollback
+  brain_prune
   # ship the teaport operator CLI on PATH (repo root = the parent of the brain dir)
-  local cli; cli="$(dirname "$src")/cli/teaport"
+  local cli; cli="$(dirname "$SRC_DIR")/cli/teaport"
   if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
   # The config page's privileged helper, as a ROOT-OWNED copy outside $PREFIX. The venv
-  # (chown -R $RUN_USER above, populated by an unprivileged uv sync) is the run user's to
+  # (owned by $RUN_USER, populated by an unprivileged uv sync) is the run user's to
   # rewrite, so the sudoers line in install_config_sudoers must not trust anything in it —
   # not its python, not its copy of this module. It trusts this file and /usr/bin/python3.
-  local helper="$src/teaport_brain/config_apply.py"
+  local helper="$SRC_DIR/teaport_brain/config_apply.py"
   if [ -f "$helper" ]; then
     log "install config helper -> $CONFIG_HELPER"
     SUDO install -d -m 0755 -o root -g root "$(dirname "$CONFIG_HELPER")"
@@ -1130,7 +1372,7 @@ phase_bridge() {
   if [ -z "$src" ]; then
     local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
     work="$STATE/bridge-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
-    # Same re-run == repair fix as phase_brain: `git clone` dies on a non-empty destination.
+    # Same re-run == repair fix as resolve_brain_src: `git clone` dies on a non-empty destination.
     # This clone is pure staging too — index.js/package.json are copied out below.
     if [ -e "$work" ]; then run rm -rf "$work"; fi
     run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
@@ -1255,7 +1497,34 @@ usage_footer() {
 EOF
 }
 
+# --only brain: the brain's venv, CLI and config helper, from brain/uv.lock, and nothing
+# else (see the header). An appliance must already exist — this updates one.
+main_brain_only() {
+  log "teaport installer — brain only  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  if [ ! -d "$PREFIX" ] || ! systemctl cat teaport-brain.service >/dev/null 2>&1; then
+    local msg="no installed appliance here ($PREFIX, teaport-brain.service) — --only brain updates one; run install.sh without it first"
+    if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
+  fi
+  check_brain_source
+  phase_brain
+  log "done — brain updated from uv.lock$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
+  printf '  undo:    install.sh --rollback brain\n'
+  printf '  check:   teaport doctor\n'
+}
+
+main_rollback_brain() {
+  log "teaport installer — brain rollback  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
+  local prev; prev="$(readlink "$BRAIN_PREV" 2>/dev/null || true)"
+  [ -n "$prev" ] && [ -d "$prev" ] || die "no previous brain venv to roll back to ($BRAIN_PREV)"
+  # Not --auto-rollback: rolling back a rollback is what the next --rollback is for (the
+  # venv being replaced becomes $BRAIN_PREV), and doing it unasked would hide the failure.
+  brain_swap "$prev"
+  log "done — brain rolled back to $prev (run --rollback brain again to undo)"
+}
+
 main() {
+  if [ "$ROLLBACK" = brain ]; then main_rollback_brain; return; fi
+  if [ "$ONLY" = brain ]; then main_brain_only; return; fi
   log "teaport installer  (prefix=$PREFIX, manifest=$MANIFEST_URL$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
   # The manifest pins the license version/text, so fetch it first; the gate
   # still runs before any phase touches the system.
