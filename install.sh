@@ -20,9 +20,10 @@
 # do not. No EULA, no system packages, no engine download, no credential prompts, no
 # unit or env rendering: engine, agent, front door, bridge and SIP are left as they are.
 # A brain change that needs a new unit or env setting ships with a full install run
-# instead: that builds the release the same way, points the link at it, and restarts and
-# checks everything the way it always has — with no automatic rollback, since what a full
-# run changes is far more than the brain (`--rollback brain` still works after it).
+# instead: that builds the release the same way, then — once every unit and env file is
+# written — points the link at it and restarts the engine and every brain process (the
+# SIP pair too, when it is running) in one step, and checks them. No automatic rollback
+# there, since a full run changes far more than the brain (`--rollback brain` still works).
 # Every run builds a new release; the newest three are kept, plus the live one and the
 # rollback target.
 #
@@ -411,6 +412,17 @@ BRAIN_LEGACY="$PREFIX/venv.pre-uv"
 # so. --no-optional-locks keeps `status` from rewriting .git/index (git's own flag for
 # read-only callers like this one).
 SRC_DIR=""
+# brain_src_fetch — fetch the checkout's upstream without ever stopping at a prompt:
+# GIT_TERMINAL_PROMPT for https, ssh BatchMode for ssh, and a timeout for anything else.
+# BatchMode only when neither the environment nor the repo names its own ssh command —
+# overriding a deploy key's core.sshCommand would make every fetch fail.
+brain_src_fetch() {
+  local ssh=()
+  if [ -z "${GIT_SSH_COMMAND:-}" ] && [ -z "$(git -C "$HERE" config core.sshCommand 2>/dev/null)" ]; then
+    ssh=(GIT_SSH_COMMAND="ssh -o BatchMode=yes")
+  fi
+  env GIT_TERMINAL_PROMPT=0 "${ssh[@]}" timeout 30 git -C "$HERE" fetch --quiet 2>/dev/null
+}
 check_brain_source() {
   SRC_DIR="$BRAIN_SRC"
   if [ -z "$SRC_DIR" ] && [ -d "$HERE/brain" ]; then SRC_DIR="$HERE/brain"; fi
@@ -419,12 +431,17 @@ check_brain_source() {
   fi
   [ -z "$BRAIN_SRC" ] && [ -n "$SRC_DIR" ] && have git || return 0
   local up behind
+  # A checkout git refuses to read (a "dubious ownership" refusal, say, under `su -`) must
+  # say so: returning quietly would skip the freshness check with nothing on screen.
+  if [ -e "$HERE/.git" ] && ! git -C "$HERE" rev-parse --git-dir >/dev/null 2>&1; then
+    warn "git cannot read $HERE as this user — its freshness is NOT checked: $(git -C "$HERE" rev-parse --git-dir 2>&1 | head -1)"
+    return 0
+  fi
   up="$(git -C "$HERE" rev-parse --abbrev-ref --symbolic-full-name '@{u}' 2>/dev/null)" || return 0
   # --dry-run touches nothing, .git included: judge against the last fetch.
   if [ "$DRY_RUN" = 1 ]; then :
   elif [ "$(id -u)" = 0 ]; then warn "running as root: not fetching $up into $HERE — checking against its last fetch"
-  elif ! GIT_TERMINAL_PROMPT=0 GIT_SSH_COMMAND="${GIT_SSH_COMMAND:-ssh} -o BatchMode=yes" \
-         timeout 30 git -C "$HERE" fetch --quiet 2>/dev/null; then
+  elif ! brain_src_fetch; then
     warn "cannot fetch $up — checking this checkout against the last fetch instead"
   fi
   behind="$(git -C "$HERE" rev-list --count "HEAD..$up" 2>/dev/null)" || behind=0
@@ -541,6 +558,10 @@ brain_stage() {
   else
     warn "this brain source predates teaport_brain.lockcheck — no build record, so teaport doctor cannot check the venv for drift"
   fi
+  # The operator CLI travels with the release (the config helper already does, inside the
+  # venv), so whichever release is live can put its own tools in place — see
+  # brain_install_tools.
+  if [ -f "$(dirname "$src")/cli/teaport" ]; then cp "$(dirname "$src")/cli/teaport" "$STAGED/teaport-cli"; fi
   # A clean sync proves the lock resolved, not that the result runs here: the likeliest
   # break is a compiled extension (onnxruntime, loudness) under a numpy major, which only
   # shows when it runs. The self-check imports both front-ends and pushes audio through
@@ -575,6 +596,9 @@ brain_stage() {
 # imports follow the link — which is why brain_swap has sudo ready before it swaps, so
 # the restart follows at once), and the pre-uv venv, which moves out from under its
 # brain here, for the instant before that restart.
+#
+# The operator tools follow the link: every move installs the new live release's CLI and
+# config helper, so a rollback — automatic or by hand — puts the matching ones back too.
 brain_point_at() {
   local target="$1" old=""
   if [ -L "$BRAIN_LINK" ]; then
@@ -592,6 +616,7 @@ brain_point_at() {
     ln -sfn "$target" "$BRAIN_LINK.tmp"; mv -Tf "$BRAIN_LINK.tmp" "$BRAIN_LINK"
   fi
   if [ -n "$old" ] && ! [ "$old" -ef "$target" ]; then ln -sfn "$old" "$BRAIN_PREV"; fi
+  brain_install_tools "$target"
 }
 
 # brain_units — which units a --only brain swap (or --rollback brain) restarts. Sets
@@ -662,6 +687,12 @@ brain_verify() {
     sleep 1; n=0
     for u in "$@"; do
       FAILED_UNIT="$u"
+      # The SIP brain down with its gateway down is the gateway's failure (BindsTo= stops
+      # the brain with it). The SIP brain down with the gateway UP is the brain's own: its
+      # crash leaves the gateway running until Restart= brings the brain back.
+      if [ "$u" = teaport-sip-brain.service ] && { [ "$SIP_GATEWAY_DOWN" = 1 ] || ! systemctl is-active --quiet teaport-sip.service; }; then
+        brain_gateway_down; n=$((n + 1)); continue
+      fi
       if ! systemctl is-active --quiet "$u"; then warn "$u is $(systemctl is-active "$u" 2>/dev/null || true) after the swap"; return 1; fi
       now="$(systemctl show -p InvocationID --value "$u" 2>/dev/null || true)"
       if [ "$now" != "${ids[$n]}" ]; then warn "$u restarted after the swap (crash-looping)"; return 1; fi
@@ -676,11 +707,34 @@ brain_verify() {
 # leave the link on a venv nothing has vouched for (a dependency job failing, the start
 # rate limit, a job conflict inside the SIP pair all make systemctl return non-zero).
 brain_restart() {
-  local extra="$1"; shift
+  local extra="$1" u; shift
+  SIP_GATEWAY_DOWN=0
   log "restarting $extra${extra:+ }$* (a call in progress is dropped)"
   # shellcheck disable=SC2086  # $extra is a word list of unit names
-  if ! SUDO systemctl restart $extra "$@"; then FAILED_UNIT="$1"; warn "systemctl restart failed"; return 1; fi
+  if ! SUDO systemctl restart $extra "$@"; then
+    warn "systemctl restart failed"
+    # A gateway that did not come back takes its brain down with it (BindsTo=): the
+    # gateway's failure, which swapping the brain back would not fix. Say so and judge
+    # the rest. Anything else is a failed swap, named after the unit that is down.
+    if contains teaport-sip.service "$extra" && ! systemctl is-active --quiet teaport-sip.service; then
+      brain_gateway_down
+    else
+      FAILED_UNIT="$1"
+      for u in "$@"; do if ! systemctl is-active --quiet "$u"; then FAILED_UNIT="$u"; break; fi; done
+      return 1
+    fi
+  fi
   brain_verify "$@"
+}
+
+# brain_gateway_down — the SIP gateway is not running after the restart: report it as the
+# gateway's failure and drop the SIP brain (which BindsTo= it, so is down too) from what
+# brain_verify judges.
+SIP_GATEWAY_DOWN=0
+brain_gateway_down() {
+  [ "$SIP_GATEWAY_DOWN" = 1 ] && return 0
+  SIP_GATEWAY_DOWN=1
+  warn "the SIP gateway (teaport-sip) is not running — the phone line is down, but that is the gateway's failure, not the brain's: no rollback for it. See: journalctl -u teaport-sip -n 50"
 }
 
 # brain_swap <venv> <mode> — point the link at <venv>, restart the brain units on it
@@ -717,7 +771,7 @@ brain_swap() {
     die "the brain did not come back on $target — see: $journal"
   fi
   local prev; prev="$(readlink "$BRAIN_PREV" 2>/dev/null || true)"
-  [ -n "$prev" ] || die "the brain did not come back on $target, and there is no previous venv to roll back to — see: $journal"
+  [ -n "$prev" ] && [ -d "$prev" ] || die "the brain did not come back on $target, and there is no previous venv to roll back to — see: $journal"
   warn "the brain did not come back on the new venv — rolling back to $prev"
   brain_point_at "$prev"
   # The failed venv is kept for inspection but is not a rollback target; brain_prune
@@ -742,19 +796,19 @@ brain_prune() {
   # rollback target are recognised with -ef (same file after following the links), not
   # by comparing path text, which a trailing slash or a // in $PREFIX would defeat — and
   # the price of a miss here is rm -rf of the running brain.
-  for d in $(find "$BRAIN_VENVS" -mindepth 1 -maxdepth 1 -type d 2>/dev/null | sort -r) "$BRAIN_LEGACY"; do
+  while IFS= read -r -d '' d; do
     [ -d "$d" ] && [ ! -L "$d" ] || continue
     if [ "$d" -ef "$BRAIN_LINK" ] || [ "$d" -ef "$BRAIN_PREV" ]; then continue; fi
     if [ "$d" != "$BRAIN_LEGACY" ] && [ "$n" -lt "$BRAIN_KEEP" ]; then n=$((n + 1)); continue; fi
     log "removing old brain venv $d"
     run rm -rf "$d" 2>/dev/null || SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
-  done
+  done < <({ find "$BRAIN_VENVS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -rz; printf '%s\0' "$BRAIN_LEGACY"; })
 }
 
-# phase_brain — build a new brain release (STAGED) and install the operator tools from
-# the same source. It restarts nothing; the caller puts the release live:
-#   full install: brain_activate — point the link, and phase_services restarts the brain
-#     on it with everything else, as it always has; phase_verify checks it.
+# phase_brain — build a new brain release (STAGED). It restarts nothing and moves no
+# link; the caller puts the release live:
+#   full install: phase_services, once every unit and env file is written — it points the
+#     link and restarts the engine and every brain process together (brain_activate).
 #   --only brain: brain_swap — restart the brain units on it, verify, roll back.
 phase_brain() {
   log "brain -> $BRAIN_LINK (uv sync --locked into a staged venv, python3.12)"
@@ -762,36 +816,40 @@ phase_brain() {
   resolve_brain_src
   brain_release_id
   brain_stage "$SRC_DIR"
-  brain_install_tools
 }
 
-# brain_activate — the full install's way live: point the link at the new release and
-# prune. No restart here — phase_services restarts the engine and the brain on the env
-# and units it has just written. A running brain is unaffected until then (see
-# brain_point_at). A running SIP brain keeps its release until the phone line is
-# restarted, which a full install has never done on its own (phase_sip says how).
+# brain_activate — the full install's way live, called by phase_services right before
+# its restart: point the link at the new release (and install its tools). Nothing runs on
+# it until that restart, which takes every brain process with it — the old in-place
+# install stopped and restarted the SIP brain for the same reason. Pruning waits until
+# after the restart, when no process can still be running an older release.
 brain_activate() {
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s -> %s (phase_services restarts the brain on it)\n' "$BRAIN_LINK" "$STAGED"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s -> %s (+ its CLI and config helper)\n' "$BRAIN_LINK" "$STAGED"; return 0; fi
   brain_point_at "$STAGED"
   log "brain venv: $BRAIN_LINK -> $STAGED"
-  brain_prune
 }
 
-# brain_install_tools — the operator CLI and the config page's root-owned helper, from
-# the same source as the venv.
+# brain_install_tools <release> — install the operator CLI and the config page's
+# root-owned helper from <release>: its copy of cli/teaport (brain_stage puts it there)
+# and the config_apply.py inside its venv. A release that predates the CLI copy leaves the
+# installed CLI as it is. Non-fatal: the brain is already live when this runs.
 brain_install_tools() {
-  # ship the teaport operator CLI on PATH (repo root = the parent of the brain dir)
-  local cli; cli="$(dirname "$SRC_DIR")/cli/teaport"
-  if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
+  local rel="$1" cli helper
+  cli="$rel/teaport-cli"
+  if [ -f "$cli" ]; then
+    log "install teaport CLI -> /usr/local/bin/teaport"
+    SUDO install -m 0755 "$cli" /usr/local/bin/teaport || warn "could not install the teaport CLI"
+  fi
   # The config page's privileged helper, as a ROOT-OWNED copy outside $PREFIX. The venv
   # (owned by $RUN_USER, populated by an unprivileged uv sync) is the run user's to
   # rewrite, so the sudoers line in install_config_sudoers must not trust anything in it —
   # not its python, not its copy of this module. It trusts this file and /usr/bin/python3.
-  local helper="$SRC_DIR/teaport_brain/config_apply.py"
-  if [ -f "$helper" ]; then
+  # Copied out of the release at swap time; a run-user edit made after that never reaches it.
+  helper="$(find -L "$rel/lib" -maxdepth 4 -path '*/site-packages/teaport_brain/config_apply.py' 2>/dev/null | head -1)"
+  if [ -n "$helper" ]; then
     log "install config helper -> $CONFIG_HELPER"
-    SUDO install -d -m 0755 -o root -g root "$(dirname "$CONFIG_HELPER")"
-    SUDO install -m 0755 -o root -g root "$helper" "$CONFIG_HELPER"
+    { SUDO install -d -m 0755 -o root -g root "$(dirname "$CONFIG_HELPER")" \
+        && SUDO install -m 0755 -o root -g root "$helper" "$CONFIG_HELPER"; } || warn "could not install the config helper"
   fi
 }
 
@@ -1351,7 +1409,16 @@ phase_services() {
   # and phase_verify's journal check reads the OLD startup's lines and passes. `restart`
   # also starts a stopped unit, so a first install behaves the same.
   SUDO systemctl enable teaport-engine.service teaport-brain.service
-  SUDO systemctl restart teaport-engine.service teaport-brain.service
+  # The new brain release goes live here, with everything it needs already on disk (units
+  # and env above, the SIP units in phase_sip, which main runs first). One restart takes
+  # the engine and EVERY process running brain code, so none is left on an older release
+  # — the SIP pair included when the gateway is running (as a pair; see brain_units).
+  local sip=""
+  if systemctl is-active --quiet teaport-sip.service 2>/dev/null; then sip="teaport-sip.service teaport-sip-brain.service"; fi
+  brain_activate
+  # shellcheck disable=SC2086  # $sip is a word list of unit names
+  SUDO systemctl restart teaport-engine.service teaport-brain.service $sip
+  if [ "$DRY_RUN" != 1 ]; then brain_prune; fi
   if [ -n "$SANDBOX" ]; then SUDO systemctl enable --now teaport-sandbox-recover.service; fi
   install_config_sudoers
 }
@@ -1538,9 +1605,7 @@ phase_sip() {
   # re-run on an already-configured box re-renders the units but leaves their enabled
   # state alone, so repairing never silently turns telephony off.
   if systemctl is-active --quiet teaport-sip.service 2>/dev/null; then
-    # Telephony is on. The repair never restarts it by itself (a call may be up), so the
-    # phone line keeps its current brain release until someone does.
-    log "sip telephony: on — run 'teaport sip restart' to put the phone line on the new brain (drops a call in progress)"
+    log "sip telephony: on — phase_services restarts it on the new brain"
   else
     log "sip telephony: units installed but inert — run 'teaport sip configure' (or --conf FILE for an existing gateway .conf) to register a SIP trunk and start it"
   fi
@@ -1661,14 +1726,13 @@ main() {
   phase_sysdeps
   phase_engine
   phase_brain
-  brain_activate
   detect_agent
   phase_agent
   phase_credentials
+  phase_sip        # renders the SIP units only; before phase_services, whose one restart uses them
   phase_services
   phase_frontdoor
   phase_bridge
-  phase_sip
   phase_verify
   usage_footer
 }
