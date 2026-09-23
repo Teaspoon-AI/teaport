@@ -515,6 +515,14 @@ brain_stage() {
   #                         other installs (a root-run `uv sync`, another project) hardlink from.
   #   --python-preference only-system: use JetPack's python3.12 (phase_sysdeps), NOT a
   #                         downloaded managed CPython, so the ABI matches the platform.
+  #   --reinstall-package teaport-brain: build the brain itself from $src every time.
+  #                         uv caches a local project's build keyed on pyproject.toml's
+  #                         mtime (its default cache-keys), not on the code, so a pull that
+  #                         changes only .py files got the PREVIOUS build out of the cache —
+  #                         old brain code under the new revision's name, with the lock,
+  #                         the build record and the self-check all passing. (Caught live
+  #                         2026-09-23: a new module missing from the freshly built venv.)
+  #                         Dependencies still come from the cache; only this one rebuilds.
   # UV_PROJECT_ENVIRONMENT redirects uv's project venv from brain/.venv to the staged dir.
   # UV_CACHE_DIR pins the wheel cache to ONE shared, disk-accountable location — per-$HOME
   # caches meant a sudo install and an operator repair each grew their own ~0.5GB invisibly,
@@ -524,6 +532,7 @@ brain_stage() {
   SUDO mkdir -p "$STATE/uv-cache"; SUDO chown -R "$RUN_USER" "$STATE/uv-cache"
   if ! run env UV_PROJECT_ENVIRONMENT="$STAGED" UV_CACHE_DIR="$STATE/uv-cache" \
       "$UV" sync --locked --no-editable --no-dev --link-mode copy \
+      --reinstall-package teaport-brain \
       --python 3.12 --python-preference only-system --project "$src"; then
     rm -rf "$STAGED"
     die "uv sync failed — nothing was swapped; the live brain is untouched"
