@@ -93,10 +93,14 @@ brain_lock_check() {
   # From / so the venv's python never picks up a teaport_brain/ from the cwd. The diff
   # lives in the brain package (teaport_brain.lockcheck), next to the code that wrote
   # the record, so writer and reader cannot normalize names differently.
-  if ! out="$(cd / && "$venv/bin/python" -m teaport_brain.lockcheck diff "$rec" 2>&1)"; then
-    warnc "brain venv: cannot read its build record ($rec): ${out##*$'\n'}"
-    return 0
+  # stdout only: the three lines below are parsed by position, and a warning the venv's
+  # interpreter prints on stderr would shift them into a false drift report.
+  local err; err="$(mktemp)"
+  if ! out="$(cd / && "$venv/bin/python" -m teaport_brain.lockcheck diff "$rec" 2>"$err")"; then
+    warnc "brain venv: cannot read its build record ($rec): $(tail -n 1 "$err")"
+    rm -f "$err"; return 0
   fi
+  rm -f "$err"
   local what n detail
   { IFS= read -r what; IFS= read -r n; IFS= read -r detail || true; } <<<"$out"
   if [ "$n" = 0 ]; then ok "brain venv matches its uv.lock build ($what)"
