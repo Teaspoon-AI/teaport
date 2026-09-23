@@ -646,8 +646,10 @@ brain_units() {
 # Not a live turn: the brain serves one session at a time and a new /talk connection
 # evicts the current one, so a turn driven from here would hang up on a real caller.
 # The pipeline's in-process models were already exercised by brain_stage's self-check.
+FAILED_UNIT=""
 brain_verify() {
   local u i n port now up=0 ids=()
+  FAILED_UNIT=teaport-brain.service
   port="$(sed -n 's/^BRAIN_PORT=//p' "$ETC/brain.env" 2>/dev/null | tail -1)"; port="${port:-$BRAIN_PORT}"
   if contains teaport-brain.service "$*"; then
     for i in $(seq 1 45); do
@@ -660,6 +662,7 @@ brain_verify() {
   for i in $(seq 1 15); do
     sleep 1; n=0
     for u in "$@"; do
+      FAILED_UNIT="$u"
       if ! systemctl is-active --quiet "$u"; then warn "$u is $(systemctl is-active "$u" 2>/dev/null || true) after the swap"; return 1; fi
       now="$(systemctl show -p InvocationID --value "$u" 2>/dev/null || true)"
       if [ "$now" != "${ids[$n]}" ]; then warn "$u restarted after the swap (crash-looping)"; return 1; fi
@@ -677,7 +680,7 @@ brain_restart() {
   local extra="$1"; shift
   log "restarting $extra${extra:+ }$* (a call in progress is dropped)"
   # shellcheck disable=SC2086  # $extra is a word list of unit names
-  if ! SUDO systemctl restart $extra "$@"; then warn "systemctl restart failed"; return 1; fi
+  if ! SUDO systemctl restart $extra "$@"; then FAILED_UNIT="$1"; warn "systemctl restart failed"; return 1; fi
   brain_verify "$@"
 }
 
@@ -708,20 +711,21 @@ brain_swap() {
   log "brain venv: $BRAIN_LINK -> $target"
   if [ $# = 0 ]; then return 0; fi   # nothing was running: phase_services / the operator starts it
   if brain_restart "$SWAP_ALSO" "$@"; then log "brain units back up on $target: $*"; return 0; fi
+  local journal="journalctl -u ${FAILED_UNIT%.service} -n 50"   # the unit that failed, which the SIP brain's often is
   if [ "$auto" != --auto-rollback ]; then
-    die "the brain did not come back on $target — see: journalctl -u teaport-brain -n 50"
+    die "the brain did not come back on $target — see: $journal"
   fi
   local prev; prev="$(readlink "$BRAIN_PREV" 2>/dev/null || true)"
-  [ -n "$prev" ] || die "the brain did not come back on $target, and there is no previous venv to roll back to — see: journalctl -u teaport-brain -n 50"
+  [ -n "$prev" ] || die "the brain did not come back on $target, and there is no previous venv to roll back to — see: $journal"
   warn "the brain did not come back on the new venv — rolling back to $prev"
   brain_point_at "$prev"
   # The failed venv is kept for inspection but is not a rollback target; the next
   # successful install prunes it.
   rm -f "$BRAIN_PREV"
   if brain_restart "" "$@"; then
-    die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: journalctl -u teaport-brain -n 50"
+    die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: $journal"
   fi
-  die "rolled back to $prev, but the brain is not healthy there either — see: journalctl -u teaport-brain -n 50"
+  die "rolled back to $prev, but the brain is not healthy there either — see: $journal"
 }
 
 # brain_prune — keep the live venv and the rollback target; everything else goes.
@@ -1629,7 +1633,8 @@ main_brain_only() {
   phase_brain
   # shellcheck disable=SC2046  # brain_units is a word list of unit names
   brain_go_live $(brain_units)
-  log "done — brain updated from uv.lock$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
+  if [ -z "$BRAIN_PENDING" ] && [ "$DRY_RUN" != 1 ]; then log "done — the brain was already current; nothing restarted"
+  else log "done — brain updated from uv.lock$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"; fi
   printf '  undo:    install.sh --rollback brain\n'
   printf '  check:   teaport doctor\n'
 }
