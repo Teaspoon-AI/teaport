@@ -70,7 +70,14 @@ jobs:
         # extensions (onnxruntime, loudness) a numpy major would break. Here it runs on
         # the aarch64 leg too, so a lock bump that breaks them on arm fails in CI rather
         # than in an appliance's install (where it would be caught, but only then).
-        run: uv run --project brain python -m teaport_brain.selfcheck
+        # In a venv of its own built the way brain_stage builds one — --no-dev, not the
+        # dev-group venv above — and run from / like install.sh runs it, so nothing the
+        # tests need, and no teaport_brain/ from the checkout, can make it pass here and
+        # fail on the box. `uv run` would re-sync the project venv instead.
+        run: |
+          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/brain-prod" \
+            uv sync --locked --no-editable --no-dev --project brain
+          cd / && "$RUNNER_TEMP/brain-prod/bin/python" -m teaport_brain.selfcheck
       - name: Hermetic tests
         # No -k denylist. test_suite.py runs each test_*.py as a subprocess, and a
         # script whose dependency is absent exits appliance.SKIP_EXIT, which the

@@ -13,7 +13,6 @@
 # run against a venv that is not live yet, and on a box whose engine is busy with a call.
 # Exit 0 = pass; anything else names the check that failed.
 #
-import asyncio
 import importlib
 import sys
 
@@ -30,21 +29,29 @@ def _check_imports():
         importlib.import_module(mod)
 
 
-async def _check_vad():
+def _check_vad():
+    from pipecat.audio.utils import calculate_audio_volume
     from pipecat.audio.vad.silero import SileroVADAnalyzer
 
     vad = SileroVADAnalyzer(sample_rate=SAMPLE_RATE)
     vad.set_sample_rate(SAMPLE_RATE)  # what the transport does at StartFrame
-    # A 440 Hz tone at speech level: enough to make the loudness measurement and the
-    # ONNX session both do real work (silence can short-circuit either).
+    # Straight to the model and the loudness meter, NOT through voice_confidence() or
+    # analyze_audio(): voice_confidence catches every exception, logs it and returns 0 —
+    # a valid-looking confidence — so an ONNX session that throws on every frame would
+    # pass through it. And analyze_audio only measures loudness once its window holds a
+    # 400 ms BS.1770 gating block, so a handful of frames never runs the extension at all.
+    # A 440 Hz tone at speech level: silence can short-circuit either.
+    t = np.arange(SAMPLE_RATE // 2) / SAMPLE_RATE  # 0.5 s, more than one gating block
+    tone = (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16)
     n = vad.num_frames_required()
-    t = np.arange(n) / SAMPLE_RATE
-    frame = (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16).tobytes()
-    for _ in range(4):
-        await vad.analyze_audio(frame)
-    conf = vad.voice_confidence(frame)
-    if not 0.0 <= conf <= 1.0:
-        raise RuntimeError(f"Silero VAD returned an out-of-range confidence: {conf!r}")
+    for i in range(4):
+        conf = float(np.asarray(vad._model(tone[i * n:(i + 1) * n].astype(np.float32) / 32768.0, SAMPLE_RATE)).ravel()[0])
+        if not 0.0 <= conf <= 1.0:  # also rejects NaN
+            raise RuntimeError(f"Silero VAD returned an out-of-range confidence: {conf!r}")
+    volume = calculate_audio_volume(tone.tobytes(), SAMPLE_RATE)
+    # A tone this loud measures well above the absolute gate; 0 means the meter is broken.
+    if not 0.0 < volume <= 1.0:
+        raise RuntimeError(f"loudness measured a speech-level tone as {volume!r}")
 
 
 def _check_smart_turn():
@@ -63,7 +70,7 @@ def _check_smart_turn():
 def main() -> int:
     checks = [
         ("import both front-ends", _check_imports),
-        ("Silero VAD (onnxruntime + loudness)", lambda: asyncio.run(_check_vad())),
+        ("Silero VAD (onnxruntime) + loudness", _check_vad),
         ("Smart Turn v3 (onnxruntime)", _check_smart_turn),
     ]
     for name, fn in checks:

@@ -90,21 +90,10 @@ brain_lock_check() {
     warnc "brain venv has no build record, so brain/uv.lock was never applied to it (a pre-uv pip venv, or a hand build) — rebuild it: install.sh --only brain"
     return 0
   fi
-  # From / so the venv's python never picks up a teaport_brain/ from the cwd.
-  if ! out="$(cd / && "$venv/bin/python" - "$rec" <<'PY' 2>&1
-import importlib.metadata as md, json, re, sys
-rec = json.load(open(sys.argv[1]))
-want = rec["installed"]
-have = {re.sub(r"[-_.]+", "-", d.metadata["Name"]).lower(): d.version for d in md.distributions()}
-diff = [f"{n} {want[n]} -> {have[n]}" for n in sorted(want.keys() & have.keys()) if want[n] != have[n]]
-diff += [f"+{n} {have[n]}" for n in sorted(have.keys() - want.keys())]
-diff += [f"-{n} {want[n]}" for n in sorted(want.keys() - have.keys())]
-print(f"{rec.get('revision', '?')}, built {rec.get('built', '?')[:10]}")
-print(len(diff))
-if diff:
-    print(", ".join(diff[:8]) + (f", … (+{len(diff) - 8} more)" if len(diff) > 8 else ""))
-PY
-)"; then
+  # From / so the venv's python never picks up a teaport_brain/ from the cwd. The diff
+  # lives in the brain package (teaport_brain.lockcheck), next to the code that wrote
+  # the record, so writer and reader cannot normalize names differently.
+  if ! out="$(cd / && "$venv/bin/python" -m teaport_brain.lockcheck diff "$rec" 2>&1)"; then
     warnc "brain venv: cannot read its build record ($rec): ${out##*$'\n'}"
     return 0
   fi

@@ -28,7 +28,14 @@ Environment=SIP_HALF_DUPLEX=0
 # (bounded) for the socket to appear, so this start does not race PJSUA2's init.
 # -u: stdout unbuffered, so the brain's own print()s reach journald as they happen
 # rather than in 4 KiB blocks after the fact.
-ExecStart=@PREFIX@/venv/bin/python -u -m teaport_brain.sip_server --socket @SIP_UDS@
+# The venv link is resolved ONCE, here: @PREFIX@/venv is a symlink install.sh repoints at
+# a new venv before it restarts this unit, and python started through the link would
+# find its site-packages through it too — so a lazy import after a swap (or after one
+# whose restart never came) would load the NEW venv's modules into this old process.
+# The resolved path pins it to the venv it started from, like teaport-brain's console
+# script shebang does. Not a console script of our own: a rollback to a venv that
+# predates one would leave this unit pointing at nothing. ($$ = a literal $ to systemd.)
+ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.sip_server --socket @SIP_UDS@'
 Restart=always
 # PartOf=/Upholds= on the gateway unit (teaport-sip.service) propagate every restart
 # job we run into a forced gateway restart+re-REGISTER — that propagation bypasses the
