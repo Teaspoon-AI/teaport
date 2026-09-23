@@ -697,8 +697,13 @@ brain_swap() {
   fi
   # sudo ready BEFORE the link moves: a password prompt between the swap and the restart
   # would keep the brain units running under a link that already names the new venv for
-  # as long as it waits — or for good, if it is answered with Ctrl-C.
-  if [ $# -gt 0 ] && [ "$(id -u)" != 0 ]; then sudo -v || die "sudo is needed to restart $* — nothing was swapped"; fi
+  # as long as it waits — or for good, if it is answered with Ctrl-C. `sudo -n true` first:
+  # `sudo -v` wants a password unless EVERY sudoers rule for the user is NOPASSWD (its
+  # verifypw default), so on a box with a NOPASSWD rule beside a password one — the
+  # appliance's own — it would prompt although the restart itself never would.
+  if [ $# -gt 0 ] && [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
+    sudo -v || die "sudo is needed to restart $* — nothing was swapped"
+  fi
   brain_point_at "$target"
   log "brain venv: $BRAIN_LINK -> $target"
   if [ $# = 0 ]; then return 0; fi   # nothing was running: phase_services / the operator starts it
