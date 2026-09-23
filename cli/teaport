@@ -75,6 +75,39 @@ cmd_status() {
 }
 
 # ---- doctor ----------------------------------------------------------------
+# brain_lock_check — is the live brain venv still the set brain/uv.lock installed?
+# install.sh builds every venv with `uv sync --locked` and records what it held
+# (teaport-build.json); this diffs the venv against that record. Drift is a hand
+# `pip install` into the venv, and it is the failure that used to accumulate unseen for
+# weeks: CI tests the lock, the box runs something else. A venv with no record predates
+# the uv installer (pip-built) and has never had the lock applied at all.
+# Uses doctor's ok/warnc (dynamically scoped from cmd_doctor).
+brain_lock_check() {
+  local venv="$PREFIX/venv" rec out
+  rec="$venv/teaport-build.json"
+  [ -x "$venv/bin/python" ] || return 0
+  if [ ! -f "$rec" ]; then
+    warnc "brain venv has no build record, so brain/uv.lock was never applied to it (a pre-uv pip venv, or a hand build) — rebuild it: install.sh --only brain"
+    return 0
+  fi
+  # -I (isolated) so the venv's python imports its own teaport_brain — not one from a
+  # PYTHONPATH the operator has exported, not the cwd. The diff
+  # lives in the brain package (teaport_brain.lockcheck), next to the code that wrote
+  # the record, so writer and reader cannot normalize names differently.
+  # stdout only: the three lines below are parsed by position, and a warning the venv's
+  # interpreter prints on stderr would shift them into a false drift report.
+  local err; err="$(mktemp)"
+  if ! out="$("$venv/bin/python" -I -m teaport_brain.lockcheck diff "$rec" 2>"$err")"; then
+    warnc "brain venv: cannot read its build record ($rec): $(tail -n 1 "$err")"
+    rm -f "$err"; return 0
+  fi
+  rm -f "$err"
+  local what n detail
+  { IFS= read -r what; IFS= read -r n; IFS= read -r detail || true; } <<<"$out"
+  if [ "$n" = 0 ]; then ok "brain venv matches its uv.lock build ($what)"
+  else warnc "brain venv has drifted from its uv.lock build ($what) — $n change(s): $detail — rebuild: install.sh --only brain"; fi
+}
+
 cmd_doctor() {
   local fix=0; [ "${1:-}" = --fix ] && fix=1
   local RC=0
@@ -88,6 +121,7 @@ cmd_doctor() {
   [ -f "$PREFIX/models/kokoro/Kokoro_espeak_F16.gguf" ] && ok "Kokoro TTS model" || failc "Kokoro model missing ($PREFIX/models/kokoro)"
   [ -f "$PREFIX/THIRD_PARTY_NOTICES.txt" ] && ok "engine third-party notices" || failc "engine third-party notices missing ($PREFIX/THIRD_PARTY_NOTICES.txt — re-run install.sh)"
   [ -x "$PREFIX/venv/bin/teaport-brain" ] && ok "brain (teaport-brain)" || failc "brain not installed in $PREFIX/venv"
+  brain_lock_check
   have espeak-ng && ok "espeak-ng (engine G2P dep)" || failc "espeak-ng missing — apt install espeak-ng"
   local fpt; fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"
   if [ -z "$fpt" ]; then failc "KOKORO_RESERVE_FPT unset in $ETC/engine.env — the code default (50) OOMs an 8GB box"
@@ -173,8 +207,9 @@ PY
   [ "$check_only" = 1 ] && { echo "  (--check) not applying."; return 0; }
   # Applying swaps only changed artifacts + restarts only affected units — the same
   # idempotent, sha-verifying path install.sh runs. Wire it in once get.teaspoon.tech hosts
-  # real artifacts; until then, re-run install.sh to update.
-  die "apply not wired yet — re-run install.sh (idempotent; downloads only changed artifacts). Auto-swap lands with get.teaspoon.tech artifact hosting."
+  # real artifacts; until then, install.sh is the update path — and for the brain alone,
+  # `install.sh --only brain` rebuilds just its venv from uv.lock, without the engine.
+  die "apply not wired yet — for a brain change run: install.sh --only brain (the brain's venv from uv.lock, nothing else); for anything else re-run install.sh (idempotent; downloads only changed artifacts)."
 }
 
 # ---- logs ------------------------------------------------------------------

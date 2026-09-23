@@ -40,4 +40,34 @@ downloads. You bring your own Jetson and your own LLM.
   local assistant and the phone line share one speech slot; see **docs/CONFIG.md
   → SIP telephony** for how that works and how to dedicate a box to the phone.
 
-TODO: expand each step; add troubleshooting, uninstall, and update paths.
+## Updating the brain
+
+The brain (the voice pipeline) updates on its own, without the engine download or
+any of the installer's prompts:
+
+```
+git pull && ./install.sh --only brain          # from a checkout of this repo
+bash <(curl -fsSL https://get.teaspoon.tech/teaport) --only brain   # or the one-liner
+```
+
+It builds a new Python environment from `brain/uv.lock` next to the running one,
+self-checks it, then swaps it in and restarts the brain (and the phone line, if it
+is running — a call in progress is dropped). If the brain does not come back healthy
+it puts the previous environment back by itself. The newest three environments are
+kept, plus the running one and the rollback target. `--only brain` leaves the systemd units and `/etc/teaport` alone, so a brain
+change that needs a new setting there goes in with a full `./install.sh` run instead.
+A full run builds the brain the same way and restarts everything on it — the phone
+line too, if it is on — but does not roll back on its own; `./install.sh --rollback
+brain` does that by hand.
+To go back by hand:
+`./install.sh --rollback brain` (run it again to undo the rollback). Add `--dry-run`
+to either to see the plan first.
+
+A checkout that is behind the branch it tracks is refused, since installing it would
+quietly put an older brain on the box — `git pull` first.
+
+`teaport doctor` reports whether the brain's environment still matches the lock it
+was built from. Anything installed into it by hand shows up there as drift; the fix
+is another `--only brain`.
+
+TODO: expand each step; add troubleshooting and uninstall.
