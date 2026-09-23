@@ -35,6 +35,9 @@ Environment=SIP_HALF_DUPLEX=0
 # The resolved path pins it to the venv it started from, like teaport-brain's console
 # script shebang does. Not a console script of our own: a rollback to a venv that
 # predates one would leave this unit pointing at nothing. ($$ = a literal $ to systemd.)
+# The journal tag: journald names the process that was exec'd first — sh, here — so
+# without this every SIP brain line would be tagged "sh".
+SyslogIdentifier=teaport-sip-brain
 ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.sip_server --socket @SIP_UDS@'
 Restart=always
 # PartOf=/Upholds= on the gateway unit (teaport-sip.service) propagate every restart

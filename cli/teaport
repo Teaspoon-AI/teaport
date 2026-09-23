@@ -90,13 +90,14 @@ brain_lock_check() {
     warnc "brain venv has no build record, so brain/uv.lock was never applied to it (a pre-uv pip venv, or a hand build) — rebuild it: install.sh --only brain"
     return 0
   fi
-  # From / so the venv's python never picks up a teaport_brain/ from the cwd. The diff
+  # -I (isolated) so the venv's python imports its own teaport_brain — not one from a
+  # PYTHONPATH the operator has exported, not the cwd. The diff
   # lives in the brain package (teaport_brain.lockcheck), next to the code that wrote
   # the record, so writer and reader cannot normalize names differently.
   # stdout only: the three lines below are parsed by position, and a warning the venv's
   # interpreter prints on stderr would shift them into a false drift report.
   local err; err="$(mktemp)"
-  if ! out="$(cd / && "$venv/bin/python" -m teaport_brain.lockcheck diff "$rec" 2>"$err")"; then
+  if ! out="$("$venv/bin/python" -I -m teaport_brain.lockcheck diff "$rec" 2>"$err")"; then
     warnc "brain venv: cannot read its build record ($rec): $(tail -n 1 "$err")"
     rm -f "$err"; return 0
   fi

@@ -52,10 +52,13 @@ bash <(curl -fsSL https://get.teaspoon.tech/teaport) --only brain   # or the one
 
 It builds a new Python environment from `brain/uv.lock` next to the running one,
 self-checks it, then swaps it in and restarts the brain (and the phone line, if it
-is on — a call in progress is dropped). If the brain does not come back healthy it
-puts the previous environment back by itself. The newest three environments are
+is running — a call in progress is dropped). If the brain does not come back healthy
+it puts the previous environment back by itself. The newest three environments are
 kept, plus the running one and the rollback target. `--only brain` leaves the systemd units and `/etc/teaport` alone, so a brain
 change that needs a new setting there goes in with a full `./install.sh` run instead.
+A full run builds the brain the same way and restarts everything, but does not roll
+back on its own — `./install.sh --rollback brain` does that by hand — and leaves a
+running phone line on its current brain until `teaport sip restart`.
 To go back by hand:
 `./install.sh --rollback brain` (run it again to undo the rollback). Add `--dry-run`
 to either to see the plan first.
