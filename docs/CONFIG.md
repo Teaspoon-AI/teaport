@@ -273,8 +273,9 @@ teaport sip configure --conf ~/my-trunk.conf
 ```
 
 It goes through the same test-register, then is installed as-is except for the
-two keys the units own (`sip_port` → 5060, `uds_path` → the socket the SIP brain
-is started with). If a hand-launched gateway or SIP brain is still running, the
+three keys the units own (`sip_port` → 5060, `uds_path` → the socket the SIP brain
+is started with, `register` → true — the gateway's default and the sample's value
+are `false`). If a hand-launched gateway or SIP brain is still running, the
 command refuses and tells you what to stop: the unit it is about to enable needs
 `:5060` and the socket.
 
