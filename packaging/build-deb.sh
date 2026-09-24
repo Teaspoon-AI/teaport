@@ -37,7 +37,8 @@ NFPM_VERSION="2.47.0"
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO="$(dirname "$HERE")"
-OUT="${TEAPORT_DEB_OUT:-$REPO/dist}"
+# Absolute: nfpm runs from the staged source copy (see "source" below), not from here.
+OUT="$(realpath -m -- "${TEAPORT_DEB_OUT:-$REPO/dist}")"
 CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/teaport-deb"
 
 log()  { printf '\033[1;36m==>\033[0m %s\n' "$*"; }
