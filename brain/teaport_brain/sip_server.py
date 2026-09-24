@@ -59,7 +59,7 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
-from teaport_brain import agent_backend, audio_dump
+from teaport_brain import agent_backend, audio_dump, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import SipProtocolSerializer
@@ -500,6 +500,13 @@ async def run(sock_path: str):
 
     logger.info("SIP brain ready — persistent connection up; a fresh pipeline is "
                 "built per call (STT -> LLM -> TTS over teaport-sip)")
+    # Ready = connected AND able to take a call: the connection, its serializer and
+    # every handler exist, and the receive loop is the next thing to run (datagrams the
+    # gateway sends before it starts wait in the socket). Signalling at connect instead
+    # let a failure in that setup surface only after `systemctl restart` had already
+    # returned success. Under a Type=notify unit this is what ends the restart;
+    # elsewhere it is a no-op.
+    sdnotify.ready()
     try:
         # Blocks for the whole process: dispatches control + routes audio. Per-call
         # pipelines run as background tasks launched from on_call_state above.

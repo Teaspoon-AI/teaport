@@ -28,6 +28,7 @@
 #
 import argparse
 import os
+import sys
 
 import uvicorn
 from fastapi import FastAPI, WebSocket
@@ -44,7 +45,7 @@ from teaport_brain.agent_session import (
     build_agent_session,
     slot_active,
 )
-from teaport_brain import agent_backend, config_ui
+from teaport_brain import agent_backend, config_ui, sdnotify
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
@@ -156,6 +157,31 @@ async def talk(websocket: WebSocket):
             logger.info("session-end reclaim skipped — a replacement session is active")
 
 
+class _ReadyServer(uvicorn.Server):
+    """uvicorn.Server that tells systemd it is ready once the port is bound.
+
+    Not an app startup hook: uvicorn runs the ASGI lifespan startup BEFORE it creates
+    the listening socket (Server.startup), so a hook would report ready while /talk and
+    /health still refuse connections, and before a port already in use fails the start.
+    `started` is set only once every listener is up; a bind failure exits instead."""
+
+    async def startup(self, sockets=None):
+        await super().startup(sockets=sockets)
+        if self.started:
+            sdnotify.ready()
+
+
+def serve(host: str, port: int) -> None:
+    """uvicorn.run(app, host=, port=) with a readiness notification after the bind."""
+    server = _ReadyServer(uvicorn.Config(app, host=host, port=port))
+    try:
+        server.run()
+    except KeyboardInterrupt:  # as uvicorn.run: it re-raises a Ctrl-C after shutting down
+        pass
+    if not server.started:
+        sys.exit(3)  # uvicorn.run's own exit status for a server that never started
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="teaport OpenClaw gateway-relay voice server"
@@ -174,7 +200,7 @@ def main():
     logger.info("Priming TTS service...")
     make_tts()  # warm the engine TTS client once at startup (G2P/synthesis are engine-side)
     logger.info(f"teaport OpenClaw relay server on ws://{args.host}:{args.port}/talk")
-    uvicorn.run(app, host=args.host, port=args.port)
+    serve(args.host, args.port)
 
 
 if __name__ == "__main__":

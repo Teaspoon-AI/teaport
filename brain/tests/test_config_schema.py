@@ -35,8 +35,9 @@ TIERS = {"setup", "tuning", "diag", "installer"}
 READS = {"startup", "session", "unit"}
 
 
-# Read by the code but not settings: sudo's own variables, seen by config_apply.
-NOT_SETTINGS = {"SUDO_GID", "SUDO_UID", "SUDO_USER"}
+# Read by the code but not settings: sudo's own variables, seen by config_apply, and
+# the readiness socket systemd hands a Type=notify unit (sdnotify).
+NOT_SETTINGS = {"SUDO_GID", "SUDO_UID", "SUDO_USER", "NOTIFY_SOCKET"}
 
 
 def env_reads_in_code() -> set[str]:

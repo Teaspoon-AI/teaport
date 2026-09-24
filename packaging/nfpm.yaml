@@ -1,0 +1,77 @@
+# nfpm recipe for teaport-brain_<version>_<arch>.deb (#60). Built by
+# packaging/build-deb.sh, locally or in CI's brain-deb job; not by hand, because the
+# venv under contents must first be built AT /opt/teaport/brain (a venv is not
+# relocatable) and the version comes from the script.
+#
+# Build-only for now: the package lays its files down and has no maintainer scripts.
+# The installer and the units still run the brain from its own venv, so installing
+# this .deb changes nothing that is running. Pointing the units, the sudoers line and
+# the config page at these paths is a separate step.
+name: teaport-brain
+arch: ${TEAPORT_DEB_ARCH}
+platform: linux
+version: ${TEAPORT_DEB_VERSION}
+# Taken verbatim. The default (semver) would reparse 0.1.0~dev12+gabc123 into
+# prerelease/metadata fields and rebuild it in its own spelling; the Debian ordering
+# (~ sorts before the release) is the one that matters here.
+version_schema: none
+section: misc
+priority: optional
+maintainer: Teaspoon AI <hello@teaspoon.tech>
+vendor: Teaspoon AI
+homepage: https://github.com/Teaspoon-AI/teaport
+license: MIT
+description: |-
+  teaport voice brain
+  The Pipecat voice pipeline (STT -> LLM -> TTS) of a teaport appliance, as a
+  self-contained Python virtual environment built from brain/uv.lock against the
+  system python3.12, plus the teaport operator CLI and the config page's root-run
+  helper.
+
+# The venv's compiled dependencies are manylinux wheels that bundle most of their own
+# .so files. What they still load from the system, per CI's ldd of every one of them
+# (the brain-deb job fails if a library's package is missing here): glibc, the GCC
+# runtime (libgcc_s, libstdc++), zlib, and libgomp, the OpenMP runtime numba's thread
+# pool links (numba comes in with resampy). libgomp is the one of these a minimal
+# Ubuntu install lacks. Then the interpreter the venv was built on (pyvenv.cfg home =
+# /usr/bin), the system python3 that runs the root-owned config helper, and curl for
+# the CLI. No python3.12-venv: the venv is built in CI by uv, and nothing on the box
+# creates one or runs ensurepip.
+depends:
+  - python3.12 (>= 3.12.3)
+  - python3
+  - curl
+  - libc6
+  - libgcc-s1
+  - libstdc++6
+  - zlib1g
+  - libgomp1
+
+umask: 0o022
+
+contents:
+  # The venv, byte for byte as uv built it (bytecode included, so a root-owned tree
+  # never needs a __pycache__ write). Symlinks such as bin/python -> /usr/bin/python3.12
+  # are kept as symlinks.
+  - src: /opt/teaport/brain/
+    dst: /opt/teaport/brain/
+    type: tree
+    file_info:
+      owner: root
+      group: root
+
+  - src: cli/teaport
+    dst: /usr/bin/teaport
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
+
+  # The config page's privileged helper, run by sudo with the SYSTEM python3, never out
+  # of the venv: a root-owned copy outside it (see config_apply.py's docstring).
+  - src: brain/teaport_brain/config_apply.py
+    dst: /usr/lib/teaport/config_apply.py
+    file_info:
+      mode: 0o755
+      owner: root
+      group: root
