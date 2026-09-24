@@ -171,7 +171,7 @@ jobs:
           # dpkg -S by the path ldd printed, then by its resolved one: since the /usr
           # merge a library can be registered under either spelling. Diversion notes
           # (the dynamic loader has one) are not owners.
-          owner() { { dpkg -S "$1" || dpkg -S "$(readlink -f "$1")"; } 2>/dev/null | grep -v '^diversion by' | head -1 | cut -d: -f1; }
+          owner() { { dpkg -S "$1"; dpkg -S "$(readlink -f "$1")"; } 2>/dev/null | grep -v '^diversion by' | head -1 | cut -d: -f1; }
           echo "system libraries the venv links against:"
           : > "$RUNNER_TEMP/pkgs"
           while read -r lib so; do
@@ -182,8 +182,10 @@ jobs:
           echo "packages: $(sort -u "$RUNNER_TEMP/pkgs" | paste -sd' ')"
           depends="$(dpkg-query -W -f='${Depends}' teaport-brain)"
           echo "Depends: $depends"
+          # Package names only (version constraints dropped), matched as whole lines.
+          sed 's/ *([^)]*)//g; s/, */\n/g' <<<"$depends" > "$RUNNER_TEMP/depends"
           for pkg in $(sort -u "$RUNNER_TEMP/pkgs"); do
-            if ! grep -qE "(^|, )$pkg( |,|$)" <<<"$depends"; then echo "not in Depends: $pkg"; missing=1; fi
+            if ! grep -qxF "$pkg" "$RUNNER_TEMP/depends"; then echo "not in Depends: $pkg"; missing=1; fi
           done
           [ "$missing" = 0 ]
       - uses: actions/upload-artifact@v4
