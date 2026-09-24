@@ -133,7 +133,8 @@ trap cleanup EXIT
 #                         them, every start would recompile all of pipecat in memory.
 #   UV_PYTHON_DOWNLOADS=never, with --python-preference only-system: never a managed
 #                         CPython, so the venv's interpreter is the box's /usr/bin one.
-# umask 022: the files go into the package with the modes they have here.
+# umask 022 for what uv creates; the chmod below settles what it does not honour it for.
+# The files go into the package with the modes they have here.
 umask 022
 log "uv sync --locked $REPO/brain -> $DEST (python $("$PY" -c 'import platform; print(platform.python_version())'))"
 env UV_PROJECT_ENVIRONMENT="$DEST" UV_PYTHON_DOWNLOADS=never \
@@ -144,8 +145,12 @@ env UV_PROJECT_ENVIRONMENT="$DEST" UV_PYTHON_DOWNLOADS=never \
 # and world-writable has no place in a root-owned tree) and the markers that keep a
 # project venv out of git and backups. None of them means anything once it is packaged.
 rm -f "$DEST/.lock" "$DEST/.gitignore" "$DEST/CACHEDIR.TAG"
-ww="$(find "$DEST" -perm -o+w ! -type l -print -quit)"
-[ -z "$ww" ] || die "world-writable file in the build: $ww"
+# Modes as a root-owned tree wants them, whatever uv created them with (on the arm64
+# runner, a world-writable lib/ despite the umask): nothing writable but by
+# the owner, everything readable, executables and directories searchable.
+chmod -R u+rwX,go+rX,go-w "$DEST"
+ww="$(find "$DEST" -perm /022 ! -type l -print -quit)"
+[ -z "$ww" ] || die "group- or world-writable file in the build: $(ls -ld "$ww")"
 home="$(sed -n 's/^home *= *//p' "$DEST/pyvenv.cfg")"
 [ "$home" = /usr/bin ] || die "the venv's interpreter is '$home', not /usr/bin — it would not run on the appliance"
 
