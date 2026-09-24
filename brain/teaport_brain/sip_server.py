@@ -59,7 +59,7 @@ from pipecat.pipeline.runner import PipelineRunner
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
-from teaport_brain import agent_backend, audio_dump
+from teaport_brain import agent_backend, audio_dump, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import SipProtocolSerializer
@@ -214,6 +214,9 @@ async def run(sock_path: str):
     logger.info(f"connecting to teaport-sip gateway at {sock_path}")
     sock = await _connect_when_listening(sock_path)
     logger.info("connected — the brain is the socket client (gateway is the server)")
+    # Ready = connected: from here the gateway's calls reach this pipeline. Under a
+    # Type=notify unit this is what ends `systemctl restart`; elsewhere it is a no-op.
+    sdnotify.ready()
 
     # The serializer is shared: the persistent connection uses it to DESERIALIZE
     # inbound datagrams; the per-call output transport uses it (via params) to

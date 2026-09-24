@@ -3,6 +3,9 @@ name: ci
 on:
   push:
     branches: [main]
+    # brain-v<X.Y.Z>: brain-deb builds the release package. It is uploaded as a run
+    # artifact like any other build; publishing it is a separate, manual step.
+    tags: ["brain-v*"]
   pull_request:
 
 concurrency:
@@ -90,6 +93,99 @@ jobs:
         # failed CI instead of skipping.
         run: uv run --project brain python -m pytest brain/tests/test_suite.py -v
 
+  brain-deb:
+    # The brain as a .deb (#60): built on the architecture it ships to, from the lock,
+    # with the system python3.12 — the ubuntu-24.04 runner's is the appliance's own
+    # release — by packaging/build-deb.sh, the script a local `packaging/build-deb.sh`
+    # runs too. Then the PACKAGE is tested, not the tree it was built from: the build
+    # removes /opt/teaport/brain after packaging, so what the self-check below runs is
+    # exactly what `apt install` unpacked. The .deb is uploaded as a run artifact on
+    # every build; nothing here publishes it.
+    #
+    # Versions (see build-deb.sh): <BASE_VERSION>~dev<run>+g<sha> for PRs and branches,
+    # X.Y.Z for a brain-vX.Y.Z tag. A PR builds its head commit, not the merge commit
+    # GitHub tests by default, so the +g<sha> names a commit you can check out.
+    runs-on: ubuntu-24.04-arm
+    # Same queue-don't-cancel reasoning as the brain job's arm64 leg.
+    concurrency:
+      group: ci-brain-deb-${{ github.ref }}
+      cancel-in-progress: false
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Build the .deb
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/brain-v* ]]; then
+            export TEAPORT_DEB_VERSION="${GITHUB_REF_NAME#brain-v}"
+          else
+            export TEAPORT_DEB_BUILD="${{ github.run_number }}"
+          fi
+          packaging/build-deb.sh
+          [ ! -e /opt/teaport/brain ] || { echo "the build tree was left behind"; exit 1; }
+          deb="$(ls dist/teaport-brain_*.deb)"
+          echo "DEB=$deb" >> "$GITHUB_ENV"
+          dpkg-deb --info "$deb"
+          ls -l "$deb"; sha256sum "$deb" | tee "$deb.sha256"
+      - name: Install it
+        run: sudo apt-get install -y "./$DEB"
+      - name: Self-check the installed package
+        # From /, isolated (-I), as the runner user and then as root. Root is the strict
+        # case: a root python writes a __pycache__ wherever a .pyc is missing or stale,
+        # which the next step would see as a file the package does not own, or as a
+        # changed one. The run user on the box cannot write the tree at all, so a stale
+        # .pyc there would cost a recompile on every start instead.
+        run: |
+          cd /
+          /opt/teaport/brain/bin/python -I -m teaport_brain.selfcheck
+          sudo /opt/teaport/brain/bin/python -I -m teaport_brain.selfcheck
+          /opt/teaport/brain/bin/teaport-brain --help >/dev/null
+          test -x /usr/bin/teaport && bash -n /usr/bin/teaport
+          # compile(), not py_compile: that would write a __pycache__ beside the helper.
+          /usr/bin/python3 -I -c 'import sys; p = sys.argv[1]; compile(open(p).read(), p, "exec")' /usr/lib/teaport/config_apply.py
+      - name: dpkg -V is clean, and the package owns every file under its root
+        run: |
+          out="$(dpkg -V teaport-brain)"
+          [ -z "$out" ] || { printf '%s\n' "$out"; echo "dpkg -V: files changed after install"; exit 1; }
+          stray="$(comm -13 <(dpkg -L teaport-brain | sort -u) <(find /opt/teaport/brain | sort -u))"
+          [ -z "$stray" ] || { printf '%s\n' "$stray" | head -50; echo "files under /opt/teaport/brain that the package does not own (written at run time?)"; exit 1; }
+          echo "dpkg -V clean; $(dpkg -L teaport-brain | wc -l) paths owned"
+      - name: Shared libraries (what Depends must cover)
+        # Every ELF object in the venv, through ldd. Anything unresolved fails the job.
+        # Anything resolved OUTSIDE the venv is a system library the package relies on:
+        # listed with the Debian package that ships it, which is what Depends: must name
+        # (libc6 and the rest of the essential set are present on every Ubuntu).
+        run: |
+          find /opt/teaport/brain -type f \( -name '*.so' -o -name '*.so.*' \) > "$RUNNER_TEMP/elfs"
+          echo "$(wc -l < "$RUNNER_TEMP/elfs") shared objects in the venv"
+          missing=0; : > "$RUNNER_TEMP/sys"
+          while IFS= read -r f; do
+            out="$(ldd "$f" 2>&1 || true)"
+            if grep -q 'not found' <<<"$out"; then echo "UNRESOLVED in $f:"; grep 'not found' <<<"$out"; missing=1; fi
+            awk '/=> \//{print $3} /^\t\/[^ ]+ \(/{print $1}' <<<"$out" | grep -v '^/opt/teaport/brain/' >> "$RUNNER_TEMP/sys" || true
+          done < "$RUNNER_TEMP/elfs"
+          # dpkg -S by the path ldd printed, then by its resolved one: since the /usr
+          # merge a library can be registered under either spelling.
+          owner() { { dpkg -S "$1" || dpkg -S "$(readlink -f "$1")"; } 2>/dev/null | head -1 | cut -d: -f1; }
+          echo "system libraries the venv links against:"
+          : > "$RUNNER_TEMP/pkgs"
+          while IFS= read -r lib; do
+            pkg="$(owner "$lib" || true)"
+            printf '  %-50s %s\n' "$lib" "${pkg:-?}"
+            echo "${pkg:-?}" >> "$RUNNER_TEMP/pkgs"
+          done < <(sort -u "$RUNNER_TEMP/sys")
+          echo "packages: $(sort -u "$RUNNER_TEMP/pkgs" | paste -sd' ')"
+          [ "$missing" = 0 ]
+      - uses: actions/upload-artifact@v4
+        with:
+          name: teaport-brain-deb
+          path: |
+            dist/teaport-brain_*.deb
+            dist/teaport-brain_*.deb.sha256
+          if-no-files-found: error
+          compression-level: 0 # already compressed
+
   plugin:
     runs-on: ubuntu-latest
     steps:
@@ -156,10 +252,11 @@ jobs:
           bash -n install.sh
           bash -n install-bootstrap.sh
           bash -n cli/teaport
+          bash -n packaging/build-deb.sh
           for f in brain/test/*.sh; do bash -n "$f"; done
       - name: shellcheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh install-bootstrap.sh cli/teaport brain/test/*.sh
+        run: shellcheck install.sh install-bootstrap.sh cli/teaport packaging/build-deb.sh brain/test/*.sh
       - name: Manifest JSON is valid
         run: |
           for m in manifest/*.json; do
