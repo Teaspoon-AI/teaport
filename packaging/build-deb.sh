@@ -4,7 +4,8 @@
 #
 #   packaging/build-deb.sh                           dev build: <BASE_VERSION>~dev0+g<sha>
 #   TEAPORT_DEB_BUILD=12 packaging/build-deb.sh      dev build: <BASE_VERSION>~dev12+g<sha>
-#   TEAPORT_DEB_VERSION=0.1.0 packaging/build-deb.sh release build (must equal BASE_VERSION)
+#   TEAPORT_DEB_VERSION=0.1.0 packaging/build-deb.sh release build: must equal BASE_VERSION,
+#                                                    HEAD must be tag brain-v0.1.0, tree clean
 #
 # The same script CI's brain-deb job runs, so a local build is the package CI would
 # make from the same commit. The .deb lands in dist/ (TEAPORT_DEB_OUT overrides).
@@ -46,18 +47,27 @@ SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 # --- version -------------------------------------------------------------------
 rev="$(git -C "$REPO" rev-parse --short=8 HEAD)"
+# brain/, cli/ and packaging/ are what the package is built from.
+dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- brain cli packaging)"
 if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
   VERSION="$TEAPORT_DEB_VERSION"
   [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "TEAPORT_DEB_VERSION must be X.Y.Z (got '$VERSION')"
   [ "$VERSION" = "$BASE_VERSION" ] || die "release $VERSION is not BASE_VERSION $BASE_VERSION (packaging/build-deb.sh) — dev builds of this tree were versioned below $BASE_VERSION, so bump BASE_VERSION to the release being cut"
+  # A release version carries no +g<sha> or .dirty, so nothing in it would tell two
+  # different X.Y.Z packages apart, and apt treats them as the same package. Build it
+  # only from the tagged commit, unmodified.
+  tag="brain-v$VERSION"
+  tagged="$(git -C "$REPO" rev-parse -q --verify "refs/tags/$tag^{commit}" 2>/dev/null)" \
+    || die "release $VERSION needs the tag $tag, and this checkout has no such tag"
+  [ "$tagged" = "$(git -C "$REPO" rev-parse HEAD)" ] \
+    || die "release $VERSION must be built from $tag ($(git -C "$REPO" rev-parse --short=8 "$tagged")), not HEAD $rev"
+  [ -z "$dirty" ] || die "release $VERSION must be built from a clean tree; uncommitted changes under brain/ cli/ packaging/:
+$dirty"
 else
   build="${TEAPORT_DEB_BUILD:-0}"
   [[ "$build" =~ ^[0-9]+$ ]] || die "TEAPORT_DEB_BUILD must be a number (got '$build')"
   VERSION="$BASE_VERSION~dev$build+g$rev"
-  # brain/, cli/ and packaging/ are what the package is built from.
-  if [ -n "$(git -C "$REPO" --no-optional-locks status --porcelain -- brain cli packaging)" ]; then
-    VERSION="$VERSION.dirty"
-  fi
+  [ -z "$dirty" ] || VERSION="$VERSION.dirty"
 fi
 
 case "$(uname -m)" in
@@ -93,7 +103,7 @@ else
 fi
 
 NFPM=""
-if have nfpm && [ "$(nfpm --version 2>/dev/null | sed -n 's/^GitVersion: *//p')" = "v$NFPM_VERSION" ]; then
+if have nfpm && [ "$(nfpm --version 2>/dev/null | sed -n 's/^GitVersion: *//p')" = "$NFPM_VERSION" ]; then
   NFPM="$(command -v nfpm)"
 else
   tgz="$CACHE/nfpm_${NFPM_VERSION}_Linux_$NFPM_ARCH.tar.gz"

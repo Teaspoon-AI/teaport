@@ -214,9 +214,6 @@ async def run(sock_path: str):
     logger.info(f"connecting to teaport-sip gateway at {sock_path}")
     sock = await _connect_when_listening(sock_path)
     logger.info("connected — the brain is the socket client (gateway is the server)")
-    # Ready = connected: from here the gateway's calls reach this pipeline. Under a
-    # Type=notify unit this is what ends `systemctl restart`; elsewhere it is a no-op.
-    sdnotify.ready()
 
     # The serializer is shared: the persistent connection uses it to DESERIALIZE
     # inbound datagrams; the per-call output transport uses it (via params) to
@@ -503,6 +500,13 @@ async def run(sock_path: str):
 
     logger.info("SIP brain ready — persistent connection up; a fresh pipeline is "
                 "built per call (STT -> LLM -> TTS over teaport-sip)")
+    # Ready = connected AND able to take a call: the connection, its serializer and
+    # every handler exist, and the receive loop is the next thing to run (datagrams the
+    # gateway sends before it starts wait in the socket). Signalling at connect instead
+    # let a failure in that setup surface only after `systemctl restart` had already
+    # returned success. Under a Type=notify unit this is what ends the restart;
+    # elsewhere it is a no-op.
+    sdnotify.ready()
     try:
         # Blocks for the whole process: dispatches control + routes audio. Per-call
         # pipelines run as background tasks launched from on_call_state above.
