@@ -269,24 +269,29 @@ EOF
   chmod 600 "$dest"
 }
 
-# sip_conf_set <file> <key> <value> — set one key in a gateway .conf in place. The
-# gateway's parser is LAST-wins (config.h reads top to bottom and overwrites), so the
-# LAST `key = …` line (spaced or not) is the one rewritten, in place, and any earlier
+# sip_conf_set <file> <key> <value> — set one key in a gateway .conf. The gateway's
+# parser is LAST-wins (config.h reads top to bottom and overwrites), so the LAST
+# `key = …` line (spaced or not) is the one rewritten, in place, and any earlier
 # duplicates are dropped — rewriting the first would print the change and change
 # nothing. Everything else — comments, order, the other keys — is kept byte for byte,
-# and a missing key is appended. Rewrites through the existing file so its mode (600)
-# survives; a mktemp+mv would hand the password file the default umask. Returns 1 when
-# the rewrite fails (read-only conf, full /tmp): under set -e that stops the caller
-# before it prints "aec: true -> false" over a file that still says true.
+# and a missing key is appended. Written to a sibling temp and renamed over the conf,
+# so the conf is either the old bytes or the new ones: writing THROUGH the conf opened
+# it O_TRUNC first, and a write that then failed (full filesystem, quota) left a
+# 0..N-byte conf with no password while the caller reported it unchanged — and
+# ConditionPathExists still saw a file, so the units came up on it at the next boot.
+# mktemp creates 0600 whatever the umask, so the password file keeps its mode across
+# the rename. Returns 1 when the rewrite fails (read-only conf or directory, full
+# filesystem): under set -e that stops the caller before it prints "aec: true -> false"
+# over a file that still says true.
 sip_conf_set() {
   local f="$1" k="$2" v="$3" tmp n
+  [ -w "$f" ] || return 1
   n="$(grep -cE "^[[:space:]]*$k[[:space:]]*=" "$f" 2>/dev/null || true)"; n="${n:-0}"
-  tmp="$(mktemp)"
+  tmp="$(mktemp "$f.XXXXXX")" || return 1
   awk -v k="$k" -v v="$v" -v n="$n" '
     $0 ~ ("^[ \t]*" k "[ \t]*=") { if (++seen == n) print k "=" v; next }
     { print }
-    END { if (n == 0) print k "=" v }' "$f" > "$tmp" && cat "$tmp" > "$f" || { rm -f "$tmp"; return 1; }
-  rm -f "$tmp"
+    END { if (n == 0) print k "=" v }' "$f" > "$tmp" && mv -f "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
 # The gateway's last registration line ([reg] REGISTERED code=200 OK, or the failure)
@@ -358,6 +363,14 @@ sip_probe_register() {
   printf 'test-registering %s (throwaway port %s — :5060 untouched)...\n' "$label" "$(confval "$testconf" sip_port)"
   "$SIP_GATEWAY" "$testconf" >"$out" 2>&1 &
   local gpid=$! ok=0 i
+  # Ctrl-C during the ~8 s probe: bash starts a background command with SIGINT ignored,
+  # so the gateway would outlive this script on :5062, and the conf (with the password)
+  # would sit in /tmp. Kill and remove on any exit; INT/TERM leave through the EXIT
+  # trap. The CLI sets no other traps, and the normal path clears these once it has
+  # cleaned up itself.
+  trap "kill $gpid 2>/dev/null; rm -f $(printf '%q %q %q' "$testconf" "$testuds" "$out")" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
   for i in $(seq 1 16); do              # ~8s: 16 * 0.5s
     kill -0 "$gpid" 2>/dev/null || break                                  # binary exited early
     if grep -Eiq 'REGISTERED.*200|registration success|200 *OK' "$out"; then ok=1; break; fi
@@ -376,10 +389,11 @@ sip_probe_register() {
     printf '%s\n' "$(c "$RED" 'registration FAILED')" >&2
     echo "  the gateway did not report a 200 OK registration within ~8s. Output tail:" >&2
     tail -n 15 "$out" | sed 's/^/    /' >&2
-    rm -f "$out"; return 1
+  else
+    printf '%s\n' "$(c "$GREEN" 'registration OK (200)')"
   fi
-  rm -f "$out"; printf '%s\n' "$(c "$GREEN" 'registration OK (200)')"
-  return 0
+  rm -f "$out"; trap - EXIT INT TERM
+  [ "$ok" = 1 ]
 }
 
 # A gateway or SIP brain that systemd did not start — the hand launch this CLI
@@ -389,18 +403,35 @@ sip_probe_register() {
 # "Ours" is decided per process from its cgroup, not from `is-active`: right after a
 # `sip restart`/`sip aec`, or while `sip disable` is stopping the unit, is-active says
 # activating/deactivating and a bare process-name match found the UNIT's own gateway,
-# told the operator to pkill it, and aborted configure.
-sip_pid_is_unit() { grep -qE '/teaport-sip(-brain)?\.service' "/proc/$1/cgroup" 2>/dev/null; }
-sip_stray_pids() { local p out=""; for p in $(pgrep "$@" 2>/dev/null || true); do sip_pid_is_unit "$p" || out="$out$p "; done; printf '%s' "$out"; }
+# told the operator to pkill it, and aborted configure. Only the SYSTEM units count:
+# a gateway under a `systemctl --user` unit of the same name (the dev-era setup the
+# unit files were verified with) sits in user.slice/…/teaport-sip.service and holds
+# :5060 exactly like a hand launch, so here it is one — an unanchored
+# `teaport-sip.service` waved it through and enabled a system unit that could not
+# bind. A pid whose cgroup file is gone exited between pgrep and the read (the
+# teardown window this check exists for) and is nobody's stray.
+sip_pid_is_unit() { grep -qE '^[0-9]+:[^:]*:/system\.slice/teaport-sip(-brain)?\.service$' "/proc/$1/cgroup" 2>/dev/null; }
+sip_stray_pids() {
+  local p out=""
+  for p in $(pgrep "$@" 2>/dev/null || true); do
+    [ -r "/proc/$p/cgroup" ] || continue
+    sip_pid_is_unit "$p" || out="$out$p "
+  done
+  printf '%s' "$out"
+}
+# The remedy names the stray pids and nothing else: this runs while the unit's own
+# gateway may be alive, and a `pkill -x teaport-sip` here would take it down mid-call
+# and cost a re-REGISTER (the SBC rate limiter the units document).
 sip_refuse_hand_launched() {
-  local pids bpids
+  local pids bpids all
   pids="$(sip_stray_pids -x teaport-sip)"
   bpids="$(sip_stray_pids -f 'teaport_brain\.sip_server')"
-  [ -z "$pids$bpids" ] && return 0
+  all="$pids$bpids"; all="${all% }"
+  [ -z "$all" ] && return 0
   printf '%s a hand-launched SIP path is running outside systemd:' "$(c "$RED" 'error:')" >&2
-  [ -n "$pids" ] && printf ' teaport-sip pid %s' "$pids" >&2
-  [ -n "$bpids" ] && printf ' sip_server pid %s' "$bpids" >&2
-  printf '\n  stop it first — pkill -x teaport-sip; pkill -f teaport_brain.sip_server — then retry.\n' >&2
+  [ -n "$pids" ] && printf ' teaport-sip pid %s' "${pids% }" >&2
+  [ -n "$bpids" ] && printf ' sip_server pid %s' "${bpids% }" >&2
+  printf '\n  stop it first — kill %s — then retry.\n' "$all" >&2
   exit 1
 }
 
@@ -508,8 +539,10 @@ sip_adopt_conf() {
   sip_refuse_hand_launched
   local uds; uds="$(confval "$src" uds_path)"
   [ -n "$uds" ] && [ "$uds" != "$SIP_UDS" ] && printf 'note: uds_path %s -> %s (the socket the units use)\n' "$uds" "$SIP_UDS"
+  # Truthy as the gateway's asBool reads it (config.h: 1|true|yes|on), or a conf that
+  # says `register = yes` gets a note claiming the trunk was not being registered.
   local regv; regv="$(confval "$src" register)"
-  [ "$regv" = true ] || printf 'note: register=%s -> true (the units register the trunk)\n' "${regv:-unset}"
+  case "$regv" in 1|true|yes|on) ;; *) printf 'note: register=%s -> true (the units register the trunk)\n' "${regv:-unset}" ;; esac
   sip_test_register_conf "$src" \
     || die "SIP registration failed — nothing installed, units left disabled. Fix $src and retry."
 
