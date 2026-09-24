@@ -154,8 +154,9 @@ jobs:
       - name: Shared libraries (what Depends must cover)
         # Every ELF object in the venv, through ldd. Anything unresolved fails the job.
         # Anything resolved OUTSIDE the venv is a system library the package relies on:
-        # listed with the Debian package that ships it, which is what Depends: must name
-        # (libc6 and the rest of the essential set are present on every Ubuntu).
+        # listed with the Debian package that ships it and one .so that needs it, and
+        # every such package must be named in the .deb's Depends: (what dpkg-shlibdeps
+        # would have derived, for a package nfpm builds without it).
         run: |
           find /opt/teaport/brain -type f \( -name '*.so' -o -name '*.so.*' \) > "$RUNNER_TEMP/elfs"
           echo "$(wc -l < "$RUNNER_TEMP/elfs") shared objects in the venv"
@@ -163,19 +164,27 @@ jobs:
           while IFS= read -r f; do
             out="$(ldd "$f" 2>&1 || true)"
             if grep -q 'not found' <<<"$out"; then echo "UNRESOLVED in $f:"; grep 'not found' <<<"$out"; missing=1; fi
-            awk '/=> \//{print $3} /^\t\/[^ ]+ \(/{print $1}' <<<"$out" | grep -v '^/opt/teaport/brain/' >> "$RUNNER_TEMP/sys" || true
+            awk -v so="${f#/opt/teaport/brain/lib/python3.12/site-packages/}" \
+              '/=> \//{print $3, so} /^\t\/[^ ]+ \(/{print $1, so}' <<<"$out" \
+              | grep -v '^/opt/teaport/brain/' >> "$RUNNER_TEMP/sys" || true
           done < "$RUNNER_TEMP/elfs"
           # dpkg -S by the path ldd printed, then by its resolved one: since the /usr
-          # merge a library can be registered under either spelling.
-          owner() { { dpkg -S "$1" || dpkg -S "$(readlink -f "$1")"; } 2>/dev/null | head -1 | cut -d: -f1; }
+          # merge a library can be registered under either spelling. Diversion notes
+          # (the dynamic loader has one) are not owners.
+          owner() { { dpkg -S "$1" || dpkg -S "$(readlink -f "$1")"; } 2>/dev/null | grep -v '^diversion by' | head -1 | cut -d: -f1; }
           echo "system libraries the venv links against:"
           : > "$RUNNER_TEMP/pkgs"
-          while IFS= read -r lib; do
+          while read -r lib so; do
             pkg="$(owner "$lib" || true)"
-            printf '  %-50s %s\n' "$lib" "${pkg:-?}"
+            printf '  %-44s %-12s e.g. %s\n' "$lib" "${pkg:-?}" "$so"
             echo "${pkg:-?}" >> "$RUNNER_TEMP/pkgs"
-          done < <(sort -u "$RUNNER_TEMP/sys")
+          done < <(sort -u -k1,1 "$RUNNER_TEMP/sys")
           echo "packages: $(sort -u "$RUNNER_TEMP/pkgs" | paste -sd' ')"
+          depends="$(dpkg-query -W -f='${Depends}' teaport-brain)"
+          echo "Depends: $depends"
+          for pkg in $(sort -u "$RUNNER_TEMP/pkgs"); do
+            if ! grep -qE "(^|, )$pkg( |,|$)" <<<"$depends"; then echo "not in Depends: $pkg"; missing=1; fi
+          done
           [ "$missing" = 0 ]
       - uses: actions/upload-artifact@v4
         with:
