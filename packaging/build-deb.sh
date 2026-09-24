@@ -47,8 +47,11 @@ SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 # --- version -------------------------------------------------------------------
 rev="$(git -C "$REPO" rev-parse --short=8 HEAD)"
-# brain/, cli/ and packaging/ are what the package is built from.
-dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- brain cli packaging)"
+# brain/, cli/ and packaging/ are what the package is built from — and only the files
+# git sees there, tracked or untracked-not-ignored (see "source" below), so this check
+# covers everything that goes in.
+SRC_PATHS=(brain cli packaging)
+dirty="$(git -C "$REPO" --no-optional-locks status --porcelain -- "${SRC_PATHS[@]}")"
 if [ -n "${TEAPORT_DEB_VERSION:-}" ]; then
   VERSION="$TEAPORT_DEB_VERSION"
   [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || die "TEAPORT_DEB_VERSION must be X.Y.Z (got '$VERSION')"
@@ -130,11 +133,26 @@ if [ -e "$DEST" ]; then
 fi
 parent_existed=0; [ -d "$(dirname "$DEST")" ] && parent_existed=1
 SUDO install -d -o "$(id -u)" -g "$(id -g)" -m 0755 "$DEST"
+SRC=""
 cleanup() {
+  [ -z "$SRC" ] || rm -rf "$SRC"
   rm -rf "$DEST" 2>/dev/null || SUDO rm -rf "$DEST"
   if [ "$parent_existed" = 0 ]; then SUDO rmdir "$(dirname "$DEST")" 2>/dev/null || true; fi
 }
 trap cleanup EXIT
+
+# --- source --------------------------------------------------------------------
+# Build from a copy of the files git sees under SRC_PATHS, not from the checkout: the
+# setuptools build packages whatever sits in brain/ — gitignored files included, such
+# as a test run's cached assets/typing.wav (package-data) or a stale brain/build/lib —
+# which the .dirty check above cannot see. The copy holds exactly what that check
+# covers, so a clean version really is the commit, and a local build matches CI's.
+SRC="$(mktemp -d "${TMPDIR:-/tmp}/teaport-deb-src.XXXXXX")"
+# -c lists tracked files deleted from the tree too; those stay out (and made it .dirty).
+git -C "$REPO" ls-files -z -co --exclude-standard -- "${SRC_PATHS[@]}" \
+  | (cd "$REPO" && while IFS= read -r -d '' f; do
+       if [ -e "$f" ] || [ -L "$f" ]; then printf '%s\0' "$f"; fi; done) \
+  | tar -C "$REPO" --null -T - -cf - | tar -C "$SRC" -xf -
 
 # --- venv ----------------------------------------------------------------------
 # The flags install.sh's brain_stage uses, for the same reasons (see there), plus:
@@ -146,11 +164,11 @@ trap cleanup EXIT
 # umask 022 for what uv creates; the chmod below settles what it does not honour it for.
 # The files go into the package with the modes they have here.
 umask 022
-log "uv sync --locked $REPO/brain -> $DEST (python $("$PY" -c 'import platform; print(platform.python_version())'))"
+log "uv sync --locked brain/ (staged from $REPO) -> $DEST (python $("$PY" -c 'import platform; print(platform.python_version())'))"
 env UV_PROJECT_ENVIRONMENT="$DEST" UV_PYTHON_DOWNLOADS=never \
   "$UV" sync --locked --no-editable --no-dev --compile-bytecode --link-mode copy \
   --reinstall-package teaport-brain \
-  --python "$PY" --python-preference only-system --project "$REPO/brain"
+  --python "$PY" --python-preference only-system --project "$SRC/brain"
 # uv's own bookkeeping in the venv root: its lock file (created 0666 whatever the umask,
 # and world-writable has no place in a root-owned tree) and the markers that keep a
 # project venv out of git and backups. None of them means anything once it is packaged.
@@ -167,7 +185,7 @@ home="$(sed -n 's/^home *= *//p' "$DEST/pyvenv.cfg")"
 # --- package -------------------------------------------------------------------
 mkdir -p "$OUT"
 log "nfpm $NFPM_VERSION -> $OUT/teaport-brain_${VERSION}_$ARCH.deb"
-(cd "$REPO" && TEAPORT_DEB_VERSION="$VERSION" TEAPORT_DEB_ARCH="$ARCH" \
+(cd "$SRC" && TEAPORT_DEB_VERSION="$VERSION" TEAPORT_DEB_ARCH="$ARCH" \
   "$NFPM" pkg --config packaging/nfpm.yaml --packager deb --target "$OUT/")
 deb="$OUT/teaport-brain_${VERSION}_$ARCH.deb"
 [ -f "$deb" ] || die "nfpm did not produce $deb"
