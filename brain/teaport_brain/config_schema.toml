@@ -1060,7 +1060,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:522"
+source = "sip_server.py:526"
 
 # ---- diagnostics
 
