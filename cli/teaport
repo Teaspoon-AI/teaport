@@ -283,11 +283,21 @@ EOF
 # the rename. Returns 1 when the rewrite fails (read-only conf or directory, full
 # filesystem): under set -e that stops the caller before it prints "aec: true -> false"
 # over a file that still says true.
+# Two things a rename changes that a write-through did not, both undone here: it lands
+# on the LINK when the conf is a symlink (a conf kept in a secrets store, say), so the
+# CLI's path became a regular file with the new value while the target — the copy the
+# operator keeps — still said the old one; and it is owned by whoever runs this, so a
+# `sudo -E teaport sip aec off` left a root:root 0600 conf the User= gateway could not
+# open at the next restart. Rewrite the target, and keep its owner (chown is a no-op
+# for the owner, and fails harmlessly for a group-writable conf we do not own).
+sip_conf_target() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
 sip_conf_set() {
-  local f="$1" k="$2" v="$3" tmp n
+  local f k="$2" v="$3" tmp n
+  f="$(sip_conf_target "$1")"
   [ -w "$f" ] || return 1
-  n="$(grep -cE "^[[:space:]]*$k[[:space:]]*=" "$f" 2>/dev/null || true)"; n="${n:-0}"
+  n="$(grep -cE "^[[:space:]]*${k}[[:space:]]*=" "$f" 2>/dev/null || true)"; n="${n:-0}"
   tmp="$(mktemp "$f.XXXXXX")" || return 1
+  chown --reference="$f" "$tmp" 2>/dev/null || true
   awk -v k="$k" -v v="$v" -v n="$n" '
     $0 ~ ("^[ \t]*" k "[ \t]*=") { if (++seen == n) print k "=" v; next }
     { print }
@@ -367,8 +377,12 @@ sip_probe_register() {
   # so the gateway would outlive this script on :5062, and the conf (with the password)
   # would sit in /tmp. Kill and remove on any exit; INT/TERM leave through the EXIT
   # trap. The CLI sets no other traps, and the normal path clears these once it has
-  # cleaned up itself.
-  trap "kill $gpid 2>/dev/null; rm -f $(printf '%q %q %q' "$testconf" "$testuds" "$out")" EXIT
+  # cleaned up itself. `|| true` on the kill: set -e applies inside the trap, and a
+  # gateway that has already exited (bash reaps it at once — a probe that could not
+  # bind :5062 dies within the loop's sleep) makes kill fail, which ended the trap
+  # before the rm -f and turned the exit status into 1.
+  # shellcheck disable=SC2064  # expanded NOW on purpose: the pid and paths of this probe
+  trap "kill $gpid 2>/dev/null || true; rm -f $(printf '%q %q %q' "$testconf" "$testuds" "$out")" EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   for i in $(seq 1 16); do              # ~8s: 16 * 0.5s
@@ -409,29 +423,47 @@ sip_probe_register() {
 # :5060 exactly like a hand launch, so here it is one — an unanchored
 # `teaport-sip.service` waved it through and enabled a system unit that could not
 # bind. A pid whose cgroup file is gone exited between pgrep and the read (the
-# teardown window this check exists for) and is nobody's stray.
-sip_pid_is_unit() { grep -qE '^[0-9]+:[^:]*:/system\.slice/teaport-sip(-brain)?\.service$' "/proc/$1/cgroup" 2>/dev/null; }
+# teardown window this check exists for) and is nobody's stray — so the file is read
+# ONCE and the match runs on what was read: a `[ -r ]` followed by a separate grep
+# let a pid vanish in between, and the failed grep counted it as a stray.
+sip_pid_is_unit() { printf '%s\n' "$1" | grep -qE '^[0-9]+:[^:]*:/system\.slice/teaport-sip(-brain)?\.service$'; }
 sip_stray_pids() {
-  local p out=""
+  local p cg out=""
   for p in $(pgrep "$@" 2>/dev/null || true); do
-    [ -r "/proc/$p/cgroup" ] || continue
-    sip_pid_is_unit "$p" || out="$out$p "
+    cg="$(cat "/proc/$p/cgroup" 2>/dev/null)" || continue
+    sip_pid_is_unit "$cg" || out="$out$p "
   done
   printf '%s' "$out"
 }
+# The unit name when a cgroup places the process under a `systemctl --user` manager
+# (user.slice/user-N.slice/user@N.service/…/<unit>.service), else nothing: a shell's
+# hand launch sits in a session-N.scope and does not match.
+sip_user_unit_of() { printf '%s\n' "$1" | sed -nE 's#^[0-9]+:[^:]*:/user\.slice/user-[0-9]+\.slice/user@[0-9]+\.service/.*/([^/]+)\.service$#\1#p' | head -1; }
 # The remedy names the stray pids and nothing else: this runs while the unit's own
 # gateway may be alive, and a `pkill -x teaport-sip` here would take it down mid-call
-# and cost a re-REGISTER (the SBC rate limiter the units document).
+# and cost a re-REGISTER (the SBC rate limiter the units document). And it has to fit
+# the stray: `kill` on a user unit's gateway is undone by its Restart= within seconds
+# (configure then refused again with a new pid, forever) — name the unit to disable;
+# on a pid that is not ours it is EPERM — say sudo.
 sip_refuse_hand_launched() {
-  local pids bpids all
+  local pids bpids all p cg u owner units="" hint
   pids="$(sip_stray_pids -x teaport-sip)"
   bpids="$(sip_stray_pids -f 'teaport_brain\.sip_server')"
   all="$pids$bpids"; all="${all% }"
   [ -z "$all" ] && return 0
+  hint="kill $all"
+  for p in $all; do
+    cg="$(cat "/proc/$p/cgroup" 2>/dev/null || true)"
+    u="$(sip_user_unit_of "$cg")"
+    if [ -n "$u" ]; then case " $units " in *" $u "*) ;; *) units="$units $u" ;; esac; fi
+    owner="$(stat -c %u "/proc/$p" 2>/dev/null || true)"
+    [ -z "$owner" ] || [ "$owner" = "$(id -u)" ] || hint="sudo kill $all"
+  done
+  [ -n "$units" ] && hint="systemctl --user disable --now$units"
   printf '%s a hand-launched SIP path is running outside systemd:' "$(c "$RED" 'error:')" >&2
   [ -n "$pids" ] && printf ' teaport-sip pid %s' "${pids% }" >&2
   [ -n "$bpids" ] && printf ' sip_server pid %s' "${bpids% }" >&2
-  printf '\n  stop it first — kill %s — then retry.\n' "$all" >&2
+  printf '\n  stop it first — %s — then retry.\n' "$hint" >&2
   exit 1
 }
 
@@ -458,8 +490,11 @@ sip_test_register_conf() {
   sip_require_gateway
   testconf="$(mktemp)"
   testuds="$(mktemp -u --tmpdir teaport-sip-testreg.XXXXXX.sock)"
-  cat "$src" > "$testconf"
-  sip_adopt_conf_keys "$testconf" 5062 "$testuds" || { rm -f "$testconf"; return 1; }
+  # A copy that cannot be prepared (a full or read-only TMPDIR) is not a registration
+  # failure: returned as one, the caller told the operator to fix a conf that was never
+  # tried.
+  { cat "$src" > "$testconf" && sip_adopt_conf_keys "$testconf" 5062 "$testuds"; } \
+    || { rm -f "$testconf"; die "could not write the probe copy of $src in ${TMPDIR:-/tmp} — no REGISTER attempted, nothing installed"; }
   sip_probe_register "$testconf" "$testuds" "$(confval "$src" id_uri) via $(confval "$src" registrar_uri)"
 }
 
@@ -547,16 +582,19 @@ sip_adopt_conf() {
     || die "SIP registration failed — nothing installed, units left disabled. Fix $src and retry."
 
   mkdir -p "$SECRETS"; chmod 700 "$SECRETS" 2>/dev/null || true
-  # Through a temp file (mktemp is 0600): `cat "$src" > "$SIP_CONF"` truncates the target
-  # before reading it, and "re-test the conf I just edited in place" — `--conf` pointed at
-  # $SIP_CONF itself, or a symlink to it — is a natural thing to run. It passed the probe
-  # (that copies to a temp) and then installed an empty conf with no credentials.
-  local staged; staged="$(mktemp)"
-  cat "$src" > "$staged"
-  ( umask 077; cat "$staged" > "$SIP_CONF" )
-  rm -f "$staged"
-  chmod 600 "$SIP_CONF"
-  sip_adopt_conf_keys "$SIP_CONF" 5060 "$SIP_UDS" || die "could not rewrite $SIP_CONF — nothing enabled"
+  # Staged as a sibling of the conf (mktemp: 0600), completed there, renamed into place:
+  # the installed conf is either the old one or the finished new one. `cat "$src" >
+  # "$SIP_CONF"` truncated the target before reading it, and "re-test the conf I just
+  # edited in place" — `--conf` pointed at $SIP_CONF itself, or a symlink to it — is a
+  # natural thing to run: it passed the probe (that copies to a temp) and installed an
+  # empty conf. And rewriting the keys AFTER the copy was installed left, when that
+  # rewrite failed, the operator's raw conf — register=false, the hand launch's port and
+  # socket — under a pair that a re-adopt (a password rotation) finds already enabled,
+  # while the die said "nothing enabled". The target of a symlinked conf, as sip_conf_set.
+  local dest staged; dest="$(sip_conf_target "$SIP_CONF")"
+  staged="$(mktemp "$dest.XXXXXX")" || die "cannot write in $(dirname "$dest") — nothing installed"
+  { cat "$src" > "$staged" && sip_adopt_conf_keys "$staged" 5060 "$SIP_UDS" && mv -f "$staged" "$dest"; } \
+    || { rm -f "$staged"; die "could not write $dest — the installed conf, if any, is unchanged"; }
   printf 'installed %s -> %s (mode 600)\n' "$src" "$SIP_CONF"
   sip_turn_on
   printf '%s — telephony is on.\n' "$(c "$GREEN" 'SIP enabled')"
