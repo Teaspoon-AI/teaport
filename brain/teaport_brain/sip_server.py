@@ -28,8 +28,9 @@
 # build: it is a confirmed like any other, so the caller gets a fresh pipeline. It only
 # changes the FIRST thing said: the caller has been in silence for a few seconds and the
 # old process took the conversation with it, so the session opens with a short "sorry, I
-# lost you for a moment" (AgentSession.greet(resumed=True)) instead of a hello from
-# scratch. A replayed state short of `confirmed` is ignored like its live twin, and the
+# lost you for a moment, where were we?" (AgentSession.greet(resumed=True)) instead of a
+# hello from scratch. The caller-audio dump, if on, starts a new caller-<id>.r1 file
+# rather than truncating the first process's (audio_dump.py). A replayed state short of `confirmed` is ignored like its live twin, and the
 # live `confirmed` that follows greets normally, since that caller has heard nothing
 # yet. An older gateway never sends the flag, and nothing changes.
 #
@@ -330,8 +331,15 @@ async def run(sock_path: str):
 
     @connection.event_handler("on_hello")
     async def on_hello(_connection, msg):
+        # "replay": true in the hello is the gateway saying it replays a call in
+        # progress to a brain that (re)connects; one that predates that leaves a brain
+        # restarted mid-call with no session for the call. Logged so whoever decides
+        # whether this unit may restart alone can see which kind is running.
         logger.info(f"gateway hello: proto={msg.get('proto')} rate={msg.get('rate')} "
-                    f"ch={msg.get('channels')} ptime={msg.get('ptime_ms')}ms")
+                    f"ch={msg.get('channels')} ptime={msg.get('ptime_ms')}ms "
+                    + ("replay=yes (a call in progress survives a brain restart)"
+                       if msg.get("replay") is True else
+                       "replay=no (older gateway: a brain restart strands a call in progress)"))
 
     @connection.event_handler("on_call_incoming")
     async def on_call_incoming(_connection, msg):

@@ -216,7 +216,12 @@ class _Harness:
         sip_server.turn_reclaim = reclaim
 
         def build(transport, **kw):
-            call_id = self._pending.pop(0)
+            # Record the ATTEMPT before taking an id. A build nobody queued an id for
+            # (a regression that builds on a state other than confirmed) must land in
+            # `built` where a test can see it, not die as an IndexError inside the
+            # background bring-up task, which is only logged -- that let a test
+            # asserting "nothing was built" pass against exactly that regression.
+            call_id = self._pending.pop(0) if self._pending else "<unexpected>"
             _FakeSession.built.append(call_id)
             return _FakeSession(call_id)
         sip_server.build_agent_session = build
@@ -490,6 +495,25 @@ async def test_a_replay_during_setup_waits_for_the_live_confirmed():
         assert await wait_until(lambda: "A" in _FakeSession.greeted), "call A never built"
         assert _FakeSession.resumed["A"] is False, (
             "a caller who had heard nothing yet got the 'sorry, I lost you' line")
+    finally:
+        await h.stop()
+
+
+async def test_only_a_json_true_marks_a_replay():
+    """`replay` counts only as the JSON literal true. A gateway bug or a hand-rolled
+    test client sending "true", 1 or "false" must not flip a live call into the
+    'sorry, I lost you' opening -- nor must anything but true."""
+    h = _Harness()
+    try:
+        await h.start()
+        for i, val in enumerate(["true", 1, "false", "yes"]):
+            cid = f"X{i}"
+            h._pending.append(cid)
+            await h.send_raw({"type": "call.state", "call_id": cid, "state": "confirmed",
+                              "replay": val})
+            assert await wait_until(lambda: cid in _FakeSession.greeted), f"{cid} never built"
+            assert _FakeSession.resumed[cid] is False, (
+                f"replay={val!r} was taken as a replay; only the JSON literal true is one")
     finally:
         await h.stop()
 

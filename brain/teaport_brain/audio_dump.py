@@ -27,6 +27,12 @@
 #   caller-<callid>.wav    the exact PCM handed to the VAD/STT, 16 kHz mono s16
 #   caller-<callid>.marks  bot playout spans as SAMPLE OFFSETS into that wav
 #
+# A call that already has a dump gets caller-<callid>.r1.wav/.marks (then .r2, ...)
+# rather than truncating it: that is a call the SIP gateway replayed to a restarted
+# brain, and the first process's recording is the only copy of that part of the call.
+# Each pair keeps the same stem, so anything that pairs a .marks with its .wav by name
+# still does.
+#
 # The marks are what make it usable: double-talk is the region of interest and it is a
 # few seconds inside a ten-minute recording. Offsets are in samples of the wav itself, so
 # a region can be cut with no clock arithmetic and no dependence on log timestamps.
@@ -65,6 +71,17 @@ ENABLED = bool(DUMP_DIR)
 MAX_SECS = env_num("TEAPORT_AUDIO_DUMP_MAX_SECS", "600", float)
 
 
+def _free_stem(stem: str) -> str:
+    """`stem`, or `stem.r1`, `stem.r2`, ... -- the first with neither a .wav nor a
+    .marks on disk. Never truncate an existing dump: the same call id recorded twice is
+    a call resumed by a restarted brain, and the earlier file is its first half."""
+    candidate, n = stem, 0
+    while os.path.exists(candidate + ".wav") or os.path.exists(candidate + ".marks"):
+        n += 1
+        candidate = f"{stem}.r{n}"
+    return candidate
+
+
 class CallerAudioTap(FrameProcessor):
     """Write caller PCM to a wav, and bot-playout spans to a sidecar, then pass through.
 
@@ -77,8 +94,9 @@ class CallerAudioTap(FrameProcessor):
         super().__init__()
         self._sr = sample_rate
         safe = "".join(c for c in (call_id or "call") if c.isalnum() or c in "-_")[:64]
-        self._wav_path = os.path.join(DUMP_DIR, f"caller-{safe}.wav")
-        self._marks_path = os.path.join(DUMP_DIR, f"caller-{safe}.marks")
+        stem = _free_stem(os.path.join(DUMP_DIR, f"caller-{safe}"))
+        self._wav_path = stem + ".wav"
+        self._marks_path = stem + ".marks"
         self._wav = None
         self._marks = None
         self._samples = 0

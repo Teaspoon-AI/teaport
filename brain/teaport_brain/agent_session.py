@@ -509,13 +509,14 @@ class AgentSession:
     # The same cue for a session RESUMED mid-call: the SIP brain was restarted while a
     # caller stayed on the line, and the gateway replayed the call to the new process
     # (teaport-sip's reconnect replay, `"replay": true`). The caller has been sitting in
-    # silence for a few seconds and may have been mid-sentence, and everything said
-    # before is gone with the old process, so a warm hello from scratch reads as a bot
-    # that forgot them. A short apology and a request to repeat is what a person would say.
+    # silence for a few seconds, and everything said before is gone with the old
+    # process, so a warm hello from scratch reads as a bot that forgot them. A short
+    # apology and "where were we?" is what a person would say -- neutral on purpose, since
+    # the gap may have come while the caller was talking, while the bot was, or in silence.
     _RESUME_GREETING = (
-        "(The line dropped out for a moment and has just come back, and you lost what "
-        "I said before that. In one short sentence, say sorry, you lost me for a "
-        "moment, and ask me to say that again.)"
+        "(The line dropped out for a moment and has just come back, and you lost the "
+        "conversation before that. In one short sentence, say sorry, you lost me for a "
+        "moment, and ask where we were.)"
     )
     # Spoken when the engine's single STT slot is already held by another session (the
     # local OpenClaw brain and the SIP brain share ONE engine slot; whoever connects
@@ -555,7 +556,7 @@ class AgentSession:
 
         `resumed` is for a session that picks up a call already in progress (the SIP
         gateway replayed it to a restarted brain): it cues a short "sorry, I lost you
-        for a moment" instead of the from-scratch greeting. Everything else — the STT
+        for a moment, where were we?" instead of the from-scratch greeting. Everything else — the STT
         wait, the busy/unavailable lines — is the same either way.
 
         If STT didn't connect (e.g. the single-session engine's STT slot is already
