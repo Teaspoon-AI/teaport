@@ -313,22 +313,23 @@ sip_conf_set() {
 sip_last_reg() {
   local inv; inv="$(systemctl show -p InvocationID --value teaport-sip.service 2>/dev/null || true)"
   [ -n "$inv" ] || return 0
-  journalctl "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
+  journalctl --system -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
 }
 # Why sip_last_reg may be empty on a running gateway: a user outside adm/systemd-journal
-# gets exit 0 from journalctl, which opens their OWN user journal, prints a "not seeing
-# messages from other users and the system" hint on stderr, and shows no lines for a
-# system unit — on stdout that is identical to "nothing logged yet". Prints the reason
-# (and returns 1) when that is the case, so the callers say "cannot read" rather than
-# polling for 20 s and reporting a healthy trunk as not registered.
+# cannot open the system journal. journalctl's default scope then opens their OWN user
+# journal, exits 0, and only hints on stderr ("not seeing messages from other users…"),
+# so on stdout a system unit looks exactly like "nothing logged yet". Ask for the
+# SYSTEM journal alone: with no system file readable journalctl exits non-zero
+# (journal-util.c: -EACCES when no file could be opened), in whatever words this
+# version puts the hint — matching the hint text broke with the wording. Checked on the
+# box (systemd 255) as a user without access: exit 1 with and without -q and with the
+# invocation filter; exit 0 for adm and root. Prints the remedy (and returns 1) in that
+# case, so the callers say "cannot read" rather than polling for 20 s and reporting a
+# healthy trunk as not registered.
 sip_journal_note() {
-  [ "$(id -u)" = 0 ] && return 0
-  local err; err="$(journalctl -u teaport-sip.service -n 1 -o cat 2>&1 >/dev/null || true)"
-  case "$err" in
-    *"insufficient permissions"*|*"not seeing messages from other users"*)
-      printf 'journal not readable by %s — add them to systemd-journal (sudo usermod -aG systemd-journal %s; re-login) or run: sudo teaport sip status' "$(id -un)" "$(id -un)"; return 1 ;;
-  esac
-  return 0
+  journalctl --system -q -n 1 -o cat >/dev/null 2>&1 && return 0
+  printf 'journal not readable by %s — add them to systemd-journal (sudo usermod -aG systemd-journal %s; re-login) or run: sudo teaport sip status' "$(id -un)" "$(id -un)"
+  return 1
 }
 # Only the gateway's own `[reg] REGISTERED code=200` — case matters: a trunk that
 # logs out writes `[reg] unregistered code=200 OK` (call.cpp onRegState), and a loose
