@@ -278,14 +278,19 @@ EOF
 # at the next restart, and a group member's edit of a 0660 conf left it 0600 and theirs.
 # cp does not report an owner it could not keep (a non-root user cannot give a file
 # away; exit 0 all the same), so the result is compared, and a conf this user cannot
-# rewrite as its owner is refused rather than installed unreadable. A NEW conf is
-# mktemp's: 0600 and the invoker's.
+# rewrite as its owner is refused rather than installed unreadable. Everything but the
+# access of OTHERS is kept: the conf holds the trunk password, and both writers used to
+# leave it 0600 whatever it was, so a conf left 0644 is closed to others here rather
+# than kept world-readable; owner, group and ACL entries stay as the operator set them.
+# A NEW conf is mktemp's: 0600 and the invoker's.
 sip_conf_stage() {
-  local dest="$1" tmp owner
+  local dest="$1" tmp owner want
   tmp="$(mktemp "$dest.XXXXXX")" || return 1
   [ -e "$dest" ] || { printf '%s' "$tmp"; return 0; }
   cp --attributes-only --preserve=mode,ownership "$dest" "$tmp" 2>/dev/null || true
-  if [ "$(stat -c %u:%g:%a "$tmp")" != "$(stat -c %u:%g:%a "$dest")" ]; then
+  chmod o-rwx "$tmp" 2>/dev/null || true
+  want="$(stat -c %u:%g "$dest"):$(printf '%o' "$(( 8#$(stat -c %a "$dest") & ~07 ))")"
+  if [ "$(stat -c %u:%g:%a "$tmp")" != "$want" ]; then
     rm -f "$tmp"; owner="$(stat -c %U "$dest")"
     printf 'note: %s is %s; a copy written by %s could not keep that — run this as %s or with sudo -E\n' \
       "$dest" "$(stat -c '%U:%G %a' "$dest")" "$(id -un)" "$owner" >&2
