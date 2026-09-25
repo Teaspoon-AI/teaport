@@ -269,6 +269,31 @@ EOF
   chmod 600 "$dest"
 }
 
+# sip_conf_stage <dest> — the sibling temp both conf writers fill and then rename over
+# <dest> (sip_conf_set, sip_adopt_conf); prints its path. A rename installs the TEMP's
+# inode, so the temp is given dest's owner, group, mode and ACLs first (`cp --preserve=
+# mode` carries the ACLs; the filler's `>` truncates and keeps them): a bare mktemp is
+# 0600 and owned by whoever runs this, and a `sudo -E teaport sip aec off` or `sudo -E
+# teaport sip configure --conf` left a root:root conf the User= gateway could not open
+# at the next restart, and a group member's edit of a 0660 conf left it 0600 and theirs.
+# cp does not report an owner it could not keep (a non-root user cannot give a file
+# away; exit 0 all the same), so the result is compared, and a conf this user cannot
+# rewrite as its owner is refused rather than installed unreadable. A NEW conf is
+# mktemp's: 0600 and the invoker's.
+sip_conf_stage() {
+  local dest="$1" tmp owner
+  tmp="$(mktemp "$dest.XXXXXX")" || return 1
+  [ -e "$dest" ] || { printf '%s' "$tmp"; return 0; }
+  cp --attributes-only --preserve=mode,ownership "$dest" "$tmp" 2>/dev/null || true
+  if [ "$(stat -c %u:%g:%a "$tmp")" != "$(stat -c %u:%g:%a "$dest")" ]; then
+    rm -f "$tmp"; owner="$(stat -c %U "$dest")"
+    printf 'note: %s is %s; a copy written by %s could not keep that — run this as %s or with sudo -E\n' \
+      "$dest" "$(stat -c '%U:%G %a' "$dest")" "$(id -un)" "$owner" >&2
+    return 1
+  fi
+  printf '%s' "$tmp"
+}
+
 # sip_conf_set <file> <key> <value> — set one key in a gateway .conf. The gateway's
 # parser is LAST-wins (config.h reads top to bottom and overwrites), so the LAST
 # `key = …` line (spaced or not) is the one rewritten, in place, and any earlier
@@ -279,25 +304,19 @@ EOF
 # it O_TRUNC first, and a write that then failed (full filesystem, quota) left a
 # 0..N-byte conf with no password while the caller reported it unchanged — and
 # ConditionPathExists still saw a file, so the units came up on it at the next boot.
-# mktemp creates 0600 whatever the umask, so the password file keeps its mode across
-# the rename. Returns 1 when the rewrite fails (read-only conf or directory, full
-# filesystem): under set -e that stops the caller before it prints "aec: true -> false"
-# over a file that still says true.
-# Two things a rename changes that a write-through did not, both undone here: it lands
-# on the LINK when the conf is a symlink (a conf kept in a secrets store, say), so the
-# CLI's path became a regular file with the new value while the target — the copy the
-# operator keeps — still said the old one; and it is owned by whoever runs this, so a
-# `sudo -E teaport sip aec off` left a root:root 0600 conf the User= gateway could not
-# open at the next restart. Rewrite the target, and keep its owner (chown is a no-op
-# for the owner, and fails harmlessly for a group-writable conf we do not own).
+# Returns 1 when the rewrite fails (read-only conf or directory, full filesystem, an
+# owner sip_conf_stage cannot keep): under set -e that stops the caller before it
+# prints "aec: true -> false" over a file that still says true.
+# A rename lands on the LINK when the conf is a symlink (a conf kept in a secrets
+# store, say): the CLI's path became a regular file with the new value while the
+# target — the copy the operator keeps — still said the old one. Rewrite the target.
 sip_conf_target() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
 sip_conf_set() {
   local f k="$2" v="$3" tmp n
   f="$(sip_conf_target "$1")"
   [ -w "$f" ] || return 1
   n="$(grep -cE "^[[:space:]]*${k}[[:space:]]*=" "$f" 2>/dev/null || true)"; n="${n:-0}"
-  tmp="$(mktemp "$f.XXXXXX")" || return 1
-  chown --reference="$f" "$tmp" 2>/dev/null || true
+  tmp="$(sip_conf_stage "$f")" || return 1
   awk -v k="$k" -v v="$v" -v n="$n" '
     $0 ~ ("^[ \t]*" k "[ \t]*=") { if (++seen == n) print k "=" v; next }
     { print }
@@ -310,24 +329,39 @@ sip_conf_set() {
 # is not readable by this user (sip_journal_note tells those apart). Newest-first with
 # the first match: sip_wait_registered calls this every 0.5 s, and a run at log_level=5
 # has thousands of lines that a forward scan re-formats on every tick.
+# The default scope, NOT --system: the gateway is a system unit but runs as User=, and
+# on a persistent journal journald (SplitMode=uid, the default) files a regular uid's
+# lines in user-<uid>.journal whatever unit wrote them — a file --system never opens,
+# so every registered trunk read as "not registered yet", for root too. On a volatile
+# journal (the box) there is no split and the lines are in the system journal; the
+# default scope reads both. Checked on a persistent host (systemd 255): a system unit
+# run as a regular uid logged a [reg] 200 that --system showed to nobody, root
+# included, and the default scope showed to root, to adm, and to that uid itself.
 sip_last_reg() {
   local inv; inv="$(systemctl show -p InvocationID --value teaport-sip.service 2>/dev/null || true)"
   [ -n "$inv" ] || return 0
-  journalctl --system -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
+  journalctl -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
 }
-# Why sip_last_reg may be empty on a running gateway: a user outside adm/systemd-journal
-# cannot open the system journal. journalctl's default scope then opens their OWN user
-# journal, exits 0, and only hints on stderr ("not seeing messages from other users…"),
-# so on stdout a system unit looks exactly like "nothing logged yet". Ask for the
-# SYSTEM journal alone: with no system file readable journalctl exits non-zero
-# (journal-util.c: -EACCES when no file could be opened), in whatever words this
-# version puts the hint — matching the hint text broke with the wording. Checked on the
-# box (systemd 255) as a user without access: exit 1 with and without -q and with the
-# invocation filter; exit 0 for adm and root. Prints the remedy (and returns 1) in that
-# case, so the callers say "cannot read" rather than polling for 20 s and reporting a
-# healthy trunk as not registered.
+# Why sip_last_reg may be empty on a running gateway: this user cannot read the file the
+# gateway's lines land in. The default scope exits 0 on whatever it could open and only
+# hints on stderr, in words that change between versions, so "cannot read" looks
+# exactly like "nothing logged yet". Two tests, neither needing this run to have logged
+# anything (sip_wait_registered asks right after the restart):
+#  - the SYSTEM journal alone opens: adm, systemd-journal, root — they read every file.
+#    With none readable journalctl exits non-zero (journal-util.c: -EACCES when no file
+#    could be opened); checked on the box (systemd 255) as a user without access.
+#  - lines from the gateway's User= uid are visible: on a persistent journal they sit in
+#    user-<uid>.journal, which carries a read ACL for that uid, so the operator the units
+#    run as reads their own gateway without any group — and that file already holds
+#    their login from long before the gateway's first line. On a volatile journal
+#    nothing is split out, and a non-member sees none of that uid.
+# Prints the remedy (and returns 1) when both fail, so the callers say "cannot read"
+# rather than polling for 20 s and reporting a healthy trunk as not registered.
 sip_journal_note() {
+  local uid
   journalctl --system -q -n 1 -o cat >/dev/null 2>&1 && return 0
+  uid="$(id -u "$(systemctl show -p User --value teaport-sip.service 2>/dev/null || true)" 2>/dev/null || true)"
+  [ -n "$uid" ] && [ -n "$(journalctl -q -n 1 -o short "_UID=$uid" 2>/dev/null || true)" ] && return 0
   printf 'journal not readable by %s — add them to systemd-journal (sudo usermod -aG systemd-journal %s; re-login) or run: sudo teaport sip status' "$(id -un)" "$(id -un)"
   return 1
 }
@@ -591,12 +625,13 @@ sip_adopt_conf() {
   # empty conf. And rewriting the keys AFTER the copy was installed left, when that
   # rewrite failed, the operator's raw conf — register=false, the hand launch's port and
   # socket — under a pair that a re-adopt (a password rotation) finds already enabled,
-  # while the die said "nothing enabled". The target of a symlinked conf, as sip_conf_set.
+  # while the die said "nothing enabled". The target of a symlinked conf, and its owner
+  # and mode kept, as sip_conf_set.
   local dest staged; dest="$(sip_conf_target "$SIP_CONF")"
-  staged="$(mktemp "$dest.XXXXXX")" || die "cannot write in $(dirname "$dest") — nothing installed"
+  staged="$(sip_conf_stage "$dest")" || die "cannot stage a new conf next to $dest — nothing installed"
   { cat "$src" > "$staged" && sip_adopt_conf_keys "$staged" 5060 "$SIP_UDS" && mv -f "$staged" "$dest"; } \
     || { rm -f "$staged"; die "could not write $dest — the installed conf, if any, is unchanged"; }
-  printf 'installed %s -> %s (mode 600)\n' "$src" "$SIP_CONF"
+  printf 'installed %s -> %s (%s)\n' "$src" "$SIP_CONF" "$(stat -c '%U:%G mode %a' "$dest")"
   sip_turn_on
   printf '%s — telephony is on.\n' "$(c "$GREEN" 'SIP enabled')"
   sip_wait_registered 20 || true
