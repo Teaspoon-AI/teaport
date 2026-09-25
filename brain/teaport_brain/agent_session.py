@@ -506,6 +506,17 @@ class AgentSession:
     # "No user query found in messages". The parenthetical reads as a call-connected
     # cue, so the persona still generates the wording.
     _GREETING = "(The call/session just connected. Greet me warmly in one short sentence.)"
+    # The same cue for a session RESUMED mid-call: the SIP brain was restarted while a
+    # caller stayed on the line, and the gateway replayed the call to the new process
+    # (teaport-sip's reconnect replay, `"replay": true`). The caller has been sitting in
+    # silence for a few seconds and may have been mid-sentence, and everything said
+    # before is gone with the old process, so a warm hello from scratch reads as a bot
+    # that forgot them. A short apology and a request to repeat is what a person would say.
+    _RESUME_GREETING = (
+        "(The line dropped out for a moment and has just come back, and you lost what "
+        "I said before that. In one short sentence, say sorry, you lost me for a "
+        "moment, and ask me to say that again.)"
+    )
     # Spoken when the engine's single STT slot is already held by another session (the
     # local OpenClaw brain and the SIP brain share ONE engine slot; whoever connects
     # first holds it, the second hears this). Unified wording for both front-ends: the
@@ -539,8 +550,13 @@ class AgentSession:
         # client disconnect). False on a normal greeting.
         self.should_end = False
 
-    async def greet(self):
+    async def greet(self, resumed: bool = False):
         """Greet the user with an LLM turn — but only through a working STT.
+
+        `resumed` is for a session that picks up a call already in progress (the SIP
+        gateway replayed it to a restarted brain): it cues a short "sorry, I lost you
+        for a moment" instead of the from-scratch greeting. Everything else — the STT
+        wait, the busy/unavailable lines — is the same either way.
 
         If STT didn't connect (e.g. the single-session engine's STT slot is already
         held → 503), speak a busy message and flag the session to END instead of
@@ -578,7 +594,8 @@ class AgentSession:
                 self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE,
                 append_to_context=False)])
             return
-        self.context.add_message({"role": "user", "content": self._GREETING})
+        self.context.add_message(
+            {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         await self.task.queue_frames([LLMRunFrame()])
 
     # There is no reset_context() here any more. It existed for the pre-2612baf
