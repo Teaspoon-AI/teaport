@@ -201,10 +201,13 @@ class CaptionTap(FrameProcessor):
     SEGMENTS: within one audio context, pipecat tracks one sentence at a time
     (one AggregatedTextFrame slot); accumulated_text restarts at each new
     segment_id. The bubble text is completed segments' full source text plus the
-    live segment's accumulated text, space-joined (sentence boundaries are
-    whitespace in the source). A finalize only fires at a playout boundary, by
-    which point the current segment has fully played, so finals use the full
-    source text — which also covers a force-completed tail (words whose
+    live segment's accumulated text, joined by _join. Sentence boundaries are
+    whitespace in the source: a space, which pipecat strips and _join restores,
+    or a line break, which pipecat leaves at the start of the next sentence
+    ("\\nWhether ...") and _join keeps. Partials and the final join the same
+    parts, so each extends the one before. A finalize only fires at a playout
+    boundary, by which point the current segment has fully played, so finals use
+    the full source text — which also covers a force-completed tail (words whose
     timestamps the engine dropped mid-segment still played as audio). A whole
     segment with NO word timestamps (engine aligner failure for a clause) has no
     progress frames at all and is absent from the bubble; the ledger and LLM
@@ -269,9 +272,23 @@ class CaptionTap(FrameProcessor):
         self._last_sent = ""
         self._first_pts = None
 
+    @staticmethod
+    def _join(parts) -> str:
+        """Sentences in playout order, separated as in the source: a space where
+        neither side brings its own whitespace (pipecat stripped it), nothing
+        where one does (a line break a sentence starts with stays)."""
+        text = ""
+        for p in parts:
+            if not p:
+                continue
+            if text and not text[-1].isspace() and not p[0].isspace():
+                text += " "
+            text += p
+        return text.strip()
+
     def _snapshot(self) -> str:
         """Bubble text right now: completed sentences + the live played prefix."""
-        return " ".join(p for p in [*self._done, self._acc] if p).strip()
+        return self._join([*self._done, self._acc])
 
     async def _finalize(self, reason: str):
         """Commit the current utterance's bubble.
@@ -280,7 +297,7 @@ class CaptionTap(FrameProcessor):
         pts, real silence), by which point the live sentence has fully played —
         so it contributes its FULL source text, not just the accumulated prefix
         (covers a force-completed tail whose timestamps the engine dropped)."""
-        text = " ".join(p for p in [*self._done, self._seg_text] if p).strip()
+        text = self._join([*self._done, self._seg_text])
         ctx, shown, user_active = self._ctx, self._last_sent, self._user_active()
         self._reset()
         if not text:
@@ -326,7 +343,9 @@ class CaptionTap(FrameProcessor):
                 self._done.append(self._seg_text)
             self._seg = frame.segment_id
             self._seg_text = frame.text or ""
-            self._acc = (frame.accumulated_text or "").strip()
+            # Unstripped, so a line break this sentence starts with shows in the
+            # partial just as it will in the final (_join).
+            self._acc = frame.accumulated_text or ""
             snapshot = self._snapshot()
             if len(snapshot) > len(self._last_sent):
                 if self._user_active():

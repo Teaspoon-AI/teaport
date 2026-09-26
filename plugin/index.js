@@ -37,7 +37,15 @@ export default definePluginEntry({
   register(api) {
     // The host version decides how assistant captions reach the Talk view: as deltas
     // on 2026.8.1+, as full text before (provider.js, TalkTranscriptAdapter).
-    const hostVersion = api.runtime?.version;
+    // On 2026.7.x any read of api.runtime resolves the whole plugin runtime, which
+    // can throw; the provider must register regardless, so an unreadable version
+    // is simply unknown.
+    let hostVersion;
+    try {
+      hostVersion = api.runtime?.version;
+    } catch {
+      hostVersion = undefined;
+    }
     api.logger?.info?.(
       `teaport-realtime: OpenClaw ${hostVersion ?? "(version unknown)"} — assistant ` +
         `captions sent as ${appendsAssistantDeltas(hostVersion) ? "deltas" : "full text"}`,

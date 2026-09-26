@@ -102,15 +102,42 @@ test("a new reply that begins with the cut words is shown whole", () => {
   assert.deepEqual(a.adapt(A, "Okay, what's", false, "u2"), [[A, "Okay, what's", false]]);
 });
 
-test("a tool card cuts the caption bubble and stands alone", () => {
+test("a tool card waits for the caption's utterance, then stands alone", () => {
   const a = new TalkTranscriptAdapter();
-  a.adapt(A, "Let me check.", false, "u1");
-  assert.deepEqual(a.adapt(A, "> 🔧 **web_search**", true), [
+  a.adapt(A, "Let", false, "u1");
+  // The tool ran while "Let me check." was still playing: hold the card.
+  assert.deepEqual(a.adapt(A, "> 🔧 **web_search**", true), []);
+  assert.deepEqual(a.adapt(A, "Let me check.", false, "u1"), [[A, " me check.", false]]);
+  assert.deepEqual(a.adapt(A, "Let me check.", true, "u1"), [
     [A, "Let me check.", true],
     [A, "> 🔧 **web_search**", true],
   ]);
-  assert.deepEqual(a.adapt(A, "Let me check. The", false, "u1"), [[A, "The", false]]);
-  assert.deepEqual(a.adapt(A, "Let me check. The weather.", true, "u1"), [[A, "The weather.", true]]);
+});
+
+test("a tool card with no caption bubble open goes out at once", () => {
+  const a = new TalkTranscriptAdapter();
+  assert.deepEqual(a.adapt(A, "> 🔧 **web_search**", true), [[A, "> 🔧 **web_search**", true]]);
+});
+
+test("a held tool card follows the cut when the user talks", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "Let", false, "u1");
+  a.adapt(A, "> 🔧 **web_search**", true);
+  assert.deepEqual(a.adapt(U, " Wait", false), [
+    [A, "Let", true],
+    [A, "> 🔧 **web_search**", true],
+    [U, "Wait", false],
+  ]);
+});
+
+test("a line break the partials didn't carry neither freezes the bubble nor repeats the cut", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "To be. Whether", false, "u1");
+  a.adapt(U, " Hm", false); // cut: "To be. Whether"
+  // An older brain joins the sentence after its line break in later messages.
+  assert.deepEqual(a.adapt(A, "To be. \nWhether 'tis", false, "u1"), [[A, "'tis", false]]);
+  assert.deepEqual(a.adapt(A, "To be. \nWhether 'tis nobler.", false, "u1"), [[A, " nobler.", false]]);
+  assert.deepEqual(a.adapt(A, "To be. \nWhether 'tis nobler.", true, "u1"), [[A, "'tis nobler.", true]]);
 });
 
 test("a new utterance under an open bubble closes it first", () => {
@@ -127,12 +154,14 @@ test("a caption final with no partials is sent whole", () => {
   assert.deepEqual(a.adapt(A, "Done.", true, "u1"), [[A, "Done.", true]]);
 });
 
-test("an untagged caption (older brain) carries on when it extends the text", () => {
+test("an untagged caption (older brain) continues only its open bubble", () => {
   const a = new TalkTranscriptAdapter();
-  a.adapt(A, "This is", false);
-  a.adapt(U, " Mm.", true);
-  assert.deepEqual(a.adapt(A, "This is a long answer.", false), [[A, "a long answer.", false]]);
-  assert.deepEqual(a.adapt(A, "Something else", false), [[A, "a long answer.", true], [A, "Something else", false]]);
+  a.adapt(A, "Okay,", false);
+  assert.deepEqual(a.adapt(A, "Okay, so", false), [[A, " so", false]]);
+  a.adapt(U, " Actually wait.", true); // cut; an older brain sends no final on barge-in
+  // Without an utterance id this may be a new reply that starts with the same words,
+  // so it is shown whole rather than cut short.
+  assert.deepEqual(a.adapt(A, "Okay, so what's up?", false), [[A, "Okay, so what's up?", false]]);
 });
 
 test("the bridge forwards every event the adapter makes", () => {
@@ -169,4 +198,33 @@ test("the bridge sends full text to an older host", () => {
     bridge._onMessage(JSON.stringify({ type: "transcript", role: A, text: t, final: false, utterance: "u1" }));
   }
   assert.deepEqual(calls, ["Hello", "Hello there."]);
+});
+
+test("the plugin registers even when reading the host version throws", async () => {
+  // OpenClaw 2026.7.x resolves the whole plugin runtime on any api.runtime read.
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const { pathToFileURL, fileURLToPath } = await import("node:url");
+  const dir = mkdtempSync(join(tmpdir(), "teaport-plugin-"));
+  const sdk = join(dir, "node_modules", "openclaw", "plugin-sdk");
+  mkdirSync(sdk, { recursive: true });
+  writeFileSync(join(dir, "node_modules", "openclaw", "package.json"),
+    JSON.stringify({ name: "openclaw", type: "module", exports: { "./plugin-sdk/plugin-entry": "./plugin-sdk/plugin-entry.js" } }));
+  writeFileSync(join(sdk, "plugin-entry.js"), "export const definePluginEntry = (entry) => entry;\n");
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  const here = fileURLToPath(new URL("..", import.meta.url));
+  for (const f of ["index.js", "provider.js"]) copyFileSync(join(here, f), join(dir, f));
+  const entry = (await import(pathToFileURL(join(dir, "index.js")).href)).default;
+  const registered = [];
+  const logs = [];
+  entry.register({
+    get runtime() {
+      throw new Error("plugin runtime module could not be resolved");
+    },
+    logger: { info: (m) => logs.push(m) },
+    registerRealtimeVoiceProvider: (p) => registered.push(p.id),
+  });
+  assert.deepEqual(registered, ["teaport"]);
+  assert.match(logs[0], /version unknown/);
 });

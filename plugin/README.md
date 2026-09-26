@@ -74,12 +74,17 @@ assistant bubbles:
   exactly the bubble's text, so the session transcript keeps what was shown.
 - If the voice carries on after a cut, the next bubble, and that utterance's final,
   carry only the text after the cut.
-- A tool card closes the open caption bubble and gets a bubble of its own.
+- A tool card gets a bubble of its own. It waits while a caption bubble is open, and
+  follows once that utterance ends or is cut. The tool runs when the model writes the
+  call, but captions follow the audio, so the card would otherwise land mid-sentence.
 
 The brain tags each caption with its utterance id, so the plugin can tell the voice
-carrying on from a new reply that begins with the same words. User transcripts are
-always full text. Older hosts get full text throughout, as before. See
-`TalkTranscriptAdapter` in `provider.js`.
+carrying on from a new reply that begins with the same words. An older brain sends
+no id, so its captions only continue a bubble that is still open. User transcripts
+are always full text. Older hosts get full text throughout, as before. A host whose
+version can't be read counts as current. Deltas still read correctly on an older
+view, while full text stacks on a current one. See `TalkTranscriptAdapter` in
+`provider.js`.
 
 ## Tests
 

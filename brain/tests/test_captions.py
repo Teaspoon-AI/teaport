@@ -350,6 +350,24 @@ async def test_messages_carry_their_utterance():
     print("  PASS partials and finals carry their utterance id")
 
 
+async def test_partials_extend_across_a_line_break():
+    # pipecat strips only spaces from a sentence, so one that follows a line break
+    # arrives as "\nWhether ...". Every caption must extend the one before it, the
+    # final included: the plugin sends the difference (provider.js), and text that
+    # stops extending freezes the bubble. The break itself is kept, as in the source.
+    h = Harness()
+    await h.sentence("To be: that is the question.", "ctx-l")
+    await h.sentence("\nWhether 'tis nobler.", "ctx-l")
+    await h.sentence("Or to take arms.", "ctx-l")
+    await h.feed(BotStoppedSpeakingFrame())
+    texts = [t for t, _ in h.sent]
+    for a, b in zip(texts, texts[1:]):
+        assert b.startswith(a), (a, b)
+    assert h.finals() == [
+        "To be: that is the question.\nWhether 'tis nobler. Or to take arms."], h.sent
+    print("  PASS captions keep extending across a line break")
+
+
 def test_captions():
     async def main():
         await test_seamless_multi_utterance_segment()
@@ -366,6 +384,7 @@ def test_captions():
         await test_clean_single_utterance()
         await test_no_empty_or_double_finals()
         await test_messages_carry_their_utterance()
+        await test_partials_extend_across_a_line_break()
     asyncio.run(main())
 
 

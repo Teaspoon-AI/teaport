@@ -56,20 +56,29 @@ function withVoiceParams(url, cfg) {
 //   * A user transcript cuts the open bubble. The adapter first sends a final of
 //     exactly its text. The view would commit the bubble at the user's first words
 //     anyway, but without a final; sending one saves what the bubble showed to the
-//     session transcript and leaves no doubt the bubble is closed.
+//     session transcript and leaves no doubt the bubble is closed. (The relay also
+//     compares user finals of 4+ words with recent assistant finals to drop echo, so
+//     that shown text is now in the comparison too. It only gates voice control of a
+//     running agent consult, and it helps catch real echo of the words cut into.)
 //   * If the voice carries on after the cut, the next bubble starts where the cut
 //     one ended, and the utterance's final carries only the text after the cut.
-//   * A final that is not part of the utterance (a tool card, a debug chip), or a
-//     new utterance, also cuts the open bubble, so nothing merges into it.
+//   * A new utterance cuts the open bubble too.
+//   * A final that is not a caption (a tool card, a debug chip) waits while a caption
+//     bubble is open, and follows once that utterance ends or is cut. A tool runs
+//     when the model writes the call, but captions follow the audio, so the card
+//     would otherwise land mid-sentence ("Let" | card | "me check.").
 // The brain tags its captions with their utterance (the TTS context id), which is
 // how a carry-on is told apart from a new reply that begins with the same words.
-// Untagged text (an older brain) counts as a carry-on when it extends the text sent.
+// Untagged text (an older brain) only continues a bubble that is still open.
 
 const ASSISTANT_DELTAS_SINCE = [2026, 8, 1];
 
 /**
  * Whether an OpenClaw host appends assistant transcript partials as deltas, i.e. is
- * 2026.8.1 or newer. A missing or unparsable version counts as current OpenClaw.
+ * 2026.8.1 or newer. A missing or unparsable version (a dev build, or a host whose
+ * runtime would not say) counts as current OpenClaw: full text stacks on a current
+ * view, while deltas still read correctly on an older one, apart from a repeated
+ * word that can drop out until the final.
  */
 export function appendsAssistantDeltas(version) {
   const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim());
@@ -81,6 +90,30 @@ export function appendsAssistantDeltas(version) {
   return true;
 }
 
+const SPACE = /\s/;
+
+// The rest of `text` past `prefix`, or null when `text` does not start with it.
+// Whitespace runs only have to line up, not match, so a sentence joined after a
+// line break in one message and after a space in the next still continues.
+function after(text, prefix) {
+  if (text.startsWith(prefix)) return text.slice(prefix.length);
+  let i = 0;
+  let j = 0;
+  while (j < prefix.length) {
+    if (SPACE.test(prefix[j])) {
+      if (i >= text.length || !SPACE.test(text[i])) return null;
+      while (j < prefix.length && SPACE.test(prefix[j])) j += 1;
+      while (i < text.length && SPACE.test(text[i])) i += 1;
+    } else if (text[i] === prefix[j]) {
+      i += 1;
+      j += 1;
+    } else {
+      return null;
+    }
+  }
+  return text.slice(i);
+}
+
 /**
  * Turns the brain's full-text transcripts into what the host's Talk view needs.
  * adapt() returns the [role, text, final] events to hand onTranscript, in order.
@@ -90,41 +123,44 @@ export class TalkTranscriptAdapter {
     this._deltas = assistantDeltas;
     this._utt = null; // the utterance being shown: its id, "" if untagged, null if none
     this._said = ""; // all of its text sent to the view so far
-    this._base = 0; // how much of _said is in closed bubbles
+    this._closed = ""; // the part of _said that is in closed bubbles
     this._open = false; // the view has a bubble open with the rest of _said
+    this._cards = []; // non-caption finals waiting for that bubble's utterance to end
   }
 
   adapt(role, text, final, utterance) {
     const full = typeof text === "string" ? text.trim() : "";
     // The view ignores empty text, so it changes nothing there.
     if (!this._deltas || !full) return [[role, full, final]];
-    if (role !== "assistant") return [...this._cut(), [role, full, final]];
+    if (role !== "assistant") return [...this._cut(), ...this._release(), [role, full, final]];
     const id = typeof utterance === "string" && utterance ? utterance : null;
+    if (final && !id && !this._continues(null, full)) {
+      if (!this._open) return [[role, full, true]];
+      this._cards.push(full);
+      return [];
+    }
     const out = [];
     if (!this._continues(id, full)) {
-      out.push(...this._cut());
-      // An untagged final that is not part of the utterance is a card of its own;
-      // the utterance carries on after it.
-      if (final && !id) return [...out, [role, full, true]];
+      out.push(...this._cut(), ...this._release());
       this._utt = id ?? "";
       this._said = "";
-      this._base = 0;
+      this._closed = "";
     }
     if (final) {
       // The final carries what is not in a closed bubble yet, and ends the utterance.
-      const closed = this._said.slice(0, this._base);
-      const rest = full.startsWith(closed) ? full.slice(this._base).trim() : full;
+      const rest = (after(full, this._closed) ?? full).trim();
       this._utt = null;
       this._said = "";
-      this._base = 0;
+      this._closed = "";
       this._open = false;
-      return rest ? [...out, [role, rest, true]] : out;
+      return [...out, ...(rest ? [[role, rest, true]] : []), ...this._release()];
     }
     // Text sent can't be taken back; the brain only ever extends an utterance.
-    if (!full.startsWith(this._said)) return out;
+    const more = after(full, this._said);
+    if (more === null) return out;
     const add = this._open
-      ? full.slice(this._said.length)
-      : full.slice(this._base).trimStart(); // a new bubble: what follows the cut
+      ? more
+      : (after(full, this._closed) ?? full).trimStart(); // a new bubble: what follows the cut
     this._said = full;
     if (!add) return out;
     this._open = true;
@@ -133,7 +169,10 @@ export class TalkTranscriptAdapter {
 
   _continues(id, full) {
     if (this._utt === null) return false;
-    return id ? id === this._utt : full.startsWith(this._said);
+    if (id || this._utt) return id === this._utt;
+    // Untagged: after a cut, a carry-on can't be told from a new reply that starts
+    // with the same words, so only the open bubble continues.
+    return this._open && after(full, this._said) !== null;
   }
 
   // Close the open bubble with a final of exactly its text: the view keeps the text
@@ -141,9 +180,15 @@ export class TalkTranscriptAdapter {
   _cut() {
     if (!this._open) return [];
     this._open = false;
-    const shown = this._said.slice(this._base).trim();
-    this._base = this._said.length;
+    const shown = (after(this._said, this._closed) ?? this._said).trim();
+    this._closed = this._said;
     return [["assistant", shown, true]];
+  }
+
+  _release() {
+    const cards = this._cards.map((t) => ["assistant", t, true]);
+    this._cards = [];
+    return cards;
   }
 }
 
@@ -287,8 +332,9 @@ class TeaportBridge {
           // the brain's Voxtral interims are a cumulative buffer of SentencePiece
           // deltas, so each begins with a leading space (" What", " What is", ...),
           // and the Talk reducer APPENDS whitespace-leading user text instead of
-          // replacing the turn ("What What is What is the ..."). Finals always stay
-          // the complete text, so the turn still closes and the LLM responds.
+          // replacing the turn ("What What is What is the ..."). A user final is
+          // always the complete text, so the turn still closes and the LLM responds;
+          // an assistant final can hold just the text after a cut.
           const events = this._transcripts.adapt(msg.role, msg.text, Boolean(msg.final), msg.utterance);
           for (const [role, text, final] of events) {
             if (TRACE) {
