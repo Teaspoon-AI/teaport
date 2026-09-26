@@ -32,6 +32,15 @@
 #      the 8 GB unified pool OOMs. It must NOT run on a superseded teardown, where the
 #      replacement call's bring-up is already starting behind it.
 #
+# And the brain's half of the gateway's reconnect replay:
+#
+#   5. A brain that connects while a call is already up is replayed that call by the
+#      gateway (call.incoming + call.state, "replay": true, before any audio). A replayed
+#      confirmed must build a pipeline like a live one — the caller is on the line — but
+#      open with a short "sorry, I lost you" rather than a hello from scratch; a replayed
+#      state short of confirmed must build nothing, and the live confirmed after it
+#      greets normally.
+#
 # Run: python test_sip_call_lifecycle.py
 #
 import asyncio
@@ -149,6 +158,7 @@ class _FakeSession:
     built = []          # call ids, in build order
     greeted = []        # call ids that finished greeting
     by_id = {}          # call id -> the session built for it
+    resumed = {}        # call id -> the `resumed` greet() was called with
 
     def __init__(self, call_id):
         self.call_id = call_id
@@ -157,7 +167,8 @@ class _FakeSession:
         self.followup_gate = _FakeGate()
         self.should_end = False
 
-    async def greet(self):
+    async def greet(self, resumed=False):
+        _FakeSession.resumed[self.call_id] = resumed
         await asyncio.sleep(self.greet_delay)
         _FakeSession.greeted.append(self.call_id)
 
@@ -184,6 +195,7 @@ class _Harness:
         _FakeSession.built = []
         _FakeSession.greeted = []
         _FakeSession.by_id = {}
+        _FakeSession.resumed = {}
         self.reclaims = []
         self.controls = []
         self._patch()
@@ -204,7 +216,12 @@ class _Harness:
         sip_server.turn_reclaim = reclaim
 
         def build(transport, **kw):
-            call_id = self._pending.pop(0)
+            # Record the ATTEMPT before taking an id. A build nobody queued an id for
+            # (a regression that builds on a state other than confirmed) must land in
+            # `built` where a test can see it, not die as an IndexError inside the
+            # background bring-up task, which is only logged -- that let a test
+            # asserting "nothing was built" pass against exactly that regression.
+            call_id = self._pending.pop(0) if self._pending else "<unexpected>"
             _FakeSession.built.append(call_id)
             return _FakeSession(call_id)
         sip_server.build_agent_session = build
@@ -233,10 +250,13 @@ class _Harness:
         sip_server.SipGatewayTransport = self._orig_transport
         sip_server.turn_reclaim = self._orig_reclaim
 
-    async def call_state(self, call_id, state):
-        self._pending.append(call_id)
-        self.peer.send(encode_control(
-            {"type": "call.state", "call_id": call_id, "state": state}))
+    async def call_state(self, call_id, state, replay=False):
+        if state == "confirmed":   # the only state that builds a pipeline
+            self._pending.append(call_id)
+        msg = {"type": "call.state", "call_id": call_id, "state": state}
+        if replay:
+            msg["replay"] = True
+        self.peer.send(encode_control(msg))
 
     async def send_raw(self, msg):
         self.peer.send(encode_control(msg))
@@ -420,6 +440,122 @@ async def test_a_teardown_the_call_id_guard_rejects_does_not_reclaim():
             "a teardown that did not happen")
     finally:
         await h.stop()
+
+
+# --- 5. a brain that (re)connects mid-call ----------------------------------------
+
+async def test_a_replayed_call_is_resumed_not_greeted_from_scratch():
+    """The brain restarted under a live call. The gateway kept the caller on the line
+    and replays the call to the new process before any audio; without a pipeline for it
+    the caller would wait for a bot that never answers. It is brought up like any call,
+    but opens with the apology, and from there it is an ordinary call: its own live
+    disconnected tears it down, and the NEXT caller is greeted from scratch."""
+    h = _Harness()
+    try:
+        await h.start()
+        await h.send_raw({"type": "call.incoming", "call_id": "A",
+                          "from": "sip:caller@example.invalid",
+                          "to": "sip:svc@example.invalid", "replay": True})
+        await h.call_state("A", "confirmed", replay=True)
+        assert await wait_until(lambda: "A" in _FakeSession.greeted), (
+            "no pipeline for the replayed call — the caller is on a line with no brain")
+        assert _FakeSession.resumed["A"] is True, (
+            "a caller who was mid-call was greeted from scratch, as if they had just "
+            "dialled in")
+
+        await h.send_raw({"type": "call.state", "call_id": "A", "state": "disconnected"})
+        assert await wait_until(lambda: torn_down("A")), (
+            "the replayed call's own disconnected did not tear it down")
+
+        await h.call_state("B", "confirmed")
+        assert await wait_until(lambda: "B" in _FakeSession.greeted), "call B never built"
+        assert _FakeSession.resumed["B"] is False, (
+            "a live confirmed after a replayed one was treated as a resume")
+    finally:
+        await h.stop()
+
+
+async def test_a_replay_during_setup_waits_for_the_live_confirmed():
+    """A brain that connects during call SETUP is replayed the state the call is in
+    (here `connecting`) and then receives `confirmed` live, without the flag. The
+    replayed state must build nothing, and the live confirmed greets normally: that
+    caller has not heard a word yet."""
+    h = _Harness()
+    try:
+        await h.start()
+        await h.send_raw({"type": "call.incoming", "call_id": "A",
+                          "from": "sip:caller@example.invalid",
+                          "to": "sip:svc@example.invalid", "replay": True})
+        await h.call_state("A", "connecting", replay=True)
+        await asyncio.sleep(0.3)   # asserting a NEGATIVE: give it room to misbehave
+        assert _FakeSession.built == [], (
+            f"a replayed pre-confirmed state built a pipeline: {_FakeSession.built}")
+
+        await h.call_state("A", "confirmed")
+        assert await wait_until(lambda: "A" in _FakeSession.greeted), "call A never built"
+        assert _FakeSession.resumed["A"] is False, (
+            "a caller who had heard nothing yet got the 'sorry, I lost you' line")
+    finally:
+        await h.stop()
+
+
+async def test_only_a_json_true_marks_a_replay():
+    """`replay` counts only as the JSON literal true. A gateway bug or a hand-rolled
+    test client sending "true", 1 or "false" must not flip a live call into the
+    'sorry, I lost you' opening -- nor must anything but true."""
+    h = _Harness()
+    try:
+        await h.start()
+        for i, val in enumerate(["true", 1, "false", "yes"]):
+            cid = f"X{i}"
+            h._pending.append(cid)
+            await h.send_raw({"type": "call.state", "call_id": cid, "state": "confirmed",
+                              "replay": val})
+            assert await wait_until(lambda: cid in _FakeSession.greeted), f"{cid} never built"
+            assert _FakeSession.resumed[cid] is False, (
+                f"replay={val!r} was taken as a replay; only the JSON literal true is one")
+    finally:
+        await h.stop()
+
+
+async def test_resumed_greet_cues_the_apology_through_the_same_llm_turn():
+    """AgentSession.greet(resumed=True) swaps the stage direction and nothing else:
+    same user-role cue (a system-only context is rejected by strict providers), same
+    LLMRunFrame, same STT gate in front of it."""
+    from pipecat.frames.frames import LLMRunFrame
+    from teaport_brain.agent_session import AgentSession
+
+    class _Ctx:
+        def __init__(self):
+            self.messages = []
+
+        def add_message(self, m):
+            self.messages.append(m)
+
+    class _Stt:
+        stt_available = True
+        slot_busy = False
+
+    class _Task:
+        def __init__(self):
+            self.queued = []
+
+        async def queue_frames(self, frames):
+            self.queued.extend(frames)
+
+    said = {}
+    for resumed in (False, True):
+        ctx, task = _Ctx(), _Task()
+        session = AgentSession(task=task, context=ctx, stt=_Stt(), tts=None, llm=None,
+                               ledger=None, followup_gate=None)
+        await session.greet(resumed=resumed)
+        assert session.should_end is False
+        assert [m["role"] for m in ctx.messages] == ["user"], ctx.messages
+        assert [type(f) for f in task.queued] == [LLMRunFrame], task.queued
+        said[resumed] = ctx.messages[0]["content"]
+    assert said[False] == AgentSession._GREETING, said
+    assert said[True] == AgentSession._RESUME_GREETING, said
+    assert said[True] != said[False]
 
 
 async def wait_until(pred, timeout=3.0, what=""):

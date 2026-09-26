@@ -21,6 +21,19 @@
 # Single active call in protocol v0: a new confirmed cancels any running call first.
 # If the gateway socket closes (EOF), we cancel any running call and stop.
 #
+# Mid-call (re)connect: a gateway that resynchronizes on connect (teaport-sip's
+# reconnect replay) keeps the call up while this process is gone, and when the next
+# brain connects it replays the call in progress — call.incoming + call.state with
+# "replay": true — before any audio. A replayed `confirmed` needs nothing special to
+# build: it is a confirmed like any other, so the caller gets a fresh pipeline. It only
+# changes the FIRST thing said: the caller has been in silence for a few seconds and the
+# old process took the conversation with it, so the session opens with a short "sorry, I
+# lost you for a moment, where were we?" (AgentSession.greet(resumed=True)) instead of a
+# hello from scratch. The caller-audio dump, if on, starts a new caller-<id>.r1 file
+# rather than truncating the first process's (audio_dump.py). A replayed state short of `confirmed` is ignored like its live twin, and the
+# live `confirmed` that follows greets normally, since that caller has heard nothing
+# yet. An older gateway never sends the flag, and nothing changes.
+#
 # This mirrors the OpenClaw path (gateway_server.py), which already builds a fresh
 # pipeline per WebSocket connection. The earlier one-persistent-pipeline design (reset
 # context between calls, cancel_on_idle_timeout=False to keep it alive) is gone.
@@ -318,12 +331,21 @@ async def run(sock_path: str):
 
     @connection.event_handler("on_hello")
     async def on_hello(_connection, msg):
+        # "replay": true in the hello is the gateway saying it replays a call in
+        # progress to a brain that (re)connects; one that predates that leaves a brain
+        # restarted mid-call with no session for the call. Logged so whoever decides
+        # whether this unit may restart alone can see which kind is running.
         logger.info(f"gateway hello: proto={msg.get('proto')} rate={msg.get('rate')} "
-                    f"ch={msg.get('channels')} ptime={msg.get('ptime_ms')}ms")
+                    f"ch={msg.get('channels')} ptime={msg.get('ptime_ms')}ms "
+                    + ("replay=yes (a call in progress survives a brain restart)"
+                       if msg.get("replay") is True else
+                       "replay=no (older gateway: a brain restart strands a call in progress)"))
 
     @connection.event_handler("on_call_incoming")
     async def on_call_incoming(_connection, msg):
-        logger.info(f"call.incoming id={msg.get('call_id')} from={msg.get('from')} to={msg.get('to')}")
+        logger.info(f"call.incoming id={msg.get('call_id')} from={msg.get('from')} to={msg.get('to')}"
+                    + (" (replayed: the call was already up when this brain connected)"
+                       if msg.get("replay") is True else ""))
 
     @connection.event_handler("on_dtmf")
     async def on_dtmf(_connection, call_id, digit):
@@ -350,13 +372,16 @@ async def run(sock_path: str):
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"bring-up task ended with: {e!r}")
 
-    async def bring_up_call(call_id):
+    async def bring_up_call(call_id, resumed: bool = False):
         """Build the per-call pipeline and greet. Runs as a TASK, never inline in the
-        receive loop — see on_call_state."""
+        receive loop — see on_call_state. `resumed`: the call was already up when this
+        brain connected (a replayed confirmed), so greet() apologises for the gap
+        instead of greeting from scratch."""
         logger.info(f"building a FRESH per-call pipeline for call {call_id} "
-                    "(new STT/LLM/TTS/context)")
+                    "(new STT/LLM/TTS/context)"
+                    + (" — RESUMING a call already in progress" if resumed else ""))
         try:
-            await _bring_up(call_id)
+            await _bring_up(call_id, resumed)
         finally:
             # Retire our own entry once the bring-up is over, so `setup` means what its
             # name says: a bring-up STILL IN FLIGHT. Without this it stayed set for the
@@ -373,7 +398,7 @@ async def run(sock_path: str):
                 setup["task"] = None
                 setup["call_id"] = None
 
-    async def _bring_up(call_id):
+    async def _bring_up(call_id, resumed: bool = False):
         transport = SipGatewayTransport(connection, params)
         # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
@@ -439,7 +464,7 @@ async def run(sock_path: str):
         # Publish BEFORE greeting: from here a `disconnected` for this call can find
         # and tear down the pipeline even though the bring-up is still running.
         active["call"] = (call_id, session, runner_task, transport)
-        await session.greet()
+        await session.greet(resumed=resumed)
         if session.should_end:
             # STT is unavailable — either the engine's single slot is held by another
             # session (e.g. the local OpenClaw brain) or the engine is unreachable.
@@ -454,8 +479,9 @@ async def run(sock_path: str):
             await cancel_active_call("STT unavailable", call_id=call_id)
 
     @connection.event_handler("on_call_state")
-    async def on_call_state(_connection, call_id, state):
-        logger.info(f"call.state={state} (call {call_id})")
+    async def on_call_state(_connection, call_id, state, replay=False):
+        logger.info(f"call.state={state} (call {call_id})"
+                    + (" (replayed on connect)" if replay else ""))
         # This handler is dispatched sync=True, INLINE in the connection's single
         # receive loop, so whatever it awaits is time the socket is not being read:
         # no control, and no caller audio either. The bring-up is by far the longest
@@ -487,7 +513,7 @@ async def run(sock_path: str):
             # that has a replacement call in hand.
             await cancel_active_call("superseded by a new call", reclaim=False)
             setup["call_id"] = call_id
-            setup["task"] = asyncio.create_task(bring_up_call(call_id))
+            setup["task"] = asyncio.create_task(bring_up_call(call_id, resumed=replay))
         elif state == "disconnected":
             # Both guarded by call_id: this may be a stale disconnected for a call that
             # has already been superseded, in which case it must touch nothing.

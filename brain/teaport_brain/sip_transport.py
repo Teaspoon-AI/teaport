@@ -160,8 +160,13 @@ class SipConnection(BaseObject):
       - on_client_connected(connection)              socket is up (once, at start)
       - on_client_disconnected(connection)           gateway hung up / socket EOF
       - on_hello(connection, msg)                    gateway hello {proto,rate,...}
-      - on_call_incoming(connection, msg)            {call_id, from, to}
-      - on_call_state(connection, call_id, state)    state transition
+      - on_call_incoming(connection, msg)            {call_id, from, to[, replay]}
+      - on_call_state(connection, call_id, state, replay)
+                                                     state transition; `replay` is True
+                                                     when the gateway is re-describing a
+                                                     call already in progress because this
+                                                     brain just (re)connected, False for a
+                                                     live transition
       - on_dtmf(connection, call_id, digit)          DTMF digit
 
     The control handlers are dispatched SYNCHRONOUSLY (is_sync=True) so they run
@@ -312,7 +317,10 @@ class SipConnection(BaseObject):
         elif mtype == "call.incoming":
             await self._call_event_handler("on_call_incoming", msg)
         elif mtype == "call.state":
-            await self._call_event_handler("on_call_state", msg.get("call_id"), msg.get("state"))
+            # `replay` is strictly the JSON literal true: a gateway that predates the
+            # reconnect replay never sends it, and anything else is a live event.
+            await self._call_event_handler("on_call_state", msg.get("call_id"),
+                                           msg.get("state"), msg.get("replay") is True)
         elif mtype == "dtmf":
             await self._call_event_handler("on_dtmf", msg.get("call_id"), msg.get("digit"))
         else:

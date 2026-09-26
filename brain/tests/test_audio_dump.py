@@ -121,6 +121,38 @@ async def test_a_write_failure_disables_the_tap_and_keeps_the_call():
         await tap.cleanup()
 
 
+async def test_a_resumed_call_does_not_overwrite_its_first_dump():
+    """The SIP gateway replays a call in progress to a brain restarted mid-call, and
+    the new process builds a tap for the SAME call id. Opening the old names with "wb"
+    would truncate the first half of the call -- and these dumps are the only record
+    the latency tooling has. The second tap gets .r1 (then .r2), same stem for both
+    files, so a tool that pairs <stem>.marks with <stem>.wav still pairs them."""
+    with tempfile.TemporaryDirectory() as tmp:
+        first = _tap(tmp, "call-7")
+        for _ in range(3):
+            await _send(first, InputAudioRawFrame(audio=CHUNK, sample_rate=SR, num_channels=1))
+        await _send(first, BotStartedSpeakingFrame())
+        await first.cleanup()
+
+        second = _tap(tmp, "call-7")
+        await _send(second, InputAudioRawFrame(audio=CHUNK, sample_rate=SR, num_channels=1))
+        await second.cleanup()
+        third = _tap(tmp, "call-7")
+        await third.cleanup()
+
+        assert first._wav_path.endswith("caller-call-7.wav"), first._wav_path
+        assert second._wav_path.endswith("caller-call-7.r1.wav"), second._wav_path
+        assert second._marks_path.endswith("caller-call-7.r1.marks"), second._marks_path
+        assert third._wav_path.endswith("caller-call-7.r2.wav"), third._wav_path
+        with wave.open(first._wav_path) as w:
+            assert w.getnframes() == 3 * 320, "the first half of the call was truncated"
+        assert "BOT_START" in open(first._marks_path).read(), "its marks were truncated"
+        with wave.open(second._wav_path) as w:
+            assert w.getnframes() == 320, w.getnframes()
+        for tap in (first, second, third):
+            assert tap._marks_path[:-len(".marks")] == tap._wav_path[:-len(".wav")]
+
+
 async def test_an_unwritable_directory_is_not_fatal():
     tap = ad.CallerAudioTap.__new__(ad.CallerAudioTap)
     ad.DUMP_DIR = "/proc/teaport-cannot-exist"
