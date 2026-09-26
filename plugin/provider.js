@@ -37,13 +37,150 @@ function withVoiceParams(url, cfg) {
   return url + (url.includes("?") ? "&" : "?") + q.join("&");
 }
 
+// ── How the Talk view merges transcripts ─────────────────────────────────────
+// The brain sends the FULL text on every transcript event. OpenClaw's Control UI
+// Talk view merges each event into the open bubble for its role, and since
+// OpenClaw 2026.8.1 the two roles merge differently:
+//   user       text that extends the bubble REPLACES it; whitespace-leading text is
+//              APPENDED (which is why every transcript is trimmed here).
+//   assistant  a partial is APPENDED verbatim — a delta, like OpenAI Realtime's
+//              output transcript deltas. Only a final replaces the bubble's text,
+//              and only when it extends or resembles what the bubble shows.
+// So full-text assistant partials stack on 2026.8.1+ ("I'mI'm runningI'm running
+// smoothly,…"). Before 2026.8.1 both roles used the user rule, so full text was
+// correct there, and it is still what those versions get.
+//
+// A delta is only correct relative to the view's open bubble, and a new bubble must
+// start with the full text so far, or the final (the full utterance) cannot replace
+// it. TalkTranscriptAdapter therefore mirrors the view's reducer (the realtime Talk
+// conversation state in the Control UI bundle) over the exact event stream this
+// plugin forwards: which assistant bubble is open and what it holds, and the open
+// user entry, whose next event can commit that assistant bubble.
+
+const ASSISTANT_DELTAS_SINCE = [2026, 8, 1];
+// The view's window for a user final that only resembles its entry to still count
+// as that entry's final rather than a new turn (OpenClaw's constant).
+const USER_FINAL_GRACE_MS = 1500;
+
+/**
+ * Whether an OpenClaw host appends assistant transcript partials as deltas, i.e. is
+ * 2026.8.1 or newer. A missing or unparsable version counts as current OpenClaw.
+ */
+export function appendsAssistantDeltas(version) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim());
+  if (!m) return true;
+  for (let i = 0; i < 3; i += 1) {
+    const d = Number(m[i + 1]) - ASSISTANT_DELTAS_SINCE[i];
+    if (d !== 0) return d > 0;
+  }
+  return true;
+}
+
+const words = (s) => [...s.toLowerCase().matchAll(/[\p{L}\p{N}]+/gu)].map((w) => w[0]);
+const squash = (s) => s.toLowerCase().replace(/\s+/g, " ").trim();
+
+// The view's "same utterance, reworded" test: same first word, and the same second
+// word or a long enough shared prefix.
+function resembles(a, b) {
+  const wa = words(a);
+  const wb = words(b);
+  if (!wa.length || !wb.length || wa[0] !== wb[0]) return false;
+  if (wa.length > 1 && wb.length > 1 && wa[1] === wb[1]) return true;
+  const sa = squash(a);
+  const sb = squash(b);
+  const n = Math.min(sa.length, sb.length);
+  let i = 0;
+  while (i < n && sa[i] === sb[i]) i += 1;
+  return i >= 6 && i / Math.max(1, n) >= 0.45;
+}
+
+/**
+ * Turns the brain's full-text transcripts into what the host's Talk view needs.
+ * adapt() returns the text to hand onTranscript, or null to send nothing.
+ */
+export class TalkTranscriptAdapter {
+  constructor({ assistantDeltas = true, now = Date.now } = {}) {
+    this._deltas = assistantDeltas;
+    this._now = now;
+    this._assistant = null; // text of the view's open assistant bubble, or null
+    this._held = false; // that bubble stopped matching the brain's text (see adapt)
+    // The view's open user entry: {text, streaming, since}. `text` is the last text
+    // sent, which is what the view shows while the brain sends full text.
+    this._user = null;
+  }
+
+  adapt(role, text, final) {
+    const full = typeof text === "string" ? text.trim() : "";
+    // The view ignores empty text, so it changes nothing there.
+    if (!this._deltas || !full) return full;
+    let out = full;
+    if (role === "assistant" && !final && this._assistant !== null) {
+      if (full.startsWith(this._assistant)) {
+        out = full.slice(this._assistant.length);
+      } else if (!this._held) {
+        // The brain restarted its text while the view's bubble is still open (a
+        // barge-in that no user transcript committed). A partial cannot replace
+        // text, and only a final closes a bubble — finals are saved to the
+        // session transcript, so this never invents one. Break the paragraph
+        // once and hold this utterance's partials; its final lands after the break.
+        this._held = true;
+        out = "\n\n";
+      } else {
+        out = "";
+      }
+    }
+    if (!out) return null;
+    this._observe(role, out, final);
+    return out;
+  }
+
+  // Apply one forwarded, non-empty event the way the view does.
+  _observe(role, text, final) {
+    const now = this._now();
+    if (role === "assistant") {
+      // Any assistant event stops the open user entry streaming; its next event is
+      // then checked for a new turn (_newUserTurn).
+      if (this._user) this._user = { ...this._user, streaming: false, since: now };
+      if (final) this._closeAssistant();
+      else this._assistant = this._assistant === null ? text : this._assistant + text;
+      return;
+    }
+    const newTurn = this._user !== null && this._newUserTurn(text, final, now);
+    // A user event commits the assistant bubble when it opens a user entry.
+    if (this._user === null || newTurn) this._closeAssistant();
+    this._user = final ? null : { text, streaming: true, since: null };
+  }
+
+  // Whether the view starts a new user entry for this text instead of merging it into
+  // the open one. Both texts are trimmed and non-empty, so the view's blank and
+  // leading-whitespace cases never apply.
+  _newUserTurn(text, final, now) {
+    const u = this._user;
+    if (u.streaming) return false;
+    const prev = u.text;
+    return !(
+      text.startsWith(prev) ||
+      prev.endsWith(text) ||
+      (final && now - u.since <= USER_FINAL_GRACE_MS && resembles(prev, text))
+    );
+  }
+
+  _closeAssistant() {
+    this._assistant = null;
+    this._held = false;
+  }
+}
+
 /**
  * Build the RealtimeVoiceProviderPlugin object OpenClaw registers.
- * @param {{url?: string, voice?: string, language?: string}} defaults  fallback config
- *   (mainly for tests); live config arrives per-session as req.providerConfig
- *   (talk.realtime.providers.teaport.*).
+ * @param {{url?: string, voice?: string, language?: string, hostVersion?: string}}
+ *   defaults  fallback config (mainly for tests); live config arrives per-session as
+ *   req.providerConfig (talk.realtime.providers.teaport.*). hostVersion is the
+ *   OpenClaw version (index.js passes api.runtime.version); it picks how assistant
+ *   partials are sent, see TalkTranscriptAdapter.
  */
 export function buildTeaportRealtimeProvider(defaults = {}) {
+  const assistantDeltas = appendsAssistantDeltas(defaults.hostVersion);
   return {
     id: "teaport",
     label: "Teaport (on-device Pipecat)",
@@ -66,7 +203,7 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
         language: cfg.language || defaults.language,
         token: cfg.token || defaults.token || process.env.TEAPORT_GATEWAY_TOKEN,
       });
-      return new TeaportBridge(req, url);
+      return new TeaportBridge(req, url, new TalkTranscriptAdapter({ assistantDeltas }));
     },
   };
 }
@@ -74,9 +211,10 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
 // RealtimeVoiceBridge implementation. createBridge() is synchronous and callbacks
 // must not fire before it returns, so all WS work starts in connect().
 class TeaportBridge {
-  constructor(req, url) {
+  constructor(req, url, transcripts) {
     this._req = req; // RealtimeVoiceBridgeCreateRequest (callbacks + providerConfig)
     this._url = url; // ws://<pipecat-host>:7861/talk
+    this._transcripts = transcripts; // one per session, like the Talk view's state
     this._ws = null;
     this._open = false;
     this._closed = false; // we initiated close()
@@ -166,20 +304,20 @@ class TeaportBridge {
         if (this._req.onClearAudio) this._req.onClearAudio();
       } else if (msg.type === "transcript") {
         if (this._req.onTranscript) {
-          // Trim surrounding whitespace before forwarding. The brain's Voxtral
-          // interims are a cumulative buffer of SentencePiece deltas, so each
-          // partial begins with a leading space (" What", " What is", ...).
-          // OpenClaw's Talk reducer treats any whitespace-leading transcript as a
-          // delta to APPEND rather than replace, which stacks the growing partials
-          // into one bubble ("What What is What is the ..."). We always send the
-          // FULL utterance (never deltas), so trimming keeps each partial a clean
-          // full-text replacement of the active turn — and the final stays a
-          // complete transcript, so the turn still closes and the LLM responds.
-          const text = typeof msg.text === "string" ? msg.text.trim() : "";
+          // The brain sends the FULL text every time; the adapter trims it and, for
+          // an OpenClaw that appends assistant partials (2026.8.1+), sends those as
+          // deltas (see TalkTranscriptAdapter). Trimming matters for the user role:
+          // the brain's Voxtral interims are a cumulative buffer of SentencePiece
+          // deltas, so each begins with a leading space (" What", " What is", ...),
+          // and the Talk reducer APPENDS whitespace-leading user text instead of
+          // replacing the turn ("What What is What is the ..."). Finals always stay
+          // the complete text, so the turn still closes and the LLM responds.
+          const final = Boolean(msg.final);
+          const text = this._transcripts.adapt(msg.role, msg.text, final);
           if (TRACE) {
-            console.log(`[DBLTRACE-plugin] forward role=${msg.role} final=${Boolean(msg.final)} text=${JSON.stringify(text.slice(0, 45))}`);
+            console.log(`[DBLTRACE-plugin] forward role=${msg.role} final=${final} text=${text === null ? "(nothing new)" : JSON.stringify(text.slice(0, 45))}`);
           }
-          this._req.onTranscript(msg.role, text, Boolean(msg.final));
+          if (text !== null) this._req.onTranscript(msg.role, text, final);
         }
       } else if (msg.type === "tool_call") {
         // Surface the brain's tool calls in the OpenClaw Talk UI: the relay's

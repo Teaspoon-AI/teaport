@@ -62,8 +62,9 @@ const req = {
     cleared++;
     events.push("CLEAR");
   },
+  // Quoted, so the leading space of an assistant delta shows.
   onTranscript: (role, text, final) =>
-    events.push(`transcript[${role}${final ? "/final" : ""}]: ${text}`),
+    events.push(`transcript[${role}${final ? "/final" : ""}]: ${JSON.stringify(text)}`),
   onReady: () => events.push("READY"),
   onError: (err) => events.push(`ERROR: ${err.message}`),
   onClose: (reason) => events.push(`CLOSE: ${reason}`),

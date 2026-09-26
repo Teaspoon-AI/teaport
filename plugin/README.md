@@ -61,10 +61,21 @@ Two things require it:
 This was documented as `"none"` until 2026-09-08, on the reasoning that the teaport brain
 orchestrates so OpenClaw should stay quiet. That confuses `brain` with response ownership.
 
+## Transcripts in the Talk view
+
+The brain sends the full text on every transcript event. The Control UI's Talk view
+merges assistant text differently from OpenClaw 2026.8.1 on: it appends each
+assistant partial as a delta, and only a final replaces the bubble. The plugin reads
+the host version (`api.runtime.version`) and, on 2026.8.1 and newer, sends each
+assistant partial as the text added since the last one. A new bubble still opens
+with the full text so far. Finals and user transcripts are always full text. Older
+hosts get full text throughout, as before. See `TalkTranscriptAdapter` in
+`provider.js`.
+
 ## Tests
 
 ```bash
-npm test           # syntax gate (node --check) — no brain needed, CI-safe
+npm test           # syntax gate (node --check) + transcript unit tests — no brain needed, CI-safe
 npm run test:live  # full bridge<->brain integration harness — needs a running brain + Node ≥ 22
 ```
 

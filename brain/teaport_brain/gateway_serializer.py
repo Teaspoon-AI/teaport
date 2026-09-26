@@ -17,6 +17,8 @@
 #       OutputTransportMessage[Urgent]Frame -> JSON text, the .message dict:
 #           {"type":"clear"}                              (barge-in: flush playback)
 #           {"type":"transcript","role":...,"text":...,"final":bool}
+#             text is always the FULL text so far, never a delta; the plugin
+#             adapts it to how the OpenClaw version merges transcripts
 #
 # Pipecat serializes audio (write_audio_frame) and OutputTransportMessage frames
 # (send_message); it never serializes transcripts itself, so the emitters in

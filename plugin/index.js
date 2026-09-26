@@ -26,7 +26,7 @@
 // several rounds of flipping the value back and forth against a live gateway.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
-import { buildTeaportRealtimeProvider } from "./provider.js";
+import { appendsAssistantDeltas, buildTeaportRealtimeProvider } from "./provider.js";
 
 export default definePluginEntry({
   id: "teaport-realtime",
@@ -35,6 +35,13 @@ export default definePluginEntry({
     "Routes OpenClaw realtime voice (gateway-relay) to an external Pipecat " +
     "speech-to-speech server with heard-grounded barge-in.",
   register(api) {
-    api.registerRealtimeVoiceProvider(buildTeaportRealtimeProvider());
+    // The host version decides how assistant captions reach the Talk view: as deltas
+    // on 2026.8.1+, as full text before (provider.js, TalkTranscriptAdapter).
+    const hostVersion = api.runtime?.version;
+    api.logger?.info?.(
+      `teaport-realtime: OpenClaw ${hostVersion ?? "(version unknown)"} — assistant ` +
+        `captions sent as ${appendsAssistantDeltas(hostVersion) ? "deltas" : "full text"}`,
+    );
+    api.registerRealtimeVoiceProvider(buildTeaportRealtimeProvider({ hostVersion }));
   },
 });

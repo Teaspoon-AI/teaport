@@ -161,6 +161,12 @@ class UserTranscriptEmitter(FrameProcessor):
 class CaptionTap(FrameProcessor):
     """Assistant captions: playout-paced partials AND per-utterance finals.
 
+    Every partial carries the bubble's FULL text so far, and within an utterance
+    each one extends the last. OpenClaw 2026.8.1+ APPENDS assistant partials, so
+    the plugin sends the difference between consecutive partials
+    (plugin/provider.js, TalkTranscriptAdapter). A partial that stops extending
+    the previous one therefore reads as a new caption to the plugin.
+
     Placed AFTER transport.output(): the output transport queues each word's
     AggregatedTextProgressFrame by its presentation timestamp and its clock task
     releases it DOWNSTREAM exactly when that word's audio plays (verified live:
