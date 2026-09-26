@@ -11,15 +11,21 @@
 #       binary frame              raw PCM16 24 kHz mono  -> InputAudioRawFrame
 #       text {"type":"close"}                            -> EndFrame
 #       text {"type":"barge_in"}                         -> None (VAD owns barge-in)
+#       text {"type":"tool_result",...}                  -> None (consult_bridge)
+#       text {"type":"context","id":...,"text":...,"respond":bool[,"kind":...]}
+#                                                        -> ClientContextFrame
+#                                                           (client_notes.py)
 #
 #   us -> plugin (serialize):
 #       OutputAudioRawFrame       -> binary raw PCM16 24 kHz  (bot speech)
 #       OutputTransportMessage[Urgent]Frame -> JSON text, the .message dict:
+#           {"type":"hello","features":{"context":{limits}}}  (on connect)
 #           {"type":"clear"}                              (barge-in: flush playback)
 #           {"type":"transcript","role":...,"text":...,"final":bool[,"utterance":id]}
 #             text is always the FULL text so far, never a delta; the plugin
 #             adapts it to how the OpenClaw version merges transcripts.
 #             Assistant captions carry "utterance" (their TTS context id).
+#           {"type":"context_result","id":...,"ok":bool,...}  (answers a context note)
 #
 # Pipecat serializes audio (write_audio_frame) and OutputTransportMessage frames
 # (send_message); it never serializes transcripts itself, so the emitters in
@@ -42,6 +48,8 @@ from pipecat.frames.frames import (
     OutputTransportMessageUrgentFrame,
 )
 from pipecat.serializers.base_serializer import FrameSerializer
+
+from teaport_brain.client_notes import ClientContextFrame
 
 # OpenClaw gateway-relay fixes audio at PCM16 / 24 kHz / mono both ways
 # (REALTIME_VOICE_AUDIO_FORMAT_PCM16_24KHZ). Silero VAD and the engine STT want 16 kHz,
@@ -126,6 +134,17 @@ class TeaportGatewaySerializer(FrameSerializer):
                 will_continue=bool(msg.get("will_continue")),
             )
             return None
+        if msg.get("type") == "context":
+            # A client context note (teaport.talk.context). Typed loosely here and
+            # judged by ClientNotes, which answers every note with a context_result --
+            # a note refused here would leave the plugin waiting on its ack.
+            text, kind, req = msg.get("text"), msg.get("kind"), msg.get("id")
+            return ClientContextFrame(
+                text=text if isinstance(text, str) else "",
+                respond=msg.get("respond") is True,
+                kind=kind if isinstance(kind, str) and kind else None,
+                request_id=str(req) if req is not None else None,
+            )
         # barge_in: the pipeline VAD already interrupts from the forwarded mic
         # audio, so an explicit signal needs no separate injection here.
         return None

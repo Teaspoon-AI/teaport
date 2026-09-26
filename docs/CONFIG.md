@@ -144,6 +144,16 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |
 | `TEAPORT_THINKING_WAV` | `<package>/assets/typing.wav` | Your own 24 kHz mono wav for the thinking bed; the default is synthesized and cached next to the code. |
 
+## Talk client context notes
+
+In `/etc/teaport/brain.env`. Limits on the notes a Talk client adds to the voice LLM's context through the plugin's `teaport.talk.context` method (client_notes.py). Read only by teaport-brain.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TEAPORT_CONTEXT_MAX_CHARS` | **1000** chars (≥ 1) | Longest context note a Talk client may send; a longer one is refused, not cut. |
+| `TEAPORT_CONTEXT_MAX_NOTES` | **20** (≥ 1) | How many context notes stay in the LLM context; past it the oldest are removed. |
+| `TEAPORT_CONTEXT_RESPOND_INTERVAL_S` | **15** s (≥ 0) | Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited. |
+
 ## SIP brain
 
 In `/etc/teaport/brain.env`. Read only by teaport-sip-brain; the Talk brain ignores them.

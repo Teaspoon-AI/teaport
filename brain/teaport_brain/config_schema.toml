@@ -90,6 +90,11 @@ title = "Agent consult and follow-ups"
 blurb = "TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; every other row here applies only when it does."
 
 [[groups]]
+id = "talk_client"
+title = "Talk client context notes"
+blurb = "Limits on the notes a Talk client adds to the voice LLM's context through the plugin's `teaport.talk.context` method (client_notes.py). Read only by teaport-brain."
+
+[[groups]]
 id = "sip_brain"
 title = "SIP brain"
 blurb = "Read only by teaport-sip-brain; the Talk brain ignores them."
@@ -900,7 +905,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:240"
+source = "agent_session.py:241"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1006,6 +1011,49 @@ read = "startup"
 tier = "tuning"
 help = "Your own 24 kHz mono wav for the thinking bed; the default is synthesized and cached next to the code."
 source = "thinking_sound.py:52"
+
+# ---- talk client context notes
+
+[[settings]]
+name = "TEAPORT_CONTEXT_MAX_CHARS"
+store = "brain_env"
+group = "talk_client"
+services = ["teaport-brain"]
+type = "int"
+unit = "chars"
+min = 1
+default = 1000
+read = "startup"
+tier = "tuning"
+help = "Longest context note a Talk client may send; a longer one is refused, not cut."
+source = "client_notes.py:65"
+
+[[settings]]
+name = "TEAPORT_CONTEXT_MAX_NOTES"
+store = "brain_env"
+group = "talk_client"
+services = ["teaport-brain"]
+type = "int"
+min = 1
+default = 20
+read = "startup"
+tier = "tuning"
+help = "How many context notes stay in the LLM context; past it the oldest are removed."
+source = "client_notes.py:66"
+
+[[settings]]
+name = "TEAPORT_CONTEXT_RESPOND_INTERVAL_S"
+store = "brain_env"
+group = "talk_client"
+services = ["teaport-brain"]
+type = "float"
+unit = "s"
+min = 0
+default = 15
+read = "startup"
+tier = "tuning"
+help = "Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited."
+source = "client_notes.py:67"
 
 # ---- sip brain
 
@@ -1187,7 +1235,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:58"
+source = "gateway_server.py:59"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1199,7 +1247,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:65"
+source = "gateway_server.py:66"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"

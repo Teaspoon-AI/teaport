@@ -41,6 +41,7 @@ from teaport_brain.captions import (
     UserTranscriptEmitter,
     VoiceActivity,
 )
+from teaport_brain.client_notes import ClientNotes
 from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
     EagerSmartTurnAnalyzer,
@@ -538,7 +539,8 @@ class AgentSession:
         "Please hang up and reconnect in a moment."
     )
 
-    def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate):
+    def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate,
+                 client_notes=None):
         self.task = task
         self.context = context
         self.stt = stt
@@ -546,6 +548,9 @@ class AgentSession:
         self.llm = llm
         self.ledger = ledger
         self.followup_gate = followup_gate
+        # Takes the Talk client's context notes into the LLM context (client_notes.py).
+        # The OpenClaw front-end reads its limits for the /talk hello.
+        self.client_notes = client_notes
         # Set by greet() when the STT slot is busy: the front-end reads it to end the
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
         # client disconnect). False on a normal greeting.
@@ -791,6 +796,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # Retires the follow-up's one-shot trigger at the completion that reads it. Must
     # sit directly below the LLM — see FollowupTrigger's placement note.
     followup_trigger = FollowupTrigger()
+    # Client context notes (teaport.talk.context, OpenClaw only in practice: nothing on
+    # the SIP wire produces one). Removals go through the corrector so its positional
+    # window survives them.
+    client_notes = ClientNotes(context, followup_gate, followup_trigger,
+                               drop_messages=heard_corrector.drop_messages)
 
     pipeline = Pipeline([p for p in [
         transport.input(),
@@ -811,6 +821,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # other data frame, so they are dropped here rather than ride to the transport.
         SegmentDoneSink(),
         heard_corrector,
+        # Notes join the context here, just before the turn being answered or at a
+        # quiet moment -- never mid-turn. Below the corrector: see ClientNotes.
+        client_notes,
         # A failed completion must be HEARD, not just logged (see the module). ABOVE the
         # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a
         # single LLM error and only ever caught the TTS's, which it then blamed on the
@@ -897,6 +910,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     _end_session_when_unusable(stt, "hear the user", task)
     _end_session_when_unusable(tts, "speak", task)
     _end_session_when_unusable(transport_output, "reach the user", task)
+    client_notes.task = task  # a reaction is an LLMRunFrame queued on it
 
     @task.event_handler("on_setup_timeout")
     async def _on_setup_timeout(_task):
@@ -931,4 +945,5 @@ def build_agent_session(transport, *, voice: str | None = None,
         llm=llm,
         ledger=ledger,
         followup_gate=followup_gate,
+        client_notes=client_notes,
     )

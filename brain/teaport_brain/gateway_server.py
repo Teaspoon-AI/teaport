@@ -34,6 +34,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket
 from loguru import logger
 
+from pipecat.frames.frames import OutputTransportMessageUrgentFrame
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
@@ -91,6 +92,13 @@ async def run_relay_bot(websocket: WebSocket):
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
         logger.info("OpenClaw relay client connected — greeting")
+        # What this brain accepts beyond audio, so the plugin can tell a Talk client
+        # (teaport.talk.capabilities) before it sends anything. An older plugin
+        # ignores message types it does not know.
+        await session.task.queue_frames([OutputTransportMessageUrgentFrame(message={
+            "type": "hello",
+            "features": {"context": session.client_notes.limits()},
+        })])
         await session.greet()
         if session.should_end:
             # greet() spoke the can't-hear line instead of greeting. Nothing read this

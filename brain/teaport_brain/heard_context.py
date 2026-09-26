@@ -99,6 +99,21 @@ class HeardContextCorrector(FrameProcessor):
         self._done = len(self._ledger.events)
         self._mark = len(self._context.get_messages())
 
+    def drop_messages(self, doomed):
+        """Remove `doomed` (matched by identity) from the context, keeping _mark true.
+
+        _truncate walks back no further than _mark, the context length at the previous
+        reconcile. A message removed from below that mark shifts everything after it
+        left by one, so the first message added since, often the very reply that was
+        cut, would fall outside the window and go uncorrected. Anything else that
+        removes messages between reconciles must come through here (ClientNotes does,
+        for its retention cap)."""
+        ids = {id(m) for m in doomed}
+        msgs = self._context.get_messages()
+        below = sum(1 for m in msgs[:self._mark] if id(m) in ids)
+        self._context.set_messages([m for m in msgs if id(m) not in ids])
+        self._mark -= below
+
     def _truncate(self, u, start=0):
         """Reconcile the cut turn's spoken message to the heard prefix.
 

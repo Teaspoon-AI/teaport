@@ -19,6 +19,11 @@ const PCM16_24K = { encoding: "pcm16", sampleRateHz: 24000, channels: 1 };
 // traced text is user speech, so keep this off in normal operation).
 const TRACE = /^(1|true)$/i.test(process.env.TEAPORT_TRACE || "");
 
+// How long a context note waits for the brain's context_result. The brain answers as
+// soon as the note reaches it, so running out means a brain that predates context notes
+// (it drops the message) or one too wedged to matter.
+const CONTEXT_ACK_TIMEOUT_MS = 3000;
+
 // The caption protocol this plugin speaks, sent to the brain as ?captions=. From 2
 // on, the brain sends every utterance's final and leaves it to the plugin to drop a
 // repeat (TalkTranscriptAdapter). A brain that sees no flag keeps skipping the final
@@ -363,12 +368,13 @@ export class TalkTranscriptAdapter {
  * Build the RealtimeVoiceProviderPlugin object OpenClaw registers.
  * @param {{url?: string, voice?: string, language?: string, token?: string,
  *   assistantTranscripts?: string, hostVersion?: string | (() => string | undefined),
- *   log?: (msg: string) => void}} defaults
+ *   log?: (msg: string) => void, sessions?: object}} defaults
  *   fallback config (mainly for tests); live config arrives per-session as
  *   req.providerConfig (talk.realtime.providers.teaport.*). hostVersion is the
  *   OpenClaw version, or a function that reads it (index.js reads api.runtime.version);
  *   it is read once, when a session first needs it. log reports how each session
- *   sends assistant captions.
+ *   sends assistant captions. sessions is the TalkSessions registry (context.js)
+ *   every bridge joins, so the context-note gateway methods can find it.
  */
 export function buildTeaportRealtimeProvider(defaults = {}) {
   let version = null; // { value } once read
@@ -411,7 +417,9 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
         readVersion,
       );
       defaults.log?.(`teaport-realtime: assistant captions sent as ${deltas ? "deltas" : "full text"} (${reason})`);
-      return new TeaportBridge(req, url, new TalkTranscriptAdapter({ assistantDeltas: deltas }));
+      const bridge = new TeaportBridge(req, url, new TalkTranscriptAdapter({ assistantDeltas: deltas }));
+      if (defaults.sessions) bridge._onEnd = defaults.sessions.add(bridge);
+      return bridge;
     },
   };
 }
@@ -433,6 +441,63 @@ class TeaportBridge {
     // via submitToolResult below. Declaring continuation support switches the
     // relay's consult machinery on (working responses + final tool_result).
     this.supportsToolResultContinuation = true;
+    // Context notes (context.js): what the brain said it accepts in its hello, and the
+    // notes sent to it that it has not answered yet.
+    this._brain = null;
+    this._contextSeq = 0;
+    this._contextAcks = new Map();
+    this._ended = false;
+    this._onEnd = null;
+  }
+
+  /** The brain's hello features ({context: {...}}), or null before/without one. */
+  brainFeatures() {
+    return this._brain;
+  }
+
+  hasEnded() {
+    return this._ended;
+  }
+
+  /**
+   * Send a context note to the brain; resolves with its context_result
+   * ({ok, status} or {ok: false, error, message, retry_after_ms?}).
+   */
+  sendContext({ text, respond, kind }) {
+    if (!this._ws || !this._open) {
+      return Promise.reject(new Error("the voice session is not connected"));
+    }
+    this._contextSeq += 1;
+    const id = `c${this._contextSeq}`;
+    return new Promise((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this._contextAcks.delete(id);
+        reject(new Error("the teaport brain did not answer the note (it may predate context notes)"));
+      }, CONTEXT_ACK_TIMEOUT_MS);
+      this._contextAcks.set(id, { resolve, reject, timer });
+      try {
+        const note = { type: "context", id, text, respond: Boolean(respond) };
+        if (kind) note.kind = kind;
+        this._ws.send(JSON.stringify(note));
+      } catch (err) {
+        clearTimeout(timer);
+        this._contextAcks.delete(id);
+        reject(err instanceof Error ? err : new Error(String(err)));
+      }
+    });
+  }
+
+  // The session is over, however it ended: fail the notes still waiting on the brain
+  // and leave the registry (once).
+  _end() {
+    if (this._ended) return;
+    this._ended = true;
+    for (const { reject, timer } of this._contextAcks.values()) {
+      clearTimeout(timer);
+      reject(new Error("the voice session closed"));
+    }
+    this._contextAcks.clear();
+    if (this._onEnd) this._onEnd();
   }
 
   // Relay -> brain: consult results (and working notices, willContinue=true).
@@ -486,12 +551,15 @@ class TeaportBridge {
         // for a session the relay never saw succeed. Post-open: report.
         if (!this._open) {
           this._closed = true;
+          this._end();
           reject(err);
           return;
         }
         if (this._req.onError) this._req.onError(err);
       });
       ws.addEventListener("close", () => {
+        this._open = false;
+        this._end();
         if (this._closed) return; // we initiated it; relay already knows
         this._closed = true;
         this._open = false;
@@ -514,6 +582,16 @@ class TeaportBridge {
         // A barge-in: the brain drops the rest of the utterance and sends no final
         // for it, so close its bubble and let out the cards held behind it.
         this._forward(this._transcripts.end());
+      } else if (msg.type === "hello") {
+        // What this brain accepts beyond audio (context notes and their limits).
+        this._brain = msg.features && typeof msg.features === "object" ? msg.features : {};
+      } else if (msg.type === "context_result") {
+        const pending = this._contextAcks.get(msg.id);
+        if (pending) {
+          clearTimeout(pending.timer);
+          this._contextAcks.delete(msg.id);
+          pending.resolve(msg);
+        }
       } else if (msg.type === "transcript") {
         // The brain sends the FULL text every time; the adapter trims it and, in
         // delta mode, shapes the assistant bubbles (see TalkTranscriptAdapter): one
@@ -625,6 +703,7 @@ class TeaportBridge {
     if (!this._closed) this._endTranscripts();
     this._closed = true;
     this._open = false;
+    this._end();
     if (this._ws) {
       try {
         this._ws.send(JSON.stringify({ type: "close" }));

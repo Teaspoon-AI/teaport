@@ -189,6 +189,11 @@ class FollowupGate(FrameProcessor):
         # Replies being watched to completion — see Delivery and watch_delivery.
         self._deliveries: list = []
 
+    def is_clear(self) -> bool:
+        """Idle and no turn in flight, right now -- undebounced, so a snapshot for
+        reporting, not a moment to act in (wait_until_idle(turn_free=True) is that)."""
+        return self._clear.is_set()
+
     def watch_delivery(self) -> Delivery:
         """Watch the reply about to be queued, until it finishes playing or is cut.
 

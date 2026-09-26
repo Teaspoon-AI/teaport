@@ -32,7 +32,32 @@
 // several rounds of flipping the value back and forth against a live gateway.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
+import { TalkSessions, contextMethods } from "./context.js";
 import { buildTeaportRealtimeProvider } from "./provider.js";
+
+// The gateway connection a request came in on. createBridge runs inside the client's
+// talk.session.create request, so this names the connection that owns the session
+// (context.js). The SDK's request-scope getter is loaded lazily: a host without it
+// (older OpenClaw) still loads the plugin, and sessions are then matched without it.
+let requestScope = () => undefined;
+import("openclaw/plugin-sdk/plugin-runtime")
+  .then((sdk) => {
+    if (typeof sdk.getPluginRuntimeGatewayRequestScope === "function") {
+      requestScope = sdk.getPluginRuntimeGatewayRequestScope;
+    }
+  })
+  .catch(() => {});
+
+// OpenClaw's own Talk session registry (src/gateway/talk-session-registry.ts): the
+// record talk.session.create made for a sessionId, if any. It is internal, not SDK,
+// so this reads it defensively: undefined when this host has no such registry, which
+// context.js treats as "cannot tell" rather than "unknown".
+const TALK_SESSIONS = Symbol.for("openclaw.unifiedTalkSessions");
+function lookupTalkSession(sessionId) {
+  const registry = globalThis[TALK_SESSIONS];
+  if (!(registry instanceof Map)) return undefined;
+  return registry.get(sessionId) ?? null;
+}
 
 export default definePluginEntry({
   id: "teaport-realtime",
@@ -45,11 +70,23 @@ export default definePluginEntry({
     // OpenClaw builds the plugin runtime lazily, and on 2026.7.x any read of
     // api.runtime builds all of it (and can throw), which every plugin load
     // (discovery, CLI commands) would otherwise pay for.
+    const sessions = new TalkSessions({
+      currentConnId: () => requestScope()?.client?.connId,
+      lookupTalkSession,
+    });
     api.registerRealtimeVoiceProvider(
       buildTeaportRealtimeProvider({
         hostVersion: () => api.runtime?.version,
         log: (msg) => api.logger?.info?.(msg),
+        sessions,
       }),
     );
+    // Context notes for live sessions (context.js). The scope is talk.session.*'s:
+    // whoever may drive the session may add to what its voice knows.
+    if (typeof api.registerGatewayMethod === "function") {
+      for (const [method, handler] of Object.entries(contextMethods(sessions))) {
+        api.registerGatewayMethod(method, handler, { scope: "operator.talk" });
+      }
+    }
   },
 });

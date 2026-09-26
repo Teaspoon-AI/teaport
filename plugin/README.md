@@ -62,6 +62,69 @@ Two things require it:
 This was documented as `"none"` until 2026-09-08, on the reasoning that the teaport brain
 orchestrates so OpenClaw should stay quiet. That confuses `brain` with response ownership.
 
+## Context notes for a live session
+
+A Talk client can give the voice some context during a call without speaking: a tap
+on an on-screen character, a changed setting, a new camera view. The plugin
+registers two gateway methods for this. Both need the `operator.talk` scope, the same
+as `talk.session.*`, and work only for `gateway-relay` sessions.
+
+```
+teaport.talk.context
+  params: {
+    sessionId: string,   // the relaySessionId from talk.session.create
+    text: string,        // plain language, e.g. "The user tapped the character's left shoulder twice."
+    respond?: boolean,   // default false: context only. true: the voice also reacts aloud
+    kind?: string        // optional short label for the brain's log, e.g. "ui-event"
+  }
+  result: { ok: true, status: "applied" | "queued" }
+```
+
+- The brain adds the note to the voice LLM's context. It is never spoken and never
+  captioned.
+- A note joins the context at a turn boundary, never mid-turn. `applied` means
+  nothing was in flight, so the note went in right away. `queued` means a turn was
+  in flight: the note waits for that turn to end, or goes in just before the user's
+  next words, whichever comes first.
+- With `respond: true` and the voice idle, the voice gives one short spoken
+  reaction. While it is speaking, the reaction waits until it stops. If the user
+  speaks first, their turn answers the note instead. A reaction that finds no quiet
+  moment within 20 s is dropped, and the note stays as context.
+- Limits are set by the brain (`docs/CONFIG.md`, *Talk client context notes*): at
+  most 1,000 characters per note, 20 notes kept in the context (the oldest are
+  removed), and one `respond: true` note per 15 s. Notes over a limit are refused,
+  never queued.
+
+Errors:
+
+| Case | `code` | `details.reason` |
+|---|---|---|
+| Unknown session, or not a gateway-relay session | `INVALID_REQUEST` | `unknown_session`, `not_relay` |
+| Session closed | `INVALID_REQUEST` | `closed_session` |
+| Another connection's session | `INVALID_REQUEST` | `not_owner` |
+| Bad params, empty or too-long text | `INVALID_REQUEST` | `bad_params`, `empty`, `too_long` |
+| Too frequent | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `rate_limited` |
+| Still connecting, or the brain did not answer | `UNAVAILABLE`, `retryable` | `connecting`, `brain_unavailable` |
+
+```
+teaport.talk.capabilities
+  params: { sessionId?: string }
+  result: {
+    ok: true,
+    context: { method: "teaport.talk.context", version: 1, respond: true },
+    session?: { sessionId, context: { maxChars, maxNotes, respondIntervalMs } | null }
+  }
+```
+
+A client that gets "unknown method" from either call is talking to an older plugin.
+It should fall back to `chat.inject`, which reaches the text agent but not the voice.
+`session.context` is `null` when the session's brain predates context notes.
+
+`createBridge` is never told which relay session it serves, so the plugin links the
+two itself. It records the connection that created each bridge, and binds a
+`sessionId` to that connection's newest live teaport bridge on first use. On OpenClaw
+2026.9 it checks the id against OpenClaw's Talk session registry first.
+
 ## Transcripts in the Talk view
 
 The brain sends the full text on every transcript event. The Control UI's Talk view
@@ -125,13 +188,14 @@ always has. See `TalkTranscriptAdapter` in `provider.js`.
 ## Tests
 
 ```bash
-npm test           # syntax gate (node --check) + transcript unit tests — no brain needed, CI-safe
+npm test           # syntax gate (node --check) + unit tests (node --test) — no brain needed, CI-safe
 npm run test:live  # full bridge<->brain integration harness — needs a running brain + Node ≥ 22
 ```
 
 `test/bridge_harness.mjs` exercises the real
 `createBridge → connect → sendAudio → onAudio/onTranscript` path against a
-running brain, with no OpenClaw gateway in the loop.
+running brain, with no OpenClaw gateway in the loop. `NOTE="…"` (plus `RESPOND=1`)
+sends a context note after the greeting; see the header of the file.
 
 ## Status
 
