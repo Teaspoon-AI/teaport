@@ -1,9 +1,11 @@
 // Unit tests: how the brain's full-text transcripts are handed to the Talk view.
 //
-// OpenClaw 2026.8.1+ appends assistant partials verbatim, so they must be deltas
-// against the view's open bubble, and a new bubble must open with the full text so
-// the final (always the full utterance) can replace it. Older hosts replace on
-// extension and keep getting full text. See TalkTranscriptAdapter in provider.js.
+// OpenClaw 2026.8.1+ appends assistant partials verbatim and lets a final replace a
+// bubble only when it extends the bubble's text. So partials go out as deltas, a
+// user transcript first closes the open bubble with a final of its text, and if the
+// voice carries on, the next bubble and the final carry only what follows the cut.
+// Older hosts replace on extension and keep getting full text. See
+// TalkTranscriptAdapter in provider.js.
 //
 // Run: node --test test/transcripts.test.mjs   (npm test runs it too)
 
@@ -16,16 +18,8 @@ import {
   TalkTranscriptAdapter,
 } from "../provider.js";
 
-// A clock the test advances; the adapter mirrors a time-bounded rule of the view.
-function adapter(opts = {}) {
-  const clock = { t: 1000 };
-  const a = new TalkTranscriptAdapter({ now: () => clock.t, ...opts });
-  const send = (role, text, final = false) => {
-    clock.t += 100;
-    return a.adapt(role, text, final);
-  };
-  return { send, clock };
-}
+const A = "assistant";
+const U = "user";
 
 // The brain's caption partials for one sentence: one full-text snapshot per word.
 const snapshots = (text) => [...text.matchAll(/\S+/g)].map((m) => text.slice(0, m.index + m[0].length));
@@ -41,129 +35,126 @@ test("host version decides deltas: 2026.8.1 and newer, or unknown", () => {
 });
 
 test("assistant partials become deltas; the final stays the full text", () => {
-  const { send } = adapter();
+  const a = new TalkTranscriptAdapter();
   const text = "I'm running smoothly, with plenty of memory left.";
-  const out = snapshots(text).map((s) => send("assistant", s));
-  assert.deepEqual(out.slice(0, 4), ["I'm", " running", " smoothly,", " with"]);
-  assert.equal(out.join(""), text); // what the view shows once the partials are appended
-  assert.equal(send("assistant", text, true), text);
+  const out = snapshots(text).flatMap((s) => a.adapt(A, s, false, "u1"));
+  assert.deepEqual(out.slice(0, 3), [[A, "I'm", false], [A, " running", false], [A, " smoothly,", false]]);
+  assert.equal(out.map(([, t]) => t).join(""), text); // the bubble once the partials are appended
+  assert.deepEqual(a.adapt(A, text, true, "u1"), [[A, text, true]]);
 });
 
 test("a later sentence continues the same bubble", () => {
-  const { send } = adapter();
-  send("assistant", "Sure.");
-  assert.equal(send("assistant", "Sure. Here"), " Here");
-  assert.equal(send("assistant", "Sure. Here it is."), " it is.");
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "Sure.", false, "u1");
+  assert.deepEqual(a.adapt(A, "Sure. Here", false, "u1"), [[A, " Here", false]]);
 });
 
 test("an older host gets the full, trimmed text every time", () => {
-  const { send } = adapter({ assistantDeltas: false });
-  assert.equal(send("assistant", "I'm"), "I'm");
-  assert.equal(send("assistant", "I'm running"), "I'm running");
-  assert.equal(send("user", " What is", false), "What is");
+  const a = new TalkTranscriptAdapter({ assistantDeltas: false });
+  assert.deepEqual(a.adapt(A, "I'm", false, "u1"), [[A, "I'm", false]]);
+  assert.deepEqual(a.adapt(A, "I'm running", false, "u1"), [[A, "I'm running", false]]);
+  assert.deepEqual(a.adapt(U, " What is", false), [[U, "What is", false]]);
 });
 
 test("text that adds nothing is not sent", () => {
-  const { send } = adapter();
-  send("assistant", "Hello there");
-  assert.equal(send("assistant", "Hello there"), null);
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "Hello there", false, "u1");
+  assert.deepEqual(a.adapt(A, "Hello there", false, "u1"), []);
 });
 
 test("empty text is forwarded as before and changes nothing", () => {
-  const { send } = adapter();
-  send("assistant", "Hello");
-  assert.equal(send("user", "   "), "");
-  assert.equal(send("assistant", "Hello there"), " there"); // bubble still open
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "Hello", false, "u1");
+  assert.deepEqual(a.adapt(U, "   ", false), [[U, "", false]]);
+  assert.deepEqual(a.adapt(A, "Hello there", false, "u1"), [[A, " there", false]]); // still open
 });
 
 test("user transcripts are trimmed and pass through", () => {
-  const { send } = adapter();
-  assert.equal(send("user", " What"), "What");
-  assert.equal(send("user", " What time is it?", true), "What time is it?");
+  const a = new TalkTranscriptAdapter();
+  assert.deepEqual(a.adapt(U, " What time is it?", true), [[U, "What time is it?", true]]);
 });
 
-test("a user transcript that opens a user entry commits the assistant bubble", () => {
-  const { send } = adapter();
-  send("assistant", "This is a");
-  send("user", " Wait");
-  send("user", " Wait.", true);
-  // The view starts a new bubble here, so it must get everything so far.
-  assert.equal(send("assistant", "This is a long answer"), "This is a long answer");
-  assert.equal(send("assistant", "This is a long answer."), ".");
+test("talking over the voice cuts its bubble; the carry-on starts after the cut", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "One, two,", false, "c");
+  a.adapt(A, "One, two, three,", false, "c");
+  // The bubble is closed with a final of its text before the user's words go out.
+  assert.deepEqual(a.adapt(U, " Stop", false), [[A, "One, two, three,", true], [U, "Stop", false]]);
+  assert.deepEqual(a.adapt(U, " Stop.", true), [[U, "Stop.", true]]);
+  // The voice carried on: the new bubble holds only what came after the cut.
+  assert.deepEqual(a.adapt(A, "One, two, three, four, five,", false, "c"), [[A, "four, five,", false]]);
+  assert.deepEqual(a.adapt(A, "One, two, three, four, five, six.", false, "c"), [[A, " six.", false]]);
+  // The final carries the same span, so it replaces that bubble.
+  assert.deepEqual(a.adapt(A, "One, two, three, four, five, six.", true, "c"), [[A, "four, five, six.", true]]);
 });
 
-test("a user interim continuing its open entry leaves the assistant bubble open", () => {
-  const { send } = adapter();
-  send("assistant", "This is a");
-  send("user", " Mm"); // opens a user entry: commits the bubble above
-  assert.equal(send("assistant", "This is a long answer"), "This is a long answer");
-  send("user", " Mm hmm"); // same entry, extended: the view keeps the new bubble open
-  assert.equal(send("assistant", "This is a long answer that"), " that");
+test("a final with nothing past the cut sends nothing", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "Sure thing.", false, "u1");
+  a.adapt(U, " Thanks", false);
+  assert.deepEqual(a.adapt(A, "Sure thing.", true, "u1"), []);
 });
 
-test("a user interim that starts a new turn commits the assistant bubble", () => {
-  const { send } = adapter();
-  send("user", " Mm"); // entry left open (no final)
-  send("assistant", "Right, so");
-  send("user", " What about disk?"); // does not extend "Mm": a new user turn
-  assert.equal(send("assistant", "Right, so the disk"), "Right, so the disk");
+test("a new reply that begins with the cut words is shown whole", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "Okay,", false, "u1");
+  a.adapt(U, " Actually wait.", true); // barge: u1 never finishes
+  assert.deepEqual(a.adapt(A, "Okay, what's", false, "u2"), [[A, "Okay, what's", false]]);
 });
 
-test("a resembling user final soon after the bot spoke closes its own entry", () => {
-  const { send } = adapter();
-  send("user", " Set a timer for ten");
-  send("assistant", "Sure");
-  // A reworded final within the view's grace window is that entry's final, not a
-  // new turn, so the assistant bubble stays open.
-  send("user", " Set a timer for 10 minutes.", true);
-  assert.equal(send("assistant", "Sure thing"), " thing");
+test("a tool card cuts the caption bubble and stands alone", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "Let me check.", false, "u1");
+  assert.deepEqual(a.adapt(A, "> 🔧 **web_search**", true), [
+    [A, "Let me check.", true],
+    [A, "> 🔧 **web_search**", true],
+  ]);
+  assert.deepEqual(a.adapt(A, "Let me check. The", false, "u1"), [[A, "The", false]]);
+  assert.deepEqual(a.adapt(A, "Let me check. The weather.", true, "u1"), [[A, "The weather.", true]]);
 });
 
-test("the same user final after the grace window is a new turn", () => {
-  const { send, clock } = adapter();
-  send("user", " Set a timer for ten");
-  send("assistant", "Sure");
-  clock.t += 5000;
-  send("user", " Set a timer for 10 minutes.", true);
-  assert.equal(send("assistant", "Sure thing"), "Sure thing");
+test("a new utterance under an open bubble closes it first", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "First answer that", false, "u1"); // barged with no user transcript
+  assert.deepEqual(a.adapt(A, "Second", false, "u2"), [
+    [A, "First answer that", true],
+    [A, "Second", false],
+  ]);
 });
 
-test("any assistant final closes the bubble, including a tool card", () => {
-  const { send } = adapter();
-  send("assistant", "Let me check.");
-  assert.equal(send("assistant", "> 🔧 **web_search**", true), "> 🔧 **web_search**");
-  assert.equal(send("assistant", "Let me check. The"), "Let me check. The");
+test("a caption final with no partials is sent whole", () => {
+  const a = new TalkTranscriptAdapter();
+  assert.deepEqual(a.adapt(A, "Done.", true, "u1"), [[A, "Done.", true]]);
 });
 
-test("text restarted under an open bubble: one paragraph break, then hold for the final", () => {
-  const { send } = adapter();
-  send("assistant", "First answer that");
-  // A barge-in no user transcript committed: the brain starts a new caption.
-  assert.equal(send("assistant", "Second"), "\n\n");
-  assert.equal(send("assistant", "Second answer."), null);
-  assert.equal(send("assistant", "Second answer.", true), "Second answer.");
-  assert.equal(send("assistant", "Next"), "Next"); // the final closed it
+test("an untagged caption (older brain) carries on when it extends the text", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "This is", false);
+  a.adapt(U, " Mm.", true);
+  assert.deepEqual(a.adapt(A, "This is a long answer.", false), [[A, "a long answer.", false]]);
+  assert.deepEqual(a.adapt(A, "Something else", false), [[A, "a long answer.", true], [A, "Something else", false]]);
 });
 
-test("the bridge forwards the adapted text and skips what adds nothing", () => {
+test("the bridge forwards every event the adapter makes", () => {
   const calls = [];
   const provider = buildTeaportRealtimeProvider({ url: "ws://brain/talk", hostVersion: "2026.9.1" });
   const bridge = provider.createBridge({
     providerConfig: {},
     onTranscript: (role, text, final) => calls.push([role, text, final]),
   });
-  const msg = (role, text, final = false) =>
-    bridge._onMessage(JSON.stringify({ type: "transcript", role, text, final }));
-  msg("user", " Hi", true);
-  msg("assistant", "Hello");
-  msg("assistant", "Hello");
-  msg("assistant", "Hello there.");
-  msg("assistant", "Hello there.", true);
+  const msg = (role, text, final, utterance) =>
+    bridge._onMessage(JSON.stringify({ type: "transcript", role, text, final, utterance }));
+  msg(A, "Hello", false, "u1");
+  msg(A, "Hello", false, "u1");
+  msg(U, " Hi", true);
+  msg(A, "Hello there.", false, "u1");
+  msg(A, "Hello there.", true, "u1");
   assert.deepEqual(calls, [
-    ["user", "Hi", true],
-    ["assistant", "Hello", false],
-    ["assistant", " there.", false],
-    ["assistant", "Hello there.", true],
+    [A, "Hello", false],
+    [A, "Hello", true],
+    [U, "Hi", true],
+    [A, "there.", false],
+    [A, "there.", true],
   ]);
 });
 
@@ -175,7 +166,7 @@ test("the bridge sends full text to an older host", () => {
     onTranscript: (role, text) => calls.push(text),
   });
   for (const t of ["Hello", "Hello there."]) {
-    bridge._onMessage(JSON.stringify({ type: "transcript", role: "assistant", text: t, final: false }));
+    bridge._onMessage(JSON.stringify({ type: "transcript", role: A, text: t, final: false, utterance: "u1" }));
   }
   assert.deepEqual(calls, ["Hello", "Hello there."]);
 });

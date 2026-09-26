@@ -66,11 +66,20 @@ orchestrates so OpenClaw should stay quiet. That confuses `brain` with response 
 The brain sends the full text on every transcript event. The Control UI's Talk view
 merges assistant text differently from OpenClaw 2026.8.1 on: it appends each
 assistant partial as a delta, and only a final replaces the bubble. The plugin reads
-the host version (`api.runtime.version`) and, on 2026.8.1 and newer, sends each
-assistant partial as the text added since the last one. A new bubble still opens
-with the full text so far. Finals and user transcripts are always full text. Older
-hosts get full text throughout, as before. See `TalkTranscriptAdapter` in
-`provider.js`.
+the host version (`api.runtime.version`). On 2026.8.1 and newer it shapes the
+assistant bubbles:
+
+- Each partial is the text added since the last one.
+- A user transcript cuts the open bubble. The plugin first sends a final with
+  exactly the bubble's text, so the session transcript keeps what was shown.
+- If the voice carries on after a cut, the next bubble, and that utterance's final,
+  carry only the text after the cut.
+- A tool card closes the open caption bubble and gets a bubble of its own.
+
+The brain tags each caption with its utterance id, so the plugin can tell the voice
+carrying on from a new reply that begins with the same words. User transcripts are
+always full text. Older hosts get full text throughout, as before. See
+`TalkTranscriptAdapter` in `provider.js`.
 
 ## Tests
 

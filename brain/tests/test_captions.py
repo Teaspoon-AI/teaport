@@ -79,12 +79,14 @@ class Harness:
         self.activity = VoiceActivity()
         self.tap = CaptionTap(self.activity)
         self.sent = []  # (text, final) transcript messages, in emit order
-        sent = self.sent
+        self.msgs = []  # the same messages, whole
+        sent, msgs = self.sent, self.msgs
 
         async def fake_push(frame, direction=FrameDirection.DOWNSTREAM):
             m = getattr(frame, "message", None)
             if m and m.get("type") == "transcript":
                 sent.append((m["text"], m["final"]))
+                msgs.append(m)
         self.tap.push_frame = fake_push
 
     def new_seg(self):
@@ -332,6 +334,22 @@ async def test_no_empty_or_double_finals():
     print("  PASS boundary spam → exactly one final per utterance, none empty")
 
 
+async def test_messages_carry_their_utterance():
+    # The plugin uses this id to tell the voice carrying on after the user talked
+    # over it from a new reply that starts with the same words (provider.js).
+    h = Harness()
+    await h.sentence("Okay, so.", "ctx-1")
+    await h.sentence("Okay, sure.", "ctx-2")
+    await h.feed(BotStoppedSpeakingFrame())
+    assert [(m["text"], m["final"], m["utterance"]) for m in h.msgs] == [
+        ("Okay,", False, "ctx-1"), ("Okay, so.", False, "ctx-1"),
+        ("Okay, so.", True, "ctx-1"),
+        ("Okay,", False, "ctx-2"), ("Okay, sure.", False, "ctx-2"),
+        ("Okay, sure.", True, "ctx-2"),
+    ], h.msgs
+    print("  PASS partials and finals carry their utterance id")
+
+
 def test_captions():
     async def main():
         await test_seamless_multi_utterance_segment()
@@ -347,6 +365,7 @@ def test_captions():
         await test_force_completed_tail_in_final()
         await test_clean_single_utterance()
         await test_no_empty_or_double_finals()
+        await test_messages_carry_their_utterance()
     asyncio.run(main())
 
 

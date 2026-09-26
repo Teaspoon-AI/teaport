@@ -161,11 +161,15 @@ class UserTranscriptEmitter(FrameProcessor):
 class CaptionTap(FrameProcessor):
     """Assistant captions: playout-paced partials AND per-utterance finals.
 
-    Every partial carries the bubble's FULL text so far, and within an utterance
-    each one extends the last. OpenClaw 2026.8.1+ APPENDS assistant partials, so
-    the plugin sends the difference between consecutive partials
-    (plugin/provider.js, TalkTranscriptAdapter). A partial that stops extending
-    the previous one therefore reads as a new caption to the plugin.
+    Every partial carries the utterance's FULL text so far, and within an
+    utterance each one extends the last. Partials and finals carry the
+    utterance's audio context id as "utterance". The plugin shapes these for the
+    Talk view (plugin/provider.js, TalkTranscriptAdapter). OpenClaw 2026.8.1+
+    APPENDS assistant partials, so the plugin sends the difference between
+    consecutive partials. When the user talks over the voice, the plugin ends
+    the bubble there, and if this utterance carries on, starts the next bubble
+    after the text already shown. The id is how it tells a carry-on from a new
+    reply that begins with the same words.
 
     Placed AFTER transport.output(): the output transport queues each word's
     AggregatedTextProgressFrame by its presentation timestamp and its clock task
@@ -212,7 +216,8 @@ class CaptionTap(FrameProcessor):
     with near-identical text ("seen twice"), which a following tool card then
     renders into. So while user interims are active (shared VoiceActivity stamp)
     partials are HELD — the buffer keeps accumulating, and if the utterance
-    survives (no barge), the next emit carries the full text so far. A final due
+    survives (no barge), the next emit carries the full text so far (the plugin
+    shows only what follows the committed bubble). A final due
     during the hold is SKIPPED when it exactly matches the last shown partial
     (the client already committed that bubble; re-sending it would duplicate).
 
@@ -276,7 +281,7 @@ class CaptionTap(FrameProcessor):
         so it contributes its FULL source text, not just the accumulated prefix
         (covers a force-completed tail whose timestamps the engine dropped)."""
         text = " ".join(p for p in [*self._done, self._seg_text] if p).strip()
-        shown, user_active = self._last_sent, self._user_active()
+        ctx, shown, user_active = self._ctx, self._last_sent, self._user_active()
         self._reset()
         if not text:
             return
@@ -292,7 +297,7 @@ class CaptionTap(FrameProcessor):
         await self.push_frame(
             OutputTransportMessageUrgentFrame(message={
                 "type": "transcript", "role": "assistant",
-                "text": text, "final": True,
+                "text": text, "final": True, "utterance": ctx,
             }),
             FrameDirection.UPSTREAM,
         )
@@ -335,7 +340,7 @@ class CaptionTap(FrameProcessor):
                 await self.push_frame(
                     OutputTransportMessageUrgentFrame(message={
                         "type": "transcript", "role": "assistant",
-                        "text": snapshot, "final": False,
+                        "text": snapshot, "final": False, "utterance": ctx,
                     }),
                     FrameDirection.UPSTREAM,
                 )
