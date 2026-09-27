@@ -202,7 +202,7 @@ test("the bridge sends full text to an older host", () => {
 
 test("the plugin registers even when reading the host version throws", async () => {
   // OpenClaw 2026.7.x resolves the whole plugin runtime on any api.runtime read.
-  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync } = await import("node:fs");
+  const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { pathToFileURL, fileURLToPath } = await import("node:url");
@@ -213,8 +213,10 @@ test("the plugin registers even when reading the host version throws", async () 
     JSON.stringify({ name: "openclaw", type: "module", exports: { "./plugin-sdk/plugin-entry": "./plugin-sdk/plugin-entry.js" } }));
   writeFileSync(join(sdk, "plugin-entry.js"), "export const definePluginEntry = (entry) => entry;\n");
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
+  // Load exactly what the package ships, so a module index.js gains is loaded too.
   const here = fileURLToPath(new URL("..", import.meta.url));
-  for (const f of ["index.js", "provider.js"]) copyFileSync(join(here, f), join(dir, f));
+  const { files } = JSON.parse(readFileSync(join(here, "package.json"), "utf8"));
+  for (const f of files) copyFileSync(join(here, f), join(dir, f));
   const entry = (await import(pathToFileURL(join(dir, "index.js")).href)).default;
   const registered = [];
   const logs = [];
