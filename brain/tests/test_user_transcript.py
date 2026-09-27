@@ -40,7 +40,8 @@ from teaport_brain.captions import UserTranscriptEmitter, VoiceActivity  # noqa:
 
 class Harness:
     def __init__(self):
-        self.em = UserTranscriptEmitter(VoiceActivity())
+        self.activity = VoiceActivity()
+        self.em = UserTranscriptEmitter(self.activity)
         self.sent = []       # (text, final) transcript messages — the DISPLAY copy
         self.forwarded = []  # frame.text of the frames passed downstream — internal path
         sent, forwarded = self.sent, self.forwarded
@@ -98,11 +99,24 @@ async def test_trailing_and_whitespace_only():
     print("  PASS trailing/whitespace-only handled, no over-collapse")
 
 
+async def test_only_text_stamps_voice_activity():
+    # The stamp holds assistant captions while the user talks. An empty transcript
+    # changes nothing in the Talk view, so it must not hold them.
+    h = Harness()
+    await h.interim("   ")
+    await h.final("")
+    assert h.activity.user_ts == 0.0, h.activity.user_ts
+    await h.interim(" Stop")
+    assert h.activity.user_active()
+    print("  PASS only non-empty user text stamps voice activity")
+
+
 def test_user_transcript():
     async def main():
         await test_leading_space_stripped_forward_verbatim()
         await test_clean_text_and_inner_spaces_unchanged()
         await test_trailing_and_whitespace_only()
+        await test_only_text_stamps_voice_activity()
     asyncio.run(main())
 
 

@@ -64,27 +64,41 @@ orchestrates so OpenClaw should stay quiet. That confuses `brain` with response 
 ## Transcripts in the Talk view
 
 The brain sends the full text on every transcript event. The Control UI's Talk view
-merges assistant text differently from OpenClaw 2026.8.1 on: it appends each
-assistant partial as a delta, and only a final replaces the bubble. The plugin reads
-the host version (`api.runtime.version`). On 2026.8.1 and newer it shapes the
-assistant bubbles:
+merges assistant text differently from user text, as of OpenClaw 2026.7.2. It appends
+each assistant partial as a delta, and only a final replaces the bubble. The plugin
+supports OpenClaw 2026.9.1 and newer. The optional
+`talk.realtime.providers.teaport.assistantTranscripts` setting picks what it sends:
+
+- `"auto"` (the default) reads the host version (`api.runtime.version`) when a Talk
+  session starts. It sends deltas on 2026.7.2 and newer, and when the version can't be
+  read or reads `0.0.0` (how OpenClaw reports a version it couldn't resolve). It sends
+  full text to older hosts.
+- `"delta"` or `"full"` fixes the shape. Use it for a client whose view is versioned
+  separately from the gateway, or for a host the version check gets wrong.
+
+The gateway log shows which one each session got (`teaport-realtime: assistant captions
+sent as …`). In delta mode the plugin shapes the assistant bubbles:
 
 - Each partial is the text added since the last one.
-- A user transcript cuts the open bubble. The plugin first sends a final with
-  exactly the bubble's text, so the session transcript keeps what was shown.
+- The view closes the open bubble when user words start a new user entry. That
+  happens on the first words after the user's last final, or on words that don't
+  continue the open entry once the voice has spoken since. The plugin first sends a
+  final with exactly the bubble's text, so the session transcript keeps what was
+  shown. Other user text only updates its entry, and the bubble stays open.
 - If the voice carries on after a cut, the next bubble, and that utterance's final,
   carry only the text after the cut.
+- A barge-in (`clear`) or the end of the session closes the open bubble the same way.
+  The brain sends no final for a barged utterance.
 - A tool card gets a bubble of its own. It waits while a caption bubble is open, and
-  follows once that utterance ends or is cut. The tool runs when the model writes the
-  call, but captions follow the audio, so the card would otherwise land mid-sentence.
+  follows once that bubble closes. The tool runs when the model writes the call, but
+  captions follow the audio, so the card would otherwise land mid-sentence.
 
 The brain tags each caption with its utterance id, so the plugin can tell the voice
 carrying on from a new reply that begins with the same words. An older brain sends
 no id, so its captions only continue a bubble that is still open. User transcripts
-are always full text. Older hosts get full text throughout, as before. A host whose
-version can't be read counts as current. Deltas still read correctly on an older
-view, while full text stacks on a current one. See `TalkTranscriptAdapter` in
-`provider.js`.
+are always full text. In full mode, an assistant final that only repeats a bubble the
+user's words closed is dropped, since it would show up again after the user's message.
+See `TalkTranscriptAdapter` in `provider.js`.
 
 ## Tests
 

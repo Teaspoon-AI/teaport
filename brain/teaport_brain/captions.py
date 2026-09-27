@@ -83,8 +83,9 @@ _USER_HOLD_S = float(os.getenv("TEAPORT_CAPTION_USER_HOLD_S", "1.2"))
 
 class VoiceActivity:
     """One shared fact: when did the USER's transcript last reach the client?
-    UserTranscriptEmitter stamps it as it sends; CaptionTap reads it to decide
-    whether the client has committed the active assistant bubble."""
+    UserTranscriptEmitter stamps it as it sends text (an empty transcript changes
+    nothing in the Talk view, so it doesn't count); CaptionTap reads it to hold
+    assistant partials while the user talks."""
 
     def __init__(self):
         self.user_ts = 0.0  # time.monotonic() of the last user interim/final sent
@@ -134,12 +135,13 @@ class UserTranscriptEmitter(FrameProcessor):
             # heard-grounding. A whitespace-leading transcript makes OpenClaw's Talk
             # reducer APPEND instead of REPLACE, stacking partials into one bubble.
             # Mirrors CaptionTap's assistant-side .strip().
-            if self._activity:
+            text = (frame.text or "").strip()
+            if self._activity and text:
                 self._activity.stamp()
             await self.push_frame(
                 OutputTransportMessageUrgentFrame(message={
                     "type": "transcript", "role": "user",
-                    "text": (frame.text or "").strip(), "final": False,
+                    "text": text, "final": False,
                 }),
                 FrameDirection.DOWNSTREAM,
             )
@@ -147,12 +149,13 @@ class UserTranscriptEmitter(FrameProcessor):
             # The final also triggers a turn interruption that flushes the paced
             # sink queue; urgent keeps it from being dropped and keeps it ordered
             # after this turn's interims.
-            if self._activity:
+            text = (frame.text or "").strip()
+            if self._activity and text:
                 self._activity.stamp()
             await self.push_frame(
                 OutputTransportMessageUrgentFrame(message={
                     "type": "transcript", "role": "user",
-                    "text": (frame.text or "").strip(), "final": True,   # display copy only (see interim)
+                    "text": text, "final": True,   # display copy only (see interim)
                 }),
                 FrameDirection.DOWNSTREAM,
             )
@@ -164,10 +167,10 @@ class CaptionTap(FrameProcessor):
     Every partial carries the utterance's FULL text so far, and within an
     utterance each one extends the last. Partials and finals carry the
     utterance's audio context id as "utterance". The plugin shapes these for the
-    Talk view (plugin/provider.js, TalkTranscriptAdapter). OpenClaw 2026.8.1+
+    Talk view (plugin/provider.js, TalkTranscriptAdapter). OpenClaw 2026.7.2+
     APPENDS assistant partials, so the plugin sends the difference between
-    consecutive partials. When the user talks over the voice, the plugin ends
-    the bubble there, and if this utterance carries on, starts the next bubble
+    consecutive partials. When the user's words close the bubble in the view,
+    the plugin ends it there, and if this utterance carries on, starts the next bubble
     after the text already shown. The id is how it tells a carry-on from a new
     reply that begins with the same words.
 
@@ -220,9 +223,10 @@ class CaptionTap(FrameProcessor):
     renders into. So while user interims are active (shared VoiceActivity stamp)
     partials are HELD — the buffer keeps accumulating, and if the utterance
     survives (no barge), the next emit carries the full text so far (the plugin
-    shows only what follows the committed bubble). A final due
-    during the hold is SKIPPED when it exactly matches the last shown partial
-    (the client already committed that bubble; re-sending it would duplicate).
+    shows only what follows the committed bubble). Finals are always sent, even
+    during the hold: only the plugin knows whether the user's words closed the
+    bubble (the Talk view closes it only when they start a new user entry), so it
+    decides what a final adds (plugin/provider.js, TalkTranscriptAdapter).
 
     On barge-in the interrupted utterance's context goes on the dead list: the
     committed bubble is the record of what was heard, no final is emitted, and
@@ -298,16 +302,9 @@ class CaptionTap(FrameProcessor):
         so it contributes its FULL source text, not just the accumulated prefix
         (covers a force-completed tail whose timestamps the engine dropped)."""
         text = self._join([*self._done, self._seg_text])
-        ctx, shown, user_active = self._ctx, self._last_sent, self._user_active()
+        ctx = self._ctx
         self._reset()
         if not text:
-            return
-        if user_active and text == shown:
-            # The user is mid-utterance and their interim already committed the
-            # bubble showing exactly this text — a final now would render as a
-            # duplicate bubble after their message and add nothing.
-            if _TRACE:
-                logger.info(f"[CAP] FINAL skipped (client committed) tail={text[-40:]!r}")
             return
         if _TRACE:
             logger.info(f"[CAP] FINAL ({reason}) tail={text[-40:]!r}")

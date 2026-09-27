@@ -271,17 +271,19 @@ async def test_stale_end_ignored():
     print("  PASS stale End (pts < first word) ignored")
 
 
-async def test_final_skipped_when_client_committed():
-    # Utterance fully shown, user interim commits the bubble, THEN the boundary
-    # fires: an identical final would render after the user's message as a
-    # duplicate bubble — skip it.
+async def test_final_sent_while_the_user_talks():
+    # Utterance fully shown, the user starts talking, THEN the boundary fires. The
+    # final goes out anyway: whether the user's words closed the bubble is the Talk
+    # view's call (it closes it only when they start a new user entry), and the
+    # plugin models that view. It sends nothing for a final the cut already showed,
+    # and without this final a bubble the view kept open would never close.
     h = Harness()
     await h.sentence("Hey there.", "ctx-greet", pts=1_000)
-    h.user_talks()                        # interim beat the boundary this time
+    h.user_talks()
     await h.feed(END(pts=1_000))
-    assert h.finals() == [], h.sent
-    assert h.partials()[-1] == "Hey there.", h.partials()
-    print("  PASS final skipped when the client already committed identical text")
+    assert h.finals() == ["Hey there."], h.sent
+    assert h.msgs[-1]["utterance"] == "ctx-greet", h.msgs
+    print("  PASS final sent while the user talks (the plugin decides what it adds)")
 
 
 async def test_exact_source_spacing():
@@ -378,7 +380,7 @@ def test_captions():
         await test_a_stop_between_contexts_does_not_split_the_next_bubble()
         await test_reply_end_finalizes_at_last_word()
         await test_stale_end_ignored()
-        await test_final_skipped_when_client_committed()
+        await test_final_sent_while_the_user_talks()
         await test_exact_source_spacing()
         await test_force_completed_tail_in_final()
         await test_clean_single_utterance()
