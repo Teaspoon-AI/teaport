@@ -51,6 +51,7 @@ from teaport_brain.gateway_serializer import (
     RELAY_SAMPLE_RATE,
     TeaportGatewaySerializer,
 )
+from teaport_brain.captions import sends_every_final
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 
@@ -80,9 +81,11 @@ async def run_relay_bot(websocket: WebSocket):
     # talk.realtime.providers.teaport.{voice,language} as WS URL query params. A
     # voice's prefix implies its language (ef_*→Spanish, …), so `voice` alone is enough;
     # `language` can override the phonemizer. Missing/unknown → defaults (af_heart/en-us).
+    # `captions` is the caption protocol the plugin speaks (captions.sends_every_final).
     qp = websocket.query_params
     session = build_agent_session(
-        transport, voice=qp.get("voice"), language=qp.get("language")
+        transport, voice=qp.get("voice"), language=qp.get("language"),
+        caption_every_final=sends_every_final(qp.get("captions")),
     )
 
     @transport.event_handler("on_client_connected")

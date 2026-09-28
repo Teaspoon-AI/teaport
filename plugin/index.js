@@ -8,6 +8,12 @@
 //   talk.realtime.transport = "gateway-relay"
 //   talk.realtime.brain     = "agent-consult"  // see below; "none" breaks talk.client.create
 //   talk.realtime.providers.teaport.url = "ws://<pipecat-host>:7861/talk"
+//   talk.realtime.providers.teaport.assistantTranscripts = "auto"  // optional; see below
+//
+// assistantTranscripts is how assistant captions reach the Talk view: "delta" (each
+// partial is the text added since the last; what OpenClaw 2026.8.1+ expects), "full"
+// (the whole text each time, for a view that replaces), or "auto", the default,
+// which picks by the OpenClaw version (provider.js, pickAssistantTranscripts).
 //
 // `brain` is OpenClaw's "tool/agent strategy for realtime sessions" — how the session
 // reaches TOOLS AND THE AGENT. It does not decide who speaks: the realtime *provider*
@@ -35,6 +41,15 @@ export default definePluginEntry({
     "Routes OpenClaw realtime voice (gateway-relay) to an external Pipecat " +
     "speech-to-speech server with heard-grounded barge-in.",
   register(api) {
-    api.registerRealtimeVoiceProvider(buildTeaportRealtimeProvider());
+    // The OpenClaw version is read when a Talk session first needs it, not here:
+    // OpenClaw builds the plugin runtime lazily, and on 2026.7.x any read of
+    // api.runtime builds all of it (and can throw), which every plugin load
+    // (discovery, CLI commands) would otherwise pay for.
+    api.registerRealtimeVoiceProvider(
+      buildTeaportRealtimeProvider({
+        hostVersion: () => api.runtime?.version,
+        log: (msg) => api.logger?.info?.(msg),
+      }),
+    );
   },
 });

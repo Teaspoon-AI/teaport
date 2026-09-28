@@ -80,11 +80,27 @@ _USER_HOLD_S = float(os.getenv("TEAPORT_CAPTION_USER_HOLD_S", "1.2"))
 # SEGMENT within a turn's shared audio context; CaptionTap stitches completed
 # segments (their full source text) plus the live segment's accumulated text.
 
+# The caption protocol a /talk client announces with ?captions= (the OpenClaw plugin
+# sends 2, plugin/provider.js). From 2 on the client drops an assistant final that
+# only repeats a bubble the user's words closed, so CaptionTap sends every final. A
+# client that says nothing (an older plugin, the Discord bridge) and the SIP path get
+# the old skip (see CaptionTap).
+_CAPTIONS_EVERY_FINAL = 2
+
+
+def sends_every_final(captions) -> bool:
+    """Whether a client's ?captions= value asks for every utterance's final."""
+    try:
+        return int(captions) >= _CAPTIONS_EVERY_FINAL
+    except (TypeError, ValueError):
+        return False
+
 
 class VoiceActivity:
     """One shared fact: when did the USER's transcript last reach the client?
-    UserTranscriptEmitter stamps it as it sends; CaptionTap reads it to decide
-    whether the client has committed the active assistant bubble."""
+    UserTranscriptEmitter stamps it as it sends text (an empty transcript changes
+    nothing in the Talk view, so it doesn't count); CaptionTap reads it to hold
+    assistant partials while the user talks."""
 
     def __init__(self):
         self.user_ts = 0.0  # time.monotonic() of the last user interim/final sent
@@ -134,12 +150,13 @@ class UserTranscriptEmitter(FrameProcessor):
             # heard-grounding. A whitespace-leading transcript makes OpenClaw's Talk
             # reducer APPEND instead of REPLACE, stacking partials into one bubble.
             # Mirrors CaptionTap's assistant-side .strip().
-            if self._activity:
+            text = (frame.text or "").strip()
+            if self._activity and text:
                 self._activity.stamp()
             await self.push_frame(
                 OutputTransportMessageUrgentFrame(message={
                     "type": "transcript", "role": "user",
-                    "text": (frame.text or "").strip(), "final": False,
+                    "text": text, "final": False,
                 }),
                 FrameDirection.DOWNSTREAM,
             )
@@ -147,12 +164,13 @@ class UserTranscriptEmitter(FrameProcessor):
             # The final also triggers a turn interruption that flushes the paced
             # sink queue; urgent keeps it from being dropped and keeps it ordered
             # after this turn's interims.
-            if self._activity:
+            text = (frame.text or "").strip()
+            if self._activity and text:
                 self._activity.stamp()
             await self.push_frame(
                 OutputTransportMessageUrgentFrame(message={
                     "type": "transcript", "role": "user",
-                    "text": (frame.text or "").strip(), "final": True,   # display copy only (see interim)
+                    "text": text, "final": True,   # display copy only (see interim)
                 }),
                 FrameDirection.DOWNSTREAM,
             )
@@ -160,6 +178,18 @@ class UserTranscriptEmitter(FrameProcessor):
 
 class CaptionTap(FrameProcessor):
     """Assistant captions: playout-paced partials AND per-utterance finals.
+
+    Every partial carries the utterance's FULL text so far, and within an
+    utterance each one extends the last. Partials and finals carry the
+    utterance's audio context id as "utterance". The plugin shapes these for the
+    Talk view (plugin/provider.js, TalkTranscriptAdapter). OpenClaw 2026.8.1+ and
+    the 2026.7.2 prereleases APPEND assistant partials, so the plugin sends the
+    difference between consecutive partials. (The 2026.7.33-7.35 maintenance
+    releases don't append, and get the differences anyway, which only delays a
+    repeated word until the final.) When the user's words close the bubble in the view,
+    the plugin ends it there, and if this utterance carries on, starts the next bubble
+    after the text already shown. The id is how it tells a carry-on from a new
+    reply that begins with the same words.
 
     Placed AFTER transport.output(): the output transport queues each word's
     AggregatedTextProgressFrame by its presentation timestamp and its clock task
@@ -191,10 +221,13 @@ class CaptionTap(FrameProcessor):
     SEGMENTS: within one audio context, pipecat tracks one sentence at a time
     (one AggregatedTextFrame slot); accumulated_text restarts at each new
     segment_id. The bubble text is completed segments' full source text plus the
-    live segment's accumulated text, space-joined (sentence boundaries are
-    whitespace in the source). A finalize only fires at a playout boundary, by
-    which point the current segment has fully played, so finals use the full
-    source text — which also covers a force-completed tail (words whose
+    live segment's accumulated text, joined by _join. Sentence boundaries are
+    whitespace in the source: a space, which pipecat strips and _join restores,
+    or a line break, which pipecat leaves at the start of the next sentence
+    ("\\nWhether ...") and _join keeps. Partials and the final join the same
+    parts, so each extends the one before. A finalize only fires at a playout
+    boundary, by which point the current segment has fully played, so finals use
+    the full source text — which also covers a force-completed tail (words whose
     timestamps the engine dropped mid-segment still played as audio). A whole
     segment with NO word timestamps (engine aligner failure for a clause) has no
     progress frames at all and is absent from the bubble; the ledger and LLM
@@ -206,9 +239,17 @@ class CaptionTap(FrameProcessor):
     with near-identical text ("seen twice"), which a following tool card then
     renders into. So while user interims are active (shared VoiceActivity stamp)
     partials are HELD — the buffer keeps accumulating, and if the utterance
-    survives (no barge), the next emit carries the full text so far. A final due
-    during the hold is SKIPPED when it exactly matches the last shown partial
-    (the client already committed that bubble; re-sending it would duplicate).
+    survives (no barge), the next emit carries the full text so far (the plugin
+    shows only what follows the committed bubble).
+
+    Finals during the hold depend on the client (every_final, from ?captions=).
+    A client that speaks caption protocol 2 (the current plugin) gets every
+    final: only it knows whether the user's words closed the bubble (the Talk
+    view closes it only when they start a new user entry), so it decides what a
+    final adds (plugin/provider.js, TalkTranscriptAdapter). Any other client gets
+    the old rule: a final due during the hold is SKIPPED when it exactly matches
+    the last shown partial, since an older plugin passes it through and the view
+    would render it as a duplicate bubble after the user's message.
 
     On barge-in the interrupted utterance's context goes on the dead list: the
     committed bubble is the record of what was heard, no final is emitted, and
@@ -217,9 +258,10 @@ class CaptionTap(FrameProcessor):
     # Barged context ids kept to reject stragglers; bounded, they're short uuids.
     _DEAD_MAX = 16
 
-    def __init__(self, activity: "VoiceActivity" = None):
+    def __init__(self, activity: "VoiceActivity" = None, *, every_final: bool = False):
         super().__init__()
         self._activity = activity
+        self._every_final = every_final  # the client drops repeated finals itself
         self._ctx = None        # context_id of the utterance currently playing
         self._seg = None        # segment_id of the sentence currently playing
         self._seg_text = ""     # that sentence's FULL source text (frame.text)
@@ -258,9 +300,23 @@ class CaptionTap(FrameProcessor):
         self._last_sent = ""
         self._first_pts = None
 
+    @staticmethod
+    def _join(parts) -> str:
+        """Sentences in playout order, separated as in the source: a space where
+        neither side brings its own whitespace (pipecat stripped it), nothing
+        where one does (a line break a sentence starts with stays)."""
+        text = ""
+        for p in parts:
+            if not p:
+                continue
+            if text and not text[-1].isspace() and not p[0].isspace():
+                text += " "
+            text += p
+        return text.strip()
+
     def _snapshot(self) -> str:
         """Bubble text right now: completed sentences + the live played prefix."""
-        return " ".join(p for p in [*self._done, self._acc] if p).strip()
+        return self._join([*self._done, self._acc])
 
     async def _finalize(self, reason: str):
         """Commit the current utterance's bubble.
@@ -269,15 +325,15 @@ class CaptionTap(FrameProcessor):
         pts, real silence), by which point the live sentence has fully played —
         so it contributes its FULL source text, not just the accumulated prefix
         (covers a force-completed tail whose timestamps the engine dropped)."""
-        text = " ".join(p for p in [*self._done, self._seg_text] if p).strip()
-        shown, user_active = self._last_sent, self._user_active()
+        text = self._join([*self._done, self._seg_text])
+        ctx, shown, user_active = self._ctx, self._last_sent, self._user_active()
         self._reset()
         if not text:
             return
-        if user_active and text == shown:
-            # The user is mid-utterance and their interim already committed the
-            # bubble showing exactly this text — a final now would render as a
-            # duplicate bubble after their message and add nothing.
+        if not self._every_final and user_active and text == shown:
+            # An older client: the user is mid-utterance and their interim already
+            # committed the bubble showing exactly this text — a final now would
+            # render as a duplicate bubble after their message and add nothing.
             if _TRACE:
                 logger.info(f"[CAP] FINAL skipped (client committed) tail={text[-40:]!r}")
             return
@@ -286,7 +342,7 @@ class CaptionTap(FrameProcessor):
         await self.push_frame(
             OutputTransportMessageUrgentFrame(message={
                 "type": "transcript", "role": "assistant",
-                "text": text, "final": True,
+                "text": text, "final": True, "utterance": ctx,
             }),
             FrameDirection.UPSTREAM,
         )
@@ -315,7 +371,9 @@ class CaptionTap(FrameProcessor):
                 self._done.append(self._seg_text)
             self._seg = frame.segment_id
             self._seg_text = frame.text or ""
-            self._acc = (frame.accumulated_text or "").strip()
+            # Unstripped, so a line break this sentence starts with shows in the
+            # partial just as it will in the final (_join).
+            self._acc = frame.accumulated_text or ""
             snapshot = self._snapshot()
             if len(snapshot) > len(self._last_sent):
                 if self._user_active():
@@ -329,7 +387,7 @@ class CaptionTap(FrameProcessor):
                 await self.push_frame(
                     OutputTransportMessageUrgentFrame(message={
                         "type": "transcript", "role": "assistant",
-                        "text": snapshot, "final": False,
+                        "text": snapshot, "final": False, "utterance": ctx,
                     }),
                     FrameDirection.UPSTREAM,
                 )

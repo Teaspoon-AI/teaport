@@ -41,7 +41,7 @@
     "url": "https://github.com/Teaspoon-AI/teaport/issues"
   },
   "scripts": {
-    "test": "node --check index.js && node --check provider.js && node --check test/bridge_harness.mjs",
+    "test": "node --check index.js && node --check provider.js && node --check test/bridge_harness.mjs && node --test test/transcripts.test.mjs",
     "test:live": "node test/bridge_harness.mjs"
   },
   "publishConfig": {
