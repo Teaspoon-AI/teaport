@@ -1,7 +1,7 @@
 // Unit tests: how the brain's full-text transcripts are handed to the Talk view.
 //
-// OpenClaw 2026.7.2+ appends assistant partials verbatim and lets a final replace a
-// bubble only when it extends the bubble's text. So partials go out as deltas, a
+// OpenClaw 2026.8.1+ (and the 2026.7.2 prereleases) appends assistant partials
+// verbatim and lets a final replace a bubble only when it extends the bubble's text. So partials go out as deltas, a
 // user transcript that starts a user entry first closes the open bubble with a final
 // of its text, and if the voice carries on, the next bubble and the final carry only
 // what follows the cut. "full" mode sends the whole text instead. See
@@ -17,6 +17,7 @@ import {
   buildTeaportRealtimeProvider,
   pickAssistantTranscripts,
   TalkTranscriptAdapter,
+  withVoiceParams,
 } from "../provider.js";
 
 const A = "assistant";
@@ -29,6 +30,10 @@ test("host version decides deltas: 2026.7.2 and newer, or unknown", () => {
   for (const v of ["2026.7.2-beta.1", "2026.7.2-beta.3", "2026.8.1", "2026.9.1", "2026.9.6", "2027.1.0", "v2026.10.2"]) {
     assert.equal(appendsAssistantDeltas(v), true, v);
   }
+  // The 2026.7.33-7.35 maintenance releases still replace, but get deltas anyway: a
+  // repeated word shows only at the final there, while full text after a cut
+  // repeats the whole bubble.
+  for (const v of ["2026.7.33", "2026.7.35"]) assert.equal(appendsAssistantDeltas(v), true, v);
   for (const v of ["2026.7.1", "2026.7.1-beta.6", "2026.6.35", "2025.12.9"]) {
     assert.equal(appendsAssistantDeltas(v), false, v);
   }
@@ -49,6 +54,10 @@ test("assistantTranscripts pins the shape; auto goes by the version", () => {
   assert.deepEqual(pickAssistantTranscripts("auto", read("2026.7.1")), { deltas: false, reason: "auto, OpenClaw 2026.7.1" });
   assert.equal(pickAssistantTranscripts("deltas", read("2026.7.1")).deltas, false); // a typo falls back to auto
   assert.match(pickAssistantTranscripts("deltas", read("2026.7.1")).reason, /ignored assistantTranscripts="deltas"/);
+  // Case and surrounding spaces don't matter.
+  assert.deepEqual(pickAssistantTranscripts(" Full ", read("2026.9.1")), { deltas: false, reason: 'assistantTranscripts="full"' });
+  assert.equal(pickAssistantTranscripts("DELTA", read("2026.7.1")).deltas, true);
+  assert.equal(pickAssistantTranscripts("Auto", read("2026.7.1")).reason, "auto, OpenClaw 2026.7.1");
   const throws = () => {
     throw new Error("plugin runtime module could not be resolved");
   };
@@ -74,7 +83,21 @@ test("full mode sends the full, trimmed text every time", () => {
   const a = new TalkTranscriptAdapter({ assistantDeltas: false });
   assert.deepEqual(a.adapt(A, "I'm", false, "u1"), [[A, "I'm", false]]);
   assert.deepEqual(a.adapt(A, "I'm running", false, "u1"), [[A, "I'm running", false]]);
-  assert.deepEqual(a.adapt(U, " What is", false), [[U, "What is", false]]);
+  // The user's words start an entry: the bubble is closed with its text first.
+  assert.deepEqual(a.adapt(U, " What is", false), [[A, "I'm running", true], [U, "What is", false]]);
+});
+
+test("full mode keeps the bubble open while the user's words only update their entry", () => {
+  // 2026.7.35: a late user final that extends the entry leaves the bubble open in the
+  // view, so the carry-on's final must go out to close it.
+  const a = new TalkTranscriptAdapter({ assistantDeltas: false });
+  a.adapt(A, "Hey there.", false, "u1");
+  a.adapt(A, "Hey there. How", false, "u1");
+  assert.deepEqual(a.adapt(U, " Hi", false), [[A, "Hey there. How", true], [U, "Hi", false]]);
+  assert.deepEqual(a.adapt(A, "Hey there. How are you?", false, "u1"), [[A, "Hey there. How are you?", false]]);
+  assert.deepEqual(a.adapt(U, " Hi there.", true), [[U, "Hi there.", true]]);
+  assert.deepEqual(a.adapt(A, "Hey there. How are you?", true, "u1"), [[A, "Hey there. How are you?", true]]);
+  assert.deepEqual(a.adapt(A, "Sure,", false, "u2"), [[A, "Sure,", false]]);
 });
 
 test("full mode drops a final that repeats the bubble the user's words closed", () => {
@@ -245,8 +268,51 @@ test("the voice ending closes the bubble and lets the held cards out", () => {
     [A, "> 🔧 **web_search**", true],
   ]);
   assert.deepEqual(a.end(), []);
-  // The barged utterance is over: text tagged with it again is a new bubble.
-  assert.deepEqual(a.adapt(A, "Let me see", false, "u1"), [[A, "Let me see", false]]);
+});
+
+test("captions that arrive for a barged utterance after the clear are dropped", () => {
+  for (const assistantDeltas of [true, false]) {
+    const a = new TalkTranscriptAdapter({ assistantDeltas });
+    a.adapt(A, "Let me", false, "u1");
+    a.end();
+    // A straggler would otherwise open a new bubble with the whole utterance.
+    assert.deepEqual(a.adapt(A, "Let me see", false, "u1"), [], String(assistantDeltas));
+    assert.deepEqual(a.adapt(A, "Let me see.", true, "u1"), [], String(assistantDeltas));
+    assert.deepEqual(a.adapt(A, "Okay.", false, "u2"), [[A, "Okay.", false]], String(assistantDeltas));
+  }
+});
+
+test("a user final closes the entry: the next words cut even if they extend it", () => {
+  const a = new TalkTranscriptAdapter();
+  a.adapt(A, "One,", false, "c");
+  a.adapt(U, " Stop", false);
+  a.adapt(U, " Stop", true);
+  assert.deepEqual(a.adapt(A, "One, two,", false, "c"), [[A, "two,", false]]);
+  // "Stop it" extends "Stop", but that entry is closed: the view starts a new one.
+  assert.deepEqual(a.adapt(U, " Stop it", false), [[A, "two,", true], [U, "Stop it", false]]);
+});
+
+test("after a cut on user text of unknown shape, the next words cut again", () => {
+  // Replayed through OpenClaw 2026.9.1's Talk reducer, the round-2 plugin took "hmm"
+  // below for the whole user entry when the view had merged it into "okay wait hmm".
+  // It then took "hmm yes" for an update, while the view started a new entry and
+  // closed the "four," bubble with no final, and "five," was appended to it.
+  const a = new TalkTranscriptAdapter();
+  const c = (t, f = false) => a.adapt(A, t, f, "c");
+  c("One,");
+  c("One, two,");
+  assert.deepEqual(a.adapt(U, " okay", false), [[A, "One, two,", true], [U, "okay", false]]);
+  a.adapt(U, " okay wait", false);
+  a.adapt(U, " hmm", false); // an STT revision: the view shows "okay wait hmm"
+  assert.deepEqual(c("One, two, three,"), [[A, "three,", false]]);
+  // The adapter can't tell whether "hmm" starts an entry here. It cuts (the view
+  // merged it: a needless split), and the entry's text stays unknown.
+  assert.deepEqual(a.adapt(U, " hmm", false), [[A, "three,", true], [U, "hmm", false]]);
+  assert.deepEqual(c("One, two, three, four,"), [[A, "four,", false]]);
+  // The view starts a new entry for "hmm yes", closing the bubble: cut it first.
+  assert.deepEqual(a.adapt(U, " hmm yes", false), [[A, "four,", true], [U, "hmm yes", false]]);
+  assert.deepEqual(c("One, two, three, four, five,"), [[A, "five,", false]]);
+  assert.deepEqual(c("One, two, three, four, five, six.", true), [[A, "five, six.", true]]);
 });
 
 test("the bridge forwards every event the adapter makes", () => {
@@ -309,7 +375,65 @@ test("a barge-in clear closes the bubble and sends the held cards", () => {
   assert.deepEqual(calls, [[A, "Let me", false], "clear", [A, "Let me", true], [A, "> 🔧 **web_search**", true]]);
 });
 
+test("the plugin tells the brain it speaks caption protocol 2", () => {
+  // Without it the brain keeps skipping a final that repeats a bubble while the user
+  // talks, which an older plugin needs.
+  assert.equal(withVoiceParams("ws://brain/talk", {}), "ws://brain/talk?captions=2");
+  assert.equal(
+    withVoiceParams("ws://brain/talk?x=1", { voice: "af_heart", token: "t k" }),
+    "ws://brain/talk?x=1&voice=af_heart&token=t%20k&captions=2",
+  );
+  const provider = buildTeaportRealtimeProvider({ url: "ws://brain/talk", hostVersion: "2026.9.1" });
+  const bridge = provider.createBridge({ providerConfig: { voice: "af_heart" } });
+  assert.equal(new URL(bridge._url).searchParams.get("captions"), "2");
+});
+
+test("the brain hanging up closes the bubble and sends the held cards", async (t) => {
+  // A stand-in for the WebSocket the bridge opens, driven by the test.
+  class FakeSocket extends EventTarget {
+    constructor(url) {
+      super();
+      this.url = url;
+      FakeSocket.last = this;
+    }
+    send() {}
+    close() {}
+  }
+  const real = globalThis.WebSocket;
+  globalThis.WebSocket = FakeSocket;
+  t.after(() => {
+    globalThis.WebSocket = real;
+  });
+  const calls = [];
+  const provider = buildTeaportRealtimeProvider({ url: "ws://brain/talk", hostVersion: "2026.9.1" });
+  const bridge = provider.createBridge({
+    providerConfig: {},
+    onTranscript: (role, text, final) => calls.push([role, text, final]),
+    onClose: (reason) => calls.push(["close", reason]),
+  });
+  const connected = bridge.connect();
+  const ws = FakeSocket.last;
+  ws.dispatchEvent(new Event("open"));
+  await connected;
+  const message = (m) => {
+    const ev = new Event("message");
+    ev.data = JSON.stringify(m);
+    ws.dispatchEvent(ev);
+  };
+  message({ type: "transcript", role: A, text: "Let me", final: false, utterance: "u1" });
+  message({ type: "transcript", role: A, text: "> 🔧 **web_search**", final: true });
+  ws.dispatchEvent(new Event("close"));
+  assert.deepEqual(calls, [
+    [A, "Let me", false],
+    [A, "Let me", true],
+    [A, "> 🔧 **web_search**", true],
+    ["close", "completed"],
+  ]);
+});
+
 test("closing the session closes the bubble and sends the held cards", () => {
+  // What the relay does with them is its business: OpenClaw 2026.9.1 drops them when
+  // it ends the session itself (see _endTranscripts).
   const { bridge, calls, msg } = bridgeFor();
   msg({ type: "transcript", role: A, text: "Let me", final: false, utterance: "u1" });
   msg({ type: "transcript", role: A, text: "> 🔧 **web_search**", final: true });

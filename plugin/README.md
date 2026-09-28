@@ -38,7 +38,8 @@ Configure in `~/.openclaw/openclaw.json`:
 
 The plugin appends `voice`, `language`, and `token` to the brain WebSocket URL
 as query parameters for each session. The `token` value can also come from the
-`TEAPORT_GATEWAY_TOKEN` environment variable.
+`TEAPORT_GATEWAY_TOKEN` environment variable. It also appends `captions=2`, the
+caption protocol it speaks (see below).
 
 ### Why `brain` must be `"agent-consult"`
 
@@ -64,20 +65,29 @@ orchestrates so OpenClaw should stay quiet. That confuses `brain` with response 
 ## Transcripts in the Talk view
 
 The brain sends the full text on every transcript event. The Control UI's Talk view
-merges assistant text differently from user text, as of OpenClaw 2026.7.2. It appends
-each assistant partial as a delta, and only a final replaces the bubble. The plugin
-supports OpenClaw 2026.9.1 and newer. The optional
-`talk.realtime.providers.teaport.assistantTranscripts` setting picks what it sends:
+in OpenClaw 2026.8.1 and later (and in the 2026.7.2 prereleases) merges assistant
+text differently from user text. It appends each assistant partial as a delta, and
+only a final replaces the bubble. 2026.7.1 and earlier, and the 2026.7.33–7.35
+maintenance releases, replace the bubble with each partial instead; there is no
+2026.7.2 stable release. The package declares `openclaw >=2026.4.0`. The captions
+were checked against the Talk view code of 2026.7.1, 2026.7.35 and 2026.9.1. The
+optional `talk.realtime.providers.teaport.assistantTranscripts` setting picks what
+the plugin sends:
 
-- `"auto"` (the default) reads the host version (`api.runtime.version`) when a Talk
-  session starts. It sends deltas on 2026.7.2 and newer, and when the version can't be
-  read or reads `0.0.0` (how OpenClaw reports a version it couldn't resolve). It sends
-  full text to older hosts.
+- `"auto"` (the default) reads the host version (`api.runtime.version`) once, when
+  the first Talk session starts. It sends deltas on 2026.7.2 and newer, and when the
+  version can't be read or reads `0.0.0` (how OpenClaw reports a version it couldn't
+  resolve). It sends full text to older hosts. The 2026.7.33–7.35 maintenance
+  releases get deltas too, which only delays a repeated word until the final.
 - `"delta"` or `"full"` fixes the shape. Use it for a client whose view is versioned
-  separately from the gateway, or for a host the version check gets wrong.
+  separately from the gateway, or for a host the version check gets wrong. Case and
+  surrounding spaces are ignored.
 
 The gateway log shows which one each session got (`teaport-realtime: assistant captions
-sent as …`). In delta mode the plugin shapes the assistant bubbles:
+sent as …`). The plugin predicts when the view starts a new user entry, since that
+closes the assistant bubble. When it can't tell, it assumes a new entry: a wrong
+guess splits a bubble in two, but never leaves one open or repeats text. In delta
+mode the plugin shapes the assistant bubbles:
 
 - Each partial is the text added since the last one.
 - The view closes the open bubble when user words start a new user entry. That
@@ -87,8 +97,12 @@ sent as …`). In delta mode the plugin shapes the assistant bubbles:
   shown. Other user text only updates its entry, and the bubble stays open.
 - If the voice carries on after a cut, the next bubble, and that utterance's final,
   carry only the text after the cut.
-- A barge-in (`clear`) or the end of the session closes the open bubble the same way.
-  The brain sends no final for a barged utterance.
+- A barge-in (`clear`) closes the open bubble the same way. The brain sends no final
+  for a barged utterance, and captions that still arrive for it are dropped.
+- When the brain ends the session, the open bubble is closed the same way. When
+  OpenClaw ends it (the user stops Talk, the client disconnects, the session
+  expires), OpenClaw 2026.9.1 drops the session before it closes the provider and
+  ignores what the plugin sends then, so the open bubble gets no final.
 - A tool card gets a bubble of its own. It waits while a caption bubble is open, and
   follows once that bubble closes. The tool runs when the model writes the call, but
   captions follow the audio, so the card would otherwise land mid-sentence.
@@ -96,9 +110,17 @@ sent as …`). In delta mode the plugin shapes the assistant bubbles:
 The brain tags each caption with its utterance id, so the plugin can tell the voice
 carrying on from a new reply that begins with the same words. An older brain sends
 no id, so its captions only continue a bubble that is still open. User transcripts
-are always full text. In full mode, an assistant final that only repeats a bubble the
-user's words closed is dropped, since it would show up again after the user's message.
-See `TalkTranscriptAdapter` in `provider.js`.
+are always full text.
+
+In full mode, user words that start an entry, and a barge-in, close the bubble with
+a final of its text too. An assistant final that only repeats a bubble the user's words closed is
+dropped, since it would show up again after the user's message. A carry-on after a
+cut shows the whole utterance again.
+
+With `captions=2` on the URL, the brain sends every utterance's final and leaves the
+repeat to the plugin. Without it (an older plugin, or another client), the brain
+skips a final that exactly repeats the bubble while the user is talking, as it
+always has. See `TalkTranscriptAdapter` in `provider.js`.
 
 ## Tests
 

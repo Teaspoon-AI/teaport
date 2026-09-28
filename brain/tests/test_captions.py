@@ -45,7 +45,7 @@ from pipecat.frames.frames import (  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 from pipecat.utils.text.base_text_aggregator import AggregationType  # noqa: E402
 
-from teaport_brain.captions import CaptionTap, VoiceActivity  # noqa: E402
+from teaport_brain.captions import CaptionTap, VoiceActivity, sends_every_final  # noqa: E402
 
 
 def P(ctx, seg, text, acc, pts=None):
@@ -75,9 +75,9 @@ def prefixes(text):
 class Harness:
     _seg_counter = 1000  # unique segment ids across the run, like prod frame ids
 
-    def __init__(self):
+    def __init__(self, every_final=True):
         self.activity = VoiceActivity()
-        self.tap = CaptionTap(self.activity)
+        self.tap = CaptionTap(self.activity, every_final=every_final)
         self.sent = []  # (text, final) transcript messages, in emit order
         self.msgs = []  # the same messages, whole
         sent, msgs = self.sent, self.msgs
@@ -272,18 +272,41 @@ async def test_stale_end_ignored():
 
 
 async def test_final_sent_while_the_user_talks():
+    # A client that announced caption protocol 2 (?captions=2, the current plugin).
     # Utterance fully shown, the user starts talking, THEN the boundary fires. The
     # final goes out anyway: whether the user's words closed the bubble is the Talk
     # view's call (it closes it only when they start a new user entry), and the
     # plugin models that view. It sends nothing for a final the cut already showed,
     # and without this final a bubble the view kept open would never close.
-    h = Harness()
+    assert sends_every_final("2") and sends_every_final("3")
+    h = Harness(every_final=True)
     await h.sentence("Hey there.", "ctx-greet", pts=1_000)
     h.user_talks()
     await h.feed(END(pts=1_000))
     assert h.finals() == ["Hey there."], h.sent
     assert h.msgs[-1]["utterance"] == "ctx-greet", h.msgs
     print("  PASS final sent while the user talks (the plugin decides what it adds)")
+
+
+async def test_final_skipped_for_an_older_client():
+    # No ?captions= (an older plugin, the Discord bridge, SIP): the old rule. The
+    # utterance was fully shown and the user's interim committed the bubble; an
+    # older plugin would pass an identical final through, and the view would render
+    # it as a duplicate bubble after the user's message — so it is skipped.
+    for flag in (None, "", "1", "yes"):
+        assert not sends_every_final(flag), flag
+    h = Harness(every_final=False)
+    await h.sentence("Hey there.", "ctx-greet", pts=1_000)
+    h.user_talks()
+    await h.feed(END(pts=1_000))
+    assert h.finals() == [], h.sent
+    assert h.partials()[-1] == "Hey there.", h.partials()
+    # A final that adds to what was shown (here the partials were all held) still
+    # goes out.
+    await h.sentence("Sure.", "ctx-2", pts=2_000)
+    await h.feed(END(pts=2_000))
+    assert h.finals() == ["Sure."], h.sent
+    print("  PASS older client: final skipped when the view already committed identical text")
 
 
 async def test_exact_source_spacing():
@@ -381,6 +404,7 @@ def test_captions():
         await test_reply_end_finalizes_at_last_word()
         await test_stale_end_ignored()
         await test_final_sent_while_the_user_talks()
+        await test_final_skipped_for_an_older_client()
         await test_exact_source_spacing()
         await test_force_completed_tail_in_final()
         await test_clean_single_utterance()

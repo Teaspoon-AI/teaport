@@ -11,7 +11,7 @@
 //   talk.realtime.providers.teaport.assistantTranscripts = "auto"  // optional; see below
 //
 // assistantTranscripts is how assistant captions reach the Talk view: "delta" (each
-// partial is the text added since the last; what OpenClaw 2026.7.2+ expects), "full"
+// partial is the text added since the last; what OpenClaw 2026.8.1+ expects), "full"
 // (the whole text each time, for a view that replaces), or "auto", the default,
 // which picks by the OpenClaw version (provider.js, pickAssistantTranscripts).
 //

@@ -19,46 +19,57 @@ const PCM16_24K = { encoding: "pcm16", sampleRateHz: 24000, channels: 1 };
 // traced text is user speech, so keep this off in normal operation).
 const TRACE = /^(1|true)$/i.test(process.env.TEAPORT_TRACE || "");
 
+// The caption protocol this plugin speaks, sent to the brain as ?captions=. From 2
+// on, the brain sends every utterance's final and leaves it to the plugin to drop a
+// repeat (TalkTranscriptAdapter). A brain that sees no flag keeps skipping the final
+// that repeats a bubble while the user talks, which is what an older plugin needs.
+const CAPTIONS_PROTOCOL = 2;
+
 /**
  * Append OpenClaw-selected TTS voice/language — and the gateway auth token — to the
- * brain's WS URL as query params. The Pipecat brain reads ?voice=&language=&token=
- * per session (gateway_server.py). A Kokoro voice's prefix implies its language, so
- * voice alone usually suffices; language is an optional phonemizer override. Voice
- * and language come from talk.realtime.providers.teaport.*; token from the same
- * config or the TEAPORT_GATEWAY_TOKEN env (must match the gateway's GATEWAY_TOKEN).
+ * brain's WS URL as query params, plus the caption protocol. The Pipecat brain reads
+ * ?voice=&language=&token=&captions= per session (gateway_server.py). A Kokoro
+ * voice's prefix implies its language, so voice alone usually suffices; language is
+ * an optional phonemizer override. Voice and language come from
+ * talk.realtime.providers.teaport.*; token from the same config or the
+ * TEAPORT_GATEWAY_TOKEN env (must match the gateway's GATEWAY_TOKEN).
  */
-function withVoiceParams(url, cfg) {
+export function withVoiceParams(url, cfg) {
   if (!url) return url;
   const q = [];
   if (cfg && cfg.voice) q.push("voice=" + encodeURIComponent(cfg.voice));
   if (cfg && cfg.language) q.push("language=" + encodeURIComponent(cfg.language));
   if (cfg && cfg.token) q.push("token=" + encodeURIComponent(cfg.token));
-  if (!q.length) return url;
+  q.push(`captions=${CAPTIONS_PROTOCOL}`);
   return url + (url.includes("?") ? "&" : "?") + q.join("&");
 }
 
 // ── How the Talk view merges transcripts ─────────────────────────────────────
 // The brain sends the FULL text on every transcript event. OpenClaw's Control UI
-// Talk view merges each event into the open entry for its role, and since
-// OpenClaw 2026.7.2 the two roles merge differently:
+// Talk view merges each event into the open entry for its role. In the 2026.7.2
+// prereleases and from 2026.8.1 on, the two roles merge differently:
 //   user       text that extends the entry REPLACES it; whitespace-leading text is
 //              APPENDED (which is why every transcript is trimmed here).
 //   assistant  a partial is APPENDED verbatim — a delta, like OpenAI Realtime's
 //              output transcript deltas. Only a final replaces the bubble's text,
 //              and only when it extends or resembles what the bubble shows.
 // So full-text assistant partials stack ("I'mI'm runningI'm running smoothly,…").
-// Before 2026.7.2 both roles used the user rule and took full text. The plugin
-// supports OpenClaw 2026.9.1 and newer, which all append; the assistantTranscripts
-// setting picks the shape (see pickAssistantTranscripts).
+// There is no 2026.7.2 stable release. 2026.7.1 and earlier, and the 2026.7.33–7.35
+// maintenance releases, use the user rule for both roles and take full text. The
+// assistantTranscripts setting picks the shape (see pickAssistantTranscripts).
 //
 // The view closes the open assistant bubble only when a user transcript starts a
 // new user entry: the first words after the user's last final, or words that don't
 // continue the open user entry once the voice has spoken since. Any other user text
-// just updates its entry, and the assistant bubble stays open.
+// just updates its entry, and the assistant bubble stays open. The user rule is the
+// same in every version above.
 //
 // A delta is only correct against the bubble the view has open, and a final only
-// replaces a bubble whose text it extends. So in delta mode TalkTranscriptAdapter
-// opens and closes every assistant bubble itself and always knows what it holds:
+// replaces a bubble whose text it extends. So TalkTranscriptAdapter opens and closes
+// every assistant bubble itself and always knows what it holds. To do that it
+// predicts the view's user rule (_startsUserEntry). When it can't tell, it predicts
+// a new entry, and a wrong guess only splits a bubble in two; it never leaves a
+// bubble open or repeats text.
 //   * A user transcript that starts a user entry cuts the open bubble. The adapter
 //     first sends a final of exactly its text. The view would close the bubble
 //     anyway, but without a final; sending one saves what the bubble showed to the
@@ -70,7 +81,9 @@ function withVoiceParams(url, cfg) {
 //     one ended, and the utterance's final carries only the text after the cut.
 //   * A new utterance cuts the open bubble too, and so does the end of the voice:
 //     a barge-in clear (the brain sends no final for a barged utterance) or the
-//     session closing.
+//     session closing (which reaches the view only when the brain ended the session,
+//     see _endTranscripts). Captions that still arrive for a barged utterance are
+//     dropped.
 //   * A final that is not a caption (a tool card, a debug chip) waits while a caption
 //     bubble is open, and follows once that bubble is cut or its utterance ends. A
 //     tool runs when the model writes the call, but captions follow the audio, so the
@@ -78,16 +91,23 @@ function withVoiceParams(url, cfg) {
 // The brain tags its captions with their utterance (the TTS context id), which is
 // how a carry-on is told apart from a new reply that begins with the same words.
 // Untagged text (an older brain) only continues a bubble that is still open.
+// Full mode cuts at user words and at the end of the voice the same way, with the
+// bubble's whole text, and drops captions for a barged utterance. The rest is delta
+// mode only: a carry-on after a cut shows the whole utterance again, as it always
+// has, and new utterances and cards aren't cut apart.
 
 const ASSISTANT_DELTAS_SINCE = [2026, 7, 2];
 
 /**
- * Whether an OpenClaw host appends assistant transcript partials as deltas, i.e. is
- * 2026.7.2 or newer. A version that says nothing counts as current OpenClaw: a
- * missing or unparsable one (a dev build, or a runtime that would not say), and
- * "0.0.0", which OpenClaw reports when it can't resolve its own version. Full text
- * stacks on a current view, while deltas still read correctly on an older one,
- * apart from a repeated word that can drop out until the final.
+ * Whether to send an OpenClaw host assistant transcript partials as deltas: 2026.7.2
+ * or newer. The 2026.7.2 prereleases and 2026.8.1+ append partials. The 2026.7.33–7.35
+ * maintenance releases don't, and get deltas anyway, which only delays a repeated
+ * word until the final (the final renders the same either way, and after a cut
+ * deltas read better there than full text). A version that says nothing counts as
+ * current OpenClaw: a missing or unparsable one (a dev build, or a runtime that would
+ * not say), and "0.0.0", which OpenClaw reports when it can't resolve its own
+ * version. Full text stacks on a current view, while deltas still read correctly on
+ * an older one, apart from that repeated word.
  */
 export function appendsAssistantDeltas(version) {
   const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(version ?? "").trim());
@@ -108,8 +128,9 @@ export function appendsAssistantDeltas(version) {
  * Returns { deltas, reason }, the reason for the log.
  */
 export function pickAssistantTranscripts(setting, readVersion = () => undefined) {
-  if (setting === "delta" || setting === "full") {
-    return { deltas: setting === "delta", reason: `assistantTranscripts="${setting}"` };
+  const s = typeof setting === "string" ? setting.trim().toLowerCase() : setting;
+  if (s === "delta" || s === "full") {
+    return { deltas: s === "delta", reason: `assistantTranscripts="${s}"` };
   }
   let version;
   try {
@@ -118,7 +139,7 @@ export function pickAssistantTranscripts(setting, readVersion = () => undefined)
     version = undefined;
   }
   const auto =
-    setting === undefined || setting === null || setting === "auto"
+    s === undefined || s === null || s === "auto"
       ? "auto"
       : `auto; ignored assistantTranscripts=${JSON.stringify(setting)}`;
   return {
@@ -161,6 +182,7 @@ export class TalkTranscriptAdapter {
     this._deltas = assistantDeltas;
     this._setUtterance(null);
     this._cards = []; // non-caption finals waiting for the open bubble to close
+    this._dead = []; // utterances a barge-in ended: their late captions are dropped
     // The view's open user entry, null once a final closed it: the text it shows
     // (null when unsure) and whether it is still streaming, i.e. no assistant text
     // has reached the view since the entry last changed.
@@ -180,14 +202,18 @@ export class TalkTranscriptAdapter {
     const full = typeof text === "string" ? text.trim() : "";
     // The view ignores empty text, so it changes nothing there.
     if (!full) return [[role, full, final]];
-    if (!this._deltas) return this._adaptFull(role, full, final);
     if (role !== "assistant") {
       const starts = this._startsUserEntry(full);
-      const out = starts ? this._closeBubble() : [];
-      this._user = final ? null : { text: starts ? full : this._userText(full), streaming: true };
+      const out = starts ? this._cut() : [];
+      // When the entry's text was unknown, a predicted new entry may really have
+      // merged into the old one, so the text stays unknown.
+      const known = !this._user || this._user.text !== null;
+      this._user = final ? null : { text: starts ? (known ? full : null) : this._userText(full), streaming: true };
       return [...out, [role, full, final]];
     }
     const id = typeof utterance === "string" && utterance ? utterance : null;
+    if (id && this._dead.includes(id)) return [];
+    if (!this._deltas) return this._toView(this._adaptFull(full, final, id));
     if (final && !id && !this._continues(null, full)) {
       if (!this._open) return this._toView([[role, full, true]]);
       this._cards.push(full);
@@ -222,21 +248,22 @@ export class TalkTranscriptAdapter {
    * Closes the open bubble and sends the cards held behind it.
    */
   end() {
-    if (!this._deltas) return [];
-    const out = this._closeBubble();
+    if (this._utt) {
+      this._dead.push(this._utt);
+      if (this._dead.length > 16) this._dead.shift();
+    }
+    const out = this._cut();
     this._setUtterance(null);
     return out;
   }
 
   // Full text, for a view that replaces a bubble whose text the new text extends.
-  // Such a view closes the assistant bubble at the user's words, and a final that
-  // only repeats what that bubble showed would open a duplicate of it after the
-  // user's message, so that final is dropped.
-  _adaptFull(role, full, final) {
-    if (role !== "assistant") {
-      if (this._shown) this._cutText = this._shown;
-      this._shown = "";
-    } else if (!final) {
+  // Such a view closes the assistant bubble when the user's words start an entry
+  // (_cut), and a final that only repeats what that bubble showed would open a
+  // duplicate of it after the user's message, so that final is dropped.
+  _adaptFull(full, final, id) {
+    this._utt = final ? null : id;
+    if (!final) {
       this._shown = full;
       this._cutText = "";
     } else {
@@ -246,7 +273,18 @@ export class TalkTranscriptAdapter {
         return [];
       }
     }
-    return [[role, full, final]];
+    return [["assistant", full, final]];
+  }
+
+  // Close the open assistant bubble with a final of exactly its text: before user
+  // words that start a user entry (the view closes the bubble there anyway, without
+  // a final), and when the voice ends.
+  _cut() {
+    if (this._deltas) return this._closeBubble();
+    const out = this._shown ? [["assistant", this._shown, true]] : [];
+    if (this._shown) this._cutText = this._shown;
+    this._shown = "";
+    return this._toView(out);
   }
 
   // Show a new utterance: its id, "" when untagged, or null for none.
@@ -534,8 +572,11 @@ class TeaportBridge {
     }
   }
 
-  // The session is ending: close the open bubble and send the held cards while the
-  // relay still takes transcripts, so they are shown and saved.
+  // The session is ending: close the open bubble and send the held cards. They reach
+  // the view and the session transcript only when the brain ended the session (the
+  // WS close event). When OpenClaw ends it (the user stops Talk, the client goes
+  // away, the session expires), OpenClaw 2026.9.1's relay drops the session before
+  // it calls close(), and ignores these without an error; the plugin can't help that.
   _endTranscripts() {
     try {
       this._forward(this._transcripts.end());

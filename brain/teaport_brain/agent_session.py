@@ -651,7 +651,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         language: str | None = None,
                         input_processors: list | None = None,
                         cancel_on_idle_timeout: bool | None = None,
-                        stt_makeup_db: float = 0.0) -> AgentSession:
+                        stt_makeup_db: float = 0.0,
+                        caption_every_final: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -664,6 +665,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     - input_processors: optional processors inserted right after transport.input()
       (before the debug ep_in tap) — the ONLY place a front-end injects its own
       processors. SIP passes [HalfDuplexInputGate()]; OpenClaw passes nothing.
+    - caption_every_final: the client drops a repeated assistant final itself, so
+      CaptionTap sends every one (OpenClaw's plugin announces it with ?captions=2;
+      see captions.sends_every_final). SIP leaves it off.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -841,7 +845,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         ThinkingSound() if thinking_sound.ENABLED else None,
         transport_output,
         followup_gate,  # track user/bot/LLM activity → hold async follow-ups for a clear moment
-        CaptionTap(activity),  # AFTER the transport: playout-paced partials + per-utterance finals
+        CaptionTap(activity, every_final=caption_every_final),  # AFTER the transport: playout-paced partials + per-utterance finals
         MemoryReclaim(),  # per-turn: hand glibc arena pages back to the OS (CUDA at session end)
         context_aggregator.assistant(),
     ] if p is not None])
