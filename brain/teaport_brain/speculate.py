@@ -23,8 +23,11 @@
 #     miss. brain/formal/UserTurn.tla (SPEC = "byText") is the counterexample for
 #     promoting on text alone. Which writers can land in that window is narrower than
 #     it looks: MemoryRecall's note is injected on the final BEFORE the aggregator sees
-#     it, so it is always inside the snapshot; the consult follow-up posts only with the
-#     turn free, and a speculation only exists inside an open turn. The one writer that
+#     it, so it is always inside the snapshot; the consult follow-up and ClientNotes
+#     (a Talk client's context notes) post only with the turn free, and a speculation
+#     only exists inside an open turn. ClientNotes also folds pending notes into the
+#     context at the commit, after the snapshot: that turn is a miss, never a stale
+#     reply. The one writer that
 #     is OURS and ran at the commit, the heard-context corrector, is run before the
 #     snapshot instead so its rewrite is inside it (see Speculator). The equality check
 #     stays whole-context regardless, because nothing in the machine prevents a new

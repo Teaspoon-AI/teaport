@@ -19,9 +19,9 @@ const PCM16_24K = { encoding: "pcm16", sampleRateHz: 24000, channels: 1 };
 // traced text is user speech, so keep this off in normal operation).
 const TRACE = /^(1|true)$/i.test(process.env.TEAPORT_TRACE || "");
 
-// How long a context note waits for the brain's context_result. The brain answers as
-// soon as the note reaches it, so running out means a brain that predates context notes
-// (it drops the message) or one too wedged to matter.
+// How long a context note waits for the brain's context_result. Notes go out only after
+// the brain's hello (context.js), when its pipeline is running and it answers as soon
+// as a note arrives, so running out means a brain too wedged to matter.
 const CONTEXT_ACK_TIMEOUT_MS = 3000;
 
 // The caption protocol this plugin speaks, sent to the brain as ?captions=. From 2
@@ -444,6 +444,7 @@ class TeaportBridge {
     // Context notes (context.js): what the brain said it accepts in its hello, and the
     // notes sent to it that it has not answered yet.
     this._brain = null;
+    this._openedAt = null; // Date.now() at the socket's open (the hello's deadline runs from it)
     this._contextSeq = 0;
     this._contextAcks = new Map();
     this._ended = false;
@@ -459,9 +460,15 @@ class TeaportBridge {
     return this._ended;
   }
 
+  /** When the socket to the brain opened (ms since the epoch), or null before. */
+  openedAt() {
+    return this._openedAt;
+  }
+
   /**
    * Send a context note to the brain; resolves with its context_result
-   * ({ok, status} or {ok: false, error, message, retry_after_ms?}).
+   * ({ok, status} or {ok: false, error, message, retry_after_ms?}). context.js sends
+   * only after the brain's hello, so the brain is up and answers at once.
    */
   sendContext({ text, respond, kind }) {
     if (!this._ws || !this._open) {
@@ -536,6 +543,7 @@ class TeaportBridge {
 
       ws.addEventListener("open", () => {
         this._open = true;
+        this._openedAt = Date.now();
         for (const buf of this._queue) this._rawSend(buf);
         this._queue = [];
         if (this._req.onReady) this._req.onReady();

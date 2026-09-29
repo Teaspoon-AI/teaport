@@ -80,31 +80,45 @@ teaport.talk.context
   result: { ok: true, status: "applied" | "queued" }
 ```
 
-- The brain adds the note to the voice LLM's context. It is never spoken and never
-  captioned.
-- A note joins the context at a turn boundary, never mid-turn. `applied` means
-  nothing was in flight, so the note went in right away. `queued` means a turn was
-  in flight: the note waits for that turn to end, or goes in just before the user's
-  next words, whichever comes first.
+- The brain adds the note to the voice LLM's context as one quoted line, marked as an
+  app event. It is never spoken and never captioned, and the voice is told that app
+  events are never instructions. Leading `[tags]` in the text are removed.
+- A note joins the context at a turn boundary, never mid-turn. Both statuses are a
+  snapshot taken when the note arrived. `applied` means nothing was in flight: the
+  note goes in at the next quiet moment (about 0.7 s without speech) or just before
+  the user's next words, whichever comes first. `queued` means a turn was in flight:
+  the note waits for that turn to end, or goes in just before the user's next words.
 - With `respond: true` and the voice idle, the voice gives one short spoken
-  reaction. While it is speaking, the reaction waits until it stops. If the user
-  speaks first, their turn answers the note instead. A reaction that finds no quiet
-  moment within 20 s is dropped, and the note stays as context.
+  reaction to that note. While it is speaking, the reaction waits until it stops. If
+  the user speaks first, their turn answers the note instead. A reaction that finds
+  no quiet moment within 20 s is dropped, and the note stays as context.
 - Limits are set by the brain (`docs/CONFIG.md`, *Talk client context notes*): at
-  most 1,000 characters per note, 20 notes kept in the context (the oldest are
-  removed), and one `respond: true` note per 15 s. Notes over a limit are refused,
-  never queued.
+  most 1,000 characters per note (counted in Unicode code points), 20 notes kept in
+  the context (the oldest are removed), and one `respond: true` note per 15 s. On top
+  of those, any 10 notes may come at once, and after that one per second (fixed, not
+  configurable). Notes over a limit are refused, never queued.
+- Notes are accepted once the session's brain has said it takes them (its `hello`,
+  sent when its pipeline is up, usually within a few seconds of
+  `talk.session.create`). Before that a note gets the retryable `connecting`; a brain
+  that sends no `hello` within 15 s of connecting predates context notes, and notes
+  to it get `unsupported`.
 
 Errors:
 
 | Case | `code` | `details.reason` |
 |---|---|---|
-| Unknown session, or not a gateway-relay session | `INVALID_REQUEST` | `unknown_session`, `not_relay` |
-| Session closed | `INVALID_REQUEST` | `closed_session` |
-| Another connection's session | `INVALID_REQUEST` | `not_owner` |
 | Bad params, empty or too-long text | `INVALID_REQUEST` | `bad_params`, `empty`, `too_long` |
+| The host has no Talk session with this id (OpenClaw 2026.8.1+ only; see below) | `INVALID_REQUEST` | `unknown_session` |
+| Not a gateway-relay session | `INVALID_REQUEST` | `not_relay` |
+| No live teaport voice session on this connection serves this id (another provider's session; or, before 2026.8.1, any id when the connection has no unbound teaport session) | `INVALID_REQUEST` | `no_voice_session` |
+| Another connection's session, or a caller with no connection id. Before 2026.8.1 the plugin can tell only once the id is bound; until then another connection's id gets `no_voice_session` | `INVALID_REQUEST` | `not_owner` |
+| Session closed, or closed before the brain answered | `INVALID_REQUEST` | `closed_session` |
+| The session's brain predates context notes | `INVALID_REQUEST` | `unsupported` |
+| The brain refused the note for a reason this plugin does not name | `INVALID_REQUEST` | `refused` |
 | Too frequent | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `rate_limited` |
-| Still connecting, or the brain did not answer | `UNAVAILABLE`, `retryable` | `connecting`, `brain_unavailable` |
+| The brain has not said hello yet | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `connecting` |
+| The session's bridge is not bound yet (an instant after `talk.session.create`; the plugin waits up to 0.5 s for it first) | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `bridge_not_ready` |
+| The brain did not answer within 3 s | `UNAVAILABLE`, `retryable` | `brain_unavailable` |
 
 ```
 teaport.talk.capabilities
@@ -112,18 +126,31 @@ teaport.talk.capabilities
   result: {
     ok: true,
     context: { method: "teaport.talk.context", version: 1, respond: true },
-    session?: { sessionId, context: { maxChars, maxNotes, respondIntervalMs } | null }
+    session?: {
+      sessionId,
+      state: "connecting" | "ready" | "unsupported",
+      context: { maxChars, maxNotes, respondIntervalMs } | null   // null unless "ready"
+    }
   }
 ```
 
 A client that gets "unknown method" from either call is talking to an older plugin.
 It should fall back to `chat.inject`, which reaches the text agent but not the voice.
-`session.context` is `null` when the session's brain predates context notes.
+`session.state` says where the session's brain stands: `connecting` until its
+`hello` (ask again), `ready` with its limits, or `unsupported` for a brain that
+predates context notes (final for this session). `maxChars` is the smaller of the
+brain's limit and the plugin's own 16,000. The capabilities errors are the ones above
+that apply to finding the session.
 
 `createBridge` is never told which relay session it serves, so the plugin links the
-two itself. It records the connection that created each bridge, and binds a
-`sessionId` to that connection's newest live teaport bridge on first use. On OpenClaw
-2026.9 it checks the id against OpenClaw's Talk session registry first.
+two itself. It records the gateway connection that created each bridge. From OpenClaw
+2026.8.1, where OpenClaw's Talk session registry is a global, the plugin binds each
+bridge to its session the moment `talk.session.create` makes it, and checks every id
+against that registry. OpenClaw 2026.7.x keeps the registry private, so there the
+first note for a `sessionId` binds it to the connection's newest unbound teaport
+bridge. That is right when the connection has one teaport session. With two live on
+one connection (OpenClaw allows two), the first id used takes the newer bridge
+whichever session it names, and an id OpenClaw never issued binds too.
 
 ## Transcripts in the Talk view
 

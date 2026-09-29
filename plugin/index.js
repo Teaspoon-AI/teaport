@@ -37,26 +37,23 @@ import { buildTeaportRealtimeProvider } from "./provider.js";
 
 // The gateway connection a request came in on. createBridge runs inside the client's
 // talk.session.create request, so this names the connection that owns the session
-// (context.js). The SDK's request-scope getter is loaded lazily: a host without it
-// (older OpenClaw) still loads the plugin, and sessions are then matched without it.
-let requestScope = () => undefined;
-import("openclaw/plugin-sdk/plugin-runtime")
-  .then((sdk) => {
-    if (typeof sdk.getPluginRuntimeGatewayRequestScope === "function") {
-      requestScope = sdk.getPluginRuntimeGatewayRequestScope;
-    }
-  })
-  .catch(() => {});
+// (context.js). OpenClaw keeps the request scope in a global AsyncLocalStorage
+// (src/plugins/runtime/gateway-request-scope.ts, a Symbol.for singleton from 2026.7.1
+// through 2026.9.1), read here directly: no SDK import at load, and nothing to race.
+const REQUEST_SCOPE = Symbol.for("openclaw.pluginRuntimeGatewayRequestScope");
+function currentConnId() {
+  const scope = globalThis[REQUEST_SCOPE];
+  return typeof scope?.getStore === "function" ? scope.getStore()?.client?.connId : undefined;
+}
 
 // OpenClaw's own Talk session registry (src/gateway/talk-session-registry.ts): the
-// record talk.session.create made for a sessionId, if any. It is internal, not SDK,
-// so this reads it defensively: undefined when this host has no such registry, which
-// context.js treats as "cannot tell" rather than "unknown".
+// record talk.session.create makes for each sessionId ({kind, connId, ...}). It is
+// internal, not SDK, and a global Map only from 2026.8.1 (module-local before), so
+// this reads it defensively: undefined means this host does not expose one.
 const TALK_SESSIONS = Symbol.for("openclaw.unifiedTalkSessions");
-function lookupTalkSession(sessionId) {
+function talkRegistry() {
   const registry = globalThis[TALK_SESSIONS];
-  if (!(registry instanceof Map)) return undefined;
-  return registry.get(sessionId) ?? null;
+  return registry instanceof Map ? registry : undefined;
 }
 
 export default definePluginEntry({
@@ -70,10 +67,7 @@ export default definePluginEntry({
     // OpenClaw builds the plugin runtime lazily, and on 2026.7.x any read of
     // api.runtime builds all of it (and can throw), which every plugin load
     // (discovery, CLI commands) would otherwise pay for.
-    const sessions = new TalkSessions({
-      currentConnId: () => requestScope()?.client?.connId,
-      lookupTalkSession,
-    });
+    const sessions = new TalkSessions({ currentConnId, talkRegistry });
     api.registerRealtimeVoiceProvider(
       buildTeaportRealtimeProvider({
         hostVersion: () => api.runtime?.version,

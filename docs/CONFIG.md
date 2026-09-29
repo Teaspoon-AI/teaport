@@ -150,7 +150,7 @@ In `/etc/teaport/brain.env`. Limits on the notes a Talk client adds to the voice
 
 | Setting | Default | Description |
 |---|---|---|
-| `TEAPORT_CONTEXT_MAX_CHARS` | **1000** chars (≥ 1) | Longest context note a Talk client may send; a longer one is refused, not cut. |
+| `TEAPORT_CONTEXT_MAX_CHARS` | **1000** chars (≥ 1) | Longest context note a Talk client may send, in characters; a longer one is refused, not cut. The teaport-realtime plugin announces the smaller of this and its own 16000. |
 | `TEAPORT_CONTEXT_MAX_NOTES` | **20** (≥ 1) | How many context notes stay in the LLM context; past it the oldest are removed. |
 | `TEAPORT_CONTEXT_RESPOND_INTERVAL_S` | **15** s (≥ 0) | Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited. |
 

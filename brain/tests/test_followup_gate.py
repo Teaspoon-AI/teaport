@@ -244,6 +244,70 @@ async def test_a_dropped_watch_is_forgotten():
     assert not d.done.is_set(), "a dropped watch still settled"
 
 
+# --- the claim: one turn-free window, one injector ---
+
+async def _two_waiters(gate, **kw):
+    a = asyncio.ensure_future(gate.wait_until_idle(turn_free=True, **kw))
+    b = asyncio.ensure_future(gate.wait_until_idle(turn_free=True, **kw))
+    return a, b
+
+
+async def test_one_window_goes_to_one_injector():
+    """The consult follow-up and a client-note reaction waiting together used to both
+    get the same quiet window: two LLMRunFrames, two completions, and the first one's
+    text retired both one-shot triggers. The window is now claimed by the first waiter
+    it is reported to, until that waiter's completion has started and ended."""
+    gate = _gate(quiet_secs=0.02)
+    await _feed(gate, BotStartedSpeakingFrame())
+    a, b = await _two_waiters(gate, max_wait=2.0)
+    await asyncio.sleep(0.01)
+    await _feed(gate, BotStoppedSpeakingFrame())
+    done, _ = await asyncio.wait({a, b}, timeout=0.3, return_when=asyncio.FIRST_COMPLETED)
+    assert len(done) == 1 and done.pop().result() is True
+    await asyncio.sleep(0.1)
+    assert sum(t.done() for t in (a, b)) == 1, "both injectors took the same window"
+    # The winner's completion starts (the claim ends; the turn holds the window) and
+    # ends: the other injector gets the next window.
+    await _feed(gate, LLMFullResponseStartFrame())
+    await asyncio.sleep(0.1)
+    assert sum(t.done() for t in (a, b)) == 1, "the window reopened mid-completion"
+    await _feed(gate, LLMFullResponseEndFrame())
+    assert await asyncio.wait_for(asyncio.gather(a, b), timeout=1.0) == [True, True]
+
+
+async def test_a_claim_given_back_reopens_the_window():
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    assert not gate.is_clear(), "the window was not claimed"
+    assert not await gate.wait_until_idle(max_wait=0.1, turn_free=True)
+    gate.release_claim()
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+
+
+async def test_an_interruption_ends_a_claim():
+    """A barge-in flushes the claimant's queued LLMRunFrame, so no completion will
+    start for it: the claim cannot wait for one."""
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    await _feed(gate, InterruptionFrame())
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+
+
+async def test_a_forgotten_claim_expires():
+    gate = FollowupGate(quiet_secs=0.02, claim_secs=0.1)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True), "the claim never expired"
+
+
+async def test_the_narrator_wait_neither_claims_nor_heeds_a_claim():
+    """The narrator speaks during a tool call's silence; the claim is the injectors'."""
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5)
+    assert gate.is_clear(), "a narrator wait claimed the window"
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    assert await gate.wait_until_idle(max_wait=0.5), "a claim held the narrator back"
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and asyncio.iscoroutinefunction(v)]

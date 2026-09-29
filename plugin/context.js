@@ -10,16 +10,24 @@
 //
 // sessionId is the relaySessionId talk.session.create returned. OpenClaw never tells a
 // provider's bridge which relay session it serves (createBridge gets no id), so this
-// module ties the two together itself:
-//   * At createBridge, which runs inside the client's talk.session.create request, the
-//     bridge records the connection that created it (index.js reads it from the
-//     gateway request scope).
-//   * The first note for a sessionId binds it to that connection's newest live
-//     teaport bridge. The brain serves one session at a time (a new /talk connection
-//     evicts the old one), so in practice there is exactly one.
-//   * Where the host exposes its Talk session registry (OpenClaw 2026.9), the id is
-//     checked against it first: unknown ids and other connections' sessions are
-//     refused before anything is bound.
+// module ties the two together itself. createBridge runs inside the client's
+// talk.session.create request, so the bridge records the gateway connection that
+// created it (index.js reads it from the gateway request scope). Then:
+//
+//   * Where the host's Talk session registry is reachable (a global Map since OpenClaw
+//     2026.8.1), the bridge is bound to its session AT CREATION. OpenClaw calls
+//     createBridge and then records the session (rememberUnifiedTalkSession) in the
+//     same synchronous run of talk.session.create, so a microtask queued in add() finds
+//     the record: the first realtime-relay record for this connection that was not in
+//     the registry when the bridge was made. The registry also vets every id: unknown
+//     ids, other kinds of session and other connections' sessions are refused.
+//   * On older hosts (2026.7.x keeps the registry module-local) nothing tells the
+//     plugin which session a bridge serves, so the first note for a sessionId binds it
+//     to the caller's newest unbound live bridge. That is right when the connection has
+//     one teaport session, the usual case: the brain serves one session at a time. With
+//     two live at once on one connection (OpenClaw allows two), the first id used takes
+//     the newer bridge whichever session it names, and an id the host never issued
+//     binds too.
 //
 // This module imports nothing from the OpenClaw SDK, like provider.js, so it can be
 // tested standalone (test/context.test.mjs).
@@ -27,13 +35,22 @@
 export const CONTEXT_METHOD = "teaport.talk.context";
 export const CAPABILITIES_METHOD = "teaport.talk.capabilities";
 
-// Transport sanity bounds. The brain enforces the real limits (TEAPORT_CONTEXT_*)
-// and announces them in its hello; these only keep garbage off the socket before it has.
+// A transport bound on the note, in characters (code points, as the brain counts them).
+// The brain's own limit (TEAPORT_CONTEXT_MAX_CHARS) is the real one; capabilities
+// reports the smaller of the two, so a client never meets this one unannounced.
 const MAX_TEXT_CHARS = 16000;
 const MAX_KIND_CHARS = 64;
 const MAX_SESSION_ID_CHARS = 256;
 // Closed session ids remembered so a late note hears "closed" rather than "unknown".
 const CLOSED_IDS_KEPT = 64;
+// How long after its socket opens a bridge waits for the brain's hello before taking
+// the brain for one that predates context notes. The hello is sent once the brain's
+// pipeline is up, which can include waiting out the previous session's teardown
+// (acquire_slot: up to ~5 s) and the STT connection.
+export const HELLO_TIMEOUT_MS = 15000;
+// How long a request waits for a bridge whose binding is still pending (a microtask
+// after createBridge; see TalkSessions.add) before reporting bridge_not_ready.
+const BIND_WAIT_MS = 500;
 
 function invalid(message, reason) {
   return { code: "INVALID_REQUEST", message, details: { reason } };
@@ -49,32 +66,59 @@ function unavailable(message, reason, retryAfterMs) {
   };
 }
 
-/** The brain's announced context limits, in the gateway's camelCase. */
+const notOwner = () => invalid("Talk session is not owned by this connection", "not_owner");
+
+/** Length in code points, which is what the brain's len() counts. */
+function chars(text) {
+  let n = 0;
+  for (const _ of text) n += 1;
+  return n;
+}
+
+/** The brain's announced context limits, in the gateway's camelCase, or null. */
 function contextLimits(features) {
   const c = features && features.context;
   if (!c || typeof c !== "object") return null;
+  const brainMax = Number(c.max_chars);
   return {
-    maxChars: c.max_chars,
+    maxChars: Number.isFinite(brainMax) && brainMax > 0 ? Math.min(brainMax, MAX_TEXT_CHARS) : MAX_TEXT_CHARS,
     maxNotes: c.max_notes,
     respondIntervalMs: Math.round(Number(c.respond_interval_s) * 1000),
   };
 }
 
 /**
+ * Where a bridge's brain stands on context notes:
+ *   "connecting"  - the socket is not open yet, or the brain has not sent its hello and
+ *                   still may (within helloTimeoutMs of the open);
+ *   "ready"       - the hello announced context notes;
+ *   "unsupported" - the hello announced none, or none came in time (a brain that
+ *                   predates context notes never sends one);
+ *   "closed"      - the session is over.
+ */
+export function contextState(bridge, { helloTimeoutMs = HELLO_TIMEOUT_MS, now = Date.now } = {}) {
+  if (bridge.hasEnded()) return "closed";
+  const features = bridge.brainFeatures();
+  if (features !== null && features !== undefined) return contextLimits(features) ? "ready" : "unsupported";
+  const openedAt = bridge.openedAt();
+  if (openedAt === null || openedAt === undefined) return "connecting";
+  return now() - openedAt < helloTimeoutMs ? "connecting" : "unsupported";
+}
+
+/**
  * The live teaport bridges and the Talk sessions they serve.
  * @param {{currentConnId?: () => string|undefined,
- *          lookupTalkSession?: (id: string) => object|null|undefined}} hooks
+ *          talkRegistry?: () => Map<string, object>|undefined}} hooks
  *   currentConnId: the gateway connection of the request running now.
- *   lookupTalkSession: the host's record for a Talk session id; null when there is
- *   none, undefined when the host does not expose one (then only connections are
- *   checked).
+ *   talkRegistry: the host's Talk session registry (sessionId -> {kind, connId, ...}),
+ *   or undefined when this host does not expose one.
  */
 export class TalkSessions {
-  constructor({ currentConnId, lookupTalkSession } = {}) {
+  constructor({ currentConnId, talkRegistry } = {}) {
     this._currentConnId = currentConnId || (() => undefined);
-    this._lookup = lookupTalkSession || (() => undefined);
+    this._registry = talkRegistry || (() => undefined);
     this._live = []; // bridges not yet ended, oldest first
-    this._bySession = new Map(); // sessionId -> bridge
+    this._bySession = new Map(); // sessionId -> entry
     this._closed = []; // recently ended session ids
   }
 
@@ -86,12 +130,45 @@ export class TalkSessions {
     } catch {
       connId = undefined;
     }
-    const entry = { bridge, connId, sessionId: undefined };
+    // A bridge made outside a gateway request has no owner anyone could check, so it
+    // is never bound, and notes cannot reach it.
+    const entry = { bridge, connId, sessionId: undefined, claiming: false, ended: false };
     this._live.push(entry);
+    const registry = connId ? this._registry() : undefined;
+    if (registry) {
+      // Bind at creation (the module comment). The record lands after this returns,
+      // in the same synchronous run, so look for it in a microtask.
+      const before = new Set(registry.keys());
+      entry.claiming = true;
+      queueMicrotask(() => {
+        entry.claiming = false;
+        this._claim(entry, before);
+      });
+    }
     return () => this._ended(entry);
   }
 
+  _claim(entry, before) {
+    if (entry.ended) return;
+    const registry = this._registry();
+    if (!registry) return;
+    // In insertion order: the first new record is the one made for this bridge. A
+    // later one on the same connection belongs to a bridge made after this one.
+    for (const [id, record] of registry) {
+      if (before.has(id) || this._bySession.has(id) || this._closed.includes(id)) continue;
+      if (!record || record.kind !== "realtime-relay" || record.connId !== entry.connId) continue;
+      this._bind(entry, id);
+      return;
+    }
+  }
+
+  _bind(entry, sessionId) {
+    entry.sessionId = sessionId;
+    this._bySession.set(sessionId, entry);
+  }
+
   _ended(entry) {
+    entry.ended = true;
     this._live = this._live.filter((e) => e !== entry);
     if (entry.sessionId === undefined) return;
     this._bySession.delete(entry.sessionId);
@@ -99,40 +176,61 @@ export class TalkSessions {
     if (this._closed.length > CLOSED_IDS_KEPT) this._closed.shift();
   }
 
-  /** The bridge serving `sessionId` for the caller on `connId`, or {error}. */
-  resolve(sessionId, connId) {
-    const owned = (c) => !c || !connId || c === connId;
+  /**
+   * The bridge serving `sessionId` for the caller on `connId`, or {error}.
+   * bind:false peeks: on a host without the registry it names the bridge a note would
+   * bind to, without binding it (capabilities must not claim a bridge for a typo).
+   */
+  resolve(sessionId, connId, { bind = true } = {}) {
+    // As OpenClaw's requireUnifiedTalkSessionConn: no connection, no ownership.
+    if (!connId) return { error: notOwner() };
     const bound = this._bySession.get(sessionId);
     if (bound) {
-      if (!owned(bound.connId)) {
-        return { error: invalid("Talk session is not owned by this connection", "not_owner") };
-      }
+      if (bound.connId !== connId) return { error: notOwner() };
       return { bridge: bound.bridge };
     }
     if (this._closed.includes(sessionId)) {
       return { error: invalid("Talk session is closed", "closed_session") };
     }
-    const record = this._lookup(sessionId);
-    if (record === null) return { error: invalid("Unknown Talk session", "unknown_session") };
-    if (record) {
+    const registry = this._registry();
+    if (registry) {
+      const record = registry.get(sessionId);
+      if (!record) return { error: invalid("Unknown Talk session", "unknown_session") };
       if (record.kind !== "realtime-relay") {
         return {
           error: invalid("teaport.talk.context needs a gateway-relay realtime session", "not_relay"),
         };
       }
-      if (!owned(record.connId)) {
-        return { error: invalid("Talk session is not owned by this connection", "not_owner") };
+      if (record.connId !== connId) return { error: notOwner() };
+      // A live relay session of this connection that no teaport bridge serves: either
+      // its bridge is a microtask away from binding, or it is another provider's.
+      if (this._live.some((e) => e.claiming && e.connId === connId)) {
+        return {
+          error: unavailable("the voice session's bridge is not bound yet", "bridge_not_ready", 100),
+        };
       }
-    }
-    const entry = this._live.filter((e) => e.sessionId === undefined && owned(e.connId)).at(-1);
-    if (!entry) {
       return {
-        error: invalid("No live teaport voice session for this Talk session", "unknown_session"),
+        error: invalid("this Talk session is not served by the teaport voice provider", "no_voice_session"),
       };
     }
-    entry.sessionId = sessionId;
-    this._bySession.set(sessionId, entry);
+    const entry = this._live.filter((e) => e.sessionId === undefined && e.connId === connId).at(-1);
+    if (!entry) {
+      return {
+        error: invalid("no live teaport voice session on this connection", "no_voice_session"),
+      };
+    }
+    if (bind) this._bind(entry, sessionId);
     return { bridge: entry.bridge };
+  }
+
+  /** resolve(), waiting out a binding still pending (bounded by BIND_WAIT_MS). */
+  async resolveSettled(sessionId, connId, options) {
+    const deadline = Date.now() + BIND_WAIT_MS;
+    for (;;) {
+      const found = this.resolve(sessionId, connId, options);
+      if (found.error?.details?.reason !== "bridge_not_ready" || Date.now() >= deadline) return found;
+      await new Promise((r) => setTimeout(r, 10));
+    }
   }
 }
 
@@ -145,7 +243,8 @@ function parseContextParams(params) {
   if (typeof text !== "string" || !text.trim()) {
     return { error: invalid("text must be a non-empty string", "bad_params") };
   }
-  if (text.length > MAX_TEXT_CHARS) {
+  const trimmed = text.trim();
+  if (chars(trimmed) > MAX_TEXT_CHARS) {
     return { error: invalid(`text is longer than ${MAX_TEXT_CHARS} characters`, "too_long") };
   }
   if (respond !== undefined && typeof respond !== "boolean") {
@@ -154,7 +253,7 @@ function parseContextParams(params) {
   if (kind !== undefined && (typeof kind !== "string" || kind.length > MAX_KIND_CHARS)) {
     return { error: invalid(`kind must be a string of at most ${MAX_KIND_CHARS} characters`, "bad_params") };
   }
-  return { sessionId: sessionId.trim(), text: text.trim(), respond: respond === true, kind };
+  return { sessionId: sessionId.trim(), text: trimmed, respond: respond === true, kind };
 }
 
 /** The brain's refusal of a note, as a gateway error. */
@@ -170,38 +269,54 @@ function brainError(ack) {
 /**
  * The gateway method handlers, keyed by method name, for api.registerGatewayMethod.
  * @param {TalkSessions} sessions
+ * @param {{helloTimeoutMs?: number, now?: () => number}} [options] for tests
  */
-export function contextMethods(sessions) {
+export function contextMethods(sessions, options = {}) {
   return {
     [CONTEXT_METHOD]: async ({ params, client, respond }) => {
       const p = parseContextParams(params);
       if (p.error) return respond(false, undefined, p.error);
-      const found = sessions.resolve(p.sessionId, client?.connId);
+      const found = await sessions.resolveSettled(p.sessionId, client?.connId);
       if (found.error) return respond(false, undefined, found.error);
       const { bridge } = found;
-      if (!bridge.isConnected()) {
-        return respond(
-          false,
-          undefined,
-          bridge.hasEnded()
-            ? invalid("Talk session is closed", "closed_session")
-            : unavailable("the voice session is still connecting", "connecting", 500),
-        );
+      // Only once the brain has said hello. Before it, a note would wait in the socket
+      // while the brain sets up (acquire_slot waits out the previous session's
+      // teardown), and could time out here yet still be applied there, so a retry
+      // would add it twice.
+      switch (contextState(bridge, options)) {
+        case "closed":
+          return respond(false, undefined, invalid("Talk session is closed", "closed_session"));
+        case "connecting":
+          return respond(false, undefined, unavailable("the voice session is still connecting", "connecting", 500));
+        case "unsupported":
+          return respond(
+            false,
+            undefined,
+            invalid("this session's teaport brain does not take context notes", "unsupported"),
+          );
+        default:
+          break;
       }
-      // The brain's own limit, when it has said what it is, refused here rather than
-      // after a round trip.
       const limits = contextLimits(bridge.brainFeatures());
-      if (limits && Number.isFinite(limits.maxChars) && p.text.length > limits.maxChars) {
+      const length = chars(p.text);
+      if (length > limits.maxChars) {
         return respond(
           false,
           undefined,
-          invalid(`the note is ${p.text.length} characters; the limit is ${limits.maxChars}`, "too_long"),
+          invalid(`the note is ${length} characters; the limit is ${limits.maxChars}`, "too_long"),
         );
       }
       let ack;
       try {
         ack = await bridge.sendContext({ text: p.text, respond: p.respond, kind: p.kind });
       } catch (err) {
+        if (bridge.hasEnded()) {
+          return respond(
+            false,
+            undefined,
+            invalid("Talk session closed before the brain answered the note", "closed_session"),
+          );
+        }
         const message = err instanceof Error ? err.message : String(err);
         return respond(false, undefined, unavailable(message, "brain_unavailable"));
       }
@@ -216,12 +331,20 @@ export function contextMethods(sessions) {
       };
       const sessionId = params && typeof params === "object" ? params.sessionId : undefined;
       if (typeof sessionId === "string" && sessionId.trim()) {
-        const found = sessions.resolve(sessionId.trim(), client?.connId);
+        const id = sessionId.trim();
+        const found = await sessions.resolveSettled(id, client?.connId, { bind: false });
         if (found.error) return respond(false, undefined, found.error);
-        const limits = contextLimits(found.bridge.brainFeatures());
-        // null: this session's brain has not announced context notes (an older brain,
-        // or one still connecting); notes to it will not be answered.
-        result.session = { sessionId: sessionId.trim(), context: limits };
+        const state = contextState(found.bridge, options);
+        if (state === "closed") {
+          return respond(false, undefined, invalid("Talk session is closed", "closed_session"));
+        }
+        // context is null unless state is "ready". "connecting" is worth asking about
+        // again; "unsupported" is final for this session.
+        result.session = {
+          sessionId: id,
+          state,
+          context: state === "ready" ? contextLimits(found.bridge.brainFeatures()) : null,
+        };
       }
       return respond(true, result);
     },

@@ -87,14 +87,17 @@ async def run_relay_bot(websocket: WebSocket):
     session = build_agent_session(
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),
+        context_notes=True,
     )
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
         logger.info("OpenClaw relay client connected — greeting")
         # What this brain accepts beyond audio, so the plugin can tell a Talk client
-        # (teaport.talk.capabilities) before it sends anything. An older plugin
-        # ignores message types it does not know.
+        # (teaport.talk.capabilities) before it sends anything. It is also the plugin's
+        # "ready": it sends no note before it (the pipeline is running from here), so a
+        # note never waits in the socket through acquire_slot and the pipeline start.
+        # An older plugin ignores message types it does not know.
         await session.task.queue_frames([OutputTransportMessageUrgentFrame(message={
             "type": "hello",
             "features": {"context": session.client_notes.limits()},

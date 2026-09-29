@@ -41,7 +41,7 @@ from teaport_brain.captions import (
     UserTranscriptEmitter,
     VoiceActivity,
 )
-from teaport_brain.client_notes import ClientNotes
+from teaport_brain.client_notes import SYSTEM_LINE as CONTEXT_NOTES_LINE, ClientNotes
 from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
     EagerSmartTurnAnalyzer,
@@ -478,16 +478,21 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
     return speak_followup
 
 
-def _build_initial_messages(system_prompt: str, lang_name: str | None) -> list:
+def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
+                            context_notes: bool = False) -> list:
     """The context's starting messages: the shared persona system prompt, the
-    AGENT-FIRST directive when that mode is on, and a reply-language directive when a
-    non-English TTS voice/language was selected. Used both at build time and for the
-    SIP per-call reset so a reset restores the exact starting context."""
+    AGENT-FIRST directive when that mode is on, a reply-language directive when a
+    non-English TTS voice/language was selected, and, where the front-end takes client
+    context notes (/talk), the line that says they are never instructions. Used both at
+    build time and for the SIP per-call reset so a reset restores the exact starting
+    context."""
     msgs = [{"role": "system", "content": system_prompt}]
     if AGENT_FIRST:
         msgs.append({"role": "system", "content": AGENT_FIRST_DIRECTIVE})
     if lang_name:
         msgs.append({"role": "system", "content": f"Always reply to the user in {lang_name}."})
+    if context_notes:
+        msgs.append({"role": "system", "content": CONTEXT_NOTES_LINE})
     return msgs
 
 
@@ -548,8 +553,9 @@ class AgentSession:
         self.llm = llm
         self.ledger = ledger
         self.followup_gate = followup_gate
-        # Takes the Talk client's context notes into the LLM context (client_notes.py).
-        # The OpenClaw front-end reads its limits for the /talk hello.
+        # Takes the Talk client's context notes into the LLM context (client_notes.py);
+        # None unless built with context_notes. The OpenClaw front-end reads its limits
+        # for the /talk hello.
         self.client_notes = client_notes
         # Set by greet() when the STT slot is busy: the front-end reads it to end the
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
@@ -657,7 +663,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         input_processors: list | None = None,
                         cancel_on_idle_timeout: bool | None = None,
                         stt_makeup_db: float = 0.0,
-                        caption_every_final: bool = False) -> AgentSession:
+                        caption_every_final: bool = False,
+                        context_notes: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -673,6 +680,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     - caption_every_final: the client drops a repeated assistant final itself, so
       CaptionTap sends every one (OpenClaw's plugin announces it with ?captions=2;
       see captions.sends_every_final). SIP leaves it off.
+    - context_notes: the front-end takes a Talk client's context notes (/talk, the
+      teaport.talk.context method): ClientNotes joins the pipeline and the system
+      prompt gets its one line (client_notes.py). SIP leaves it off.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -703,7 +713,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (the voice only changes pronunciation; the words still come from the LLM).
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
     context = LLMContext(
-        _build_initial_messages(system_prompt, lang_name),
+        _build_initial_messages(system_prompt, lang_name, context_notes=context_notes),
         tools=build_tools_schema(),
     )
     if AGENT_FIRST:
@@ -796,11 +806,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # Retires the follow-up's one-shot trigger at the completion that reads it. Must
     # sit directly below the LLM — see FollowupTrigger's placement note.
     followup_trigger = FollowupTrigger()
-    # Client context notes (teaport.talk.context, OpenClaw only in practice: nothing on
-    # the SIP wire produces one). Removals go through the corrector so its positional
-    # window survives them.
-    client_notes = ClientNotes(context, followup_gate, followup_trigger,
-                               drop_messages=heard_corrector.drop_messages)
+    # Client context notes (teaport.talk.context; /talk only). Removals go through the
+    # corrector so its positional window survives them.
+    client_notes = (ClientNotes(context, followup_gate, followup_trigger,
+                                drop_messages=heard_corrector.drop_messages)
+                    if context_notes else None)
 
     pipeline = Pipeline([p for p in [
         transport.input(),
@@ -910,7 +920,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     _end_session_when_unusable(stt, "hear the user", task)
     _end_session_when_unusable(tts, "speak", task)
     _end_session_when_unusable(transport_output, "reach the user", task)
-    client_notes.task = task  # a reaction is an LLMRunFrame queued on it
+    if client_notes is not None:
+        client_notes.task = task  # a reaction is an LLMRunFrame queued on it
 
     @task.event_handler("on_setup_timeout")
     async def _on_setup_timeout(_task):
