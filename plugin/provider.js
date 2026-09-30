@@ -20,8 +20,8 @@ const PCM16_24K = { encoding: "pcm16", sampleRateHz: 24000, channels: 1 };
 const TRACE = /^(1|true)$/i.test(process.env.TEAPORT_TRACE || "");
 
 // How long a context note waits for the brain's context_result. Notes go out only after
-// the brain's hello (context.js), when its pipeline is running and it answers as soon
-// as a note arrives, so running out means a brain too wedged to matter.
+// the brain says "ready" (context.js), when its pipeline is running and it answers as
+// soon as a note arrives, so running out means a brain too wedged to matter.
 const CONTEXT_ACK_TIMEOUT_MS = 3000;
 
 // The caption protocol this plugin speaks, sent to the brain as ?captions=. From 2
@@ -432,22 +432,24 @@ class TeaportBridge {
     this._url = url; // ws://<pipecat-host>:7861/talk
     this._transcripts = transcripts; // one per session, like the Talk view's state
     this._ws = null;
-    this._open = false;
-    this._closed = false; // we initiated close()
-    this._errored = false;
+    // "connecting" until the socket opens, then "open", then "ended" however the
+    // session ended: close() from the relay, the brain closing the socket, or a failed
+    // connect. Only the brain closing it is news to the relay (onClose).
+    this._state = "connecting";
+    this._errored = false; // the socket reported an error (the onClose reason)
     this._queue = []; // audio buffered until the socket opens (sendAudio races connect)
     // The brain delegates heavy requests by emitting an openclaw_agent_consult
     // tool call; the relay runs the agent turn IN-PROCESS and returns the result
     // via submitToolResult below. Declaring continuation support switches the
     // relay's consult machinery on (working responses + final tool_result).
     this.supportsToolResultContinuation = true;
-    // Context notes (context.js): what the brain said it accepts in its hello, and the
-    // notes sent to it that it has not answered yet.
+    // Context notes (context.js): what the brain said it accepts in its hello, whether
+    // it has said "ready", and the notes sent to it that it has not answered yet.
     this._brain = null;
+    this._brainReady = false;
     this._openedAt = null; // Date.now() at the socket's open (the hello's deadline runs from it)
     this._contextSeq = 0;
     this._contextAcks = new Map();
-    this._ended = false;
     this._onEnd = null;
   }
 
@@ -456,8 +458,13 @@ class TeaportBridge {
     return this._brain;
   }
 
+  /** Whether the brain has said "ready": its pipeline runs and it takes notes now. */
+  brainReady() {
+    return this._brainReady;
+  }
+
   hasEnded() {
-    return this._ended;
+    return this._state === "ended";
   }
 
   /** When the socket to the brain opened (ms since the epoch), or null before. */
@@ -468,10 +475,10 @@ class TeaportBridge {
   /**
    * Send a context note to the brain; resolves with its context_result
    * ({ok, status} or {ok: false, error, message, retry_after_ms?}). context.js sends
-   * only after the brain's hello, so the brain is up and answers at once.
+   * only after the brain's "ready", so the brain is up and answers at once.
    */
   sendContext({ text, respond, kind }) {
-    if (!this._ws || !this._open) {
+    if (!this._ws || this._state !== "open") {
       return Promise.reject(new Error("the voice session is not connected"));
     }
     this._contextSeq += 1;
@@ -495,22 +502,23 @@ class TeaportBridge {
   }
 
   // The session is over, however it ended: fail the notes still waiting on the brain
-  // and leave the registry (once).
+  // and leave the registry. Returns false if it had already ended.
   _end() {
-    if (this._ended) return;
-    this._ended = true;
+    if (this._state === "ended") return false;
+    this._state = "ended";
     for (const { reject, timer } of this._contextAcks.values()) {
       clearTimeout(timer);
       reject(new Error("the voice session closed"));
     }
     this._contextAcks.clear();
     if (this._onEnd) this._onEnd();
+    return true;
   }
 
   // Relay -> brain: consult results (and working notices, willContinue=true).
   // The brain resolves its pending ask_openclaw future on the final result.
   submitToolResult(callId, result, options) {
-    if (!this._ws || !this._open) return;
+    if (!this._ws || this._state !== "open") return;
     try {
       this._ws.send(JSON.stringify({
         type: "tool_result",
@@ -542,7 +550,11 @@ class TeaportBridge {
       this._ws = ws;
 
       ws.addEventListener("open", () => {
-        this._open = true;
+        if (this._state !== "connecting") {
+          resolve(); // close() ran while connecting: nothing to start, and nothing failed
+          return;
+        }
+        this._state = "open";
         this._openedAt = Date.now();
         for (const buf of this._queue) this._rawSend(buf);
         this._queue = [];
@@ -554,11 +566,10 @@ class TeaportBridge {
         this._errored = true;
         const detail = (ev && (ev.error?.message || ev.message)) || "unknown";
         const err = new Error(`teaport provider WS error: ${detail}`);
-        // Pre-open: connect() rejection is the failure signal — mark the bridge
-        // settled so the WS's follow-up "close" event doesn't ALSO fire onClose
-        // for a session the relay never saw succeed. Post-open: report.
-        if (!this._open) {
-          this._closed = true;
+        // Pre-open: connect() rejection is the failure signal — end the bridge so
+        // the WS's follow-up "close" event doesn't ALSO fire onClose for a session the
+        // relay never saw succeed. Post-open: report.
+        if (this._state !== "open") {
           this._end();
           reject(err);
           return;
@@ -566,11 +577,7 @@ class TeaportBridge {
         if (this._req.onError) this._req.onError(err);
       });
       ws.addEventListener("close", () => {
-        this._open = false;
-        this._end();
-        if (this._closed) return; // we initiated it; relay already knows
-        this._closed = true;
-        this._open = false;
+        if (!this._end()) return; // close() or a failed connect ended it; the relay knows
         this._endTranscripts();
         if (this._req.onClose) this._req.onClose(this._errored ? "error" : "completed");
       });
@@ -591,8 +598,12 @@ class TeaportBridge {
         // for it, so close its bubble and let out the cards held behind it.
         this._forward(this._transcripts.end());
       } else if (msg.type === "hello") {
-        // What this brain accepts beyond audio (context notes and their limits).
+        // What this brain accepts beyond audio (context notes and their limits). It
+        // comes as soon as the brain accepts the socket; "ready" follows once notes can
+        // be sent.
         this._brain = msg.features && typeof msg.features === "object" ? msg.features : {};
+      } else if (msg.type === "ready") {
+        this._brainReady = true;
       } else if (msg.type === "context_result") {
         const pending = this._contextAcks.get(msg.id);
         if (pending) {
@@ -673,8 +684,8 @@ class TeaportBridge {
 
   sendAudio(audio) {
     // audio: Buffer of PCM16/24k from the relay. Queue until the socket is open.
-    if (this._open && this._ws) this._rawSend(audio);
-    else this._queue.push(audio);
+    if (this._state === "open") this._rawSend(audio);
+    else if (this._state === "connecting") this._queue.push(audio);
   }
 
   _rawSend(audio) {
@@ -694,7 +705,7 @@ class TeaportBridge {
   handleBargeIn(_options) {
     // Pipecat's VAD detects barge-in from the forwarded audio and sends us back a
     // {"type":"clear"}; we still forward an explicit hint when the relay asks.
-    if (this._open && this._ws) {
+    if (this._state === "open") {
       try {
         this._ws.send(JSON.stringify({ type: "barge_in" }));
       } catch {
@@ -708,11 +719,11 @@ class TeaportBridge {
   }
 
   close() {
-    if (!this._closed) this._endTranscripts();
-    this._closed = true;
-    this._open = false;
+    // Only a session that has not ended yet has a bubble to close and a socket to shut.
+    const live = this._state !== "ended";
+    if (live) this._endTranscripts();
     this._end();
-    if (this._ws) {
+    if (live && this._ws) {
       try {
         this._ws.send(JSON.stringify({ type: "close" }));
       } catch {
@@ -727,6 +738,6 @@ class TeaportBridge {
   }
 
   isConnected() {
-    return this._open;
+    return this._state === "open";
   }
 }

@@ -83,8 +83,10 @@ await bridge.connect();
 console.log("connected:", bridge.isConnected());
 
 if (process.env.NOTE) {
+  // Notes wait for the brain's "ready" (its pipeline and STT are up), as context.js does.
+  for (let t = 0; t < 400 && !bridge.brainReady(); t++) await sleep(50);
+  console.log("brain hello:", JSON.stringify(bridge.brainFeatures()), "| ready:", bridge.brainReady());
   await sleep(3000); // let the greeting finish
-  console.log("brain hello:", JSON.stringify(bridge.brainFeatures()));
   const respond = /^(1|true)$/i.test(process.env.RESPOND || "");
   const ack = await bridge.sendContext({ text: process.env.NOTE, respond, kind: "harness" });
   console.log(`note (respond=${respond}) ->`, JSON.stringify(ack));

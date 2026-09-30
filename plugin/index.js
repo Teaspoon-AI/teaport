@@ -31,25 +31,26 @@
 // OpenClaw should stay quiet. That confuses `brain` with response ownership, and cost
 // several rounds of flipping the value back and forth against a live gateway.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { getPluginRuntimeGatewayRequestScope } from "openclaw/plugin-sdk/plugin-runtime";
 
 import { TalkSessions, contextMethods } from "./context.js";
 import { buildTeaportRealtimeProvider } from "./provider.js";
 
 // The gateway connection a request came in on. createBridge runs inside the client's
 // talk.session.create request, so this names the connection that owns the session
-// (context.js). OpenClaw keeps the request scope in a global AsyncLocalStorage
-// (src/plugins/runtime/gateway-request-scope.ts, a Symbol.for singleton from 2026.7.1
-// through 2026.9.1), read here directly: no SDK import at load, and nothing to race.
-const REQUEST_SCOPE = Symbol.for("openclaw.pluginRuntimeGatewayRequestScope");
+// (context.js). OpenClaw runs every gateway method, core ones included, inside the
+// request scope this SDK accessor reads. OpenClaw 2026.9.1 kept that scope in a global
+// AsyncLocalStorage and 2026.9.6 moved it into the plugin execution frame; the
+// accessor reads either.
 function currentConnId() {
-  const scope = globalThis[REQUEST_SCOPE];
-  return typeof scope?.getStore === "function" ? scope.getStore()?.client?.connId : undefined;
+  return getPluginRuntimeGatewayRequestScope()?.client?.connId;
 }
 
-// OpenClaw's own Talk session registry (src/gateway/talk-session-registry.ts): the
-// record talk.session.create makes for each sessionId ({kind, connId, ...}). It is
-// internal, not SDK, and a global Map only from 2026.8.1 (module-local before), so
-// this reads it defensively: undefined means this host does not expose one.
+// OpenClaw's own Talk session registry (src/gateway/talk-session-registry.ts, and
+// src/gateway/talk/session-registry.ts from 2026.9.6): the record talk.session.create
+// makes for each sessionId ({kind, connId, ...}). It is internal, not SDK, so this
+// reads it defensively: undefined means this host does not expose one, and context
+// notes then answer host_unsupported.
 const TALK_SESSIONS = Symbol.for("openclaw.unifiedTalkSessions");
 function talkRegistry() {
   const registry = globalThis[TALK_SESSIONS];
@@ -64,9 +65,9 @@ export default definePluginEntry({
     "speech-to-speech server with heard-grounded barge-in.",
   register(api) {
     // The OpenClaw version is read when a Talk session first needs it, not here:
-    // OpenClaw builds the plugin runtime lazily, and on 2026.7.x any read of
-    // api.runtime builds all of it (and can throw), which every plugin load
-    // (discovery, CLI commands) would otherwise pay for.
+    // OpenClaw builds the plugin runtime lazily, and a read of api.runtime can build
+    // all of it (and throw), which every plugin load (discovery, CLI commands) would
+    // otherwise pay for.
     const sessions = new TalkSessions({ currentConnId, talkRegistry });
     api.registerRealtimeVoiceProvider(
       buildTeaportRealtimeProvider({
@@ -75,8 +76,9 @@ export default definePluginEntry({
         sessions,
       }),
     );
-    // Context notes for live sessions (context.js). The scope is talk.session.*'s:
-    // whoever may drive the session may add to what its voice knows.
+    // Context notes for live sessions (context.js). operator.talk is the scope OpenClaw
+    // 2026.9 gives its own Talk methods: whoever may drive the session may add to what
+    // its voice knows.
     if (typeof api.registerGatewayMethod === "function") {
       for (const [method, handler] of Object.entries(contextMethods(sessions))) {
         api.registerGatewayMethod(method, handler, { scope: "operator.talk" });

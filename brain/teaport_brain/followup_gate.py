@@ -30,6 +30,7 @@ from pipecat.frames.frames import (
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     InterruptionFrame,
+    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -48,6 +49,14 @@ _MAX_WAIT = float(os.getenv("TEAPORT_FOLLOWUP_MAX_WAIT_S", "60"))
 # follows its queued LLMRunFrame within milliseconds), at an interruption, or when the
 # claimant lets it go; this only bounds a claimant that queued nothing and forgot.
 _CLAIM_SECS = 3.0
+# How long a waiter whose wait ran out goes on waiting for a claimed window's completion
+# to finish before it goes ahead anyway (wait_out_claim).
+_CLAIMANT_WAIT_SECS = 30.0
+
+# The tag on every order the brain writes into the context as a user message (the
+# consult follow-up's trigger, ClientNotes' reaction order). One constant: the model is
+# told what it means once, and both injectors' orders must read the same.
+SYSTEM_NOTICE_TAG = "[automated system notice, not spoken by the user]"
 
 
 class OneShot:
@@ -117,6 +126,30 @@ class FollowupTrigger(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class TurnCommitMark(FrameProcessor):
+    """Tells the gate a completion was just asked for, the moment it is.
+
+    A committed turn (the user's words, or an injector's LLMRunFrame) reaches the LLM as
+    an LLMContextFrame, and the gate cannot see that: it sits after the output transport,
+    and the LLM consumes the frame. Until the completion's LLMFullResponseStartFrame gets
+    to the gate, the gate would call the moment turn-free, and an injector could post
+    after the user's unanswered words and queue a second completion. So each one claims
+    the window (FollowupGate.turn_committed) until its completion starts.
+
+    PLACEMENT — just above the LLM, below everything that edits the context on the way
+    (the heard corrector, ClientNotes): the frame it sees is the one the LLM gets."""
+
+    def __init__(self, gate: "FollowupGate"):
+        super().__init__()
+        self._gate = gate
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._gate.turn_committed()
+        await self.push_frame(frame, direction)
+
+
 class Delivery:
     """One reply being watched from the moment it is queued until it settles.
 
@@ -179,7 +212,9 @@ class FollowupGate(FrameProcessor):
     the second never happens as intended. The claim is taken synchronously as the
     window is reported, holds the window shut for everyone else, and ends when the
     claimant's completion starts, at an interruption, on release_claim(), or after
-    _CLAIM_SECS. A lone waiter sees no difference."""
+    _CLAIM_SECS. A lone waiter sees no difference. A committed turn claims the window the
+    same way (TurnCommitMark), so the gap between a commit and its completion's start is
+    never reported as turn-free."""
 
     def __init__(self, quiet_secs: float = _QUIET_SECS, max_wait: float = _MAX_WAIT,
                  claim_secs: float = _CLAIM_SECS):
@@ -205,6 +240,9 @@ class FollowupGate(FrameProcessor):
         # Set == idle AND no turn in flight: what the follow-up injector waits for.
         self._clear = asyncio.Event()
         self._clear.set()
+        # Set == no window claimed and no turn in flight, busy or not (wait_out_claim).
+        self._settled = asyncio.Event()
+        self._settled.set()
         # Replies being watched to completion — see Delivery and watch_delivery.
         self._deliveries: list = []
 
@@ -226,6 +264,24 @@ class FollowupGate(FrameProcessor):
         self._claim_timer = asyncio.get_running_loop().call_later(
             self._claim_secs, self.release_claim)
         self._refresh()
+
+    def turn_committed(self) -> None:
+        """A completion was just asked for (TurnCommitMark): hold the window shut until
+        it starts, as a claimant's is."""
+        self._claim()
+
+    async def wait_out_claim(self, max_wait: float = _CLAIMANT_WAIT_SECS) -> None:
+        """For a waiter whose wait_until_idle ran out and that goes ahead anyway: if a
+        window is claimed, wait until the claimant's completion has started and ended
+        (bounded), so the two never queue completions into one window. The first one's
+        text would retire both one-shot triggers (FollowupTrigger fires every armed one).
+        Returns at once when nothing is claimed."""
+        if not self._claimed:
+            return
+        try:
+            await asyncio.wait_for(self._settled.wait(), timeout=max_wait)
+        except asyncio.TimeoutError:
+            logger.info("followup_gate: the claimed window's turn outlasted the wait")
 
     def release_claim(self) -> None:
         """Give back a window wait_until_idle(turn_free=True) reported, for a claimant
@@ -272,6 +328,10 @@ class FollowupGate(FrameProcessor):
             self._clear.clear()
         else:
             self._clear.set()
+        if self._turn or self._claimed:
+            self._settled.clear()
+        else:
+            self._settled.set()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)

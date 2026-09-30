@@ -879,7 +879,7 @@ default = 0.7
 read = "startup"
 tier = "tuning"
 help = "How long the conversation must stay quiet before a follow-up window counts; rejects mid-thought pauses and between-turn gaps."
-source = "followup_gate.py:43"
+source = "followup_gate.py:44"
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_MAX_WAIT_S"
@@ -892,7 +892,7 @@ default = 60
 read = "startup"
 tier = "tuning"
 help = "Ceiling on holding a follow-up for a gap; past this, speak anyway."
-source = "followup_gate.py:45"
+source = "followup_gate.py:46"
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_MIN_HEARD"
@@ -905,7 +905,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:241"
+source = "agent_session.py:243"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1026,7 +1026,7 @@ default = 1000
 read = "startup"
 tier = "tuning"
 help = "Longest context note a Talk client may send, in characters; a longer one is refused, not cut. The teaport-realtime plugin announces the smaller of this and its own 16000."
-source = "client_notes.py:80"
+source = "client_notes.py:87"
 
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_NOTES"
@@ -1039,7 +1039,7 @@ default = 20
 read = "startup"
 tier = "tuning"
 help = "How many context notes stay in the LLM context; past it the oldest are removed."
-source = "client_notes.py:81"
+source = "client_notes.py:88"
 
 [[settings]]
 name = "TEAPORT_CONTEXT_RESPOND_INTERVAL_S"
@@ -1053,7 +1053,7 @@ default = 15
 read = "startup"
 tier = "tuning"
 help = "Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited."
-source = "client_notes.py:82"
+source = "client_notes.py:89"
 
 # ---- sip brain
 
@@ -1235,7 +1235,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:59"
+source = "gateway_server.py:60"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1247,7 +1247,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:66"
+source = "gateway_server.py:67"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"

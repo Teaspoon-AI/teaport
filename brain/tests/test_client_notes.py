@@ -25,7 +25,7 @@
 #     withdrawn after REACT_MAX_WAIT_S.
 #   * The quiet moment is claimed (FollowupGate): a reaction and a consult follow-up
 #     never share a window.
-#   * /talk says hello on connect, before the greeting.
+#   * /talk says hello at once and "ready" after a greeting through a working STT.
 #
 # Run: python test_client_notes.py   (hermetic)
 #
@@ -63,7 +63,9 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  #
 
 from teaport_brain import client_notes as cn  # noqa: E402
 from teaport_brain.client_notes import ClientContextFrame, ClientNotes  # noqa: E402
-from teaport_brain.followup_gate import FollowupGate, FollowupTrigger  # noqa: E402
+from teaport_brain.followup_gate import (  # noqa: E402
+    SYSTEM_NOTICE_TAG, FollowupGate, FollowupTrigger, TurnCommitMark,
+)
 from teaport_brain.gateway_serializer import TeaportGatewaySerializer  # noqa: E402
 from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
 from teaport_brain.transcript_ledger import Utterance  # noqa: E402
@@ -276,6 +278,7 @@ async def test_the_reaction_is_to_the_note_that_asked_for_it():
         "The user tapped the character's nose.", "The camera switched to the kitchen view."]
     order = msgs[-1]["content"]
     assert order.startswith(cn._ORDER_TAG), "the order is not the tail the model answers"
+    assert cn._ORDER_TAG == SYSTEM_NOTICE_TAG, "the reaction order and the consult's differ"
     assert "nose" in order and "kitchen" not in order, order
     assert [type(f) for f in h.task.queued] == [LLMRunFrame]
 
@@ -441,20 +444,29 @@ async def test_no_note_lands_while_a_tool_call_turn_is_in_flight():
 
 
 async def test_a_turn_committed_an_instant_ago_keeps_its_words_last():
-    """The quiet moment can land between the user message's commit and its completion
-    reaching this processor. Notes appended then would be what the model answers; they
-    wait, and that completion folds them in ahead of the user's words."""
-    h = _harness(quiet_secs=0.1)
-    await h.gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-    await _send(h, "The user tapped the character.")
+    """A note arriving between a turn's commit and its completion's start: the commit
+    holds the gate (TurnCommitMark), so no quiet moment is reported and the note waits
+    for that turn, rather than landing after the user's unanswered words."""
+    h = _harness(quiet_secs=0.02)
+    mark = TurnCommitMark(h.gate)
+
+    async def ignore(frame, direction=FrameDirection.DOWNSTREAM):
+        pass
+    mark.push_frame = ignore
     h.context.add_message({"role": "user", "content": "What did I just do?"})
-    await h.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
-    await asyncio.sleep(0.15)  # one quiet window (0.1 s): found, and passed up
+    await mark.process_frame(LLMContextFrame(context=h.context), FrameDirection.DOWNSTREAM)
+    await _send(h, "The user tapped the character.")
+    assert _results(h)[-1]["status"] == "queued"
+    await asyncio.sleep(0.15)  # several quiet windows' worth: none is reported
     assert h.context.get_messages()[-1]["content"] == "What did I just do?"
-    await h.notes.process_frame(LLMContextFrame(context=h.context), FrameDirection.DOWNSTREAM)
+    await h.gate.process_frame(LLMFullResponseStartFrame(), FrameDirection.DOWNSTREAM)
+    h.context.add_message({"role": "assistant", "content": "You asked what you did."})
+    await h.gate.process_frame(LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM)
+    await _settle(h)
     msgs = h.context.get_messages()
-    assert msgs[-1]["content"] == "What did I just do?"
-    assert _text(msgs[-2]["content"]) == "The user tapped the character."
+    assert _text(msgs[-1]["content"]) == "The user tapped the character."
+    assert msgs[-2]["role"] == "assistant"
+    assert h.task.queued == []
 
 
 async def test_a_user_message_nothing_answers_does_not_hold_notes_forever():
@@ -476,6 +488,38 @@ async def test_a_reaction_that_cannot_find_a_quiet_moment_stays_as_context():
     assert len(_notes_in(h.context)) == 1
     assert "React to this now" not in _notes_in(h.context)[0]["content"]
     assert h.task.queued == [], "a stale reaction ran"
+
+
+async def test_a_reaction_asked_for_during_a_long_wait_keeps_its_own_deadline():
+    """Review of #74: a respond:true note arriving while the drainer already waited on a
+    context-only note (the gate's full max wait) was not held to REACT_MAX_WAIT_S, and
+    the voice reacted to a tap long after it. Past its deadline it is context only."""
+    h = _harness(react_max_wait_s=0.1)
+    await h.gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _send(h, "The camera switched to the kitchen.")  # the drainer starts waiting
+    await asyncio.sleep(0.01)
+    await _send(h, "The user tapped the character.", respond=True, rid="c2")
+    h.clock.t += 5.0  # the quiet moment comes long after the tap's deadline
+    await h.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _settle(h)
+    assert len(_notes_in(h.context)) == 2
+    assert _orders_in(h.context) == [] and h.task.queued == [], "a stale reaction ran"
+    assert h.gate.is_clear(), "the window stayed claimed"
+
+
+async def test_a_note_keeps_only_text():
+    """Review of #74: a note outlives its turn in the context, so a lone surrogate (half
+    an emoji a client cut) would fail every request's encoding until it was evicted.
+    Control, zero-width and direction-override characters go too; the joiner that binds
+    an emoji sequence stays."""
+    h = _harness()
+    family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
+    await _send(h, "tap\ud83d \u200bthe\x07 \u202echaracter\ufeff " + family)
+    await _settle(h)
+    content = _notes_in(h.context)[0]["content"]
+    assert _text(content) == "tap the character " + family, repr(_text(content))
+    content.encode("utf-8")  # what the LLM client does to every request
+    assert cn._log_kind("ui\x1b[31m\u200b-event\nx") == "ui[31m-event x"
 
 
 # ---- the retention cap -------------------------------------------------------------
@@ -574,8 +618,11 @@ async def test_the_session_places_it_and_a_note_gets_there():
     plain = build_agent_session(_Transport())  # SIP: no notes, no line
     assert plain.client_notes is None
     assert cn.SYSTEM_LINE not in [m["content"] for m in plain.context.get_messages()]
-    assert not any(isinstance(p, ClientNotes) for p in next(
-        p for p in plain.task.pipeline.processors if isinstance(p, Pipeline)).processors)
+    sip = list(next(p for p in plain.task.pipeline.processors if isinstance(p, Pipeline)).processors)
+    assert not any(isinstance(p, ClientNotes) for p in sip)
+    # The commit mark serves the consult follow-up too, so SIP has it as well.
+    marks = [i for i, p in enumerate(sip) if isinstance(p, TurnCommitMark)]
+    assert len(marks) == 1 and marks[0] < sip.index(plain.llm), "SIP lacks the commit mark"
 
     session = build_agent_session(_Transport(), context_notes=True)
     system = [m["content"] for m in session.context.get_messages() if m["role"] == "system"]
@@ -591,6 +638,8 @@ async def test_the_session_places_it_and_a_note_gets_there():
     assert kinds.index(HeardContextCorrector) < at, "notes must sit below the corrector"
     llm_at = next(i for i, p in enumerate(procs) if p is session.llm)
     assert at < llm_at, "notes must reach the context before the LLM reads it"
+    mark_at = kinds.index(TurnCommitMark)
+    assert at < mark_at < llm_at, "the commit mark must see the context as the LLM gets it"
     # Every processor from the transport input down to ClientNotes passes the frame on.
     frame = ClientContextFrame(text="tap", request_id="x")
     start = next(i for i, p in enumerate(procs) if p.name == "stub-in")
@@ -604,26 +653,32 @@ async def test_the_session_places_it_and_a_note_gets_there():
         assert frame in seen, f"{type(p).__name__} swallowed the note"
 
 
-async def test_talk_says_hello_before_the_greeting():
-    """The hello is the plugin's signal that notes can be sent (and the capabilities a
-    client sees). Nothing else would notice it went missing: the plugin just reports
-    the brain as connecting, then unsupported."""
+async def _run_talk(should_end=False):
+    """run_relay_bot with fakes around it. Returns the order of what the plugin would
+    see (the socket writes and the frames queued to the pipeline) and the session
+    kwargs."""
     from teaport_brain import gateway_server as gs
 
-    queued, events, built = [], [], {}
+    order, built = [], {}
 
     class _Task:
         async def queue_frames(self, frames):
-            queued.extend(frames)
+            order.extend(frames)
+
+        async def cancel(self):
+            order.append("cancelled")
 
     class _Session:
-        should_end = False
         task = _Task()
         client_notes = SimpleNamespace(limits=lambda: {"max_chars": 7})
+        followup_gate = SimpleNamespace(wait_until_delivered=lambda: asyncio.sleep(0))
+
+        def __init__(self):
+            self.should_end = False
 
         async def greet(self):
-            events.append("greet")
-            queued.append("greeting")
+            order.append("greeting")
+            self.should_end = should_end
 
     class _FakeTransport:
         def __init__(self, **kw):
@@ -647,6 +702,8 @@ async def test_talk_says_hello_before_the_greeting():
         return _Session()
 
     async def acquire(task):
+        order.append("slot")
+
         async def release():
             pass
         return None, release
@@ -658,6 +715,9 @@ async def test_talk_says_hello_before_the_greeting():
         async def run(self, task):
             await transports[0].handlers["on_client_connected"](transports[0], None)
 
+    async def send_text(text):
+        order.append(json.loads(text))
+
     saved = {k: getattr(gs, k) for k in
              ("FastAPIWebsocketTransport", "build_agent_session", "acquire_slot", "PipelineRunner")}
     gs.FastAPIWebsocketTransport = make_transport
@@ -665,15 +725,34 @@ async def test_talk_says_hello_before_the_greeting():
     gs.acquire_slot = acquire
     gs.PipelineRunner = _Runner
     try:
-        await gs.run_relay_bot(SimpleNamespace(query_params={}))
+        await gs.run_relay_bot(SimpleNamespace(query_params={}, send_text=send_text))
     finally:
         for k, v in saved.items():
             setattr(gs, k, v)
+    return order, built
+
+
+async def test_talk_says_hello_at_once_and_ready_after_the_greeting():
+    """The hello (what the brain accepts) goes out before the slot wait, so a slow
+    start is never taken for a brain without notes. "ready" (notes may be sent) comes
+    only once greet() found a working STT. Nothing else would notice either going
+    missing: the plugin just reports the brain as connecting, then unsupported."""
+    order, built = await _run_talk()
     assert built.get("context_notes") is True, "/talk built its session without notes"
-    hello = queued[0]
-    assert isinstance(hello, OutputTransportMessageUrgentFrame), queued
-    assert hello.message == {"type": "hello", "features": {"context": {"max_chars": 7}}}
-    assert queued[1] == "greeting"
+    assert order[0] == {"type": "hello", "features": {"context": {"max_chars": 7}}}, order
+    assert order[1:3] == ["slot", "greeting"], order
+    ready = order[3]
+    assert isinstance(ready, OutputTransportMessageUrgentFrame), order
+    assert ready.message == {"type": "ready"}
+    assert len(order) == 4, order
+
+
+async def test_talk_never_says_ready_when_the_session_ends():
+    """No working STT: greet() plays the can't-hear line and the session ends. Notes
+    must not be acked as applied to a session being torn down, so no "ready"."""
+    order, _ = await _run_talk(should_end=True)
+    assert order[:3] == [{"type": "hello", "features": {"context": {"max_chars": 7}}}, "slot", "greeting"], order
+    assert order[3:] == ["cancelled"], order
 
 
 def main():

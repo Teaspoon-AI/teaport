@@ -66,8 +66,9 @@ orchestrates so OpenClaw should stay quiet. That confuses `brain` with response 
 
 A Talk client can give the voice some context during a call without speaking: a tap
 on an on-screen character, a changed setting, a new camera view. The plugin
-registers two gateway methods for this. Both need the `operator.talk` scope, the same
-as `talk.session.*`, and work only for `gateway-relay` sessions.
+registers two gateway methods for this. Both need the `operator.talk` scope, the one
+OpenClaw 2026.9 gives its own Talk methods, and work only for `gateway-relay` sessions
+on OpenClaw 2026.9 and newer.
 
 ```
 teaport.talk.context
@@ -97,9 +98,12 @@ teaport.talk.context
   the context (the oldest are removed), and one `respond: true` note per 15 s. On top
   of those, any 10 notes may come at once, and after that one per second (fixed, not
   configurable). Notes over a limit are refused, never queued.
-- Notes are accepted once the session's brain has said it takes them (its `hello`,
-  sent when its pipeline is up, usually within a few seconds of
-  `talk.session.create`). Before that a note gets the retryable `connecting`; a brain
+- Notes are accepted once the session's brain is ready for them. It says what it
+  takes (its `hello`) as soon as it accepts the connection, and `ready` once its
+  pipeline runs and its speech recognition works, usually within a few seconds of
+  `talk.session.create`. Before `ready` a note gets the retryable `connecting`. A
+  session whose brain finds no speech recognition never gets `ready`: it plays a
+  warning and ends, and its notes go from `connecting` to `closed_session`. A brain
   that sends no `hello` within 15 s of connecting predates context notes, and notes
   to it get `unsupported`.
 
@@ -108,15 +112,16 @@ Errors:
 | Case | `code` | `details.reason` |
 |---|---|---|
 | Bad params, empty or too-long text | `INVALID_REQUEST` | `bad_params`, `empty`, `too_long` |
-| The host has no Talk session with this id (OpenClaw 2026.8.1+ only; see below) | `INVALID_REQUEST` | `unknown_session` |
+| The host has no Talk session with this id | `INVALID_REQUEST` | `unknown_session` |
 | Not a gateway-relay session | `INVALID_REQUEST` | `not_relay` |
-| No live teaport voice session on this connection serves this id (another provider's session; or, before 2026.8.1, any id when the connection has no unbound teaport session) | `INVALID_REQUEST` | `no_voice_session` |
-| Another connection's session, or a caller with no connection id. Before 2026.8.1 the plugin can tell only once the id is bound; until then another connection's id gets `no_voice_session` | `INVALID_REQUEST` | `not_owner` |
+| No teaport voice session serves this id (another provider's session) | `INVALID_REQUEST` | `no_voice_session` |
+| Another connection's session, or a caller with no connection id | `INVALID_REQUEST` | `not_owner` |
+| The host does not expose its Talk session registry (OpenClaw before 2026.9) | `INVALID_REQUEST` | `host_unsupported` |
 | Session closed, or closed before the brain answered | `INVALID_REQUEST` | `closed_session` |
 | The session's brain predates context notes | `INVALID_REQUEST` | `unsupported` |
 | The brain refused the note for a reason this plugin does not name | `INVALID_REQUEST` | `refused` |
 | Too frequent | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `rate_limited` |
-| The brain has not said hello yet | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `connecting` |
+| The brain has not said `ready` yet | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `connecting` |
 | The session's bridge is not bound yet (an instant after `talk.session.create`; the plugin waits up to 0.5 s for it first) | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `bridge_not_ready` |
 | The brain did not answer within 3 s | `UNAVAILABLE`, `retryable` | `brain_unavailable` |
 
@@ -125,7 +130,7 @@ teaport.talk.capabilities
   params: { sessionId?: string }
   result: {
     ok: true,
-    context: { method: "teaport.talk.context", version: 1, respond: true },
+    context: { method: "teaport.talk.context", version: 1, respond: true } | null,  // null: host unsupported
     session?: {
       sessionId,
       state: "connecting" | "ready" | "unsupported",
@@ -136,21 +141,18 @@ teaport.talk.capabilities
 
 A client that gets "unknown method" from either call is talking to an older plugin.
 It should fall back to `chat.inject`, which reaches the text agent but not the voice.
-`session.state` says where the session's brain stands: `connecting` until its
-`hello` (ask again), `ready` with its limits, or `unsupported` for a brain that
+`session.state` says where the session's brain stands: `connecting` until it says
+`ready` (ask again), `ready` with its limits, or `unsupported` for a brain that
 predates context notes (final for this session). `maxChars` is the smaller of the
 brain's limit and the plugin's own 16,000. The capabilities errors are the ones above
 that apply to finding the session.
 
 `createBridge` is never told which relay session it serves, so the plugin links the
-two itself. It records the gateway connection that created each bridge. From OpenClaw
-2026.8.1, where OpenClaw's Talk session registry is a global, the plugin binds each
-bridge to its session the moment `talk.session.create` makes it, and checks every id
-against that registry. OpenClaw 2026.7.x keeps the registry private, so there the
-first note for a `sessionId` binds it to the connection's newest unbound teaport
-bridge. That is right when the connection has one teaport session. With two live on
-one connection (OpenClaw allows two), the first id used takes the newer bridge
-whichever session it names, and an id OpenClaw never issued binds too.
+two itself. It records the gateway connection that created each bridge (through the
+SDK's `getPluginRuntimeGatewayRequestScope`), binds each bridge to its session the
+moment `talk.session.create` makes it, and checks every id against OpenClaw's Talk
+session registry. That registry is internal to OpenClaw, not part of its SDK; it is a
+global on 2026.9.1 and 2026.9.6, where this was checked.
 
 ## Transcripts in the Talk view
 
@@ -159,7 +161,7 @@ in OpenClaw 2026.8.1 and later (and in the 2026.7.2 prereleases) merges assistan
 text differently from user text. It appends each assistant partial as a delta, and
 only a final replaces the bubble. 2026.7.1 and earlier, and the 2026.7.33–7.35
 maintenance releases, replace the bubble with each partial instead; there is no
-2026.7.2 stable release. The package declares `openclaw >=2026.4.0`. The captions
+2026.7.2 stable release. The package declares `openclaw >=2026.9.0`. The captions
 were checked against the Talk view code of 2026.7.1, 2026.7.35 and 2026.9.1. The
 optional `talk.realtime.providers.teaport.assistantTranscripts` setting picks what
 the plugin sends:

@@ -12,22 +12,17 @@
 // provider's bridge which relay session it serves (createBridge gets no id), so this
 // module ties the two together itself. createBridge runs inside the client's
 // talk.session.create request, so the bridge records the gateway connection that
-// created it (index.js reads it from the gateway request scope). Then:
+// created it (index.js reads it from the gateway request scope). OpenClaw then records
+// the session in its Talk session registry (rememberUnifiedTalkSession, a global Map)
+// in the same synchronous run of talk.session.create, so a microtask queued in add()
+// finds the record: the first realtime-relay record for this connection that was not
+// in the registry when the bridge was made. The bridge is bound to that session at
+// creation, and the registry vets every id: unknown ids, other kinds of session and
+// other connections' sessions are refused.
 //
-//   * Where the host's Talk session registry is reachable (a global Map since OpenClaw
-//     2026.8.1), the bridge is bound to its session AT CREATION. OpenClaw calls
-//     createBridge and then records the session (rememberUnifiedTalkSession) in the
-//     same synchronous run of talk.session.create, so a microtask queued in add() finds
-//     the record: the first realtime-relay record for this connection that was not in
-//     the registry when the bridge was made. The registry also vets every id: unknown
-//     ids, other kinds of session and other connections' sessions are refused.
-//   * On older hosts (2026.7.x keeps the registry module-local) nothing tells the
-//     plugin which session a bridge serves, so the first note for a sessionId binds it
-//     to the caller's newest unbound live bridge. That is right when the connection has
-//     one teaport session, the usual case: the brain serves one session at a time. With
-//     two live at once on one connection (OpenClaw allows two), the first id used takes
-//     the newer bridge whichever session it names, and an id the host never issued
-//     binds too.
+// The plugin supports OpenClaw 2026.9.x, where the registry is a global (checked on
+// 2026.9.1 and 2026.9.6). A host that does not expose it gets host_unsupported: without
+// it nothing tells the plugin which session a bridge serves.
 //
 // This module imports nothing from the OpenClaw SDK, like provider.js, so it can be
 // tested standalone (test/context.test.mjs).
@@ -44,9 +39,9 @@ const MAX_SESSION_ID_CHARS = 256;
 // Closed session ids remembered so a late note hears "closed" rather than "unknown".
 const CLOSED_IDS_KEPT = 64;
 // How long after its socket opens a bridge waits for the brain's hello before taking
-// the brain for one that predates context notes. The hello is sent once the brain's
-// pipeline is up, which can include waiting out the previous session's teardown
-// (acquire_slot: up to ~5 s) and the STT connection.
+// the brain for one that predates context notes. The brain sends the hello as soon as
+// it accepts the socket, before anything slow (gateway_server.py), so this is only ever
+// reached by a brain that sends none.
 export const HELLO_TIMEOUT_MS = 15000;
 // How long a request waits for a bridge whose binding is still pending (a microtask
 // after createBridge; see TalkSessions.add) before reporting bridge_not_ready.
@@ -67,6 +62,11 @@ function unavailable(message, reason, retryAfterMs) {
 }
 
 const notOwner = () => invalid("Talk session is not owned by this connection", "not_owner");
+const hostUnsupported = () =>
+  invalid(
+    "this OpenClaw does not expose its Talk session registry; context notes need OpenClaw 2026.9 or newer",
+    "host_unsupported",
+  );
 
 /** Length in code points, which is what the brain's len() counts. */
 function chars(text) {
@@ -89,9 +89,12 @@ function contextLimits(features) {
 
 /**
  * Where a bridge's brain stands on context notes:
- *   "connecting"  - the socket is not open yet, or the brain has not sent its hello and
- *                   still may (within helloTimeoutMs of the open);
- *   "ready"       - the hello announced context notes;
+ *   "connecting"  - the socket is not open yet; or the brain has not sent its hello and
+ *                   still may (within helloTimeoutMs of the open); or it announced
+ *                   context notes and has not said "ready" yet (its pipeline and STT are
+ *                   still coming up, or the session is ending because the STT is not
+ *                   there, and then "closed" follows);
+ *   "ready"       - the brain takes notes now;
  *   "unsupported" - the hello announced none, or none came in time (a brain that
  *                   predates context notes never sends one);
  *   "closed"      - the session is over.
@@ -99,7 +102,10 @@ function contextLimits(features) {
 export function contextState(bridge, { helloTimeoutMs = HELLO_TIMEOUT_MS, now = Date.now } = {}) {
   if (bridge.hasEnded()) return "closed";
   const features = bridge.brainFeatures();
-  if (features !== null && features !== undefined) return contextLimits(features) ? "ready" : "unsupported";
+  if (features !== null && features !== undefined) {
+    if (!contextLimits(features)) return "unsupported";
+    return bridge.brainReady() ? "ready" : "connecting";
+  }
   const openedAt = bridge.openedAt();
   if (openedAt === null || openedAt === undefined) return "connecting";
   return now() - openedAt < helloTimeoutMs ? "connecting" : "unsupported";
@@ -111,7 +117,7 @@ export function contextState(bridge, { helloTimeoutMs = HELLO_TIMEOUT_MS, now = 
  *          talkRegistry?: () => Map<string, object>|undefined}} hooks
  *   currentConnId: the gateway connection of the request running now.
  *   talkRegistry: the host's Talk session registry (sessionId -> {kind, connId, ...}),
- *   or undefined when this host does not expose one.
+ *   or undefined when this host does not expose one (then nothing is ever bound).
  */
 export class TalkSessions {
   constructor({ currentConnId, talkRegistry } = {}) {
@@ -148,6 +154,11 @@ export class TalkSessions {
     return () => this._ended(entry);
   }
 
+  /** Whether this host exposes the Talk session registry notes depend on. */
+  hostSupported() {
+    return Boolean(this._registry());
+  }
+
   _claim(entry, before) {
     if (entry.ended) return;
     const registry = this._registry();
@@ -176,12 +187,8 @@ export class TalkSessions {
     if (this._closed.length > CLOSED_IDS_KEPT) this._closed.shift();
   }
 
-  /**
-   * The bridge serving `sessionId` for the caller on `connId`, or {error}.
-   * bind:false peeks: on a host without the registry it names the bridge a note would
-   * bind to, without binding it (capabilities must not claim a bridge for a typo).
-   */
-  resolve(sessionId, connId, { bind = true } = {}) {
+  /** The bridge serving `sessionId` for the caller on `connId`, or {error}. */
+  resolve(sessionId, connId) {
     // As OpenClaw's requireUnifiedTalkSessionConn: no connection, no ownership.
     if (!connId) return { error: notOwner() };
     const bound = this._bySession.get(sessionId);
@@ -193,41 +200,32 @@ export class TalkSessions {
       return { error: invalid("Talk session is closed", "closed_session") };
     }
     const registry = this._registry();
-    if (registry) {
-      const record = registry.get(sessionId);
-      if (!record) return { error: invalid("Unknown Talk session", "unknown_session") };
-      if (record.kind !== "realtime-relay") {
-        return {
-          error: invalid("teaport.talk.context needs a gateway-relay realtime session", "not_relay"),
-        };
-      }
-      if (record.connId !== connId) return { error: notOwner() };
-      // A live relay session of this connection that no teaport bridge serves: either
-      // its bridge is a microtask away from binding, or it is another provider's.
-      if (this._live.some((e) => e.claiming && e.connId === connId)) {
-        return {
-          error: unavailable("the voice session's bridge is not bound yet", "bridge_not_ready", 100),
-        };
-      }
+    if (!registry) return { error: hostUnsupported() };
+    const record = registry.get(sessionId);
+    if (!record) return { error: invalid("Unknown Talk session", "unknown_session") };
+    if (record.kind !== "realtime-relay") {
       return {
-        error: invalid("this Talk session is not served by the teaport voice provider", "no_voice_session"),
+        error: invalid("teaport.talk.context needs a gateway-relay realtime session", "not_relay"),
       };
     }
-    const entry = this._live.filter((e) => e.sessionId === undefined && e.connId === connId).at(-1);
-    if (!entry) {
+    if (record.connId !== connId) return { error: notOwner() };
+    // A live relay session of this connection that no teaport bridge serves: either
+    // its bridge is a microtask away from binding, or it is another provider's.
+    if (this._live.some((e) => e.claiming && e.connId === connId)) {
       return {
-        error: invalid("no live teaport voice session on this connection", "no_voice_session"),
+        error: unavailable("the voice session's bridge is not bound yet", "bridge_not_ready", 100),
       };
     }
-    if (bind) this._bind(entry, sessionId);
-    return { bridge: entry.bridge };
+    return {
+      error: invalid("this Talk session is not served by the teaport voice provider", "no_voice_session"),
+    };
   }
 
   /** resolve(), waiting out a binding still pending (bounded by BIND_WAIT_MS). */
-  async resolveSettled(sessionId, connId, options) {
+  async resolveSettled(sessionId, connId) {
     const deadline = Date.now() + BIND_WAIT_MS;
     for (;;) {
-      const found = this.resolve(sessionId, connId, options);
+      const found = this.resolve(sessionId, connId);
       if (found.error?.details?.reason !== "bridge_not_ready" || Date.now() >= deadline) return found;
       await new Promise((r) => setTimeout(r, 10));
     }
@@ -279,10 +277,10 @@ export function contextMethods(sessions, options = {}) {
       const found = await sessions.resolveSettled(p.sessionId, client?.connId);
       if (found.error) return respond(false, undefined, found.error);
       const { bridge } = found;
-      // Only once the brain has said hello. Before it, a note would wait in the socket
+      // Only once the brain has said "ready". Before it, a note would wait in the socket
       // while the brain sets up (acquire_slot waits out the previous session's
       // teardown), and could time out here yet still be applied there, so a retry
-      // would add it twice.
+      // would add it twice; or it would be acked for a session about to end.
       switch (contextState(bridge, options)) {
         case "closed":
           return respond(false, undefined, invalid("Talk session is closed", "closed_session"));
@@ -325,14 +323,15 @@ export function contextMethods(sessions, options = {}) {
     },
 
     [CAPABILITIES_METHOD]: async ({ params, client, respond }) => {
+      // context is null on a host that could never route a note (no Talk registry).
       const result = {
         ok: true,
-        context: { method: CONTEXT_METHOD, version: 1, respond: true },
+        context: sessions.hostSupported() ? { method: CONTEXT_METHOD, version: 1, respond: true } : null,
       };
       const sessionId = params && typeof params === "object" ? params.sessionId : undefined;
       if (typeof sessionId === "string" && sessionId.trim()) {
         const id = sessionId.trim();
-        const found = await sessions.resolveSettled(id, client?.connId, { bind: false });
+        const found = await sessions.resolveSettled(id, client?.connId);
         if (found.error) return respond(false, undefined, found.error);
         const state = contextState(found.bridge, options);
         if (state === "closed") {

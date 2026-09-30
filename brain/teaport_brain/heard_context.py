@@ -68,6 +68,14 @@ def _clean_prefix(heard: str) -> str:
     return " ".join(words).rstrip(" ,;:.").strip()
 
 
+def drop_from_context(context, doomed) -> None:
+    """Remove `doomed` from `context`, matched by identity (the dicts are live, and two
+    messages can read the same). Anything that removes messages the corrector may have
+    seen goes through HeardContextCorrector.drop_messages instead, which calls this."""
+    ids = {id(m) for m in doomed}
+    context.set_messages([m for m in context.get_messages() if id(m) not in ids])
+
+
 class HeardContextCorrector(FrameProcessor):
     """Make the LLM's context reflect only what the user actually heard."""
 
@@ -109,9 +117,8 @@ class HeardContextCorrector(FrameProcessor):
         removes messages between reconciles must come through here (ClientNotes does,
         for its retention cap)."""
         ids = {id(m) for m in doomed}
-        msgs = self._context.get_messages()
-        below = sum(1 for m in msgs[:self._mark] if id(m) in ids)
-        self._context.set_messages([m for m in msgs if id(m) not in ids])
+        below = sum(1 for m in self._context.get_messages()[:self._mark] if id(m) in ids)
+        drop_from_context(self._context, doomed)
         self._mark -= below
 
     def _truncate(self, u, start=0):

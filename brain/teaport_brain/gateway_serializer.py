@@ -18,8 +18,11 @@
 #
 #   us -> plugin (serialize):
 #       OutputAudioRawFrame       -> binary raw PCM16 24 kHz  (bot speech)
+#       {"type":"hello","features":{"context":{limits}}}  (on accept, written straight
+#                                                           to the socket by gateway_server)
 #       OutputTransportMessage[Urgent]Frame -> JSON text, the .message dict:
-#           {"type":"hello","features":{"context":{limits}}}  (on connect)
+#           {"type":"ready"}                              (notes may be sent: the pipeline
+#                                                           runs and the STT works)
 #           {"type":"clear"}                              (barge-in: flush playback)
 #           {"type":"transcript","role":...,"text":...,"final":bool[,"utterance":id]}
 #             text is always the FULL text so far, never a delta; the plugin

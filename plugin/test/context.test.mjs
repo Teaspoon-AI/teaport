@@ -1,8 +1,8 @@
 // Context notes (issue #71): the teaport.talk.context / teaport.talk.capabilities
 // gateway methods, the session registry that finds the bridge for a sessionId, and the
-// bridge's side of the /talk exchange (hello, context, context_result). No OpenClaw
-// and no brain: a fake WebSocket plays the brain, and a Map plays OpenClaw's Talk
-// session registry where a test needs one.
+// bridge's side of the /talk exchange (hello, ready, context, context_result). No
+// OpenClaw and no brain: a fake WebSocket plays the brain, and a Map plays OpenClaw's
+// Talk session registry.
 //
 //   node --test test/context.test.mjs
 
@@ -50,13 +50,14 @@ afterEach(() => {
 });
 
 const HELLO = { type: "hello", features: { context: { max_chars: 40, max_notes: 20, respond_interval_s: 15 } } };
+const READY = { type: "ready" };
 
 /**
  * A provider wired to a registry as index.js wires it, with `who.conn` as the caller.
- * `registry` (a Map) plays OpenClaw's Talk session registry (2026.8.1+); without it
- * the host is one that does not expose one (2026.7.x).
+ * `registry` (a Map) plays OpenClaw's Talk session registry; `registry: null` is a
+ * host that does not expose one.
  */
-function setup({ registry, options } = {}) {
+function setup({ registry = new Map(), options } = {}) {
   const who = { conn: "conn-A" };
   const sessions = new TalkSessions({
     currentConnId: () => who.conn,
@@ -67,27 +68,21 @@ function setup({ registry, options } = {}) {
   return { who, sessions, provider, methods, registry };
 }
 
-async function openBridge(provider, { hello = true } = {}) {
-  const bridge = provider.createBridge({ providerConfig: {} });
-  await bridge.connect();
-  const ws = FakeWebSocket.last;
-  if (hello) ws.reply(HELLO);
-  return { bridge, ws };
-}
-
 /**
- * talk.session.create as OpenClaw 2026.8.1+ runs it: createBridge inside the caller's
+ * talk.session.create as OpenClaw 2026.9 runs it: createBridge inside the caller's
  * request, then the registry record, in one synchronous run; the socket opens after.
+ * The fake brain then says hello and ready, unless told not to.
  */
-async function createSession(env, sessionId, { conn = "conn-A", hello = true } = {}) {
+async function createSession(env, sessionId = "relay-1", { conn = "conn-A", hello = true, ready = true } = {}) {
   const prev = env.who.conn;
   env.who.conn = conn;
   const bridge = env.provider.createBridge({ providerConfig: {} });
   env.who.conn = prev;
-  env.registry.set(sessionId, { kind: "realtime-relay", connId: conn, relaySessionId: sessionId });
+  env.registry?.set(sessionId, { kind: "realtime-relay", connId: conn, relaySessionId: sessionId });
   await bridge.connect();
   const ws = FakeWebSocket.last;
   if (hello) ws.reply(HELLO);
+  if (hello && ready) ws.reply(READY);
   return { bridge, ws };
 }
 
@@ -130,8 +125,9 @@ const reason = (r) => r.error?.details?.reason;
 // ── the round trip ──────────────────────────────────────────────────────────────
 
 test("a note reaches the brain and its answer is the RPC result", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider);
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env);
   const pending = call(methods, CONTEXT_METHOD, {
     sessionId: "relay-1",
     text: "  The user tapped the character.  ",
@@ -147,8 +143,9 @@ test("a note reaches the brain and its answer is the RPC result", async () => {
 });
 
 test("respond defaults to false and kind is optional", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider);
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env);
   const pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "camera: kitchen" });
   const note = await brainAnswers(ws, { ok: true, status: "applied" });
   assert.equal(note.respond, false);
@@ -157,8 +154,9 @@ test("respond defaults to false and kind is optional", async () => {
 });
 
 test("the brain's refusals become gateway errors a client can act on", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider);
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env);
   let pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap", respond: true });
   await brainAnswers(ws, { ok: false, error: "rate_limited", message: "one per 15 s", retry_after_ms: 9000 });
   let r = await pending;
@@ -182,8 +180,9 @@ test("the brain's refusals become gateway errors a client can act on", async () 
 });
 
 test("the brain's announced length limit is enforced before the round trip, in code points", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider); // hello says max_chars 40
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env); // hello says max_chars 40
   const r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "x".repeat(41) });
   assert.equal(reason(r), "too_long");
   assert.equal(ws.sent.filter((m) => m.type === "context").length, 0);
@@ -194,8 +193,9 @@ test("the brain's announced length limit is enforced before the round trip, in c
 });
 
 test("bad params are refused without touching a session", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider);
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env);
   for (const params of [
     {},
     { sessionId: "relay-1" },
@@ -213,37 +213,57 @@ test("bad params are refused without touching a session", async () => {
 
 // ── before the brain is ready (#71: "connecting" is not "unsupported") ─────────────
 
-test("before the brain's hello a note is refused as connecting and never sent", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider, { hello: false });
-  const r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap" });
-  assert.equal(r.error.code, "UNAVAILABLE");
-  assert.equal(r.error.retryable, true);
-  assert.equal(reason(r), "connecting");
-  assert.equal(ws.sent.filter((m) => m.type === "context").length, 0, "a note went out before the hello");
-  // The hello arrives: the same note now goes through.
+test("before the brain says ready a note is refused as connecting and never sent", async () => {
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env, "relay-1", { hello: false });
+  const refused = async () => {
+    const r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap" });
+    assert.equal(r.error.code, "UNAVAILABLE");
+    assert.equal(r.error.retryable, true);
+    assert.equal(reason(r), "connecting");
+  };
+  await refused();
+  // The hello says what the brain takes, not that it is up: still connecting.
   ws.reply(HELLO);
+  await refused();
+  assert.equal(ws.sent.filter((m) => m.type === "context").length, 0, "a note went out before ready");
+  // Ready: the same note now goes through.
+  ws.reply(READY);
   const pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap" });
   await brainAnswers(ws, { ok: true, status: "applied" });
   assert.equal((await pending).ok, true);
 });
 
+test("a session that ends without saying ready goes from connecting to closed", async () => {
+  // The brain found no STT: it played the warning and closed, never saying ready.
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env, "relay-1", { ready: false });
+  assert.equal((await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" })).payload.session.state, "connecting");
+  ws.emit("close", {});
+  assert.equal(reason(await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap" })), "closed_session");
+  assert.equal(ws.sent.filter((m) => m.type === "context").length, 0);
+});
+
 test("before the socket opens a note is refused as connecting", async () => {
-  const { provider, methods } = setup();
-  provider.createBridge({ providerConfig: {} }); // connect() not called yet
-  const r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap" });
+  const env = setup();
+  env.provider.createBridge({ providerConfig: {} }); // connect() not called yet
+  env.registry.set("relay-1", { kind: "realtime-relay", connId: "conn-A" });
+  const r = await call(env.methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap" });
   assert.equal(reason(r), "connecting");
 });
 
 test("a brain that sends no hello in time is unsupported, not connecting", async () => {
   let t = 1_000_000;
   const now = () => t;
-  const { provider, methods } = setup({ options: { helloTimeoutMs: 15000, now } });
+  const env = setup({ options: { helloTimeoutMs: 15000, now } });
+  const { methods } = env;
   const realNow = Date.now;
   Date.now = now; // the bridge stamps its open with Date.now()
   let ws;
   try {
-    ({ ws } = await openBridge(provider, { hello: false }));
+    ({ ws } = await createSession(env, "relay-1", { hello: false }));
   } finally {
     Date.now = realNow;
   }
@@ -260,8 +280,9 @@ test("a brain that sends no hello in time is unsupported, not connecting", async
 });
 
 test("a hello without context notes is unsupported", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider, { hello: false });
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env, "relay-1", { hello: false });
   ws.reply({ type: "hello", features: {} });
   const r = await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
   assert.equal(r.payload.session.state, "unsupported");
@@ -271,8 +292,9 @@ test("a hello without context notes is unsupported", async () => {
 // ── which session ───────────────────────────────────────────────────────────────
 
 test("a closed session fails, and keeps failing as closed", async () => {
-  const { provider, methods } = setup();
-  const { bridge, ws } = await openBridge(provider);
+  const env = setup();
+  const { methods } = env;
+  const { bridge, ws } = await createSession(env);
   const first = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
   await brainAnswers(ws, { ok: true, status: "applied" });
   await first;
@@ -283,8 +305,9 @@ test("a closed session fails, and keeps failing as closed", async () => {
 });
 
 test("the brain going away fails the note waiting on it at once, as closed", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider);
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env);
   const started = Date.now();
   const pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
   await new Promise((r) => setTimeout(r, 5));
@@ -295,71 +318,54 @@ test("the brain going away fails the note waiting on it at once, as closed", asy
   assert.ok(Date.now() - started < 1000, "the note waited out its ack timeout");
 });
 
-test("without the host registry: no live session at all is no_voice_session", async () => {
-  const { methods } = setup();
-  const r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-9", text: "hi" });
-  assert.equal(reason(r), "no_voice_session");
+test("a host without the Talk registry is unsupported, and says so", async () => {
+  // OpenClaw before 2026.9 keeps the registry private: nothing ties a bridge to its
+  // session, so no note is ever routed.
+  const env = setup({ registry: null });
+  const { ws } = await createSession(env);
+  let r = await call(env.methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
+  assert.equal(r.error.code, "INVALID_REQUEST");
+  assert.equal(reason(r), "host_unsupported");
+  assert.equal(ws.sent.filter((m) => m.type === "context").length, 0);
+  r = await call(env.methods, CAPABILITIES_METHOD, {});
+  assert.equal(r.ok, true);
+  assert.equal(r.payload.context, null);
+  assert.equal(reason(await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" })), "host_unsupported");
 });
 
-test("another connection's session is not reachable, before or after it is bound", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider); // created on conn-A
+test("another connection's session is not reachable", async () => {
+  const env = setup();
+  const { methods } = env;
+  const { ws } = await createSession(env); // created on conn-A
   let r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" }, "conn-B");
-  assert.equal(r.ok, false);
-  assert.equal(reason(r), "no_voice_session");
-  const pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
-  await brainAnswers(ws, { ok: true, status: "applied" });
-  assert.equal((await pending).ok, true);
-  // Bound to conn-A now: conn-B is refused by name.
-  r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" }, "conn-B");
   assert.equal(reason(r), "not_owner");
   r = await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" }, "conn-B");
   assert.equal(reason(r), "not_owner");
+  assert.equal(ws.sent.filter((m) => m.type === "context").length, 0);
 });
 
 test("a caller with no connection id owns nothing", async () => {
-  const { provider, methods } = setup();
-  await openBridge(provider);
-  const r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" }, null);
+  const env = setup();
+  await createSession(env);
+  const r = await call(env.methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" }, null);
   assert.equal(reason(r), "not_owner");
-  assert.equal(reason(await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" }, null)), "not_owner");
+  assert.equal(reason(await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" }, null)), "not_owner");
 });
 
 test("a bridge made outside a gateway request is never bound", async () => {
-  const { who, provider, methods } = setup();
-  who.conn = undefined;
-  await openBridge(provider);
-  who.conn = "conn-A";
-  const r = await call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
+  const env = setup();
+  env.who.conn = undefined;
+  const bridge = env.provider.createBridge({ providerConfig: {} });
+  env.who.conn = "conn-A";
+  env.registry.set("relay-1", { kind: "realtime-relay", connId: "conn-A" });
+  await bridge.connect();
+  FakeWebSocket.last.reply(HELLO);
+  FakeWebSocket.last.reply(READY);
+  const r = await call(env.methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
   assert.equal(reason(r), "no_voice_session");
 });
 
-test("without the host registry the first id binds the caller's newest bridge", async () => {
-  const { provider, methods } = setup();
-  const one = await openBridge(provider);
-  const two = await openBridge(provider);
-  const { result, on } = await noteLandsOn(methods, "relay-2", "for the newer", [one.ws, two.ws]);
-  assert.equal(result.ok, true);
-  assert.equal(on, 1, "bound the older bridge");
-});
-
-test("a bound session stays with its bridge; a newer session gets the newer bridge", async () => {
-  const { provider, methods } = setup();
-  const one = await openBridge(provider);
-  let pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "one" });
-  await brainAnswers(one.ws, { ok: true, status: "applied" });
-  await pending;
-  const two = await openBridge(provider);
-  pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-2", text: "two" });
-  await brainAnswers(two.ws, { ok: true, status: "applied" });
-  await pending;
-  pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "one again" });
-  const note = await brainAnswers(one.ws, { ok: true, status: "applied" });
-  assert.equal(note.text, "one again");
-  await pending;
-});
-
-// ── with the host's Talk session registry (OpenClaw 2026.8.1+) ────────────────────
+// ── binding sessions to bridges ─────────────────────────────────────────────────
 
 test("with the registry each session is bound to its own bridge at creation", async () => {
   // The review's repro: S1 on bridge a and S2 on bridge b, both live on one
@@ -421,20 +427,21 @@ test("a request in the instant before the bridge binds waits for it (bridge_not_
   assert.equal(r.payload.session.state, "connecting");
   await bridge.connect();
   FakeWebSocket.last.reply(HELLO);
+  FakeWebSocket.last.reply(READY);
   assert.equal((await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" })).payload.session.state, "ready");
 });
 
 // ── discovery ───────────────────────────────────────────────────────────────────
 
 test("capabilities name the method, and the session's state and limits when asked", async () => {
-  const { provider, methods } = setup();
-  let r = await call(methods, CAPABILITIES_METHOD, {});
+  const env = setup();
+  let r = await call(env.methods, CAPABILITIES_METHOD, {});
   assert.equal(r.ok, true);
   assert.equal(r.payload.context.method, "teaport.talk.context");
   assert.equal(r.payload.session, undefined);
 
-  await openBridge(provider);
-  r = await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
+  await createSession(env);
+  r = await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
   assert.deepEqual(r.payload.session, {
     sessionId: "relay-1",
     state: "ready",
@@ -442,31 +449,26 @@ test("capabilities name the method, and the session's state and limits when aske
   });
 });
 
-test("capabilities before the brain's hello say connecting, not unsupported", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider, { hello: false });
-  let r = await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
+test("capabilities before the brain is ready say connecting, not unsupported", async () => {
+  const env = setup();
+  const { ws } = await createSession(env, "relay-1", { hello: false });
+  let r = await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
   assert.deepEqual(r.payload.session, { sessionId: "relay-1", state: "connecting", context: null });
   ws.reply(HELLO);
-  r = await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
+  r = await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
+  assert.deepEqual(r.payload.session, { sessionId: "relay-1", state: "connecting", context: null });
+  ws.reply(READY);
+  r = await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
   assert.equal(r.payload.session.state, "ready");
 });
 
 test("capabilities report the effective length limit, never above the plugin's own", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider, { hello: false });
+  const env = setup();
+  const { ws } = await createSession(env, "relay-1", { hello: false });
   ws.reply({ type: "hello", features: { context: { max_chars: 100000, max_notes: 20, respond_interval_s: 15 } } });
-  const r = await call(methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
+  ws.reply(READY);
+  const r = await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
   assert.equal(r.payload.session.context.maxChars, 16000);
-});
-
-test("capabilities never bind: a stale id asked about first does not take the bridge", async () => {
-  const { provider, methods } = setup();
-  const { ws } = await openBridge(provider);
-  assert.equal((await call(methods, CAPABILITIES_METHOD, { sessionId: "stale-id" })).ok, true);
-  const pending = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
-  await brainAnswers(ws, { ok: true, status: "applied" });
-  assert.equal((await pending).ok, true, "the capabilities call bound the bridge to the stale id");
 });
 
 test("with the registry, a bridge takes the record made with it, not an older unclaimed one", async () => {
@@ -496,27 +498,27 @@ test("with the registry, two sessions made in one turn of the event loop bind in
   await bridges.a.connect();
   const wsA = FakeWebSocket.last;
   wsA.reply(HELLO);
+  wsA.reply(READY);
   await bridges.b.connect();
   const wsB = FakeWebSocket.last;
   wsB.reply(HELLO);
+  wsB.reply(READY);
   assert.equal((await noteLandsOn(env.methods, "S1", "one", [wsA, wsB])).on, 0);
   assert.equal((await noteLandsOn(env.methods, "S2", "two", [wsA, wsB])).on, 1);
 });
 
-test("index.js reads the caller's connection and the Talk registry from OpenClaw's globals", async (t) => {
-  // The plugin entry as OpenClaw loads it, against the two globals OpenClaw keeps: the
-  // gateway request scope (an AsyncLocalStorage) and, from 2026.8.1, the Talk registry.
-  const { AsyncLocalStorage } = await import("node:async_hooks");
+test("index.js reads the caller's connection from the SDK and the Talk registry from OpenClaw's global", async (t) => {
+  // The plugin entry as OpenClaw loads it: the gateway request scope comes from the
+  // SDK's getPluginRuntimeGatewayRequestScope (stubbed here over an AsyncLocalStorage,
+  // as OpenClaw keeps it), the Talk registry from its global Map.
   const { mkdtempSync, mkdirSync, writeFileSync, copyFileSync, readFileSync, rmSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
   const { pathToFileURL, fileURLToPath } = await import("node:url");
   const dir = mkdtempSync(join(tmpdir(), "teaport-plugin-"));
-  const SCOPE = Symbol.for("openclaw.pluginRuntimeGatewayRequestScope");
+  const SCOPE = Symbol.for("teaport.test.requestScope"); // how the test reaches the stub's scope
   const REGISTRY = Symbol.for("openclaw.unifiedTalkSessions");
-  const scope = new AsyncLocalStorage();
   const registry = new Map();
-  globalThis[SCOPE] = scope;
   globalThis[REGISTRY] = registry;
   t.after(() => {
     delete globalThis[SCOPE];
@@ -525,14 +527,30 @@ test("index.js reads the caller's connection and the Talk registry from OpenClaw
   });
   const sdk = join(dir, "node_modules", "openclaw", "plugin-sdk");
   mkdirSync(sdk, { recursive: true });
-  writeFileSync(join(dir, "node_modules", "openclaw", "package.json"),
-    JSON.stringify({ name: "openclaw", type: "module", exports: { "./plugin-sdk/plugin-entry": "./plugin-sdk/plugin-entry.js" } }));
+  writeFileSync(
+    join(dir, "node_modules", "openclaw", "package.json"),
+    JSON.stringify({
+      name: "openclaw",
+      type: "module",
+      exports: {
+        "./plugin-sdk/plugin-entry": "./plugin-sdk/plugin-entry.js",
+        "./plugin-sdk/plugin-runtime": "./plugin-sdk/plugin-runtime.js",
+      },
+    }),
+  );
   writeFileSync(join(sdk, "plugin-entry.js"), "export const definePluginEntry = (entry) => entry;\n");
+  writeFileSync(
+    join(sdk, "plugin-runtime.js"),
+    'import { AsyncLocalStorage } from "node:async_hooks";\n' +
+      'const scope = (globalThis[Symbol.for("teaport.test.requestScope")] = new AsyncLocalStorage());\n' +
+      "export const getPluginRuntimeGatewayRequestScope = () => scope.getStore();\n",
+  );
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   const here = fileURLToPath(new URL("..", import.meta.url));
   const { files } = JSON.parse(readFileSync(join(here, "package.json"), "utf8"));
   for (const f of files) copyFileSync(join(here, f), join(dir, f));
   const entry = (await import(pathToFileURL(join(dir, "index.js")).href)).default;
+  const scope = globalThis[SCOPE];
   const providers = [];
   const methods = {};
   entry.register({
@@ -560,8 +578,9 @@ test("index.js reads the caller's connection and the Talk registry from OpenClaw
 });
 
 test("a closed bridge leaves the registry at once, not when its socket closes", async () => {
-  const { sessions, provider, methods } = setup();
-  const { bridge, ws } = await openBridge(provider);
+  const env = setup();
+  const { sessions, methods } = env;
+  const { bridge, ws } = await createSession(env);
   const first = call(methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "hi" });
   await brainAnswers(ws, { ok: true, status: "applied" });
   await first;
