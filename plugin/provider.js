@@ -391,7 +391,12 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
       transports: ["gateway-relay"],
       inputAudioFormats: [PCM16_24K],
       outputAudioFormats: [PCM16_24K],
-      supportsBargeIn: true,
+      // The brain owns interruption: it stops for speech it actually heard (Pipecat's
+      // VAD on the forwarded mic) and sends {"type":"clear"}. false keeps OpenClaw's own
+      // barge-in out of it. On 2026.9.6 the Control UI then skips its loudness-based
+      // barge-in (it reads this from talk.catalog) and the relay ignores barge-in
+      // cancels. 2026.9.1 does neither; handleBargeIn below covers it.
+      supportsBargeIn: false,
       supportsToolCalls: false,
       supportsBrowserSession: false,
     },
@@ -605,7 +610,7 @@ class TeaportBridge {
     // Echo / barge-in timing is owned by Pipecat's VAD on the forwarded mic audio.
   }
 
-  handleBargeIn(_options) {
+  handleBargeIn(options) {
     // Pipecat's VAD detects barge-in from the forwarded audio and sends us back a
     // {"type":"clear"}; we still forward an explicit hint when the relay asks.
     if (this._open && this._ws) {
@@ -614,6 +619,17 @@ class TeaportBridge {
       } catch {
         /* best effort */
       }
+    }
+    // OpenClaw 2026.9.1's Control UI cancels the output whenever its microphone is loud
+    // while the voice plays (talk.session.cancelOutput), the voice's own echo included.
+    // The relay then waits 1 s for the provider to confirm the cancelled response and
+    // closes the whole session if none comes. The brain keeps talking unless it heard
+    // the user (it ignores barge_in), so confirm at once: the session survives, and
+    // the voice carries on after the audio the browser dropped. Not for a forced
+    // consult's flush (force: true): nothing is being cancelled there, and a
+    // cancellation would end the live talk turn.
+    if (!options?.force && this._req.onEvent) {
+      this._req.onEvent({ direction: "server", type: "response.cancelled" });
     }
   }
 
