@@ -272,6 +272,29 @@ async def test_a_notice_that_never_lands_leaves_a_note_not_a_lie():
     assert "has NOT reached the user" in after and "ran out of time" in after, after
 
 
+async def test_a_session_that_ended_is_not_delivered_into():
+    """All three unread failure notices on 2026-10-02 were queued into a pipeline
+    whose client had already disconnected. Nothing can land there: stop, don't retry."""
+    ctx = _Context()
+    retirer = _Retirer()
+    task = _Task(ctx, retirer, read_on_attempt=99)
+    task.has_finished = lambda: True
+    await _make_consult_followup(task, ctx, _Gate(), retirer, _Ledger())(
+        REQUEST, None, CALL_ID, failure="timeout")
+    assert task.attempts == 0, f"queued {task.attempts} turn(s) into a finished pipeline"
+    assert "In one short spoken sentence" not in ctx.messages[-1]["content"]
+
+
+async def test_a_session_that_ends_mid_delivery_stops_retrying():
+    ctx = _Context()
+    retirer = _Retirer()
+    task = _Task(ctx, retirer, read_on_attempt=99)
+    task.has_finished = lambda: task.attempts >= 1
+    await _make_consult_followup(task, ctx, _Gate(), retirer, _Ledger())(
+        REQUEST, ANSWER, CALL_ID)
+    assert task.attempts == 1, f"{task.attempts} attempts after the session ended"
+
+
 # --- retirement timing: the TLC counterexample, as a test -----------------------
 #
 # The three tests below come straight out of brain/formal/Followup.tla. Retiring the

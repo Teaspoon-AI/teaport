@@ -402,6 +402,11 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # a later turn reads the stale one and recites the answer twice.
         posted: dict = {}
 
+        def _session_over():
+            # PipelineTask.has_finished: true once the pipeline has run to its end
+            # (the client disconnected, or the call hung up).
+            return bool(getattr(task, "has_finished", lambda: False)())
+
         def _retire(note=_SPENT):
             msg = posted.get("msg")
             if msg is not None:
@@ -439,6 +444,17 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # helper above, so it always neutralises the copy that is currently live.
 
         for attempt in range(_DELIVERY_ATTEMPTS):
+            if _session_over():
+                # The caller has gone. All three "not delivered after 3 attempts" on
+                # 2026-10-02 (00:14, 17:01, 20:26) were this: the Talk client had
+                # disconnected and the pipeline had finished (pipecat even flagged the
+                # consult waiter as a dangling task), so each attempt queued an
+                # LLMRunFrame into a dead pipeline and timed out as "flushed". There is
+                # no one to tell; say so once and stop.
+                logger.info("consult follow-up: the session ended before it could be "
+                            f"delivered ({'answer' if text else outcome.status}) — dropping it")
+                _retire(_UNTOLD)
+                return
             # Arm BOTH before queueing: the completion can start while queue_frames is
             # still awaiting, and an unarmed trigger read is exactly the double-recital
             # case. next_assistant() fires on the next utterance charted, and the gate
