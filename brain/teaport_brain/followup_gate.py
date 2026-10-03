@@ -271,17 +271,19 @@ class FollowupGate(FrameProcessor):
         self._claim()
 
     async def wait_out_claim(self, max_wait: float = _CLAIMANT_WAIT_SECS) -> None:
-        """For a waiter whose wait_until_idle ran out and that goes ahead anyway: if a
-        window is claimed, wait until the claimant's completion has started and ended
-        (bounded), so the two never queue completions into one window. The first one's
-        text would retire both one-shot triggers (FollowupTrigger fires every armed one).
-        Returns at once when nothing is claimed."""
-        if not self._claimed:
+        """For a waiter whose wait_until_idle ran out and that goes ahead anyway: wait
+        (bounded) until no window is claimed AND no completion is running, so its own
+        trigger is not armed while another completion is under way. That completion's
+        first text would retire every armed one-shot (FollowupTrigger fires them all),
+        this waiter's included, unread. A claim ends when its completion STARTS, so
+        waiting only while one is claimed is not enough. Speech alone does not hold it:
+        a waiter that ran out has already given up on a quiet moment."""
+        if self._settled.is_set():
             return
         try:
             await asyncio.wait_for(self._settled.wait(), timeout=max_wait)
         except asyncio.TimeoutError:
-            logger.info("followup_gate: the claimed window's turn outlasted the wait")
+            logger.info("followup_gate: the turn in flight outlasted the wait")
 
     def release_claim(self) -> None:
         """Give back a window wait_until_idle(turn_free=True) reported, for a claimant

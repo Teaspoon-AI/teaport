@@ -43,6 +43,11 @@ const CLOSED_IDS_KEPT = 64;
 // it accepts the socket, before anything slow (gateway_server.py), so this is only ever
 // reached by a brain that sends none.
 export const HELLO_TIMEOUT_MS = 15000;
+// How long after the hello a bridge waits for "ready" before giving up on notes for
+// the session. The brain says ready once its slot is free (acquire_slot, up to ~5 s),
+// its pipeline runs and greet() found the STT (an unreachable engine takes ~10 s to
+// fail, and then the session ends instead). Past this the brain is wedged.
+export const READY_TIMEOUT_MS = 30000;
 // How long a request waits for a bridge whose binding is still pending (a microtask
 // after createBridge; see TalkSessions.add) before reporting bridge_not_ready.
 const BIND_WAIT_MS = 500;
@@ -96,15 +101,23 @@ function contextLimits(features) {
  *                   there, and then "closed" follows);
  *   "ready"       - the brain takes notes now;
  *   "unsupported" - the hello announced none, or none came in time (a brain that
- *                   predates context notes never sends one);
+ *                   predates context notes never sends one), or "ready" never
+ *                   followed the hello within readyTimeoutMs;
  *   "closed"      - the session is over.
  */
-export function contextState(bridge, { helloTimeoutMs = HELLO_TIMEOUT_MS, now = Date.now } = {}) {
+export function contextState(
+  bridge,
+  { helloTimeoutMs = HELLO_TIMEOUT_MS, readyTimeoutMs = READY_TIMEOUT_MS, now = Date.now } = {},
+) {
   if (bridge.hasEnded()) return "closed";
   const features = bridge.brainFeatures();
   if (features !== null && features !== undefined) {
     if (!contextLimits(features)) return "unsupported";
-    return bridge.brainReady() ? "ready" : "connecting";
+    if (bridge.brainReady()) return "ready";
+    const helloAt = bridge.helloAt();
+    return helloAt !== null && helloAt !== undefined && now() - helloAt >= readyTimeoutMs
+      ? "unsupported"
+      : "connecting";
   }
   const openedAt = bridge.openedAt();
   if (openedAt === null || openedAt === undefined) return "connecting";
@@ -329,7 +342,10 @@ export function contextMethods(sessions, options = {}) {
         context: sessions.hostSupported() ? { method: CONTEXT_METHOD, version: 1, respond: true } : null,
       };
       const sessionId = params && typeof params === "object" ? params.sessionId : undefined;
-      if (typeof sessionId === "string" && sessionId.trim()) {
+      if (typeof sessionId === "string" && sessionId.trim() && !sessions.hostSupported()) {
+        // The same answer as without a sessionId: notes cannot work on this host.
+        result.session = { sessionId: sessionId.trim(), state: "unsupported", context: null };
+      } else if (typeof sessionId === "string" && sessionId.trim()) {
         const id = sessionId.trim();
         const found = await sessions.resolveSettled(id, client?.connId);
         if (found.error) return respond(false, undefined, found.error);

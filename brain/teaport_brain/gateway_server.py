@@ -97,7 +97,9 @@ async def run_relay_bot(websocket: WebSocket):
     # teardown) and the pipeline start, which could otherwise hold it past the plugin's
     # wait for a hello and have a working brain taken for one without context notes.
     # It does not mean notes can be sent yet; "ready" says that (below). Nothing else
-    # writes to the socket until the pipeline runs. An older plugin ignores both types.
+    # writes to the socket until the pipeline runs. A plugin that predates context
+    # notes ignores both types. The brain and the plugin ship together: a plugin from
+    # before "ready" took the hello for it and sent notes into a session not yet up.
     await websocket.send_text(json.dumps({
         "type": "hello",
         "features": {"context": session.client_notes.limits()},

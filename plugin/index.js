@@ -31,7 +31,6 @@
 // OpenClaw should stay quiet. That confuses `brain` with response ownership, and cost
 // several rounds of flipping the value back and forth against a live gateway.
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
-import { getPluginRuntimeGatewayRequestScope } from "openclaw/plugin-sdk/plugin-runtime";
 
 import { TalkSessions, contextMethods } from "./context.js";
 import { buildTeaportRealtimeProvider } from "./provider.js";
@@ -39,11 +38,27 @@ import { buildTeaportRealtimeProvider } from "./provider.js";
 // The gateway connection a request came in on. createBridge runs inside the client's
 // talk.session.create request, so this names the connection that owns the session
 // (context.js). OpenClaw runs every gateway method, core ones included, inside the
-// request scope this SDK accessor reads. OpenClaw 2026.9.1 kept that scope in a global
-// AsyncLocalStorage and 2026.9.6 moved it into the plugin execution frame; the
-// accessor reads either.
+// request scope the SDK's getPluginRuntimeGatewayRequestScope reads. OpenClaw 2026.9.1
+// kept that scope in a global AsyncLocalStorage and 2026.9.6 moved it into the plugin
+// execution frame; the accessor reads either.
+//
+// The accessor is exported only from openclaw/plugin-sdk/plugin-runtime, a broad barrel
+// (2026.9.1 through 2026.9.7 have no narrower subpath for it). So it is imported only
+// when the gateway loads the plugin for real (registrationMode "full"), not for
+// discovery or CLI metadata, and asynchronously: createBridge is synchronous, and the
+// first talk.session.create comes long after the gateway has loaded its plugins.
+let getRequestScope = null;
+function loadRequestScope() {
+  import("openclaw/plugin-sdk/plugin-runtime")
+    .then((sdk) => {
+      getRequestScope = sdk.getPluginRuntimeGatewayRequestScope;
+    })
+    .catch(() => {
+      /* no SDK accessor: bridges stay unbound and notes answer no_voice_session */
+    });
+}
 function currentConnId() {
-  return getPluginRuntimeGatewayRequestScope()?.client?.connId;
+  return getRequestScope ? getRequestScope()?.client?.connId : undefined;
 }
 
 // OpenClaw's own Talk session registry (src/gateway/talk-session-registry.ts, and
@@ -68,6 +83,9 @@ export default definePluginEntry({
     // OpenClaw builds the plugin runtime lazily, and a read of api.runtime can build
     // all of it (and throw), which every plugin load (discovery, CLI commands) would
     // otherwise pay for.
+    // Discovery and CLI loads only list what the plugin offers; nothing will run a
+    // Talk session in them. (A host that does not say is treated as a full load.)
+    if (api.registrationMode === undefined || api.registrationMode === "full") loadRequestScope();
     const sessions = new TalkSessions({ currentConnId, talkRegistry });
     api.registerRealtimeVoiceProvider(
       buildTeaportRealtimeProvider({

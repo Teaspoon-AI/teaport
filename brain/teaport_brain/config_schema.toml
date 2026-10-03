@@ -1026,7 +1026,7 @@ default = 1000
 read = "startup"
 tier = "tuning"
 help = "Longest context note a Talk client may send, in characters; a longer one is refused, not cut. The teaport-realtime plugin announces the smaller of this and its own 16000."
-source = "client_notes.py:87"
+source = "client_notes.py:93"
 
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_NOTES"
@@ -1039,7 +1039,7 @@ default = 20
 read = "startup"
 tier = "tuning"
 help = "How many context notes stay in the LLM context; past it the oldest are removed."
-source = "client_notes.py:88"
+source = "client_notes.py:94"
 
 [[settings]]
 name = "TEAPORT_CONTEXT_RESPOND_INTERVAL_S"
@@ -1053,7 +1053,7 @@ default = 15
 read = "startup"
 tier = "tuning"
 help = "Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited."
-source = "client_notes.py:89"
+source = "client_notes.py:95"
 
 # ---- sip brain
 

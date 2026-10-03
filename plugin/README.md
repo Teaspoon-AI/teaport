@@ -105,7 +105,8 @@ teaport.talk.context
   session whose brain finds no speech recognition never gets `ready`: it plays a
   warning and ends, and its notes go from `connecting` to `closed_session`. A brain
   that sends no `hello` within 15 s of connecting predates context notes, and notes
-  to it get `unsupported`.
+  to it get `unsupported`; so do notes to a brain that said `hello` but no `ready`
+  within 30 s.
 
 Errors:
 
@@ -143,9 +144,11 @@ A client that gets "unknown method" from either call is talking to an older plug
 It should fall back to `chat.inject`, which reaches the text agent but not the voice.
 `session.state` says where the session's brain stands: `connecting` until it says
 `ready` (ask again), `ready` with its limits, or `unsupported` for a brain that
-predates context notes (final for this session). `maxChars` is the smaller of the
-brain's limit and the plugin's own 16,000. The capabilities errors are the ones above
-that apply to finding the session.
+predates context notes, a brain that never became ready, or a host that does not
+expose its Talk session registry (final for this session). `maxChars` is the smaller
+of the brain's limit and the plugin's own 16,000. The capabilities errors are the ones
+above that apply to finding the session; on an unsupported host it answers `ok` with
+`context: null` instead of `host_unsupported`.
 
 `createBridge` is never told which relay session it serves, so the plugin links the
 two itself. It records the gateway connection that created each bridge (through the

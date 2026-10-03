@@ -256,8 +256,8 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # Wait for a clear moment: don't step on the user mid-utterance OR the
         # assistant mid-answer about something else. (Gives up after max_wait so a
         # relentlessly chatty conversation can't strand the answer.) Giving up still
-        # waits out a window someone else claimed: two completions queued into one
-        # window, and the first one's text retires both one-shot triggers.
+        # waits out a claimed window and any completion in flight: the first text of
+        # another completion retires every armed one-shot trigger, ours included.
         if not await gate.wait_until_idle(turn_free=True):
             await gate.wait_out_claim()
 
@@ -325,8 +325,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # The tag matters because this message OUTLIVES the turn: without it the rest
         # of the session reads a request the user never made, and the model starts
         # attributing it to them.
-        _TAG = SYSTEM_NOTICE_TAG
-        _SPENT = (f"{_TAG}\nAn earlier background task finished and its outcome was "
+        _SPENT = (f"{SYSTEM_NOTICE_TAG}\nAn earlier background task finished and its outcome was "
                   "already given to the user. Nothing further is needed.")
 
         # The trigger is RE-POSTED per attempt, not restored in place, because being the
@@ -351,7 +350,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
 
         def _post_trigger():
             _retire()
-            msg = {"role": "user", "content": f"{_TAG}\n{content}"}
+            msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n{content}"}
             context.add_message(msg)
             posted["msg"] = msg
 

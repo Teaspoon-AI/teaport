@@ -277,8 +277,7 @@ async def test_the_reaction_is_to_the_note_that_asked_for_it():
     assert [_text(m["content"]) for m in msgs[-3:-1]] == [
         "The user tapped the character's nose.", "The camera switched to the kitchen view."]
     order = msgs[-1]["content"]
-    assert order.startswith(cn._ORDER_TAG), "the order is not the tail the model answers"
-    assert cn._ORDER_TAG == SYSTEM_NOTICE_TAG, "the reaction order and the consult's differ"
+    assert order.startswith(SYSTEM_NOTICE_TAG), "the order is not the tail the model answers"
     assert "nose" in order and "kitchen" not in order, order
     assert [type(f) for f in h.task.queued] == [LLMRunFrame]
 
@@ -510,16 +509,39 @@ async def test_a_reaction_asked_for_during_a_long_wait_keeps_its_own_deadline():
 async def test_a_note_keeps_only_text():
     """Review of #74: a note outlives its turn in the context, so a lone surrogate (half
     an emoji a client cut) would fail every request's encoding until it was evicted.
-    Control, zero-width and direction-override characters go too; the joiner that binds
-    an emoji sequence stays."""
+    Control characters, zero-width spaces and direction overrides go too. The joiners,
+    emoji tag sequences and characters newer than Python's Unicode tables are text and
+    stay (second review of #74: they were stripped as whole categories)."""
     h = _harness()
     family = "\U0001F468\u200d\U0001F469\u200d\U0001F467"
-    await _send(h, "tap\ud83d \u200bthe\x07 \u202echaracter\ufeff " + family)
+    england = "\U0001F3F4\U000E0067\U000E0062\U000E0065\U000E006E\U000E0067\U000E007F"
+    persian = "\u0645\u06cc\u200c\u062e\u0648\u0627\u0647\u0645"  # ZWNJ inside a word
+    unassigned = "\U0001FAEF"  # no character there yet in any Unicode version this test knows
+    await _send(h, "tap\ud83d \u200bthe\x07 \u202echaracter\ufeff " + family
+                + " " + england + " " + persian + " " + unassigned)
     await _settle(h)
     content = _notes_in(h.context)[0]["content"]
-    assert _text(content) == "tap the character " + family, repr(_text(content))
+    assert _text(content) == ("tap the character " + family + " " + england + " "
+                              + persian + " " + unassigned), repr(_text(content))
     content.encode("utf-8")  # what the LLM client does to every request
     assert cn._log_kind("ui\x1b[31m\u200b-event\nx") == "ui[31m-event x"
+
+
+async def test_a_turn_not_yet_at_the_mark_still_holds_the_notes():
+    """Second review of #74: the user's words reach the context a few processor queues
+    before their LLMContextFrame reaches TurnCommitMark. A window that opens in that
+    gap finds a user message at the tail; the notes wait for its completion and are
+    folded in ahead of it, not appended after it."""
+    h = _harness(quiet_secs=0.02)
+    await _send(h, "The user tapped the character.")
+    h.context.add_message({"role": "user", "content": "What did I just do?"})  # no mark yet
+    await asyncio.sleep(0.04)  # one window: found, and passed up
+    assert h.context.get_messages()[-1]["content"] == "What did I just do?"
+    await h.notes.process_frame(LLMContextFrame(context=h.context), FrameDirection.DOWNSTREAM)
+    msgs = h.context.get_messages()
+    assert msgs[-1]["content"] == "What did I just do?"
+    assert _text(msgs[-2]["content"]) == "The user tapped the character."
+    assert h.task.queued == []
 
 
 # ---- the retention cap -------------------------------------------------------------

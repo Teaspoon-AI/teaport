@@ -279,6 +279,25 @@ test("a brain that sends no hello in time is unsupported, not connecting", async
   assert.equal(ws.sent.filter((m) => m.type === "context").length, 0);
 });
 
+test("a brain that says hello but never ready gives up as unsupported", async () => {
+  // Second review of #74: without a deadline a wedged brain left notes "connecting" for good.
+  let t = 1_000_000;
+  const now = () => t;
+  const env = setup({ options: { readyTimeoutMs: 30000, now } });
+  const realNow = Date.now;
+  Date.now = now; // the bridge stamps the hello with Date.now()
+  try {
+    await createSession(env, "relay-1", { ready: false });
+  } finally {
+    Date.now = realNow;
+  }
+  t += 29_000;
+  assert.equal((await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" })).payload.session.state, "connecting");
+  t += 2_000;
+  assert.equal((await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" })).payload.session.state, "unsupported");
+  assert.equal(reason(await call(env.methods, CONTEXT_METHOD, { sessionId: "relay-1", text: "tap" })), "unsupported");
+});
+
 test("a hello without context notes is unsupported", async () => {
   const env = setup();
   const { methods } = env;
@@ -330,7 +349,11 @@ test("a host without the Talk registry is unsupported, and says so", async () =>
   r = await call(env.methods, CAPABILITIES_METHOD, {});
   assert.equal(r.ok, true);
   assert.equal(r.payload.context, null);
-  assert.equal(reason(await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" })), "host_unsupported");
+  // With a sessionId too: the same answer, not an error (second review of #74).
+  r = await call(env.methods, CAPABILITIES_METHOD, { sessionId: "relay-1" });
+  assert.equal(r.ok, true);
+  assert.equal(r.payload.context, null);
+  assert.deepEqual(r.payload.session, { sessionId: "relay-1", state: "unsupported", context: null });
 });
 
 test("another connection's session is not reachable", async () => {
@@ -550,10 +573,19 @@ test("index.js reads the caller's connection from the SDK and the Talk registry 
   const { files } = JSON.parse(readFileSync(join(here, "package.json"), "utf8"));
   for (const f of files) copyFileSync(join(here, f), join(dir, f));
   const entry = (await import(pathToFileURL(join(dir, "index.js")).href)).default;
-  const scope = globalThis[SCOPE];
+  // Discovery loads only list what the plugin offers: the SDK barrel stays unloaded.
+  entry.register({
+    registrationMode: "discovery",
+    logger: { info: () => {} },
+    registerRealtimeVoiceProvider: () => {},
+    registerGatewayMethod: () => {},
+  });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(globalThis[SCOPE], undefined, "a discovery load imported plugin-runtime");
   const providers = [];
   const methods = {};
   entry.register({
+    registrationMode: "full",
     logger: { info: () => {} },
     registerRealtimeVoiceProvider: (p) => providers.push(p),
     registerGatewayMethod: (name, handler, opts) => {
@@ -562,6 +594,11 @@ test("index.js reads the caller's connection from the SDK and the Talk registry 
     },
   });
   assert.deepEqual(Object.keys(methods).sort(), [CAPABILITIES_METHOD, CONTEXT_METHOD]);
+  // A full load imports the accessor in the background; it is in place long before a
+  // session is created.
+  await new Promise((r) => setTimeout(r, 20));
+  const scope = globalThis[SCOPE];
+  assert.ok(scope, "a full load did not import plugin-runtime");
   // talk.session.create on conn-A: createBridge inside the request scope, then the record.
   scope.run({ client: { connId: "conn-A" } }, () => {
     providers[0].createBridge({ providerConfig: { url: "ws://brain/talk" } });

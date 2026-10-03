@@ -351,9 +351,23 @@ async def test_a_waiter_that_ran_out_waits_out_a_claimed_window():
     assert not waiter.done(), "went ahead while the claimant's completion ran"
     await _feed(gate, LLMFullResponseEndFrame())
     await asyncio.wait_for(waiter, timeout=0.5)
-    # Nothing claimed: no wait at all, however busy the conversation is.
+    # Nothing claimed and no completion running: no wait, however much speech.
     await _feed(gate, BotStartedSpeakingFrame())
     await asyncio.wait_for(gate.wait_out_claim(max_wait=2.0), timeout=0.05)
+
+
+async def test_a_waiter_that_ran_out_waits_out_a_completion_already_running():
+    """Second review of #74: a claim ends when its completion STARTS. A waiter that
+    gives up while that completion runs must still wait for it to end: its first text
+    would retire the waiter's freshly armed trigger unread."""
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)  # someone's claim
+    await _feed(gate, LLMFullResponseStartFrame())  # ...its completion started: claim gone
+    waiter = asyncio.ensure_future(gate.wait_out_claim(max_wait=2.0))
+    await asyncio.sleep(0.05)
+    assert not waiter.done(), "went ahead while a completion was running"
+    await _feed(gate, LLMFullResponseEndFrame())
+    await asyncio.wait_for(waiter, timeout=0.5)
 
 
 def main():

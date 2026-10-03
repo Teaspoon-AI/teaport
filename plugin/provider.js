@@ -448,6 +448,7 @@ class TeaportBridge {
     this._brain = null;
     this._brainReady = false;
     this._openedAt = null; // Date.now() at the socket's open (the hello's deadline runs from it)
+    this._helloAt = null; // Date.now() at the hello ("ready"'s deadline runs from it)
     this._contextSeq = 0;
     this._contextAcks = new Map();
     this._onEnd = null;
@@ -459,6 +460,11 @@ class TeaportBridge {
   }
 
   /** Whether the brain has said "ready": its pipeline runs and it takes notes now. */
+  /** When the brain's hello arrived (ms since the epoch), or null before. */
+  helloAt() {
+    return this._helloAt;
+  }
+
   brainReady() {
     return this._brainReady;
   }
@@ -551,7 +557,14 @@ class TeaportBridge {
 
       ws.addEventListener("open", () => {
         if (this._state !== "connecting") {
-          resolve(); // close() ran while connecting: nothing to start, and nothing failed
+          // The bridge ended while connecting: nothing to start, and nothing failed.
+          // Shut the socket, or the brain would hold a session (and the STT slot) for it.
+          try {
+            ws.close();
+          } catch {
+            /* ignore */
+          }
+          resolve();
           return;
         }
         this._state = "open";
@@ -602,6 +615,7 @@ class TeaportBridge {
         // comes as soon as the brain accepts the socket; "ready" follows once notes can
         // be sent.
         this._brain = msg.features && typeof msg.features === "object" ? msg.features : {};
+        this._helloAt = Date.now();
       } else if (msg.type === "ready") {
         this._brainReady = true;
       } else if (msg.type === "context_result") {
