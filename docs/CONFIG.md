@@ -165,7 +165,7 @@ In `/etc/teaport/brain.env`. All off by default; log-only.
 | `TEAPORT_ENDPOINT_DIST_EVERY` | **500** frames (≥ 1) | The per-frame confidence census interval (500 frames ≈ 16 s). |
 | `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Parsed as == "1", not through env_flag: true/yes/on are silently off. Write 1. |
 | `TEAPORT_TRACE` | **off** | Keep the [CAP] caption-pipeline and [WTS] word-timestamp traces in the journal. |
-| `TEAPORT_AUDIO_DUMP` | — | A directory; every call writes the caller PCM the brain received plus a sidecar of bot-playout offsets. Empty = off. |
+| `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. |
 | `TEAPORT_AUDIO_DUMP_MAX_SECS` | **600** s (≥ 1) | Caps the recording. |
 | `TEAPORT_CAPTION_USER_HOLD_S` | **1.2** s (≥ 0) | Gap after the user's last interim before assistant partials may render again; prevents the doubled assistant bubble in the Talk UI. |
 | `ENGINE_LOG` | `~/teaport-engine.log` | The engine's serve log, where the tools read decode ms/step. *Set by the installer.* |
