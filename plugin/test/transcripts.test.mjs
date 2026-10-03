@@ -454,8 +454,16 @@ test("the plugin registers without reading the host version", async (t) => {
   const sdk = join(dir, "node_modules", "openclaw", "plugin-sdk");
   mkdirSync(sdk, { recursive: true });
   writeFileSync(join(dir, "node_modules", "openclaw", "package.json"),
-    JSON.stringify({ name: "openclaw", type: "module", exports: { "./plugin-sdk/plugin-entry": "./plugin-sdk/plugin-entry.js" } }));
+    JSON.stringify({
+      name: "openclaw",
+      type: "module",
+      exports: {
+        "./plugin-sdk/plugin-entry": "./plugin-sdk/plugin-entry.js",
+        "./plugin-sdk/plugin-runtime": "./plugin-sdk/plugin-runtime.js",
+      },
+    }));
   writeFileSync(join(sdk, "plugin-entry.js"), "export const definePluginEntry = (entry) => entry;\n");
+  writeFileSync(join(sdk, "plugin-runtime.js"), "export const getPluginRuntimeGatewayRequestScope = () => undefined;\n");
   writeFileSync(join(dir, "package.json"), JSON.stringify({ type: "module" }));
   // Load exactly what the package ships, so a module index.js gains is loaded too.
   const here = fileURLToPath(new URL("..", import.meta.url));

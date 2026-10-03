@@ -41,6 +41,7 @@ from teaport_brain.captions import (
     UserTranscriptEmitter,
     VoiceActivity,
 )
+from teaport_brain.client_notes import SYSTEM_LINE as CONTEXT_NOTES_LINE, ClientNotes
 from teaport_brain.endpointing import (
     ENDPOINT_STOP_SECS,
     EagerSmartTurnAnalyzer,
@@ -64,7 +65,9 @@ from teaport_brain import speculate
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.env import env_num
-from teaport_brain.followup_gate import FollowupGate, FollowupTrigger
+from teaport_brain.followup_gate import (
+    SYSTEM_NOTICE_TAG, FollowupGate, FollowupTrigger, TurnCommitMark,
+)
 from teaport_brain.heard_context import HeardContextCorrector
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
@@ -249,11 +252,17 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
     `retirer` (FollowupTrigger) takes the one-shot trigger back out of the context
     once the model has actually answered from it, and `ledger` says whether the caller
     heard the answer — a different question from whether the model gave one."""
-    async def speak_followup(request, text, tool_call_id=None):
+    async def wait_for_window():
         # Wait for a clear moment: don't step on the user mid-utterance OR the
         # assistant mid-answer about something else. (Gives up after max_wait so a
-        # relentlessly chatty conversation can't strand the answer.)
-        await gate.wait_until_idle(turn_free=True)
+        # relentlessly chatty conversation can't strand the answer.) Giving up still
+        # waits out a claimed window and any completion in flight: the first text of
+        # another completion retires every armed one-shot trigger, ours included.
+        if not await gate.wait_until_idle(turn_free=True):
+            await gate.wait_out_claim()
+
+    async def speak_followup(request, text, tool_call_id=None):
+        await wait_for_window()
         # Rewrite the placeholder tool result to the real outcome. The placeholder's
         # own instruction ("add nothing more... do not invent an answer now") stays
         # authoritative if left in the context — observed live: the model obeyed IT
@@ -316,8 +325,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # The tag matters because this message OUTLIVES the turn: without it the rest
         # of the session reads a request the user never made, and the model starts
         # attributing it to them.
-        _TAG = "[automated system notice, not spoken by the user]"
-        _SPENT = (f"{_TAG}\nAn earlier background task finished and its outcome was "
+        _SPENT = (f"{SYSTEM_NOTICE_TAG}\nAn earlier background task finished and its outcome was "
                   "already given to the user. Nothing further is needed.")
 
         # The trigger is RE-POSTED per attempt, not restored in place, because being the
@@ -342,7 +350,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
 
         def _post_trigger():
             _retire()
-            msg = {"role": "user", "content": f"{_TAG}\n{content}"}
+            msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n{content}"}
             context.add_message(msg)
             posted["msg"] = msg
 
@@ -394,7 +402,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 if attempt + 1 < _DELIVERY_ATTEMPTS:
                     logger.info("consult follow-up: turn was flushed before the model "
                                 f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
-                    await gate.wait_until_idle(turn_free=True)
+                    await wait_for_window()
                     # Whatever flushed the turn was a barge-in, so the caller's question
                     # is now the tail message and the still-live trigger is buried above
                     # it. Re-post so the retry is a turn the model answers.
@@ -454,7 +462,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                     f"consult follow-up: answered but heard~{said.heard_fraction*100:.0f}%"
                     f" — the caller did not get it, retrying "
                     f"({attempt + 2}/{_DELIVERY_ATTEMPTS})")
-                await gate.wait_until_idle(turn_free=True)
+                await wait_for_window()
                 # After the gate, not before: the caller's barge-in question lands in
                 # the context while we wait, and the trigger has to end up after it.
                 _post_trigger()
@@ -477,16 +485,21 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
     return speak_followup
 
 
-def _build_initial_messages(system_prompt: str, lang_name: str | None) -> list:
+def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
+                            context_notes: bool = False) -> list:
     """The context's starting messages: the shared persona system prompt, the
-    AGENT-FIRST directive when that mode is on, and a reply-language directive when a
-    non-English TTS voice/language was selected. Used both at build time and for the
-    SIP per-call reset so a reset restores the exact starting context."""
+    AGENT-FIRST directive when that mode is on, a reply-language directive when a
+    non-English TTS voice/language was selected, and, where the front-end takes client
+    context notes (/talk), the line that says they are never instructions. Used both at
+    build time and for the SIP per-call reset so a reset restores the exact starting
+    context."""
     msgs = [{"role": "system", "content": system_prompt}]
     if AGENT_FIRST:
         msgs.append({"role": "system", "content": AGENT_FIRST_DIRECTIVE})
     if lang_name:
         msgs.append({"role": "system", "content": f"Always reply to the user in {lang_name}."})
+    if context_notes:
+        msgs.append({"role": "system", "content": CONTEXT_NOTES_LINE})
     return msgs
 
 
@@ -538,7 +551,8 @@ class AgentSession:
         "Please hang up and reconnect in a moment."
     )
 
-    def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate):
+    def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate,
+                 client_notes=None):
         self.task = task
         self.context = context
         self.stt = stt
@@ -546,6 +560,10 @@ class AgentSession:
         self.llm = llm
         self.ledger = ledger
         self.followup_gate = followup_gate
+        # Takes the Talk client's context notes into the LLM context (client_notes.py);
+        # None unless built with context_notes. The OpenClaw front-end reads its limits
+        # for the /talk hello.
+        self.client_notes = client_notes
         # Set by greet() when the STT slot is busy: the front-end reads it to end the
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
         # client disconnect). False on a normal greeting.
@@ -652,7 +670,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         input_processors: list | None = None,
                         cancel_on_idle_timeout: bool | None = None,
                         stt_makeup_db: float = 0.0,
-                        caption_every_final: bool = False) -> AgentSession:
+                        caption_every_final: bool = False,
+                        context_notes: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -668,6 +687,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     - caption_every_final: the client drops a repeated assistant final itself, so
       CaptionTap sends every one (OpenClaw's plugin announces it with ?captions=2;
       see captions.sends_every_final). SIP leaves it off.
+    - context_notes: the front-end takes a Talk client's context notes (/talk, the
+      teaport.talk.context method): ClientNotes joins the pipeline and the system
+      prompt gets its one line (client_notes.py). SIP leaves it off.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -698,7 +720,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (the voice only changes pronunciation; the words still come from the LLM).
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
     context = LLMContext(
-        _build_initial_messages(system_prompt, lang_name),
+        _build_initial_messages(system_prompt, lang_name, context_notes=context_notes),
         tools=build_tools_schema(),
     )
     if AGENT_FIRST:
@@ -791,6 +813,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # Retires the follow-up's one-shot trigger at the completion that reads it. Must
     # sit directly below the LLM — see FollowupTrigger's placement note.
     followup_trigger = FollowupTrigger()
+    # Client context notes (teaport.talk.context; /talk only). Removals go through the
+    # corrector so its positional window survives them.
+    client_notes = (ClientNotes(context, followup_gate, followup_trigger,
+                                drop_messages=heard_corrector.drop_messages)
+                    if context_notes else None)
 
     pipeline = Pipeline([p for p in [
         transport.input(),
@@ -811,6 +838,12 @@ def build_agent_session(transport, *, voice: str | None = None,
         # other data frame, so they are dropped here rather than ride to the transport.
         SegmentDoneSink(),
         heard_corrector,
+        # Notes join the context here, just before the turn being answered or at a
+        # quiet moment -- never mid-turn. Below the corrector: see ClientNotes.
+        client_notes,
+        # The commit, as the gate learns of it: holds the window shut until this
+        # completion starts. Below everything that edits the context on the way.
+        TurnCommitMark(followup_gate),
         # A failed completion must be HEARD, not just logged (see the module). ABOVE the
         # LLM on purpose: ErrorFrames travel UPSTREAM, so below the LLM this never saw a
         # single LLM error and only ever caught the TTS's, which it then blamed on the
@@ -897,6 +930,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     _end_session_when_unusable(stt, "hear the user", task)
     _end_session_when_unusable(tts, "speak", task)
     _end_session_when_unusable(transport_output, "reach the user", task)
+    if client_notes is not None:
+        client_notes.task = task  # a reaction is an LLMRunFrame queued on it
 
     @task.event_handler("on_setup_timeout")
     async def _on_setup_timeout(_task):
@@ -931,4 +966,5 @@ def build_agent_session(transport, *, voice: str | None = None,
         llm=llm,
         ledger=ledger,
         followup_gate=followup_gate,
+        client_notes=client_notes,
     )
