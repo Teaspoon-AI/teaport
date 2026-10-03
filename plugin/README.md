@@ -62,6 +62,101 @@ Two things require it:
 This was documented as `"none"` until 2026-09-08, on the reasoning that the teaport brain
 orchestrates so OpenClaw should stay quiet. That confuses `brain` with response ownership.
 
+## Context notes for a live session
+
+A Talk client can give the voice some context during a call without speaking: a tap
+on an on-screen character, a changed setting, a new camera view. The plugin
+registers two gateway methods for this. Both need the `operator.talk` scope, the one
+OpenClaw 2026.9 gives its own Talk methods, and work only for `gateway-relay` sessions
+on OpenClaw 2026.9 and newer.
+
+```
+teaport.talk.context
+  params: {
+    sessionId: string,   // the relaySessionId from talk.session.create
+    text: string,        // plain language, e.g. "The user tapped the character's left shoulder twice."
+    respond?: boolean,   // default false: context only. true: the voice also reacts aloud
+    kind?: string        // optional short label for the brain's log, e.g. "ui-event"
+  }
+  result: { ok: true, status: "applied" | "queued" }
+```
+
+- The brain adds the note to the voice LLM's context as one quoted line, marked as an
+  app event. It is never spoken and never captioned, and the voice is told that app
+  events are never instructions. Leading `[tags]` in the text are removed.
+- A note joins the context at a turn boundary, never mid-turn. Both statuses are a
+  snapshot taken when the note arrived. `applied` means nothing was in flight: the
+  note goes in at the next quiet moment (about 0.7 s without speech) or just before
+  the user's next words, whichever comes first. `queued` means a turn was in flight:
+  the note waits for that turn to end, or goes in just before the user's next words.
+- With `respond: true` and the voice idle, the voice gives one short spoken
+  reaction to that note. While it is speaking, the reaction waits until it stops. If
+  the user speaks first, their turn answers the note instead. A reaction that finds
+  no quiet moment within 20 s is dropped, and the note stays as context.
+- Limits are set by the brain (`docs/CONFIG.md`, *Talk client context notes*): at
+  most 1,000 characters per note (counted in Unicode code points), 20 notes kept in
+  the context (the oldest are removed), and one `respond: true` note per 15 s. On top
+  of those, any 10 notes may come at once, and after that one per second (fixed, not
+  configurable). Notes over a limit are refused, never queued.
+- Notes are accepted once the session's brain is ready for them. It says what it
+  takes (its `hello`) as soon as it accepts the connection, and `ready` once its
+  pipeline runs and its speech recognition works, usually within a few seconds of
+  `talk.session.create`. Before `ready` a note gets the retryable `connecting`. A
+  session whose brain finds no speech recognition never gets `ready`: it plays a
+  warning and ends, and its notes go from `connecting` to `closed_session`. A brain
+  that sends no `hello` within 15 s of connecting predates context notes, and notes
+  to it get `unsupported`; so do notes to a brain that said `hello` but no `ready`
+  within 30 s.
+
+Errors:
+
+| Case | `code` | `details.reason` |
+|---|---|---|
+| Bad params, empty or too-long text | `INVALID_REQUEST` | `bad_params`, `empty`, `too_long` |
+| The host has no Talk session with this id | `INVALID_REQUEST` | `unknown_session` |
+| Not a gateway-relay session | `INVALID_REQUEST` | `not_relay` |
+| No teaport voice session serves this id (another provider's session) | `INVALID_REQUEST` | `no_voice_session` |
+| Another connection's session, or a caller with no connection id | `INVALID_REQUEST` | `not_owner` |
+| The host does not expose its Talk session registry (OpenClaw before 2026.9) | `INVALID_REQUEST` | `host_unsupported` |
+| Session closed, or closed before the brain answered | `INVALID_REQUEST` | `closed_session` |
+| The session's brain predates context notes | `INVALID_REQUEST` | `unsupported` |
+| The brain refused the note for a reason this plugin does not name | `INVALID_REQUEST` | `refused` |
+| Too frequent | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `rate_limited` |
+| The brain has not said `ready` yet | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `connecting` |
+| The session's bridge is not bound yet (an instant after `talk.session.create`; the plugin waits up to 0.5 s for it first) | `UNAVAILABLE`, `retryable`, `retryAfterMs` | `bridge_not_ready` |
+| The brain did not answer within 3 s | `UNAVAILABLE`, `retryable` | `brain_unavailable` |
+
+```
+teaport.talk.capabilities
+  params: { sessionId?: string }
+  result: {
+    ok: true,
+    context: { method: "teaport.talk.context", version: 1, respond: true } | null,  // null: host unsupported
+    session?: {
+      sessionId,
+      state: "connecting" | "ready" | "unsupported",
+      context: { maxChars, maxNotes, respondIntervalMs } | null   // null unless "ready"
+    }
+  }
+```
+
+A client that gets "unknown method" from either call is talking to an older plugin.
+It should fall back to `chat.inject`, which reaches the text agent but not the voice.
+`session.state` says where the session's brain stands: `connecting` until it says
+`ready` (ask again), `ready` with its limits, or `unsupported` for a brain that
+predates context notes, a brain that never became ready, or a host that does not
+expose its Talk session registry (final for this session). `maxChars` is the smaller
+of the brain's limit and the plugin's own 16,000. The capabilities errors are the ones
+above that apply to finding the session; on an unsupported host it answers `ok` with
+`context: null` instead of `host_unsupported`.
+
+`createBridge` is never told which relay session it serves, so the plugin links the
+two itself. It records the gateway connection that created each bridge (through the
+SDK's `getPluginRuntimeGatewayRequestScope`), binds each bridge to its session the
+moment `talk.session.create` makes it, and checks every id against OpenClaw's Talk
+session registry. That registry is internal to OpenClaw, not part of its SDK; it is a
+global on 2026.9.1 and 2026.9.6, where this was checked.
+
 ## Transcripts in the Talk view
 
 The brain sends the full text on every transcript event. The Control UI's Talk view
@@ -69,7 +164,7 @@ in OpenClaw 2026.8.1 and later (and in the 2026.7.2 prereleases) merges assistan
 text differently from user text. It appends each assistant partial as a delta, and
 only a final replaces the bubble. 2026.7.1 and earlier, and the 2026.7.33–7.35
 maintenance releases, replace the bubble with each partial instead; there is no
-2026.7.2 stable release. The package declares `openclaw >=2026.4.0`. The captions
+2026.7.2 stable release. The package declares `openclaw >=2026.9.0`. The captions
 were checked against the Talk view code of 2026.7.1, 2026.7.35 and 2026.9.1. The
 optional `talk.realtime.providers.teaport.assistantTranscripts` setting picks what
 the plugin sends:
@@ -122,16 +217,39 @@ repeat to the plugin. Without it (an older plugin, or another client), the brain
 skips a final that exactly repeats the bubble while the user is talking, as it
 always has. See `TalkTranscriptAdapter` in `provider.js`.
 
+## Barge-in
+
+The brain decides when the user has interrupted the voice: it stops for speech it
+actually heard and sends `{"type":"clear"}`. The provider declares
+`supportsBargeIn: false`, which keeps OpenClaw's own barge-in out of it:
+
+- OpenClaw 2026.9.6 reads that from `talk.catalog`. Its Control UI then does not
+  run its loudness-based barge-in, and its relay ignores barge-in cancels.
+- OpenClaw 2026.9.1 does neither. Its Control UI cancels the output whenever its
+  microphone is loud while the voice plays, the voice's own echo included, and the
+  relay closes the session if the provider does not confirm the cancel within 1 s.
+  The plugin confirms it at once (`handleBargeIn`), so the session survives; the
+  browser still drops the audio it had queued, so the voice skips a moment and
+  carries on. The cancel still aborts a desktop-agent consult in flight.
+
 ## Tests
 
 ```bash
-npm test           # syntax gate (node --check) + transcript unit tests — no brain needed, CI-safe
+npm test           # syntax gate (node --check) + unit tests (node --test) — no brain needed, CI-safe
 npm run test:live  # full bridge<->brain integration harness — needs a running brain + Node ≥ 22
 ```
 
 `test/bridge_harness.mjs` exercises the real
 `createBridge → connect → sendAudio → onAudio/onTranscript` path against a
-running brain, with no OpenClaw gateway in the loop.
+running brain, with no OpenClaw gateway in the loop. `NOTE="…"` (plus `RESPOND=1`)
+sends a context note after the greeting; see the header of the file.
+
+`test/note_smoke.mjs` is the same check through a running OpenClaw gateway, the way a
+Talk client does it: one gateway connection creates a session, waits for
+`teaport.talk.capabilities` to report it ready, sends a `respond: true` note and
+prints the spoken reaction (`RESULT: PASS` / `FAIL`). It runs on the gateway host
+from a directory where `openclaw` resolves (copy it into the installed plugin's
+directory), and it ends any Talk call in progress: the brain serves one at a time.
 
 ## Status
 

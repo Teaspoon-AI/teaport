@@ -39,12 +39,14 @@ from pipecat.frames.frames import (  # noqa: E402
     FunctionCallResultFrame,
     FunctionCallResultProperties,
     InterruptionFrame,
+    LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
 )
+from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
-from teaport_brain.followup_gate import FollowupGate  # noqa: E402
+from teaport_brain.followup_gate import FollowupGate, TurnCommitMark  # noqa: E402
 
 
 def _gate(quiet_secs=0.01):
@@ -242,6 +244,130 @@ async def test_a_dropped_watch_is_forgotten():
     gate.drop_delivery(d)
     await _feed(gate, BotStartedSpeakingFrame(), BotStoppedSpeakingFrame())
     assert not d.done.is_set(), "a dropped watch still settled"
+
+
+# --- the claim: one turn-free window, one injector ---
+
+async def _two_waiters(gate, **kw):
+    a = asyncio.ensure_future(gate.wait_until_idle(turn_free=True, **kw))
+    b = asyncio.ensure_future(gate.wait_until_idle(turn_free=True, **kw))
+    return a, b
+
+
+async def test_one_window_goes_to_one_injector():
+    """The consult follow-up and a client-note reaction waiting together used to both
+    get the same quiet window: two LLMRunFrames, two completions, and the first one's
+    text retired both one-shot triggers. The window is now claimed by the first waiter
+    it is reported to, until that waiter's completion has started and ended."""
+    gate = _gate(quiet_secs=0.02)
+    await _feed(gate, BotStartedSpeakingFrame())
+    a, b = await _two_waiters(gate, max_wait=2.0)
+    await asyncio.sleep(0.01)
+    await _feed(gate, BotStoppedSpeakingFrame())
+    done, _ = await asyncio.wait({a, b}, timeout=0.3, return_when=asyncio.FIRST_COMPLETED)
+    assert len(done) == 1 and done.pop().result() is True
+    await asyncio.sleep(0.1)
+    assert sum(t.done() for t in (a, b)) == 1, "both injectors took the same window"
+    # The winner's completion starts (the claim ends; the turn holds the window) and
+    # ends: the other injector gets the next window.
+    await _feed(gate, LLMFullResponseStartFrame())
+    await asyncio.sleep(0.1)
+    assert sum(t.done() for t in (a, b)) == 1, "the window reopened mid-completion"
+    await _feed(gate, LLMFullResponseEndFrame())
+    assert await asyncio.wait_for(asyncio.gather(a, b), timeout=1.0) == [True, True]
+
+
+async def test_a_claim_given_back_reopens_the_window():
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    assert not gate.is_clear(), "the window was not claimed"
+    assert not await gate.wait_until_idle(max_wait=0.1, turn_free=True)
+    gate.release_claim()
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+
+
+async def test_an_interruption_ends_a_claim():
+    """A barge-in flushes the claimant's queued LLMRunFrame, so no completion will
+    start for it: the claim cannot wait for one."""
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    await _feed(gate, InterruptionFrame())
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+
+
+async def test_a_forgotten_claim_expires():
+    gate = FollowupGate(quiet_secs=0.02, claim_secs=0.1)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True), "the claim never expired"
+
+
+async def test_the_narrator_wait_neither_claims_nor_heeds_a_claim():
+    """The narrator speaks during a tool call's silence; the claim is the injectors'."""
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5)
+    assert gate.is_clear(), "a narrator wait claimed the window"
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+    assert await gate.wait_until_idle(max_wait=0.5), "a claim held the narrator back"
+
+
+async def _commit(gate):
+    """A completion asked for, as TurnCommitMark (above the LLM) sees it."""
+    mark = TurnCommitMark(gate)
+
+    async def fake_push(frame, direction=FrameDirection.DOWNSTREAM):
+        pass
+    mark.push_frame = fake_push
+    await mark.process_frame(LLMContextFrame(context=LLMContext([])), FrameDirection.DOWNSTREAM)
+
+
+async def test_a_committed_turn_holds_the_window_until_its_completion_starts():
+    """Review of #74: the gate learned of a turn only at its LLMFullResponseStartFrame,
+    so the moment between a commit and that frame read as turn-free, and an injector
+    could post after the user's unanswered words and queue a second completion."""
+    gate = _gate(quiet_secs=0.02)
+    await _commit(gate)
+    assert not gate.is_clear()
+    assert not await gate.wait_until_idle(max_wait=0.1, turn_free=True), \
+        "a window was reported between the commit and its completion"
+    # The narrator's wait is about speech, not turns: a commit does not hold it.
+    assert await gate.wait_until_idle(max_wait=0.1)
+    await _feed(gate, LLMFullResponseStartFrame())
+    assert not await gate.wait_until_idle(max_wait=0.1, turn_free=True)
+    await _feed(gate, LLMFullResponseEndFrame())
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
+
+
+async def test_a_waiter_that_ran_out_waits_out_a_claimed_window():
+    """Review of #74: the consult follow-up goes ahead when its wait runs out. If a
+    window is claimed right then, it now waits for the claimant's completion to start
+    and end, rather than queue a second completion into the same window."""
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)  # someone's claim
+    waiter = asyncio.ensure_future(gate.wait_out_claim(max_wait=2.0))
+    await asyncio.sleep(0.05)
+    assert not waiter.done(), "went ahead into a claimed window"
+    await _feed(gate, LLMFullResponseStartFrame())  # the claimant's completion
+    await asyncio.sleep(0.05)
+    assert not waiter.done(), "went ahead while the claimant's completion ran"
+    await _feed(gate, LLMFullResponseEndFrame())
+    await asyncio.wait_for(waiter, timeout=0.5)
+    # Nothing claimed and no completion running: no wait, however much speech.
+    await _feed(gate, BotStartedSpeakingFrame())
+    await asyncio.wait_for(gate.wait_out_claim(max_wait=2.0), timeout=0.05)
+
+
+async def test_a_waiter_that_ran_out_waits_out_a_completion_already_running():
+    """Second review of #74: a claim ends when its completion STARTS. A waiter that
+    gives up while that completion runs must still wait for it to end: its first text
+    would retire the waiter's freshly armed trigger unread."""
+    gate = _gate(quiet_secs=0.02)
+    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)  # someone's claim
+    await _feed(gate, LLMFullResponseStartFrame())  # ...its completion started: claim gone
+    waiter = asyncio.ensure_future(gate.wait_out_claim(max_wait=2.0))
+    await asyncio.sleep(0.05)
+    assert not waiter.done(), "went ahead while a completion was running"
+    await _feed(gate, LLMFullResponseEndFrame())
+    await asyncio.wait_for(waiter, timeout=0.5)
 
 
 def main():

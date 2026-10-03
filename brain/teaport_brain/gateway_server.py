@@ -27,6 +27,7 @@
 #   Requires the engine reachable at TEAPORT_URL (default ws://127.0.0.1:8000).
 #
 import argparse
+import json
 import os
 import sys
 import time
@@ -35,6 +36,7 @@ import uvicorn
 from fastapi import FastAPI, WebSocket
 from loguru import logger
 
+from pipecat.frames.frames import OutputTransportMessageUrgentFrame
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.websocket.fastapi import (
     FastAPIWebsocketParams,
@@ -96,8 +98,23 @@ async def run_relay_bot(websocket: WebSocket):
     session = build_agent_session(
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),
+        context_notes=True,
         input_processors=input_procs,
     )
+
+    # What this brain accepts beyond audio, so the plugin can tell a Talk client
+    # (teaport.talk.capabilities) before it sends anything. It goes out at once, on the
+    # raw socket: before acquire_slot (up to ~5 s waiting out the previous session's
+    # teardown) and the pipeline start, which could otherwise hold it past the plugin's
+    # wait for a hello and have a working brain taken for one without context notes.
+    # It does not mean notes can be sent yet; "ready" says that (below). Nothing else
+    # writes to the socket until the pipeline runs. A plugin that predates context
+    # notes ignores both types. The brain and the plugin ship together: a plugin from
+    # before "ready" took the hello for it and sent notes into a session not yet up.
+    await websocket.send_text(json.dumps({
+        "type": "hello",
+        "features": {"context": session.client_notes.limits()},
+    }))
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
@@ -109,10 +126,15 @@ async def run_relay_bot(websocket: WebSocket):
             # that answered once and then never again, while holding _active_session.
             # docs/CONFIG.md and docs/FAQ.md both promise the session ends here, and
             # the SIP path already does it (hangs the caller up). Let the line play,
-            # then end the pipeline — the client sees a clean disconnect.
+            # then end the pipeline — the client sees a clean disconnect. It never says
+            # "ready", so the plugin keeps notes out of a session being torn down.
             logger.info("STT unavailable — ending the session after the warning plays")
             await session.followup_gate.wait_until_delivered()
             await session.task.cancel()
+            return
+        # The plugin sends notes only after this: the pipeline is running and the STT
+        # works, so a note is answered at once and lands in a session that will last.
+        await session.task.queue_frames([OutputTransportMessageUrgentFrame(message={"type": "ready"})])
 
     @transport.event_handler("on_client_disconnected")
     async def on_client_disconnected(_transport, _client):

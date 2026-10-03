@@ -9,6 +9,11 @@
 // pipeline + LLM + TTS + audio serialization). With a 24k mono PCM16 WAV it streams
 // it as "user mic" audio (proves STT + a full turn). Requires Node >= 22 (global
 // WebSocket) and a running gateway_server.py.
+//
+// NOTE="The user tapped the character's left shoulder twice." adds a context note
+// after the greeting (the teaport.talk.context path, minus the gateway); RESPOND=1
+// asks the brain to react to it aloud. With a WAV asking "What did I just do?" it
+// checks that a respond:false note is known without being spoken.
 
 import { readFileSync, writeFileSync } from "node:fs";
 
@@ -76,6 +81,18 @@ const bridge = provider.createBridge(req);
 
 await bridge.connect();
 console.log("connected:", bridge.isConnected());
+
+if (process.env.NOTE) {
+  // Notes wait for the brain's "ready" (its pipeline and STT are up), as context.js does.
+  for (let t = 0; t < 400 && !bridge.brainReady(); t++) await sleep(50);
+  console.log("brain hello:", JSON.stringify(bridge.brainFeatures()), "| ready:", bridge.brainReady());
+  await sleep(3000); // let the greeting finish
+  const respond = /^(1|true)$/i.test(process.env.RESPOND || "");
+  const ack = await bridge.sendContext({ text: process.env.NOTE, respond, kind: "harness" });
+  console.log(`note (respond=${respond}) ->`, JSON.stringify(ack));
+  events.push(`NOTE sent (respond=${respond})`);
+  audioOut.length = 0; // out.wav: what came after the note
+}
 
 if (wavPath) {
   if (process.env.BARGE) {
