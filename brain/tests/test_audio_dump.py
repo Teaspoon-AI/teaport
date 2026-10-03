@@ -177,7 +177,11 @@ async def _talk_input_processors(dump_dir):
 
     def build(transport, **kw):
         seen.update(kw)
-        return SimpleNamespace(task=None)
+        # client_notes for a /talk that says hello with its context-note limits (#74).
+        return SimpleNamespace(task=None, client_notes=SimpleNamespace(limits=lambda: {}))
+
+    async def send_text(text):
+        pass
 
     async def acquire(task):
         async def release():
@@ -200,7 +204,7 @@ async def _talk_input_processors(dump_dir):
     gs.PipelineRunner = _Runner
     ad.DUMP_DIR, ad.ENABLED = dump_dir, bool(dump_dir)
     try:
-        await gs.run_relay_bot(SimpleNamespace(query_params={}))
+        await gs.run_relay_bot(SimpleNamespace(query_params={}, send_text=send_text))
     finally:
         for k, v in saved.items():
             setattr(gs, k, v)
