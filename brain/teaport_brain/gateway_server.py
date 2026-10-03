@@ -30,6 +30,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 import uvicorn
 from fastapi import FastAPI, WebSocket
@@ -47,7 +48,7 @@ from teaport_brain.agent_session import (
     build_agent_session,
     slot_active,
 )
-from teaport_brain import agent_backend, config_ui, sdnotify
+from teaport_brain import agent_backend, audio_dump, config_ui, sdnotify
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
@@ -85,10 +86,20 @@ async def run_relay_bot(websocket: WebSocket):
     # `language` can override the phonemizer. Missing/unknown → defaults (af_heart/en-us).
     # `captions` is the caption protocol the plugin speaks (captions.sends_every_final).
     qp = websocket.query_params
+    # The caller-audio tap, as on the phone path (sip_server): first in the pipeline, so
+    # it records the PCM the VAD and STT go on to see. Off unless TEAPORT_AUDIO_DUMP
+    # names a directory. Talk sessions have no call id, so the UTC start time stands in,
+    # prefixed so they are told apart from phone calls (caller-talk-<time>.wav).
+    input_procs = None
+    if audio_dump.ENABLED:
+        input_procs = [audio_dump.CallerAudioTap(
+            "talk-" + time.strftime("%Y%m%d%H%M%S", time.gmtime()) + f"{time.time() % 1:.6f}"[2:],
+            sample_rate=PIPELINE_SAMPLE_RATE)]
     session = build_agent_session(
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),
         context_notes=True,
+        input_processors=input_procs,
     )
 
     # What this brain accepts beyond audio, so the plugin can tell a Talk client

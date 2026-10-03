@@ -1167,7 +1167,7 @@ group = "diag"
 type = "dir"
 read = "startup"
 tier = "diag"
-help = "A directory; every call writes the caller PCM the brain received plus a sidecar of bot-playout offsets. Empty = off."
+help = "A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off."
 source = "audio_dump.py:65"
 
 [[settings]]
@@ -1235,7 +1235,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:60"
+source = "gateway_server.py:61"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1247,7 +1247,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:67"
+source = "gateway_server.py:68"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"

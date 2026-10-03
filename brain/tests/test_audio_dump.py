@@ -160,6 +160,70 @@ async def test_an_unwritable_directory_is_not_fatal():
     assert tap._wav is None
 
 
+async def _talk_input_processors(dump_dir):
+    """What /talk hands build_agent_session as input_processors, with fakes around it."""
+    from types import SimpleNamespace
+
+    from teaport_brain import gateway_server as gs
+
+    seen = {}
+
+    class _Transport:
+        def __init__(self, **kw):
+            pass
+
+        def event_handler(self, name):
+            return lambda fn: fn
+
+    def build(transport, **kw):
+        seen.update(kw)
+        # client_notes for a /talk that says hello with its context-note limits (#74).
+        return SimpleNamespace(task=None, client_notes=SimpleNamespace(limits=lambda: {}))
+
+    async def send_text(text):
+        pass
+
+    async def acquire(task):
+        async def release():
+            pass
+        return None, release
+
+    class _Runner:
+        def __init__(self, **kw):
+            pass
+
+        async def run(self, task):
+            pass
+
+    saved = {k: getattr(gs, k) for k in
+             ("FastAPIWebsocketTransport", "build_agent_session", "acquire_slot", "PipelineRunner")}
+    saved_dump = (ad.DUMP_DIR, ad.ENABLED)
+    gs.FastAPIWebsocketTransport = _Transport
+    gs.build_agent_session = build
+    gs.acquire_slot = acquire
+    gs.PipelineRunner = _Runner
+    ad.DUMP_DIR, ad.ENABLED = dump_dir, bool(dump_dir)
+    try:
+        await gs.run_relay_bot(SimpleNamespace(query_params={}, send_text=send_text))
+    finally:
+        for k, v in saved.items():
+            setattr(gs, k, v)
+        ad.DUMP_DIR, ad.ENABLED = saved_dump
+    return seen.get("input_processors")
+
+
+async def test_talk_sessions_are_recorded_too():
+    """The tap used to be wired on the phone path only, so a Talk call was never captured
+    however TEAPORT_AUDIO_DUMP was set. /talk now puts it first, as sip_server does."""
+    with tempfile.TemporaryDirectory() as tmp:
+        procs = await _talk_input_processors(tmp)
+        assert procs and isinstance(procs[0], ad.CallerAudioTap), procs
+        name = os.path.basename(procs[0]._wav_path)
+        assert name.startswith("caller-talk-") and name.endswith(".wav"), name
+        procs[0]._close()
+    assert await _talk_input_processors("") is None, "a tap with the dump off"
+
+
 def main():
     async def run_all():
         for name, fn in sorted(globals().items()):
