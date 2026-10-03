@@ -1,8 +1,8 @@
 #
 # Unit test: split_clauses_ramp's long-sentence split, and strip_urls_for_speech.
 #
-# The engine synthesizes a chunk whole before any of it can play, so a long sentence
-# IS the first-audio wait. Live 2026-09-04 on the appliance: a 236-char consult answer
+# First audio scales with the chunk's length, so a long sentence IS the first-audio
+# wait. Live 2026-09-04 on the appliance (pre-#14 brain, 2026-09 engine): a 236-char consult answer
 # (18.8 s of audio) began 4.6 s after the model finished it; a ~30 s one took 6.6 s,
 # and the 8 s of silence that made read as "it's done" -- the user talked over the
 # delivery and it was retired at 10% heard. gpt-oss writes list answers as one

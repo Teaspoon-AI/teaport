@@ -82,7 +82,7 @@ In `/etc/teaport/brain.env`. First-audio latency versus seam quality. Each is ex
 
 | Setting | Default | Description |
 |---|---|---|
-| `TTS_SENTENCE_SOFT_MAX` | **80** chars (≥ 0) | A sentence longer than this is split at clause boundaries before synthesis; the engine synthesizes a chunk whole before any of it plays, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it). 0 disables the split. |
+| `TTS_SENTENCE_SOFT_MAX` | **80** chars (≥ 0) | A sentence longer than this is split at clause boundaries before synthesis; first audio scales with the chunk's length, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it, on the 2026-09 engine and pre-#14 brain). 0 disables the split. |
 | `TTS_FIRST_CLAUSE_CHARS` | **32** chars (≥ 8) | Size of the first chunk — the one the caller waits on. |
 | `TTS_CLAUSE_GROWTH` | **1.5** (1.0–1.67) | Each chunk may grow this many times the previous. Must stay below 1/RTF (~1.67 at the measured CPU RTF 0.6) or a chunk's synth outruns the previous chunk's playout and playback stalls at the seam. |
 | `TTS_CLAUSE_CAP` | **200** chars (≥ 8) | The largest ramped chunk. |

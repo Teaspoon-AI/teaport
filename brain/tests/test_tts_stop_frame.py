@@ -71,14 +71,15 @@ DEADLINE_SECS = BOT_VAD_STOP_FALLBACK_SECS + 3.0   # room for the fallback AND s
 
 
 async def _fake_segments(text: str):
-    """What _synth_text returns for one clause: a tone (not silence, so the seam trim
+    """What _synth_text streams for one clause: a tone (not silence, so the seam trim
     keeps it whole) and per-word start times spread over the clip."""
     n = int(AUDIO_SECS * _SAMPLE_RATE)
     t = np.arange(n, dtype=np.float32) / _SAMPLE_RATE
     audio = (0.3 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
     words = text.split()
     step = AUDIO_SECS / max(1, len(words))
-    return [(audio, [(w, i * step) for i, w in enumerate(words)])]
+    yield "audio", audio
+    yield "end", [(w, i * step) for i, w in enumerate(words)]
 
 
 class StubOutput(BaseOutputTransport):

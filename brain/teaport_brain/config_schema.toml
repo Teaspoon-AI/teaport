@@ -292,7 +292,7 @@ default = "ws://127.0.0.1:8000/v1/tts"
 read = "startup"
 tier = "installer"
 help = "The engine text-to-speech base; the stream URL derives from it."
-source = "engine_tts.py:48"
+source = "engine_tts.py:49"
 
 [[settings]]
 name = "ENGINE_TTS_STREAM_URL"
@@ -303,7 +303,7 @@ default = "<ENGINE_TTS_URL base>/v1/audio/speech/stream"
 read = "startup"
 tier = "installer"
 help = "Only set to override the derivation from ENGINE_TTS_URL."
-source = "engine_tts.py:49"
+source = "engine_tts.py:50"
 
 [[settings]]
 name = "TTS_VOICE"
@@ -337,7 +337,7 @@ default = 20
 read = "startup"
 tier = "tuning"
 help = "Per-request receive timeout on the TTS stream. A clause synthesizes in ~0.2–0.5 s; 20 s covers a stuck engine without hanging a reply."
-source = "engine_tts.py:50"
+source = "engine_tts.py:51"
 
 [[settings]]
 name = "TTS_CONNECT_RETRIES"
@@ -350,7 +350,7 @@ read = "startup"
 tier = "tuning"
 help = "Connect attempts while the engine drains synth a barge-in abandoned (~1.5 s on an Orin Nano). Measured: 0/3 clauses survive with one attempt, 3/3 with three."
 note = "The code clamps to at least 1; 0 or 1 both mean a single attempt."
-source = "engine_tts.py:66"
+source = "engine_tts.py:67"
 
 [[settings]]
 name = "TTS_CONNECT_BACKOFF"
@@ -363,7 +363,7 @@ default = 0.6
 read = "startup"
 tier = "tuning"
 help = "Gap between those connect attempts."
-source = "engine_tts.py:67"
+source = "engine_tts.py:68"
 
 [[settings]]
 name = "TTS_STOP_FRAME_TIMEOUT_S"
@@ -376,7 +376,7 @@ default = 15
 read = "startup"
 tier = "tuning"
 help = "Pipecat's stop-frame timeout. Its 3 s default trips in normal CPU-backend operation; 15 s covers the worst cap-sized chunk at CPU RTF ~0.6."
-source = "engine_tts.py:89"
+source = "engine_tts.py:90"
 
 [[settings]]
 name = "TEAPORT_STT_BACKEND"
@@ -437,8 +437,8 @@ min = 0
 default = 80
 read = "startup"
 tier = "tuning"
-help = "A sentence longer than this is split at clause boundaries before synthesis; the engine synthesizes a chunk whole before any of it plays, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it). 0 disables the split."
-source = "engine_tts.py:116"
+help = "A sentence longer than this is split at clause boundaries before synthesis; first audio scales with the chunk's length, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it, on the 2026-09 engine and pre-#14 brain). 0 disables the split."
+source = "engine_tts.py:128"
 
 [[settings]]
 name = "TTS_FIRST_CLAUSE_CHARS"
@@ -451,7 +451,7 @@ default = 32
 read = "startup"
 tier = "tuning"
 help = "Size of the first chunk — the one the caller waits on."
-source = "engine_tts.py:99"
+source = "engine_tts.py:110"
 
 [[settings]]
 name = "TTS_CLAUSE_GROWTH"
@@ -464,7 +464,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "Each chunk may grow this many times the previous. Must stay below 1/RTF (~1.67 at the measured CPU RTF 0.6) or a chunk's synth outruns the previous chunk's playout and playback stalls at the seam."
-source = "engine_tts.py:104"
+source = "engine_tts.py:115"
 
 [[settings]]
 name = "TTS_CLAUSE_CAP"
@@ -477,7 +477,7 @@ default = 200
 read = "startup"
 tier = "tuning"
 help = "The largest ramped chunk."
-source = "engine_tts.py:105"
+source = "engine_tts.py:116"
 
 [[settings]]
 name = "TTS_CLAUSE_HARD_MAX"
@@ -491,7 +491,7 @@ default = 350
 read = "startup"
 tier = "tuning"
 help = "Last-resort mid-sentence word break so a run-on cannot overflow the engine's ~512-token utterance limit and crash the synth."
-source = "engine_tts.py:109"
+source = "engine_tts.py:120"
 
 [[settings]]
 name = "TTS_SEAM_KEEP_LEAD"
@@ -504,7 +504,7 @@ default = 0.05
 read = "startup"
 tier = "tuning"
 help = "Near-silence kept before a chunk's first sound."
-source = "engine_tts.py:117"
+source = "engine_tts.py:129"
 
 [[settings]]
 name = "TTS_SEAM_KEEP_TRAIL"
@@ -517,7 +517,7 @@ default = 0.25
 read = "startup"
 tier = "tuning"
 help = "Near-silence kept after a chunk's last sound. With the lead this lands a seam near a sentence's natural ~320 ms comma pause instead of the ~793 ms a naive concat gives."
-source = "engine_tts.py:118"
+source = "engine_tts.py:130"
 
 [[settings]]
 name = "TTS_USER_SPEECH_HOLD_MAX_S"
@@ -530,7 +530,7 @@ default = 3.0
 read = "startup"
 tier = "tuning"
 help = "While VAD says the user is speaking, the next clause is held back to free the GPU for barge-in transcription. This caps the hold so sustained noise cannot stall the reply."
-source = "engine_tts.py:129"
+source = "engine_tts.py:141"
 
 [[settings]]
 name = "TTS_CAPTION_LEAD_SECS"
@@ -543,7 +543,7 @@ default = 0.2
 read = "startup"
 tier = "tuning"
 help = "Caption lead shared by the TTS word timestamps and the heard-word ledger. One knob so the two cannot drift."
-source = "tts_text.py:322"
+source = "tts_text.py:323"
 
 # ---- turn-taking
 
