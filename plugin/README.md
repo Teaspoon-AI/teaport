@@ -217,6 +217,21 @@ repeat to the plugin. Without it (an older plugin, or another client), the brain
 skips a final that exactly repeats the bubble while the user is talking, as it
 always has. See `TalkTranscriptAdapter` in `provider.js`.
 
+## Barge-in
+
+The brain decides when the user has interrupted the voice: it stops for speech it
+actually heard and sends `{"type":"clear"}`. The provider declares
+`supportsBargeIn: false`, which keeps OpenClaw's own barge-in out of it:
+
+- OpenClaw 2026.9.6 reads that from `talk.catalog`. Its Control UI then does not
+  run its loudness-based barge-in, and its relay ignores barge-in cancels.
+- OpenClaw 2026.9.1 does neither. Its Control UI cancels the output whenever its
+  microphone is loud while the voice plays, the voice's own echo included, and the
+  relay closes the session if the provider does not confirm the cancel within 1 s.
+  The plugin confirms it at once (`handleBargeIn`), so the session survives; the
+  browser still drops the audio it had queued, so the voice skips a moment and
+  carries on. The cancel still aborts a desktop-agent consult in flight.
+
 ## Tests
 
 ```bash
