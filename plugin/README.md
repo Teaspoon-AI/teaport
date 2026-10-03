@@ -229,6 +229,13 @@ npm run test:live  # full bridge<->brain integration harness — needs a running
 running brain, with no OpenClaw gateway in the loop. `NOTE="…"` (plus `RESPOND=1`)
 sends a context note after the greeting; see the header of the file.
 
+`test/note_smoke.mjs` is the same check through a running OpenClaw gateway, the way a
+Talk client does it: one gateway connection creates a session, waits for
+`teaport.talk.capabilities` to report it ready, sends a `respond: true` note and
+prints the spoken reaction (`RESULT: PASS` / `FAIL`). It runs on the gateway host
+from a directory where `openclaw` resolves (copy it into the installed plugin's
+directory), and it ends any Talk call in progress: the brain serves one at a time.
+
 ## Status
 
 The plugin lives in `teaport` (`plugin/`) for now. The plugin and the
