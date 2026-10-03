@@ -18,6 +18,7 @@
 #
 import asyncio
 import json
+from typing import NamedTuple
 
 from loguru import logger
 
@@ -243,6 +244,61 @@ _DELIVERY_CHART_TIMEOUT = 5.0
 _MIN_HEARD = env_num("TEAPORT_FOLLOWUP_MIN_HEARD", "0.3", float)
 
 
+class _FailureOutcome(NamedTuple):
+    status: str  # the tool result's status and the trigger's tag
+    record: str  # the tool result's error: what the model may say if asked later
+    told: str    # the trigger's statement of what happened ({request} is filled in)
+    ask: str     # what the trigger asks the model to say
+
+
+# A hedge every failure keeps: a consult can die AFTER its action landed (observed
+# live: message posted, then rc=1), and a timed-out one may still be running.
+_ACTION_HEDGE = (" If the request was something visible (a message, poll, or post), "
+                 "ask them to check whether it appeared — do NOT state that it "
+                 "definitely failed.")
+
+
+def _failure_outcome(failure, detail) -> _FailureOutcome:
+    """How a consult that produced no answer is recorded and told. Each kind says what
+    actually happened — a timeout says time ran out, an empty run says it came back
+    empty — because "didn't get confirmation" for all of them left the caller unable
+    to tell a slow request from a broken one (#80)."""
+    if failure == "timeout":
+        return _FailureOutcome(
+            "timeout", "the desktop agent ran out of time before it finished",
+            "The desktop agent ran out of time on this earlier request and did not "
+            "finish it: \"{request}\".",
+            " In one short spoken sentence, tell the user it took too long and you "
+            "don't have an answer, and offer to try again or narrow it down." + _ACTION_HEDGE)
+    if failure == "empty":
+        return _FailureOutcome(
+            "empty", "the desktop agent finished but came back with no answer",
+            "The desktop agent finished this earlier request but came back with no "
+            "answer: \"{request}\".",
+            " In one short spoken sentence, tell the user it came back empty-handed and "
+            "offer to try again." + _ACTION_HEDGE)
+    if failure == "error":
+        billing = "402" in (detail or "")
+        why = ("its AI service refused the request (a billing or credit problem)"
+               if billing else "it hit an error")
+        return _FailureOutcome(
+            "error", f"the desktop agent could not do it: {why}",
+            f"The desktop agent could not complete this earlier request — {why}: "
+            "\"{request}\".",
+            " In one short spoken sentence, tell the user it couldn't be done"
+            + (" because the agent's AI service has a billing problem" if billing
+               else " and offer to try again") + "." + _ACTION_HEDGE)
+    # "unknown", not "failed": the consult can die on teardown AFTER the action
+    # landed, so asserting failure can be a lie.
+    return _FailureOutcome(
+        "unknown", "the desktop agent did not report back; the action may or may not "
+                   "have completed",
+        "The desktop agent did not report back on this earlier request: "
+        "\"{request}\". It may or may not have completed.",
+        " In one short spoken sentence, tell the user you didn't get confirmation."
+        + _ACTION_HEDGE)
+
+
 def _make_consult_followup(task, context, gate, retirer, ledger):
     """Follow-up injector for the ASYNC ask_openclaw path. When a background consult
     finishes, append its answer to the context and run the LLM so the bot SPEAKS it
@@ -261,7 +317,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         if not await gate.wait_until_idle(turn_free=True):
             await gate.wait_out_claim()
 
-    async def speak_followup(request, text, tool_call_id=None):
+    async def speak_followup(request, text, tool_call_id=None, failure=None, detail=""):
         await wait_for_window()
         # Rewrite the placeholder tool result to the real outcome. The placeholder's
         # own instruction ("add nothing more... do not invent an answer now") stays
@@ -270,6 +326,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # so the answer never reached the user. With the tool result rewritten, the
         # context reads like any normally-completed tool call.
         rewrote = False
+        outcome = _failure_outcome(failure, detail) if not text else None
         # The record loses the web addresses too. 2132096 kept them here so "what
         # did the agent say?" could still offer a link -- and live 2026-09-04 21:59
         # that question was answered FROM this record with every path read aloud
@@ -281,12 +338,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                     and m.get("tool_call_id") == tool_call_id):
                 m["content"] = json.dumps(
                     {"status": "complete", "answer": strip_urls_for_speech(text)} if text
-                    # "unknown", not "failed": the consult can die on teardown
-                    # AFTER the action landed (observed live — message posted,
-                    # then rc=1), so asserting failure can be a lie.
-                    else {"status": "unknown",
-                          "error": "the desktop agent did not report back; the "
-                                   "action may or may not have completed"})
+                    else {"status": outcome.status, "error": outcome.record})
                 rewrote = True
                 break
         if text:
@@ -306,13 +358,8 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 "wanted — …\"). Speak naturally; don't mention tools, agents, or that "
                 "it was delayed, and don't read out web addresses — name the source.")
         else:
-            content = (
-                f"[background task: no confirmation] The desktop agent did not report "
-                f"back on this earlier request: \"{request}\". It may or may not have "
-                "completed. In one short spoken sentence, tell the user you didn't get "
-                "confirmation — and if the request was something visible (a message, "
-                "poll, or post), ask them to check whether it appeared. Do NOT state "
-                "that it definitely failed.")
+            content = (f"[background task: {outcome.status}] {outcome.told.format(request=request)}"
+                       f"{outcome.ask}")
         # As a USER message, not a system one. A trailing system message is not a turn
         # the model answers: it re-answers the last real user question instead and the
         # delivery never happens. Measured against the live model on the exact context
@@ -327,6 +374,18 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # attributing it to them.
         _SPENT = (f"{SYSTEM_NOTICE_TAG}\nAn earlier background task finished and its outcome was "
                   "already given to the user. Nothing further is needed.")
+        # What a trigger retired UNREAD becomes. Not _SPENT: that tells the model the
+        # user already knows, which after a lost delivery is false — three failure
+        # notices on 2026-10-02 went out that way and the caller never learned the
+        # consult had failed (#80). Not a "tell them now" either, which would be a
+        # standing order for the next unrelated turn. A note the model can answer
+        # from if the user asks what happened.
+        _UNTOLD = (f"{SYSTEM_NOTICE_TAG}\nThe outcome of the earlier background request "
+                   f"\"{request}\" has NOT reached the user yet: "
+                   + (strip_urls_for_speech(text) if text
+                      else outcome.told.format(request=request))
+                   + "\nDon't bring it up unprompted, but if the user asks about that "
+                   "request, or what happened to it, answer from this.")
 
         # The trigger is RE-POSTED per attempt, not restored in place, because being the
         # last message is the whole reason it works. A retry follows a barge-in, so by
@@ -343,10 +402,10 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
         # a later turn reads the stale one and recites the answer twice.
         posted: dict = {}
 
-        def _retire():
+        def _retire(note=_SPENT):
             msg = posted.get("msg")
             if msg is not None:
-                msg["content"] = _SPENT
+                msg["content"] = note
 
         def _post_trigger():
             _retire()
@@ -355,7 +414,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
             posted["msg"] = msg
 
         _post_trigger()
-        logger.info(f"consult follow-up: delivering ({'answer' if text else 'failure'}; "
+        logger.info(f"consult follow-up: delivering ({'answer' if text else outcome.status}; "
                     f"tool result {'rewritten' if rewrote else 'not found'})")
 
         # Retire the trigger once the model has ANSWERED FROM IT. It is a one-shot:
@@ -467,21 +526,23 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 # the context while we wait, and the trigger has to end up after it.
                 _post_trigger()
             else:
-                # Out of attempts, but the trigger was already retired at the read, so
-                # there is nothing live to clean up and the post-loop notice below would
-                # say "unread", which is the wrong story.
+                # Out of attempts. The trigger was already retired at the read, so the
+                # post-loop notice below would say "unread", which is the wrong story.
                 logger.warning(
                     f"consult follow-up: answered but heard~{said.heard_fraction*100:.0f}%"
                     f" on the last of {_DELIVERY_ATTEMPTS} attempts — the answer never "
-                    "reached the caller (it survives in the tool result)")
+                    "reached the caller, leaving a note")
+                # Retired at the read as _SPENT ("already given to the user"), which
+                # the heard check just proved false.
+                _retire(_UNTOLD)
                 return
         # Out of attempts. Retire it anyway: a live "tell the user now" is a standing
         # order the next unrelated turn would execute, which is worse than a lost answer
         # (the answer itself survives in the rewritten tool result, so "what did the
         # agent say?" still works).
         logger.warning(f"consult follow-up: not delivered after {_DELIVERY_ATTEMPTS} "
-                       "attempts — retiring the trigger unread")
-        _retire()
+                       "attempts — retiring the trigger unread, leaving a note")
+        _retire(_UNTOLD)
     return speak_followup
 
 

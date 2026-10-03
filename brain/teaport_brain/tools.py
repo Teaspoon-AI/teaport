@@ -324,17 +324,30 @@ _ASK_OPENCLAW_TIMEOUT = float(os.getenv("TEAPORT_ASK_OPENCLAW_TIMEOUT", "55"))
 # ASYNC path: the consult runs off the turn as a background task, so it can wait far
 # longer than a voice turn ever could — the answer is spoken as an unprompted
 # follow-up whenever it lands (or an honest "couldn't get it" past this ceiling).
-_ASYNC_CONSULT_TIMEOUT = float(os.getenv("TEAPORT_ASYNC_CONSULT_TIMEOUT", "180"))
+#
+# ONE budget for every lane, sized to the slowest one we cannot change. A Talk consult
+# runs in OpenClaw's Control UI, which gives up at a hard-coded 120 s and submits "OpenClaw
+# tool call timed out" (ui/src/pages/chat/talk/shared.ts, 2026.9.7) — nothing can
+# arrive after that, so the old 180 s only meant a minute of waiting on a result that
+# was never coming. 130 s = that 120 s plus room for its submission to land. The same
+# budget now goes to the gateway/CLI lane (SIP, or a relay that never acks), which used
+# to get CONSULT_TIMEOUT's 45 s: 11 of 13 SIP consults on 2026-09-30..10-02 died there,
+# on the same kinds of request (local search, news) that took 45-100 s on Talk (#80).
+_ASYNC_CONSULT_TIMEOUT = float(os.getenv("TEAPORT_ASYNC_CONSULT_TIMEOUT", "130"))
 
 
-def _consult_outcome(result):
-    """(text, error) from a resolved consult result — text is None if empty."""
+def _consult_outcome(result) -> oc.ConsultOutcome:
+    """The outcome of a resolved native consult (see consult_bridge.classify)."""
     from teaport_brain import consult_bridge
 
-    if isinstance(result, dict) and result.get("error") \
-            and not any(result.get(k) for k in ("text", "result", "output")):
-        return None, str(result["error"])
-    return (consult_bridge.extract_text(result) or None), None
+    return oc.ConsultOutcome(*consult_bridge.classify(result))
+
+
+def _describe(outcome: oc.ConsultOutcome) -> str:
+    """One log phrase for an outcome."""
+    if outcome.text:
+        return f"answered ({len(outcome.text)} chars)"
+    return f"{outcome.failure}: {outcome.detail}" if outcome.detail else str(outcome.failure)
 
 
 # How long past each line's moment the narrator will wait for a conversational gap
@@ -462,7 +475,7 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
     progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
                 if llm is not None else None)
 
-    async def deliver(answer):
+    async def deliver(outcome: oc.ConsultOutcome):
         """Hand the outcome to the injector, narrator first."""
         # Stop the narrator BEFORE the answer is spoken, not in the finally below. It
         # is a countdown against dead air, and there is no dead air once the outcome is
@@ -473,8 +486,11 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         # shop list was spoken at :25.0 and "Almost there — hang tight." landed at :37.3.
         if progress is not None:
             progress.cancel()
-        await followup(request, answer, tool_call_id)
+        await followup(request, outcome.text, tool_call_id,
+                       failure=outcome.failure, detail=outcome.detail)
 
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + _ASYNC_CONSULT_TIMEOUT
     try:
         try:
             result = await asyncio.wait_for(asyncio.shield(fut),
@@ -495,28 +511,29 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
                 logger.info(
                     f"ask_openclaw(async): relay never acked in "
                     f"{_NATIVE_CONSULT_ACK_TIMEOUT:.0f}s; falling back to the CLI agent")
-                reply = await oc.agent_consult(request)
-                logger.info(
-                    "ask_openclaw(async): CLI consult "
-                    + (f"answered ({len(reply)} chars)" if reply else "returned NOTHING"))
-                await deliver(reply or None)
+                outcome = await oc.agent_consult(request, timeout=deadline - loop.time())
+                (logger.info if outcome.text else logger.warning)(
+                    f"ask_openclaw(async): CLI consult {_describe(outcome)}")
+                await deliver(outcome)
                 return
-            result = await asyncio.wait_for(fut, timeout=_ASYNC_CONSULT_TIMEOUT)
-        text, err = _consult_outcome(result)
-        if err:
-            logger.warning(f"ask_openclaw(async): consult errored: {err!r}")
-        logger.info(f"ask_openclaw(async): follow-up ready ({len(text or '')} chars)")
-        await deliver(text)
+            result = await asyncio.wait_for(fut, timeout=deadline - loop.time())
+        outcome = _consult_outcome(result)
+        if outcome.text:
+            logger.info(f"ask_openclaw(async): follow-up ready ({len(outcome.text)} chars)")
+        else:
+            logger.warning(f"ask_openclaw(async): consult {_describe(outcome)}")
+        await deliver(outcome)
     except asyncio.TimeoutError:
         logger.warning(f"ask_openclaw(async): consult unfinished after "
                        f"{_ASYNC_CONSULT_TIMEOUT:.0f}s")
-        await deliver(None)
+        await deliver(oc.ConsultOutcome(
+            None, "timeout", f"no result within {_ASYNC_CONSULT_TIMEOUT:.0f}s"))
     except asyncio.CancelledError:
         raise  # session teardown
     except Exception as e:  # noqa: BLE001
         logger.warning(f"ask_openclaw(async) failed: {e!r}")
         try:
-            await deliver(None)
+            await deliver(oc.ConsultOutcome(None, "error", repr(e)))
         except Exception:  # noqa: BLE001
             pass
     finally:
@@ -554,7 +571,7 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
                 properties=no_inference())
             return
 
-    call_id = f"teaport-consult-{uuid.uuid4().hex[:12]}"
+    call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
     fut = consult_bridge.create(call_id)
     await params.llm.push_frame(OutputTransportMessageUrgentFrame(
         message={"type": "tool_call", "call_id": call_id,
@@ -602,10 +619,12 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
         except asyncio.TimeoutError:
             if not getattr(fut, "working", False):
                 logger.warning("ask_openclaw: native consult not acked; using CLI")
-                reply = await oc.agent_consult(request)
+                outcome = await oc.agent_consult(request)
                 await params.result_callback(
-                    {"answer": reply} if reply
-                    else {"error": "the desktop agent did not answer in time"})
+                    {"answer": outcome.text} if outcome.text
+                    else {"error": "the desktop agent did not answer in time"
+                          if outcome.failure == "timeout"
+                          else "the desktop agent returned no answer"})
                 return
             try:
                 result = await asyncio.wait_for(fut, timeout=_NATIVE_CONSULT_TIMEOUT)
@@ -615,15 +634,15 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
                 await params.result_callback(
                     {"error": "the desktop agent is taking too long — try a narrower request"})
                 return
-        text, err = _consult_outcome(result)
-        if err:
-            logger.warning(f"ask_openclaw: native consult errored: {err!r}")
-            await params.result_callback({"error": err})
-        elif text:
-            logger.info(f"ask_openclaw: native consult ok ({len(text)} chars)")
-            await params.result_callback({"answer": text})
-        else:
+        outcome = _consult_outcome(result)
+        if outcome.text:
+            logger.info(f"ask_openclaw: native consult ok ({len(outcome.text)} chars)")
+            await params.result_callback({"answer": outcome.text})
+        elif outcome.failure == "empty":
             await params.result_callback({"error": "the desktop agent returned no answer"})
+        else:
+            logger.warning(f"ask_openclaw: native consult {_describe(outcome)}")
+            await params.result_callback({"error": outcome.detail or "the desktop agent failed"})
     except asyncio.CancelledError:
         consult_bridge.cancel(call_id)
         raise  # barge-in: propagate so the task actually cancels

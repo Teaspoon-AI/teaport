@@ -132,9 +132,12 @@ async def test_it_stops_after_the_attempt_budget():
     assert task.attempts == agent_session._DELIVERY_ATTEMPTS, (
         f"{task.attempts} attempts for a budget of {agent_session._DELIVERY_ATTEMPTS}")
     after = ctx.messages[-1]["content"]
-    assert "already given to the user" in after, (
+    assert "Tell the user now" not in after, (
         "the trigger was left live after the last attempt — a standing 'tell the user "
         "now' is recited by the next turn that has nothing else to do")
+    # Not "already given to the user" either: the heard check just proved it was not,
+    # and that line is what the model would then answer "did you find it?" from (#80).
+    assert "has NOT reached the user" in after and ANSWER in after, after
 
 
 async def test_an_uncharted_reply_is_not_repeated():

@@ -744,7 +744,7 @@ default = "http://127.0.0.1:18789"
 read = "startup"
 tier = "installer"
 help = "The co-resident gateway for shared persona and memory recall. The installer sets it from the gateway port."
-source = "openclaw_client.py:31"
+source = "openclaw_client.py:34"
 
 [[settings]]
 name = "OPENCLAW_GATEWAY_TOKEN"
@@ -756,7 +756,7 @@ read = "session"
 tier = "setup"
 help = "Bearer token for that gateway."
 note = "Prefer the file; the env var, if set, wins over it."
-source = "openclaw_client.py:93"
+source = "openclaw_client.py:98"
 
 [[settings]]
 name = "OPENCLAW_AGENT_ID"
@@ -767,7 +767,7 @@ default = "main"
 read = "startup"
 tier = "tuning"
 help = "The agent consulted."
-source = "openclaw_client.py:75"
+source = "openclaw_client.py:78"
 
 [[settings]]
 name = "OPENCLAW_BIN"
@@ -777,7 +777,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "The openclaw CLI used as the consult fallback. Auto-detected; the host may have none when OpenClaw runs only inside the sandbox."
-source = "openclaw_client.py:62"
+source = "openclaw_client.py:65"
 
 [[settings]]
 name = "TEAPORT_AGENT_FIRST"
@@ -801,7 +801,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "Memory-recall budget. Never awaited on the frame path, so a generous value adds no turn latency; 1.5 s clears a cold embedder (~1.14 s measured on-box)."
-source = "openclaw_client.py:47"
+source = "openclaw_client.py:50"
 
 [[settings]]
 name = "TEAPORT_CONSULT_TIMEOUT"
@@ -813,8 +813,8 @@ min = 5
 default = 45
 read = "startup"
 tier = "tuning"
-help = "CLI consult ceiling. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts."
-source = "openclaw_client.py:80"
+help = "Gateway/CLI consult ceiling on the synchronous path (a client with no follow-up injector). The async path, SIP included, uses TEAPORT_ASYNC_CONSULT_TIMEOUT instead. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts."
+source = "openclaw_client.py:85"
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT"
@@ -862,11 +862,11 @@ group = "agent"
 type = "float"
 unit = "s"
 min = 5
-default = 180
+default = 130
 read = "startup"
 tier = "tuning"
-help = "Async consult ceiling. The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or an honest \"couldn't get it\" past this."
-source = "tools.py:327"
+help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
+source = "tools.py:336"
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"
@@ -905,7 +905,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:243"
+source = "agent_session.py:244"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -999,7 +999,7 @@ default = "~/.openclaw/workspace/memory"
 read = "startup"
 tier = "installer"
 help = "The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it."
-source = "openclaw_client.py:87"
+source = "openclaw_client.py:92"
 
 [[settings]]
 name = "TEAPORT_THINKING_WAV"
