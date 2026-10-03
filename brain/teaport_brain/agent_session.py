@@ -255,7 +255,7 @@ class _FailureOutcome(NamedTuple):
 # live: message posted, then rc=1), and a timed-out one may still be running.
 _ACTION_HEDGE = (" If the request was something visible (a message, poll, or post), "
                  "ask them to check whether it appeared — do NOT state that it "
-                 "definitely failed.")
+                 "definitely failed. Don't mention tools or agents.")
 
 
 def _failure_outcome(failure, detail) -> _FailureOutcome:
