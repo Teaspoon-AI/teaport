@@ -336,6 +336,23 @@ _ASK_OPENCLAW_TIMEOUT = float(os.getenv("TEAPORT_ASK_OPENCLAW_TIMEOUT", "55"))
 _ASYNC_CONSULT_TIMEOUT = float(os.getenv("TEAPORT_ASYNC_CONSULT_TIMEOUT", "130"))
 
 
+# What the model is told while a consult is still running. The placeholder stays in
+# the context, as this tool's result, on EVERY turn until the follow-up rewrites it --
+# not just the turn that started the consult -- so it has to cover the turns the caller
+# takes in the meantime. "Do not respond now" alone covered only the first one: asked
+# "did you get any news on that?" mid-consult, the model filled the gap from its own
+# knowledge and presented it as the finding. Live twice: 2026-10-03 04:33, an invented
+# RX 580 framework list ("here's what I found: ROCm 5.7 with vLLM..."); 19:08, a 60 s
+# "rundown" of French rioting news quoting a prime minister out of office since 2024,
+# while that consult was still running and later timed out (#80). Replaying the 04:33
+# contexts against the live model: 5/12 invented results with the old wording, 0/12
+# with this. It does not forbid general knowledge -- only passing it off as results.
+_PENDING_RULE = (
+    "Its outcome will arrive later as a separate notice. Until it does, you have NO "
+    "results for this request: if the user asks about it, say you're still waiting on "
+    "it, and never present your own knowledge as something you found.")
+
+
 def _consult_outcome(result) -> oc.ConsultOutcome:
     """The outcome of a resolved native consult (see consult_bridge.classify)."""
     from teaport_brain import consult_bridge
@@ -566,8 +583,8 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
             # No inference on a placeholder result — see no_inference() below.
             await params.result_callback(
                 {"status": "duplicate",
-                 "instruction": ("This exact request is already in progress; "
-                                 "its outcome will arrive. Do not respond.")},
+                 "instruction": ("This exact request is already in progress. Do not "
+                                 "respond now. " + _PENDING_RULE)},
                 properties=no_inference())
             return
 
@@ -604,9 +621,8 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
         # and item id reached the speaker).
         await params.result_callback({
             "status": "working_in_background",
-            "instruction": (
-                "The task is running in the background; the outcome will arrive "
-                "later. Do not respond now.")},
+            "instruction": ("The task is running in the background and nothing has "
+                            "come back yet. Do not respond now. " + _PENDING_RULE)},
             properties=no_inference())
         return
 

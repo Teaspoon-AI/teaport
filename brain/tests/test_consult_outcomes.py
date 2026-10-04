@@ -230,6 +230,62 @@ async def test_the_budget_sits_just_past_the_control_ui():
     assert 120 < tools._ASYNC_CONSULT_TIMEOUT <= 150, tools._ASYNC_CONSULT_TIMEOUT
 
 
+# --- the placeholder the model reads while a consult runs ---------------------------
+
+class _PlaceholderLLM:
+    def __init__(self):
+        self.tasks = []
+
+    async def push_frame(self, frame, *a, **k):
+        pass
+
+    def create_task(self, coro):
+        t = asyncio.get_running_loop().create_task(coro)
+        self.tasks.append(t)
+        return t
+
+
+class _Params:
+    def __init__(self, llm, request):
+        self.llm, self.arguments, self.tool_call_id = llm, {"request": request}, "tc-1"
+        self.results = []
+
+    async def result_callback(self, result, properties=None):
+        self.results.append((result, properties))
+
+
+async def _placeholders():
+    """(first, duplicate) placeholder results for the same request."""
+    async def followup(*a, **k):
+        pass
+
+    llm = _PlaceholderLLM()
+    first, dup = _Params(llm, "French rioting news"), _Params(llm, "French rioting news")
+    await tools._ask_openclaw(first, followup=followup)
+    await tools._ask_openclaw(dup, followup=followup)
+    for t in llm.tasks:
+        t.cancel()
+    await asyncio.gather(*llm.tasks, return_exceptions=True)
+    return first.results[0], dup.results[0]
+
+
+async def test_the_placeholder_says_there_are_no_results_yet():
+    """It stays in the context for every turn the caller takes while the consult runs,
+    so it must cover those turns, not only the first. Asked "did you get any news on
+    that?" mid-consult, the old "Do not respond now" let the model invent the news
+    (2026-10-03 19:08)."""
+    for (result, props), status in zip(await _placeholders(),
+                                       ("working_in_background", "duplicate")):
+        assert result["status"] == status, result
+        text = result["instruction"]
+        assert "Do not respond now" in text, text
+        assert "NO results" in text and "still waiting" in text, text
+        assert "never present your own knowledge as something you found" in text, text
+        assert props is not None and props.run_llm is False, (
+            "a placeholder must not trigger inference -- that is the fabrication path "
+            "no_inference() exists to close")
+
+
 def main():
     aio = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
