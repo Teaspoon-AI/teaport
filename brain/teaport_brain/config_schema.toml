@@ -528,7 +528,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Play each engine audio chunk as it arrives (first audio sooner). Off buffers each sentence to its end, as before #14, and tells the engine to skip its eager prefix. Turn it off on a CPU-only engine or wherever synthesis runs slower than playout, where the early first block plays out before the rest of the sentence arrives and leaves a gap mid-sentence."
-source = "engine_tts.py:141"
+source = "engine_tts.py:142"
 
 [[settings]]
 name = "TTS_USER_SPEECH_HOLD_MAX_S"
@@ -541,7 +541,7 @@ default = 3.0
 read = "startup"
 tier = "tuning"
 help = "While VAD says the user is speaking, the next clause is held back to free the GPU for barge-in transcription. This caps the hold so sustained noise cannot stall the reply."
-source = "engine_tts.py:152"
+source = "engine_tts.py:157"
 
 [[settings]]
 name = "TTS_CAPTION_LEAD_SECS"

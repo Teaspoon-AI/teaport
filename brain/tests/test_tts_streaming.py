@@ -90,47 +90,61 @@ def test_seam_trim_matches_whole_buffer_trim():
 
 def test_seam_trim_ignores_a_quiet_first_block():
     """The trim's "sound" threshold is 1% of the peak heard so far. A first block that is
-    only padding noise (or a soft onset) must not set it: the noise would count as sound
-    and the whole lead padding would be kept (PR #81 review: lead_cut 0.0 vs 0.25 s)."""
+    only padding noise (or a soft onset) must not set it below the noise floor, or the
+    noise counts as sound and the whole lead padding is kept (PR #81 reviews: lead_cut
+    0.0 vs 0.25 s). The _SEAM_FLOOR keeps it out; onsets then land within a sample of
+    the whole-buffer trim's (its threshold is 1% of the final peak, a hair higher)."""
     rng = np.random.default_rng(7)
     noise = lambda secs: (2e-4 * rng.standard_normal(int(secs * SR))).astype(np.float32)  # noqa: E731
-    sentence = np.concatenate([noise(0.3), _tone(0.2, amp=0.02), _tone(1.0), noise(0.4)])
-    want, want_cut = _whole_trim(sentence)
     s = lambda secs: int(secs * SR)  # noqa: E731
-    for name, cuts in {"first block all noise": [s(0.1)],
-                       "first block noise + soft onset": [s(0.45)],
-                       "engine-like": [s(0.98)],
-                       "many small blocks": list(range(s(0.05), sentence.shape[0], s(0.05)))
-                       }.items():
-        got, cut = _streamed_trim(sentence, cuts)
-        assert abs(cut - want_cut) < 1e-9, f"{name}: lead_cut {cut:.3f} vs {want_cut:.3f}"
-        assert np.array_equal(got, want), \
-            f"{name}: streamed trim {got.shape[0]} samples vs whole-buffer {want.shape[0]}"
-    quiet = np.concatenate([noise(0.3), _tone(0.5, amp=0.02), noise(0.4)])  # never loud
-    want, want_cut = _whole_trim(quiet)
-    got, cut = _streamed_trim(quiet, [s(0.2), s(0.6)])
-    assert abs(cut - want_cut) < 1e-9 and np.array_equal(got, want), \
-        "a sentence that never gets loud is trimmed whole at its end"
+    cases = {
+        "soft 0.02 onset": np.concatenate([noise(0.3), _tone(0.2, amp=0.02), _tone(1.0),
+                                           noise(0.4)]),
+        "0.06 onset under 0.6 speech": np.concatenate([noise(0.3), _tone(0.15, amp=0.06),
+                                                       _tone(1.0, amp=0.6), noise(0.4)]),
+    }
+    for label, sentence in cases.items():
+        want, want_cut = _whole_trim(sentence)
+        for name, cuts in {"first block all noise": [s(0.1)],
+                           "first block noise + onset": [s(0.45)],
+                           "engine-like": [s(0.98)],
+                           "many small blocks": list(range(s(0.05), sentence.shape[0], s(0.05)))
+                           }.items():
+            got, cut = _streamed_trim(sentence, cuts)
+            assert abs(cut - want_cut) <= 2 / SR, \
+                f"{label} / {name}: lead_cut {cut:.4f} vs {want_cut:.4f}"
+            assert abs(got.shape[0] - want.shape[0]) <= 2, \
+                f"{label} / {name}: {got.shape[0]} samples vs whole-buffer {want.shape[0]}"
+    # Soft speech only: the whole-buffer trim's 1%-of-peak threshold (0.0002) sits under
+    # the padding noise and keeps all of it; the floor still finds the onset.
+    quiet = np.concatenate([noise(0.3), _tone(0.5, amp=0.02), noise(0.4)])
+    _, cut = _streamed_trim(quiet, [s(0.2), s(0.6)])
+    assert abs(cut - 0.25) <= 2 / SR, f"soft-only sentence: lead_cut {cut:.4f}, want 0.25"
     print("  PASS a quiet or noisy first block does not set the trim threshold")
 
 
 def test_seam_trim_holds_only_trailing_quiet():
-    # A sine's edge sits a sample or two off the tone boundary (zero crossings), hence ~.
-    near = lambda got, want: abs(got - want) <= 5  # noqa: E731
-    trim = _SeamTrim(SR)
-    first = np.concatenate([_quiet(0.3), _tone(0.5), _quiet(0.2)])
-    out = trim.feed(first)
+    """Quiet after the latest sound plays at once up to KEEP_TRAIL — it plays either
+    way, so holding it would only add to a stall — and only the excess waits."""
+    near = lambda got, want: abs(got - want) <= 5  # noqa: E731  (sine edges: a sample or two)
     keep = int(engine_tts._SEAM_KEEP_LEAD * SR)
-    assert near(out.shape[0], keep + _tone(0.5).shape[0]), \
-        "plays the kept lead + the speech at once, holds only the quiet after it"
-    assert trim.feed(_quiet(0.3)).shape[0] == 0, "more quiet: still held"
-    assert near(trim.feed(_tone(0.2)).shape[0], int(0.5 * SR) + _tone(0.2).shape[0]), \
-        "sound after the gap releases the held gap with it (the pause is not cut)"
-    assert trim.finish().shape[0] <= 5, "nothing held after trailing sound"
+    trail = int(engine_tts._SEAM_KEEP_TRAIL * SR)
+    trim = _SeamTrim(SR)
+    out = trim.feed(np.concatenate([_quiet(0.3), _tone(0.5), _quiet(0.2)]))
+    assert near(out.shape[0], keep + int(0.5 * SR) + int(0.2 * SR)), \
+        "the kept lead, the speech and the 0.2 s of quiet after it (under the trail) all play"
+    out = trim.feed(_quiet(0.3))
+    assert near(out.shape[0], trail - int(0.2 * SR)), "quiet plays up to the trail"
+    out = trim.feed(_tone(0.2))
+    assert near(out.shape[0], int(0.5 * SR) - trail + int(0.2 * SR)), \
+        "sound after the gap releases the held excess with it (the pause is not cut)"
+    assert trim.finish().shape[0] == 0, "nothing past the trail after the last sound"
+    trim.feed(np.concatenate([_tone(0.2), _quiet(0.6)]))
+    assert trim.finish().shape[0] == 0, "padding past the trail is dropped at the end"
     silent = _SeamTrim(SR)
     assert silent.feed(_quiet(0.2)).shape[0] == 0
     assert silent.finish().shape[0] == int(0.2 * SR), "an all-quiet sentence passes untrimmed"
-    print("  PASS only trailing quiet is held back")
+    print("  PASS quiet plays up to the trail at once; only the excess is held")
 
 
 class _Recorder(EngineTTSService):
@@ -285,6 +299,88 @@ async def test_abandoning_the_reply_closes_the_stream_at_once():
     print("  PASS an abandoned or cancelled reply closes its stream immediately")
 
 
+async def test_a_tally_reset_mid_sentence_does_not_shift_its_words():
+    """pipecat's stop-frame timeout can end a context (and the base reset its tally)
+    while a sentence is still synthesizing. Its words must then be based on the audio
+    emitted since, not on a base noted before the reset: that one was stale by all the
+    audio played before it (PR #81 review: words ~8 s late)."""
+    w = [("Late", 1.0)]
+    for when in ("during connect", "after the first block"):
+        gate = asyncio.Event()
+        first, rest = SENTENCE[:int(0.98 * SR)], SENTENCE[int(0.98 * SR):]
+        script = ([gate, ("audio", first), ("audio", rest), ("end", w)]
+                  if when == "during connect" else
+                  [("audio", first), gate, ("audio", rest), ("end", w)])
+        svc = _Recorder({"Late words here.": script})
+        svc._ctx_audio_secs["ctx-1"] = 8.0   # the reply had already played 8 s
+        task = asyncio.create_task(svc.speak("Late words here."))
+        await asyncio.sleep(0.05)
+        svc._ctx_audio_secs.pop("ctx-1", None)  # the timeout ended the context
+        gate.set()
+        await asyncio.wait_for(task, 2.0)
+        _, lead_cut = _whole_trim(SENTENCE)
+        [(_, [(_, t)])] = svc.placed
+        assert abs(t - max(0.0, 1.0 - lead_cut - _CAPTION_LEAD_SECS)) < 1e-6, \
+            f"{when}: word placed at {t:.3f}s — based on the stale pre-reset tally"
+    print("  PASS a tally reset mid-sentence: words based on the audio emitted since")
+
+
+async def test_context_end_drops_only_its_own_tally():
+    """The per-context end hook records where that context's audio ends and drops its
+    tally only; a context queued behind keeps its own. A barge-in drops them all."""
+    svc = _Recorder({})
+
+    async def no_push(*a, **k):
+        pass
+    svc.push_frame = no_push
+    svc._ctx_audio_secs.update({"a": 1.5, "b": 0.7})
+    svc._initial_word_timestamp = 10_000_000_000
+    await svc._maybe_reset_word_timestamps("a")
+    assert svc._ctx_audio_secs == {"b": 0.7}, svc._ctx_audio_secs
+    assert svc._prev_audio_end_ns == 10_000_000_000 + 1_500_000_000
+    assert svc._initial_word_timestamp == -1, "the base still resets its baseline"
+    svc._interrupted = True
+    await svc.reset_word_timestamps()
+    assert svc._ctx_audio_secs == {} and svc._prev_audio_end_ns == 0
+    print("  PASS a context's end drops its own tally only; a barge-in drops all")
+
+
+async def test_tallies_are_bounded():
+    clauses = {f"Clause number {i}.": [("audio", SENTENCE), ("end", [])] for i in range(20)}
+    svc = _Recorder(clauses)
+    for i, text in enumerate(clauses):
+        async for _ in svc.run_tts(text, f"ctx-{i}"):
+            pass
+    assert len(svc._ctx_audio_secs) <= engine_tts._MAX_CTX_TALLIES
+    assert "ctx-19" in svc._ctx_audio_secs, "the newest context keeps its tally"
+    print(f"  PASS tallies bounded at {engine_tts._MAX_CTX_TALLIES}")
+
+
+async def test_a_late_block_mid_sentence_is_logged():
+    """TTS_STREAM_AUDIO's evidence: a sentence's next block arriving after its audio so
+    far has played out is logged, and an on-time one is not."""
+    from loguru import logger
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="INFO")
+    try:
+        for playing_for, want in ((5.0, True), (0.0, False)):
+            lines.clear()
+            clause = "Under run test."
+            svc = _Recorder({clause: [("audio", SENTENCE[:int(0.98 * SR)]),
+                                      ("audio", SENTENCE[int(0.98 * SR):]), ("end", [])]})
+            now = 100_000_000_000
+            svc.get_clock = lambda: type("C", (), {"get_time": lambda self: now})()
+            svc._playing_context_id = "ctx-1"
+            # Playout of this context began `playing_for` s ago; it has 0.73 s of audio.
+            svc._initial_word_timestamp = now - int(playing_for * 1e9)
+            await svc.speak(clause)
+            got = any("TTS stream underrun" in ln for ln in lines)
+            assert got == want, f"playing for {playing_for}s: logged={got}"
+    finally:
+        logger.remove(sink)
+    print("  PASS a mid-sentence underrun is logged; an on-time block is not")
+
+
 class _FakeWS:
     """The engine's speech stream, scripted: records what the brain sends, replays
     `messages` (dicts become JSON text frames)."""
@@ -352,13 +448,13 @@ async def test_synth_text_protocol_edges():
 
     # Streaming off: each sentence's audio is one block, right before its words, and
     # the engine is asked to skip its eager prefix.
-    engine_tts._STREAM_AUDIO = False
+    saved, engine_tts._STREAM_AUDIO = engine_tts._STREAM_AUDIO, False
     try:
         events, ws = await _events([{"type": "audio.start"}, _chunk(pcm[:1000]),
                                     _chunk(pcm[1000:]), _chunk(ts=ts), {"type": "audio.done"},
                                     {"type": "session.done"}])
     finally:
-        engine_tts._STREAM_AUDIO = True
+        engine_tts._STREAM_AUDIO = saved
     assert [k for k, _ in events] == ["audio", "end"] and events[0][1].shape[0] == 1000
     assert ws.sent[0]["eager"] is False
     print("  PASS _synth_text: odd-byte chunks, missing audio.done, engine errors, "
@@ -377,6 +473,10 @@ def test_tts_streaming():
         await test_a_brain_bug_is_not_logged_as_an_engine_failure()
         await test_abandoning_the_reply_closes_the_stream_at_once()
         await test_synth_text_protocol_edges()
+        await test_a_tally_reset_mid_sentence_does_not_shift_its_words()
+        await test_context_end_drops_only_its_own_tally()
+        await test_tallies_are_bounded()
+        await test_a_late_block_mid_sentence_is_logged()
     asyncio.run(main())
 
 

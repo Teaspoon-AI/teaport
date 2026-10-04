@@ -133,12 +133,17 @@ _SEAM_KEEP_LEAD = env_num("TTS_SEAM_KEEP_LEAD", "0.05", float)   # s kept before
 _SEAM_KEEP_TRAIL = env_num("TTS_SEAM_KEEP_TRAIL", "0.25", float)  # s kept after last sound
 # Play each engine audio.chunk as it arrives (issue #14). Off = buffer each sentence to its
 # audio.done and play it whole, as before #14, and ask the engine to skip its eager prefix
-# (session.config "eager": false, ~20% less synthesis per clause; it only buys early audio).
+# (session.config "eager": false, ~10% less synthesis per clause, measured on the box; it
+# only buys early audio).
 # Turn it off on a CPU-only engine, or wherever synthesis runs slower than playout: there a
 # clause's eager first block plays out before the rest of its sentence arrives, leaving a hole
 # mid-sentence (PR #81 review). The brain cannot see the engine's backend, so the default
 # follows the GPU appliance.
 _STREAM_AUDIO = env_flag("TTS_STREAM_AUDIO", True)
+# _note_underrun reports a mid-sentence playout gap longer than this.
+_UNDERRUN_LOG_MS = 20.0
+# Per-context audio tallies kept at most (see EngineTTSService._ctx_audio_secs).
+_MAX_CTX_TALLIES = 8
 
 # GPU-yield hold: Kokoro synthesis and Voxtral STT share ONE CUDA context in the
 # engine, and synthesis starves transcription (measured 2026-07-21: decode
@@ -152,12 +157,13 @@ _STREAM_AUDIO = env_flag("TTS_STREAM_AUDIO", True)
 _USER_SPEECH_HOLD_MAX_S = env_num("TTS_USER_SPEECH_HOLD_MAX_S", "3.0", float)
 
 
-# The front of a sentence is cut only once a block this loud has arrived. A quieter opening
-# block (all padding, or a soft onset) would set the 1%-of-peak "sound" threshold below the
-# padding's noise floor and keep all of the lead padding (PR #81 review); it is held instead.
-# Engine first blocks peak at 0.25-0.77 and the padding is digital silence (measured
-# 2026-10-03: 8 sentences x 3 voices; streamed onsets within 0.2 ms of whole-sentence ones).
-_SEAM_SPEECH_PEAK = 0.05
+# "Sound", for the seam trim, is above max(1% of the peak heard so far, this floor). The
+# floor (-54 dBFS) keeps a quiet opening block (noise padding, a soft onset) from setting
+# the threshold below the padding's noise floor and keeping all of the lead padding (PR #81
+# review). It sits under every real threshold: engine sentences peak at 0.25-0.77, so 1% is
+# 0.0025-0.0077, and the padding is digital silence (measured 2026-10-03: 8 sentences x 3
+# voices; streamed onsets within 0.2 ms of whole-sentence ones).
+_SEAM_FLOOR = 0.002
 
 
 class _EngineError(Exception):
@@ -170,55 +176,59 @@ class _SeamTrim:
     clauses don't stack the engine's per-synth silence padding into an over-long seam.
 
     feed() takes each audio block as it arrives and returns what can play now: nothing
-    before the first sound (bar _SEAM_KEEP_LEAD of it), and nothing after the latest
-    sound, which is held until more sound follows it or the sentence ends. finish()
-    returns the held tail capped at _SEAM_KEEP_TRAIL. "Sound" is above 1% of the peak
-    heard so far, and nothing is cut until that peak reaches _SEAM_SPEECH_PEAK; a sentence
-    that never gets there is trimmed whole at finish(). lead_cut is the seconds dropped
-    from the front — shift the sentence's word times back by it so they stay aligned."""
+    before the first sound bar _SEAM_KEEP_LEAD of it, then everything, except that quiet
+    after the latest sound plays only up to _SEAM_KEEP_TRAIL; the excess is held until
+    more sound follows it (a pause: it plays in full) or the sentence ends (finish():
+    trailing padding, dropped). "Sound" is above max(1% of the peak so far, _SEAM_FLOOR).
+    That threshold only ever rises, so a sample once quiet stays quiet and each block is
+    scanned once. lead_cut is the seconds dropped from the front — shift the sentence's
+    word times back by it so they stay aligned with the audio."""
 
     def __init__(self, sr):
         self._sr = sr
-        self._held = np.zeros(0, dtype=np.float32)
+        self._held = np.zeros(0, dtype=np.float32)  # lead padding, or quiet past the trail
         self._peak = 0.0
         self._started = False
+        self._quiet = 0  # samples of quiet since the last sound (once started)
         self.lead_cut = 0.0
 
-    def _lead(self, held, loud):
-        # Nothing has been dropped or emitted yet, so `held` starts at sample 0.
-        start = max(0, int(loud[0] - _SEAM_KEEP_LEAD * self._sr))
-        self.lead_cut = start / self._sr
-        self._started = True
-        return held[start:], loud - start
-
     def feed(self, block):
-        held = np.concatenate([self._held, block]) if self._held.size else block
-        if block.size:
-            self._peak = max(self._peak, float(np.max(np.abs(block))))
-        if not self._started and self._peak < _SEAM_SPEECH_PEAK:
-            self._held = held
-            return held[:0]
-        loud = np.nonzero(np.abs(held) > 0.01 * self._peak)[0]
+        mag = np.abs(block)
+        if mag.size:
+            self._peak = max(self._peak, float(mag.max()))
+        loud = np.nonzero(mag > max(0.01 * self._peak, _SEAM_FLOOR))[0]
         if loud.size == 0:
-            self._held = held
-            return held[:0]
+            if not self._started:
+                self._held = np.concatenate([self._held, block])
+                return block[:0]
+            # More quiet: it plays up to the trail; the rest waits for sound or the end.
+            room = max(0, int(_SEAM_KEEP_TRAIL * self._sr) - self._quiet)
+            self._quiet += block.shape[0]
+            self._held = np.concatenate([self._held, block[room:]])
+            return block[:room]
         if not self._started:
-            held, loud = self._lead(held, loud)
-        cut = int(loud[-1]) + 1
-        self._held = held[cut:]
-        return held[:cut]
+            # Nothing has been dropped or emitted yet: `held` (all quiet) starts at sample 0.
+            h = self._held.shape[0]
+            start = max(0, h + int(loud[0]) - int(_SEAM_KEEP_LEAD * self._sr))
+            self.lead_cut = start / self._sr
+            if start < h:
+                self._held = self._held[start:]
+            else:
+                self._held = block[:0]
+                block, loud = block[start - h:], loud - (start - h)
+            self._started = True
+        last = int(loud[-1]) + 1
+        tail = block[last:]
+        room = int(_SEAM_KEEP_TRAIL * self._sr)
+        out = np.concatenate([self._held, block[:last], tail[:room]])
+        self._held, self._quiet = tail[room:], tail.shape[0]
+        return out
 
     def finish(self):
         held, self._held = self._held, np.zeros(0, dtype=np.float32)
         if self._started:
-            return held[:int(_SEAM_KEEP_TRAIL * self._sr)]
-        # Never loud enough to cut while streaming, so `held` is the whole sentence.
-        loud = (np.nonzero(np.abs(held) > 0.01 * self._peak)[0]
-                if self._peak > 0.0 else held[:0])
-        if loud.size == 0:
-            return held  # no sound at all: pass it through untrimmed
-        held, loud = self._lead(held, loud)
-        return held[:int(loud[-1]) + 1 + int(_SEAM_KEEP_TRAIL * self._sr)]
+            return held[:0]  # trailing padding past the trail: dropped
+        return held  # no sound at all: pass it through untrimmed
 
 # Voice names encode their language in the FIRST letter (af_heart/am_* = American
 # English, ef_*/em_* = Spanish, ...). Map that letter to the language the engine's G2P uses
@@ -298,10 +308,9 @@ class EngineTTSService(TTSService):
         # baseline when its PLAYOUT ends, and by then the reply queued behind it may
         # already be synthesizing: a shared total zeroed there put that reply's words a
         # whole reply late (PR #81 review: 'Bravo' at 2.3 s instead of 0.3 s). A context's
-        # entry goes when its playout ends (reset_word_timestamps), all of them on a
-        # barge-in.
+        # entry goes when its playout ends (_maybe_reset_word_timestamps), all of them on
+        # a barge-in.
         self._ctx_audio_secs: dict[str, float] = {}
-        self._ending_ctx = None  # the context whose playout end is resetting the base
         # Where the previous context's audio ENDS on the playout clock (its word
         # baseline + all the audio it emitted), so a reply queued behind it is
         # scheduled from there. pipecat anchors a new context at the previous one's
@@ -473,8 +482,10 @@ class EngineTTSService(TTSService):
             # needs its words transcribed NOW); resume on VAD-stop or the cap.
             await self._hold_for_user_speech()
             try:
-                # aclosing: the clause's stream holds one of the engine's two session
-                # slots while open, so any early exit must close it now, not at GC.
+                # aclosing: any early exit closes the clause's stream now, not at GC. That
+                # releases the brain's socket; the engine still finishes the sentence it
+                # was synthesizing (~1.5 s) before its session slot frees, which is what
+                # _connect_stream's retry rides out.
                 async with aclosing(self._speak_clause(clause, context_id)) as frames:
                     async for frame in frames:
                         yield frame
@@ -489,7 +500,8 @@ class EngineTTSService(TTSService):
                 # Only the engine stream's own failures land here: a brain/pipecat bug
                 # raised while placing words or yielding frames propagates, as it did
                 # before #14, instead of being logged as the engine's.
-                logger.error(f"engine synth error on clause (skipping): {e.__cause__ or e!r} "
+                cause = f" ({e.__cause__!r})" if e.__cause__ else ""
+                logger.error(f"engine synth error on clause (skipping): {e}{cause} "
                              f"clause={clause[:60]!r}")
                 failed_clauses += 1
                 continue
@@ -518,13 +530,22 @@ class EngineTTSService(TTSService):
         def emitted():
             return self._ctx_audio_secs.get(context_id, 0.0)
 
-        trim, base = _SeamTrim(self.sample_rate), emitted()
+        trim, sent, blocks = _SeamTrim(self.sample_rate), 0.0, 0
         async with aclosing(self._synth_text(clause)) as stream:
             async for kind, payload in stream:
                 if kind == "audio":
                     audio = trim.feed(payload)
+                    blocks += 1
+                    if blocks > 1:
+                        self._note_underrun(context_id)
                 else:  # "end": the sentence is complete; place its words, emit its tail
                     audio, words = trim.finish(), payload
+                    # Where this sentence's audio began in its context: what the context
+                    # has emitted, less this sentence's share. Taken now, not before the
+                    # awaits above: if the base reset the context meanwhile (pipecat's
+                    # stop-frame timeout), its tally restarted and a base noted earlier
+                    # would be stale by everything played before (PR #81 review).
+                    base = max(0.0, emitted() - sent)
                     if words:
                         words = [(w, max(0.0, s - trim.lead_cut)) for (w, s) in words]
                         if _TRACE:
@@ -537,14 +558,34 @@ class EngineTTSService(TTSService):
                         await self.add_word_timestamps(
                             [(w, max(0.0, base + s - _CAPTION_LEAD_SECS)) for (w, s) in words],
                             context_id)
-                    trim = _SeamTrim(self.sample_rate)
+                    trim, sent, blocks = _SeamTrim(self.sample_rate), 0.0, 0
                 if audio.shape[0]:
                     pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
                     yield TTSAudioRawFrame(pcm, self.sample_rate, 1, context_id=context_id)
-                    self._ctx_audio_secs[context_id] = (
-                        emitted() + audio.shape[0] / self.sample_rate)
-                if kind == "end":
-                    base = emitted()
+                    secs = audio.shape[0] / self.sample_rate
+                    if kind == "audio":
+                        sent += secs
+                    self._ctx_audio_secs[context_id] = emitted() + secs
+                    # A tally is dropped when its context's playout ends, or on a barge-in;
+                    # one written after either (an uninterruptible frame's run_tts keeps
+                    # going) would stay. Keep only the newest few.
+                    while len(self._ctx_audio_secs) > _MAX_CTX_TALLIES:
+                        self._ctx_audio_secs.pop(next(iter(self._ctx_audio_secs)))
+
+    def _note_underrun(self, context_id: str):
+        """Log a sentence's later block arriving after its earlier audio had played out:
+        the mid-sentence gap TTS_STREAM_AUDIO=0 exists for. Approximate (it takes the
+        context's word baseline as its playout start), and only for the context that is
+        playing; enough to show whether a box ever does this under real load."""
+        start = self._initial_word_timestamp
+        if start == -1 or self._playing_context_id != context_id:
+            return
+        late_ms = (self.get_clock().get_time() - start) / 1e6 \
+            - self._ctx_audio_secs.get(context_id, 0.0) * 1000.0
+        if late_ms > _UNDERRUN_LOG_MS:
+            logger.info(f"{self}: TTS stream underrun — a sentence's next block came "
+                        f"{late_ms:.0f} ms after its audio so far had played out "
+                        f"(ctx={str(context_id)[:8]}; TTS_STREAM_AUDIO=0 avoids this)")
 
     async def start_word_timestamps(self):
         # The base sets the baseline to max(now, _word_last_pts) -- "the last emitted
@@ -562,34 +603,29 @@ class EngineTTSService(TTSService):
         await super().start_word_timestamps()
 
     async def reset_word_timestamps(self):
-        # The base zeroes its per-reply word-timestamp baseline here (a context's playout
-        # end, or interruption); drop that context's audio tally in lockstep so a reply
-        # that reuses its id starts at 0 again — otherwise it would inherit the previous
-        # reply's tail offset and schedule every word in the past (dropped). First,
-        # remember where this context's audio ends (baseline + everything it emitted) for
-        # the next one -- unless a barge-in just flushed it.
-        # (A reset with no baseline set is a no-op reset -- pipecat resets more than
-        # once around a context end -- and must not forget a real end.)
-        base = self._initial_word_timestamp
+        # The base zeroes its per-reply word-timestamp baseline here. A context's normal
+        # end is handled first in _maybe_reset_word_timestamps, which knows the context;
+        # this override only handles the barge-in: the flushed audio ends now, not where
+        # it would have, so nothing is carried, and every queued context's tally goes.
         if self._interrupted:
             self._prev_audio_end_ns = 0
             self._interrupted = False
-            self._ctx_audio_secs.clear()  # the barge-in flushed every queued context
-        elif base != -1:
-            # Only the context whose playout just ended: one queued behind it keeps its
-            # tally, since its run_tts may already be placing words against it.
-            secs = self._ctx_audio_secs.pop(self._ending_ctx, 0.0)
-            self._prev_audio_end_ns = base + int(secs * 1e9)
+            self._ctx_audio_secs.clear()
         await super().reset_word_timestamps()
 
     async def _maybe_reset_word_timestamps(self, context_id: str):
-        # pipecat's per-context end hook (it calls reset_word_timestamps): note which
-        # context ended so the reset drops that one's tally and no other.
-        self._ending_ctx = context_id
-        try:
-            await super()._maybe_reset_word_timestamps(context_id)
-        finally:
-            self._ending_ctx = None
+        # pipecat's per-context end hook: `context_id`'s playout just ended and the base
+        # is about to reset the baseline. Remember where that context's audio ends
+        # (baseline + everything it emitted) for a reply queued behind it, and drop its
+        # tally — so a reply that reuses its id starts at 0 — and no other context's:
+        # one queued behind may already be placing words against its own. (With no
+        # baseline set the reset is a no-op one -- pipecat resets more than once around
+        # a context end -- and must not forget a real end.)
+        base = self._initial_word_timestamp
+        secs = self._ctx_audio_secs.pop(context_id, 0.0)
+        if base != -1 and not self._interrupted:
+            self._prev_audio_end_ns = base + int(secs * 1e9)
+        await super()._maybe_reset_word_timestamps(context_id)
 
     async def _handle_interruption(self, frame, direction):
         # Forensics for the stale-speech bug class: prove the barge-in actually
@@ -641,6 +677,7 @@ class EngineTTSService(TTSService):
         word_timestamps back to the source token engine-side, so captions show "2026", not
         "twenty twenty six"."""
         import base64
+        import binascii
         import json
         try:
             ws = await self._connect_stream()
@@ -657,18 +694,40 @@ class EngineTTSService(TTSService):
             pending, carry, heard, words = [], b"", False, []
             return events
 
-        try:
-            await ws.send(json.dumps({"type": "session.config", "voice": self._voice,
-                                      "response_format": "pcm", "stream_audio": True,
-                                      "word_timestamps": True, "eager": _STREAM_AUDIO}))
-            await ws.send(json.dumps({"type": "input.text", "text": text},
-                                     ensure_ascii=False))
-            await ws.send(json.dumps({"type": "input.done"}))
-            while True:
+        # Only the stream's own I/O and the engine's bytes become _EngineError; the rest of
+        # this body is the brain's code, and a bug in it must surface as itself.
+        async def send(obj):
+            msg = json.dumps(obj, ensure_ascii=False)
+            try:
+                await ws.send(msg)
+            except Exception as e:  # noqa: BLE001 — connection closed / socket error
+                raise _EngineError("send failed") from e
+
+        async def recv():
+            try:
                 msg = await asyncio.wait_for(ws.recv(), timeout=_STREAM_TIMEOUT)
-                if isinstance(msg, (bytes, bytearray)):
-                    continue  # word_timestamps=True => audio rides base64 JSON, not binary
+            except Exception as e:  # noqa: BLE001 — timeout / connection closed
+                raise _EngineError("recv failed") from e
+            if isinstance(msg, (bytes, bytearray)):
+                return None  # word_timestamps=True => audio rides base64 JSON, not binary
+            try:
                 data = json.loads(msg)
+            except ValueError as e:
+                raise _EngineError("malformed message") from e
+            if not isinstance(data, dict):
+                raise _EngineError(f"malformed message: {msg[:80]!r}")
+            return data
+
+        try:
+            await send({"type": "session.config", "voice": self._voice,
+                        "response_format": "pcm", "stream_audio": True,
+                        "word_timestamps": True, "eager": _STREAM_AUDIO})
+            await send({"type": "input.text", "text": text})
+            await send({"type": "input.done"})
+            while True:
+                data = await recv()
+                if data is None:
+                    continue
                 mtype = data.get("type")
                 if mtype == "audio.start":
                     for event in close_sentence():
@@ -678,7 +737,10 @@ class EngineTTSService(TTSService):
                     if b64:
                         # Decode whole samples only; a chunk that ends mid-sample carries
                         # its odd byte into the next one.
-                        raw = carry + base64.b64decode(b64)
+                        try:
+                            raw = carry + base64.b64decode(b64)
+                        except (binascii.Error, ValueError) as e:
+                            raise _EngineError("malformed audio") from e
                         cut = len(raw) - len(raw) % 2
                         carry = raw[cut:]
                         pcm = np.frombuffer(raw[:cut], dtype=np.int16)
@@ -709,10 +771,6 @@ class EngineTTSService(TTSService):
                 elif mtype == "error":
                     raise _EngineError(f"tts engine (stream): "
                                        f"{data.get('message') or data.get('error')}")
-        except _EngineError:
-            raise
-        except Exception as e:  # noqa: BLE001 — send/recv/timeout/malformed message
-            raise _EngineError("stream failed") from e
         finally:
             try:
                 await ws.close()
