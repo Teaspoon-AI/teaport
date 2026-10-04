@@ -303,7 +303,9 @@ def _require_context_end_hook():
     """EngineTTSService does its per-context end bookkeeping (where a context's audio
     ends, dropping its tally) in an override of pipecat's PRIVATE
     TTSService._maybe_reset_word_timestamps(context_id), called from
-    _handle_audio_context when a context's playout ends. If a pipecat bump renames,
+    _handle_audio_context once a context's queued audio has all been handed downstream
+    (synthesis done, its end frame through; not when that audio finishes playing, which
+    is why _prev_audio_end_ns exists). If a pipecat bump renames,
     reshapes or stops calling it, the override would silently never run: queued replies
     anchored at the previous reply's last word again (issue #19) and tallies never
     dropped. So, like endpointing.keep_barge_in_reachable, fail loudly at session build
@@ -313,8 +315,15 @@ def _require_context_end_hook():
     if hook is None or "context_id" not in inspect.signature(hook).parameters:
         raise AttributeError("pipecat TTSService._maybe_reset_word_timestamps(context_id) "
                              "is gone: EngineTTSService's per-context reset needs a new hook")
-    if "_maybe_reset_word_timestamps(" not in inspect.getsource(
-            TTSService._handle_audio_context):
+    try:
+        source = inspect.getsource(TTSService._handle_audio_context)
+    except (OSError, TypeError):
+        # An install without .py sources (a stripped package): the call check can't
+        # run, and failing every session over that would be worse than skipping it.
+        logger.warning("pipecat source unavailable: cannot confirm _handle_audio_context "
+                       "still calls _maybe_reset_word_timestamps")
+        return
+    if "_maybe_reset_word_timestamps(" not in source:
         raise AttributeError("pipecat no longer calls _maybe_reset_word_timestamps from "
                              "_handle_audio_context: EngineTTSService's per-context reset "
                              "needs a new hook")
@@ -334,11 +343,11 @@ class EngineTTSService(TTSService):
         # reply's opening ("To die, to sleep" landing right after "To be"). This carries
         # the base across calls: seconds of audio each context has emitted so far.
         # Keyed by context, not one running total, because the base resets a context's
-        # baseline when its PLAYOUT ends, and by then the reply queued behind it may
-        # already be synthesizing: a shared total zeroed there put that reply's words a
-        # whole reply late (PR #81 review: 'Bravo' at 2.3 s instead of 0.3 s). A context's
-        # entry goes when its playout ends (_maybe_reset_word_timestamps), all of them on
-        # a barge-in.
+        # baseline once that context's audio has all been handed downstream, and by then
+        # the reply queued behind it may already be synthesizing: a shared total zeroed
+        # there put that reply's words a whole reply late (PR #81 review: 'Bravo' at
+        # 2.3 s instead of 0.3 s). A context's entry goes at that same point
+        # (_maybe_reset_word_timestamps), all of them on a barge-in.
         self._ctx_audio_secs: dict[str, float] = {}
         # When the audio emitted so far finishes playing (time.monotonic(); 0 = idle
         # since the last barge-in), for _note_playout.
@@ -555,11 +564,16 @@ class EngineTTSService(TTSService):
         flush work as they did when whole sentences were buffered. A word's time is
         where its sentence's audio began in this context (`base`) plus its own offset,
         less the lead trim. `base` is taken when the words are placed: the context's
-        tally less what this sentence has emitted so far. That stays right if the base
-        reset the context meanwhile (pipecat's stop-frame timeout restarts its tally),
-        and it moves with any playout gap _note_playout adds to the tally. An engine
-        without per-chunk lists (pre teagram-engine#77) gives the words only at the
-        sentence's end; they are placed then, after its audio, as before #77."""
+        tally less what this sentence has emitted so far, so it moves with any playout
+        gap _note_playout adds to the tally. An engine without per-chunk lists (pre
+        teagram-engine#77) gives the words only at the sentence's end; they are placed
+        then, after its audio, as before #77.
+
+        Known limit: if pipecat's stop-frame timeout (TTS_STOP_FRAME_TIMEOUT_S with no
+        frame) ends the context mid-sentence, pipecat force-completes the sentence's
+        remaining text as one caption and drops the next chunk's words, so that
+        sentence loses its word timing. Main does the same for a stall between clauses;
+        it takes an engine stalled for longer than the timeout (PR #81 review)."""
         def emitted():
             return self._ctx_audio_secs.get(context_id, 0.0)
 
@@ -588,10 +602,13 @@ class EngineTTSService(TTSService):
                     yield TTSAudioRawFrame(pcm, self.sample_rate, 1, context_id=context_id)
                     secs = audio.shape[0] / self.sample_rate
                     sent += secs
-                    self._ctx_audio_secs[context_id] = emitted() + secs
-                    # A tally is dropped when its context's playout ends, or on a barge-in;
-                    # one written after either (an uninterruptible frame's run_tts keeps
-                    # going) would stay. Keep only the newest few.
+                    # Re-inserted, so the dict's order is "least recently updated first".
+                    total = emitted() + secs
+                    self._ctx_audio_secs.pop(context_id, None)
+                    self._ctx_audio_secs[context_id] = total
+                    # A tally is dropped when its context ends, or on a barge-in; one
+                    # written after either (an uninterruptible frame's run_tts keeps
+                    # going) would stay. Keep only the most recently updated few.
                     while len(self._ctx_audio_secs) > _MAX_CTX_TALLIES:
                         self._ctx_audio_secs.pop(next(iter(self._ctx_audio_secs)))
                 if event[0] == "end":
@@ -620,7 +637,13 @@ class EngineTTSService(TTSService):
         yet heard (PR #81 review). The gap joins the context's tally, which shifts all
         later words with the audio. Not on a context's first audio: its baseline is set
         when that audio starts, so there is nothing to shift. A gap inside a sentence is
-        the hole TTS_STREAM_AUDIO=0 avoids, so it is also logged."""
+        the hole TTS_STREAM_AUDIO=0 avoids, so it is also logged.
+
+        Assumes contexts don't interleave: the model is one playout stream in emission
+        order, while the transport plays contexts in queue order. A TTSSpeakFrame spoken
+        while a reply is still being synthesized counts as playing at once although it
+        plays after that reply, which hides the reply's next gap (PR #81 review). Today's
+        call sites push them between replies."""
         now = time.monotonic()
         gap = now - self._play_end if self._play_end else 0.0
         self._play_end = max(self._play_end, now) + secs
@@ -662,8 +685,9 @@ class EngineTTSService(TTSService):
         await super().reset_word_timestamps()
 
     async def _maybe_reset_word_timestamps(self, context_id: str):
-        # pipecat's per-context end hook: `context_id`'s playout just ended and the base
-        # is about to reset the baseline. Remember where that context's audio ends
+        # pipecat's per-context end hook: `context_id`'s audio has all been handed
+        # downstream (it may still be playing) and the base is about to reset the
+        # baseline. Remember where that context's audio ends
         # (baseline + everything it emitted) for a reply queued behind it, and drop its
         # tally — so a reply that reuses its id starts at 0 — and no other context's:
         # one queued behind may already be placing words against its own. (With no
@@ -730,14 +754,16 @@ class EngineTTSService(TTSService):
         token engine-side, so captions show "2026", not "twenty twenty six".
 
         Every failure of the engine stream itself (connect, I/O, timeout, malformed engine
-        data, an engine-reported error) raises _EngineError; a bug in this code surfaces
-        as itself."""
+        messages or audio, an engine-reported error) raises _EngineError; a bug in this
+        code surfaces as itself. Malformed word timestamps only lose the words (logged)."""
         import base64
         import binascii
         import json
+        import websockets
         try:
             ws = await self._connect_stream()
-        except Exception as e:  # noqa: BLE001 — refused / timed out / handshake failed
+        except (OSError, websockets.exceptions.WebSocketException) as e:
+            # refused / timed out (TimeoutError is an OSError) / handshake failed
             raise _EngineError("connect failed") from e
         pending, chunk_words, carry, heard, trailing = [], None, b"", False, []
 
@@ -778,16 +804,19 @@ class EngineTTSService(TTSService):
             # [{word,start_ms,end_ms}] -> [(word, start_sec)]; null stays None. Bare word
             # tokens (no trailing space): pipecat 1.5.0's word tracker matches them against
             # the LLM's leading-space tokens (a trailing space mismatches and the word is
-            # discarded); captions.py rejoins with spaces.
+            # discarded); captions.py rejoins with spaces. Malformed timing is treated as
+            # null: the audio still plays, without its words (the ledger then estimates).
             if ts is None:
                 return None
-            if not isinstance(ts, list) or not all(isinstance(w, dict) for w in ts):
-                raise _EngineError(f"malformed timestamps: {str(ts)[:80]!r}")
             try:
-                return [(str(w.get("word", "")), float(w.get("start_ms", 0)) / 1000.0)
-                        for w in ts]
-            except (TypeError, ValueError) as e:
-                raise _EngineError(f"malformed timestamps: {str(ts)[:80]!r}") from e
+                if isinstance(ts, list) and all(isinstance(w, dict) for w in ts):
+                    return [(str(w.get("word", "")), float(w.get("start_ms", 0)) / 1000.0)
+                            for w in ts]
+            except (TypeError, ValueError):
+                pass
+            logger.warning(f"{self}: malformed engine word timestamps, dropped: "
+                           f"{str(ts)[:80]!r}")
+            return None
 
         try:
             await send({"type": "session.config", "voice": self._voice,

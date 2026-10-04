@@ -1,12 +1,14 @@
 #
 # Unit test: EngineTTSService plays engine audio as it streams (issue #14).
 #
-# The engine sends a sentence as several audio.chunk messages while it synthesizes,
-# then the word timestamps in a trailing empty chunk. The brain used to buffer every
-# chunk to audio.done, so first audio waited for the LAST chunk (measured 370-830 ms
-# per clause on the 2026-09-01 engine). Now each chunk is played on arrival, the seam
-# trim runs incrementally, and the words are placed once the sentence ends, timed
-# from where its audio began. No engine needed: _synth_text is stubbed.
+# The engine sends a sentence as several audio.chunk messages while it synthesizes.
+# The brain used to buffer every chunk to audio.done, so first audio waited for the
+# LAST chunk (measured 370-830 ms per clause on the 2026-09-01 engine). Now each chunk
+# is played on arrival and the seam trim runs incrementally. With teagram-engine#77's
+# "chunk_timestamps" each chunk carries the words that start in it, placed just ahead
+# of its audio; against an engine without it the words come in the trailing list and
+# are placed at the sentence's end. Playout gaps move later words with the audio. No
+# engine needed: _synth_text (or the socket under it) is stubbed.
 #
 # Run: python test_tts_streaming.py   (or via pytest)
 #
@@ -302,32 +304,6 @@ async def test_abandoning_the_reply_closes_the_stream_at_once():
     print("  PASS an abandoned or cancelled reply closes its stream immediately")
 
 
-async def test_a_tally_reset_mid_sentence_does_not_shift_its_words():
-    """pipecat's stop-frame timeout can end a context (and the base reset its tally)
-    while a sentence is still synthesizing. Its words must then be based on the audio
-    emitted since, not on a base noted before the reset: that one was stale by all the
-    audio played before it (PR #81 review: words ~8 s late)."""
-    w = [("Late", 1.0)]
-    for when in ("during connect", "after the first block"):
-        gate = asyncio.Event()
-        first, rest = SENTENCE[:int(0.98 * SR)], SENTENCE[int(0.98 * SR):]
-        script = ([gate, ("audio", first), ("audio", rest), ("end", w)]
-                  if when == "during connect" else
-                  [("audio", first), gate, ("audio", rest), ("end", w)])
-        svc = _Recorder({"Late words here.": script})
-        svc._ctx_audio_secs["ctx-1"] = 8.0   # the reply had already played 8 s
-        task = asyncio.create_task(svc.speak("Late words here."))
-        await asyncio.sleep(0.05)
-        svc._ctx_audio_secs.pop("ctx-1", None)  # the timeout ended the context
-        gate.set()
-        await asyncio.wait_for(task, 2.0)
-        _, lead_cut = _whole_trim(SENTENCE)
-        [(_, [(_, t)])] = svc.placed
-        assert abs(t - max(0.0, 1.0 - lead_cut - _CAPTION_LEAD_SECS)) < 1e-6, \
-            f"{when}: word placed at {t:.3f}s — based on the stale pre-reset tally"
-    print("  PASS a tally reset mid-sentence: words based on the audio emitted since")
-
-
 async def test_context_end_drops_only_its_own_tally():
     """The per-context end hook records where that context's audio ends and drops its
     tally only; a context queued behind keeps its own. A barge-in drops them all."""
@@ -424,7 +400,19 @@ def test_a_moved_pipecat_hook_fails_the_session_build():
             raise AssertionError("a missing _maybe_reset_word_timestamps went unnoticed")
     finally:
         TTSService._maybe_reset_word_timestamps = saved
-    print("  PASS the private pipecat hook is checked at session build")
+    # An install without .py sources can't run the call check: skip it, don't fail.
+    import inspect
+    saved_src = inspect.getsource
+
+    def no_source(obj):
+        raise OSError("could not get source code")
+    inspect.getsource = no_source
+    try:
+        engine_tts._require_context_end_hook()
+    finally:
+        inspect.getsource = saved_src
+    print("  PASS the private pipecat hook is checked at session build (skipped, not "
+          "failed, without sources)")
 
 
 class _FakeWS:
@@ -496,14 +484,20 @@ async def test_synth_text_protocol_edges():
     # Engine-side failures, and only those, are _EngineError.
     for bad in ({"type": "error", "message": "unknown voice"},
                 {"type": "audio.done", "error": True}, "not json",
-                _chunk(pcm, ts=[{"word": "Hi", "start_ms": None}]),
-                _chunk(pcm, ts=["Hi"]), _chunk(pcm, ts="abc"),
                 {"type": "audio.chunk", "audio_b64": 12345, "timestamps": None}):
         try:
             await _events([{"type": "audio.start"}, bad])
         except _EngineError:
             continue
         raise AssertionError(f"{bad!r} did not raise _EngineError")
+
+    # Malformed word timing only loses the words: the audio still plays.
+    for bad_ts in ([{"word": "Hi", "start_ms": None}], ["Hi"], "abc", {"word": "Hi"}):
+        events, _ = await _events([{"type": "audio.start"}, _chunk(pcm, ts=bad_ts),
+                                   _chunk(ts=bad_ts), {"type": "audio.done"},
+                                   {"type": "session.done"}])
+        assert [e[0] for e in events] == ["audio", "end"], (bad_ts, events)
+        assert events[0][2] is None and events[1] == ("end", []), (bad_ts, events)
 
     # Streaming off: each sentence's audio is one block, right before its words, and
     # the engine is asked to skip its eager prefix.
@@ -518,7 +512,7 @@ async def test_synth_text_protocol_edges():
     assert events[0][2] == [("Hi", 0.1)], "a buffered sentence keeps its chunks' words"
     assert ws.sent[0]["eager"] is False
     print("  PASS _synth_text: per-chunk words, odd-byte chunks, missing audio.done, "
-          "engine errors incl. malformed timestamps, TTS_STREAM_AUDIO=0")
+          "engine errors, malformed timestamps keep the audio, TTS_STREAM_AUDIO=0")
 
 
 def test_tts_streaming():
@@ -534,7 +528,6 @@ def test_tts_streaming():
         await test_a_brain_bug_is_not_logged_as_an_engine_failure()
         await test_abandoning_the_reply_closes_the_stream_at_once()
         await test_synth_text_protocol_edges()
-        await test_a_tally_reset_mid_sentence_does_not_shift_its_words()
         await test_context_end_drops_only_its_own_tally()
         await test_tallies_are_bounded()
         await test_words_go_out_ahead_of_their_own_chunk()
