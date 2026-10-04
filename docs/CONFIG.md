@@ -82,13 +82,14 @@ In `/etc/teaport/brain.env`. First-audio latency versus seam quality. Each is ex
 
 | Setting | Default | Description |
 |---|---|---|
-| `TTS_SENTENCE_SOFT_MAX` | **80** chars (≥ 0) | A sentence longer than this is split at clause boundaries before synthesis; the engine synthesizes a chunk whole before any of it plays, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it). 0 disables the split. |
+| `TTS_SENTENCE_SOFT_MAX` | **80** chars (≥ 0) | A sentence longer than this is split at clause boundaries before synthesis; first audio scales with the chunk's length, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it, on the 2026-09 engine and pre-#14 brain). 0 disables the split. |
 | `TTS_FIRST_CLAUSE_CHARS` | **32** chars (≥ 8) | Size of the first chunk — the one the caller waits on. |
 | `TTS_CLAUSE_GROWTH` | **1.5** (1.0–1.67) | Each chunk may grow this many times the previous. Must stay below 1/RTF (~1.67 at the measured CPU RTF 0.6) or a chunk's synth outruns the previous chunk's playout and playback stalls at the seam. |
 | `TTS_CLAUSE_CAP` | **200** chars (≥ 8) | The largest ramped chunk. |
 | `TTS_CLAUSE_HARD_MAX` | **350** chars (8–450) | Last-resort mid-sentence word break so a run-on cannot overflow the engine's ~512-token utterance limit and crash the synth. |
 | `TTS_SEAM_KEEP_LEAD` | **0.05** s (≥ 0) | Near-silence kept before a chunk's first sound. |
 | `TTS_SEAM_KEEP_TRAIL` | **0.25** s (≥ 0) | Near-silence kept after a chunk's last sound. With the lead this lands a seam near a sentence's natural ~320 ms comma pause instead of the ~793 ms a naive concat gives. |
+| `TTS_STREAM_AUDIO` | **on** | Play each engine audio chunk as it arrives (first audio sooner). Off buffers each sentence to its end, as before #14, and tells the engine to skip its eager prefix. Turn it off on a CPU-only engine or wherever synthesis runs slower than playout, where the early first block plays out before the rest of the sentence arrives and leaves a gap mid-sentence; the journal logs each such gap as "TTS stream underrun". |
 | `TTS_USER_SPEECH_HOLD_MAX_S` | **3.0** s (≥ 0) | While VAD says the user is speaking, the next clause is held back to free the GPU for barge-in transcription. This caps the hold so sustained noise cannot stall the reply. |
 | `TTS_CAPTION_LEAD_SECS` | **0.2** s (≥ 0) | Caption lead shared by the TTS word timestamps and the heard-word ledger. One knob so the two cannot drift. |
 

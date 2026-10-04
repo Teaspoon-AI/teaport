@@ -2,7 +2,8 @@
 """
 test_engine_text_stream.py — exercise the engine's text-in TTS stream
 (/v1/audio/speech/stream), the path EngineTTSService uses (text-in).
-Mirrors engine_tts.py `_synth_text`. Needs a LIVE engine (deps: websockets, numpy).
+Speaks the protocol engine_tts.py `_synth_text` streams, collected per sentence.
+Needs a LIVE engine (deps: websockets, numpy).
 
   ENGINE_TTS_STREAM_URL=ws://127.0.0.1:8000/v1/audio/speech/stream python3 test_engine_text_stream.py
 """
@@ -26,7 +27,7 @@ SR = 24000
 
 
 async def synth(text, voice="af_heart"):
-    """Same protocol as EngineTTSService._synth_text. -> [(audio, [(word, start_s)])]."""
+    """EngineTTSService._synth_text's protocol, collected. -> [(audio, [(word, start_s)])]."""
     ws = await websockets.connect(URL, max_size=None, open_timeout=5)
     try:
         await ws.send(json.dumps({"type": "session.config", "voice": voice,
