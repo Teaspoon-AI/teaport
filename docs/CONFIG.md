@@ -89,6 +89,7 @@ In `/etc/teaport/brain.env`. First-audio latency versus seam quality. Each is ex
 | `TTS_CLAUSE_HARD_MAX` | **350** chars (8–450) | Last-resort mid-sentence word break so a run-on cannot overflow the engine's ~512-token utterance limit and crash the synth. |
 | `TTS_SEAM_KEEP_LEAD` | **0.05** s (≥ 0) | Near-silence kept before a chunk's first sound. |
 | `TTS_SEAM_KEEP_TRAIL` | **0.25** s (≥ 0) | Near-silence kept after a chunk's last sound. With the lead this lands a seam near a sentence's natural ~320 ms comma pause instead of the ~793 ms a naive concat gives. |
+| `TTS_STREAM_AUDIO` | **on** | Play each engine audio chunk as it arrives (first audio sooner). Off buffers each sentence to its end, as before #14, and tells the engine to skip its eager prefix. Turn it off on a CPU-only engine or wherever synthesis runs slower than playout, where the early first block plays out before the rest of the sentence arrives and leaves a gap mid-sentence. |
 | `TTS_USER_SPEECH_HOLD_MAX_S` | **3.0** s (≥ 0) | While VAD says the user is speaking, the next clause is held back to free the GPU for barge-in transcription. This caps the hold so sustained noise cannot stall the reply. |
 | `TTS_CAPTION_LEAD_SECS` | **0.2** s (≥ 0) | Caption lead shared by the TTS word timestamps and the heard-word ledger. One knob so the two cannot drift. |
 

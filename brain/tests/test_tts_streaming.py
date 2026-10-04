@@ -12,6 +12,8 @@
 #
 
 import asyncio
+import base64
+import json
 import os
 import sys
 
@@ -30,6 +32,7 @@ from teaport_brain.engine_tts import (  # noqa: E402
     _CAPTION_LEAD_SECS,
     _SAMPLE_RATE as SR,
     EngineTTSService,
+    _EngineError,
     _SeamTrim,
 )
 
@@ -85,6 +88,32 @@ def test_seam_trim_matches_whole_buffer_trim():
     print("  PASS incremental seam trim == whole-buffer trim at every block split")
 
 
+def test_seam_trim_ignores_a_quiet_first_block():
+    """The trim's "sound" threshold is 1% of the peak heard so far. A first block that is
+    only padding noise (or a soft onset) must not set it: the noise would count as sound
+    and the whole lead padding would be kept (PR #81 review: lead_cut 0.0 vs 0.25 s)."""
+    rng = np.random.default_rng(7)
+    noise = lambda secs: (2e-4 * rng.standard_normal(int(secs * SR))).astype(np.float32)  # noqa: E731
+    sentence = np.concatenate([noise(0.3), _tone(0.2, amp=0.02), _tone(1.0), noise(0.4)])
+    want, want_cut = _whole_trim(sentence)
+    s = lambda secs: int(secs * SR)  # noqa: E731
+    for name, cuts in {"first block all noise": [s(0.1)],
+                       "first block noise + soft onset": [s(0.45)],
+                       "engine-like": [s(0.98)],
+                       "many small blocks": list(range(s(0.05), sentence.shape[0], s(0.05)))
+                       }.items():
+        got, cut = _streamed_trim(sentence, cuts)
+        assert abs(cut - want_cut) < 1e-9, f"{name}: lead_cut {cut:.3f} vs {want_cut:.3f}"
+        assert np.array_equal(got, want), \
+            f"{name}: streamed trim {got.shape[0]} samples vs whole-buffer {want.shape[0]}"
+    quiet = np.concatenate([noise(0.3), _tone(0.5, amp=0.02), noise(0.4)])  # never loud
+    want, want_cut = _whole_trim(quiet)
+    got, cut = _streamed_trim(quiet, [s(0.2), s(0.6)])
+    assert abs(cut - want_cut) < 1e-9 and np.array_equal(got, want), \
+        "a sentence that never gets loud is trimmed whole at its end"
+    print("  PASS a quiet or noisy first block does not set the trim threshold")
+
+
 def test_seam_trim_holds_only_trailing_quiet():
     # A sine's edge sits a sample or two off the tone boundary (zero crossings), hence ~.
     near = lambda got, want: abs(got - want) <= 5  # noqa: E731
@@ -124,6 +153,7 @@ class _Recorder(EngineTTSService):
 
     async def _synth_text(self, text):
         try:
+            await asyncio.sleep(0)  # the real stream awaits its engine connect first
             for ev in self.script[text]:
                 if isinstance(ev, asyncio.Event):
                     await ev.wait()
@@ -171,6 +201,7 @@ async def test_first_block_plays_before_the_sentence_ends():
     after, words = svc.placed[0]
     assert after >= 1, "words are placed after the audio they describe has been yielded"
     expect = [("Hello", 0.3), ("there", 0.8), ("friend.", 1.7)]
+    assert len(words) == len(expect), f"placed {words}"
     for (w, t), (ew, es) in zip(words, expect):
         assert w == ew and abs(t - max(0.0, es - lead_cut - _CAPTION_LEAD_SECS)) < 1e-9, \
             f"{w}: {t} — word times shift back by the lead trim and the caption lead"
@@ -192,6 +223,7 @@ async def test_later_words_time_from_where_their_audio_began():
     trimmed, lead_cut = _whole_trim(SENTENCE)
     dur = trimmed.shape[0] / SR
     bases = [t + _CAPTION_LEAD_SECS - (1.0 - lead_cut) for _, [(_, t)] in svc.placed]
+    assert len(bases) == 3, f"every sentence places its words: {svc.placed}"
     for got, want in zip(bases, [0.0, dur, 2 * dur]):
         assert abs(got - want) < 1e-6, f"sentence based at {got:.4f}s, want {want:.4f}s"
     print("  PASS each sentence's words are based at the audio emitted before it")
@@ -199,7 +231,7 @@ async def test_later_words_time_from_where_their_audio_began():
 
 async def test_a_failed_clause_keeps_what_it_played_and_the_reply_goes_on():
     clause, nxt = "It broke midway.", "Next one."
-    svc = _Recorder({clause: [("audio", SENTENCE[:int(0.98 * SR)]), RuntimeError("engine")],
+    svc = _Recorder({clause: [("audio", SENTENCE[:int(0.98 * SR)]), _EngineError("engine")],
                      nxt: [("audio", SENTENCE), ("end", [("Next", 0.3)])]})
     out = await svc.speak(clause)
     assert any(isinstance(f, TTSAudioRawFrame) for f in out), "the played block stays played"
@@ -209,6 +241,24 @@ async def test_a_failed_clause_keeps_what_it_played_and_the_reply_goes_on():
     await svc.speak(nxt)
     assert len(svc.placed) == 1
     print("  PASS a clause failing mid-stream keeps its audio; no ErrorFrame")
+
+
+async def test_a_brain_bug_is_not_logged_as_an_engine_failure():
+    """Only the engine stream's failures skip a clause. A bug raised while placing words
+    (brain or pipecat) must surface, not be logged as an engine synth error."""
+    class Broken(_Recorder):
+        async def add_word_timestamps(self, word_times, context_id=None, **kw):
+            raise ValueError("word sequencer bug")
+    clause = "Hello there friend."
+    svc = Broken({clause: [("audio", SENTENCE), ("end", [("Hello", 0.3)])]})
+    try:
+        await svc.speak(clause)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("a ValueError from add_word_timestamps was swallowed")
+    assert svc.closed == [clause]
+    print("  PASS a brain-side error propagates; only _EngineError skips a clause")
 
 
 async def test_abandoning_the_reply_closes_the_stream_at_once():
@@ -235,15 +285,98 @@ async def test_abandoning_the_reply_closes_the_stream_at_once():
     print("  PASS an abandoned or cancelled reply closes its stream immediately")
 
 
+class _FakeWS:
+    """The engine's speech stream, scripted: records what the brain sends, replays
+    `messages` (dicts become JSON text frames)."""
+
+    def __init__(self, messages):
+        self.sent, self._msgs, self.closed = [], list(messages), False
+
+    async def send(self, msg):
+        self.sent.append(json.loads(msg))
+
+    async def recv(self):
+        m = self._msgs.pop(0)
+        return json.dumps(m) if isinstance(m, dict) else m
+
+    async def close(self):
+        self.closed = True
+
+
+def _chunk(raw=b"", ts=None, i=0):
+    return {"type": "audio.chunk", "sentence_index": i,
+            "audio_b64": base64.b64encode(raw).decode(), "timestamps": ts}
+
+
+async def _events(messages):
+    svc = EngineTTSService(voice="af_heart")
+    ws = _FakeWS(messages)
+
+    async def connect():
+        return ws
+    svc._connect_stream = connect
+    events = [ev async for ev in svc._synth_text("x")]
+    return events, ws
+
+
+async def test_synth_text_protocol_edges():
+    pcm = (np.arange(-500, 500, dtype=np.int16) * 30).tobytes()
+    ts = [{"word": "Hi", "start_ms": 100, "end_ms": 300}]
+    # Chunks split mid-sample: the odd byte carries over instead of failing to decode.
+    events, ws = await _events([{"type": "audio.start"}, _chunk(pcm[:333]), _chunk(pcm[333:801]),
+                                _chunk(pcm[801:]), _chunk(ts=ts), {"type": "audio.done"},
+                                {"type": "session.done"}])
+    got = np.concatenate([p for k, p in events if k == "audio"])
+    assert np.array_equal(np.round(got * 32768).astype(np.int16),
+                          np.frombuffer(pcm, dtype=np.int16)), "odd-byte chunks reassemble"
+    assert events[-1] == ("end", [("Hi", 0.1)]) and ws.closed
+    assert ws.sent[0]["eager"] is engine_tts._STREAM_AUDIO
+
+    # A sentence left without its audio.done is closed (no words) when the next starts,
+    # and one still open at session.done is closed there.
+    events, _ = await _events([{"type": "audio.start"}, _chunk(pcm), {"type": "audio.start"},
+                               _chunk(pcm, i=1), _chunk(ts=ts, i=1), {"type": "audio.done"},
+                               {"type": "audio.start"}, _chunk(pcm, i=2),
+                               {"type": "session.done"}])
+    assert [k if k == "audio" else (k, p) for k, p in events] == \
+        ["audio", ("end", []), "audio", ("end", [("Hi", 0.1)]), "audio", ("end", [])], events
+
+    # Engine-side failures, and only those, are _EngineError.
+    for bad in ({"type": "error", "message": "unknown voice"},
+                {"type": "audio.done", "error": True}, "not json"):
+        try:
+            await _events([{"type": "audio.start"}, bad])
+        except _EngineError:
+            continue
+        raise AssertionError(f"{bad!r} did not raise _EngineError")
+
+    # Streaming off: each sentence's audio is one block, right before its words, and
+    # the engine is asked to skip its eager prefix.
+    engine_tts._STREAM_AUDIO = False
+    try:
+        events, ws = await _events([{"type": "audio.start"}, _chunk(pcm[:1000]),
+                                    _chunk(pcm[1000:]), _chunk(ts=ts), {"type": "audio.done"},
+                                    {"type": "session.done"}])
+    finally:
+        engine_tts._STREAM_AUDIO = True
+    assert [k for k, _ in events] == ["audio", "end"] and events[0][1].shape[0] == 1000
+    assert ws.sent[0]["eager"] is False
+    print("  PASS _synth_text: odd-byte chunks, missing audio.done, engine errors, "
+          "TTS_STREAM_AUDIO=0")
+
+
 def test_tts_streaming():
     test_seam_trim_matches_whole_buffer_trim()
+    test_seam_trim_ignores_a_quiet_first_block()
     test_seam_trim_holds_only_trailing_quiet()
 
     async def main():
         await test_first_block_plays_before_the_sentence_ends()
         await test_later_words_time_from_where_their_audio_began()
         await test_a_failed_clause_keeps_what_it_played_and_the_reply_goes_on()
+        await test_a_brain_bug_is_not_logged_as_an_engine_failure()
         await test_abandoning_the_reply_closes_the_stream_at_once()
+        await test_synth_text_protocol_edges()
     asyncio.run(main())
 
 
