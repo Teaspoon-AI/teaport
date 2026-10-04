@@ -178,22 +178,10 @@ class HeardContextCorrector(FrameProcessor):
                 self._context.set_messages(
                     msgs[:end] + [{"role": "assistant", "content": heard}] + msgs[end:])
                 logger.info(f"HeardCorrector[truncate]: inserted heard reply …{heard[-40:]!r}")
-        elif anchor is None and heard and start > 0:
-            # Nothing was committed, yet the ledger says part of it was heard: the TTS
-            # streams audio before a sentence's word timestamps exist (issue #14), and
-            # pipecat commits only word frames, so a barge-in inside that window plays
-            # audio the context never records. Put the heard prefix where the reply
-            # was: at `start`, the context length when the LLM call that produced it
-            # ran, i.e. right after the turn it answered and before everything since.
-            self._context.set_messages(
-                msgs[:start] + [{"role": "assistant", "content": heard}] + msgs[start:])
-            logger.info(f"HeardCorrector[truncate]: inserted heard reply (nothing "
-                        f"committed) …{heard[-40:]!r}")
         elif anchor is None:
             # Nothing was committed for the cut turn, so there is nothing to correct.
             # Not a warning: this is the ordinary shape of a reply barged over before
-            # any of it was spoken. (start == 0 means no LLM call has reconciled yet,
-            # so there is no known place for a heard prefix.)
+            # any of it was spoken.
             logger.info("HeardCorrector[truncate]: cut turn left no committed message")
         else:
             logger.warning("HeardCorrector[truncate]: no anchor for the cut turn "

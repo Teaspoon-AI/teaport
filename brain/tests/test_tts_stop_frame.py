@@ -81,8 +81,9 @@ async def _fake_segments(text: str):
     # The real stream awaits its engine connect before any audio: anything the pipeline
     # does meanwhile (a previous reply's playout ending) lands inside run_tts.
     await asyncio.sleep(0.01)
-    yield "audio", audio
-    yield "end", [(w, i * step) for i, w in enumerate(words)]
+    timed = [(w, i * step) for i, w in enumerate(words)]
+    yield "audio", audio, timed    # per-chunk words (teagram-engine#77)
+    yield "end", timed
 
 
 class StubOutput(BaseOutputTransport):

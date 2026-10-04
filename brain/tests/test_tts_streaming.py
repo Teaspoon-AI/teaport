@@ -16,6 +16,7 @@ import base64
 import json
 import os
 import sys
+import time
 
 import numpy as np
 
@@ -173,6 +174,8 @@ class _Recorder(EngineTTSService):
                     await ev.wait()
                 elif isinstance(ev, Exception):
                     raise ev
+                elif ev[0] == "audio" and len(ev) == 2:
+                    yield ev + (None,)  # no per-chunk list: an engine without #77
                 else:
                     yield ev
         finally:
@@ -220,8 +223,8 @@ async def test_first_block_plays_before_the_sentence_ends():
         assert w == ew and abs(t - max(0.0, es - lead_cut - _CAPTION_LEAD_SECS)) < 1e-9, \
             f"{w}: {t} — word times shift back by the lead trim and the caption lead"
     assert svc.closed == [clause]
-    print(f"  PASS first block yielded before the sentence ended; words placed after "
-          f"(lead cut {lead_cut:.2f}s)")
+    print(f"  PASS first block yielded before the sentence ended; without per-chunk lists "
+          f"(pre-#77 engine) the words follow at its end (lead cut {lead_cut:.2f}s)")
 
 
 async def test_later_words_time_from_where_their_audio_began():
@@ -356,29 +359,72 @@ async def test_tallies_are_bounded():
     print(f"  PASS tallies bounded at {engine_tts._MAX_CTX_TALLIES}")
 
 
-async def test_a_late_block_mid_sentence_is_logged():
-    """TTS_STREAM_AUDIO's evidence: a sentence's next block arriving after its audio so
-    far has played out is logged, and an on-time one is not."""
+async def test_words_go_out_ahead_of_their_own_chunk():
+    """With per-chunk lists (teagram-engine#77) each chunk's words are handed over
+    BEFORE its audio, so the caption lead and the barge-in flush work as they did when
+    whole sentences were buffered; the trailing full list is then not placed again."""
+    a, b = SENTENCE[:int(0.98 * SR)], SENTENCE[int(0.98 * SR):]
+    full = [("Hello", 0.35), ("there", 0.8), ("friend.", 1.75)]
+    clause = "Hello there friend."
+    svc = _Recorder({clause: [("audio", a, full[:2]), ("audio", b, full[2:]), ("end", full)]})
+    await svc.speak(clause)
+    _, lead_cut = _whole_trim(SENTENCE)
+    assert [n for n, _ in svc.placed] == [0, 1], \
+        f"each chunk's words go out before that chunk's audio: {svc.placed}"
+    got = [w for _, ws in svc.placed for w in ws]
+    want = [(w, max(0.0, s - lead_cut - _CAPTION_LEAD_SECS)) for w, s in full]
+    assert len(got) == len(want) and all(
+        g[0] == w[0] and abs(g[1] - w[1]) < 1e-9 for g, w in zip(got, want)), got
+    print("  PASS per-chunk words go out ahead of their chunk; the trailing list is not "
+          "placed twice")
+
+
+async def test_a_playout_gap_moves_later_words_and_is_logged():
+    """Word times count emitted audio. When the next block comes after the audio so far
+    has played out, everything after it starts late by the gap: the gap joins the
+    context's tally so later words move with it (PR #81 review), and a gap inside a
+    sentence is logged. The first audio of a context is not a gap."""
     from loguru import logger
     lines = []
     sink = logger.add(lambda m: lines.append(str(m)), level="INFO")
     try:
-        for playing_for, want in ((5.0, True), (0.0, False)):
-            lines.clear()
-            clause = "Under run test."
-            svc = _Recorder({clause: [("audio", SENTENCE[:int(0.98 * SR)]),
-                                      ("audio", SENTENCE[int(0.98 * SR):]), ("end", [])]})
-            now = 100_000_000_000
-            svc.get_clock = lambda: type("C", (), {"get_time": lambda self: now})()
-            svc._playing_context_id = "ctx-1"
-            # Playout of this context began `playing_for` s ago; it has 0.73 s of audio.
-            svc._initial_word_timestamp = now - int(playing_for * 1e9)
-            await svc.speak(clause)
-            got = any("TTS stream underrun" in ln for ln in lines)
-            assert got == want, f"playing for {playing_for}s: logged={got}"
+        gate = asyncio.Event()
+        a, b = SENTENCE[:int(0.98 * SR)], SENTENCE[int(0.98 * SR):]
+        clause = "Gap in the middle."
+        svc = _Recorder({clause: [("audio", a, [("Gap", 0.35)]), gate,
+                                  ("audio", b, [("middle.", 1.75)]), ("end", [])]})
+        svc._play_end = time.monotonic() - 5.0   # long idle before the reply: not a gap
+        task = asyncio.create_task(svc.speak(clause))
+        await asyncio.sleep(0.05)
+        svc._play_end = time.monotonic() - 0.5   # block 1 has played out 0.5 s ago
+        gate.set()
+        await asyncio.wait_for(task, 2.0)
+        _, lead_cut = _whole_trim(SENTENCE)
+        (_, [(_, t1)]), (_, [(_, t2)]) = svc.placed
+        assert abs(t1 - max(0.0, 0.35 - lead_cut - _CAPTION_LEAD_SECS)) < 1e-6, t1
+        assert 0.45 < t2 - (1.75 - lead_cut - _CAPTION_LEAD_SECS) < 0.6, \
+            f"the word after a ~0.5 s gap moved {t2 - (1.75 - lead_cut - _CAPTION_LEAD_SECS):.3f}s"
+        assert sum("TTS stream underrun" in ln for ln in lines) == 1, lines
     finally:
         logger.remove(sink)
-    print("  PASS a mid-sentence underrun is logged; an on-time block is not")
+    print("  PASS a playout gap moves the words after it, and a mid-sentence one is logged")
+
+
+def test_a_moved_pipecat_hook_fails_the_session_build():
+    from pipecat.services.tts_service import TTSService
+    engine_tts._require_context_end_hook()          # today's pipecat: fine
+    saved = TTSService._maybe_reset_word_timestamps
+    try:
+        del TTSService._maybe_reset_word_timestamps
+        try:
+            engine_tts._require_context_end_hook()
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError("a missing _maybe_reset_word_timestamps went unnoticed")
+    finally:
+        TTSService._maybe_reset_word_timestamps = saved
+    print("  PASS the private pipecat hook is checked at session build")
 
 
 class _FakeWS:
@@ -422,11 +468,21 @@ async def test_synth_text_protocol_edges():
     events, ws = await _events([{"type": "audio.start"}, _chunk(pcm[:333]), _chunk(pcm[333:801]),
                                 _chunk(pcm[801:]), _chunk(ts=ts), {"type": "audio.done"},
                                 {"type": "session.done"}])
-    got = np.concatenate([p for k, p in events if k == "audio"])
+    got = np.concatenate([e[1] for e in events if e[0] == "audio"])
     assert np.array_equal(np.round(got * 32768).astype(np.int16),
                           np.frombuffer(pcm, dtype=np.int16)), "odd-byte chunks reassemble"
     assert events[-1] == ("end", [("Hi", 0.1)]) and ws.closed
+    assert all(e[2] is None for e in events if e[0] == "audio"), "no per-chunk list: None"
     assert ws.sent[0]["eager"] is engine_tts._STREAM_AUDIO
+    assert ws.sent[0]["chunk_timestamps"] is True
+
+    # Per-chunk lists (#77) ride their audio; [] is "no word starts here".
+    t2 = [{"word": "there", "start_ms": 900, "end_ms": 1200}]
+    events, _ = await _events([{"type": "audio.start"}, _chunk(pcm, ts=ts), _chunk(pcm, ts=[]),
+                               _chunk(pcm, ts=t2), _chunk(ts=ts + t2), {"type": "audio.done"},
+                               {"type": "session.done"}])
+    assert [e[2] for e in events if e[0] == "audio"] == [[("Hi", 0.1)], [], [("there", 0.9)]]
+    assert events[-1] == ("end", [("Hi", 0.1), ("there", 0.9)])
 
     # A sentence left without its audio.done is closed (no words) when the next starts,
     # and one still open at session.done is closed there.
@@ -434,12 +490,15 @@ async def test_synth_text_protocol_edges():
                                _chunk(pcm, i=1), _chunk(ts=ts, i=1), {"type": "audio.done"},
                                {"type": "audio.start"}, _chunk(pcm, i=2),
                                {"type": "session.done"}])
-    assert [k if k == "audio" else (k, p) for k, p in events] == \
+    assert [e[0] if e[0] == "audio" else e for e in events] == \
         ["audio", ("end", []), "audio", ("end", [("Hi", 0.1)]), "audio", ("end", [])], events
 
     # Engine-side failures, and only those, are _EngineError.
     for bad in ({"type": "error", "message": "unknown voice"},
-                {"type": "audio.done", "error": True}, "not json"):
+                {"type": "audio.done", "error": True}, "not json",
+                _chunk(pcm, ts=[{"word": "Hi", "start_ms": None}]),
+                _chunk(pcm, ts=["Hi"]), _chunk(pcm, ts="abc"),
+                {"type": "audio.chunk", "audio_b64": 12345, "timestamps": None}):
         try:
             await _events([{"type": "audio.start"}, bad])
         except _EngineError:
@@ -450,21 +509,23 @@ async def test_synth_text_protocol_edges():
     # the engine is asked to skip its eager prefix.
     saved, engine_tts._STREAM_AUDIO = engine_tts._STREAM_AUDIO, False
     try:
-        events, ws = await _events([{"type": "audio.start"}, _chunk(pcm[:1000]),
-                                    _chunk(pcm[1000:]), _chunk(ts=ts), {"type": "audio.done"},
-                                    {"type": "session.done"}])
+        events, ws = await _events([{"type": "audio.start"}, _chunk(pcm[:1000], ts=ts),
+                                    _chunk(pcm[1000:], ts=[]), _chunk(ts=ts),
+                                    {"type": "audio.done"}, {"type": "session.done"}])
     finally:
         engine_tts._STREAM_AUDIO = saved
-    assert [k for k, _ in events] == ["audio", "end"] and events[0][1].shape[0] == 1000
+    assert [e[0] for e in events] == ["audio", "end"] and events[0][1].shape[0] == 1000
+    assert events[0][2] == [("Hi", 0.1)], "a buffered sentence keeps its chunks' words"
     assert ws.sent[0]["eager"] is False
-    print("  PASS _synth_text: odd-byte chunks, missing audio.done, engine errors, "
-          "TTS_STREAM_AUDIO=0")
+    print("  PASS _synth_text: per-chunk words, odd-byte chunks, missing audio.done, "
+          "engine errors incl. malformed timestamps, TTS_STREAM_AUDIO=0")
 
 
 def test_tts_streaming():
     test_seam_trim_matches_whole_buffer_trim()
     test_seam_trim_ignores_a_quiet_first_block()
     test_seam_trim_holds_only_trailing_quiet()
+    test_a_moved_pipecat_hook_fails_the_session_build()
 
     async def main():
         await test_first_block_plays_before_the_sentence_ends()
@@ -476,7 +537,8 @@ def test_tts_streaming():
         await test_a_tally_reset_mid_sentence_does_not_shift_its_words()
         await test_context_end_drops_only_its_own_tally()
         await test_tallies_are_bounded()
-        await test_a_late_block_mid_sentence_is_logged()
+        await test_words_go_out_ahead_of_their_own_chunk()
+        await test_a_playout_gap_moves_later_words_and_is_logged()
     asyncio.run(main())
 
 

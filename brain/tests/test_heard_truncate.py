@@ -181,23 +181,6 @@ def test_a_settled_reply_is_never_removed():
     print("  PASS settled reply -> untouched by a later 0%-heard cut")
 
 
-def test_heard_but_uncommitted_reply_is_inserted_where_it_was():
-    """The TTS plays a sentence's audio before its word timestamps exist (issue #14),
-    and pipecat commits only word frames. A barge-in in that window leaves NOTHING
-    committed although the ledger says part of the reply was heard; the heard prefix
-    must still reach the context, right after the turn it answered (PR #81 review)."""
-    msgs = [{"role": "system", "content": "s"},
-            {"role": "user", "content": "Tell me about Rome."},      # the LLM call ran here
-            {"role": "system", "content": "You remember these things ..."},
-            {"role": "user", "content": "Wait, stop."}]
-    out = run([U(ROME_FULL, ROME_HEARD)], msgs, mark=2)
-    assert [(m["role"], m["content"]) for m in out[1:4]] == [
-        ("user", "Tell me about Rome."), ("assistant", ROME_HEARD.rstrip(",")),
-        ("system", "You remember these things ...")], out
-    assert out[-1]["content"] == "Wait, stop."
-    print("  PASS heard-but-uncommitted reply -> heard prefix inserted after its turn")
-
-
 def test_no_bot_turn_safe():
     # a cut event but no bot turn in context -> no-op, no crash
     out = run([U(ROME_FULL, ROME_HEARD)],
@@ -211,7 +194,6 @@ if __name__ == "__main__":
                test_multi_fragment_trigger, test_prose_overwrite,
                test_nothing_heard_removes, test_note_mode_additive,
                test_fully_heard_untouched, test_midword_rounds_to_complete_item,
-               test_no_bot_turn_safe, test_a_settled_reply_is_never_removed,
-               test_heard_but_uncommitted_reply_is_inserted_where_it_was]:
+               test_no_bot_turn_safe, test_a_settled_reply_is_never_removed]:
         fn()
     print("ALL PASS")
