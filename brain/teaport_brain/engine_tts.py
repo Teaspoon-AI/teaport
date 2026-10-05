@@ -15,6 +15,7 @@
 # host/port (the stream path is derived), or ENGINE_TTS_STREAM_URL sets the stream URL directly.
 
 import asyncio
+import math
 import os
 import time
 from contextlib import aclosing
@@ -160,6 +161,24 @@ _MAX_CTX_TALLIES = 8
 _USER_SPEECH_HOLD_MAX_S = env_num("TTS_USER_SPEECH_HOLD_MAX_S", "3.0", float)
 _HOLD_ON_USER_SPEECH = env_flag("TTS_HOLD_ON_USER_SPEECH", True)
 
+
+def _parse_lead_s(raw: str):
+    """TTS_LEAD_S: seconds (>= 0), or None for auto. A bad value falls back to the
+    documented default (auto), not to some fixed lead; inf would hold every clause
+    for the wait cap."""
+    raw = (raw or "").strip().lower()
+    if raw in ("", "auto"):
+        return None
+    try:
+        secs = float(raw)
+    except ValueError:
+        secs = math.nan
+    if not math.isfinite(secs):
+        logger.warning(f"TTS_LEAD_S={raw!r} is not auto or a number of seconds; using auto")
+        return None
+    return max(0.0, secs)
+
+
 # Synthesis pacing. "greedy" submits each clause as soon as the previous one is
 # synthesized, so a reply is on the GPU in one burst right after it starts playing,
 # and a barge-in throws away everything synthesized past the cut. "lead" holds the
@@ -175,8 +194,7 @@ _HOLD_ON_USER_SPEECH = env_flag("TTS_HOLD_ON_USER_SPEECH", True)
 # overlaps STT; an interrupted reply discarded ~3-5 s of synthesis instead of
 # ~15-45 s. Hence off by default: it saves GPU work, not latency, on this hardware.
 _PACING = env_choice("TTS_PACING", "greedy", ("lead", "greedy"))
-_LEAD_S_RAW = (os.getenv("TTS_LEAD_S") or "").strip().lower()
-_LEAD_S = None if _LEAD_S_RAW in ("", "auto") else max(0.0, env_num("TTS_LEAD_S", "1.5", float))
+_LEAD_S = _parse_lead_s(os.getenv("TTS_LEAD_S"))
 _LEAD_AUTO_FLOOR_S = 1.5
 _LEAD_AUTO_SYNTH_MULT = 2.0
 _PACE_MAX_WAIT_S = 30.0
@@ -532,10 +550,12 @@ class EngineTTSService(TTSService):
         return self._lead_secs() < self._est_synth_secs(clause)
 
     async def _pace(self, clause: str, context_id: str) -> float:
-        """"lead" pacing: wait until less than the lead target is queued ahead of
-        playout. Returns the seconds waited. The reply's audio context sees no frame
-        while we wait, so refresh it at least twice per stop_frame_timeout_s: its
-        watchdog would otherwise close it mid-wait and end the reply early."""
+        """"lead" pacing: wait until at most the lead target is queued ahead of
+        playout (at most: a TTS_LEAD_S of 0 means "once playout has caught up", and
+        with "less than" it could never be met). Returns the seconds waited. The
+        reply's audio context sees no frame while we wait, so refresh it at least
+        twice per stop_frame_timeout_s: its watchdog would otherwise close it mid-wait
+        and end the reply early."""
         if self._pacing != "lead":
             return 0.0
         target = self._lead_target(clause)
@@ -543,7 +563,7 @@ class EngineTTSService(TTSService):
         t0 = time.monotonic()
         while True:
             lead = self._lead_secs()
-            if lead < target:
+            if lead <= target:
                 break
             if time.monotonic() - t0 >= _PACE_MAX_WAIT_S:
                 logger.warning(f"{self}: pacing wait cap ({_PACE_MAX_WAIT_S:.0f}s) reached "
@@ -621,11 +641,13 @@ class EngineTTSService(TTSService):
         # interruptions with zero survivors before the old guard was removed.
         # That includes a pacing or speech-hold wait.
         for clause in clauses:
+            paced_secs += await self._pace(clause, context_id)
             # User speaking → hold this clause so the GPU serves STT (a maybe-barge
-            # needs its words transcribed NOW); resume on VAD-stop or the cap.
+            # needs its words transcribed NOW); resume on VAD-stop or the cap. After
+            # the pacing wait, not before it: the user may start talking during that
+            # wait, and that is when the clause must not go to the GPU.
             if self._hold_on_user_speech:
                 await self._hold_for_user_speech()
-            paced_secs += await self._pace(clause, context_id)
             eager = self._want_eager(clause, context_id)
             clause_secs, t0 = 0.0, time.monotonic()
             try:

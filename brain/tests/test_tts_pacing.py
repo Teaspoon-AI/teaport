@@ -79,6 +79,10 @@ async def test_lead_waits_until_the_queue_drains_to_the_target():
     assert await svc._pace("Next.", "ctx") < 0.05, "below the target: no wait"
     assert await _Paced(lead_s=0.2).at(queued=0)._pace("Idle.", "ctx") < 0.05, \
         "nothing playing: no wait"
+    zero = _Paced(lead_s=0.0).at(queued=0.2)
+    caught_up = await asyncio.wait_for(zero._pace("Caught up.", "ctx"), 2.0)
+    assert 0.15 <= caught_up < 0.5, \
+        f"TTS_LEAD_S=0 waited {caught_up:.2f}s, want the playout (~0.2 s)"
     print(f"  PASS lead pacing waited {waited:.2f}s for the queue to drain to the target")
 
 
@@ -122,6 +126,59 @@ def test_auto_lead_target_follows_the_learned_synth_time():
     assert abs(svc._rtf - 0.4 / 13.0) < 0.01
     assert _Paced(lead_s=2.5)._lead_target(long_) == 2.5, "a fixed TTS_LEAD_S wins"
     print("  PASS auto lead = max(floor, 2x learned synth time); fixed overrides")
+
+
+def test_lead_s_parsing():
+    parse = engine_tts._parse_lead_s
+    assert parse(None) is None and parse("") is None and parse(" Auto ") is None
+    assert parse("2.5") == 2.5 and parse("0") == 0.0 and parse("-1") == 0.0
+    for bad in ("fast", "inf", "nan"):
+        assert parse(bad) is None, f"TTS_LEAD_S={bad!r} must fall back to auto"
+    print("  PASS TTS_LEAD_S: auto / seconds (>= 0); a bad value falls back to auto")
+
+
+class _Driven(_Paced):
+    """run_tts driven directly, no pipeline: records when each clause reached the engine."""
+
+    def __init__(self, **kw):
+        super().__init__(**kw)
+        self._sample_rate = SR
+        self.submitted = []
+
+    async def start_tts_usage_metrics(self, text):
+        pass
+
+    async def add_word_timestamps(self, word_times, context_id=None, **kw):
+        pass
+
+    async def _synth_text(self, text, eager=True):
+        self.submitted.append(time.monotonic())
+        async for ev in _tone_segments(text, eager):
+            yield ev
+
+
+async def test_speech_hold_follows_the_pacing_wait():
+    # 0.5 s queued, target 0.2 s: the wait ends at ~0.3 s. The user starts talking at
+    # 0.1 s, inside the wait, and stops at 0.7 s: the clause must not go to the GPU
+    # before then (hold on), and with TTS_HOLD_ON_USER_SPEECH off goes at ~0.3 s.
+    for hold, lo, hi in [(True, 0.65, 1.2), (False, 0.25, 0.6)]:
+        svc = _Driven(lead_s=0.2).at(queued=0.5)
+        svc._hold_on_user_speech = hold
+        t0 = time.monotonic()
+
+        async def drain():
+            async for _ in svc.run_tts("Hello there.", "ctx"):
+                pass
+        task = asyncio.create_task(drain())
+        await asyncio.sleep(0.1)
+        svc._user_quiet.clear()
+        await asyncio.sleep(0.6)
+        svc._user_quiet.set()
+        await asyncio.wait_for(task, 3.0)
+        assert len(svc.submitted) == 1
+        at = svc.submitted[0] - t0
+        assert lo <= at < hi, f"hold={hold}: clause submitted at {at:.2f}s, want {lo}-{hi}"
+    print("  PASS the speech hold applies after the pacing wait; off, it does not hold")
 
 
 def test_eager_policy():
@@ -224,6 +281,7 @@ async def test_pacing_wait_keeps_the_reply_context_alive():
 def test_tts_pacing():
     require_pinned()
     test_auto_lead_target_follows_the_learned_synth_time()
+    test_lead_s_parsing()
     test_eager_policy()
     test_env_choice()
 
@@ -232,6 +290,7 @@ def test_tts_pacing():
         await test_lead_waits_until_the_queue_drains_to_the_target()
         await test_a_long_wait_is_capped()
         await test_barge_in_cancels_a_pacing_wait()
+        await test_speech_hold_follows_the_pacing_wait()
         await test_pacing_wait_keeps_the_reply_context_alive()
     asyncio.run(main())
 
