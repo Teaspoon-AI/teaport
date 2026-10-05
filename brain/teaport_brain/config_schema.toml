@@ -292,7 +292,7 @@ default = "ws://127.0.0.1:8000/v1/tts"
 read = "startup"
 tier = "installer"
 help = "The engine text-to-speech base; the stream URL derives from it."
-source = "engine_tts.py:49"
+source = "engine_tts.py:50"
 
 [[settings]]
 name = "ENGINE_TTS_STREAM_URL"
@@ -303,7 +303,7 @@ default = "<ENGINE_TTS_URL base>/v1/audio/speech/stream"
 read = "startup"
 tier = "installer"
 help = "Only set to override the derivation from ENGINE_TTS_URL."
-source = "engine_tts.py:50"
+source = "engine_tts.py:51"
 
 [[settings]]
 name = "TTS_VOICE"
@@ -337,7 +337,7 @@ default = 20
 read = "startup"
 tier = "tuning"
 help = "Per-request receive timeout on the TTS stream. A clause synthesizes in ~0.2–0.5 s; 20 s covers a stuck engine without hanging a reply."
-source = "engine_tts.py:51"
+source = "engine_tts.py:52"
 
 [[settings]]
 name = "TTS_CONNECT_RETRIES"
@@ -350,7 +350,7 @@ read = "startup"
 tier = "tuning"
 help = "Connect attempts while the engine drains synth a barge-in abandoned (~1.5 s on an Orin Nano). Measured: 0/3 clauses survive with one attempt, 3/3 with three."
 note = "The code clamps to at least 1; 0 or 1 both mean a single attempt."
-source = "engine_tts.py:67"
+source = "engine_tts.py:68"
 
 [[settings]]
 name = "TTS_CONNECT_BACKOFF"
@@ -363,7 +363,7 @@ default = 0.6
 read = "startup"
 tier = "tuning"
 help = "Gap between those connect attempts."
-source = "engine_tts.py:68"
+source = "engine_tts.py:69"
 
 [[settings]]
 name = "TTS_STOP_FRAME_TIMEOUT_S"
@@ -376,7 +376,7 @@ default = 15
 read = "startup"
 tier = "tuning"
 help = "Pipecat's stop-frame timeout. Its 3 s default trips in normal CPU-backend operation; 15 s covers the worst cap-sized chunk at CPU RTF ~0.6."
-source = "engine_tts.py:93"
+source = "engine_tts.py:94"
 
 [[settings]]
 name = "TEAPORT_STT_BACKEND"
@@ -438,7 +438,7 @@ default = 80
 read = "startup"
 tier = "tuning"
 help = "A sentence longer than this is split at clause boundaries before synthesis; first audio scales with the chunk's length, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it, on the 2026-09 engine and pre-#14 brain). 0 disables the split."
-source = "engine_tts.py:132"
+source = "engine_tts.py:133"
 
 [[settings]]
 name = "TTS_FIRST_CLAUSE_CHARS"
@@ -451,7 +451,7 @@ default = 32
 read = "startup"
 tier = "tuning"
 help = "Size of the first chunk — the one the caller waits on."
-source = "engine_tts.py:114"
+source = "engine_tts.py:115"
 
 [[settings]]
 name = "TTS_CLAUSE_GROWTH"
@@ -464,7 +464,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "Each chunk may grow this many times the previous. Must stay below 1/RTF (~1.67 at the measured CPU RTF 0.6) or a chunk's synth outruns the previous chunk's playout and playback stalls at the seam."
-source = "engine_tts.py:119"
+source = "engine_tts.py:120"
 
 [[settings]]
 name = "TTS_CLAUSE_CAP"
@@ -477,7 +477,7 @@ default = 200
 read = "startup"
 tier = "tuning"
 help = "The largest ramped chunk."
-source = "engine_tts.py:120"
+source = "engine_tts.py:121"
 
 [[settings]]
 name = "TTS_CLAUSE_HARD_MAX"
@@ -491,7 +491,7 @@ default = 350
 read = "startup"
 tier = "tuning"
 help = "Last-resort mid-sentence word break so a run-on cannot overflow the engine's ~512-token utterance limit and crash the synth."
-source = "engine_tts.py:124"
+source = "engine_tts.py:125"
 
 [[settings]]
 name = "TTS_SEAM_KEEP_LEAD"
@@ -504,7 +504,7 @@ default = 0.05
 read = "startup"
 tier = "tuning"
 help = "Near-silence kept before a chunk's first sound."
-source = "engine_tts.py:133"
+source = "engine_tts.py:134"
 
 [[settings]]
 name = "TTS_SEAM_KEEP_TRAIL"
@@ -517,7 +517,7 @@ default = 0.25
 read = "startup"
 tier = "tuning"
 help = "Near-silence kept after a chunk's last sound. With the lead this lands a seam near a sentence's natural ~320 ms comma pause instead of the ~793 ms a naive concat gives."
-source = "engine_tts.py:134"
+source = "engine_tts.py:135"
 
 [[settings]]
 name = "TTS_STREAM_AUDIO"
@@ -528,7 +528,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Play each engine audio chunk as it arrives (first audio sooner). Off buffers each sentence to its end, as before #14, and tells the engine to skip its eager prefix. Turn it off on a CPU-only engine or wherever synthesis runs slower than playout, where the early first block plays out before the rest of the sentence arrives and leaves a gap mid-sentence; the journal logs each such gap as \"TTS stream underrun\"."
-source = "engine_tts.py:144"
+source = "engine_tts.py:145"
 
 [[settings]]
 name = "TTS_USER_SPEECH_HOLD_MAX_S"
@@ -541,7 +541,54 @@ default = 3.0
 read = "startup"
 tier = "tuning"
 help = "While VAD says the user is speaking, the next clause is held back to free the GPU for barge-in transcription. This caps the hold so sustained noise cannot stall the reply."
-source = "engine_tts.py:160"
+source = "engine_tts.py:161"
+
+[[settings]]
+name = "TTS_HOLD_ON_USER_SPEECH"
+store = "brain_env"
+group = "tts_chunking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Hold the next clause while VAD hears the user, so STT gets the GPU (capped by TTS_USER_SPEECH_HOLD_MAX_S)."
+source = "engine_tts.py:162"
+
+[[settings]]
+name = "TTS_PACING"
+store = "brain_env"
+group = "tts_chunking"
+type = "enum"
+values = ["greedy", "lead"]
+default = "greedy"
+read = "startup"
+tier = "tuning"
+help = "greedy submits each clause as soon as the previous one is synthesized. lead holds it until less than TTS_LEAD_S of synthesized audio is still unplayed, so the GPU idles for STT through most of the playout and a barge-in discards less synthesis."
+note = "Measured 2026-10-04 on the appliance and an Orin NX (80 barge-ins each): no change in barge-in latency, since synthesis now runs ~30x real time; an interrupted reply discards ~3-5 s of synthesis instead of ~15-45 s."
+source = "engine_tts.py:196"
+
+[[settings]]
+name = "TTS_LEAD_S"
+store = "brain_env"
+group = "tts_chunking"
+type = "string"
+default = "auto"
+read = "startup"
+tier = "tuning"
+help = "With TTS_PACING=lead: seconds of unplayed audio to keep queued, or auto for max(1.5 s, 2x the next clause's synth time learned this session)."
+source = "engine_tts.py:197"
+
+[[settings]]
+name = "TTS_EAGER"
+store = "brain_env"
+group = "tts_chunking"
+type = "enum"
+values = ["always", "first", "low_lead", "never"]
+default = "always"
+read = "startup"
+tier = "tuning"
+help = "Which clauses ask the engine for its eager prefix (an earlier first block, ~10% more synthesis): always, each reply's first clause, any clause submitted with less audio queued ahead of it than its own synth time (low_lead), or never. Ignored with TTS_STREAM_AUDIO off, which never asks."
+source = "engine_tts.py:211"
 
 [[settings]]
 name = "TTS_CAPTION_LEAD_SECS"

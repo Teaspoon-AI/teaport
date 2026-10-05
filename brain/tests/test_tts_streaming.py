@@ -168,7 +168,7 @@ class _Recorder(EngineTTSService):
     async def add_word_timestamps(self, word_times, context_id=None, **kw):
         self.placed.append((self.frames_out, list(word_times)))
 
-    async def _synth_text(self, text):
+    async def _synth_text(self, text, eager=True):
         try:
             await asyncio.sleep(0)  # the real stream awaits its engine connect first
             for ev in self.script[text]:

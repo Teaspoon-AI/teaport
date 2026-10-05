@@ -70,7 +70,7 @@ AUDIO_SECS = 0.6            # the stubbed clip; short, so the run is quick
 DEADLINE_SECS = BOT_VAD_STOP_FALLBACK_SECS + 3.0   # room for the fallback AND slack
 
 
-async def _fake_segments(text: str):
+async def _fake_segments(text: str, eager: bool = True):
     """What _synth_text streams for one clause: a tone (not silence, so the seam trim
     keeps it whole) and per-word start times spread over the clip."""
     n = int(AUDIO_SECS * _SAMPLE_RATE)
