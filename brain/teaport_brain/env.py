@@ -64,6 +64,18 @@ def env_num(name: str, default, cast):
         return cast(default)
 
 
+def env_choice(name: str, default: str, choices) -> str:
+    """Read an enum knob (case-insensitive). Empty/unset -> `default`; a value outside
+    `choices` warns and falls back, for the same import-time reason as env_num."""
+    raw = (os.getenv(name) or "").strip().lower()
+    if not raw:
+        return default
+    if raw in choices:
+        return raw
+    logger.warning(f"{name}={raw!r} is not one of {'/'.join(choices)}; using default {default!r}")
+    return default
+
+
 def env_json(name: str, default=None):
     """Read a JSON-valued knob, warning and falling back rather than raising.
 

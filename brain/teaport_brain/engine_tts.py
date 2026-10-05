@@ -34,7 +34,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.env import env_choice, env_flag, env_num
 from teaport_brain.tts_text import split_clauses_ramp
 
 # TEAPORT_TRACE=1 keeps the [WTS] word-timestamp traces (debug aid for the
@@ -158,6 +158,48 @@ _MAX_CTX_TALLIES = 8
 # sustained non-barge speech/noise can't stall the reply; the clause-ramp's
 # synthesized lead over playout absorbs a capped hold without an audible gap.
 _USER_SPEECH_HOLD_MAX_S = env_num("TTS_USER_SPEECH_HOLD_MAX_S", "3.0", float)
+_HOLD_ON_USER_SPEECH = env_flag("TTS_HOLD_ON_USER_SPEECH", True)
+
+# Synthesis pacing. "greedy" submits each clause as soon as the previous one is
+# synthesized, so a reply is on the GPU in one burst right after it starts playing,
+# and a barge-in throws away everything synthesized past the cut. "lead" holds the
+# next clause until the audio emitted but not yet played (_play_end, see
+# _note_playout) drops below TTS_LEAD_S, so a barge-in discards at most about one
+# lead of synthesis. "auto" sizes the lead from the next clause:
+# _LEAD_AUTO_SYNTH_MULT x its estimated synth time (learned per session), never under
+# _LEAD_AUTO_FLOOR_S, so a slow engine gets a longer lead before it starves playout.
+# _PACE_MAX_WAIT_S caps one clause's wait. Measured 2026-10-04 (appliance with the
+# live LLM, and an Orin NX with a fixed reply; 80 barge-ins each, 2x2 with
+# VOX_STT_STREAM_PRIORITY): barge-in latency did not move (onset -> cut ~1.9 s in
+# every arm), because synthesis now runs ~30x real time and greedy's burst barely
+# overlaps STT; an interrupted reply discarded ~3-5 s of synthesis instead of
+# ~15-45 s. Hence off by default: it saves GPU work, not latency, on this hardware.
+_PACING = env_choice("TTS_PACING", "greedy", ("lead", "greedy"))
+_LEAD_S_RAW = (os.getenv("TTS_LEAD_S") or "").strip().lower()
+_LEAD_S = None if _LEAD_S_RAW in ("", "auto") else max(0.0, env_num("TTS_LEAD_S", "1.5", float))
+_LEAD_AUTO_FLOOR_S = 1.5
+_LEAD_AUTO_SYNTH_MULT = 2.0
+_PACE_MAX_WAIT_S = 30.0
+
+# Which clauses ask the engine for its eager prefix (session.config "eager"), which
+# only buys early audio, at ~10% more synthesis (measured on the box). With
+# TTS_STREAM_AUDIO off no clause does.
+#   always   every clause (the brain's behaviour before this knob)
+#   first    each reply's first clause
+#   low_lead a clause submitted with less audio queued ahead of it than its own
+#            estimated synth time: a reply's opening after silence, or after an
+#            underrun; not one queued behind audio still playing
+#   never    no clause
+_EAGER = env_choice("TTS_EAGER", "always", ("always", "first", "low_lead", "never"))
+
+# Starting estimates for the per-session EWMAs behind "auto" lead and "low_lead"
+# eager: speech runs ~15 chars/s, and the engine synthesizes at RTF ~0.03-0.04
+# (measured 2026-10-04: a 120-char clause, 9.1 s of audio, in 0.30 s on the
+# appliance). 0.1 leaves margin for in-call load, so the first clauses err toward a
+# long lead / eager on; a slower engine raises the estimate within a few clauses.
+_SECS_PER_CHAR_SEED = 0.065
+_RTF_SEED = 0.1
+_EWMA_ALPHA = 0.3
 
 
 # "Sound", for the seam trim, is above max(1% of the peak heard so far, this floor). The
@@ -370,6 +412,12 @@ class EngineTTSService(TTSService):
         self._user_quiet = asyncio.Event()
         self._user_quiet.set()
         self._speech_hold_max_s = _USER_SPEECH_HOLD_MAX_S
+        self._hold_on_user_speech = _HOLD_ON_USER_SPEECH
+        self._pacing, self._lead_s, self._eager = _PACING, _LEAD_S, _EAGER
+        # Per-session estimates of a clause's audio length and synth time (see
+        # _est_synth_secs), learned from every clause this session synthesizes.
+        self._secs_per_char = _SECS_PER_CHAR_SEED
+        self._rtf = _RTF_SEED
         # Resolve synthesis language from the explicit request (OpenClaw-driven) or the
         # voice's language family. Populating TTSSettings here also satisfies pipecat's
         # validate_complete() — without it the service logs a NOT_GIVEN warning each start.
@@ -462,6 +510,58 @@ class EngineTTSService(TTSService):
         logger.debug(f"{self}: synthesis resumed after "
                      f"{time.monotonic() - held:.2f}s hold")
 
+    def _lead_secs(self) -> float:
+        """Audio emitted that has not played yet, across contexts (_note_playout's model)."""
+        return max(0.0, self._play_end - time.monotonic()) if self._play_end else 0.0
+
+    def _est_synth_secs(self, clause: str) -> float:
+        return len(clause) * self._secs_per_char * self._rtf
+
+    def _lead_target(self, clause: str) -> float:
+        if self._lead_s is not None:
+            return self._lead_s
+        return max(_LEAD_AUTO_FLOOR_S, _LEAD_AUTO_SYNTH_MULT * self._est_synth_secs(clause))
+
+    def _want_eager(self, clause: str, context_id: str) -> bool:
+        if not _STREAM_AUDIO or self._eager == "never":
+            return False
+        if self._eager == "always":
+            return True
+        if self._eager == "first":
+            return self._ctx_audio_secs.get(context_id, 0.0) == 0.0
+        return self._lead_secs() < self._est_synth_secs(clause)
+
+    async def _pace(self, clause: str, context_id: str) -> float:
+        """"lead" pacing: wait until less than the lead target is queued ahead of
+        playout. Returns the seconds waited. The reply's audio context sees no frame
+        while we wait, so refresh it at least twice per stop_frame_timeout_s: its
+        watchdog would otherwise close it mid-wait and end the reply early."""
+        if self._pacing != "lead":
+            return 0.0
+        target = self._lead_target(clause)
+        step = min(1.0, self._stop_frame_timeout_s / 2)
+        t0 = time.monotonic()
+        while True:
+            lead = self._lead_secs()
+            if lead < target:
+                break
+            if time.monotonic() - t0 >= _PACE_MAX_WAIT_S:
+                logger.warning(f"{self}: pacing wait cap ({_PACE_MAX_WAIT_S:.0f}s) reached "
+                               f"with {lead:.1f}s queued — submitting anyway")
+                break
+            self._refresh_audio_context(context_id)
+            await asyncio.sleep(min(lead - target + 0.01, step))
+        return time.monotonic() - t0
+
+    def _learn(self, clause: str, audio_secs: float, synth_secs: float):
+        """Fold one clause's measured audio length and synth time into the estimates.
+        A clause under 0.3 s of audio is too short to say anything about either."""
+        if audio_secs < 0.3 or not clause:
+            return
+        a = _EWMA_ALPHA
+        self._secs_per_char += a * (audio_secs / len(clause) - self._secs_per_char)
+        self._rtf += a * (synth_secs / audio_secs - self._rtf)
+
     @property
     def espeak_language(self) -> str:
         """The language the current voice implies ('en-us', 'es', ...). Public accessor
@@ -514,25 +614,38 @@ class EngineTTSService(TTSService):
         emitted_audio = False
         emitted_secs = 0.0
         failed_clauses = 0
+        paced_secs = synth_secs = 0.0
         # No interrupted-context bookkeeping here: a barge-in cancels the process
         # task this generator runs on (pipecat 1.5.0 InterruptionFrame handling),
         # so an in-flight run_tts dies at its next await — measured 255 live
         # interruptions with zero survivors before the old guard was removed.
+        # That includes a pacing or speech-hold wait.
         for clause in clauses:
             # User speaking → hold this clause so the GPU serves STT (a maybe-barge
             # needs its words transcribed NOW); resume on VAD-stop or the cap.
-            await self._hold_for_user_speech()
+            if self._hold_on_user_speech:
+                await self._hold_for_user_speech()
+            paced_secs += await self._pace(clause, context_id)
+            eager = self._want_eager(clause, context_id)
+            clause_secs, t0 = 0.0, time.monotonic()
             try:
                 # aclosing: any early exit closes the clause's stream now, not at GC. That
                 # releases the brain's socket; the engine still finishes the sentence it
                 # was synthesizing (~1.5 s) before its session slot frees, which is what
                 # _connect_stream's retry rides out.
-                async with aclosing(self._speak_clause(clause, context_id)) as frames:
+                async with aclosing(self._speak_clause(clause, context_id, eager)) as frames:
                     async for frame in frames:
                         yield frame
                         emitted_audio = True
-                        emitted_secs += frame.num_frames / self.sample_rate
+                        clause_secs += frame.num_frames / self.sample_rate
+                emitted_secs += clause_secs
+                wall = time.monotonic() - t0
+                synth_secs += wall
+                self._learn(clause, clause_secs, wall)
+                logger.debug(f"{self}: clause {len(clause)} chars → {clause_secs:.2f}s audio "
+                             f"in {wall:.2f}s (eager={eager}, est rtf {self._rtf:.3f})")
             except _EngineError as e:
+                emitted_secs += clause_secs
                 # Skip the rest of this clause but keep going — one bad chunk shouldn't
                 # abort the whole reply mid-sentence and leave the user hanging ("why did
                 # you stop?"). hard_max should prevent the over-length case upstream.
@@ -548,7 +661,8 @@ class EngineTTSService(TTSService):
                 continue
         # Playout forensics: which utterance emitted how much audio, into which
         # context, and when relative to barge-ins (the stale-speech bug class).
-        logger.debug(f"{self}: run_tts done — {emitted_secs:.1f}s audio "
+        logger.debug(f"{self}: run_tts done — {emitted_secs:.1f}s audio, "
+                     f"{synth_secs:.2f}s synth, {paced_secs:.2f}s paced "
                      f"ctx={str(context_id)[:8]} [{text[:36]}…]")
         if failed_clauses and not emitted_audio:
             # EVERY clause failed (CUDA OOM, unsupported language, corrupted engine):
@@ -556,7 +670,7 @@ class EngineTTSService(TTSService):
             # pipeline/user knows the voice is down.
             yield ErrorFrame(error=f"tts: all {failed_clauses} clause(s) failed to synthesize")
 
-    async def _speak_clause(self, clause: str, context_id: str):
+    async def _speak_clause(self, clause: str, context_id: str, eager: bool | None = None):
         """One clause's audio frames, each yielded as the engine streams it (seam-trimmed),
         each preceded by the word timestamps of the words that start in it.
 
@@ -578,7 +692,7 @@ class EngineTTSService(TTSService):
             return self._ctx_audio_secs.get(context_id, 0.0)
 
         trim, sent, words, chunked = _SeamTrim(self.sample_rate), 0.0, [], False
-        async with aclosing(self._synth_text(clause)) as stream:
+        async with aclosing(self._synth_text(clause, eager=eager)) as stream:
             async for event in stream:
                 if event[0] == "audio":
                     audio, chunk_words = trim.feed(event[1]), event[2]
@@ -704,6 +818,11 @@ class EngineTTSService(TTSService):
         # reached the TTS (fresh context dicts, word-timestamp reset) and when.
         logger.debug(f"{self}: interruption reached TTS "
                      f"(turn_ctx={str(self._turn_context_id)[:8]})")
+        # How much emitted audio the barge-in threw away — the synthesis pacing exists
+        # to avoid. Read before _play_end is cleared below.
+        if self._lead_secs() > 0.0:
+            logger.info(f"{self}: barge-in discarded {self._lead_secs():.1f}s of "
+                        f"synthesized audio (pacing={self._pacing})")
         self._interrupted = True  # the base resets word timestamps below: no carry
         self._play_end = 0.0      # the flushed audio is not going to play
         await super()._handle_interruption(frame, direction)
@@ -734,7 +853,7 @@ class EngineTTSService(TTSService):
                              f"likely full — retry {attempt + 1}/{_STREAM_CONNECT_RETRIES - 1}")
                 await asyncio.sleep(_STREAM_CONNECT_BACKOFF * (attempt + 1))
 
-    async def _synth_text(self, text: str):
+    async def _synth_text(self, text: str, eager: bool | None = None):
         """Synthesize via the engine's vLLM-Omni text-in stream (/v1/audio/speech/stream).
         The ENGINE does G2P + number normalization + word timing — the brain sends raw text,
         no phonemize. One WS per call (the stream is one-shot per connection:
@@ -822,7 +941,7 @@ class EngineTTSService(TTSService):
             await send({"type": "session.config", "voice": self._voice,
                         "response_format": "pcm", "stream_audio": True,
                         "word_timestamps": True, "chunk_timestamps": True,
-                        "eager": _STREAM_AUDIO})
+                        "eager": _STREAM_AUDIO if eager is None else eager})
             await send({"type": "input.text", "text": text})
             await send({"type": "input.done"})
             while True:

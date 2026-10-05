@@ -544,6 +544,53 @@ help = "While VAD says the user is speaking, the next clause is held back to fre
 source = "engine_tts.py:160"
 
 [[settings]]
+name = "TTS_HOLD_ON_USER_SPEECH"
+store = "brain_env"
+group = "tts_chunking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Hold the next clause while VAD hears the user, so STT gets the GPU (capped by TTS_USER_SPEECH_HOLD_MAX_S)."
+source = "engine_tts.py:161"
+
+[[settings]]
+name = "TTS_PACING"
+store = "brain_env"
+group = "tts_chunking"
+type = "enum"
+values = ["greedy", "lead"]
+default = "greedy"
+read = "startup"
+tier = "tuning"
+help = "greedy submits each clause as soon as the previous one is synthesized. lead holds it until less than TTS_LEAD_S of synthesized audio is still unplayed, so the GPU idles for STT through most of the playout and a barge-in discards less synthesis."
+note = "Measured 2026-10-04 on the appliance and an Orin NX (80 barge-ins each): no change in barge-in latency, since synthesis now runs ~30x real time; an interrupted reply discards ~3-5 s of synthesis instead of ~15-45 s."
+source = "engine_tts.py:177"
+
+[[settings]]
+name = "TTS_LEAD_S"
+store = "brain_env"
+group = "tts_chunking"
+type = "string"
+default = "auto"
+read = "startup"
+tier = "tuning"
+help = "With TTS_PACING=lead: seconds of unplayed audio to keep queued, or auto for max(1.5 s, 2x the next clause's synth time learned this session)."
+source = "engine_tts.py:178"
+
+[[settings]]
+name = "TTS_EAGER"
+store = "brain_env"
+group = "tts_chunking"
+type = "enum"
+values = ["always", "first", "low_lead", "never"]
+default = "always"
+read = "startup"
+tier = "tuning"
+help = "Which clauses ask the engine for its eager prefix (an earlier first block, ~10% more synthesis): always, each reply's first clause, any clause submitted with less audio queued ahead of it than its own synth time (low_lead), or never. Ignored with TTS_STREAM_AUDIO off, which never asks."
+source = "engine_tts.py:193"
+
+[[settings]]
 name = "TTS_CAPTION_LEAD_SECS"
 store = "brain_env"
 group = "tts_chunking"
