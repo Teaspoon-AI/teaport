@@ -27,6 +27,8 @@ from loguru import logger
 from pipecat.frames.frames import Frame, LLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
+
 HEARD_MODE = os.getenv("HEARD_MODE", "truncate")  # truncate | note
 
 
@@ -79,7 +81,11 @@ def drop_from_context(context, doomed) -> None:
 class HeardContextCorrector(FrameProcessor):
     """Make the LLM's context reflect only what the user actually heard."""
 
-    def __init__(self, ledger, context, mode=None):
+    # Class-level defaults as well: the hermetic tests build one with __new__.
+    _merge = None
+    _last_user = None
+
+    def __init__(self, ledger, context, mode=None, merge=None):
         super().__init__()
         self._ledger = ledger
         self._context = context
@@ -88,6 +94,11 @@ class HeardContextCorrector(FrameProcessor):
         # How long the context was at the previous reconcile. The cut turn's spoken
         # message can only be among the messages added since — see _truncate.
         self._mark = 0
+        # reply_hold.TurnMerge: set when the reply to the previous user turn was dropped
+        # before any of it played, so the turn committed now finishes that one. The
+        # user message at the tail of the previous reconcile is the one it finishes.
+        self._merge = merge
+        self._last_user = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -105,7 +116,37 @@ class HeardContextCorrector(FrameProcessor):
             else:
                 self._truncate(u, start)
         self._done = len(self._ledger.events)
-        self._mark = len(self._context.get_messages())
+        # After the truncation: a reply cut at 0% that pipecat did commit sits between
+        # the two user messages until it is removed above.
+        if self._merge is not None and self._merge.take():
+            self._merge_tail()
+        msgs = self._context.get_messages()
+        self._last_user = msgs[-1] if msgs and msgs[-1].get("role") == "user" else None
+        self._mark = len(msgs)
+
+    def _merge_tail(self):
+        """Fold the user message just committed into the one before it.
+
+        Asked for by reply_hold.ReplyHoldGate when the reply to the previous user turn
+        was dropped before a word of it played: the caller was not answered, they kept
+        talking, and what they said is the rest of that turn. Left as two messages the
+        model reads a fragment and a separate continuation -- and has been seen to answer
+        the fragment. Only when the two are adjacent and both the caller's own words: a
+        tool call in between, or an injected order (SYSTEM_NOTICE_TAG), leaves them be."""
+        msgs = self._context.get_messages()
+        prev = self._last_user
+        if (len(msgs) >= 2 and prev is not None and msgs[-2] is prev
+                and msgs[-1].get("role") == "user"):
+            first, rest = _msg_text(prev).strip(), _msg_text(msgs[-1]).strip()
+            if (first and rest and not first.startswith(SYSTEM_NOTICE_TAG)
+                    and not rest.startswith(SYSTEM_NOTICE_TAG)):
+                _set_msg_text(prev, f"{first} {rest}")
+                self.drop_messages([msgs[-1]])
+                logger.info(f"HeardCorrector[merge]: unanswered turn + its continuation "
+                            f"-> one user turn …{_msg_text(prev)[-60:]!r}")
+                return
+        logger.info("HeardCorrector[merge]: the unanswered turn is not the message "
+                    "before this one; left as two turns")
 
     def drop_messages(self, doomed):
         """Remove `doomed` (matched by identity) from the context, keeping _mark true.

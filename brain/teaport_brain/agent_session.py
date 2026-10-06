@@ -61,7 +61,9 @@ from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard
 from teaport_brain import agent_backend
 from teaport_brain import raw_llm_capture
+from teaport_brain import reply_hold
 from teaport_brain import speculate
+from teaport_brain.speech_onset import SpeechOnsetMixin
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.env import env_num
@@ -100,14 +102,17 @@ def _vad_cls():
     # with the debug analyzer instead of excluding it — the two answer different
     # questions and the session that needs one usually wants the other.
     if VAD_SAMPLE_RATE == 8000:
-        return type("NarrowbandSileroVAD", (NarrowbandSileroMixin, base), {})
-    if VAD_SAMPLE_RATE != 16000:
+        base = type("NarrowbandSileroVAD", (NarrowbandSileroMixin, base), {})
+    elif VAD_SAMPLE_RATE != 16000:
         # Only 8000 selects the narrowband mixin; 16000 is the stock rate. Anything
         # else is a typo (a bare 800, say) that would otherwise silently run the stock
         # analyzer with no hint the setting did nothing.
         logger.warning(f"VAD_SAMPLE_RATE={VAD_SAMPLE_RATE} is neither 16000 (stock) nor "
                        "8000 (narrowband); using the stock 16 kHz analyzer")
-    return base
+    # Outermost, so it reads the confidence whichever of the above produced it: the
+    # faster speech-onset signal reply_hold.py listens to. It changes nothing the VAD
+    # decides (speech_onset.py).
+    return type(f"Onset{base.__name__}", (SpeechOnsetMixin, base), {})
 
 
 # Agent-first experiment (TEAPORT_AGENT_FIRST=1): the sandboxed OpenClaw agent owns
@@ -779,7 +784,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # transport.output() caches, but naming it says so rather than relying on it.
     transport_output = transport.output()
     ledger = TranscriptLedger(tts=tts, output=transport_output)
-    heard_corrector = HeardContextCorrector(ledger, context)
+    # Holds a fresh reply while the caller is talking over its start, and has the
+    # corrector fold the caller's next turn into the one it then drops (reply_hold.py).
+    turn_merge = reply_hold.TurnMerge() if reply_hold.ENABLED else None
+    reply_gate = reply_hold.ReplyHoldGate(merge=turn_merge) if reply_hold.ENABLED else None
+    heard_corrector = HeardContextCorrector(ledger, context, merge=turn_merge)
     if speculate.ENABLED:
         # Ask the LLM on a final the turn did not conclude on; the service adopts the
         # stream at the commit if the context is still what was asked. The corrector's
@@ -800,6 +809,14 @@ def build_agent_session(transport, *, voice: str | None = None,
                 "wait the speculation would use, so no final lands before the commit and "
                 "it will find nothing to do. Set TEAPORT_STT_COMMIT_ON=vad-stop to use it "
                 "(see speculate.py for the trade)")
+    if reply_gate is not None:
+        vad_analyzer.onset_listeners.append(reply_gate.on_onset)
+
+        @context_aggregator.user().event_handler("on_user_turn_inference_triggered")
+        async def _arm_reply_gate(_aggregator, _strategy):
+            # Every user-turn commit: the reply it asks for is checked before it plays.
+            await reply_gate.arm()
+
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
     # Opt-in live endpointing probe (TEAPORT_ENDPOINT_DEBUG=1): two taps sharing
@@ -871,6 +888,11 @@ def build_agent_session(transport, *, voice: str | None = None,
         # this forwards, so it cleans speech and history in one place.
         LLMTextGuard() if llm_text_guard.ENABLED else None,
         tts,
+        # DIRECTLY below the TTS: the first processor to handle the TTS's frames is
+        # where the ledger charts them, and a held reply must not be charted until it
+        # plays. Everything below it (the taps, the bed, the transport) sees the reply
+        # only once it is going to the caller.
+        reply_gate,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
         # Fill the dead air of a long ask_openclaw consult with a soft typing bed;
