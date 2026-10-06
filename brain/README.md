@@ -21,6 +21,8 @@ harnesses. Some highlights:
 - `services` — the LLM/STT/TTS factories (provider selection reads the env at call time).
 - `endpointing` — the endpointing policy: VAD gates, Smart Turn v3 threshold, barge-in guard.
 - `transcript_ledger` / `heard_context` — heard-grounding: what the user actually *heard*.
+- `reply_hold` / `speech_onset` — hold a fresh reply while the caller is talking again; a
+  faster "speech has begun" read off the VAD's own confidences.
 - `tools` / `openclaw_client` / `memory_recall` — tool calls, memory read/write, consults.
 
 A WebRTC dev-harness entry is deliberately **not** part of this package: it would drag

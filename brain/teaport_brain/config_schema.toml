@@ -292,7 +292,7 @@ default = "ws://127.0.0.1:8000/v1/tts"
 read = "startup"
 tier = "installer"
 help = "The engine text-to-speech base; the stream URL derives from it."
-source = "engine_tts.py:48"
+source = "engine_tts.py:51"
 
 [[settings]]
 name = "ENGINE_TTS_STREAM_URL"
@@ -303,7 +303,7 @@ default = "<ENGINE_TTS_URL base>/v1/audio/speech/stream"
 read = "startup"
 tier = "installer"
 help = "Only set to override the derivation from ENGINE_TTS_URL."
-source = "engine_tts.py:49"
+source = "engine_tts.py:52"
 
 [[settings]]
 name = "TTS_VOICE"
@@ -337,7 +337,7 @@ default = 20
 read = "startup"
 tier = "tuning"
 help = "Per-request receive timeout on the TTS stream. A clause synthesizes in ~0.2–0.5 s; 20 s covers a stuck engine without hanging a reply."
-source = "engine_tts.py:50"
+source = "engine_tts.py:53"
 
 [[settings]]
 name = "TTS_CONNECT_RETRIES"
@@ -350,7 +350,7 @@ read = "startup"
 tier = "tuning"
 help = "Connect attempts while the engine drains synth a barge-in abandoned (~1.5 s on an Orin Nano). Measured: 0/3 clauses survive with one attempt, 3/3 with three."
 note = "The code clamps to at least 1; 0 or 1 both mean a single attempt."
-source = "engine_tts.py:66"
+source = "engine_tts.py:69"
 
 [[settings]]
 name = "TTS_CONNECT_BACKOFF"
@@ -363,7 +363,7 @@ default = 0.6
 read = "startup"
 tier = "tuning"
 help = "Gap between those connect attempts."
-source = "engine_tts.py:67"
+source = "engine_tts.py:70"
 
 [[settings]]
 name = "TTS_STOP_FRAME_TIMEOUT_S"
@@ -376,7 +376,7 @@ default = 15
 read = "startup"
 tier = "tuning"
 help = "Pipecat's stop-frame timeout. Its 3 s default trips in normal CPU-backend operation; 15 s covers the worst cap-sized chunk at CPU RTF ~0.6."
-source = "engine_tts.py:89"
+source = "engine_tts.py:95"
 
 [[settings]]
 name = "TEAPORT_STT_BACKEND"
@@ -437,8 +437,8 @@ min = 0
 default = 80
 read = "startup"
 tier = "tuning"
-help = "A sentence longer than this is split at clause boundaries before synthesis; the engine synthesizes a chunk whole before any of it plays, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it). 0 disables the split."
-source = "engine_tts.py:116"
+help = "A sentence longer than this is split at clause boundaries before synthesis; first audio scales with the chunk's length, so one long sentence is the whole first-audio wait (a 236-char sentence began 4.6 s after the model finished it, on the 2026-09 engine and pre-#14 brain). 0 disables the split."
+source = "engine_tts.py:134"
 
 [[settings]]
 name = "TTS_FIRST_CLAUSE_CHARS"
@@ -451,7 +451,7 @@ default = 32
 read = "startup"
 tier = "tuning"
 help = "Size of the first chunk — the one the caller waits on."
-source = "engine_tts.py:99"
+source = "engine_tts.py:116"
 
 [[settings]]
 name = "TTS_CLAUSE_GROWTH"
@@ -464,7 +464,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "Each chunk may grow this many times the previous. Must stay below 1/RTF (~1.67 at the measured CPU RTF 0.6) or a chunk's synth outruns the previous chunk's playout and playback stalls at the seam."
-source = "engine_tts.py:104"
+source = "engine_tts.py:121"
 
 [[settings]]
 name = "TTS_CLAUSE_CAP"
@@ -477,7 +477,7 @@ default = 200
 read = "startup"
 tier = "tuning"
 help = "The largest ramped chunk."
-source = "engine_tts.py:105"
+source = "engine_tts.py:122"
 
 [[settings]]
 name = "TTS_CLAUSE_HARD_MAX"
@@ -491,7 +491,7 @@ default = 350
 read = "startup"
 tier = "tuning"
 help = "Last-resort mid-sentence word break so a run-on cannot overflow the engine's ~512-token utterance limit and crash the synth."
-source = "engine_tts.py:109"
+source = "engine_tts.py:126"
 
 [[settings]]
 name = "TTS_SEAM_KEEP_LEAD"
@@ -504,7 +504,7 @@ default = 0.05
 read = "startup"
 tier = "tuning"
 help = "Near-silence kept before a chunk's first sound."
-source = "engine_tts.py:117"
+source = "engine_tts.py:135"
 
 [[settings]]
 name = "TTS_SEAM_KEEP_TRAIL"
@@ -517,7 +517,18 @@ default = 0.25
 read = "startup"
 tier = "tuning"
 help = "Near-silence kept after a chunk's last sound. With the lead this lands a seam near a sentence's natural ~320 ms comma pause instead of the ~793 ms a naive concat gives."
-source = "engine_tts.py:118"
+source = "engine_tts.py:136"
+
+[[settings]]
+name = "TTS_STREAM_AUDIO"
+store = "brain_env"
+group = "tts_chunking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Play each engine audio chunk as it arrives (first audio sooner). Off buffers each sentence to its end, as before #14, and tells the engine to skip its eager prefix. Turn it off on a CPU-only engine or wherever synthesis runs slower than playout, where the early first block plays out before the rest of the sentence arrives and leaves a gap mid-sentence; the journal logs each such gap as \"TTS stream underrun\"."
+source = "engine_tts.py:146"
 
 [[settings]]
 name = "TTS_USER_SPEECH_HOLD_MAX_S"
@@ -530,7 +541,54 @@ default = 3.0
 read = "startup"
 tier = "tuning"
 help = "While VAD says the user is speaking, the next clause is held back to free the GPU for barge-in transcription. This caps the hold so sustained noise cannot stall the reply."
-source = "engine_tts.py:129"
+source = "engine_tts.py:162"
+
+[[settings]]
+name = "TTS_HOLD_ON_USER_SPEECH"
+store = "brain_env"
+group = "tts_chunking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Hold the next clause while VAD hears the user, so STT gets the GPU (capped by TTS_USER_SPEECH_HOLD_MAX_S)."
+source = "engine_tts.py:163"
+
+[[settings]]
+name = "TTS_PACING"
+store = "brain_env"
+group = "tts_chunking"
+type = "enum"
+values = ["greedy", "lead"]
+default = "greedy"
+read = "startup"
+tier = "tuning"
+help = "greedy submits each clause as soon as the previous one is synthesized. lead holds it until less than TTS_LEAD_S of synthesized audio is still unplayed, so the GPU idles for STT through most of the playout and a barge-in discards less synthesis."
+note = "Measured 2026-10-04 on the appliance and an Orin NX (80 barge-ins each): no change in barge-in latency, since synthesis now runs ~30x real time; an interrupted reply discards ~3-5 s of synthesis instead of ~15-45 s."
+source = "engine_tts.py:197"
+
+[[settings]]
+name = "TTS_LEAD_S"
+store = "brain_env"
+group = "tts_chunking"
+type = "string"
+default = "auto"
+read = "startup"
+tier = "tuning"
+help = "With TTS_PACING=lead: seconds of unplayed audio to keep queued, or auto for max(1.5 s, 2x the next clause's synth time learned this session)."
+source = "engine_tts.py:198"
+
+[[settings]]
+name = "TTS_EAGER"
+store = "brain_env"
+group = "tts_chunking"
+type = "enum"
+values = ["always", "first", "low_lead", "never"]
+default = "always"
+read = "startup"
+tier = "tuning"
+help = "Which clauses ask the engine for its eager prefix (an earlier first block, ~10% more synthesis): always, each reply's first clause, any clause submitted with less audio queued ahead of it than its own synth time (low_lead), or never. Ignored with TTS_STREAM_AUDIO off, which never asks."
+source = "engine_tts.py:212"
 
 [[settings]]
 name = "TTS_CAPTION_LEAD_SECS"
@@ -543,7 +601,7 @@ default = 0.2
 read = "startup"
 tier = "tuning"
 help = "Caption lead shared by the TTS word timestamps and the heard-word ledger. One knob so the two cannot drift."
-source = "tts_text.py:322"
+source = "tts_text.py:323"
 
 # ---- turn-taking
 
@@ -648,6 +706,105 @@ help = "Transcribed words needed to interrupt the bot. 1 makes every word a barg
 source = "endpointing.py:159"
 
 [[settings]]
+name = "TEAPORT_REPLY_HOLD"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+read = "startup"
+tier = "diag"
+help = "Retired, never shipped in a release: the reply hold is set per front-end by TEAPORT_REPLY_HOLD_SIP and TEAPORT_REPLY_HOLD_TALK. If it is still set, the brain ignores it and logs a warning saying so."
+source = "reply_hold.py:129"
+
+[[settings]]
+name = "TEAPORT_REPLY_HOLD_SIP"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+services = ["teaport-sip-brain"]
+help = "Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed."
+source = "reply_hold.py:127"
+
+[[settings]]
+name = "TEAPORT_REPLY_HOLD_TALK"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = false
+read = "startup"
+tier = "tuning"
+services = ["teaport-brain"]
+help = "The same reply hold for the OpenClaw Talk path. Off until a Talk session has been measured with it: the only measurement so far is a telephony call."
+source = "reply_hold.py:128"
+
+[[settings]]
+name = "TEAPORT_REPLY_HOLD_RELEASE_S"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+default = 1.0
+read = "startup"
+tier = "tuning"
+help = "How long a held reply waits for the caller's words once the line is quiet -- the VAD's stop and the fast onset test's offset, whichever is later -- before it plays anyway. So it is about ENDPOINT_STOP_SECS more than this after the speech ends."
+source = "reply_hold.py:139"
+
+[[settings]]
+name = "TEAPORT_REPLY_HOLD_MAX_S"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+default = 6.0
+read = "startup"
+tier = "tuning"
+help = "The longest a reply is ever held, from the start of the hold, whatever the VAD says. Raised to TEAPORT_REPLY_HOLD_RELEASE_S if set lower."
+source = "reply_hold.py:142"
+
+[[settings]]
+name = "TEAPORT_REPLY_HOLD_ONSET_MAX_S"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+default = 2.5
+read = "startup"
+tier = "tuning"
+help = "The cap for a hold only the fast onset test asked for (no VAD start in it). That test has no volume gate, so steady room noise above its threshold would otherwise hold every reply to TEAPORT_REPLY_HOLD_MAX_S. Never more than that, never less than TEAPORT_REPLY_HOLD_RELEASE_S."
+source = "reply_hold.py:144"
+
+[[settings]]
+name = "TEAPORT_ONSET_CONFIDENCE"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+min = 0
+max = 1
+default = 0.6
+read = "startup"
+tier = "tuning"
+help = "Silero confidence that counts toward the fast speech-onset signal the reply hold uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides."
+source = "speech_onset.py:36"
+
+[[settings]]
+name = "TEAPORT_ONSET_MIN_MS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "ms"
+min = 32
+default = 128
+read = "startup"
+tier = "tuning"
+help = "Consecutive speech at TEAPORT_ONSET_CONFIDENCE that makes an onset (32 ms per Silero chunk, rounded up)."
+source = "speech_onset.py:38"
+
+[[settings]]
 name = "TEAPORT_STRANDED_INTERIM_SECS"
 store = "brain_env"
 group = "turn_taking"
@@ -706,7 +863,7 @@ default = "truncate"
 read = "startup"
 tier = "tuning"
 help = "How the context records a reply the caller only partly heard: truncate it to what was heard, or keep it whole with a note."
-source = "heard_context.py:30"
+source = "heard_context.py:32"
 
 [[settings]]
 name = "TEAPORT_SILENT_TURN_SECS"
@@ -905,7 +1062,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:245"
+source = "agent_session.py:250"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1068,7 +1225,7 @@ read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
 note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
-source = "sip_server.py:135"
+source = "sip_server.py:136"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -1082,7 +1239,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:136"
+source = "sip_server.py:137"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1097,7 +1254,7 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:146"
+source = "sip_server.py:147"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1108,7 +1265,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:552"
+source = "sip_server.py:554"
 
 # ---- diagnostics
 
