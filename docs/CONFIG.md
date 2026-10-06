@@ -252,6 +252,7 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 | `LOCAL_AUDIO_CAPTURE_CHANNEL` | **0** (0–1) | Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam. |
 | `LOCAL_AUDIO_URL` | `ws://127.0.0.1:$BRAIN_PORT/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
 | `LOCAL_AUDIO_FACE_SOCK` | `/run/oled-avatar/face.sock` | The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, one mouth flap per spoken word and the reply text for its mood. No daemon there means no face; nothing else changes. |
+| `LOCAL_AUDIO_FACE_ADVANCE_MS` | **50** ms (0–300) | How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads. |
 
 ## Settings that constrain each other
 

@@ -25,9 +25,12 @@
 # The face tap: when an OLED avatar daemon (github.com/Teaspoon-AI/teaport-oled-avatar,
 # `oled_face.py --serve`) is listening on LOCAL_AUDIO_FACE_SOCK, the bridge drives it
 # from the same /talk events it already sees: the user's transcript (listening,
-# thinking), the played assistant captions (speaking, one mouth flap per word, the
-# reply text for its sentiment mood) and the speaker going quiet (idle). Datagrams are
-# fire-and-forget: no daemon, no face, nothing else changes.
+# thinking), the bot's audio and captions (speaking, the reply text for its sentiment
+# mood) and the speaker going quiet (idle). The mouth follows the AUDIO, not the words:
+# each 20 ms chunk handed to the card carries its loudness, sent as {"mouth": 0..1} at
+# the moment that chunk becomes audible, so the jaw moves on syllables. (Caption words
+# arrive ~150 ms before they are heard, and a per-word flap count can't know a word's
+# length.) Datagrams are fire-and-forget: no daemon, no face, nothing else changes.
 #
 # arecord/aplay (alsa-utils) rather than a Python audio binding: no new dependency in
 # the brain venv, and a dead card is a dead child process we can see and restart.
@@ -41,6 +44,7 @@ import signal
 import socket
 import sys
 import time
+from collections import deque
 
 import numpy as np
 import soxr
@@ -66,14 +70,30 @@ FACE_SOCK = os.getenv("LOCAL_AUDIO_FACE_SOCK", "/run/oled-avatar/face.sock")
 DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audio")
 # The speaker has been quiet this long after a reply: the face goes back to idle.
 FACE_IDLE_SECS = 0.8
+# Send each mouth level this much before its audio is heard, to cover the avatar's own
+# delay (a 30 fps frame plus the I2C write of the panel).
+FACE_ADVANCE_SECS = int(os.getenv("LOCAL_AUDIO_FACE_ADVANCE_MS", "50")) / 1000
+# Chunk loudness -> mouth opening: closed at or below the floor, fully open SPAN dB above.
+MOUTH_FLOOR_DB = -45.0
+MOUTH_SPAN_DB = 25.0
+MOUTH_STEP = 0.05  # smaller changes are not worth a datagram
+
+
+def mouth_level(chunk: bytes) -> float:
+    """Loudness of one chunk of device PCM as a mouth opening, 0 (closed) to 1."""
+    pcm = np.frombuffer(chunk, dtype="<i2").astype(np.float32)
+    if not pcm.any():
+        return 0.0
+    db = 20 * np.log10(np.sqrt(np.mean(pcm * pcm)) / 32768 + 1e-9)
+    return float(min(1.0, max(0.0, (db - MOUTH_FLOOR_DB) / MOUTH_SPAN_DB)))
 
 
 class FaceTap:
     """Conversation events -> the OLED avatar's datagram protocol.
 
-    {"state": idle|listening|thinking|speaking}, {"word": w} (one mouth flap),
-    {"text": t} (VADER mood). States are sent only on change; words are the new ones
-    in each assistant caption, which carries the FULL text so far.
+    {"state": idle|listening|thinking|speaking}, {"mouth": 0..1} (jaw opening, from
+    the played audio), {"text": t} (VADER mood). States are sent only on change, mouth
+    levels only when they move.
     """
 
     def __init__(self, path: str = FACE_SOCK, send=None):
@@ -82,6 +102,7 @@ class FaceTap:
         self._send = send or self._sendto
         self._state = None
         self._caption = ""
+        self._mouth = 0.0
 
     def _sendto(self, data: bytes) -> None:
         try:
@@ -114,19 +135,21 @@ class FaceTap:
         if final:
             if text:
                 self._emit({"text": text})
-            return
-        words = new.split()
-        if not words:
-            return
-        self.state("speaking")
-        for w in words:
-            self._emit({"word": w})
+        elif new.strip():
+            self.state("speaking")
 
     def speaking(self) -> None:
         self.state("speaking")
 
+    def mouth(self, level: float) -> None:
+        level = round(level, 2)
+        if abs(level - self._mouth) >= MOUTH_STEP or (level == 0 and self._mouth):
+            self._mouth = level
+            self._emit({"mouth": level})
+
     def interrupted(self) -> None:
         self._caption = ""
+        self.mouth(0.0)
         self.state("listening")
 
     def quiet(self) -> None:
@@ -165,6 +188,8 @@ class Playback:
         self._chunk_bytes = DEVICE_RATE * CHUNK_MS // 1000 * DEVICE_CHANNELS * 2
         self._start: float | None = None
         self._written_secs = 0.0
+        # (clock time the chunk is heard, its mouth level) for every chunk handed over.
+        self._levels: deque[tuple[float, float]] = deque()
 
     def push(self, relay_audio: bytes) -> None:
         self._pending += relay_to_device(relay_audio, self._resampler)
@@ -194,7 +219,18 @@ class Playback:
                 chunk = bytes(self._pending).ljust(self._chunk_bytes, b"\0")
                 self._pending.clear()
             self._write(chunk)
+            # The card plays its queue back to back from _start, so this chunk is heard
+            # where the timeline has got to (the device's own latency is a few ms).
+            self._levels.append((self._start + self._written_secs, mouth_level(chunk)))
             self._written_secs += CHUNK_MS / 1000
+
+    def mouth_due(self, now: float) -> float | None:
+        """The loudest chunk heard by `now` since the last call, None if none was."""
+        level = None
+        while self._levels and self._levels[0][0] <= now:
+            _, lv = self._levels.popleft()
+            level = lv if level is None else max(level, lv)
+        return level
 
 
 async def _spawn(*argv: str, **kw) -> asyncio.subprocess.Process:
@@ -226,6 +262,9 @@ async def run_session() -> None:
             while True:
                 play.pump()
                 await aplay.stdin.drain()
+                level = play.mouth_due(time.monotonic() + FACE_ADVANCE_SECS)
+                if level is not None:
+                    face.mouth(level)
                 if play.speaking:
                     quiet_since = None
                 else:

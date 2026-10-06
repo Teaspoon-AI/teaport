@@ -91,18 +91,48 @@ def test_face_follows_a_turn():
     face.quiet()
     assert sent == [
         {"state": "listening"}, {"state": "thinking"}, {"state": "speaking"},
-        {"word": "It"}, {"word": "is"}, {"word": "sunny"}, {"word": "today"},
         {"text": "It is sunny today."}, {"state": "idle"},
     ]
+
+
+def test_face_mouth_sends_only_real_moves():
+    face, sent = _face()
+    for lv in (0.0, 0.02, 0.5, 0.52, 0.9, 0.3, 0.0, 0.0):
+        face.mouth(lv)
+    assert sent == [{"mouth": 0.5}, {"mouth": 0.9}, {"mouth": 0.3}, {"mouth": 0.0}]
+    face.mouth(0.7)
+    face.interrupted()                       # barge-in shuts the mouth
+    assert sent[-2:] == [{"mouth": 0.0}, {"state": "listening"}]
+
+
+def test_mouth_level_tracks_loudness():
+    assert la.mouth_level(bytes(1280)) == 0.0
+    quiet = la.mouth_level(np.full(640, 50, "<i2").tobytes())      # ~ -56 dBFS
+    mid = la.mouth_level(np.full(640, 2000, "<i2").tobytes())      # ~ -24 dBFS
+    loud = la.mouth_level(np.full(640, 20000, "<i2").tobytes())    # ~ -4 dBFS
+    assert quiet == 0.0 and 0.6 < mid < 1.0 and loud == 1.0
+
+
+def test_mouth_levels_come_due_when_their_audio_is_heard():
+    play, clock, sunk = _playback()
+    play.push(np.tile(_tone(24000, 0.2), 1).tobytes())   # 200 ms of speech
+    play.pump()                                         # card primed LEAD_SECS ahead
+    assert play.mouth_due(clock.t - 0.001) is None      # nothing heard yet
+    first = play.mouth_due(clock.t)                     # the first chunk plays now
+    assert first is not None and first > 0.5
+    assert play.mouth_due(clock.t) is None              # each level is delivered once
+    clock.t += 0.3
+    play.pump()
+    levels = [play.mouth_due(clock.t + i * 0.02) for i in range(20)]
+    assert 0.0 in levels                                # the tail of silence closes it
 
 
 def test_face_barge_in_and_new_caption():
     face, sent = _face()
     face.assistant("Let me tell you", False)
     face.interrupted()
-    face.assistant("Sure", False)            # a new utterance: not a prefix match
-    assert sent[-2:] == [{"state": "speaking"}, {"word": "Sure"}]
-    assert {"state": "listening"} in sent
+    face.assistant("Sure", False)            # a new utterance: speaking again
+    assert sent == [{"state": "speaking"}, {"state": "listening"}, {"state": "speaking"}]
     face.quiet()
     assert sent[-1] == {"state": "idle"}
     n = len(sent)
@@ -113,4 +143,4 @@ def test_face_barge_in_and_new_caption():
 def test_face_without_a_daemon_is_silent():
     face = la.FaceTap(path="/nonexistent/face.sock")
     face.state("listening")                  # must not raise
-    face.assistant("hello there", False)
+    face.mouth(0.8)
