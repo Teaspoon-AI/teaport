@@ -39,7 +39,8 @@
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
 #   TEAPORT_BRIDGE_SRC     install the bridge from this local dir instead of cloning
 #   TEAPORT_ENABLE_LOCAL_AUDIO=1  enable the opt-in local mic+speaker bridge (USB mic array)
-#   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800)
+#   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800;
+#                                 set, it overrides the device already in local-audio.env)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
 #
 set -euo pipefail
@@ -1616,25 +1617,35 @@ phase_sip() {
 
 # The local audio bridge (opt-in): talk to the agent through a sound card on the box — a
 # USB mic array with a speaker on its jack (brain/teaport_brain/local_audio.py). The unit is
-# always laid down but INERT (ConditionPathExists on local-audio.env). TEAPORT_ENABLE_LOCAL_AUDIO=1
-# seeds that file and enables it; once the file exists a repair keeps it on and restarts it
-# onto the new brain venv. Turning it off: systemctl disable --now teaport-local-audio.
+# always laid down but INERT (ConditionPathExists on local-audio.env). Only
+# TEAPORT_ENABLE_LOCAL_AUDIO=1 seeds that file and enables the unit. A repair without it
+# leaves the enabled state alone: an enabled bridge is restarted onto the new brain venv,
+# and one the operator turned off (systemctl disable --now teaport-local-audio) stays off.
 phase_local_audio() {
   render_unit teaport-local-audio.service.in teaport-local-audio.service
   SUDO systemctl daemon-reload
-  if [ "${TEAPORT_ENABLE_LOCAL_AUDIO:-0}" != 1 ] && [ ! -f "$ETC/local-audio.env" ]; then
-    log "local audio: not configured — skipped (TEAPORT_ENABLE_LOCAL_AUDIO=1 to talk through a USB mic array)"
+  if [ "${TEAPORT_ENABLE_LOCAL_AUDIO:-0}" != 1 ]; then
+    if systemctl is-enabled --quiet teaport-local-audio.service 2>/dev/null; then
+      log "local audio: on — restarting it onto the new brain"
+      SUDO systemctl restart teaport-local-audio.service \
+        || warn "teaport-local-audio did not restart — journalctl -u teaport-local-audio -n 30"
+    else
+      log "local audio: not enabled — skipped (TEAPORT_ENABLE_LOCAL_AUDIO=1 to talk through a USB mic array)"
+    fi
     return 0
   fi
   have arecord && have aplay || die "local audio needs alsa-utils (arecord/aplay): sudo apt install alsa-utils"
   log "local audio: enable (sound card -> brain /talk)"
-  # Seeds, so a device or channel changed by hand survives a repair.
-  write_env "$ETC/local-audio.env" \
-    "?LOCAL_AUDIO_DEVICE=${TEAPORT_LOCAL_AUDIO_DEVICE:-hw:CARD=Array,DEV=0}" \
-    "?LOCAL_AUDIO_CAPTURE_CHANNEL=0"
+  # The default device is a seed, so a device changed by hand or on the config page
+  # survives a repair; one named in TEAPORT_LOCAL_AUDIO_DEVICE is an explicit answer and wins.
+  local device="?LOCAL_AUDIO_DEVICE=hw:CARD=Array,DEV=0"
+  if [ -n "${TEAPORT_LOCAL_AUDIO_DEVICE:-}" ]; then device="LOCAL_AUDIO_DEVICE=$TEAPORT_LOCAL_AUDIO_DEVICE"; fi
+  write_env "$ETC/local-audio.env" "$device" "?LOCAL_AUDIO_CAPTURE_CHANNEL=0"
   SUDO systemctl enable teaport-local-audio.service
+  # The unit does not fail on a missing card (the bridge retries the card itself): look
+  # at its log for "card ready".
   SUDO systemctl restart teaport-local-audio.service \
-    || warn "teaport-local-audio did not start — is the card plugged in? journalctl -u teaport-local-audio -n 30"
+    || warn "teaport-local-audio did not start — journalctl -u teaport-local-audio -n 30"
 }
 
 phase_verify() {
