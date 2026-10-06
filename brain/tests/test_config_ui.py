@@ -128,7 +128,8 @@ def test_get_masks_secrets_and_requires_token():
     assert "sk-hand-added" not in r.text and "OPENAI_API_KEY" not in body["values"]["brain_env"]
     assert body["values"]["brain_env"]["EXPORTED_BY_HAND"] == "2"
     assert body["secrets"]["LLM_API_KEY"] is True  # the env-file copy counts as set
-    assert body["unreadable"] == [] and body["writable"] == ["engine_env", "brain_env", "bridge_env", "local_audio_env"]
+    assert body["unreadable"] == [] and body["writable"] == ["engine_env", "brain_env", "bridge_env"]
+    assert body["absent"] == ["local_audio_env"]  # no local-audio.env: not set up, not writable
     assert body["values"]["brain_env"]["ENDPOINT_STOP_SECS"] == "0.2"
     assert body["values"]["brain_env"]["OPERATOR_ONLY"] == "keep me"
     assert body["secrets"]["OPENCLAW_GATEWAY_TOKEN"] is False  # env unset, file absent, not in the store
@@ -318,11 +319,26 @@ def test_secret_file_pending_for_startup_readers():
     assert "LLM_API_KEY" not in body["pending"].get("teaport-brain", [])
 
 
+def test_opt_in_store_is_never_created_from_the_page():
+    client, etc, home, calls = setup()
+    r = client.put("/api/config", headers=H, json={"store": "local_audio_env", "values": {"LOCAL_AUDIO_CAPTURE_CHANNEL": "1"}})
+    assert r.status_code == 409 and "not set up" in r.text
+    assert calls == [] and not os.path.exists(os.path.join(etc, "local-audio.env"))
+    with open(os.path.join(etc, "local-audio.env"), "w") as f:
+        f.write("LOCAL_AUDIO_DEVICE=hw:CARD=Array,DEV=0\n")
+    body = client.get("/api/config", headers=H).json()
+    assert "local_audio_env" in body["writable"] and body["absent"] == []
+    r = client.put("/api/config", headers=H, json={"store": "local_audio_env", "values": {"LOCAL_AUDIO_CAPTURE_CHANNEL": "1"}})
+    assert r.status_code == 200, r.text
+    assert calls[-1][:2] == ("write", "local-audio.env") and "LOCAL_AUDIO_CAPTURE_CHANNEL=1" in calls[-1][2]
+
+
 def main() -> int:
     for fn in (test_env_roundtrip, test_get_masks_secrets_and_requires_token, test_put_validation,
                test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
                test_apply_helper_backup_ring_spares_operator_backups,
-               test_unreadable_store_is_reported_not_fatal, test_secret_file_pending_for_startup_readers):
+               test_unreadable_store_is_reported_not_fatal, test_secret_file_pending_for_startup_readers,
+               test_opt_in_store_is_never_created_from_the_page):
         fn()
         print("ok", fn.__name__)
     return 0

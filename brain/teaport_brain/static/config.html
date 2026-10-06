@@ -279,7 +279,7 @@
   let rowsByName = {};
   let edits = {};                // name -> text | null (null = unset)
   const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'sip', 'teaport-sip-brain': 'sip-brain', 'teaport-discord-bridge': 'bridge' };
-  const STORE_LABEL = { engine_env: 'engine.env', brain_env: 'brain.env', bridge_env: 'bridge.env', sip_conf: 'teaport-sip.conf', secrets: '~/.config/teaport' };
+  const STORE_LABEL = { engine_env: 'engine.env', brain_env: 'brain.env', bridge_env: 'bridge.env', local_audio_env: 'local-audio.env', sip_conf: 'teaport-sip.conf', secrets: '~/.config/teaport' };
   const FLAG_ON = new Set(['1', 'true', 'yes', 'on', 'y']);
 
   const original = (name) => {
@@ -395,7 +395,8 @@
       const sec = h('section', { class: 'group', id: 'g-' + g.id, 'data-store': store },
         h('div', { class: 'group-head' }, h('h2', {}, g.title), h('span', { class: 'file' }, data.schema.stores[store].path)),
         g.blurb ? h('p', { class: 'group-blurb' }, g.blurb) : null,
-        !writable ? h('p', { class: 'group-blurb' }, 'Read-only here: ', h('span', { class: 'mono' }, data.schema.stores[store].apply)) : null,
+        (data.absent || []).includes(store) ? h('p', { class: 'group-blurb' }, 'Not set up on this box: the installer creates ', h('span', { class: 'mono' }, data.schema.stores[store].path), ' when it is turned on.')
+          : !writable ? h('p', { class: 'group-blurb' }, 'Read-only here: ', h('span', { class: 'mono' }, data.schema.stores[store].apply)) : null,
         ...rows.map((r) => renderRow(r, writable)));
       groupsEl.append(sec);
     }
