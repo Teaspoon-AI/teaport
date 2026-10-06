@@ -39,6 +39,15 @@ downloads. You bring your own Jetson and your own LLM.
   `teaport sip restart`, `teaport sip aec on|off` and `teaport sip disable`. The
   local assistant and the phone line share one speech slot; see **docs/CONFIG.md
   → SIP telephony** for how that works and how to dedicate a box to the phone.
+- **Step 6 (optional) — Talk to the box itself.** Plug a USB mic array into the
+  Jetson (built for the ReSpeaker XVF3800; put the speaker on its 3.5 mm jack so
+  its echo canceller hears what plays) and re-run the installer with
+  `TEAPORT_ENABLE_LOCAL_AUDIO=1`. It enables `teaport-local-audio`, which pipes
+  the card to the assistant and plays the replies back. The device and mic
+  channel live in `/etc/teaport/local-audio.env` (**docs/CONFIG.md → Local audio
+  bridge**). It shares the Talk slot: a browser Talk session and the local mic
+  evict each other. Turn it off with
+  `sudo systemctl disable --now teaport-local-audio`.
 
 ## Updating the brain
 

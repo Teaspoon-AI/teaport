@@ -124,20 +124,18 @@ async def run_session() -> None:
     import websockets
 
     url = URL + (("&" if "?" in URL else "?") + "token=" + GATEWAY_TOKEN if GATEWAY_TOKEN else "")
-    fmt = ["-f", "S16_LE", "-r", str(DEVICE_RATE), "-c", str(DEVICE_CHANNELS), "-D", DEVICE, "-q"]
-    period_us, buffer_us = CHUNK_MS * 1000, int(LEAD_SECS * 1e6) + CHUNK_MS * 2000
+    fmt = ["-f", "S16_LE", "-r", str(DEVICE_RATE), "-c", str(DEVICE_CHANNELS), "-D", DEVICE, "-q", "-t", "raw"]
+    # aplay starts the stream only once its buffer is full, and capture opened before
+    # that fails at once. A buffer smaller than the LEAD_SECS we prime it with means the
+    # first pump() starts playback.
+    period_us, buffer_us = CHUNK_MS * 1000, int(LEAD_SECS * 1e6) - CHUNK_MS * 1000
     async with websockets.connect(url, max_size=None, open_timeout=10) as ws:
         logger.info(f"connected to {URL}")
-        # Playback first: capture only runs once a playback stream is open.
         aplay = await _spawn(
-            "aplay", *fmt, f"--period-time={period_us}", f"--buffer-time={buffer_us}", "-t", "raw",
+            "aplay", *fmt, f"--period-time={period_us}", f"--buffer-time={buffer_us}",
             stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        procs = [aplay]
         play = Playback(aplay.stdin.write)
-        play.pump()  # prime the card before arecord opens
-        arecord = await _spawn(
-            "arecord", *fmt, "-t", "raw",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
-        procs = (aplay, arecord)
 
         async def feed_playback():
             while True:
@@ -145,12 +143,34 @@ async def run_session() -> None:
                 await aplay.stdin.drain()
                 await asyncio.sleep(CHUNK_MS / 2000)
 
+        async def open_capture() -> tuple[asyncio.subprocess.Process, bytes]:
+            # Playback is running by now; give it a moment, and retry a capture that
+            # still lost the race rather than dropping the whole session.
+            for attempt in range(1, 4):
+                await asyncio.sleep(0.2 * attempt)
+                arecord = await _spawn(
+                    "arecord", *fmt, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+                procs.append(arecord)
+                first = await arecord.stdout.read(1)
+                if first:
+                    return arecord, first
+                err = (await arecord.stderr.read()).decode(errors="replace").strip()
+                logger.warning(f"capture did not start (attempt {attempt}): {err or 'no output'}")
+            raise RuntimeError(f"capture on {DEVICE} would not start")
+
         async def send_mic():
             resampler = soxr.ResampleStream(DEVICE_RATE, RELAY_RATE, 1, dtype="int16")
             frame = DEVICE_RATE * CHUNK_MS // 1000 * DEVICE_CHANNELS * 2
+            arecord, buf = await open_capture()
+            logger.info("capture running")
             while True:
-                raw = await arecord.stdout.readexactly(frame)
-                await ws.send(capture_to_relay(raw, resampler, CAPTURE_CHANNEL))
+                try:
+                    buf += await arecord.stdout.readexactly(frame - len(buf))
+                except asyncio.IncompleteReadError:
+                    err = (await arecord.stderr.read()).decode(errors="replace").strip()
+                    raise RuntimeError(f"capture stopped: {err or 'no output'}") from None
+                await ws.send(capture_to_relay(buf, resampler, CAPTURE_CHANNEL))
+                buf = b""
 
         async def receive():
             async for msg in ws:
@@ -175,12 +195,13 @@ async def run_session() -> None:
             raise RuntimeError(f"audio process exited ({rc}): {err or 'no output'}")
 
         tasks = [asyncio.create_task(c) for c in (
-            feed_playback(), send_mic(), receive(), watch(aplay), watch(arecord))]
+            feed_playback(), send_mic(), receive(), watch(aplay))]
         try:
             await next(iter(asyncio.as_completed(tasks)))
         finally:
             for t in tasks:
                 t.cancel()
+            aplay.stdin.close()
             for p in procs:
                 if p.returncode is None:
                     p.terminate()
@@ -213,5 +234,5 @@ async def main() -> None:
 
 if __name__ == "__main__":
     logger.remove()
-    logger.add(sys.stderr, level=os.getenv("LOG_LEVEL", "INFO"))
+    logger.add(sys.stderr, level="INFO")
     asyncio.run(main())

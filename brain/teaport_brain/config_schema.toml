@@ -58,6 +58,12 @@ owner = "installer"
 services = ["teaport-discord-bridge"]
 apply = "systemctl restart teaport-discord-bridge."
 
+[stores.local_audio_env]
+path = "/etc/teaport/local-audio.env"
+owner = "installer+operator"
+services = ["teaport-local-audio"]
+apply = "systemctl restart teaport-local-audio (ends the local session; it redials the brain at once)."
+
 [stores.secrets]
 path = "~/.config/teaport"
 owner = "operator"
@@ -121,6 +127,11 @@ blurb = "Written by `teaport sip configure`; see *SIP telephony (opt-in)* below 
 [[groups]]
 id = "bridge"
 title = "Discord bridge"
+
+[[groups]]
+id = "local_audio"
+title = "Local audio bridge"
+blurb = "Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client, so it and a dashboard Talk session evict each other."
 
 # ================================================================ brain.env
 
@@ -1615,3 +1626,40 @@ kind = "follows"
 lhs = "GATEWAY_TOKEN"
 rhs = []
 message = "GATEWAY_TOKEN is mirrored into the plugin config by install.sh; change both or neither."
+
+# ================================================================ local-audio.env
+
+[[settings]]
+name = "LOCAL_AUDIO_DEVICE"
+store = "local_audio_env"
+group = "local_audio"
+type = "string"
+default = "hw:CARD=Array,DEV=0"
+read = "startup"
+tier = "setup"
+help = "The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others."
+source = "local_audio.py:49"
+
+[[settings]]
+name = "LOCAL_AUDIO_CAPTURE_CHANNEL"
+store = "local_audio_env"
+group = "local_audio"
+type = "int"
+default = 0
+min = 0
+max = 1
+read = "startup"
+tier = "tuning"
+help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
+source = "local_audio.py:50"
+
+[[settings]]
+name = "LOCAL_AUDIO_URL"
+store = "local_audio_env"
+group = "local_audio"
+type = "ws_url"
+default = "ws://127.0.0.1:$BRAIN_PORT/talk"
+read = "startup"
+tier = "tuning"
+help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."
+source = "local_audio.py:52"

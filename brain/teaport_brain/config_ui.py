@@ -60,7 +60,8 @@ SYSTEM_PYTHON = "/usr/bin/python3"
 # install.sh's dry-run transcript). A schema row that is not a secret is shown.
 _SECRET_LOOKING = re.compile(r".*(TOKEN|KEY|SECRET|PASSWORD)$", re.IGNORECASE)
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-STORE_FILES = {"engine_env": "engine.env", "brain_env": "brain.env", "bridge_env": "bridge.env"}
+STORE_FILES = {"engine_env": "engine.env", "brain_env": "brain.env", "bridge_env": "bridge.env",
+               "local_audio_env": "local-audio.env"}
 SIP_CONF = "~/.config/teaport/teaport-sip.conf"
 # What env_flag accepts (pipecat's env_truthy table), for validating flag rows.
 FLAG_WORDS = {"0", "1", "true", "false", "yes", "no", "on", "off", "y", "n"}

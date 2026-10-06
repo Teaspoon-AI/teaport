@@ -38,6 +38,8 @@
 #   TEAPORT_ENABLE_BRIDGE=1      install + enable the opt-in Discord voice bridge
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
 #   TEAPORT_BRIDGE_SRC     install the bridge from this local dir instead of cloning
+#   TEAPORT_ENABLE_LOCAL_AUDIO=1  enable the opt-in local mic+speaker bridge (USB mic array)
+#   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
 #
 set -euo pipefail
@@ -635,6 +637,11 @@ brain_units() {
     SWAP_JUDGE="${SWAP_JUDGE:+$SWAP_JUDGE }teaport-sip-brain.service"; SWAP_ALSO="teaport-sip.service"
   elif systemctl is-enabled --quiet teaport-sip.service 2>/dev/null; then
     warn "teaport-sip is enabled but not running — the phone line is left alone (teaport sip status)"
+  fi
+  # The local audio bridge runs brain code from the venv too, but it is a /talk client, not
+  # a brain: restarted onto the new venv, never judged (a missing card is not a bad brain).
+  if systemctl is-active --quiet teaport-local-audio.service 2>/dev/null; then
+    SWAP_ALSO="${SWAP_ALSO:+$SWAP_ALSO }teaport-local-audio.service"
   fi
 }
 
@@ -1607,6 +1614,29 @@ phase_sip() {
   fi
 }
 
+# The local audio bridge (opt-in): talk to the agent through a sound card on the box — a
+# USB mic array with a speaker on its jack (brain/teaport_brain/local_audio.py). The unit is
+# always laid down but INERT (ConditionPathExists on local-audio.env). TEAPORT_ENABLE_LOCAL_AUDIO=1
+# seeds that file and enables it; once the file exists a repair keeps it on and restarts it
+# onto the new brain venv. Turning it off: systemctl disable --now teaport-local-audio.
+phase_local_audio() {
+  render_unit teaport-local-audio.service.in teaport-local-audio.service
+  SUDO systemctl daemon-reload
+  if [ "${TEAPORT_ENABLE_LOCAL_AUDIO:-0}" != 1 ] && [ ! -f "$ETC/local-audio.env" ]; then
+    log "local audio: not configured — skipped (TEAPORT_ENABLE_LOCAL_AUDIO=1 to talk through a USB mic array)"
+    return 0
+  fi
+  have arecord && have aplay || die "local audio needs alsa-utils (arecord/aplay): sudo apt install alsa-utils"
+  log "local audio: enable (sound card -> brain /talk)"
+  # Seeds, so a device or channel changed by hand survives a repair.
+  write_env "$ETC/local-audio.env" \
+    "?LOCAL_AUDIO_DEVICE=${TEAPORT_LOCAL_AUDIO_DEVICE:-hw:CARD=Array,DEV=0}" \
+    "?LOCAL_AUDIO_CAPTURE_CHANNEL=0"
+  SUDO systemctl enable teaport-local-audio.service
+  SUDO systemctl restart teaport-local-audio.service \
+    || warn "teaport-local-audio did not start — is the card plugged in? journalctl -u teaport-local-audio -n 30"
+}
+
 phase_verify() {
   log "verify"
   if [ "$DRY_RUN" = 1 ]; then log "(dry-run) would check engine :$ENGINE_PORT, brain :$BRAIN_PORT$([ -n "$AGENT_MODE" ] && echo ', front door :443, gateway->brain')"; return; fi
@@ -1734,6 +1764,7 @@ main() {
   phase_services
   phase_frontdoor
   phase_bridge
+  phase_local_audio
   phase_verify
   usage_footer
 }

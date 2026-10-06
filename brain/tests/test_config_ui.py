@@ -128,7 +128,7 @@ def test_get_masks_secrets_and_requires_token():
     assert "sk-hand-added" not in r.text and "OPENAI_API_KEY" not in body["values"]["brain_env"]
     assert body["values"]["brain_env"]["EXPORTED_BY_HAND"] == "2"
     assert body["secrets"]["LLM_API_KEY"] is True  # the env-file copy counts as set
-    assert body["unreadable"] == [] and body["writable"] == ["engine_env", "brain_env", "bridge_env"]
+    assert body["unreadable"] == [] and body["writable"] == ["engine_env", "brain_env", "bridge_env", "local_audio_env"]
     assert body["values"]["brain_env"]["ENDPOINT_STOP_SECS"] == "0.2"
     assert body["values"]["brain_env"]["OPERATOR_ONLY"] == "keep me"
     assert body["secrets"]["OPENCLAW_GATEWAY_TOKEN"] is False  # env unset, file absent, not in the store

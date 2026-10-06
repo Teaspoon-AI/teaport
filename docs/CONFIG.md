@@ -33,6 +33,7 @@ column of the schema names the file and line.
 | `/etc/teaport/brain.env` | `teaport-brain`, `teaport-sip-brain` | Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: `teaport sip restart` — the gateway and the SIP brain together; a brain-only relaunch desyncs the gateway echo canceller. |
 | `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on\|off` flips the echo canceller and restarts the pair for you. |
 | `/etc/teaport/bridge.env` | `teaport-discord-bridge` | systemctl restart teaport-discord-bridge. |
+| `/etc/teaport/local-audio.env` | `teaport-local-audio` | systemctl restart teaport-local-audio (ends the local session; it redials the brain at once). |
 
 Nothing hot-reloads: every value is fixed when its service starts, so a change
 is a restart of the service(s) in the second column.
@@ -240,6 +241,16 @@ In `/etc/teaport/bridge.env`.
 | `BRIDGE_PRIME_MS` | **40** ms (≥ 0) | Downlink prime. |
 | `DISCORD_BOT_TOKEN_FILE` | `~/.config/teaport/discord_bot_token` | Where the bot token is read from. *Set by the installer.* |
 | `DISCORD_BOT_TOKEN` | file `~/.config/teaport/discord_bot_token` | The bot token. Prefer the file; the env var, if set, wins over it. Read once at login: a new token needs the bridge restarted. |
+
+## Local audio bridge
+
+In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client, so it and a dashboard Talk session evict each other.
+
+| Setting | Default | Description |
+|---|---|---|
+| `LOCAL_AUDIO_DEVICE` | `hw:CARD=Array,DEV=0` | The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others. |
+| `LOCAL_AUDIO_CAPTURE_CHANNEL` | **0** (0–1) | Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam. |
+| `LOCAL_AUDIO_URL` | `ws://127.0.0.1:$BRAIN_PORT/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
 
 ## Settings that constrain each other
 
