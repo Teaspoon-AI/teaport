@@ -258,7 +258,16 @@ async def test_a_billing_refusal_is_named():
     """402 Payment Required, live 2026-10-01: the caller can fix that, so say it."""
     _c, task, _r, _g, _l = await _deliver(None, failure="error",
                                           detail="HTTP 402 Payment Required")
-    assert "billing" in task.at_run[-1]["content"], task.at_run[-1]["content"]
+    trigger = task.at_run[-1]["content"]
+    assert "billing" in trigger, trigger
+    assert "agent's" not in trigger, "told to name the agent while told not to"
+
+
+async def test_402_inside_an_id_is_not_a_billing_problem():
+    """The detail can be a CLI stderr tail carrying a session id or a timestamp."""
+    _c, task, _r, _g, _l = await _deliver(
+        None, failure="error", detail="CLI exited rc=1: session voice:consult-a4029bc1e0 locked")
+    assert "billing" not in task.at_run[-1]["content"], task.at_run[-1]["content"]
 
 
 async def test_a_notice_that_never_lands_leaves_a_note_not_a_lie():

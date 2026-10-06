@@ -813,7 +813,7 @@ min = 5
 default = 45
 read = "startup"
 tier = "tuning"
-help = "Gateway/CLI consult ceiling on the synchronous path (a client with no follow-up injector). The async path, SIP included, uses TEAPORT_ASYNC_CONSULT_TIMEOUT instead. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts."
+help = "Gateway/CLI consult ceiling on the synchronous path (TEAPORT_AGENT_FIRST, or a client with no follow-up injector). Otherwise the async path, SIP included, uses TEAPORT_ASYNC_CONSULT_TIMEOUT instead. The sandbox-exec shim adds ~14 s of spawn tax before the agent turn even starts."
 source = "openclaw_client.py:85"
 
 [[settings]]
@@ -905,7 +905,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:244"
+source = "agent_session.py:245"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"

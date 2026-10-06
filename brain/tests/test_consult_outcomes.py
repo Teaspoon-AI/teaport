@@ -155,6 +155,12 @@ async def test_the_no_text_placeholder_is_an_empty_result():
 
 async def test_the_runner_timeout_is_a_timeout():
     assert consult_bridge.classify({"error": "OpenClaw tool call timed out"})[1] == "timeout"
+    # A run that times out inside the agent reports the agent's own message, and the
+    # iOS client words the runner's wait differently; time still ran out.
+    for err in ("preflight setup timed out", "agent runtime timeout",
+                "OpenClaw realtime tool call timed out"):
+        assert consult_bridge.classify({"error": err})[1] == "timeout", err
+    assert consult_bridge.classify({"error": "provider authentication failed"})[1] == "error"
     assert consult_bridge.classify(
         {"error": "Persisted user turn changed before replay admission"})[1] == "error"
     assert consult_bridge.classify({"text": "Sunny."}) == ("Sunny.", None, "")

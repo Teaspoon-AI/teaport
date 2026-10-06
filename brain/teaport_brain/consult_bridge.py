@@ -11,6 +11,7 @@
 # will_continue=True and must NOT resolve the future.
 #
 import asyncio
+import re
 
 from loguru import logger
 
@@ -29,7 +30,12 @@ CALL_ID_PREFIX = "teaport-consult-"
 # ran out. The first is an empty result dressed as an answer -- spoken as one, the
 # caller heard "OpenClaw finished with no text" as the reply (#80).
 _NO_TEXT_RESULTS = frozenset({"OpenClaw finished with no text."})
-_TIMEOUT_ERRORS = frozenset({"OpenClaw tool call timed out"})
+# Matched loosely, not as that one string: the runner's own wait is not the only
+# timeout it reports. A run that times out inside the agent comes back as the agent's
+# own message ("preflight setup timed out", "agent runtime timeout" -- the cases in
+# OpenClaw's realtime-talk-consult tests), and the iOS client says "OpenClaw realtime
+# tool call timed out". All of them mean time ran out, not that the request broke.
+_TIMEOUT_ERROR = re.compile(r"timed out|timeout", re.IGNORECASE)
 
 
 def create(call_id: str) -> asyncio.Future:
@@ -83,7 +89,7 @@ def classify(result) -> tuple[str | None, str | None, str]:
     if isinstance(result, dict) and result.get("error") \
             and not any(result.get(k) for k in ("text", "result", "output")):
         err = str(result["error"]).strip()
-        return None, ("timeout" if err in _TIMEOUT_ERRORS else "error"), err
+        return None, ("timeout" if _TIMEOUT_ERROR.search(err) else "error"), err
     text = extract_text(result)
     if not text or text in _NO_TEXT_RESULTS:
         return None, "empty", text or "no text in the result"

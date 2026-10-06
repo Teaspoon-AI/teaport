@@ -18,6 +18,7 @@
 #
 import asyncio
 import json
+import re
 from typing import NamedTuple
 
 from loguru import logger
@@ -278,7 +279,10 @@ def _failure_outcome(failure, detail) -> _FailureOutcome:
             " In one short spoken sentence, tell the user it came back empty-handed and "
             "offer to try again." + _ACTION_HEDGE)
     if failure == "error":
-        billing = "402" in (detail or "")
+        # A whole-number 402, not the digits anywhere: the detail can be a CLI stderr
+        # tail or a relay error carrying ids and timestamps, and a false "billing
+        # problem" sends the caller off to fix the wrong thing.
+        billing = re.search(r"\b402\b", detail or "") is not None
         why = ("its AI service refused the request (a billing or credit problem)"
                if billing else "it hit an error")
         return _FailureOutcome(
@@ -286,7 +290,7 @@ def _failure_outcome(failure, detail) -> _FailureOutcome:
             f"The desktop agent could not complete this earlier request — {why}: "
             "\"{request}\".",
             " In one short spoken sentence, tell the user it couldn't be done"
-            + (" because the agent's AI service has a billing problem" if billing
+            + (" because of a billing or credit problem with the AI service" if billing
                else " and offer to try again") + "." + _ACTION_HEDGE)
     # "unknown", not "failed": the consult can die on teardown AFTER the action
     # landed, so asserting failure can be a lie.
