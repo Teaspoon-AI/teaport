@@ -72,13 +72,44 @@
 (*                       Rejected: NoStaleReply falls.                      *)
 (* SPEC = "byContext" -- promote only when the WHOLE context equals the     *)
 (*                       snapshot (what speculate.py does).                 *)
+(*                                                                          *)
+(* The reply hold (reply_hold.py, #85). A commit's reply plays ~0.2 s after *)
+(* the commit, and a caller who was only pausing resumes inside that gap:   *)
+(* their words interrupt only once transcribed, so the reply starts over    *)
+(* them about a fragment. ReplyHoldGate, armed by every commit until the    *)
+(* reply's first audio, pauses its queue when the caller speaks; their      *)
+(* words (a new turn) drop the held reply and ask for the next commit to be *)
+(* merged into the unanswered one; no words release it.                     *)
+(*                                                                          *)
+(* HOLD = "none"          -- before #85: nothing looks at the line.         *)
+(* HOLD = "gate"          -- reply_hold.py as shipped.                      *)
+(* HOLD = "gateNoMerge"   -- the hold without TurnMerge.                    *)
+(* HOLD = "gateNoResume"  -- the gate as first written: a drop left the     *)
+(*                           queue to pipecat's reset, which does not lift  *)
+(*                           the pause when the frame in hand is            *)
+(*                           Uninterruptible.                               *)
+(* HOLD = "gateEndWaits"  -- the gate as first written: the session's End   *)
+(*                           queued behind the held reply.                  *)
+(* HOLD = "gateNoEnding"  -- a hold may start after the End reached the     *)
+(*                           gate (no _ending flag).                        *)
+(*                                                                          *)
+(* The release is a TIMER (TEAPORT_REPLY_HOLD_RELEASE_S after the caller    *)
+(* goes quiet; a cap while they may still talk). WORDS_IN_TIME = TRUE       *)
+(* states the gate's assumption -- the caller's words, or the STT's close   *)
+(* saying there were none, come before it -- under which it is sound;        *)
+(* FALSE is the timer as it is, and the stale reply it still lets through   *)
+(* is the accepted residual.                                                *)
 (***************************************************************************)
 EXTENDS Naturals
 
 CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space finite
           MODE,
           SPEC,
-          MaxCtxWrites     \* bound on context writes under a live speculation
+          MaxCtxWrites,    \* bound on context writes under a live speculation
+          HOLD,            \* the reply hold's design (see the header)
+          WORDS_IN_TIME    \* ASSUMPTION, for the gate's holding row: a resumed caller's
+                           \* words (or the STT's word-less close) arrive before the
+                           \* release timer or the cap. FALSE: the timers as they are
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -99,11 +130,30 @@ VARIABLES
     missedBargeIn,   \* the user spoke over the bot and got no interruption, at a
                      \* moment when they had already had a quiet one since the
                      \* inference: the wedge, not the ordinary in-turn delay
-    staleReply       \* a reply asked against a context the commit no longer has
+    staleReply,      \* a reply asked against a context the commit no longer has
                      \* was handed to the pipeline
+    \* --- the reply hold (reply_hold.py) ---
+    reply,           \* the last commit's reply exists and has not started playing
+    armed,           \* ReplyHoldGate is armed: commit -> that reply's first audio
+    held,            \* the gate is holding the reply
+    paused,          \* the gate's input queue is paused (pause_processing_frames)
+    resumed,         \* the caller spoke after the commit, before the reply started,
+                     \* and that speech has not yet turned out to be wordless
+    mergePending,    \* TurnMerge: fold the next commit into the unanswered one
+    unanswered,      \* user messages in the context since a reply last played
+    endQueued,       \* the session's EndFrame has reached the gate (hang-up)
+    \* --- monitors ---
+    replyOverResume, \* a reply started over the caller's resumed speech, and that
+                     \* speech was words: the stale reply the tester heard
+    splitTurn        \* a commit left two user messages with no reply between them
 
+holdVars == <<reply, armed, held, paused, resumed, mergePending, unanswered, endQueued,
+              replyOverResume, splitTurn>>
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-          stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+          stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply,
+          holdVars>>
+
+Gated == HOLD /= "none"
 
 Init ==
     /\ userTurn = FALSE
@@ -119,6 +169,19 @@ Init ==
     /\ gen = 0
     /\ missedBargeIn = FALSE
     /\ staleReply = FALSE
+    /\ reply = FALSE /\ armed = FALSE /\ held = FALSE /\ paused = FALSE
+    /\ resumed = FALSE /\ mergePending = FALSE /\ unanswered = 0 /\ endQueued = FALSE
+    /\ replyOverResume = FALSE /\ splitTurn = FALSE
+
+\* The caller starts speaking: the gate holds an armed reply (the VAD start, or the
+\* faster onset test -- one event here), and the speech counts as a resumption if
+\* the last commit's reply has not started.
+HoldOnSpeech ==
+    /\ resumed' = (resumed \/ reply)
+    \* _ending: once the session's End has reached the gate, no new hold starts.
+    /\ IF Gated /\ armed /\ ~held /\ (~endQueued \/ HOLD = "gateNoEnding")
+         THEN held' = TRUE /\ paused' = TRUE
+         ELSE UNCHANGED <<held, paused>>
 
 (***************************************************************************)
 (* VAD. Both edges re-arm the stop watchdog, which is the whole reason it   *)
@@ -132,17 +195,24 @@ Init ==
 \* would; splitting them costs no behaviours and makes the counterexample name its
 \* own mechanism instead of leaving the reader to notice which step it landed on.
 VadStart ==
+    \* Not guarded by ~endQueued: the caller can still speak after the session's End
+    \* reached the gate, and the VAD's frames still flow -- that is the gap _ending
+    \* closes.
     /\ ~userSpeaking /\ ~stopInFlight
     /\ userSpeaking' = TRUE
     /\ watchdog' = FALSE                       \* the inactivity timer is reset
     /\ spec' = FALSE                           \* the caller resumed: the text will differ
+    /\ HoldOnSpeech
     /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
                    specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
+                   splitTurn>>
 
 \* The user falls quiet. In retryOnQuiet the owed finalization is applied HERE,
 \* inside the same process_frame() call that cleared _user_speaking -- so it is
 \* atomic with respect to every other coroutine, exactly as the wrapper is.
 VadStop ==
+    /\ ~endQueued                             \* the session has not ended
     /\ userSpeaking
     /\ userSpeaking' = FALSE
     /\ watchdog' = FALSE
@@ -153,6 +223,7 @@ VadStop ==
          ELSE UNCHANGED <<userTurn, owed, inference>>
     /\ UNCHANGED <<botSpeaking, stopInFlight, turns, spec, specGen, gen,
                    missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
 
 (***************************************************************************)
 (* The turn.                                                               *)
@@ -161,6 +232,7 @@ VadStop ==
 \* MinWordsUserTurnStartStrategy fired: >= INTERRUPT_MIN_WORDS of transcript.
 \* This is the ONLY producer of an interruption in the brain.
 Interject ==
+    /\ ~endQueued                             \* the session has not ended
     /\ turns < MaxTurns
     /\ userSpeaking
     /\ IF userTurn
@@ -172,6 +244,7 @@ Interject ==
               \* talking, and refusing a second start is correct.
               /\ missedBargeIn' = (missedBargeIn \/ (inference /\ ~owed /\ botSpeaking))
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec>>
+              /\ UNCHANGED holdVars
          ELSE \* A turn starts, and with it the interruption: the bot is cut.
               /\ userTurn' = TRUE
               /\ botSpeaking' = FALSE
@@ -179,6 +252,17 @@ Interject ==
               /\ turns' = turns + 1
               /\ spec' = FALSE               \* a new turn: whatever was asked is not this
               /\ UNCHANGED missedBargeIn
+              \* The words were for speech that began after the commit, and a reply is
+              \* playing that started over it: the stale reply, cut only now.
+              /\ replyOverResume' = (replyOverResume \/ (botSpeaking /\ resumed))
+              \* The interruption cancels the reply. A held one is dropped: pipecat's
+              \* reset empties the queue; the gate lifts the pause itself -- except as
+              \* first written, where an Uninterruptible frame in hand left it paused.
+              /\ reply' = FALSE /\ armed' = FALSE /\ held' = FALSE /\ resumed' = FALSE
+              /\ paused' = (HOLD = "gateNoResume" /\ held)
+              \* None of the last commit's reply was played: the next commit finishes it.
+              /\ mergePending' = (mergePending \/ (armed /\ HOLD \notin {"none", "gateNoMerge"}))
+              /\ UNCHANGED <<unanswered, endQueued, splitTurn>>
     /\ watchdog' = FALSE
     /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, gen, staleReply>>
 
@@ -192,22 +276,26 @@ Interject ==
 \* guards read. Single-flight: a second final supersedes, which is this same step
 \* from a state where `spec` was already TRUE (the old one is closed).
 SpecStart ==
+    /\ ~endQueued                             \* the session has not ended
     /\ SPEC /= "off"
     /\ userTurn /\ ~userSpeaking /\ ~inference /\ ~stopInFlight
     /\ spec' = TRUE
     /\ specGen' = gen
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
 
 \* Something else writes the context while a speculation is live. A free action,
 \* deliberately: HeardContextCorrector._reconcile on the very LLMContextFrame that
 \* carries the commit was such a writer until it was moved ahead of the snapshot, and
 \* nothing in the pipeline stops the next one. Bounded only to keep the state finite.
 CtxChange ==
+    /\ ~endQueued                             \* the session has not ended
     /\ spec /\ gen < MaxCtxWrites
     /\ gen' = gen + 1
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
 
 \* trigger_user_turn_stopped(), first await: the stop strategy has decided, the
 \* aggregation is pushed and the LLM is asked. The controller gates this on the turn
@@ -235,14 +323,23 @@ Adopt == spec /\ (SPEC = "byText" \/ specGen = gen)
 Stale == Adopt /\ specGen /= gen
 
 Inference ==
+    /\ ~endQueued                             \* the session has not ended
     /\ userTurn /\ ~stopInFlight /\ ~inference /\ ~userSpeaking
     /\ inference' = TRUE
     /\ stopInFlight' = TRUE
     /\ watchdog' = FALSE                       \* _trigger_user_turn_inference_triggered
     /\ spec' = FALSE
     /\ staleReply' = (staleReply \/ Stale)
+    \* The commit: a reply is on its way, and on_user_turn_inference_triggered arms
+    \* the gate. The aggregator appended this turn's user message -- which the
+    \* corrector folds into the unanswered one when a merge is pending.
+    /\ reply' = TRUE /\ armed' = Gated
+    /\ unanswered' = IF mergePending THEN unanswered ELSE (IF unanswered < 2 THEN unanswered + 1 ELSE 2)
+    /\ mergePending' = FALSE
+    /\ splitTurn' = (splitTurn \/ (~mergePending /\ unanswered >= 1))
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, gen,
                    missedBargeIn>>
+    /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
 
 \* The gap between the two awaits: push_aggregation()'s trip across the pipeline,
 \* during which the aggregator's input task can run a queued VAD start. This is
@@ -252,11 +349,15 @@ Resume ==
     /\ ~userSpeaking
     /\ userSpeaking' = TRUE
     /\ watchdog' = FALSE
+    /\ HoldOnSpeech
     /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
                    spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
+                   splitTurn>>
 
 \* trigger_user_turn_stopped(), second await.
 Finalize ==
+    /\ ~endQueued                             \* the session has not ended
     /\ stopInFlight
     /\ stopInFlight' = FALSE
     /\ IF userSpeaking
@@ -269,22 +370,82 @@ Finalize ==
               /\ owed' = FALSE
     /\ UNCHANGED <<userSpeaking, watchdog, botSpeaking, turns, spec, specGen, gen,
                    missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
 
 \* The reply the inference produced reaches the transport. It cannot overtake the
 \* finalize in practice -- an LLM round trip plus synthesis against two awaits --
 \* so ~stopInFlight is an ordering FACT, stated rather than modelled. See the
 \* limits note in README.md.
 BotStart ==
-    /\ inference /\ ~stopInFlight /\ ~botSpeaking
+    /\ ~endQueued                             \* the session has not ended
+    /\ (inference \/ reply) /\ ~stopInFlight /\ ~botSpeaking
+    /\ ~paused                                 \* the gate holds it
     /\ botSpeaking' = TRUE
+    \* Its first audio goes through: the gate disarms, and the caller has a reply.
+    /\ reply' = FALSE /\ armed' = FALSE /\ unanswered' = 0
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
                    owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<held, paused, resumed, mergePending, endQueued, replyOverResume,
+                   splitTurn>>
+
+(***************************************************************************)
+(* The reply hold.                                                         *)
+(***************************************************************************)
+
+\* The resumed speech ended and its segment closed with no words (a cough, a breath).
+Wordless ==
+    /\ ~endQueued                             \* the session has not ended
+    /\ resumed /\ ~userSpeaking /\ ~stopInFlight
+    /\ resumed' = FALSE
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<reply, armed, held, paused, mergePending, unanswered, endQueued,
+                   replyOverResume, splitTurn>>
+
+\* The release timer: TEAPORT_REPLY_HOLD_RELEASE_S after the caller goes quiet, the
+\* held reply plays. A timer knows nothing of the words: under WORDS_IN_TIME they have
+\* resolved first (a turn, or `Wordless`); without it, it fires regardless.
+Release ==
+    /\ ~endQueued                             \* the session has not ended
+    /\ held /\ ~userSpeaking /\ (~WORDS_IN_TIME \/ ~resumed)
+    /\ held' = FALSE /\ paused' = FALSE
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
+                   replyOverResume, splitTurn>>
+
+\* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
+Cap ==
+    /\ ~endQueued                             \* the session has not ended
+    /\ held /\ ~WORDS_IN_TIME                 \* the cap: the caller may still be talking
+    /\ held' = FALSE /\ paused' = FALSE
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
+                   replyOverResume, splitTurn>>
+
+\* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
+\* Every other action but the caller's speech is guarded by ~endQueued: what TLC
+\* checks after it is whether a paused queue holds the End back.
+\* As shipped, queue_frame drops the held reply and lifts the pause in the same step;
+\* as first written the End waited behind the hold.
+Hangup ==
+    /\ ~endQueued
+    /\ endQueued' = TRUE
+    /\ IF Gated /\ HOLD /= "gateEndWaits" /\ held
+         THEN held' = FALSE /\ paused' = FALSE /\ reply' = FALSE
+         ELSE UNCHANGED <<held, paused, reply>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
 
 BotStop ==
+    /\ ~endQueued                             \* the session has not ended
     /\ botSpeaking
     /\ botSpeaking' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
                    owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)
@@ -293,15 +454,18 @@ BotStop ==
 (***************************************************************************)
 
 Arm ==
+    /\ ~endQueued                             \* the session has not ended
     /\ ~watchdog /\ ~userSpeaking
     /\ watchdog' = TRUE
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
 
 \* The watchdog's stop is a commit too: _trigger_user_turn_stop pushes the
 \* aggregation, which reaches get_chat_completions and Speculator.take, so a live
 \* speculation is decided here exactly as at Inference.
 ForceStop ==
+    /\ ~endQueued                             \* the session has not ended
     /\ watchdog /\ userTurn /\ ~userSpeaking
     /\ userTurn' = FALSE
     /\ inference' = FALSE
@@ -311,6 +475,7 @@ ForceStop ==
     /\ staleReply' = (staleReply \/ Stale)
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, gen,
                    missedBargeIn>>
+    /\ UNCHANGED holdVars
 
 Next ==
     \/ VadStart \/ VadStop \/ Interject
@@ -318,6 +483,7 @@ Next ==
     \/ BotStart \/ BotStop
     \/ Arm \/ ForceStop
     \/ SpecStart \/ CtxChange
+    \/ Wordless \/ Release \/ Cap \/ Hangup
 
 Spec == Init /\ [][Next]_vars
 
@@ -340,7 +506,19 @@ NoMissedBargeIn == ~missedBargeIn
 \* A speculated reply is only ever spoken for the context it was asked against. The
 \* text being right is not enough: a memory note or a truncated previous reply that
 \* landed after the snapshot is context the model never saw.
-NoStaleReply == ~staleReply
+NoStaleReply == ~staleReply /\ ~replyOverResume
+
+\* The reply hold's merge: a commit never leaves two user messages with no reply
+\* between them -- the model answers the caller's whole turn, not a fragment and then
+\* its continuation.
+NoSplitTurn == ~splitTurn
+
+\* The gate's queue is paused only while a hold is in force: never a bot that has
+\* gone silent with nothing holding it (every later reply would wait forever).
+NoSilencedBot == ~(paused /\ ~held)
+
+\* The session's End never waits behind a hold.
+NoEndBehindHold == ~(endQueued /\ paused)
 
 TypeOK ==
     /\ userTurn \in BOOLEAN /\ userSpeaking \in BOOLEAN /\ watchdog \in BOOLEAN
@@ -351,4 +529,11 @@ TypeOK ==
     /\ specGen \in 0..MaxCtxWrites /\ gen \in 0..MaxCtxWrites
     /\ SPEC \in {"off", "byText", "byContext"}
     /\ (SPEC = "off" => ~spec)
+    /\ HOLD \in {"none", "gate", "gateNoMerge", "gateNoResume", "gateEndWaits",
+                 "gateNoEnding"}
+    /\ WORDS_IN_TIME \in BOOLEAN
+    /\ reply \in BOOLEAN /\ armed \in BOOLEAN /\ held \in BOOLEAN /\ paused \in BOOLEAN
+    /\ resumed \in BOOLEAN /\ mergePending \in BOOLEAN /\ unanswered \in 0..2
+    /\ endQueued \in BOOLEAN /\ replyOverResume \in BOOLEAN /\ splitTurn \in BOOLEAN
+    /\ (~Gated => ~armed /\ ~held /\ ~paused)
 =============================================================================
