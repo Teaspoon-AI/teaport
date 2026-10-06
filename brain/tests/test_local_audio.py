@@ -72,3 +72,45 @@ def test_speech_is_played_and_clear_drops_what_was_not_yet_handed_over():
     before = len(sunk)
     play.pump()
     assert all(c == bytes(len(c)) for c in sunk[before:])  # silence after the flush
+
+
+def _face():
+    sent = []
+    return la.FaceTap(send=lambda b: sent.append(__import__("json").loads(b))), sent
+
+
+def test_face_follows_a_turn():
+    face, sent = _face()
+    face.user("what's the", False)
+    face.user("what's the weather", False)  # still listening: no repeat
+    face.user("what's the weather", True)
+    face.speaking()                          # first TTS audio
+    face.assistant("It is", False)
+    face.assistant("It is sunny today", False)
+    face.assistant("It is sunny today.", True)
+    face.quiet()
+    assert sent == [
+        {"state": "listening"}, {"state": "thinking"}, {"state": "speaking"},
+        {"word": "It"}, {"word": "is"}, {"word": "sunny"}, {"word": "today"},
+        {"text": "It is sunny today."}, {"state": "idle"},
+    ]
+
+
+def test_face_barge_in_and_new_caption():
+    face, sent = _face()
+    face.assistant("Let me tell you", False)
+    face.interrupted()
+    face.assistant("Sure", False)            # a new utterance: not a prefix match
+    assert sent[-2:] == [{"state": "speaking"}, {"word": "Sure"}]
+    assert {"state": "listening"} in sent
+    face.quiet()
+    assert sent[-1] == {"state": "idle"}
+    n = len(sent)
+    face.quiet()                             # already idle: nothing
+    assert len(sent) == n
+
+
+def test_face_without_a_daemon_is_silent():
+    face = la.FaceTap(path="/nonexistent/face.sock")
+    face.state("listening")                  # must not raise
+    face.assistant("hello there", False)

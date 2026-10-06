@@ -22,6 +22,13 @@
 #     conversation mix; channel 1 is the ASR-tuned beam. LOCAL_AUDIO_CAPTURE_CHANNEL
 #     picks one.
 #
+# The face tap: when an OLED avatar daemon (github.com/Teaspoon-AI/teaport-oled-avatar,
+# `oled_face.py --serve`) is listening on LOCAL_AUDIO_FACE_SOCK, the bridge drives it
+# from the same /talk events it already sees: the user's transcript (listening,
+# thinking), the played assistant captions (speaking, one mouth flap per word, the
+# reply text for its sentiment mood) and the speaker going quiet (idle). Datagrams are
+# fire-and-forget: no daemon, no face, nothing else changes.
+#
 # arecord/aplay (alsa-utils) rather than a Python audio binding: no new dependency in
 # the brain venv, and a dead card is a dead child process we can see and restart.
 #
@@ -31,6 +38,7 @@ import asyncio
 import json
 import os
 import signal
+import socket
 import sys
 import time
 
@@ -51,6 +59,80 @@ CAPTURE_CHANNEL = int(os.getenv("LOCAL_AUDIO_CAPTURE_CHANNEL", "0"))
 GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
 URL = os.getenv("LOCAL_AUDIO_URL") or f"ws://127.0.0.1:{os.getenv('BRAIN_PORT', '7861')}/talk"
 RECONNECT_SECS = 3.0
+FACE_SOCK = os.getenv("LOCAL_AUDIO_FACE_SOCK", "/run/oled-avatar/face.sock")
+# TEAPORT_ENDPOINT_DEBUG's timing chips (endpoint_debug.py) reach every /talk client as
+# assistant finals, indistinguishable from reply text but for these prefixes. Kept
+# here rather than imported: importing endpoint_debug pulls Pipecat into this process.
+DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audio")
+# The speaker has been quiet this long after a reply: the face goes back to idle.
+FACE_IDLE_SECS = 0.8
+
+
+class FaceTap:
+    """Conversation events -> the OLED avatar's datagram protocol.
+
+    {"state": idle|listening|thinking|speaking}, {"word": w} (one mouth flap),
+    {"text": t} (VADER mood). States are sent only on change; words are the new ones
+    in each assistant caption, which carries the FULL text so far.
+    """
+
+    def __init__(self, path: str = FACE_SOCK, send=None):
+        self._path = path
+        self._sock = None
+        self._send = send or self._sendto
+        self._state = None
+        self._caption = ""
+
+    def _sendto(self, data: bytes) -> None:
+        try:
+            if self._sock is None:
+                self._sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
+                self._sock.setblocking(False)
+            self._sock.sendto(data, self._path)
+        except OSError:
+            pass  # no daemon, or its queue is full: the face is optional
+
+    def _emit(self, ev: dict) -> None:
+        self._send(json.dumps(ev).encode())
+
+    def state(self, s: str) -> None:
+        if s != self._state:
+            self._state = s
+            self._emit({"state": s})
+
+    def user(self, text: str, final: bool) -> None:
+        if final:
+            self.state("thinking")
+        elif text:
+            self.state("listening")
+
+    def assistant(self, text: str, final: bool) -> None:
+        text = text or ""
+        prev = self._caption
+        new = text[len(prev):] if text.startswith(prev) else text
+        self._caption = "" if final else text
+        if final:
+            if text:
+                self._emit({"text": text})
+            return
+        words = new.split()
+        if not words:
+            return
+        self.state("speaking")
+        for w in words:
+            self._emit({"word": w})
+
+    def speaking(self) -> None:
+        self.state("speaking")
+
+    def interrupted(self) -> None:
+        self._caption = ""
+        self.state("listening")
+
+    def quiet(self) -> None:
+        if self._state == "speaking":
+            self._caption = ""
+            self.state("idle")
 
 
 def capture_to_relay(raw: bytes, resampler: "soxr.ResampleStream", channel: int) -> bytes:
@@ -136,11 +218,20 @@ async def run_session() -> None:
             stdin=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
         procs = [aplay]
         play = Playback(aplay.stdin.write)
+        face = FaceTap()
+        face.state("idle")
 
         async def feed_playback():
+            quiet_since = None
             while True:
                 play.pump()
                 await aplay.stdin.drain()
+                if play.speaking:
+                    quiet_since = None
+                else:
+                    quiet_since = quiet_since or time.monotonic()
+                    if time.monotonic() - quiet_since >= FACE_IDLE_SECS:
+                        face.quiet()
                 await asyncio.sleep(CHUNK_MS / 2000)
 
         async def open_capture() -> tuple[asyncio.subprocess.Process, bytes]:
@@ -176,6 +267,7 @@ async def run_session() -> None:
             async for msg in ws:
                 if isinstance(msg, bytes):
                     play.push(msg)
+                    face.speaking()
                     continue
                 try:
                     m = json.loads(msg)
@@ -184,10 +276,19 @@ async def run_session() -> None:
                 kind = m.get("type")
                 if kind == "clear":
                     play.clear()
+                    face.interrupted()
                 elif kind == "ready":
                     logger.info("session ready")
-                elif kind == "transcript" and m.get("final"):
-                    logger.info(f"{m.get('role')}: {m.get('text')}")
+                elif kind == "transcript":
+                    role, text, final = m.get("role"), m.get("text") or "", bool(m.get("final"))
+                    if role == "assistant" and text.startswith(DEBUG_CHIP_PREFIXES):
+                        continue
+                    if role == "user":
+                        face.user(text, final)
+                    elif role == "assistant":
+                        face.assistant(text, final)
+                    if final:
+                        logger.info(f"{role}: {text}")
 
         async def watch(p: asyncio.subprocess.Process):
             rc = await p.wait()

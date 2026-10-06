@@ -1638,7 +1638,7 @@ default = "hw:CARD=Array,DEV=0"
 read = "startup"
 tier = "setup"
 help = "The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others."
-source = "local_audio.py:49"
+source = "local_audio.py:57"
 
 [[settings]]
 name = "LOCAL_AUDIO_CAPTURE_CHANNEL"
@@ -1651,7 +1651,7 @@ max = 1
 read = "startup"
 tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
-source = "local_audio.py:50"
+source = "local_audio.py:58"
 
 [[settings]]
 name = "LOCAL_AUDIO_URL"
@@ -1662,4 +1662,15 @@ default = "ws://127.0.0.1:$BRAIN_PORT/talk"
 read = "startup"
 tier = "tuning"
 help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."
-source = "local_audio.py:52"
+source = "local_audio.py:60"
+
+[[settings]]
+name = "LOCAL_AUDIO_FACE_SOCK"
+store = "local_audio_env"
+group = "local_audio"
+type = "path"
+default = "/run/oled-avatar/face.sock"
+read = "startup"
+tier = "tuning"
+help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, one mouth flap per spoken word and the reply text for its mood. No daemon there means no face; nothing else changes."
+source = "local_audio.py:62"
