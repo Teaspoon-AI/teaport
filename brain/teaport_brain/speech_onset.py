@@ -12,7 +12,7 @@
 # of 16 barge-ins it never came at all: this caller's speech under the bot's voice sat
 # around confidence 0.75, often dipping under 0.7, and the volume gate lagged it.
 #
-# What reply_hold.py needs is only "speech has begun", soon
+# What reply_hold.py (and, on SIP, barge_pause.py) needs is only "speech has begun", soon
 # and with few false alarms. Measured on the same call: N consecutive 32 ms chunks at
 # confidence >= 0.6 with no volume gate, N = 4 (128 ms), fired within 250 ms of the
 # onset for 13 of the 16 barge-ins (median 144 ms) and on no non-speech in the bot's

@@ -880,6 +880,82 @@ the transport: a held commit's `LLMFullResponseStartFrame` reaches it later, so
 caller is talking or within the release window of it, which is not the dead air
 `NoDeadAirDuringTool` is about.
 
+### The barge-in pause (`PAUSE`, #86)
+
+Barge-in waits for a transcript, and the STT returns none for speech over the bot until
+the caller stops: on the 2026-10-05 call the bot took a median 0.86 s to go quiet.
+`BargeInPauser` (`barge_pause.py`) pauses playout at the transport on the caller's
+speech; their words cancel the reply as before (`TEAPORT_INTERRUPT_MIN_WORDS`, or while
+paused an utterance of stop words), no words resume it. A pause holds back the reply's
+own end with its audio, so the bot counts as speaking until the resume — which is where
+the review's must-fix came from.
+
+The reply's state is two facts the code acts on, kept apart (round-2 review: one
+boolean had merged them, and the band the answer-loss fix is about was unreachable):
+`left` — how much of it is left against the two thresholds, `short` (≤ 0.5 s: the
+transport does not pause there), `mid` (up to the ~1 s a final takes to land: a pause is
+allowed, and the rest would have played out before the caller's final), `long` — and
+`synthDone`, whether the brain knows it (the reply's `TTSStoppedFrame` has reached the
+transport). New steps: the pause inside the VAD start (and, as shipped, at `BotStart`
+when the caller is already talking), `Progress`, `SynthDone` (during a pause, as shipped,
+the transport re-announces the pause with the tail it now knows), `TailElapsed` (ground
+truth: paused, fully synthesized, less than a final's latency left — without the pause
+the reply would be over), `ResumeP`, and two transcripts — `OneWord` ("Yes." after the
+caller's VAD stop) and `StopWord` — both through the same `StartTurn` as `Interject`.
+
+The monitors observe outcomes, not the design's own branch: `answerLost` compares what
+the strategy did with a one-word final (the design: does it know a tail, `tailKnown`, and
+has it elapsed) against the ground truth (`wouldEnd`); a missed stop is the bot
+*resuming* after the caller said stop to it while paused, however that came about.
+
+| PAUSE | | `NoLostAnswer` | `NoMissedBargeIn` | `NoStuckPause` |
+|---|---|---|---|---|
+| `asWritten` | #86 as first written: pauses anywhere; a paused bot is a speaking bot | ✗ | ✓ | ✓ |
+| `aOnly` | only the near-end rule (no pause in the last 0.5 s) | ✗ | ✓ | ✓ |
+| `tailAtPause` | round 1: plus the would-have-ended rule, tail known only if synthesized at the pause | ✗ | ✓ | ✓ |
+| `noStopWord` | the shipped pause without the stop word | ✓ | ✗ | ✓ |
+| `keepOnInterrupt` | a transport that keeps its pause through the interruption | ✓ | ✓ | ✗ |
+| `shipped` | near-end rule + would-have-ended rule + the tail re-announced during the pause | ✓ | ✓ | ✓ |
+
+`shipped` holds all three with `HOLD = "gate"` and every property above, under the
+hold's `WORDS_IN_TIME` assumption (`ut_pause_shipped_all`, 994 states) and with the
+timers as they are (`ut_pause_shipped_timed`, every property but the accepted
+`NoStaleReply` residual, 2.7k states). Two **witness** rows prove it is not vacuous:
+`ut_pause_shipped_reach_band` FAILS `NoPauseInTailBand` (a pause with 0.5–1 s left is
+reachable) and `ut_pause_shipped_reach_elapsed` FAILS `NoTailElapsed` (a held-back tail
+that would have ended is reachable).
+
+- `NoLostAnswer`: **a one-word answer the caller would have had as a turn without the
+  pause is one.** `aOnly` — the row that tells the shipped design from the near-end rule
+  alone — 9 states:
+
+  ```
+  OneWord Inference Finalize   a turn, committed
+  BotStart                     its reply plays, fully synthesized, 0.5-1 s left
+  VadStart                     "Yes" over it: past the near-end rule, so it pauses
+  VadStop TailElapsed          the held-back rest would have played out by now
+  OneWord                      "Yes." -- one word against a bot that still counts as
+                               speaking: under the 2-word guard, dropped
+  ```
+
+  `asWritten` is the same with 0.5 s or less left. `tailAtPause`, 10 states: the pause
+  comes before the reply's synthesis is over (`SynthDone` lands during it), so no tail
+  was ever announced, and the same final is dropped. Shipped: the pause frame carries
+  the tail, and the transport announces it again when the `TTSStoppedFrame` arrives
+  during the pause; the strategy anchors it at the pause's start.
+- `NoMissedBargeIn` (extended): **told stop while paused, the bot does not resume.**
+  `noStopWord`, 9 states: a reply plays, the caller starts (paused), says "Stop." — one
+  word, under the guard, dropped — and the pause resumes the reply.
+- `NoStuckPause`: **playout is paused only in the middle of a reply.**
+  `keepOnInterrupt`, 7 states: paused, then the caller's words cancel the reply — and a
+  transport that kept its pause would block the next reply's first write until its 8 s
+  guard.
+
+The thinking-sound bed is not paused (`BargeInPauser` pauses only reply audio, which has
+a TTS context; the bed has none): pausing it only delayed the consult answer queued
+behind it. `Followup.tla` has no bed, and the fix removes the interaction instead of
+modelling it.
+
 ### Known limits of this model
 
 - **`Inference` requires `~userSpeaking`**, which the controller does not: the guard is on
@@ -909,7 +985,7 @@ caller is talking or within the release window of it, which is not the dead air
   reason=ctx-changed` in the journal does — and it does not know that the code's known
   writers all land outside the window today (see above); it checks the design that
   stays right when one does not.
-- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 1314 with it on, 212 for `HOLD = "gate"` with words in time and 450 with the timers as they are; well under a second each.
+- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 1314 with it on, 212 for `HOLD = "gate"` with words in time and 450 with the timers as they are, 994 and 2.7k for the shipped pause with each; a few seconds at most.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 
@@ -956,6 +1032,41 @@ committed `'Sure here'` and left seven words uncommitted.
 `test_reply_hold.py::test_a_released_reply_commits_every_word_through_the_real_transport`
 is that probe, kept. The End has no `context_id`; the gate gives it the context it saw
 last, which is the one whose audio it follows.
+
+## `PlayoutPause.tla` — heard accounting across playout pauses, and the TTS's freeze (#86)
+
+A sibling of `PlayoutClock.tla`, for the same reason: the question is the layout's
+seconds and the pts cut, which `LedgerPlayout.tla` abstracts away.
+
+**Part 1, the ledger.** A reply of `A` units plays a unit per tick from the window's
+start; word *k* is scheduled at pts *k*. The transport can pause and resume (up to
+`MaxPauses` times) and the caller can cut the reply at any tick; at the cut the ledger
+charts what it believes played — the layout's seconds and the words its pts cut keeps —
+and the truth is what the transport wrote.
+
+| LEDGER | | `HeardIsPlayed` |
+|---|---|---|
+| `unaware` | the ledger before #86 | ✗ (4 states: pause, a tick, cut — one unit charted, none played) |
+| `noShift` | freezes and re-anchors the layout, reads pts as scheduled | ✗ (5: pause, tick, resume, cut — seconds right, one word too many) |
+| `shipped` | `_pause` credits and freezes, `_resume` re-anchors and adds the pause to the pts shift of the turns with audio already pushed | ✓, two pauses in one reply (953 states) |
+
+The transport tells the ledger how long after its pause frame the audio really stops
+(`lag_secs`: the written frame's 20 ms slot), which the model's tick abstracts.
+
+**Part 2, the TTS.** A reply hold and a playout pause each stop playout; the two can
+overlap. `engine_tts._freeze_playout` freezes the TTS's playout model through them and,
+when the last one ends, moves the anchor of a reply queued behind (`_prev_audio_end_ns`)
+by the time since the first began. The check is that arithmetic, against a ground-truth
+count of the ticks playout was stopped (round-2 review: the first version only checked
+"frozen while stopped", close to a tautology). Each part runs in its own rows (`PART`).
+
+| SLOT | | `AnchorMovesByStop` (and `FrozenWhileStopped`) |
+|---|---|---|
+| `single` | #86 as first written: one frozen-since slot | ✗ (6 states: hold, pause, the hold ends — the slot clears with the pause still on; a tick of it is never added to the anchor) |
+| `set` | one freeze per source (`engine_tts._freezes`) | ✓ (189 states) |
+
+The anchor's own value is tested on the real TTS in `test_reply_hold.py` and
+`test_barge_pause.py`.
 
 ## `SttCommit.tla` — when the STT closes the engine's transcript segment (#43)
 

@@ -109,10 +109,28 @@ run UserTurn.tla ut_hold_gate_all                    "(expected: holds — as sh
 run UserTurn.tla ut_hold_gate_timed_nostalereply     "(expected: FAILS NoStaleReply — the timers as they are: the ACCEPTED RESIDUAL, words later than the release)"
 run UserTurn.tla ut_hold_gate_timed_rest             "(expected: holds — the timers as they are: every other property)"
 echo
+echo "UserTurn.tla — the barge-in pause (PAUSE, #86): pause on speech, cancel on words, resume on none"
+run UserTurn.tla ut_pause_asWritten_nolostanswer      "(expected: FAILS NoLostAnswer — first cut: a one-word answer over the reply's end, dropped)"
+run UserTurn.tla ut_pause_aOnly_nolostanswer          "(expected: FAILS NoLostAnswer — the near-end rule alone: an answer 0.5-1 s before the end, dropped)"
+run UserTurn.tla ut_pause_tailAtPause_nolostanswer    "(expected: FAILS NoLostAnswer — round 1: synthesis completing DURING the pause leaves no tail)"
+run UserTurn.tla ut_pause_shipped_reach_band          "(expected: FAILS NoPauseInTailBand — witness: a pause in the 0.5-1 s band is reachable as shipped)"
+run UserTurn.tla ut_pause_shipped_reach_elapsed       "(expected: FAILS NoTailElapsed — witness: a held-back tail that would have ended is reachable as shipped)"
+run UserTurn.tla ut_pause_noStopWord_nomissedbargein  "(expected: FAILS NoMissedBargeIn — no stop word: told stop, the paused bot resumes)"
+run UserTurn.tla ut_pause_keepOnInterrupt_nostuckpause "(expected: FAILS NoStuckPause — a transport that keeps its pause through the interruption)"
+run UserTurn.tla ut_pause_shipped_all                 "(expected: holds — barge_pause.py as shipped, with the reply hold and every other property)"
+run UserTurn.tla ut_pause_shipped_timed               "(expected: holds — the shipped pause with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
+echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
 run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"
 run PlayoutClock.tla pc_release_all        "(expected: holds — every pts moved by the first held audio's wait)"
+echo
+echo "PlayoutPause.tla — heard accounting across playout pauses, and the TTS's freeze (#86)"
+run PlayoutPause.tla pp_unaware_heard "(expected: FAILS HeardIsPlayed — the ledger before #86: its layout runs on through a pause)"
+run PlayoutPause.tla pp_noShift_heard "(expected: FAILS HeardIsPlayed — layout frozen, but the words' pts read as scheduled)"
+run PlayoutPause.tla pp_shipped_heard "(expected: holds — frozen, re-anchored, pts cut moved; two pauses in one reply)"
+run PlayoutPause.tla pp_single_anchor "(expected: FAILS AnchorMovesByStop — one freeze slot shared by the hold and the pause)"
+run PlayoutPause.tla pp_set_anchor    "(expected: holds — one freeze per source: frozen while stopped, the anchor moved by exactly the stop)"
 echo
 echo "SttCommit.tla — when the STT closes the engine's transcript segment (#43)"
 run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the commit at the raw VAD stop)"

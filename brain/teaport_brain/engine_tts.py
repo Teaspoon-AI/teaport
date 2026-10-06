@@ -36,6 +36,7 @@ from pipecat.services.tts_service import TTSService
 
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
 from teaport_brain.env import env_choice, env_flag, env_num
+from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.reply_hold import PlayoutHoldFrame
 from teaport_brain.tts_text import split_clauses_ramp
 
@@ -526,6 +527,10 @@ class EngineTTSService(TTSService):
         elif isinstance(frame, PlayoutHoldFrame):
             self._freeze_playout("hold", frame.active)
             return  # pushed for us alone
+        elif isinstance(frame, PlayoutPauseFrame):
+            # The transport paused mid-reply (barge_pause.py): the same freeze. Passed
+            # on -- the turn-start strategy reads it too.
+            self._freeze_playout("pause", frame.paused)
         await super().process_frame(frame, direction)
 
     def _now(self) -> float:
@@ -551,8 +556,10 @@ class EngineTTSService(TTSService):
         is on the pre-stop clock: it moves too, now if that context has ended, or when
         the one in progress ends (_ctx_held_ns, counted from when its words were
         anchored). The stopped context's own words are not touched here: the processor
-        that stopped them moves them (reply_hold.ReplyHoldGate re-stamps every pts of a
-        held context), and moving its baseline as well would move them twice."""
+        that stopped them accounts for them (reply_hold.ReplyHoldGate re-stamps every pts
+        of a held context; for a playout pause the TranscriptLedger moves its cut by
+        the pause, barge_pause.py), and moving the baseline as well would count them
+        twice."""
         if held:
             if not self._freezes:
                 self._frozen_at = time.monotonic()
