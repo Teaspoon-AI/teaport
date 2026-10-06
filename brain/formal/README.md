@@ -883,7 +883,8 @@ caller is talking or within the release window of it, which is not the dead air
 ### The barge-in pause (`PAUSE`, #86)
 
 Barge-in waits for a transcript, and the STT returns none for speech over the bot until
-the caller stops: on the 2026-10-05 call the bot took a median 0.86 s to go quiet.
+the caller stops, so the bot talks on through the caller's whole interjection —
+typically most of a second.
 `BargeInPauser` (`barge_pause.py`) pauses playout at the transport on the caller's
 speech; their words cancel the reply as before (`TEAPORT_INTERRUPT_MIN_WORDS`, or while
 paused an utterance of stop words), no words resume it. A pause holds back the reply's

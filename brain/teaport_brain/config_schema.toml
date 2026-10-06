@@ -813,7 +813,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "SIP only: the moment the caller starts talking over the bot (the fast speech-onset test, or the VAD), pause playout. If their words follow, the barge-in cancels the reply as before; if none come within TEAPORT_BARGE_PAUSE_RESUME_S of them stopping, the reply resumes from where it paused. No effect on Talk, whose relay can only clear its client's buffer."
-source = "barge_pause.py:120"
+source = "barge_pause.py:123"
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_RESUME_S"
@@ -827,7 +827,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The longest a paused reply waits, after the caller goes quiet, for their words before it resumes (sooner once the STT has closed that speech with no turn in it). With the VAD's own stop delay a cough stalls the bot about ENDPOINT_STOP_SECS + this. At most 8."
-source = "barge_pause.py:125"
+source = "barge_pause.py:128"
 
 [[settings]]
 name = "TEAPORT_BARGE_PAUSE_MAX_S"
@@ -841,7 +841,7 @@ default = 6.0
 read = "startup"
 tier = "tuning"
 help = "The longest one pause lasts before the reply resumes anyway. Capped at 8 s: a write held past pipecat's 10 s deadline loses the call its voice."
-source = "barge_pause.py:129"
+source = "barge_pause.py:132"
 
 [[settings]]
 name = "TEAPORT_STOP_WORDS"
@@ -852,7 +852,7 @@ default = "stop,wait,hold on,hold,pause,enough,quiet,shh,shush"
 read = "startup"
 tier = "tuning"
 help = "Comma-separated words or phrases that end a reply on their own while it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS says (with the bot silent there is no echo to garble into one). Only an utterance made entirely of them counts, so \"don't stop\" does not; any \"shh\" spelling is shh. \"No\" is left out on purpose: over the bot it is as often an answer as an objection."
-source = "barge_pause.py:138"
+source = "barge_pause.py:141"
 
 [[settings]]
 name = "TEAPORT_STRANDED_INTERIM_SECS"

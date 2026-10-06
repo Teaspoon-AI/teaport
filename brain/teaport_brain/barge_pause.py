@@ -7,9 +7,13 @@
 # (MinWordsUserTurnStartStrategy). While the bot is speaking the engine STT returns
 # nothing for the caller's words until the VAD stop flushes the segment
 # (teagram-engine#7), so the bot talks on until the caller has finished talking over
-# it. On a 2026-10-05 test call, 17 barge-ins: speech onset to the bot's audio
-# stopping was a median 0.86 s, p75 1.06 s, max 2.44 s -- and every one of the call's
-# 27 interruptions came from an STT interim, none from the VAD.
+# it: from the caller's first syllable to the bot going quiet is typically most of a
+# second, and longer the longer they talk. The VAD does not close that gap on its own:
+# it decides where an utterance starts and stops for the STT and the turn, never
+# interrupts, and its SPEAKING edge lags the onset of speech by a few hundred ms (its
+# volume is integrated over a rolling 400 ms window). A caller who talks over a bot
+# wants it to stop at once; a cough, a breath or an "mm" should not cost them the
+# reply.
 #
 # BargeInPauser takes the decision apart. The moment speech starts while the bot is
 # audible -- the faster onset test in speech_onset.py, or the VAD's start -- it PAUSES
@@ -48,14 +52,13 @@
 #     the onset test, which has no volume gate; a backchannel, a cough or a pause the cap
 #     ended does not count against it.
 #
-# The echo guard is the onset test itself: 128 ms of Silero confidence >= 0.6. On the
-# call's audio, replayed offline with this module's own rules (a pause on a rising
-# edge while the bot is audible, or at the bot's start if the caller is already
-# talking), it paused within 250 ms of the caller's onset for 13 of the 16
-# barge-ins with caller speech (15 within 400 ms, none missed), and on no non-speech while the
-# bot was audible -- but that audio is after the SIP gateway's echo canceller, which
-# left the line near digital silence whenever the caller was quiet, so it says little
-# about a line with real echo residue. Raise TEAPORT_ONSET_MIN_MS /
+# The echo guard is the onset test itself: 128 ms of Silero confidence >= 0.6, which
+# typically fires within ~100-250 ms of the onset of real speech -- well ahead of the
+# VAD's edge -- while a short click or a burst of echo residue does not last long
+# enough. How well it rejects echo depends on the line: behind the SIP gateway's echo
+# canceller the caller's audio is near silent while they are quiet, and a line with
+# real echo residue, a poor handset or background speech is where it would trip. The
+# limit on echo-like pauses below bounds that; raise TEAPORT_ONSET_MIN_MS /
 # TEAPORT_ONSET_CONFIDENCE if the bot stutters on its own echo.
 #
 # WHERE THE PAUSE HAPPENS. In the output transport (SipGatewayOutputTransport), which

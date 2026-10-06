@@ -2,9 +2,9 @@
 # Barge-in pause (barge_pause.py, teaport#34): the bot stops talking the moment the
 # caller does, and picks up from the same sample if no words follow.
 #
-# On a 2026-10-05 test call, 17 barge-ins took a median 0.86 s (max 2.44 s) from the
-# caller's speech onset to the bot's audio stopping, because barge-in waits for a
-# transcript and the STT returns none for speech over the bot until the caller stops.
+# Without it, the bot goes on talking from the caller's onset until the end of what
+# they say -- typically most of a second -- because barge-in waits for a transcript and
+# the STT returns none for speech over the bot until the caller stops.
 #
 # The playout tests drive the REAL SipGatewayOutputTransport over a socketpair (the
 # gateway end drained as it arrives, as test_sip_output_framing does): what the
