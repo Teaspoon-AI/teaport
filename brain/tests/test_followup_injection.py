@@ -162,13 +162,14 @@ class _Ledger:
         return fut
 
 
-async def _deliver(text, read_on_attempt=1, heard=1.0, cut=False):
+async def _deliver(text, read_on_attempt=1, heard=1.0, cut=False, **outcome):
     ctx = _Context()
     retirer = _Retirer()
     task = _Task(ctx, retirer, read_on_attempt)
     gate = _Gate(cut=cut)
     ledger = _Ledger(heard)
-    await _make_consult_followup(task, ctx, gate, retirer, ledger)(REQUEST, text, CALL_ID)
+    await _make_consult_followup(task, ctx, gate, retirer, ledger)(
+        REQUEST, text, CALL_ID, **outcome)
     return ctx, task, retirer, gate, ledger
 
 
@@ -229,6 +230,78 @@ async def test_a_consult_that_never_reported_is_not_called_a_failure():
     assert json.loads(tool["content"])["status"] == "unknown"
     assert ctx.messages[-1]["role"] == "user"
     assert task.frames
+
+
+# --- each failure says what happened (#80) --------------------------------------
+#
+# "Didn't get confirmation" for every failure left the caller unable to tell a request
+# that ran out of time from one that came back empty or hit a billing error.
+
+async def test_a_timeout_says_it_ran_out_of_time():
+    ctx, task, _r, _g, _l = await _deliver(None, failure="timeout", detail="no result")
+    tool = json.loads([m for m in ctx.messages if m.get("role") == "tool"][0]["content"])
+    assert tool["status"] == "timeout", tool
+    trigger = task.at_run[-1]["content"]
+    assert "ran out of time" in trigger and "took too long" in trigger, trigger
+    assert "do NOT state that it definitely failed" in trigger, (
+        "a timed-out action may still land; the hedge must survive")
+
+
+async def test_an_empty_consult_is_not_delivered_as_an_answer():
+    ctx, task, _r, _g, _l = await _deliver(None, failure="empty")
+    tool = json.loads([m for m in ctx.messages if m.get("role") == "tool"][0]["content"])
+    assert tool["status"] == "empty" and "answer" not in tool, tool
+    assert "came back with no answer" in task.at_run[-1]["content"]
+
+
+async def test_a_billing_refusal_is_named():
+    """402 Payment Required, live 2026-10-01: the caller can fix that, so say it."""
+    _c, task, _r, _g, _l = await _deliver(None, failure="error",
+                                          detail="HTTP 402 Payment Required")
+    trigger = task.at_run[-1]["content"]
+    assert "billing" in trigger, trigger
+    assert "agent's" not in trigger, "told to name the agent while told not to"
+
+
+async def test_402_inside_an_id_is_not_a_billing_problem():
+    """The detail can be a CLI stderr tail carrying a session id or a timestamp."""
+    _c, task, _r, _g, _l = await _deliver(
+        None, failure="error", detail="CLI exited rc=1: session voice:consult-a4029bc1e0 locked")
+    assert "billing" not in task.at_run[-1]["content"], task.at_run[-1]["content"]
+
+
+async def test_a_notice_that_never_lands_leaves_a_note_not_a_lie():
+    """Flushed on every attempt (three times on 2026-10-02): the trigger must not be
+    left live, and must not claim the outcome was given to the user either."""
+    ctx, task, _r, _g, _l = await _deliver(None, read_on_attempt=99, failure="timeout")
+    assert task.attempts == agent_session._DELIVERY_ATTEMPTS
+    after = ctx.messages[-1]["content"]
+    assert "In one short spoken sentence" not in after, "left a standing order"
+    assert "already given to the user" not in after, after
+    assert "has NOT reached the user" in after and "ran out of time" in after, after
+
+
+async def test_a_session_that_ended_is_not_delivered_into():
+    """All three unread failure notices on 2026-10-02 were queued into a pipeline
+    whose client had already disconnected. Nothing can land there: stop, don't retry."""
+    ctx = _Context()
+    retirer = _Retirer()
+    task = _Task(ctx, retirer, read_on_attempt=99)
+    task.has_finished = lambda: True
+    await _make_consult_followup(task, ctx, _Gate(), retirer, _Ledger())(
+        REQUEST, None, CALL_ID, failure="timeout")
+    assert task.attempts == 0, f"queued {task.attempts} turn(s) into a finished pipeline"
+    assert "In one short spoken sentence" not in ctx.messages[-1]["content"]
+
+
+async def test_a_session_that_ends_mid_delivery_stops_retrying():
+    ctx = _Context()
+    retirer = _Retirer()
+    task = _Task(ctx, retirer, read_on_attempt=99)
+    task.has_finished = lambda: task.attempts >= 1
+    await _make_consult_followup(task, ctx, _Gate(), retirer, _Ledger())(
+        REQUEST, ANSWER, CALL_ID)
+    assert task.attempts == 1, f"{task.attempts} attempts after the session ended"
 
 
 # --- retirement timing: the TLC counterexample, as a test -----------------------

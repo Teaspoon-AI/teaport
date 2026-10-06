@@ -24,7 +24,10 @@ import json
 import os
 import re
 import shutil
+import urllib.error
 import urllib.request
+import uuid
+from dataclasses import dataclass
 
 from loguru import logger
 
@@ -76,7 +79,9 @@ OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT_ID", "main")
 # 45 s, not 30: the sandbox-exec shim adds ~14 s of spawn tax (nemoclaw + docker
 # exec + CLI node startup, measured) before the agent turn even starts, and a
 # Discord-action turn needs real time after that. Callers cap the voice wait
-# separately (TEAPORT_ASK_OPENCLAW_TIMEOUT must stay above ack+consult).
+# separately (TEAPORT_ASK_OPENCLAW_TIMEOUT must stay above ack+consult). This is the
+# SYNC path's budget only: the async path (SIP, or a relay that never acks) passes its
+# own, TEAPORT_ASYNC_CONSULT_TIMEOUT, since its wait is off the turn (#80).
 CONSULT_TIMEOUT = float(os.getenv("TEAPORT_CONSULT_TIMEOUT", "45"))
 
 # Memory WRITE goes the sidecar/direct route (NOT the consult — that proved heavy,
@@ -281,7 +286,40 @@ def _completions_sync(message: str, token: str, timeout: float) -> str | None:
     return text.strip() or None
 
 
-async def _completions_consult(message: str, *, timeout: float) -> str | None:
+@dataclass(frozen=True)
+class ConsultOutcome:
+    """What one consult produced. `text` is the agent's answer, or None, and then
+    `failure` says why: "timeout" (the budget ran out first), "error" (the gateway,
+    the agent or its model provider failed or refused), or "empty" (the agent finished
+    with nothing to say). `detail` is for the log line and the follow-up's wording."""
+    text: str | None
+    failure: str | None = None
+    detail: str = ""
+
+
+def _warm_lane_error(e: BaseException) -> tuple[str, str, bool, bool]:
+    """(failure, detail, gateway_answered, worth_retrying) for one warm-lane exception.
+
+    `gateway_answered` decides the fallback: a gateway that answered at all is up and
+    owns the state directory, so the cold `--local` CLI cannot run beside it (it exits
+    rc=1, "A Gateway is running for this state directory"). `worth_retrying` is false
+    for the answers a second attempt cannot change: a timeout means the budget is gone,
+    and a 4xx such as 402 Payment Required (seen live twice on 2026-10-01: the model
+    provider out of credit) refuses the retry exactly as it refused the first."""
+    if isinstance(e, urllib.error.HTTPError):
+        retry = e.code in (408, 429) or e.code >= 500
+        return "error", f"HTTP {e.code} {e.reason}", True, retry
+    if isinstance(e, urllib.error.URLError):
+        if isinstance(e.reason, TimeoutError):
+            return "timeout", "the gateway did not answer in time", True, False
+        return "error", f"gateway unreachable ({e.reason})", False, True
+    if isinstance(e, TimeoutError):
+        return "timeout", "the agent did not finish in time", True, False
+    return "error", repr(e), True, True
+
+
+async def _completions_consult(message: str, *,
+                               timeout: float) -> tuple[ConsultOutcome, bool]:
     """WARM-LANE consult: one full agent turn on the already-running gateway
     daemon via its OpenAI-compatible endpoint — ~7s including Discord channel
     actions, vs ~25s for the cold --local CLI spawn. Requires exactly ONE thing:
@@ -299,12 +337,16 @@ async def _completions_consult(message: str, *, timeout: float) -> str | None:
     warm-lane turn drives a CHANNEL action THROUGH the NemoClaw sandbox egress
     proxy (the device-pairing dial-back loop). On bare OpenClaw (no sandbox) the
     config flag alone makes this lane work.
-    Returns reply text, or None on any failure (never raises)."""
+
+    Returns (outcome, gateway_answered); never raises. gateway_answered is None
+    when there is no token to ask with, so nothing is known about the gateway."""
     token = _token()
     if not token:
-        return None
+        return ConsultOutcome(None, "error", "no gateway token"), None
     loop = asyncio.get_running_loop()
     deadline = loop.time() + timeout
+    outcome = ConsultOutcome(None, "timeout", "no budget for the warm lane")
+    answered = True
     # Deliberately stdlib, not tenacity: the nontrivial part is the deadline
     # budget below, which a retry library doesn't provide. If retry policy
     # ever appears in a second/third caller (web_search backoff, engine
@@ -312,77 +354,95 @@ async def _completions_consult(message: str, *, timeout: float) -> str | None:
     for attempt in (1, 2):
         remaining = deadline - loop.time()
         if remaining < 5:
-            return None
+            break
         try:
-            return await asyncio.wait_for(
+            text = await asyncio.wait_for(
                 loop.run_in_executor(None, _completions_sync, message, token, remaining),
                 timeout=remaining + 0.5)
         except Exception as e:  # noqa: BLE001 — warm lane is best-effort by design
-            logger.debug("warm-lane consult attempt {} failed ({!r})", attempt, e)
-            if attempt == 1:
+            failure, detail, answered, retry = _warm_lane_error(e)
+            outcome = ConsultOutcome(None, failure, detail)
+            logger.info("warm-lane consult attempt {} failed: {} ({})",
+                        attempt, failure, detail)
+            if attempt == 1 and retry:
                 # Sporadic gateway faults happen (observed: one HTTP 408 seven
                 # seconds into a healthy turn; a concurrency probe cleared the
                 # busy-lane theory). One short retry is far cheaper than
                 # surrendering to the ~30s cold-CLI fallback.
                 await asyncio.sleep(3)
-    logger.debug("warm-lane consult failed twice; falling back to CLI")
-    return None
+                continue
+            break
+        if text is None:
+            # The turn ran and ended with no text. Asking again would rerun the
+            # whole turn (and repeat any action it took) for the same nothing.
+            return ConsultOutcome(None, "empty", "the agent finished with no text"), True
+        return ConsultOutcome(text), True
+    return outcome, answered
+
+
+# HTTP answers that mean the warm lane itself is missing (the chat-completions
+# endpoint is disabled), not that the turn failed: only these are worth the CLI.
+_LANE_MISSING = ("HTTP 404", "HTTP 405")
 
 
 async def agent_consult(message: str, *, session_key: str | None = None,
-                        timeout: float = CONSULT_TIMEOUT) -> str | None:
-    """Run ONE OpenClaw agent turn via the gateway (the 'consult') and return its reply
-    text, or None on any failure. The rich, slow path: full agent context/tools/skills/
-    memory on the cerebras model — used for delegated questions and for memory writes (a
-    "remember X" turn makes the agent persist the fact to its memory/YYYY-MM-DD.md). The
-    memory store is shared across sessions, so a voice-written note is recalled by text too.
-    Best-effort: never raises into the realtime pipeline; cancellable (kills the child)."""
+                        timeout: float = CONSULT_TIMEOUT) -> ConsultOutcome:
+    """Run ONE OpenClaw agent turn via the gateway (the 'consult') and return its
+    outcome. The rich, slow path: full agent context/tools/skills/memory on the agent's
+    model — used for delegated questions. Best-effort: never raises into the realtime
+    pipeline; cancellable (kills the child)."""
     message = (message or "").strip()
     if not message:
-        return None
+        return ConsultOutcome(None, "error", "empty request")
     # Warm lane first: the gateway daemon is already running, so a consult
-    # there skips the entire CLI/plugin cold start. Fall through to the cold
-    # --local CLI only when the warm lane fails (gateway down, endpoint
-    # disabled, mid-rebuild) — it is slower but self-contained.
+    # there skips the entire CLI/plugin cold start.
     _loop = asyncio.get_running_loop()
     _deadline = _loop.time() + timeout
-    text = await _completions_consult(message, timeout=timeout)
-    if text is not None:
-        return text
-    # The two lanes share ONE budget. When the warm lane consumed it (a
-    # task-inherently-slow turn timing out), rerunning the same doomed request
-    # through the ~15s CLI spawn just doubles the wait before an honest
-    # failure (observed live: 45s warm + 60s cold = 105s of "hang tight").
-    # Under ~20s the CLI cannot finish anyway.
+    warm, answered = await _completions_consult(message, timeout=timeout)
+    if warm.text is not None:
+        return warm
+    # The CLI is a fallback for a MISSING warm lane, not a second try at a failed
+    # turn. A timeout, an empty turn, a 402 or a 5xx came from the same gateway and
+    # model the CLI would use, so rerunning the request there only doubles the wait
+    # before the same failure (observed live: 45s warm + 60s cold = 105s of "hang
+    # tight"; and 2026-10-01, 402 twice and then a CLI that could not even start).
+    if answered and not warm.detail.startswith(_LANE_MISSING):
+        return warm
     timeout = _deadline - _loop.time()
+    # Under ~20s the CLI cannot finish anyway.
     if timeout < 20:
         logger.debug("agent_consult: no budget left after warm lane; giving up")
-        return None
+        return ConsultOutcome(None, "timeout", f"no budget left for the CLI ({warm.detail})")
     # One fresh session per consult. A shared key ("voice:main") proved doubly
     # broken: rapid consecutive consults collide on one session file ("session
     # file changed while embedded prompt", rc=1), and old failure turns poison
     # the context so the agent answers from memory instead of acting. The
     # brain sends self-contained requests, so no cross-consult context is lost.
     if session_key is None:
-        import uuid
         session_key = f"voice:consult-{uuid.uuid4().hex[:10]}"
+    args = ["agent", "--agent", OPENCLAW_AGENT, "--session-key", session_key,
+            "-m", message, "--json"]
+    if not answered:
+        # --local only when no gateway answered: it runs the agent embedded in the
+        # CLI process, which the CLI refuses while a gateway owns the state directory
+        # ("A Gateway is running for this state directory ... Run without --local to
+        # use it"). With the gateway up but its chat-completions endpoint disabled,
+        # the plain CLI dispatches the turn through the gateway instead.
+        #
+        # On NemoClaw appliances the embedded run is also what completes channel tool
+        # calls (gateway dispatch lands in an endless device-pairing loop, NemoClaw
+        # #4616 family); the installer enables the warm lane there, so this path is
+        # only reached when that gateway is down.
+        args.insert(1, "--local")
     try:
-        # --local: run the agent embedded in the CLI process. On NemoClaw
-        # appliances the default gateway-dispatch path cannot complete channel
-        # tool calls (its dial-back lands in an endless device-pairing loop,
-        # NemoClaw #4616 family); the embedded run loads channel plugins
-        # in-process and their REST calls go out through the egress proxy.
-        # Destructive Discord action families stay disabled by the sandbox
-        # config gates (channels.discord.actions.*).
-        rc, out, err = await _run_openclaw(
-            ["agent", "--local", "--agent", OPENCLAW_AGENT, "--session-key", session_key,
-             "-m", message, "--json"],
-            timeout=timeout, capture=True)
+        rc, out, err = await _run_openclaw(args, timeout=timeout, capture=True)
     except asyncio.CancelledError:
         raise  # barge-in: propagate so the task actually cancels
-    except Exception as e:  # noqa: BLE001 — incl. TimeoutError; best-effort
+    except TimeoutError:
+        return ConsultOutcome(None, "timeout", "the CLI agent did not finish in time")
+    except Exception as e:  # noqa: BLE001 — best-effort
         logger.debug("agent_consult failed: {}", e)
-        return None
+        return ConsultOutcome(None, "error", f"CLI failed to run ({e!r})")
     text = _consult_payload_text(out)
     if rc != 0:
         # Keep the full stderr for postmortem — the log line is truncated.
@@ -399,10 +459,12 @@ async def agent_consult(message: str, *, session_key: str | None = None,
             # is worse than tolerating a noisy exit.
             logger.warning("agent_consult: nonzero exit rc={} but payload present — "
                            "using it ({})", rc, tail[:120] or "(no stderr)")
-            return text
+            return ConsultOutcome(text)
         logger.warning("agent_consult: openclaw exited rc={}: {}", rc, tail or "(no stderr)")
-        return None
-    return text
+        return ConsultOutcome(None, "error", f"CLI exited rc={rc}: {tail[-120:]}")
+    if not text:
+        return ConsultOutcome(None, "empty", "the CLI agent finished with no text")
+    return ConsultOutcome(text)
 
 
 def _consult_payload_text(out: bytes) -> str | None:
