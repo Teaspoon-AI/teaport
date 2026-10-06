@@ -226,8 +226,10 @@ def test_face_follows_a_turn():
     assert face.voiced
     face.assistant("It is sunny today", False)
     face.assistant("It is sunny today.", True)
-    assert not face.voiced
+    assert face.voiced                       # the last word's audio is still to come
+    face.audio()                             # ... and arrives after the final: speech
     clock.t += 1                             # heard out (no audio since)
+    assert not face.voiced
     face.quiet()
     assert sent == [
         {"state": "listening"}, {"state": "thinking"}, {"state": "speaking"},
@@ -431,3 +433,32 @@ def test_first_session_dials_at_once_later_ones_wait_for_a_voice(monkeypatch):
     assert asyncio.run(run()) == 2
     # >= the WAKE_SECS of voice that woke it (24 kHz mono = 48 bytes/ms), sent as a burst.
     assert got["preroll"] >= 48 * la.WAKE_SECS * 1000 * 0.9, got
+
+
+def test_face_reply_tail_audio_is_not_the_thinking_sound():
+    """The final caption lands at the last word; that word's audio follows it. Those
+    trailing frames must not read as the thinking sound (the face then sat in
+    "thinking" for FACE_STALE_SECS after every reply)."""
+    clock = _Clock()
+    face, sent = _face(clock)
+    face.assistant("Hey there, welcome back", False)
+    face.assistant("Hey there, welcome back!", True)
+    for _ in range(10):                      # 0.3 s of tail audio after the final
+        face.audio()
+        clock.t += 0.03
+    clock.t += 0.1
+    face.quiet()                             # heard out with audio only 0.1 s ago
+    assert sent[-1] == {"state": "idle"}
+
+
+def test_face_thinking_sound_after_a_reply_still_shows_thinking():
+    clock = _Clock()
+    face, sent = _face(clock)
+    face.assistant("Let me check", False)
+    face.assistant("Let me check.", True)
+    clock.t += 1.0                           # past the tail grace: the bed starts
+    for _ in range(50):                      # 1.5 s of typing
+        face.audio()
+        clock.t += 0.03
+    face.quiet()
+    assert sent[-1] == {"state": "thinking"}

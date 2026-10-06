@@ -115,6 +115,9 @@ DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audi
 FACE_IDLE_SECS = 0.8
 # Uncaptioned audio (the thinking sound) this long while the face is idle: thinking.
 FACE_BED_SECS = 1.0
+# The final caption is released AT the last word, ahead of that word's audio: audio
+# arriving this soon after it is still the reply's tail, not the thinking sound.
+VOICED_TAIL_SECS = 0.6
 # Thinking or listening with no transcript and no audio for this long: idle. Timed
 # from the last activity, not from entry: a consult thinks for ~40 s, typing all along.
 FACE_STALE_SECS = 12.0
@@ -165,9 +168,10 @@ class FaceTap:
         self._active_t = clock()
         self._bed_since = None
         self._audio_t = None
-        # True from a caption with new words until the utterance's final: the audio
-        # arriving meanwhile is speech.
-        self.voiced = False
+        # True from a caption with new words until the utterance's final (plus
+        # VOICED_TAIL_SECS): the audio arriving meanwhile is speech.
+        self._voiced = False
+        self._voiced_until = 0.0
 
     def _sendto(self, data: bytes) -> None:
         try:
@@ -180,6 +184,10 @@ class FaceTap:
 
     def _emit(self, ev: dict) -> None:
         self._send(json.dumps(ev).encode())
+
+    @property
+    def voiced(self) -> bool:
+        return self._voiced or self._clock() < self._voiced_until
 
     def _activity(self) -> None:
         self._active_t = self._clock()
@@ -216,9 +224,11 @@ class FaceTap:
             self._bed_since = None
             self.state("speaking")
         if final:
-            self.voiced = False
+            if self._voiced:
+                self._voiced_until = self._clock() + VOICED_TAIL_SECS
+            self._voiced = False
         elif fresh:
-            self.voiced = True
+            self._voiced = True
         if final and text:
             self._emit({"text": text})
         return fresh
@@ -247,14 +257,19 @@ class FaceTap:
     def interrupted(self) -> None:
         self._activity()
         self._caption = ""
-        self.voiced = False
+        self._voiced, self._voiced_until = False, 0.0
         self.state("listening")
 
     def quiet(self) -> None:
         """The speech has been heard out: idle, or thinking while the thinking sound plays."""
         if self._state == "speaking":
             self._caption = ""
-            bed = self._audio_t is not None and self._clock() - self._audio_t < 0.5
+            # Only a sustained run of uncaptioned audio is the thinking sound; a stray
+            # tail frame is not (the 1 s idle -> thinking rule catches a bed that starts
+            # right after the speech).
+            now = self._clock()
+            bed = (self._bed_since is not None and self._audio_t is not None
+                   and now - self._audio_t < 0.5 and now - self._bed_since >= FACE_BED_SECS)
             self.state("thinking" if bed else "idle")
 
     def tick(self) -> None:
@@ -269,7 +284,7 @@ class FaceTap:
     def ended(self) -> None:
         """The session is over: idle, mouth shut, whatever we thought it was."""
         self._caption = ""
-        self.voiced = False
+        self._voiced, self._voiced_until = False, 0.0
         self._bed_since = self._audio_t = None
         self._mouth = 0.0
         self._emit({"mouth": 0.0})
