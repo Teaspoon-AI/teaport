@@ -70,6 +70,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.pipeline.runner import PipelineRunner
 
+from teaport_brain import reply_hold
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
 from teaport_brain import agent_backend, audio_dump, sdnotify
@@ -417,6 +418,7 @@ async def run(sock_path: str):
             transport,
             input_processors=input_procs or None,
             stt_makeup_db=STT_MAKEUP_DB,
+            reply_hold_enabled=reply_hold.SIP_ENABLED,
         )
 
         @session.task.event_handler("on_pipeline_finished")

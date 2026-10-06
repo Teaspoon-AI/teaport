@@ -706,15 +706,28 @@ help = "Transcribed words needed to interrupt the bot. 1 makes every word a barg
 source = "endpointing.py:159"
 
 [[settings]]
-name = "TEAPORT_REPLY_HOLD"
+name = "TEAPORT_REPLY_HOLD_SIP"
 store = "brain_env"
 group = "turn_taking"
 type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Before a reply to the caller's turn starts playing, check the line: if they have started talking again since the turn was committed, hold the reply. If their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they stop. A caller who stays quiet is never delayed."
-source = "reply_hold.py:100"
+services = ["teaport-sip-brain"]
+help = "Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed."
+source = "reply_hold.py:121"
+
+[[settings]]
+name = "TEAPORT_REPLY_HOLD_TALK"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = false
+read = "startup"
+tier = "tuning"
+services = ["teaport-brain"]
+help = "The same reply hold for the OpenClaw Talk path. Off until a Talk session has been measured with it: the only measurement so far is a telephony call."
+source = "reply_hold.py:122"
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_RELEASE_S"
@@ -726,8 +739,8 @@ min = 0
 default = 1.0
 read = "startup"
 tier = "tuning"
-help = "How long a held reply waits, after the caller goes quiet, for their words before it plays anyway. Counted from the VAD stop, so it is ENDPOINT_STOP_SECS more than that after the speech ends."
-source = "reply_hold.py:106"
+help = "How long a held reply waits for the caller's words once the line is quiet -- the VAD's stop and the fast onset test's offset, whichever is later -- before it plays anyway. So it is about ENDPOINT_STOP_SECS more than this after the speech ends."
+source = "reply_hold.py:129"
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_MAX_S"
@@ -739,8 +752,21 @@ min = 0
 default = 6.0
 read = "startup"
 tier = "tuning"
-help = "The longest a reply is ever held, from the start of the hold, whatever the VAD says."
-source = "reply_hold.py:108"
+help = "The longest a reply is ever held, from the start of the hold, whatever the VAD says. Raised to TEAPORT_REPLY_HOLD_RELEASE_S if set lower."
+source = "reply_hold.py:132"
+
+[[settings]]
+name = "TEAPORT_REPLY_HOLD_ONSET_MAX_S"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+default = 2.5
+read = "startup"
+tier = "tuning"
+help = "The cap for a hold only the fast onset test asked for (no VAD start in it). That test has no volume gate, so steady room noise above its threshold would otherwise hold every reply to TEAPORT_REPLY_HOLD_MAX_S. Never more than that, never less than TEAPORT_REPLY_HOLD_RELEASE_S."
+source = "reply_hold.py:134"
 
 [[settings]]
 name = "TEAPORT_ONSET_CONFIDENCE"
@@ -752,7 +778,7 @@ max = 1
 default = 0.6
 read = "startup"
 tier = "tuning"
-help = "Silero confidence that counts toward the fast speech-onset signal the reply hold uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides."
+help = "Silero confidence that counts toward the fast speech-onset signal the reply hold (and, on SIP, the barge-in pause) uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides."
 source = "speech_onset.py:36"
 
 [[settings]]
@@ -1189,7 +1215,7 @@ read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
 note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
-source = "sip_server.py:135"
+source = "sip_server.py:136"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -1203,7 +1229,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:136"
+source = "sip_server.py:137"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1218,7 +1244,7 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:146"
+source = "sip_server.py:147"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1229,7 +1255,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:552"
+source = "sip_server.py:554"
 
 # ---- diagnostics
 

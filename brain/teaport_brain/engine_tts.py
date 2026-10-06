@@ -413,9 +413,16 @@ class EngineTTSService(TTSService):
         # When the audio emitted so far finishes playing (time.monotonic(); 0 = idle
         # since the last barge-in), for _note_playout.
         self._play_end = 0.0
-        # Set while playout is held downstream (reply_hold.PlayoutHoldFrame): the time
-        # the hold began, which stands in for "now" in the model above until it ends.
+        # Set while playout is stopped downstream (reply_hold.PlayoutHoldFrame, and any
+        # other source -- one freeze per source, so two overlapping ones neither end
+        # each other early nor double-count): the time the first began, which stands in
+        # for "now" in the model above until the last ends, and the same instant on the
+        # pipeline clock. _ctx_held_ns is how much of that the context being spoken
+        # now spent stopped after its words were anchored, for _prev_audio_end_ns.
+        self._freezes: set = set()
         self._frozen_at = None
+        self._frozen_clock = None
+        self._ctx_held_ns = 0
         # Where the previous context's audio ENDS on the playout clock (its word
         # baseline + all the audio it emitted), so a reply queued behind it is
         # scheduled from there. pipecat anchors a new context at the previous one's
@@ -517,7 +524,7 @@ class EngineTTSService(TTSService):
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self._user_quiet.set()
         elif isinstance(frame, PlayoutHoldFrame):
-            self._freeze_playout(frame.active)
+            self._freeze_playout("hold", frame.active)
             return  # pushed for us alone
         await super().process_frame(frame, direction)
 
@@ -525,22 +532,49 @@ class EngineTTSService(TTSService):
         """The playout model's clock: wall time, standing still while playout is held."""
         return self._frozen_at if self._frozen_at is not None else time.monotonic()
 
-    def _freeze_playout(self, held: bool):
-        """Playout downstream stopped (held) or started again. What was emitted and not
-        yet played when it stopped plays that much later, so _play_end moves with it;
-        while it is stopped, nothing emitted is playing either (_now stands still).
-        Without this, "lead" pacing ran on through a hold and _note_playout counted the
-        hold as a playout gap, moving the next sentence's word times twice."""
+    def _clock_ns(self):
+        try:
+            return self.get_clock().get_time()
+        except Exception:  # noqa: BLE001 -- no clock before setup: nothing anchored yet
+            return None
+
+    def _freeze_playout(self, source: str, held: bool):
+        """Playout downstream stopped (`source` holds or pauses it) or started again.
+
+        What was emitted and not yet played when it stopped plays that much later, so
+        _play_end moves with it; while it is stopped, nothing emitted is playing either
+        (_now stands still). Without this, "lead" pacing ran on through a hold and
+        _note_playout counted the hold as a playout gap, moving the next sentence's word
+        times twice.
+
+        A reply queued BEHIND the stopped one is anchored at _prev_audio_end_ns, which
+        is on the pre-stop clock: it moves too, now if that context has ended, or when
+        the one in progress ends (_ctx_held_ns, counted from when its words were
+        anchored). The stopped context's own words are not touched here: the processor
+        that stopped them moves them (reply_hold.ReplyHoldGate re-stamps every pts of a
+        held context), and moving its baseline as well would move them twice."""
         if held:
-            if self._frozen_at is None:
+            if not self._freezes:
                 self._frozen_at = time.monotonic()
+                self._frozen_clock = self._clock_ns()
+            self._freezes.add(source)
             return
-        if self._frozen_at is None:
+        if source not in self._freezes:
             return
+        self._freezes.discard(source)
+        if self._freezes or self._frozen_at is None:
+            return  # still stopped by another source
         held_for = time.monotonic() - self._frozen_at
         if self._play_end > self._frozen_at:
             self._play_end += held_for
-        self._frozen_at = None
+        now, then = self._clock_ns(), self._frozen_clock
+        if now is not None and then is not None:
+            if self._prev_audio_end_ns > then:
+                self._prev_audio_end_ns += now - then
+            base = self._initial_word_timestamp
+            if base != -1:
+                self._ctx_held_ns += max(0, now - max(then, base))
+        self._frozen_at = self._frozen_clock = None
 
     async def _hold_for_user_speech(self):
         """Between clauses: wait out user speech (capped) so STT gets the GPU."""
@@ -860,7 +894,8 @@ class EngineTTSService(TTSService):
         base = self._initial_word_timestamp
         secs = self._ctx_audio_secs.pop(context_id, 0.0)
         if base != -1 and not self._interrupted:
-            self._prev_audio_end_ns = base + int(secs * 1e9)
+            self._prev_audio_end_ns = base + int(secs * 1e9) + self._ctx_held_ns
+            self._ctx_held_ns = 0
         await super()._maybe_reset_word_timestamps(context_id)
 
     async def _handle_interruption(self, frame, direction):
@@ -875,7 +910,9 @@ class EngineTTSService(TTSService):
                         f"synthesized audio (pacing={self._pacing})")
         self._interrupted = True  # the base resets word timestamps below: no carry
         self._play_end = 0.0      # the flushed audio is not going to play
-        self._frozen_at = None    # nor is anything held
+        self._freezes.clear()     # nor is anything held
+        self._frozen_at = self._frozen_clock = None
+        self._ctx_held_ns = 0
         await super()._handle_interruption(frame, direction)
         self._prev_audio_end_ns = 0
 

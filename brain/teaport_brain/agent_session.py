@@ -676,7 +676,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         cancel_on_idle_timeout: bool | None = None,
                         stt_makeup_db: float = 0.0,
                         caption_every_final: bool = False,
-                        context_notes: bool = False) -> AgentSession:
+                        context_notes: bool = False,
+                        reply_hold_enabled: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -695,6 +696,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     - context_notes: the front-end takes a Talk client's context notes (/talk, the
       teaport.talk.context method): ClientNotes joins the pipeline and the system
       prompt gets its one line (client_notes.py). SIP leaves it off.
+    - reply_hold_enabled: hold a reply's first audio while the caller is talking
+      (reply_hold.py). Per front-end: sip_server passes reply_hold.SIP_ENABLED (on by
+      default), gateway_server reply_hold.TALK_ENABLED (off by default).
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -786,8 +790,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     ledger = TranscriptLedger(tts=tts, output=transport_output)
     # Holds a fresh reply while the caller is talking over its start, and has the
     # corrector fold the caller's next turn into the one it then drops (reply_hold.py).
-    turn_merge = reply_hold.TurnMerge() if reply_hold.ENABLED else None
-    reply_gate = reply_hold.ReplyHoldGate(merge=turn_merge) if reply_hold.ENABLED else None
+    turn_merge = reply_hold.TurnMerge() if reply_hold_enabled else None
+    reply_gate = reply_hold.ReplyHoldGate(merge=turn_merge) if reply_hold_enabled else None
     heard_corrector = HeardContextCorrector(ledger, context, merge=turn_merge)
     if speculate.ENABLED:
         # Ask the LLM on a final the turn did not conclude on; the service adopts the
@@ -795,7 +799,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         # rewrite of a cut reply is applied before the snapshot so it cannot be what
         # changed in between. See speculate.py.
         speculator = speculate.Speculator(llm=llm, aggregator=context_aggregator.user(),
-                                          before_snapshot=heard_corrector._reconcile)
+                                          before_snapshot=heard_corrector.reconcile_for_snapshot)
         stop_strategy.speculator = speculator
         llm.speculator = speculator
         logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "

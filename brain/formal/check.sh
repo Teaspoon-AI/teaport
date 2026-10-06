@@ -98,6 +98,18 @@ run UserTurn.tla ut_spec_byContext_nomissedbargein "(expected: holds)"
 run UserTurn.tla ut_spec_byContext_nostalereply    "(expected: holds)"
 run UserTurn.tla ut_spec_byText_nostalereply       "(expected: FAILS NoStaleReply)"
 echo
+echo "UserTurn.tla — the reply hold (HOLD, #85): a reply started over a caller who resumed"
+run UserTurn.tla ut_hold_none_nostalereply           "(expected: FAILS NoStaleReply — before #85: the reply plays over the resumed caller)"
+run UserTurn.tla ut_hold_none_nosplitturn            "(expected: FAILS NoSplitTurn — before #85: a reply dropped unplayed leaves fragment + continuation)"
+run UserTurn.tla ut_hold_gateNoMerge_nosplitturn     "(expected: FAILS NoSplitTurn — the hold without TurnMerge)"
+run UserTurn.tla ut_hold_gateNoResume_nosilencedbot  "(expected: FAILS NoSilencedBot — first cut: a drop left the queue paused)"
+run UserTurn.tla ut_hold_gateEndWaits_noendbehindhold "(expected: FAILS NoEndBehindHold — first cut: the End waited behind the hold)"
+run UserTurn.tla ut_hold_gate_all                    "(expected: holds — reply_hold.py as shipped, with NoStrandedTurn and NoMissedBargeIn)"
+echo
+echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
+run PlayoutClock.tla pc_release_words "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
+run PlayoutClock.tla pc_release_all   "(expected: holds — every pts-carrying frame of the held context moved)"
+echo
 echo "SttCommit.tla — when the STT closes the engine's transcript segment (#43)"
 run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the commit at the raw VAD stop)"
 run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did right)"

@@ -208,6 +208,11 @@ async def test_resumed_speech_with_words_drops_the_held_reply():
         assert rig.gate.dropped == 1 and rig.gate.released == 0
         assert rig.merge.pending, "the next commit must be folded into the unanswered turn"
         assert rig.holds_up() == [True, False], rig.holds_up()
+        assert not rig.gate.armed, "the interruption is a new turn: nothing is armed"
+        # The caller goes on talking before their turn commits: nothing to hold.
+        await rig.send(VADUserStoppedSpeakingFrame(), VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        assert rig.gate.holds == 1 and not rig.gate.holding
         # The queue is live again: the next reply (to the merged turn) plays at once.
         await rig.send(VADUserStoppedSpeakingFrame())
         await asyncio.sleep(0.05)
@@ -427,6 +432,44 @@ def test_merge_only_folds_adjacent_words_of_the_caller():
     merge.request()
     c._reconcile()
     assert len(msgs) == 3
+    # ... nor INTO one: an order at the tail of the previous commit is not the caller's.
+    order = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\ntell them"}
+    msgs = [{"role": "system", "content": "s"}, order]
+    c, merge = corrector(msgs)
+    msgs.append({"role": "user", "content": "what was that"})
+    merge.request()
+    c._reconcile()
+    assert len(msgs) == 3 and msgs[1]["content"] == order["content"]
+    # Not when the newest message is not the caller's.
+    a = {"role": "user", "content": "one"}
+    msgs = [{"role": "system", "content": "s"}, a]
+    c, merge = corrector(msgs)
+    msgs.append({"role": "assistant", "content": "an answer"})
+    merge.request()
+    c._reconcile()
+    assert len(msgs) == 3 and msgs[1]["content"] == "one"
+
+    # A MemoryRecall note between the two (it lands just before the turn it recalled
+    # for) does not split them; it stays after the merged turn.
+    a = {"role": "user", "content": "so I was thinking"}
+    note = {"role": "system", "content": "You remember these things"}
+    msgs = [{"role": "system", "content": "s"}, a]
+    c, merge = corrector(msgs)
+    msgs += [note, {"role": "user", "content": "we could go"}]
+    merge.request()
+    c._reconcile()
+    assert [m["content"] for m in msgs] == ["s", "so I was thinking we could go", note["content"]]
+
+    # The speculative reply's snapshot reconcile (on B's final, before B is committed)
+    # must not take the merge: it belongs to B's commit.
+    a = {"role": "user", "content": "so I was thinking"}
+    msgs = [{"role": "system", "content": "s"}, a]
+    c, merge = corrector(msgs)
+    merge.request()
+    c.reconcile_for_snapshot()
+    msgs.append({"role": "user", "content": "we could go"})
+    c._reconcile()
+    assert [m["content"] for m in msgs] == ["s", "so I was thinking we could go"], msgs
 
 
 def test_the_tts_playout_model_stands_still_through_a_hold():
@@ -456,7 +499,7 @@ async def test_the_session_puts_the_gate_right_below_the_tts_and_on_the_onset():
     from teaport_brain.agent_session import build_agent_session
     from test_service_unusable import _Transport
 
-    session = build_agent_session(_Transport())
+    session = build_agent_session(_Transport(), reply_hold_enabled=True)
     gate = session.tts.next
     assert isinstance(gate, ReplyHoldGate), f"below the TTS: {gate!r}"
     p = session.tts
@@ -465,6 +508,240 @@ async def test_the_session_puts_the_gate_right_below_the_tts_and_on_the_onset():
     vad = p._params.vad_analyzer
     assert gate.on_onset in vad.onset_listeners
     assert gate._merge is not None
+    # Per front-end, and off unless the front-end asks (Talk's default).
+    assert not isinstance(build_agent_session(_Transport()).tts.next, ReplyHoldGate)
+    from teaport_brain import reply_hold
+    assert reply_hold.SIP_ENABLED is True and reply_hold.TALK_ENABLED is False
+
+
+async def test_speaking_at_the_commit_holds_at_once():
+    # The ceiling commits while the onset test still hears the caller (the VAD has
+    # stopped under them): about 5 of the 9 holds in the call's replay start this way.
+    async with GateRig() as rig:
+        await rig.gate.on_onset(True)
+        await asyncio.sleep(0.05)
+        assert not rig.gate.holding, "unarmed: nothing to hold yet"
+        await rig.gate.arm()
+        assert rig.gate.holding and rig.gate.onset_only_holds == 1
+        await rig.send(*reply("c1", rig))
+        await asyncio.sleep(0.2)
+        assert not rig.bottom.audio()
+        await rig.gate.on_onset(False)
+        await asyncio.sleep(RELEASE_S + 0.2)
+        assert len(rig.bottom.audio()) == 3
+
+
+async def test_an_onset_only_hold_has_the_shorter_cap():
+    async with GateRig(onset_max_secs=0.6) as rig:
+        await rig.gate.arm()
+        await rig.gate.on_onset(True)                 # steady noise: never goes quiet
+        await rig.send(*reply("c1", rig))
+        await asyncio.sleep(0.45)
+        assert not rig.bottom.audio()
+        await asyncio.sleep(0.4)
+        assert len(rig.bottom.audio()) == 3, "an onset-only hold must end at its own cap"
+    async with GateRig(onset_max_secs=0.6) as rig:
+        await rig.gate.arm()
+        await rig.gate.on_onset(True)
+        await asyncio.sleep(0.1)
+        await rig.send(VADUserStartedSpeakingFrame())  # the VAD confirms: the full cap
+        await rig.send(*reply("c1", rig))
+        await asyncio.sleep(0.9)
+        assert not rig.bottom.audio(), "a VAD-confirmed hold keeps the full cap"
+        await asyncio.sleep(MAX_S - 0.9)
+        assert len(rig.bottom.audio()) == 3
+
+
+async def test_a_drop_with_an_uninterruptible_frame_in_hand_does_not_silence_the_bot():
+    # The paused queue had already dequeued an UninterruptibleFrame when the words came:
+    # pipecat then only resets the queue and leaves its task waiting on the pause. The
+    # gate must lift the pause itself, or no reply ever plays again.
+    async with GateRig() as rig:
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        await rig.send(FunctionCallInProgressFrame(function_name="f", tool_call_id="t",
+                                                   arguments={}), *reply("c1", rig))
+        await asyncio.sleep(0.3)
+        await rig.send(InterruptionFrame(), VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(0.2)
+        await rig.gate.arm()
+        await rig.send(*reply("c2", rig))
+        await asyncio.sleep(0.4)
+        got = [f.context_id for _, f in rig.bottom.audio()]
+        assert got.count("c2") == 3 and "c1" not in got, got
+
+
+async def test_words_placed_after_the_release_move_with_the_held_ones():
+    # The TTS keeps placing the held context's words on its pre-hold baseline after the
+    # release: they move by the same wait, or they would run ahead of their audio.
+    async with GateRig() as rig:
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        frames = reply("c1", rig)
+        base = frames[2].pts
+        await rig.send(*frames[:-2])                    # the first clause, held
+        await asyncio.sleep(0.3)
+        await rig.send(VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(RELEASE_S + 0.15)
+        assert rig.gate.released == 1
+        later = word("later", "c1", base + int(2e9))     # placed after the release
+        end = frames[-2]
+        end.pts = later.pts                               # the End: the last word's pts
+        await rig.send(later, end)
+        await asyncio.sleep(0.1)
+        got = {getattr(f, "text", type(f).__name__): f.pts for _, f in rig.bottom.down
+               if getattr(f, "pts", None)}
+        moved = nanoseconds_to_seconds(got["Sure,"] - base)
+        assert 0.5 <= moved <= 0.9, moved
+        assert got["later"] - (base + int(2e9)) == got["Sure,"] - base, (
+            "a word placed after the release must move by the held context's wait")
+        assert got["LLMFullResponseEndFrame"] == got["later"], (
+            "the End (no context of its own) must move with its context's words")
+
+
+async def test_a_hang_up_during_a_hold_ends_at_once_and_plays_nothing():
+    from pipecat.frames.frames import EndFrame
+    rig = GateRig()
+    await rig.__aenter__()
+    await rig.gate.arm()
+    await rig.send(VADUserStartedSpeakingFrame())
+    await asyncio.sleep(0.05)
+    await rig.send(*reply("c1", rig))
+    await asyncio.sleep(0.2)
+    t0 = time.monotonic()
+    await rig.send(EndFrame())
+    await asyncio.wait_for(rig._run, timeout=MAX_S)
+    assert time.monotonic() - t0 < 0.5, f"the end waited {time.monotonic() - t0:.2f}s on the hold"
+    assert not rig.bottom.audio(), "the held reply played into the closing session"
+    assert rig.gate.dropped == 1 and not rig.gate.holding
+
+
+async def test_a_cancelled_session_leaves_no_timer_to_release_into():
+    from pipecat.frames.frames import CancelFrame
+    rig = GateRig()
+    await rig.__aenter__()
+    await rig.gate.arm()
+    await rig.send(VADUserStartedSpeakingFrame())
+    await asyncio.sleep(0.05)
+    await rig.send(*reply("c1", rig))
+    await rig.send(VADUserStoppedSpeakingFrame())     # the release timer is running
+    await asyncio.sleep(0.05)
+    await rig.gate.queue_frame(CancelFrame())
+    await asyncio.sleep(0.05)
+    assert rig.gate._release_task is None and rig.gate._cap_task is None
+    await rig.task.cancel()
+    await rig._run
+    await asyncio.sleep(RELEASE_S + 0.1)
+    assert rig.gate.released == 0
+
+
+async def test_cleanup_cancels_the_timers():
+    gate = ReplyHoldGate(merge=TurnMerge(), release_secs=RELEASE_S, max_secs=MAX_S)
+    gate._release_task = asyncio.get_running_loop().create_task(asyncio.sleep(10))
+    gate._cap_task = asyncio.get_running_loop().create_task(asyncio.sleep(10))
+    t1, t2 = gate._release_task, gate._cap_task
+    try:
+        await gate.cleanup()
+    except Exception:  # noqa: BLE001 -- never set up; only the timers matter here
+        pass
+    await asyncio.sleep(0)
+    assert t1.cancelled() and t2.cancelled()
+
+
+async def test_a_released_reply_commits_every_word_through_the_real_transport():
+    # The review's probe, kept: a held-then-released reply through the real output
+    # transport (its clock releases timed frames at their pts) and the real assistant
+    # aggregator. Moving only the words let the re-pushed End (pts = the last word's)
+    # overtake them; the aggregator committed "Sure here" and lost the rest.
+    from pipecat.frames.frames import OutputAudioRawFrame
+    from pipecat.processors.aggregators.llm_context import LLMContext as Ctx
+    from pipecat.processors.aggregators.llm_response_universal import (
+        LLMContextAggregatorPair as Pair)
+    from pipecat.transports.base_output import BaseOutputTransport
+    from pipecat.transports.base_transport import TransportParams
+
+    words = "Sure here is the whole answer to your question".split()
+
+    class StubOutput(BaseOutputTransport):
+        def __init__(self):
+            super().__init__(TransportParams(audio_out_enabled=True, audio_out_sample_rate=SR))
+
+        async def start(self, frame):
+            await super().start(frame)
+            await self.set_transport_ready(frame)
+
+        async def write_audio_frame(self, frame: OutputAudioRawFrame) -> bool:
+            await asyncio.sleep(len(frame.audio) / 2 / SR)
+            return True
+
+    async def run(hold):
+        context = Ctx([{"role": "system", "content": "s"}, {"role": "user", "content": "q"}])
+        pair = Pair(context)
+        gate = ReplyHoldGate(merge=TurnMerge(), release_secs=0.4, max_secs=3.0)
+        task = PipelineTask(Pipeline([gate, StubOutput(), pair.assistant()]),
+                            cancel_on_idle_timeout=False)
+        runner = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+        await asyncio.sleep(STARTUP_S)
+        await gate.arm()
+        if hold:
+            await task.queue_frame(VADUserStartedSpeakingFrame())
+            await asyncio.sleep(0.05)
+        now = gate.get_clock().get_time()
+        frames = [LLMFullResponseStartFrame(), TTSStartedFrame(context_id="c")]
+        last = now
+        for i, w in enumerate(words):
+            f = TTSTextFrame(w, aggregated_by="word", context_id="c")
+            f.pts = last = now + int(i * 0.15e9)
+            frames.append(f)
+        frames += [TTSAudioRawFrame(b"\x01\x00" * int(SR * 0.1), SR, 1, context_id="c")
+                   for _ in range(14)]
+        end = LLMFullResponseEndFrame()
+        end.pts = last
+        frames += [TTSStoppedFrame(context_id="c"), end]
+        await task.queue_frames(frames)
+        if hold:
+            await asyncio.sleep(0.6)
+            await task.queue_frame(VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(3.0)
+        await task.cancel()
+        await runner
+        return [m.get("content") for m in context.get_messages() if m["role"] == "assistant"]
+
+    assert await run(hold=False) == [" ".join(words)]
+    assert await run(hold=True) == [" ".join(words)], (
+        "a released reply must commit every word it played")
+
+
+def test_the_tts_moves_the_anchor_of_a_reply_queued_behind_a_hold():
+    # A reply queued behind the held one is anchored where the held one's audio ends
+    # (_prev_audio_end_ns, on the pipeline clock): that end moves with the hold.
+    from teaport_brain.engine_tts import EngineTTSService
+
+    class Clock:
+        t = 10_000_000_000
+
+        def get_time(self):
+            return self.t
+
+    async def run():
+        tts = EngineTTSService(voice="af_heart")
+        clk = Clock()
+        tts.get_clock = lambda: clk
+        tts._prev_audio_end_ns = clk.t + 2_000_000_000          # 2 s still to play
+        await tts.process_frame(PlayoutHoldFrame(active=True), FrameDirection.UPSTREAM)
+        clk.t += 700_000_000
+        await tts.process_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
+        assert tts._prev_audio_end_ns == 10_000_000_000 + 2_700_000_000
+        # A context in progress: its end is anchored when it completes, plus the hold.
+        tts._initial_word_timestamp = clk.t
+        await tts.process_frame(PlayoutHoldFrame(active=True), FrameDirection.UPSTREAM)
+        clk.t += 500_000_000
+        await tts.process_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
+        assert tts._ctx_held_ns == 500_000_000
+
+    asyncio.run(run())
 
 
 # ---------------------------------------------------------------- the call's shape

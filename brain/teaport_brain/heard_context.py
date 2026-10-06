@@ -106,7 +106,13 @@ class HeardContextCorrector(FrameProcessor):
             self._reconcile()
         await self.push_frame(frame, direction)
 
-    def _reconcile(self):
+    def reconcile_for_snapshot(self):
+        """The speculative reply's before_snapshot hook (speculate.py): the cut replies
+        reconciled, as at a commit -- but this is not a commit, so a pending turn merge
+        is left for the commit it belongs to (taking it here lost it)."""
+        self._reconcile(commit=False)
+
+    def _reconcile(self, commit: bool = True):
         start = self._mark
         for u in self._ledger.events[self._done:]:
             if not (u.interrupted and u.cut_short):
@@ -116,12 +122,14 @@ class HeardContextCorrector(FrameProcessor):
             else:
                 self._truncate(u, start)
         self._done = len(self._ledger.events)
-        # After the truncation: a reply cut at 0% that pipecat did commit sits between
-        # the two user messages until it is removed above.
-        if self._merge is not None and self._merge.take():
-            self._merge_tail()
         msgs = self._context.get_messages()
-        self._last_user = msgs[-1] if msgs and msgs[-1].get("role") == "user" else None
+        if commit:
+            # After the truncation: a reply cut at 0% that pipecat did commit sits
+            # between the two user messages until it is removed above.
+            if self._merge is not None and self._merge.take():
+                self._merge_tail()
+                msgs = self._context.get_messages()
+            self._last_user = msgs[-1] if msgs and msgs[-1].get("role") == "user" else None
         self._mark = len(msgs)
 
     def _merge_tail(self):
@@ -131,21 +139,25 @@ class HeardContextCorrector(FrameProcessor):
         was dropped before a word of it played: the caller was not answered, they kept
         talking, and what they said is the rest of that turn. Left as two messages the
         model reads a fragment and a separate continuation -- and has been seen to answer
-        the fragment. Only when the two are adjacent and both the caller's own words: a
-        tool call in between, or an injected order (SYSTEM_NOTICE_TAG), leaves them be."""
+        the fragment. Only when both are the caller's own words, and nothing but system
+        messages sits between them (MemoryRecall adds its note just before the turn it
+        recalled for): a tool call in between, or an injected order (SYSTEM_NOTICE_TAG),
+        leaves them be. The system notes stay where they were, after the merged turn."""
         msgs = self._context.get_messages()
-        prev = self._last_user
-        if (len(msgs) >= 2 and prev is not None and msgs[-2] is prev
-                and msgs[-1].get("role") == "user"):
-            first, rest = _msg_text(prev).strip(), _msg_text(msgs[-1]).strip()
+        prev, last = self._last_user, (msgs[-1] if msgs else None)
+        idx = next((i for i, m in enumerate(msgs) if m is prev), None)
+        if (idx is not None and last is not None and last is not prev
+                and prev.get("role") == "user" and last.get("role") == "user"
+                and all(m.get("role") == "system" for m in msgs[idx + 1:-1])):
+            first, rest = _msg_text(prev).strip(), _msg_text(last).strip()
             if (first and rest and not first.startswith(SYSTEM_NOTICE_TAG)
                     and not rest.startswith(SYSTEM_NOTICE_TAG)):
                 _set_msg_text(prev, f"{first} {rest}")
-                self.drop_messages([msgs[-1]])
+                self.drop_messages([last])
                 logger.info(f"HeardCorrector[merge]: unanswered turn + its continuation "
                             f"-> one user turn …{_msg_text(prev)[-60:]!r}")
                 return
-        logger.info("HeardCorrector[merge]: the unanswered turn is not the message "
+        logger.info("HeardCorrector[merge]: the unanswered turn is not the caller's message "
                     "before this one; left as two turns")
 
     def drop_messages(self, doomed):

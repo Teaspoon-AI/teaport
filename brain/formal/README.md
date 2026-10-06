@@ -747,7 +747,7 @@ the whole-context check is what turns one into a miss instead of a wrong reply.
 
 | SPEC | promotes when | `NoStrandedTurn` | `NoMissedBargeIn` | `NoStaleReply` |
 |---|---|---|---|---|
-| `off` | — (the four MODE rows above, unchanged: 47 states) | | | |
+| `off` | — (the four MODE rows above; 436 states since the reply hold added its variables, 47 before) | | | |
 | `byText` | the committed text is what was asked | ✓ | ✓ | ✗ |
 | `byContext` | the whole context equals the snapshot — `Speculator.take` | ✓ | ✓ | ✓ |
 
@@ -776,6 +776,83 @@ never fails on the *text*: every live speculation's text is the committed one, a
 whole difference between the two designs is what else the context holds. The commit is
 `Inference` or `ForceStop` — the watchdog's stop pushes the aggregation too, so it reaches
 `Speculator.take` and decides the speculation the same way.
+
+### The reply hold (`HOLD`, #85)
+
+A commit's reply plays ~0.2 s after the commit, and a caller who was only pausing — the
+`SMARTTURN_STOP_SECS` ceiling commits mid-sentence — resumes inside that gap. Their words
+interrupt only once transcribed, so the reply starts over them about a fragment, and the
+next commit then hands the model the fragment and its continuation as two user messages.
+On a 2026-10-05 test call 10 of 14 INCOMPLETE verdicts were committed that way.
+`ReplyHoldGate` (`reply_hold.py`) is armed by every commit until its reply's first audio;
+the caller speaking while it is armed pauses its input queue (`held`, `paused`). Their
+words — a new turn — drop the held reply and ask `HeardContextCorrector` to fold the next
+commit into the unanswered one; no words release it.
+
+The model's additions are one step each between awaits: the hold is taken inside the
+VAD start (or the `Resume` inside the commit's own await), the release after the
+resumed speech turned out to be wordless (`Wordless`, then `Release`), the drop inside
+`Interject`'s interruption, the merge at the commit (`Inference`), and `Hangup` — the
+session's `EndFrame` reaching the gate's queue. `BotStart` now also plays the last
+commit's reply (`reply`), not only the refused-finalize one, and waits while `paused`.
+
+| HOLD | | `NoStaleReply` | `NoSplitTurn` | `NoSilencedBot` | `NoEndBehindHold` |
+|---|---|---|---|---|---|
+| `none` | before #85 | ✗ | ✗ | ✓ | ✓ |
+| `gateNoMerge` | the hold without `TurnMerge` | ✓ | ✗ | ✓ | ✓ |
+| `gateNoResume` | as first written: a drop left the pause to pipecat's reset | ✓ | ✓ | ✗ | ✓ |
+| `gateEndWaits` | as first written: the End queued behind the hold | ✓ | ✓ | ✓ | ✗ |
+| `gate` | `reply_hold.py` as shipped | ✓ | ✓ | ✓ | ✓ |
+
+`gate` holds all four together with `NoStrandedTurn` and `NoMissedBargeIn`
+(`ut_hold_gate_all`); the speculation rows now run with `HOLD = "gate"`, the shipped
+gate, and the `MODE` rows with `HOLD = "none"` (their verdicts and the counterexamples
+above are unchanged; `NoStaleReply` grew a second cause, below, and `byText` still fails
+it on the speculation's).
+
+- `NoStaleReply` now also says: **a reply never starts over speech the caller began after
+  its commit and that turned out to be words.** `none`, 9 states:
+
+  ```
+  VadStart Interject VadStop    the turn
+  Inference Finalize            the ceiling commits it; the reply is on its way
+  VadStart                      the caller was only pausing
+  BotStart                      the reply's first audio plays over them
+  Interject                     their words arrive and cut it: it was stale
+  ```
+
+- `NoSplitTurn`: **a commit never leaves two user messages with no reply between them.**
+  `none` and `gateNoMerge` fail it the same way, 10 states: the commit, the caller
+  resumes, their words cut the (unplayed or held) reply, they stop, the next commit
+  appends their continuation after the unanswered fragment.
+- `NoSilencedBot`: **the queue is paused only while a hold is in force.** `gateNoResume`,
+  8 states: commit, resume (held), words (`Interject`) — pipecat's interruption reset
+  cancels and re-creates the process task, which lifts the pause, but when the frame the
+  paused task had already dequeued is an `UninterruptibleFrame` (a
+  `FunctionCallInProgressFrame`), it only resets the queue and leaves the task waiting on
+  the pause. The gate as first written did nothing more, and every later reply waited
+  behind it forever. It now resumes the queue on every end of a hold.
+- `NoEndBehindHold`: **the session's End never waits behind a hold.** `gateEndWaits`,
+  7 states: commit, a resume inside the commit's await (held), hang-up — the `EndFrame`,
+  a ControlFrame, queues behind the held reply (Talk's close took 5.7 s, and the held
+  reply then played into the closing session). `queue_frame` now drops the hold and lifts
+  the pause in the same step the End arrives.
+
+What the model does not say: the speaking-at-commit hold (`arm()` with the onset test
+still hearing the caller) is out of reach, because `Inference` requires a quiet VAD (see
+below); the onset test and the VAD are one `userSpeaking`; the release window and the
+caps are durations. `test_reply_hold.py` covers those on the real gate.
+
+**Follow-ups (`Followup.tla`) are unchanged by the hold, and the module is not
+extended.** The gate is armed only by a user commit, never by the injector's
+`LLMRunFrame`, so a follow-up's reply is not held. `FollowupTrigger` retires the trigger
+at the first `LLMTextFrame` *below the LLM*, above the gate, so `NoSilentLoss` and
+`NoRepeatRecital` do not see it. What the hold does to `FollowupGate`, which sits below
+the transport: a held commit's `LLMFullResponseStartFrame` reaches it later, so
+`TurnCommitMark`'s claim keeps the window shut longer (never an interjection), and a held
+`FunctionCallInProgressFrame` keeps the narrator out for the hold — only while the
+caller is talking or within the release window of it, which is not the dead air
+`NoDeadAirDuringTool` is about.
 
 ### Known limits of this model
 
@@ -806,7 +883,42 @@ whole difference between the two designs is what else the context holds. The com
   reason=ctx-changed` in the journal does — and it does not know that the code's known
   writers all land outside the window today (see above); it checks the design that
   stays right when one does not.
-- **Scale.** 47 distinct states with `SPEC = "off"`, 291 with it on; well under a second.
+- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 1242 with it on, 200 for `HOLD = "gate"` alone; well under a second each.
+
+## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
+
+`LedgerPlayout.tla` abstracts every number away — its limits say so: the layout's
+seconds, `heard_fraction`, the pts cut — and this question is nothing but numbers in an
+order: which frame the output transport's clock releases first. So it is a small module
+of its own rather than a constant on that one, whose state space is already 258k states.
+
+The TTS stamps its frames with a playout time as it synthesizes them: each word, and
+also the response's `LLMFullResponseEndFrame`, re-pushed after the context's audio at
+the last word's pts (`tts_service.py`). `BaseOutputTransport` puts every frame with a
+pts on a priority queue keyed `(pts, arrival)` and releases each when its clock reaches
+it; the assistant aggregator gathers the words it is handed and commits them at the End.
+A reply `ReplyHoldGate` held for `hold` units plays from its release, so all of its pts
+are that much early unless the gate moves them.
+
+| SHIFT | | `CommittedIsPlayed` |
+|---|---|---|
+| `words` | as first written: only `TTSTextFrame` pts moved | ✗ |
+| `all` | as shipped: every pts-carrying frame of the held context, the End included | ✓ |
+
+`pc_release_words`, 6 states (`N = 3`, `MaxHold = 3`):
+
+```
+Wait Wait Wait    the caller coughs over the reply's start: held 3 units
+Release           words move to pts 4..6; the End keeps pts 3
+Pop               the clock's head is the End -- released first; the aggregator
+                  commits nothing, and the three words leak into the next message
+```
+
+The review's probe found the same on the real transport and aggregator: a cough-release
+committed `'Sure here'` and left seven words uncommitted.
+`test_reply_hold.py::test_a_released_reply_commits_every_word_through_the_real_transport`
+is that probe, kept. The End has no `context_id`; the gate gives it the context it saw
+last, which is the one whose audio it follows.
 
 ## `SttCommit.tla` — when the STT closes the engine's transcript segment (#43)
 
