@@ -816,9 +816,12 @@ def build_agent_session(transport, *, voice: str | None = None,
     if reply_gate is not None:
         vad_analyzer.onset_listeners.append(reply_gate.on_onset)
 
-        @context_aggregator.user().event_handler("on_user_turn_inference_triggered")
-        async def _arm_reply_gate(_aggregator, _strategy):
-            # Every user-turn commit: the reply it asks for is checked before it plays.
+        @context_aggregator.user().event_handler("on_user_turn_message_added")
+        async def _arm_reply_gate(_aggregator, _message):
+            # Every user-turn commit that carried words (push_aggregation fires this only
+            # for a non-empty aggregation): the reply it asks for is checked before it
+            # plays. Not on_user_turn_inference_triggered, which also fires for an empty
+            # one and armed the gate for whatever spoke next.
             await reply_gate.arm()
 
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)

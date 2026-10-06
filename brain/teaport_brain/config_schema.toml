@@ -706,6 +706,16 @@ help = "Transcribed words needed to interrupt the bot. 1 makes every word a barg
 source = "endpointing.py:159"
 
 [[settings]]
+name = "TEAPORT_REPLY_HOLD"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+read = "startup"
+tier = "diag"
+help = "Retired, never shipped in a release: the reply hold is set per front-end by TEAPORT_REPLY_HOLD_SIP and TEAPORT_REPLY_HOLD_TALK. If it is still set, the brain ignores it and logs a warning saying so."
+source = "reply_hold.py:129"
+
+[[settings]]
 name = "TEAPORT_REPLY_HOLD_SIP"
 store = "brain_env"
 group = "turn_taking"
@@ -715,7 +725,7 @@ read = "startup"
 tier = "tuning"
 services = ["teaport-sip-brain"]
 help = "Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed."
-source = "reply_hold.py:121"
+source = "reply_hold.py:127"
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_TALK"
@@ -727,7 +737,7 @@ read = "startup"
 tier = "tuning"
 services = ["teaport-brain"]
 help = "The same reply hold for the OpenClaw Talk path. Off until a Talk session has been measured with it: the only measurement so far is a telephony call."
-source = "reply_hold.py:122"
+source = "reply_hold.py:128"
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_RELEASE_S"
@@ -740,7 +750,7 @@ default = 1.0
 read = "startup"
 tier = "tuning"
 help = "How long a held reply waits for the caller's words once the line is quiet -- the VAD's stop and the fast onset test's offset, whichever is later -- before it plays anyway. So it is about ENDPOINT_STOP_SECS more than this after the speech ends."
-source = "reply_hold.py:129"
+source = "reply_hold.py:139"
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_MAX_S"
@@ -753,7 +763,7 @@ default = 6.0
 read = "startup"
 tier = "tuning"
 help = "The longest a reply is ever held, from the start of the hold, whatever the VAD says. Raised to TEAPORT_REPLY_HOLD_RELEASE_S if set lower."
-source = "reply_hold.py:132"
+source = "reply_hold.py:142"
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_ONSET_MAX_S"
@@ -766,7 +776,7 @@ default = 2.5
 read = "startup"
 tier = "tuning"
 help = "The cap for a hold only the fast onset test asked for (no VAD start in it). That test has no volume gate, so steady room noise above its threshold would otherwise hold every reply to TEAPORT_REPLY_HOLD_MAX_S. Never more than that, never less than TEAPORT_REPLY_HOLD_RELEASE_S."
-source = "reply_hold.py:134"
+source = "reply_hold.py:144"
 
 [[settings]]
 name = "TEAPORT_ONSET_CONFIDENCE"
@@ -778,7 +788,7 @@ max = 1
 default = 0.6
 read = "startup"
 tier = "tuning"
-help = "Silero confidence that counts toward the fast speech-onset signal the reply hold (and, on SIP, the barge-in pause) uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides."
+help = "Silero confidence that counts toward the fast speech-onset signal the reply hold uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides."
 source = "speech_onset.py:36"
 
 [[settings]]

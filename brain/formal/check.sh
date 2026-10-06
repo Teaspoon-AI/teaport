@@ -104,11 +104,15 @@ run UserTurn.tla ut_hold_none_nosplitturn            "(expected: FAILS NoSplitTu
 run UserTurn.tla ut_hold_gateNoMerge_nosplitturn     "(expected: FAILS NoSplitTurn — the hold without TurnMerge)"
 run UserTurn.tla ut_hold_gateNoResume_nosilencedbot  "(expected: FAILS NoSilencedBot — first cut: a drop left the queue paused)"
 run UserTurn.tla ut_hold_gateEndWaits_noendbehindhold "(expected: FAILS NoEndBehindHold — first cut: the End waited behind the hold)"
-run UserTurn.tla ut_hold_gate_all                    "(expected: holds — reply_hold.py as shipped, with NoStrandedTurn and NoMissedBargeIn)"
+run UserTurn.tla ut_hold_gateNoEnding_noendbehindhold "(expected: FAILS NoEndBehindHold — no _ending: a hold started behind the End)"
+run UserTurn.tla ut_hold_gate_all                    "(expected: holds — as shipped, ASSUMING the words arrive before the release timer / cap)"
+run UserTurn.tla ut_hold_gate_timed_nostalereply     "(expected: FAILS NoStaleReply — the timers as they are: the ACCEPTED RESIDUAL, words later than the release)"
+run UserTurn.tla ut_hold_gate_timed_rest             "(expected: holds — the timers as they are: every other property)"
 echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
-run PlayoutClock.tla pc_release_words "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
-run PlayoutClock.tla pc_release_all   "(expected: holds — every pts-carrying frame of the held context moved)"
+run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
+run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"
+run PlayoutClock.tla pc_release_all        "(expected: holds — every pts moved by the first held audio's wait)"
 echo
 echo "SttCommit.tla — when the STT closes the engine's transcript segment (#43)"
 run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the commit at the raw VAD stop)"

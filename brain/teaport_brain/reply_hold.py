@@ -14,7 +14,7 @@
 # talking over the caller about something a second or two old.
 #
 # ReplyHoldGate is the look at the line. It sits directly below the TTS and is ARMED by
-# every user-turn commit (the aggregator's on_user_turn_inference_triggered). While
+# every user-turn commit (the aggregator's on_user_turn_message_added). While
 # armed -- from the commit until the reply's first audio has gone through to the
 # transport -- the caller starting to speak makes the gate HOLD: it stops processing its
 # input queue, so the reply's frames wait in it and none reach the transport. "Starting
@@ -74,9 +74,13 @@
 # to (_prev_audio_end_ns) moves with it (engine_tts._freeze_playout).
 #
 # Known limits:
+#   * The release is a timer, not knowledge: words that arrive later than
+#     TEAPORT_REPLY_HOLD_RELEASE_S after the line went quiet (a slow STT), or a hold the
+#     cap ends while the caller is still talking, let the reply play and be cut by those
+#     words as before. The accepted residual (formal/README: ut_hold_gate_timed).
 #   * A commit whose finalization the turn controller REFUSED (the caller was audibly
 #     speaking when it landed; endpointing.keep_barge_in_reachable re-applies it later)
-#     arms the gate at the inference, and the caller's further words then join the turn
+#     arms the gate at its push, and the caller's further words then join the turn
 #     that is still open instead of starting a new one, so no interruption drops the
 #     held reply: it plays after the release window, followed by the answer to the rest.
 #     That is no worse than without the gate. 0 of 27 commits on the 2026-10-05 call.
@@ -91,6 +95,7 @@
 #     after the tool returns is not checked.
 #
 import asyncio
+import os
 from dataclasses import dataclass
 
 from loguru import logger
@@ -106,6 +111,7 @@ from pipecat.frames.frames import (
     StopFrame,
     SystemFrame,
     TTSAudioRawFrame,
+    TTSTextFrame,
     UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -120,6 +126,10 @@ from teaport_brain.env import env_flag, env_num
 # agent_session takes the front-end's value from its caller (sip_server / gateway_server).
 SIP_ENABLED = env_flag("TEAPORT_REPLY_HOLD_SIP", True)
 TALK_ENABLED = env_flag("TEAPORT_REPLY_HOLD_TALK", False)
+if os.getenv("TEAPORT_REPLY_HOLD") is not None:
+    logger.warning("TEAPORT_REPLY_HOLD is no longer read: the reply hold is set per front-end "
+                   "by TEAPORT_REPLY_HOLD_SIP (default on) and TEAPORT_REPLY_HOLD_TALK "
+                   "(default off)")
 # How long a held reply waits for the caller's words once the line is quiet -- the VAD's
 # stop and the onset test's offset both -- before it plays anyway. The words of a short
 # resumption ("to the store") often have no interim before the VAD stop -- the engine's
@@ -198,6 +208,8 @@ class ReplyHoldGate(FrameProcessor):
         self._cap_task = None
         # A session end arrived while holding: drop what is queued ahead of it.
         self._discard_to_end = False
+        # A session end has reached the gate: no new hold starts behind it.
+        self._ending = False
         # Queue arrival (pipeline clock, ns) of every frame, the per-context pts shift,
         # the context last seen (for frames that carry none), and when the last hold was
         # released (a frame that arrived before it was held).
@@ -227,10 +239,13 @@ class ReplyHoldGate(FrameProcessor):
 
     async def arm(self):
         """A user turn was just committed: its reply is checked before it plays. Called
-        from the user aggregator's on_user_turn_inference_triggered."""
+        from the user aggregator's on_user_turn_message_added -- a push with the caller's
+        words in it. (on_user_turn_inference_triggered also fires for an empty
+        aggregation, which asks for no reply, and armed the gate for whatever spoke next:
+        a consult follow-up, held and dropped, then left its delivery waiter guessing.)"""
         self._armed = True
         self._tool_call = False
-        if self._speaking and not self._holding:
+        if self._speaking and not self._holding and not self._ending:
             # The commit landed while the caller is already talking (the onset test
             # often still hears them when the ceiling commits under a VAD stop).
             await self._start_hold("the caller is speaking at the commit",
@@ -249,7 +264,7 @@ class ReplyHoldGate(FrameProcessor):
                 # The VAD confirms it: the hold gets the full cap.
                 self._onset_only = False
                 self._schedule_cap()
-            if self._armed and not self._holding:
+            if self._armed and not self._holding and not self._ending:
                 await self._start_hold("the caller started speaking before the reply played"
                                        f" ({'VAD' if source == 'vad' else 'speech onset'})",
                                        onset_only=source == "onset")
@@ -265,11 +280,15 @@ class ReplyHoldGate(FrameProcessor):
                 self._arrivals[frame.id] = self.get_clock().get_time()
             except Exception:  # noqa: BLE001 -- no clock before setup; nothing to hold then
                 pass
-            if isinstance(frame, (EndFrame, StopFrame)) and self._holding:
-                # The session is ending: the held reply must not play into it, and the
-                # end must not wait the hold out (Talk's close took 5.7 s before this).
-                self._discard_to_end = True
-                await self._end_hold(released=False, why="the session is ending")
+            if isinstance(frame, (EndFrame, StopFrame)):
+                # The session is ending: no new hold may start behind its End, and a
+                # hold in force ends now -- the held reply must not play into the
+                # closing session, nor the End wait the hold out (Talk's close took
+                # 5.7 s before this).
+                self._ending = True
+                if self._holding:
+                    self._discard_to_end = True
+                    await self._end_hold(released=False, why="the session is ending")
         await super().queue_frame(frame, direction, callback)
 
     def _restamp(self, frame) -> None:
@@ -285,9 +304,14 @@ class ReplyHoldGate(FrameProcessor):
             # It arrived before the last release: the hold caught it. (A frame that came
             # through later did not wait here, but plays after the ones that did.)
             waited = self.get_clock().get_time() - arrived
-            if waited >= _HELD_NS and ctx not in self._shift:
-                # The context's first held frame fixes its shift: the frames behind it
-                # play on after it, whatever microseconds their own processing took.
+            if (waited >= _HELD_NS and ctx not in self._shift
+                    and isinstance(frame, (TTSAudioRawFrame, TTSTextFrame))):
+                # The context's first held AUDIO or WORD fixes its shift: the TTS anchors
+                # the context's word times at its first audio, so that is what the
+                # release delays -- not the TTSStartedFrame, which opens the context
+                # up to the engine's first-audio latency earlier (fixing the shift on it
+                # overshot every word by that latency). The frames behind it play on
+                # after it, whatever microseconds their own processing took.
                 self._shift[ctx] = waited
                 while len(self._shift) > _MAX_SHIFTS:
                     self._shift.pop(next(iter(self._shift)))

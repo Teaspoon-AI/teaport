@@ -458,7 +458,8 @@ def test_merge_only_folds_adjacent_words_of_the_caller():
     msgs += [note, {"role": "user", "content": "we could go"}]
     merge.request()
     c._reconcile()
-    assert [m["content"] for m in msgs] == ["s", "so I was thinking we could go", note["content"]]
+    assert [m["content"] for m in msgs] == ["s", note["content"], "so I was thinking we could go"], (
+        "the note moves ahead of the merged turn: the context ends on the caller's words")
 
     # The speculative reply's snapshot reconcile (on B's final, before B is committed)
     # must not take the merge: it belongs to B's commit.
@@ -508,6 +509,11 @@ async def test_the_session_puts_the_gate_right_below_the_tts_and_on_the_onset():
     vad = p._params.vad_analyzer
     assert gate.on_onset in vad.onset_listeners
     assert gate._merge is not None
+    # Armed by a push that carried words, not by every inference trigger.
+    arms = [h.__name__ for h in p._event_handlers["on_user_turn_message_added"].handlers]
+    assert "_arm_reply_gate" in arms, arms
+    assert "_arm_reply_gate" not in [
+        h.__name__ for h in p._event_handlers["on_user_turn_inference_triggered"].handlers]
     # Per front-end, and off unless the front-end asks (Talk's default).
     assert not isinstance(build_agent_session(_Transport()).tts.next, ReplyHoldGate)
     from teaport_brain import reply_hold
@@ -744,6 +750,113 @@ def test_the_tts_moves_the_anchor_of_a_reply_queued_behind_a_hold():
     asyncio.run(run())
 
 
+async def test_the_shift_starts_at_the_first_audio_not_the_context_open():
+    # Review N1: the engine opens a TTS context (TTSStartedFrame) up to its first-audio
+    # latency before the first audio, and anchors the words at that audio. A shift
+    # fixed on the TTSStartedFrame overshot every word by that latency.
+    async with GateRig() as rig:
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        await rig.send(LLMFullResponseStartFrame(), TTSStartedFrame(context_id="c1"))
+        await asyncio.sleep(0.25)                      # the engine's first-audio latency
+        base = rig.clock_ns()
+        t_first = time.monotonic()
+        end = LLMFullResponseEndFrame()
+        end.pts = base + int(0.1e9)
+        await rig.send(word("Sure,", "c1", base), audio("c1"),
+                       word("here", "c1", base + int(0.1e9)), audio("c1"),
+                       TTSStoppedFrame(context_id="c1"), end)
+        await asyncio.sleep(0.2)
+        await rig.send(VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(RELEASE_S + 0.3)
+        out = [(t, f) for t, f in rig.bottom.down if isinstance(f, TTSTextFrame)]
+        t_release = rig.bottom.audio()[0][0]
+        applied = nanoseconds_to_seconds(out[0][1].pts - base)
+        correct = t_release - t_first
+        assert abs(applied - correct) < 0.05, (
+            f"applied {applied:.3f}s, the first audio waited {correct:.3f}s")
+
+
+async def test_no_hold_starts_behind_the_end_of_the_session():
+    from pipecat.frames.frames import EndFrame
+    rig = GateRig()
+    await rig.__aenter__()
+    await rig.gate.arm()
+    await rig.send(LLMFullResponseStartFrame())           # something ahead of the End
+    await rig.gate.queue_frame(EndFrame())                # the End reaches the gate
+    await rig.send(VADUserStartedSpeakingFrame())         # the caller speaks after it
+    await asyncio.sleep(0.05)
+    assert rig.gate.holds == 0 and not rig.gate.holding, "a hold behind the End"
+    await asyncio.wait_for(rig._run, timeout=2.0)
+
+
+async def test_an_empty_commit_does_not_arm_the_gate():
+    # on_user_turn_message_added fires only for a push with words in it; the inference
+    # trigger also fires for an empty aggregation, which asks for no reply.
+    context = LLMContext([{"role": "system", "content": "sys"}])
+    stop = ScriptedStop()
+    pair = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_mute_strategies=[],
+            user_turn_strategies=UserTurnStrategies(
+                start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
+                stop=[stop])))
+    gate = ReplyHoldGate(merge=TurnMerge(), release_secs=RELEASE_S, max_secs=MAX_S)
+
+    @pair.user().event_handler("on_user_turn_message_added")
+    async def _arm(_a, _m):
+        await gate.arm()
+
+    task = PipelineTask(Pipeline([pair.user(), gate, pair.assistant()]),
+                        cancel_on_idle_timeout=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.sleep(STARTUP_S)
+    try:
+        await task.queue_frame(InterimTranscriptionFrame("hello", "u", "t"))   # opens a turn
+        await asyncio.sleep(0.1)
+        await stop.commit()                                # nothing aggregated
+        await asyncio.sleep(0.1)
+        assert not gate.armed, "an empty commit armed the gate"
+        await task.queue_frame(InterimTranscriptionFrame("so then", "u", "t"))
+        await asyncio.sleep(0.1)       # the turn's start flushes what is queued behind it
+        await task.queue_frame(TranscriptionFrame("so then", "u", "t"))
+        await asyncio.sleep(0.1)
+        await stop.commit()
+        await asyncio.sleep(0.1)
+        assert gate.armed, "a commit with words must arm it"
+    finally:
+        await task.cancel()
+        await run
+
+
+def test_the_tts_adds_the_hold_to_the_end_of_the_context_in_progress():
+    from teaport_brain.engine_tts import EngineTTSService
+
+    class Clock:
+        t = 10_000_000_000
+
+        def get_time(self):
+            return self.t
+
+    async def run():
+        tts = EngineTTSService(voice="af_heart")
+        clk = Clock()
+        tts.get_clock = lambda: clk
+        tts._initial_word_timestamp = base = clk.t
+        tts._ctx_audio_secs["c"] = 2.0
+        await tts.process_frame(PlayoutHoldFrame(active=True), FrameDirection.UPSTREAM)
+        clk.t += 500_000_000
+        await tts.process_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
+        await tts._maybe_reset_word_timestamps("c")
+        assert tts._prev_audio_end_ns == base + 2_000_000_000 + 500_000_000, (
+            "a reply queued behind this context starts where it really ends")
+        assert tts._ctx_held_ns == 0
+
+    asyncio.run(run())
+
+
 # ---------------------------------------------------------------- the call's shape
 
 class ScriptedStop(BaseUserTurnStopStrategy):
@@ -872,8 +985,8 @@ async def _the_call(with_gate: bool):
     gate = (ReplyHoldGate(merge=merge, release_secs=RELEASE_S, max_secs=MAX_S)
             if with_gate else None)
     if gate is not None:
-        @pair.user().event_handler("on_user_turn_inference_triggered")
-        async def _arm(_a, _s):
+        @pair.user().event_handler("on_user_turn_message_added")
+        async def _arm(_a, _m):
             await gate.arm()
     pipeline = Pipeline([p for p in [
         pair.user(), HeardContextCorrector(ledger, context, merge=merge), llm, tts,

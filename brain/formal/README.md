@@ -802,10 +802,32 @@ commit's reply (`reply`), not only the refused-finalize one, and waits while `pa
 | `gateNoMerge` | the hold without `TurnMerge` | ✓ | ✗ | ✓ | ✓ |
 | `gateNoResume` | as first written: a drop left the pause to pipecat's reset | ✓ | ✓ | ✗ | ✓ |
 | `gateEndWaits` | as first written: the End queued behind the hold | ✓ | ✓ | ✓ | ✗ |
-| `gate` | `reply_hold.py` as shipped | ✓ | ✓ | ✓ | ✓ |
+| `gateNoEnding` | a hold may start after the End reached the gate (no `_ending`) | ✓ | ✓ | ✓ | ✗ |
+| `gate`, `WORDS_IN_TIME` | `reply_hold.py` as shipped, words in time (the assumption) | ✓ | ✓ | ✓ | ✓ |
+| `gate`, timers as they are | `reply_hold.py` as shipped | ✗ (accepted residual) | ✓ | ✓ | ✓ |
 
-`gate` holds all four together with `NoStrandedTurn` and `NoMissedBargeIn`
-(`ut_hold_gate_all`); the speculation rows now run with `HOLD = "gate"`, the shipped
+**The release is a timer, and the model says so** (round-2 review: the first version's
+`Release` required `~resumed`, an oracle the code does not have). `Release` fires
+`TEAPORT_REPLY_HOLD_RELEASE_S` after the caller goes quiet, and `Cap` ends a hold while
+they may still be talking. `WORDS_IN_TIME` is the gate's assumption written down as a
+constant: the caller's words — or the STT's close saying there were none (`Wordless`) —
+arrive before either timer. Under it (`ut_hold_gate_all`) `gate` holds all four together
+with `NoStrandedTurn` and `NoMissedBargeIn`. Without it (`ut_hold_gate_timed_*`) every
+property but `NoStaleReply` still holds, and `NoStaleReply` falls — the accepted
+residual, 10 states:
+
+```
+VadStart Interject VadStop Inference Finalize   the ceiling commits mid-sentence
+VadStart                                        the caller resumes: held
+Cap                                             the cap ends the hold, the caller still talking
+BotStart Interject                              the reply plays; their late words cut it
+```
+
+That is the case the hold cannot fix without knowing the future (words slower than
+`RELEASE_S`, or a caller talking past the cap with no words transcribed); it is no worse
+than before #85.
+
+The speculation and mode rows run with `WORDS_IN_TIME = TRUE`; the speculation rows now run with `HOLD = "gate"`, the shipped
 gate, and the `MODE` rows with `HOLD = "none"` (their verdicts and the counterexamples
 above are unchanged; `NoStaleReply` grew a second cause, below, and `byText` still fails
 it on the speculation's).
@@ -836,12 +858,16 @@ it on the speculation's).
   7 states: commit, a resume inside the commit's await (held), hang-up — the `EndFrame`,
   a ControlFrame, queues behind the held reply (Talk's close took 5.7 s, and the held
   reply then played into the closing session). `queue_frame` now drops the hold and lifts
-  the pause in the same step the End arrives.
+  the pause in the same step the End arrives. And no hold may start BEHIND the End:
+  the caller can still speak after it reached the gate (`VadStart` is the one step not
+  guarded by `~endQueued`), and `gateNoEnding` — the gate without its `_ending` flag —
+  fails in 7 states: commit, hang-up, the caller's speech inside the commit's await holds
+  a reply behind the End.
 
 What the model does not say: the speaking-at-commit hold (`arm()` with the onset test
 still hearing the caller) is out of reach, because `Inference` requires a quiet VAD (see
-below); the onset test and the VAD are one `userSpeaking`; the release window and the
-caps are durations. `test_reply_hold.py` covers those on the real gate.
+below); the onset test and the VAD are one `userSpeaking`; how long the release window
+and the caps are (only that they are timers). `test_reply_hold.py` covers those on the real gate.
 
 **Follow-ups (`Followup.tla`) are unchanged by the hold, and the module is not
 extended.** The gate is armed only by a user commit, never by the injector's
@@ -883,7 +909,7 @@ caller is talking or within the release window of it, which is not the dead air
   reason=ctx-changed` in the journal does — and it does not know that the code's known
   writers all land outside the window today (see above); it checks the design that
   stays right when one does not.
-- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 1242 with it on, 200 for `HOLD = "gate"` alone; well under a second each.
+- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 1314 with it on, 212 for `HOLD = "gate"` with words in time and 450 with the timers as they are; well under a second each.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 
@@ -900,12 +926,23 @@ it; the assistant aggregator gathers the words it is handed and commits them at 
 A reply `ReplyHoldGate` held for `hold` units plays from its release, so all of its pts
 are that much early unless the gate moves them.
 
-| SHIFT | | `CommittedIsPlayed` |
-|---|---|---|
-| `words` | as first written: only `TTSTextFrame` pts moved | ✗ |
-| `all` | as shipped: every pts-carrying frame of the held context, the End included | ✓ |
+The engine opens a TTS context (`TTSStartedFrame`) up to its first-audio latency `LAT`
+before the first audio, and anchors the words at that first audio. So the right move is
+the first AUDIO's wait, not the context open's (round-2 review N1).
 
-`pc_release_words`, 6 states (`N = 3`, `MaxHold = 3`):
+| SHIFT | | `CommittedIsPlayed` | `WordsOnTime` |
+|---|---|---|---|
+| `words` | as first written: only `TTSTextFrame` pts moved | ✗ | |
+| `firstFrame` | round 1: every pts moved, by the context's first held frame — the `TTSStartedFrame` | ✓ | ✗ |
+| `all` | as shipped: every pts moved, by the wait of the context's first held audio or word | ✓ | ✓ |
+
+`pc_release_firstFrame` fails `WordsOnTime` in 3 states (`Wait`, `Release`): every word
+lands `LAT` late — captions lag the voice, and a later barge-in's heard cut is short, so
+the corrector trims the context below what was heard. `test_reply_hold.py::
+test_the_shift_starts_at_the_first_audio_not_the_context_open` is the same on the gate.
+
+`pc_release_words`, 6 states (`N = 3`, `MaxHold = 3`, `LAT = 1`; the trace is from
+before `LAT`, the shape is the same):
 
 ```
 Wait Wait Wait    the caller coughs over the reply's start: held 3 units

@@ -142,7 +142,8 @@ class HeardContextCorrector(FrameProcessor):
         the fragment. Only when both are the caller's own words, and nothing but system
         messages sits between them (MemoryRecall adds its note just before the turn it
         recalled for): a tool call in between, or an injected order (SYSTEM_NOTICE_TAG),
-        leaves them be. The system notes stay where they were, after the merged turn."""
+        leaves them be. The system notes move ahead of the merged turn, so the context
+        still ends on the caller's words."""
         msgs = self._context.get_messages()
         prev, last = self._last_user, (msgs[-1] if msgs else None)
         idx = next((i for i, m in enumerate(msgs) if m is prev), None)
@@ -154,6 +155,12 @@ class HeardContextCorrector(FrameProcessor):
                     and not rest.startswith(SYSTEM_NOTICE_TAG)):
                 _set_msg_text(prev, f"{first} {rest}")
                 self.drop_messages([last])
+                notes = [m for m in self._context.get_messages()[idx + 1:]]
+                if notes:
+                    # The notes go AHEAD of the merged turn, so the context still ends on
+                    # the caller's words (ClientNotes, for one, defers while it does not).
+                    msgs = self._context.get_messages()
+                    self._context.set_messages(msgs[:idx] + notes + [prev])
                 logger.info(f"HeardCorrector[merge]: unanswered turn + its continuation "
                             f"-> one user turn …{_msg_text(prev)[-60:]!r}")
                 return

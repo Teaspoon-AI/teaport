@@ -90,6 +90,15 @@
 (*                           Uninterruptible.                               *)
 (* HOLD = "gateEndWaits"  -- the gate as first written: the session's End   *)
 (*                           queued behind the held reply.                  *)
+(* HOLD = "gateNoEnding"  -- a hold may start after the End reached the     *)
+(*                           gate (no _ending flag).                        *)
+(*                                                                          *)
+(* The release is a TIMER (TEAPORT_REPLY_HOLD_RELEASE_S after the caller    *)
+(* goes quiet; a cap while they may still talk). WORDS_IN_TIME = TRUE       *)
+(* states the gate's assumption -- the caller's words, or the STT's close   *)
+(* saying there were none, come before it -- under which it is sound;        *)
+(* FALSE is the timer as it is, and the stale reply it still lets through   *)
+(* is the accepted residual.                                                *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -97,7 +106,10 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
           MODE,
           SPEC,
           MaxCtxWrites,    \* bound on context writes under a live speculation
-          HOLD             \* the reply hold's design (see the header)
+          HOLD,            \* the reply hold's design (see the header)
+          WORDS_IN_TIME    \* ASSUMPTION, for the gate's holding row: a resumed caller's
+                           \* words (or the STT's word-less close) arrive before the
+                           \* release timer or the cap. FALSE: the timers as they are
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -166,7 +178,8 @@ Init ==
 \* the last commit's reply has not started.
 HoldOnSpeech ==
     /\ resumed' = (resumed \/ reply)
-    /\ IF Gated /\ armed /\ ~held
+    \* _ending: once the session's End has reached the gate, no new hold starts.
+    /\ IF Gated /\ armed /\ ~held /\ (~endQueued \/ HOLD = "gateNoEnding")
          THEN held' = TRUE /\ paused' = TRUE
          ELSE UNCHANGED <<held, paused>>
 
@@ -182,7 +195,9 @@ HoldOnSpeech ==
 \* would; splitting them costs no behaviours and makes the counterexample name its
 \* own mechanism instead of leaving the reader to notice which step it landed on.
 VadStart ==
-    /\ ~endQueued                             \* the session has not ended
+    \* Not guarded by ~endQueued: the caller can still speak after the session's End
+    \* reached the gate, and the VAD's frames still flow -- that is the gap _ending
+    \* closes.
     /\ ~userSpeaking /\ ~stopInFlight
     /\ userSpeaking' = TRUE
     /\ watchdog' = FALSE                       \* the inactivity timer is reset
@@ -330,7 +345,6 @@ Inference ==
 \* during which the aggregator's input task can run a queued VAD start. This is
 \* the entire entry into the failure.
 Resume ==
-    /\ ~endQueued                             \* the session has not ended
     /\ stopInFlight
     /\ ~userSpeaking
     /\ userSpeaking' = TRUE
@@ -388,12 +402,22 @@ Wordless ==
     /\ UNCHANGED <<reply, armed, held, paused, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
 
-\* TEAPORT_REPLY_HOLD_RELEASE_S of quiet with no words: the held reply plays. (The
-\* cap is the same step from a state the caller has not left; durations are out of
-\* scope, so it is not a separate one.)
+\* The release timer: TEAPORT_REPLY_HOLD_RELEASE_S after the caller goes quiet, the
+\* held reply plays. A timer knows nothing of the words: under WORDS_IN_TIME they have
+\* resolved first (a turn, or `Wordless`); without it, it fires regardless.
 Release ==
     /\ ~endQueued                             \* the session has not ended
-    /\ held /\ ~userSpeaking /\ ~resumed
+    /\ held /\ ~userSpeaking /\ (~WORDS_IN_TIME \/ ~resumed)
+    /\ held' = FALSE /\ paused' = FALSE
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
+                   replyOverResume, splitTurn>>
+
+\* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
+Cap ==
+    /\ ~endQueued                             \* the session has not ended
+    /\ held /\ ~WORDS_IN_TIME                 \* the cap: the caller may still be talking
     /\ held' = FALSE /\ paused' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
@@ -401,8 +425,8 @@ Release ==
                    replyOverResume, splitTurn>>
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
-\* Every other action is guarded by ~endQueued: nothing after the end is modelled;
-\* what TLC checks there is whether the End reached the gate behind a paused queue.
+\* Every other action but the caller's speech is guarded by ~endQueued: what TLC
+\* checks after it is whether a paused queue holds the End back.
 \* As shipped, queue_frame drops the held reply and lifts the pause in the same step;
 \* as first written the End waited behind the hold.
 Hangup ==
@@ -459,7 +483,7 @@ Next ==
     \/ BotStart \/ BotStop
     \/ Arm \/ ForceStop
     \/ SpecStart \/ CtxChange
-    \/ Wordless \/ Release \/ Hangup
+    \/ Wordless \/ Release \/ Cap \/ Hangup
 
 Spec == Init /\ [][Next]_vars
 
@@ -505,7 +529,9 @@ TypeOK ==
     /\ specGen \in 0..MaxCtxWrites /\ gen \in 0..MaxCtxWrites
     /\ SPEC \in {"off", "byText", "byContext"}
     /\ (SPEC = "off" => ~spec)
-    /\ HOLD \in {"none", "gate", "gateNoMerge", "gateNoResume", "gateEndWaits"}
+    /\ HOLD \in {"none", "gate", "gateNoMerge", "gateNoResume", "gateEndWaits",
+                 "gateNoEnding"}
+    /\ WORDS_IN_TIME \in BOOLEAN
     /\ reply \in BOOLEAN /\ armed \in BOOLEAN /\ held \in BOOLEAN /\ paused \in BOOLEAN
     /\ resumed \in BOOLEAN /\ mergePending \in BOOLEAN /\ unanswered \in 0..2
     /\ endQueued \in BOOLEAN /\ replyOverResume \in BOOLEAN /\ splitTurn \in BOOLEAN
