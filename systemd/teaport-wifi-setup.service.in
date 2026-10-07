@@ -54,6 +54,11 @@ NoNewPrivileges=yes
 SyslogIdentifier=teaport-wifi-setup
 # Venv resolved once, as in teaport-sip-brain.service ($$ = a literal $ to systemd).
 ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.wifi_setup'
+# wifi_setup.py exits 0 connected, 1 on an error, 2 timed out with nobody on the page,
+# 3 stopped (a spoken "cancel", the config page, systemctl stop). 2 and 3 are normal
+# ends — the code put the old connection back — so only 1 leaves the unit failed. The
+# brain reads how a run ended from status.json, not from this.
+SuccessExitStatus=2 3
 # A stop (SIGTERM) makes the code take the setup network down, undo a half-done join and
 # ask for the old connection back; it needs a moment for nmcli, not systemd's 90 s.
 TimeoutStopSec=60

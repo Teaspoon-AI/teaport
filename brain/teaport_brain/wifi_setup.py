@@ -448,6 +448,23 @@ class Setup:
         self.avahi = None
 
     def run(self, ssid: str, password: str) -> int:
+        """0 connected, 1 an error, 2 timed out, 3 stopped. A stop (SIGTERM) can land
+        anywhere in here, never as a traceback: before there is a result it is 3, and
+        during the clean-up the clean-up still finishes and the result stands."""
+        rc = 3
+        try:
+            rc = self._start(ssid, password)
+        except Stopped:
+            log("stopped before setup began")  # nothing changed yet: nothing to put back
+            self.status.set("stopped")
+        finally:
+            try:
+                self._close()
+            except Stopped:
+                self._close()  # once more, whole: _on_sigterm ignores a second stop
+        return rc
+
+    def _start(self, ssid: str, password: str) -> int:
         dev = self.nm.wifi_device()
         if not dev:
             self.status.set("error", reason=N_("this box has no Wi-Fi device"))
@@ -460,13 +477,14 @@ class Setup:
             self.status.set("stopped")
             self._put_back(quick=True)
             return 3
-        finally:
-            if self.screen:
-                self.screen.close()  # a "connected" screen stays its few seconds
-            self.unpublish()
-            if self.server:
-                self.server.shutdown()
-            self.nm.ap_delete()
+
+    def _close(self) -> None:
+        if self.screen:
+            self.screen.close()  # a "connected" screen stays its few seconds
+        self.unpublish()
+        if self.server:
+            self.server.shutdown()
+        self.nm.ap_delete()
 
     def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None) -> bool:
         return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs, qr=qr))
