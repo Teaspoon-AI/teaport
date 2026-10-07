@@ -495,16 +495,136 @@ def test_volume_scales_the_card_not_the_mouth():
     assert play.mouth_due(clock.t) > 0.5                         # the mouth still opens fully
 
 
+def test_volume_survives_bad_values(tmp_path):
+    """A hand-edited state file or an odd tool argument is never an exception (one in
+    Volume() would crash-loop the unit; one in apply would end the session)."""
+    path = str(tmp_path / "volume.json")
+    for saved, percent in (('{"volume": Infinity}', 100), ('{"volume": NaN}', 100),
+                           ('[1]', 100), ('"x"', 100), ('{"volume": true}', 100),
+                           ('{"volume": 1e3}', 100), ('{"volume": "40"}', 40), ('', 100)):
+        with open(path, "w") as f:
+            f.write(saved)
+        assert la.Volume(path).percent == percent, saved
+    v = la.Volume(str(tmp_path / "fresh.json"))
+    for bad in ({"level": float("inf")}, {"level": float("nan")}, {"level": True},
+                {"level": [50]}, {"level": "50%"}, {"direction": "up"}, ["louder"], "louder"):
+        assert v.apply(bad)["ok"] is False, bad
+    assert v.percent == 100                                      # none of them changed it
+    assert v.apply({"level": 55.6})["volume"] == 56              # rounded, not truncated
+
+
+def test_volume_level_wins_over_direction_and_the_note_says_so(tmp_path):
+    v = la.Volume(str(tmp_path / "v.json"))
+    v.apply({"level": 50})
+    r = v.apply({"level": 50, "direction": "louder"})
+    assert r["volume"] == 50 and "direction (louder) was ignored" in r["note"]
+    assert "note" not in v.apply({"level": 50})                  # nothing to say
+    assert v.apply({"direction": "quieter"}) == {"ok": True, "volume": 40}
+    v.apply({"level": 0})
+    assert v.apply({"direction": "quieter"})["note"] == "already at the bottom"
+
+
+def test_volume_is_saved_by_rename(tmp_path, monkeypatch):
+    """A failed save leaves the old level on disk (and no temp file), never a truncated
+    file that would read back as full volume."""
+    path = str(tmp_path / "v.json")
+    v = la.Volume(path)
+    v.apply({"level": 30})
+    assert la.Volume(path).percent == 30 and os.listdir(tmp_path) == ["v.json"]
+
+    def broken(*a, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(la.os, "replace", broken)
+    assert v.apply({"level": 70}) == {"ok": True, "volume": 70}  # applied, not saved
+    assert la.Volume(path).percent == 30 and os.listdir(tmp_path) == ["v.json"]
+
+
 def test_client_tools_dispatch():
     class Card:
         volume = la.Volume(os.path.join(tempfile.mkdtemp(), "v.json"))
-    restart = asyncio.Event()
+    quiet = _Quiet()
+    restart = la.Restart(quiet, quiet)
     r = la.client_tool(Card, {"name": "set_volume", "args": {"level": 40}}, restart)
-    assert r == {"ok": True, "volume": 40} and not restart.is_set()
+    assert r == {"ok": True, "volume": 40} and not restart.armed.is_set()
     r = la.client_tool(Card, {"name": "restart_session", "args": {}}, restart)
-    assert r["ok"] and restart.is_set()
+    assert r["ok"] and restart.armed.is_set() and "goodbye" in r["note"]
     r = la.client_tool(Card, {"name": "unlock_door"}, restart)
     assert r == {"ok": False, "error": "this device cannot do unlock_door"}
+
+
+def test_a_bad_client_tool_request_is_an_error_result_never_an_exception():
+    class Card:
+        class volume:
+            @staticmethod
+            def apply(args):
+                raise RuntimeError("boom")
+    quiet = _Quiet()
+    restart = la.Restart(quiet, quiet)
+    for m in ({"name": "set_volume", "args": "louder"}, {"name": "set_volume", "args": [1]},
+              {"name": "set_volume", "args": {"level": 10}}, {"name": None}):
+        assert la.client_tool(Card, m, restart)["ok"] is False, m
+    assert not restart.armed.is_set()
+
+
+class _Quiet:
+    """Stands in for both the Playback and the FaceTap a Restart watches."""
+    speaking = voiced = False
+    sounding = False                                             # audio queued or echoing
+
+    def echo_free(self, now):
+        return not self.sounding
+
+
+def _restart_fired(restart, steps):
+    """Run restart.wait() against `steps`: (seconds to wait, action) pairs, then report
+    after which step (by index) the wait returned, or None."""
+    async def run():
+        waiter = asyncio.create_task(restart.wait())
+        for i, (secs, action) in enumerate(steps):
+            action()
+            await asyncio.sleep(secs)
+            if waiter.done():
+                return i
+        waiter.cancel()
+        return None
+    return asyncio.run(run())
+
+
+def test_restart_waits_for_the_goodbye_not_a_line_spoken_before_the_call(monkeypatch):
+    """The model said a line, then called restart_session; its goodbye (the reply to the
+    tool result) comes after a gap. Ending in that gap would cut the goodbye off."""
+    monkeypatch.setattr(la, "RESTART_POLL_SECS", 0.01)
+    play = _Quiet()
+    restart = la.Restart(play, play)
+    restart.caption("u1")                                        # the line before the call
+
+    def line_playing():
+        play.speaking = play.sounding = True
+        restart.arm()                                            # the tool runs meanwhile
+
+    def line_done():
+        play.speaking = play.sounding = False                    # the gap
+
+    def goodbye():
+        restart.caption("u2")
+        play.speaking = play.sounding = True
+
+    def goodbye_done():
+        play.speaking = play.sounding = False
+
+    fired = _restart_fired(restart, [(0.1, line_playing), (0.3, line_done),
+                                     (0.1, goodbye), (0.1, goodbye_done)])
+    assert fired == 3, f"restart fired after step {fired}, not after the goodbye"
+
+
+def test_restart_without_a_goodbye_waits_then_goes(monkeypatch):
+    monkeypatch.setattr(la, "RESTART_POLL_SECS", 0.01)
+    monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 0.3)
+    play = _Quiet()
+    restart = la.Restart(play, play)
+    fired = _restart_fired(restart, [(0.1, restart.arm), (0.1, lambda: None),
+                                     (0.3, lambda: None)])
+    assert fired == 2                                            # after the wait, not before
 
 
 def test_restart_session_redials_at_once_without_a_voice(monkeypatch):
