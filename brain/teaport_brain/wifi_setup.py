@@ -26,7 +26,8 @@
 #
 # The setup network's name and password, and then how the join goes, are also on the
 # box's display if it has one (display.py: the OLED avatar's screens) — in English and
-# ASCII, which its built-in font draws; the voice and the page speak the user's language.
+# ASCII, which its built-in font draws (network names folded into it); the voice and
+# the page speak the user's language.
 #
 # The brain (wifi_voice.py) starts this unit, speaks the network, the password and the
 # address, and follows status.json in the unit's RuntimeDirectory (phase: scanning,
@@ -450,7 +451,10 @@ class Setup:
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup
         network down, a half-done join undone, and the old connection back up. `quick`
-        (a stop: systemd is waiting) asks NM for the old connection without waiting."""
+        (a stop: systemd is waiting) asks NM for the old connection without waiting.
+        The screen goes first: the password must not stay up while NM takes its time."""
+        if self.screen:
+            self.screen.clear()
         self.unpublish()
         self.nm.ap_down()
         self.nm.undo()
@@ -466,6 +470,9 @@ class Setup:
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
         url = f"http://{ssid}.local"
+        # The display's font draws ASCII only: a name outside it is folded, and the
+        # address shown is then the one that needs no name.
+        shown_ssid = display.fold_ascii(ssid)
         while True:
             ok, err = self.nm.ap_up(dev, ssid, password)
             if not ok:
@@ -488,7 +495,8 @@ class Setup:
             self.publish(ssid)
             # On the display first: the status says whether it got there, and the voice
             # points at it only then.
-            shown = self._show([f"Network  {ssid}", f"Password  {password}", url])
+            shown = self._show([f"Network  {shown_ssid}", f"Password  {password}",
+                                url if shown_ssid == ssid else f"http://{self.address}"])
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error, screen=shown)
             self.request = None
@@ -501,14 +509,14 @@ class Setup:
             target, pw, hidden = self.request
             time.sleep(1.5)  # let the "joining" page reach the phone first
             self.status.set("joining", target=target)
-            self._show(["Joining", target])
+            self._show(["Joining", display.fold_ascii(target)])
             self.unpublish()
             self.nm.ap_down()
             ok, why, self.created = self.nm.join(dev, target, pw, hidden)
             if ok and self.nm.online(dev):
                 self.created = None  # kept: it is the box's network now
                 self.status.set("connected", target=target)
-                self._show(["Connected to", target], secs=CONNECTED_SCREEN_SECS)
+                self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS)
                 return 0
             if ok:
                 why = N_("it joined but there is no internet through it")
@@ -518,6 +526,9 @@ class Setup:
             self.failure = (target, why)
             self.error = self.error_text(i18n.get(i18n.SOURCE_LANG))
             self.status.set("failed", target=target, reason=why)
+            # Held until the setup network is back and its details replace it (or the
+            # way out takes it down).
+            self._show(["Could not join", display.fold_ascii(target)])
             if time.monotonic() >= self.deadline:
                 self.status.set("timeout")
                 self._put_back()

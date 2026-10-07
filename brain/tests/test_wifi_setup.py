@@ -368,13 +368,21 @@ class _Recorded(ws.Status):
         self.history.append(dict(self.data))
 
 
-def _run_setup(nm, minutes=1.0, post=None, screen=None):
+def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
-    page binds the address NM gives the setup network (FakeNM: 127.0.0.1)."""
+    page binds the address NM gives the setup network (FakeNM: 127.0.0.1). The return
+    code is the exception instead when the run raised one."""
     status = _Recorded(tempfile.mkdtemp())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen)
     result = {}
-    t = threading.Thread(target=lambda: result.setdefault("rc", setup.run("teaport-9e35", "47190352")))
+
+    def run():
+        try:
+            result["rc"] = setup.run(ssid, "47190352")
+        except Exception as e:
+            result["rc"] = e
+
+    t = threading.Thread(target=run)
     t.start()
     posted, deadline = 0, time.time() + 15
     while t.is_alive() and time.time() < deadline:
@@ -382,7 +390,7 @@ def _run_setup(nm, minutes=1.0, post=None, screen=None):
         ups = sum(1 for s in list(status.history) if s["phase"] == "ap_up")
         if post and posted < len(post) and ups > posted:
             page = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/hotspot-detect.html").read().decode()
-            assert 'value="home"' in page and "teaport-9e35" not in page
+            assert 'value="home"' in page and ssid not in page
             body = urllib.parse.urlencode(post[posted]).encode()
             reply = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/connect", body).read().decode()
             assert "Joining" in reply
@@ -436,11 +444,18 @@ def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
     assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
 
 
-def _screen(avatar=True):
-    """A Screen recording what it sends; `avatar`: whether a daemon takes it."""
+def _screen(avatar=True, events=None):
+    """A Screen recording what it sends (into `events` too, as ("screen", ...), when
+    given); `avatar`: whether a daemon that draws screens is there."""
     sent = []
-    return display.Screen("wifi-setup",
-                          send=lambda ev, path: sent.append(ev["screen"]) or avatar), sent
+
+    def send(ev, path):
+        sent.append(ev["screen"])
+        if events is not None:
+            events.append(("screen", ev["screen"]))
+        return True
+
+    return display.Screen("wifi-setup", send=send, supports=lambda path: avatar), sent
 
 
 def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while():
@@ -475,6 +490,58 @@ def test_a_stop_or_a_timeout_takes_the_screen_down(join, minutes):
                post=[{"ssid": "home", "password": "homepass1"}] if join else None)
     assert sent[0]["lines"][0] == "Network  teaport-9e35"
     assert sent[-1] == {"id": "wifi-setup"}
+
+
+@pytest.mark.parametrize("join, minutes", [([ws.Stopped()], 1.0), ([], 0.01)])
+def test_the_screen_goes_before_the_old_network_is_waited_for(join, minutes):
+    # nm.up can wait up to 45 s: the password (or "Joining") must not stay up meanwhile.
+    nm = FakeNM(join)
+    screen, _ = _screen(events=nm.events)
+    _run_setup(nm, minutes=minutes, screen=screen,
+               post=[{"ssid": "home", "password": "homepass1"}] if join else None)
+    take_down = nm.events.index(("screen", {"id": "wifi-setup"}))
+    up = next(i for i, e in enumerate(nm.events) if e[0] == "up")
+    assert take_down < up
+    assert not any(e[0] == "screen" for e in nm.events[take_down + 1:])
+
+
+def test_a_failed_join_is_shown_until_the_setup_network_is_back():
+    screen, sent = _screen()
+    nm = FakeNM([(False, "the password did not work", "home"), (True, "", "home")])
+    rc, _ = _run_setup(nm, screen=screen, post=[{"ssid": "home", "password": "wrongpass"},
+                                                {"ssid": "home", "password": "homepass1"}])
+    assert rc == 0
+    shown = [(s["lines"], s["ttl"]) for s in sent if s.get("lines")]
+    details = ["Network  teaport-9e35", "Password  47190352", "http://teaport-9e35.local"]
+    hold = display.HOLD_TTL_SECS
+    # Refreshes aside, in order: each screen replaces the one before, nothing in between.
+    order = [x for i, x in enumerate(shown) if i == 0 or x != shown[i - 1]]
+    assert order == [(details, hold), (["Joining", "home"], hold),
+                     (["Could not join", "home"], hold),
+                     (details, hold), (["Joining", "home"], hold),
+                     (["Connected to", "home"], ws.CONNECTED_SCREEN_SECS)]
+    assert {"id": "wifi-setup"} not in sent
+
+
+def test_an_unexpected_error_takes_the_screen_down():
+    screen, sent = _screen()
+    rc, _ = _run_setup(FakeNM([RuntimeError("nmcli fell over")]), screen=screen,
+                       post=[{"ssid": "home", "password": "homepass1"}])
+    assert isinstance(rc, RuntimeError)
+    assert sent[-2]["lines"] == ["Joining", "home"] and sent[-1] == {"id": "wifi-setup"}
+    screen._thread.join(timeout=5)
+    assert not screen._thread.is_alive()
+
+
+def test_network_names_reach_the_display_in_ascii():
+    screen, sent = _screen()
+    rc, seen = _run_setup(FakeNM([(True, "", "Café ☕")]), screen=screen, ssid="東京-box",
+                          post=[{"ssid": "Café ☕", "password": "homepass1"}])
+    assert rc == 0 and seen[1]["ssid"] == "東京-box"     # the voice and page keep the name
+    shown = [s["lines"] for s in sent if s.get("lines")]
+    # The .local name cannot be shown in ASCII: the address that needs none instead.
+    assert shown[0] == ["Network  -box", "Password  47190352", "http://127.0.0.1"]
+    assert ["Joining", "Cafe"] in shown and shown[-1] == ["Connected to", "Cafe"]
 
 
 def test_sigterm_becomes_one_clean_stop():

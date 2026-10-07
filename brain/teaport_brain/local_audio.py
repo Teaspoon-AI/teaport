@@ -70,6 +70,8 @@ import numpy as np
 import soxr
 from loguru import logger
 
+from teaport_brain import display
+
 DEVICE_RATE = 16000
 DEVICE_CHANNELS = 2
 RELAY_RATE = 24000
@@ -116,7 +118,8 @@ MIC_QUEUE_CHUNKS = 250
 STATUS_EVERY_SECS = 0.3
 # Lines of aplay/arecord stderr kept for the error message when one of them dies.
 STDERR_TAIL_LINES = 20
-FACE_SOCK = os.getenv("LOCAL_AUDIO_FACE_SOCK", "/run/oled-avatar/face.sock")
+# The avatar's socket; its path lives in display.py (the screens use it too).
+FACE_SOCK = os.getenv("LOCAL_AUDIO_FACE_SOCK", display.SOCK)
 # Assistant finals that are not speech, told apart from reply text only by these
 # prefixes: TEAPORT_ENDPOINT_DEBUG's timing chips (endpoint_debug.py) and the tool-call
 # bubbles (tools._wrap). Kept here rather than imported: importing either pulls Pipecat

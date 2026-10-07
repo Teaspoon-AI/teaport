@@ -56,7 +56,12 @@ Every tool the voice model can call follows one contract
   person has to read off it; Wi-Fi setup shows the setup network's name, password
   and address, then the join. A screen has an id and a time to live: a sender holds
   one up by re-sending it every few seconds, so a crashed sender's screen goes by
-  itself. The avatar's built-in font is Latin only, so screens keep to ASCII.
+  itself. Screens go only to an avatar that says it draws them: while it runs it
+  keeps a features file next to its socket (`face.sock.features`, JSON such as
+  `{"screen": 1}`), and `display.py` reads it before every send. An older avatar
+  would take the event, draw nothing and log it, setup password included. The
+  avatar's built-in font is Latin only, so screens keep to ASCII: network names
+  are folded into it.
 
 TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
 consult paths.

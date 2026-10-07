@@ -4,6 +4,7 @@ import json
 import os
 import socket
 import tempfile
+import threading
 import time
 
 import pytest
@@ -11,21 +12,36 @@ import pytest
 from teaport_brain import display
 
 
-def _screen(refresh=0.02):
+def _screen(refresh=0.02, supports=lambda path: True):
+    """A Screen recording what it sends, to an avatar that draws screens unless told."""
     sent = []
-    return display.Screen("t", refresh_secs=refresh, send=lambda ev, path: sent.append(ev["screen"])), sent
+    return display.Screen("t", refresh_secs=refresh, supports=supports,
+                          send=lambda ev, path: sent.append(ev["screen"])), sent
 
 
 def test_a_held_screen_is_resent_until_it_is_cleared():
-    screen, sent = _screen()
-    screen.show("Title", ["a", "b"])
-    time.sleep(0.15)
-    assert len(sent) >= 3 and all(s == sent[0] for s in sent)
-    assert sent[0] == {"id": "t", "title": "Title", "lines": ["a", "b"], "ttl": display.HOLD_TTL_SECS}
-    screen.clear()
-    n = len(sent)
-    time.sleep(0.1)
-    assert len(sent) == n and sent[-1] == {"id": "t"}     # nothing after the take-down
+    sent, three = [], threading.Event()
+
+    def record(ev, path):
+        sent.append(ev["screen"])
+        if len(sent) >= 3:
+            three.set()
+
+    screen = display.Screen("t", refresh_secs=0.02, send=record, supports=lambda path: True)
+    try:
+        screen.show("Title", ["a", "b"])
+        assert three.wait(timeout=5)                      # the show and two refreshes
+        screen.clear()
+        assert all(s == sent[0] for s in sent[:-1])
+        assert sent[0] == {"id": "t", "title": "Title", "lines": ["a", "b"],
+                           "ttl": display.HOLD_TTL_SECS}
+        n = len(sent)
+        time.sleep(0.1)
+        assert len(sent) == n and sent[-1] == {"id": "t"}  # nothing after the take-down
+    finally:
+        screen.close()
+    screen._thread.join(timeout=5)
+    assert not screen._thread.is_alive()                   # no refresher left behind
 
 
 def test_a_timed_screen_is_sent_once_and_outlives_close():
@@ -53,15 +69,81 @@ def test_no_avatar_is_not_an_error():
     assert display.Screen("t", path="/nonexistent/face.sock").show("T", ["x"], secs=1) is False
 
 
+def _features(path, text):
+    with open(path + display.FEATURES_SUFFIX, "w") as f:
+        f.write(text)
+
+
+def test_an_avatar_that_does_not_say_it_draws_screens_is_sent_nothing():
+    # An older avatar takes the datagram, draws nothing and logs it: the password with
+    # it. Only its features file tells the two apart.
+    path = os.path.join(tempfile.mkdtemp(), "face.sock")
+    sent = []
+    screen = display.Screen("t", path=path, refresh_secs=0.02,
+                            send=lambda ev, p: sent.append(ev["screen"]) or True)
+    try:
+        assert screen.show("T", ["Password  1234"]) is False     # no file
+        time.sleep(0.1)                                         # nor any refresh
+        screen.clear()
+        assert screen.show("T", ["x"], secs=5) is False
+        for text in ("not json", "[1]", '{"screen": 0}', '{"mouth": 1}'):
+            _features(path, text)
+            assert display.supports_screens(path) is False
+            assert screen.show("T", ["x"], secs=5) is False
+        assert sent == []
+        _features(path, '{"screen": 1}')                          # it does now
+        assert display.supports_screens(path) is True
+        assert screen.show("T", ["x"], secs=5) is True
+        assert sent == [{"id": "t", "title": "T", "lines": ["x"], "ttl": 5}]
+    finally:
+        screen.close()
+
+
+def test_an_avatar_that_comes_up_mid_hold_gets_the_screen_at_the_next_refresh():
+    path = os.path.join(tempfile.mkdtemp(), "face.sock")
+    sent, got = [], threading.Event()
+    screen = display.Screen("t", path=path, refresh_secs=0.02,
+                            send=lambda ev, p: sent.append(ev["screen"]) or got.set() or True)
+    try:
+        assert screen.show("T", ["held"]) is False
+        _features(path, '{"screen": 1}')
+        assert got.wait(timeout=5) and sent[0]["lines"] == ["held"]
+        os.remove(path + display.FEATURES_SUFFIX)               # the avatar went away
+        screen.clear()
+        assert {"id": "t"} not in sent                          # nobody to tell
+    finally:
+        screen.close()
+
+
 def test_the_event_reaches_a_listening_socket():
     path = os.path.join(tempfile.mkdtemp(), "face.sock")
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
         s.bind(path)
         s.settimeout(2)
-        assert display.Screen("wifi-setup", path=path).show("Wi-Fi setup", ["Network  x"], secs=5)
+        screen = display.Screen("wifi-setup", path=path)
+        assert not screen.show("Wi-Fi setup", ["Network  x"], secs=5)   # not advertised yet
+        _features(path, json.dumps({"screen": 1}))
+        assert screen.show("Wi-Fi setup", ["Network  x"], secs=5)
         ev = json.loads(s.recv(4096))
+        s.setblocking(False)
+        with pytest.raises(BlockingIOError):
+            s.recv(4096)                                       # the first one was never sent
     assert ev == {"screen": {"id": "wifi-setup", "title": "Wi-Fi setup",
                              "lines": ["Network  x"], "ttl": 5}}
+
+
+@pytest.mark.parametrize("name, shown", [
+    ("home", "home"),
+    ("Café  Wi-Fi", "Cafe Wi-Fi"),
+    ("Ｈｏｍｅ\tNet", "Home Net"),
+    ("東京 Net", "Net"),
+    ("東京", "your network"),
+    ("🏠", "your network"),
+    ("  ", "your network"),
+])
+def test_names_fold_to_printable_ascii(name, shown):
+    assert display.fold_ascii(name) == shown
+    assert all(" " <= c <= "~" for c in display.fold_ascii(name))
 
 
 if __name__ == "__main__":
