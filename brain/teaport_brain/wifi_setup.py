@@ -118,11 +118,11 @@ class Status:
 PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title><style>{css}</style></head><body><main>
-<div class="logo">{logo}</div>
+<div class="top"><div class="logo">{logo}</div>{picker}</div>
 <h1>{heading}</h1>
 <p>{intro}</p>
 {error}
-<form method="post" action="/connect">
+<form method="post" action="/connect?lang={lang_q}">
 {networks}
 <label class="net"><input type="radio" name="ssid" value="" {other_checked}>
 <span>{other}</span></label>
@@ -145,6 +145,18 @@ def _lang_attr(t: i18n.T) -> str:
     return t.lang.replace("_", "-")
 
 
+def render_picker(t: i18n.T) -> str:
+    """The language picker: the phone's language is the default, this the override.
+    A GET form, so it works without script; the script only saves the button press."""
+    options = "".join(
+        f'<option value="{code}"{" selected" if code == t.lang else ""}>{html.escape(name)}</option>'
+        for code, name in i18n.ENDONYMS.items() if i18n.chosen(code))
+    label = html.escape(t._("Language"), quote=True)
+    return (f'<form class="lang" method="get" action="/">'
+            f'<select name="lang" aria-label="{label}" onchange="this.form.submit()">{options}</select>'
+            f'<noscript><button type="submit">→</button></noscript></form>')
+
+
 def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) -> str:
     """The page, in t's language. `error` is already in that language."""
     t = t or i18n.get(i18n.SOURCE_LANG)
@@ -153,16 +165,17 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
         lock = t._("open") if n["open"] else "🔒"
         rows.append(
             f'<label class="net"><input type="radio" name="ssid" value="{html.escape(n["ssid"], quote=True)}"'
-            f'{" checked" if i == 0 else ""}><span>{html.escape(n["ssid"])}</span>'
-            f"<small>{lock} {n['signal']}%</small></label>")
+            f'{" checked" if i == 0 else ""}><span><bdi>{html.escape(n["ssid"])}</bdi></span>'
+            f'<small dir="ltr">{lock} {n["signal"]}%</small></label>')
     return PAGE.format(
         lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
+        picker=render_picker(t), lang_q=t.lang,
         title=html.escape(t._("Teaport Wi-Fi setup")),
         heading=html.escape(t._("Connect to Wi-Fi")),
         intro=html.escape(t._("Pick your network and type its password. Teaport will leave "
                               "this setup network and join yours, and say out loud whether "
                               "that worked.")),
-        error=f'<p class="err">{html.escape(error)}</p>' if error else "",
+        error=f'<p class="err">{_isolate(error, [n["ssid"] for n in networks])}</p>' if error else "",
         networks="\n".join(rows) or f"<p>{html.escape(t._('No networks found — use Other.'))}</p>",
         other_checked="" if networks else "checked",
         other=html.escape(t._("Other (hidden) network")),
@@ -172,12 +185,21 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
         connect=html.escape(t._("Connect")))
 
 
+def _isolate(text: str, names: list[str]) -> str:
+    """Escape `text`, wrapping each network name in it in <bdi>: a Latin name inside
+    Arabic (right-to-left) text keeps its own direction instead of being reordered."""
+    out = html.escape(text)
+    for name in sorted({n for n in names if n}, key=len, reverse=True):
+        out = out.replace(html.escape(name), f"<bdi>{html.escape(name)}</bdi>")
+    return out
+
+
 def render_joining(ssid: str, t: i18n.T) -> str:
-    strong = f"<strong>{html.escape(ssid)}</strong>"
+    strong = f"<strong><bdi>{html.escape(ssid)}</bdi></strong>"
     return JOINING.format(
         lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
         title=html.escape(t._("Teaport is joining")),
-        heading=html.escape(t._("Joining {network}…")).format(network=html.escape(ssid)),
+        heading=html.escape(t._("Joining {network}…")).format(network=f"<bdi>{html.escape(ssid)}</bdi>"),
         body=html.escape(t._("Teaport is leaving this setup network now. Switch your phone "
                              "back to {network}. Teaport will say out loud whether it "
                              "connected; if it could not, the setup network comes back and "
@@ -236,8 +258,17 @@ class Setup:
                 self.end_headers()
                 self.wfile.write(data)
 
-            def _t(self) -> i18n.T:
-                return i18n.for_accept_language(self.headers.get("Accept-Language"))
+            def _t(self) -> tuple[i18n.T, list]:
+                """The reader's language: a choice made on the picker (?lang=, then kept
+                in a cookie), else the phone's own (Accept-Language). Returns it and the
+                headers that remember a new choice."""
+                query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+                picked = i18n.chosen((query.get("lang") or [None])[0])
+                if picked:
+                    return picked, [("Set-Cookie", f"teaport_lang={picked.lang}; Path=/; SameSite=Lax")]
+                cookie = re.search(r"(?:^|;\s*)teaport_lang=([A-Za-z_]+)", self.headers.get("Cookie") or "")
+                kept = i18n.chosen(cookie.group(1)) if cookie else None
+                return kept or i18n.for_accept_language(self.headers.get("Accept-Language")), []
 
             def do_GET(self):
                 # Every path is the page: the captive-portal probes (Apple's
@@ -245,16 +276,16 @@ class Setup:
                 # something else, so the phone shows this as a sign-in page.
                 if self.path.startswith("/generate_204") or self.path.startswith("/gen_204"):
                     return self._send(302, "", extra=[("Location", f"http://{AP_ADDRESS}/")])
-                t = self._t()
-                self._send(200, render_page(setup.networks, setup.error_text(t), t))
+                t, remember = self._t()
+                self._send(200, render_page(setup.networks, setup.error_text(t), t), extra=remember)
 
             def do_POST(self):
                 length = min(int(self.headers.get("Content-Length") or 0), 4096)
                 ssid, password, hidden, error = parse_form(self.rfile.read(length))
-                t = self._t()
+                t, remember = self._t()
                 if error:
-                    return self._send(200, render_page(setup.networks, t._(error), t))
-                self._send(200, render_joining(ssid, t))
+                    return self._send(200, render_page(setup.networks, t._(error), t), extra=remember)
+                self._send(200, render_joining(ssid, t), extra=remember)
                 setup.request = (ssid, password, hidden)
                 setup.wake.set()
 

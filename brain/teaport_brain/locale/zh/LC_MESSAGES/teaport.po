@@ -8,7 +8,7 @@
 # no / cancel / repeat. English phrases are always understood as well.
 # Placeholders like {network} must be kept as they are.
 #
-# Translated by a model (2026-10-07). NEEDS REVIEW by a native speaker before relying on it.
+# Translated by a model, reviewed by a second model (LQA, 2026-10-07). A native speaker's review is still recommended.
 msgid ""
 msgstr ""
 "Project-Id-Version: teaport\n"
@@ -71,10 +71,10 @@ msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}.
 msgstr "请用手机连接无线网络{ssid}。密码是{password}。设置页面应该会自动弹出。如果没有弹出，请在浏览器里打开{url}。"
 
 msgid "the saved settings for it did not work"
-msgstr "这个网络之前保存的设置不管用"
+msgstr "这个网络之前保存的设置不起作用"
 
 msgid "the password did not work"
-msgstr "密码不对"
+msgstr "密码不正确"
 
 msgid "the network was not found"
 msgstr "找不到这个网络"
@@ -237,19 +237,23 @@ msgstr "(?:设置|设定|配置|重新设置|重设|连接|连上|连一下|重�
 # the user means: yes
 msgctxt "pattern"
 msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
-msgstr "^(?!.*(?:不(?!错)|别|没(?!问题)|算了|取消|甭))(?:.*?(?:好的|好啊|好呀|好吧|好嘞|行啊|行吧|可以|没问题|当然|确定|开始吧|开始设置|开始配置|设置吧|设置一下|来吧|弄吧|是的|是啊|是呀|对的|对啊|对呀|嗯嗯|要的)|\\W*(?:是|好|对|行|嗯|要|开始|设置)(?:的|啊|呀|吧|嘞)?\\W*$|\\W*(?:好|行|可以|对|是)(?:的|啊|呀|吧|嘞)?[\\s，,。.！!])"
+msgstr "^(?!.*(?:不(?!错)|(?<![特区分级类告识派性])别|没(?!问题)|算了|取消|甭))(?:.*?(?:好的|好啊|好呀|好吧|好嘞|好好|嗯\\W*好|行啊|行吧|可以|没问题|当然|确定|需要|开始吧|开始设置|开始配置|设置吧|设置一下|来吧|弄吧|是的|是啊|是呀|对的|对啊|对呀|嗯嗯|要的)|\\W*(?:是|好|对|行|嗯|要|开始|设置|确定)(?:的|啊|呀|吧|嘞)?\\W*$|\\W*(?:好|行|可以|对|是)(?:的|啊|呀|吧|嘞)?[\\s，,。.！!])"
 
 # the user means: no
 msgctxt "pattern"
 msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
-msgstr "\\b(?:no|nope|cancel|stop)\\b|不(?!错|客气|过|用谢)|别|算了|取消|甭|没必要|没兴趣"
+msgstr "\\b(?:no|nope|cancel|stop)\\b|不(?!错|客气|过|用谢)|(?<![特区分级类告识派性])别|算了|取消|甭|没必要|没兴趣|(?:以后|下次|回头|晚点|改天|等会儿?|待会儿?)再说"
 
 # the user means: cancel
 msgctxt "pattern"
 msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
-msgstr "取消|停止|停下|停掉|停一下|停吧|别弄了|不弄了|别设置了|不设置了|不要设置了|别搞了|不搞了|算了|退出|结束设置|结束吧|中止|不用了|不要了"
+msgstr "取消|停止|停下|停掉|停一下|停吧|^\\W*停\\W*$|(?:不|别)(?:弄|搞|设|设置|连|配)了|不要设置了|不想(?:设置|弄|搞)了?|算了|退出|结束设置|结束吧|中止|关掉|不用了|不要了"
 
 # the user means: repeat
 msgctxt "pattern"
 msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
-msgstr "再(?:说|讲|念|读|播|来)一?(?:遍|次|下)|再说|重复|重说|没听清|没听到|听不清|没听懂|密码|网络名|叫什么|是多少"
+msgstr "再(?:说|讲|念|读|播|来)一?(?:遍|次|下)|再说|重复|重说|没听清|没听到|听不清|没听懂|慢一?点|说慢|刚才说|^\\W*(?:什么|啥)\\W*$|密码|网络名|热点名|叫什么|是多少"
+
+# The language picker on the setup page (its accessible label).
+msgid "Language"
+msgstr "语言"

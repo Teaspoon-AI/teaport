@@ -10,6 +10,8 @@
 #
 #     python -m teaport_brain.i18n          # recompile every .mo from its .po
 #     python -m teaport_brain.i18n --check  # exit 1 if a committed .mo is stale
+#     python3 -m teaport_brain.i18n --glyphs  # every shown character has a font (dev:
+#                                             # fontTools + the fonts a phone has)
 #
 # (tests/test_i18n.py runs the check, the same way docs/CONFIG.md is held to its schema.)
 #
@@ -36,6 +38,14 @@ ESPEAK_TO_LANG = {
 SOURCE_LANG = "en"
 # Catalogs written right to left (the page sets dir="rtl" for them).
 RTL = frozenset({"ar"})
+# Each language by its own name, for a language picker: never translated, so a reader
+# finds theirs whatever language the page is in (as every major vendor's picker does).
+ENDONYMS = {
+    "en": "English", "es": "Español", "fr": "Français", "it": "Italiano",
+    "pt_BR": "Português (Brasil)", "de": "Deutsch", "nl": "Nederlands", "ru": "Русский",
+    "ar": "العربية", "hi": "हिन्दी", "zh": "中文（简体）", "ja": "日本語", "ko": "한국어",
+}
+
 
 
 def N_(msgid: str) -> str:
@@ -66,6 +76,13 @@ class T:
 @functools.cache
 def get(lang: str) -> T:
     return T(lang if lang in catalogs() or lang == SOURCE_LANG else SOURCE_LANG)
+
+
+def chosen(lang: str | None) -> T | None:
+    """An explicit choice (?lang=, a cookie): its catalog, or None if it names none."""
+    if lang == SOURCE_LANG or lang in catalogs():
+        return get(lang)
+    return None
 
 
 def for_espeak(code: str | None) -> T:
@@ -190,8 +207,60 @@ def compiled(lang: str) -> bytes:
         return compile_mo(parse_po(f.read()))
 
 
+def shown_characters() -> dict[str, set[str]]:
+    """Every character a catalog can put on a screen, by language (patterns excluded:
+    they are matched, never shown), plus the language picker's names."""
+    out: dict[str, set[str]] = {}
+    for lang in catalogs():
+        with open(_po_path(lang), encoding="utf-8") as f:
+            entries = parse_po(f.read())
+        out[lang] = {c for k, v in entries.items() if k and not k.startswith("pattern\x04")
+                     for c in v if not c.isspace()}
+    out["picker"] = {c for name in ENDONYMS.values() for c in name if not c.isspace()}
+    return out
+
+
+def glyph_report() -> int:
+    """Which shown characters no installed font can draw (they would be tofu: a box).
+    Dev check, run on a machine with the fonts a phone has (Android's are Noto): needs
+    fontTools and fontconfig's fc-list. Exit 1 if anything is missing."""
+    import subprocess
+    try:
+        from fontTools.ttLib import TTCollection, TTFont
+    except ImportError:
+        print("needs fontTools (pip install fonttools) — try the system python3", file=sys.stderr)
+        return 2
+    files = subprocess.run(["fc-list", ":", "file"], capture_output=True, text=True).stdout
+    covered: dict[int, set[str]] = {}
+    for path in sorted({line.split(":")[0] for line in files.splitlines() if line.strip()}):
+        try:
+            fonts = TTCollection(path).fonts if path.lower().endswith(".ttc") else [TTFont(path, lazy=True)]
+        except Exception:  # noqa: BLE001 — a font fontTools cannot read covers nothing
+            continue
+        for font in fonts:
+            family = font["name"].getDebugName(1) or os.path.basename(path)
+            cmap = font.getBestCmap() or {}
+            for cp in cmap:
+                covered.setdefault(cp, set()).add(family)
+    missing_any = 0
+    for lang, chars in shown_characters().items():
+        gone = sorted(c for c in chars if ord(c) not in covered)
+        noto = sorted(c for c in chars if ord(c) in covered
+                      and not any(f.startswith("Noto") for f in covered[ord(c)]))
+        missing_any += len(gone)
+        line = f"{lang:7} {len(chars):4} characters: " + (
+            "all drawable" if not gone else f"NO FONT for {''.join(gone)!r}")
+        if noto:
+            line += f"; not in Noto here: {''.join(noto)!r}"
+        print(line)
+    return 1 if missing_any else 0
+
+
 def main(argv=None) -> int:
-    check = "--check" in (argv if argv is not None else sys.argv[1:])
+    argv = argv if argv is not None else sys.argv[1:]
+    if "--glyphs" in argv:
+        return glyph_report()
+    check = "--check" in argv
     stale = []
     for lang in catalogs():
         mo = _po_path(lang)[:-3] + ".mo"

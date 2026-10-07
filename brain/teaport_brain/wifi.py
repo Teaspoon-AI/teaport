@@ -248,7 +248,11 @@ PAGE_CSS = """
 --err-ink:#fca5a5;--err-bg:#3b1414;--btn-bg:#38bdf8;--btn-fg:#04121f}}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 var(--sans)}
 main{max-width:32rem;margin:0 auto;padding:28px 16px 48px}
-.logo{margin:0 0 18px}.logo img{display:block;height:50px;width:auto}
+.top{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin:0 0 18px}
+.logo{margin:0 0 18px}.top .logo{margin:0}.logo img{display:block;height:50px;width:auto}
+.lang select{height:36px;max-width:11rem;padding:0 8px;border:1px solid var(--border-strong);
+border-radius:var(--radius);background:var(--surface);color:inherit;font:inherit;font-size:14px}
+.lang button{margin:0 0 0 6px;width:auto;height:36px;padding:0 10px}
 h1{font-size:28px;line-height:1.15;margin:6px 0 8px}
 p{color:var(--muted);margin:0 0 16px}
 .net{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface);
@@ -261,4 +265,13 @@ button{margin-top:20px;width:100%;height:48px;border:0;border-radius:var(--radiu
 background:var(--btn-bg);color:var(--btn-fg);font:inherit;font-weight:700;cursor:pointer}
 .err{color:var(--err-ink);background:var(--err-bg);padding:10px 14px;border-radius:var(--radius);font-weight:600}
 .show{display:flex;gap:8px;align-items:center;color:var(--muted);margin-top:8px}
+/* The phone's own fonts, per script: the page sets lang, and a Han character must be
+   drawn in the Japanese, Chinese or Korean form its reader expects (one code point,
+   three glyph styles). Each list names the platform fonts (iOS/macOS, Android = Noto,
+   Windows) before the generic fallback; no web font is shipped (the page is offline). */
+:lang(ja){font-family:"Hiragino Sans","Hiragino Kaku Gothic ProN","Noto Sans CJK JP","Noto Sans JP","Yu Gothic UI","Meiryo",var(--sans)}
+:lang(zh){font-family:"PingFang SC","Noto Sans CJK SC","Noto Sans SC","Microsoft YaHei",var(--sans)}
+:lang(ko){font-family:"Apple SD Gothic Neo","Noto Sans CJK KR","Noto Sans KR","Malgun Gothic",var(--sans);word-break:keep-all}
+:lang(ar){font-family:"Geeza Pro","Noto Naskh Arabic","Noto Sans Arabic","Segoe UI",var(--sans)}
+:lang(hi){font-family:"Kohinoor Devanagari","Noto Sans Devanagari","Nirmala UI",var(--sans)}
 """

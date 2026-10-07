@@ -58,11 +58,50 @@ def test_the_catalogs_cover_what_the_box_hears_and_says():
     assert set(i18n.ESPEAK_TO_LANG.values()) <= VOXTRAL       # the voice speaks a subset
 
 
+# Letter names are optional per language (wifi_voice.spell): only a language whose
+# letter names collide with its digits needs them, so a catalog may carry any of A-Z.
+LETTERS = {"letter\x04" + chr(c) for c in range(ord("A"), ord("Z") + 1)}
+
+
 @pytest.mark.parametrize("lang", LANGS)
 def test_every_string_is_translated_and_none_is_stale(lang):
     used, have = _used(), set(_catalog(lang))
     assert not used - have, f"{lang}: untranslated {sorted(used - have)}"
-    assert not have - used, f"{lang}: stale (no longer in the code) {sorted(have - used)}"
+    assert not have - used - LETTERS, f"{lang}: stale (no longer in the code) {sorted(have - used - LETTERS)}"
+
+
+def test_korean_names_the_letters_its_digits_would_swallow():
+    ko = i18n.get("ko")
+    assert wifi_voice.spell("teaport-9e35", ko).split(ko.p("spell", ", "))[3] != ko.p("digit", "2")
+
+
+# Which scripts a catalog's letters may come from (unicodedata names' first word, plus
+# Latin for brand names, Wi-Fi, placeholders' surroundings and the like).
+SCRIPTS = {"es": (), "pt_BR": (), "fr": (), "it": (), "de": (), "nl": (),
+           "ru": ("CYRILLIC",), "ar": ("ARABIC",), "hi": ("DEVANAGARI",),
+           "zh": ("CJK", "IDEOGRAPHIC", "FULLWIDTH"),
+           "ja": ("CJK", "HIRAGANA", "KATAKANA", "IDEOGRAPHIC", "FULLWIDTH"),
+           "ko": ("HANGUL", "CJK", "FULLWIDTH")}
+
+
+@pytest.mark.parametrize("lang", sorted(set(LANGS) | {"en"}))
+def test_no_broken_characters(lang):
+    """What renders as tofu, garbage or nothing on a phone: not NFC, the replacement
+    character, control / private-use / unassigned code points, mojibake (UTF-8 read as
+    Latin-1), or letters from a script the language does not use."""
+    import unicodedata
+    allowed = ("LATIN",) + SCRIPTS.get(lang, ())
+    for key, text in _catalog(lang).items():
+        where = f"{lang} {key.split(chr(4))[-1][:40]!r}"
+        assert unicodedata.normalize("NFC", text) == text, f"{where}: not NFC"
+        assert "\ufffd" not in text, f"{where}: replacement character"
+        assert not re.search(r"Ã.|Â.|â€|ï»¿", text), f"{where}: mojibake"
+        for c in text:
+            cat = unicodedata.category(c)
+            assert cat not in ("Cc", "Co", "Cs", "Cn"), f"{where}: {cat} U+{ord(c):04X}"
+            if cat[0] in "LM" and not key.startswith("pattern\x04"):
+                assert unicodedata.name(c, "?").startswith(allowed), (
+                    f"{where}: {c!r} ({unicodedata.name(c, '?')}) is not {lang}'s script")
 
 
 def test_english_needs_only_its_digit_words():
@@ -115,6 +154,19 @@ def test_the_patterns_hear_their_language(lang):
     assert wifi_voice.heard("start", "set up wifi", t)           # English works too...
     assert not wifi_voice.heard("start", SAYS[lang]["yes"], t)
     assert not wifi_voice.heard("yes", SAYS[lang]["no"], t) or wifi_voice.heard("no", SAYS[lang]["no"], t)
+
+
+def test_arabic_is_heard_with_or_without_its_diacritics():
+    ar = i18n.get("ar")
+    for vocalised in ("نَعَم", "نعم"):
+        assert wifi_voice.heard("yes", vocalised, ar), vocalised
+
+
+def test_network_names_keep_their_direction_in_arabic():
+    page = wifi_setup.render_page([{"ssid": "Guest 5G!", "signal": 70, "open": True}],
+                                  "", i18n.get("ar"))
+    assert '<bdi>Guest 5G!</bdi>' in page and '<small dir="ltr">' in page
+    assert "<bdi>HomeNet</bdi>" in wifi_setup.render_joining("HomeNet", i18n.get("ar"))
 
 
 def test_a_foreign_no_is_not_englishs_no():
@@ -177,5 +229,32 @@ def test_the_page_is_served_in_the_phones_language():
         assert html_mod.escape(t._("Connect to Wi-Fi")) in page
         why = t._("Could not join {network}: {reason}. Try again.").format(
             network="home", reason=t._("the password did not work"))
-        assert html_mod.escape(why) in page, lang
+        assert html_mod.escape(why) in re.sub(r"</?bdi>", "", page), lang
     assert 'dir="rtl"' in pages["ar"] and 'dir="ltr"' in pages["es"]
+
+
+def test_the_language_picker_overrides_the_phone_and_is_remembered():
+    setup = wifi_setup.Setup(nm=None, status=None, port=0)
+    setup.networks = [{"ssid": "home", "signal": 80, "open": False, "security": "WPA2"}]
+    setup.serve()
+    base = f"http://127.0.0.1:{setup.port}"
+
+    def get(path, headers):
+        with urllib.request.urlopen(urllib.request.Request(base + path, headers=headers)) as r:
+            return r.read().decode(), r.headers.get("Set-Cookie")
+    try:
+        # A Spanish phone picks Japanese: the page switches and the choice is kept.
+        page, cookie = get("/?lang=ja", {"Accept-Language": "es"})
+        assert '<html lang="ja"' in page and cookie.startswith("teaport_lang=ja")
+        assert '<option value="ja" selected>日本語</option>' in page
+        assert 'action="/connect?lang=ja"' in page          # the Joining page follows it
+        page, _ = get("/", {"Accept-Language": "es", "Cookie": "teaport_lang=ja"})
+        assert '<html lang="ja"' in page
+        # An unknown choice is ignored: back to the phone's language.
+        page, cookie = get("/?lang=xx", {"Accept-Language": "es"})
+        assert '<html lang="es"' in page and cookie is None
+        # Every catalog is offered, by its own name.
+        for code in i18n.catalogs():
+            assert f'<option value="{code}"' in page and i18n.ENDONYMS[code] in page
+    finally:
+        setup.server.shutdown()

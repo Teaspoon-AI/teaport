@@ -62,11 +62,17 @@ PATTERNS = {
 }
 
 
+_TASHKEEL = re.compile("[\u064b-\u065f\u0670\u0640]")
+
+
 def heard(meaning: str, text: str, t: i18n.T) -> bool:
     """Did the user say `meaning` ("start", "yes", ...) in English or in t's language?
     Except "no": in another language English's "no" is often an ordinary word (Portuguese
     "no celular", Italian "come no" = of course), and a false "no" throws the setup away,
     so there only the language's own "no" counts (every catalog has its word for it)."""
+    # Arabic short vowels, shadda and tatweel are optional in writing and an STT may or
+    # may not emit them: match without them (no other catalog's script uses these).
+    text = _TASHKEEL.sub("", text)
     english = PATTERNS[meaning]
     own = t.p("pattern", english)
     patterns = {own} if meaning == "no" and t.lang != i18n.SOURCE_LANG else {english, own}
@@ -103,9 +109,15 @@ def spell(text: str, t: i18n.T) -> str:
     for c in chars:
         if c.isdigit() and c.isascii():
             words.append(t.p("digit", c))
+        elif c.isalpha() and c.isascii():
+            # A letter by its name. Optional catalog context "letter" (A-Z): a language
+            # whose letter names collide with its digit words names them its own way
+            # (Korean says E like 2); without an entry the voice gets the letter itself.
+            name = t.p("letter", c.upper())
+            words.append(t.p("spell", "capital {letter}").format(letter=name)
+                         if mixed and c.isupper() else name)
         elif c.isalpha():
-            words.append(t.p("spell", "capital {letter}").format(letter=c.upper())
-                         if mixed and c.isupper() else c.upper())
+            words.append(c)
         elif c in _SYMBOLS:
             words.append(t.p("spell", _SYMBOLS[c]))
         else:

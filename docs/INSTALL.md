@@ -68,8 +68,10 @@ downloads. You bring your own Jetson and your own LLM.
   It speaks the language of the box's voice (`TTS_VOICE` / `TTS_LANGUAGE`, or
   `switch_voice` mid-conversation) and understands "yes", "cancel" and so on in
   that language as well as in English. The setup page follows the phone's own
-  language. Covered: English, Spanish, French, Italian, Brazilian Portuguese,
-  Hindi, Japanese and Mandarin; the strings live in
+  language, and has a language picker at the top to override it. Covered: English, Spanish, French, Italian, Brazilian Portuguese,
+  Hindi, Japanese and Mandarin as voices, plus German, Dutch, Russian, Arabic and
+  Korean on the page and in what it understands (every language the speech
+  recognizer knows). The strings live in
   `brain/teaport_brain/locale/<lang>/LC_MESSAGES/teaport.po`. After editing one,
   run `python -m teaport_brain.i18n` to recompile it.
   **For an image with a paper insert:** have the flashing step write

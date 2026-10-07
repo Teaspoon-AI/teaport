@@ -8,7 +8,7 @@
 # no / cancel / repeat. English phrases are always understood as well.
 # Placeholders like {network} must be kept as they are.
 #
-# Translated by a model (2026-10-07). A native speaker's review is welcome.
+# Translated by a model, reviewed by a second model (LQA, 2026-10-07). A native speaker's review is still recommended.
 msgid ""
 msgstr ""
 "Project-Id-Version: teaport\n"
@@ -32,7 +32,7 @@ msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
 msgstr "De acuerdo. Detuve la configuración del wifi y dejé todo como estaba."
 
 msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "La configuración del wifi no arrancó. Inténtalo de nuevo en un momento."
+msgstr "La configuración del wifi no se inició. Inténtalo de nuevo en un momento."
 
 msgid "I'm still waiting for you on the setup page."
 msgstr "Sigo esperándote en la página de configuración."
@@ -65,25 +65,25 @@ msgid "Say yes to start Wi-Fi setup, or no."
 msgstr "Para configurar el wifi, di sí. Si no, di no."
 
 msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "Estoy configurando el wifi. Di repite para volver a escuchar los datos, o cancela para detenerlo."
+msgstr "Estoy configurando el wifi. Di repite para volver a escuchar los datos, o cancela para salir."
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "En tu teléfono, conéctate a la red wifi {ssid}. La contraseña es {password}. Debería abrirse sola una página de configuración. Si no se abre, entra en {url}."
+msgstr "En tu teléfono, conéctate a la red wifi {ssid}. La contraseña es {password}. Debería abrirse sola una página de configuración. Si no se abre, ve a {url}."
 
 msgid "the saved settings for it did not work"
-msgstr "los datos guardados de esa red no funcionaron"
+msgstr "los datos guardados de esa red ya no sirven"
 
 msgid "the password did not work"
-msgstr "la contraseña no fue aceptada"
+msgstr "la red rechazó la contraseña"
 
 msgid "the network was not found"
 msgstr "no se encontró la red"
 
 msgid "it would not connect"
-msgstr "no se logró la conexión"
+msgstr "la conexión falló"
 
 msgid "it joined but there is no internet through it"
-msgstr "se conectó, pero esa red no tiene internet"
+msgstr "se conectó, pero esa red no tiene acceso a internet"
 
 msgid "this box has no Wi-Fi device"
 msgstr "este dispositivo no tiene wifi"
@@ -107,7 +107,7 @@ msgid "Pick your network and type its password. Teaport will leave this setup ne
 msgstr "Elige tu red y escribe su contraseña. Teaport saldrá de esta red de configuración, se conectará a la tuya y te dirá en voz alta si lo logró."
 
 msgid "No networks found — use Other."
-msgstr "No se encontraron redes. Usa «Otra red»."
+msgstr "No se encontraron redes. Usa “Otra red”."
 
 msgid "Other (hidden) network"
 msgstr "Otra red (oculta)"
@@ -137,13 +137,13 @@ msgid "Could not join {network}: {reason}. Try again."
 msgstr "No se pudo conectar a {network}: {reason}. Inténtalo de nuevo."
 
 msgid "Pick a network, or type its name under Other."
-msgstr "Elige una red o escribe su nombre en «Otra red»."
+msgstr "Elige una red o escribe su nombre en “Otra red”."
 
 msgid "That network name is too long."
 msgstr "Ese nombre de red es demasiado largo."
 
 msgid "Wi-Fi passwords are 8 to 63 characters."
-msgstr "Las contraseñas de Wi-Fi tienen entre 8 y 63 caracteres."
+msgstr "La contraseña de Wi-Fi debe tener entre 8 y 63 caracteres."
 
 msgctxt "digit"
 msgid "0"
@@ -237,19 +237,23 @@ msgstr "\\b(?:(?:re)?config[uú]r(?:a|ar|e|o|emos|amos)(?:lo|la|me|nos|te)?|conf
 # the user means: yes
 msgctxt "pattern"
 msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
-msgstr "^(?!.*\\b(?:no|nop|nel)\\b).*?\\b(?:sí|si(?!\\s+\\w)|claro|vale|dale|venga|de acuerdo|adelante|por favor|porfa|por supuesto|ok|okey|okay|hazlo|correcto|perfecto|exacto|afirmativo|órale|orale|quiero(?! saber)|empieza|empecemos|comienza|est[aá] bien|muy bien)\\b"
+msgstr "^(?!.*\\b(?:(?<!por qu[eé] )(?<!porqu[eé] )(?<!c[oó]mo )no(?! hay problema| te preocupes)|nop|nel)\\b).*?\\b(?:sí|si(?!\\s+\\w)|claro|vale|dale|venga|de acuerdo|adelante|por favor|porfa|por supuesto|ok|okey|okay|hazlo|correcto|perfecto|exacto|afirmativo|órale|orale|quiero(?! saber)|empieza|empecemos|comienza|est[aá] bien|muy bien|por qu[eé] no|c[oó]mo no|no hay problema|sin problema|no te preocupes)\\b"
 
 # the user means: no
 msgctxt "pattern"
 msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
-msgstr "\\b(?:no|nop|nel|nah|negativo|ni hablar|para nada|olv[ií]dalo|d[eé]jalo|cancel\\w*|mejor (?:despu[eé]s|luego|otro d[ií]a)|m[aá]s tarde)\\b"
+msgstr "\\b(?:(?<!por qu[eé] )(?<!porqu[eé] )(?<!c[oó]mo )no(?! hay problema| te preocupes)|nop|nel|nah|negativo|ni hablar|para nada|olv[ií]dalo|d[eé]jalo|cancel\\w*|mejor (?:despu[eé]s|luego|otro d[ií]a)|m[aá]s tarde)\\b"
 
 # the user means: cancel
 msgctxt "pattern"
 msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
-msgstr "\\b(?:cancel\\w*|det[eé]n(?:te|lo|la|er|ga|gas)?|basta|olv[ií]dalo|d[eé]jalo|ya no quiero|no quiero (?:seguir|continuar|configurar\\w*)|p[aá]ra(?:lo|la)? ya|p[aá]ralo|p[aá]rala|sal(?:ir|te)? de (?:la |el |esta |este )?(?:configuraci[oó]n|modo|wi[- ]?fi)|abort\\w*)\\b|^\\W*(?:para\\W*)+$"
+msgstr "\\b(?:cancel\\w*|det[eé]n(?:te|lo|la|er|ga)?|basta|olv[ií]dalo|d[eé]jalo|ya no quiero|no quiero (?:seguir|continuar|configurar\\w*)|p[aá]ra(?:lo|la)? ya|p[aá]ralo|p[aá]rala|sal(?:ir|te)? de (?:la |el |esta |este )?(?:configuraci[oó]n|modo|wi[- ]?fi)|abort\\w*)\\b|^\\W*(?:para\\W*)+$"
 
 # the user means: repeat
 msgctxt "pattern"
 msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
 msgstr "\\b(?:rep[ií]t\\w*|repetir\\w*|otra vez|de nuevo|una vez m[aá]s|cu[aá]l (?:era|es)|qu[eé] (?:era|es|dijiste|has dicho)|c[oó]mo (?:era|es|dijiste|se llama)|contrase[nñ]a|clave|nombre de la red|no (?:te )?(?:entend[ií]|escuch[eé]|o[ií])|m[aá]s despacio)\\b|^\\W*(?:perd[oó]n|c[oó]mo|qu[eé])\\W*$"
+
+# The language picker on the setup page (its accessible label).
+msgid "Language"
+msgstr "Idioma"

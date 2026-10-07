@@ -8,7 +8,7 @@
 # no / cancel / repeat. English phrases are always understood as well.
 # Placeholders like {network} must be kept as they are.
 #
-# Translated by a model (2026-10-07). A native speaker's review is welcome.
+# Translated by a model, reviewed by a second model (LQA, 2026-10-07). A native speaker's review is still recommended.
 msgid ""
 msgstr ""
 "Project-Id-Version: teaport\n"
@@ -35,7 +35,7 @@ msgid "Wi-Fi setup didn't start. Please try again in a moment."
 msgstr "Het instellen van de wifi is niet gestart. Probeer het zo nog een keer."
 
 msgid "I'm still waiting for you on the setup page."
-msgstr "Ik wacht nog op je, op de instelpagina."
+msgstr "Ik wacht nog tot je klaar bent op de instelpagina."
 
 msgid "That didn't work: {reason}."
 msgstr "Dat is niet gelukt: {reason}."
@@ -68,7 +68,7 @@ msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to st
 msgstr "Ik ben de wifi aan het instellen. Zeg herhaal om de gegevens nog een keer te horen, of annuleer om te stoppen."
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "Verbind je telefoon met het wifi-netwerk {ssid}. Het wachtwoord is {password}. Er zou vanzelf een instelpagina moeten openen. Zo niet, ga dan naar {url}."
+msgstr "Verbind je telefoon met het wifinetwerk {ssid}. Het wachtwoord is {password}. Er zou vanzelf een instelpagina moeten verschijnen. Zo niet, ga dan naar {url}."
 
 msgid "the saved settings for it did not work"
 msgstr "de opgeslagen instellingen voor dat netwerk werkten niet"
@@ -83,7 +83,7 @@ msgid "it would not connect"
 msgstr "de verbinding kwam niet tot stand"
 
 msgid "it joined but there is no internet through it"
-msgstr "de verbinding is gelukt, maar via dat netwerk is er geen internet"
+msgstr "de verbinding is gelukt, maar er is geen internettoegang"
 
 msgid "this box has no Wi-Fi device"
 msgstr "dit apparaat heeft geen wifi"
@@ -137,13 +137,13 @@ msgid "Could not join {network}: {reason}. Try again."
 msgstr "Kan geen verbinding maken met {network}: {reason}. Probeer het opnieuw."
 
 msgid "Pick a network, or type its name under Other."
-msgstr "Kies een netwerk, of typ de naam onder ‘Ander’."
+msgstr "Kies een netwerk of typ de naam onder ‘Ander’."
 
 msgid "That network name is too long."
 msgstr "Die netwerknaam is te lang."
 
 msgid "Wi-Fi passwords are 8 to 63 characters."
-msgstr "Wifi-wachtwoorden hebben 8 tot 63 tekens."
+msgstr "Wifiwachtwoorden hebben 8 tot 63 tekens."
 
 msgctxt "digit"
 msgid "0"
@@ -242,7 +242,7 @@ msgstr "\\b(?:ja|jawel|jazeker|jep|jup|zeker|oké|oke|okee|okay|ok|prima|graag|a
 # the user means: no
 msgctxt "pattern"
 msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
-msgstr "\\b(?:nee|neen|nope|welnee|laat maar|laat (?:het|dat) (?:maar|zitten)|vergeet (?:het|dat)|annuleer\\w*|annuleren|stop|stoppen|geen (?:zin|behoefte)|hoeft niet)\\b|(?<!waarom )(?<!ook )\\bniet\\b"
+msgstr "\\b(?:nee|neen|nope|welnee|laat maar|laat (?:het|dat) (?:maar|zitten)|vergeet (?:het|dat)|annuleer\\w*|annuleren|stop|stoppen|geen (?:zin|behoefte|tijd)|hoeft niet|ho maar|later|straks)\\b|(?<!waarom )(?<!waarom ook )(?<!werkt )(?<!lukt )(?<!doet het )\\bniet\\b(?! (?:slecht|verkeerd)\\b)"
 
 # the user means: cancel
 msgctxt "pattern"
@@ -253,3 +253,7 @@ msgstr "\\b(?:annuleer\\w*|annuleren|stop|stoppen|stopt|hou op|houd op|ophouden|
 msgctxt "pattern"
 msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
 msgstr "\\b(?:herhaal\\w*|herhalen|herhaling|nog (?:een ?keer|eens|1 keer)|nogmaals|opnieuw|wat was|hoe was|wat zei je|wachtwoord\\w*|paswoord|netwerknaam|naam van (?:het|de) (?:netwerk|wifi)|wi[\\s-]?fi[\\s-]?naam|zeg (?:dat|het)|pardon|niet verstaan|langzamer)\\b"
+
+# The language picker on the setup page (its accessible label).
+msgid "Language"
+msgstr "Taal"
