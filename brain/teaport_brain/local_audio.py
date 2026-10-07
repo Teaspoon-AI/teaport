@@ -16,7 +16,8 @@
 #   * The card comes first. aplay and arecord are opened, and capture must deliver
 #     data, BEFORE /talk is dialled: a dead or unplugged card evicts nobody. A card that
 #     fails is retried with a backoff (RETRY_SECS doubling to RETRY_MAX_SECS) — but a
-#     card that was unplugged is retried the moment it is plugged back in (CARD_POLL_SECS).
+#     card that was unplugged is retried the moment it is plugged back in (CARD_POLL_SECS,
+#     CARD_ABSENT_MIN_SECS: a card that only blinks off and on keeps its backoff).
 #   * The first session after start dials at once (and so is greeted). After any session
 #     ends — the brain hung up, its idle timeout, another client took the slot, the
 #     STT-busy line — the card stays open and the bridge waits for a VOICE in the room
@@ -91,6 +92,11 @@ RETRY_MAX_SECS = 60.0
 # is retried as soon as it appears (a replug is noticed in seconds, not a minute).
 # Looking costs nothing and dials nobody, so the backoff still protects other sessions.
 CARD_POLL_SECS = 2.0
+# ...but only a card gone this long counts as unplugged and plugged back in. One that
+# drops off the bus and comes straight back (a brownout, a bad cable) is a flapping card:
+# it keeps its backoff, or the bridge would retry it -- and, between failures, redial the
+# brain -- every few seconds forever.
+CARD_ABSENT_MIN_SECS = 5.0
 # Capture must deliver its first byte within this, or the card counts as dead.
 CAPTURE_START_SECS = 5.0
 # A voice in the room, between sessions: chunks louder than WAKE_DB (dBFS RMS on the
@@ -334,16 +340,23 @@ def card_present(device: str) -> bool | None:
 
 
 async def wait_for_card(device: str, secs: float) -> bool:
-    """Wait out a card backoff of `secs`, ending early (True) if a card that was missing
-    is plugged in meanwhile. A card that is there but failed waits the whole backoff."""
+    """Wait out a card backoff of `secs`, ending early (True) if the card is plugged back
+    in after being gone at least CARD_ABSENT_MIN_SECS. A card that is there but failed,
+    or one that only blinked off and on (flapping), waits the whole backoff."""
     if card_present(device) is not False:
         await asyncio.sleep(secs)
         return False
-    deadline = time.monotonic() + secs
+    deadline = absent_since = time.monotonic()
+    deadline += secs
     while time.monotonic() < deadline:
         await asyncio.sleep(min(CARD_POLL_SECS, max(0.0, deadline - time.monotonic())))
-        if card_present(device):
-            return True
+        if not card_present(device):
+            if absent_since is None:
+                absent_since = time.monotonic()  # gone again: a new absence starts
+        elif absent_since is not None:
+            if time.monotonic() - absent_since >= CARD_ABSENT_MIN_SECS:
+                return True
+            absent_since = None  # back too soon: a flap, not a replug
     return False
 
 
@@ -881,7 +894,8 @@ async def run_bridge() -> None:
                     connect_now = False
                     card_wait = dial_wait = RETRY_SECS  # a good session
             except CardError as e:
-                logger.warning(f"sound card {card.device}: {e} — retrying in {card_wait:g} s")
+                logger.warning(f"sound card {card.device}: {e} — retrying in {card_wait:g} s "
+                               "(sooner if it is unplugged and plugged back in)")
             finally:
                 await card.close()
             if await wait_for_card(card.device, card_wait):

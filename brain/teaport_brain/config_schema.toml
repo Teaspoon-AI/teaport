@@ -1845,7 +1845,7 @@ default = "hw:CARD=Array,DEV=0"
 read = "startup"
 tier = "setup"
 help = "The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others."
-source = "local_audio.py:82"
+source = "local_audio.py:83"
 
 [[settings]]
 name = "LOCAL_AUDIO_CAPTURE_CHANNEL"
@@ -1858,7 +1858,7 @@ max = 1
 read = "startup"
 tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
-source = "local_audio.py:83"
+source = "local_audio.py:84"
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
@@ -1872,7 +1872,7 @@ unit = "dB"
 read = "startup"
 tier = "tuning"
 help = "How loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never evicts a dashboard Talk session on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not."
-source = "local_audio.py:99"
+source = "local_audio.py:105"
 
 [[settings]]
 name = "LOCAL_AUDIO_URL"
@@ -1883,7 +1883,7 @@ default = "ws://127.0.0.1:$BRAIN_PORT/talk"
 read = "startup"
 tier = "tuning"
 help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."
-source = "local_audio.py:85"
+source = "local_audio.py:86"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_SOCK"
@@ -1894,7 +1894,7 @@ default = "/run/oled-avatar/face.sock"
 read = "startup"
 tier = "tuning"
 help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes."
-source = "local_audio.py:113"
+source = "local_audio.py:119"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_ADVANCE_MS"
@@ -1908,4 +1908,4 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:131"
+source = "local_audio.py:137"
