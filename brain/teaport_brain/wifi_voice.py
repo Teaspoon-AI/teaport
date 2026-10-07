@@ -111,10 +111,17 @@ _UNCONFIRMED = "the user did not confirm, so it never started."
 PATTERNS = {
     # "set up / setting up / connect (me) to / switching (to) ... the wifi / a new network",
     # verb first: talk about Wi-Fi ("my wifi is slow", "what network am I on?") has none.
-    "start": r"\b(?:set(?:s|ting)? ?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?"
+    # The noun must end the request ("... wifi.", "... wifi again", "... wifi on the box"),
+    # not describe another noun: "set up wifi calling", "connect the wireless keyboard",
+    # "join the network team", "switch the wifi off".
+    "start": r"\b(?:set(?:s|ting)?[- ]?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?"
              r"|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\b(?: (?:the|a|my|your|our|this"
-             r"|that|to|onto|new|another|different|other|home|me|us|it|yourself|the box|back)){0,4}"
-             r" ?(?:wi[- ]?fi|wireless|network|hotspot)s?\b|\bwi[- ]?fi (?:set ?up|setup)\b",
+             r"|that|to|onto|new|another|different|other|home|guest|me|us|it|yourself|the box|back))"
+             r"{0,4} ?(?:(?:wi[-‐‑ ]?fi|wireless)(?: (?:network|connection))?|network|hotspot)s?"
+             r"(?= *(?:[.,!?;:…]|$)| on \w| (?:and|so|but|because|since|then|now|please|again|for"
+             r"|to|at|in|with|from|here|there|too|first|today|tonight|called|named|instead|as|if"
+             r"|when|or|that|which|i|we|ok|okay|thanks|thank|right|quickly)\b)"
+             r"|\bwi[-‐‑ ]?fi (?:set[- ]?up|setup)\b",
     "yes": r"\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\b",
     "no": r"\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\b",
     "cancel": r"\b(?:cancel|stop|quit|exit|abort|never ?mind)\b",
@@ -128,9 +135,9 @@ PATTERNS = {
 # English start pattern is heard in every session; a language's own pattern is its
 # catalog's to keep narrow.
 _NOT_A_REQUEST = re.compile(
-    r"\b(?:how|why|can['’]?t|cannot|couldn['’]?t|won['’]?t|doesn['’]?t|didn['’]?t|isn['’]?t"
-    r"|wasn['’]?t|unable|trouble|problem)\b"
-    r"|\b(?:wi[- ]?fi|wireless|network|hotspot) (?:password|passcode|settings?|name|network name"
+    r"\b(?:how|why|did|does|can['’]?t|cannot|couldn['’]?t|won['’]?t|doesn['’]?t|didn['’]?t"
+    r"|isn['’]?t|wasn['’]?t|unable|trouble|problem)\b"
+    r"|\b(?:wi[-‐‑ ]?fi|wireless|network|hotspot) (?:password|passcode|settings?|name|network name"
     r"|is|was|keeps)\b"
     r"|\bon (?:my|his|her|their|our|the|this) (?:phone|laptop|computer|tablet|tv|mac|pc"
     r"|ipad|iphone|kindle)\b", re.I)
