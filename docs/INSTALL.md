@@ -46,9 +46,12 @@ downloads. You bring your own Jetson and your own LLM.
   the card to the assistant and plays the replies back. The device and mic
   channel live in `/etc/teaport/local-audio.env` (**docs/CONFIG.md → Local audio
   bridge**). It shares the Talk slot: it dials the assistant when it starts,
-  and once a session ends (a browser Talk session took the slot, or the
-  assistant hung up) it waits until someone speaks near the mic before dialling
-  again — which takes the slot back from a browser session. Turn it off with
+  and once a session ends (the assistant hung up, or its idle timeout) it waits
+  until someone speaks near the mic before dialling again. A browser or
+  dashboard Talk session takes the slot from it; the bridge then backs off and
+  does not listen for a voice until no Talk session has been live for
+  `LOCAL_AUDIO_BACKOFF_SECS` (60 s by default; a bridge that restarts while
+  such a session is live backs off the same way). Turn it off with
   `sudo systemctl disable --now teaport-local-audio`; re-running the installer
   keeps it off until you pass `TEAPORT_ENABLE_LOCAL_AUDIO=1` again.
   Through it the assistant can also turn its speaker up or down when asked

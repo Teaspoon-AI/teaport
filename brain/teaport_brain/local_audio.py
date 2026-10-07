@@ -28,6 +28,8 @@
 #     the dashboard user talking to their own session is a voice in the room too — until
 #     the brain has reported no live Talk session (/talk/status) for LOCAL_AUDIO_BACKOFF_SECS.
 #     An unused session ends on the brain's idle timeout (~5 min), so this is bounded.
+#     A bridge that starts (a crash, a unit restart) while another client's session is
+#     live backs off the same way instead of dialling (taken_at_start).
 #
 # Two hardware facts shape it:
 #   * The XVF3800 only streams capture while a playback stream is open on the same
@@ -116,9 +118,15 @@ WAKE_WINDOW_SECS = 0.4
 # Mic audio kept while waiting, sent first on the connection the voice opens.
 PREROLL_SECS = 1.0
 # Taken by another Talk client: no voice wake until the brain has had no live /talk
-# session for this long (Backoff), asked every BACKOFF_POLL_SECS.
+# session for this long (Backoff), asked every BACKOFF_POLL_SECS. 0 or less: no back-off.
 BACKOFF_SECS = float(os.getenv("LOCAL_AUDIO_BACKOFF_SECS", "60"))
 BACKOFF_POLL_SECS = 5.0
+# At process start a Talk session may still be our own previous process's (a crash, a
+# unit restart): the brain lets it go within a second of its socket closing (the kernel
+# closes it when the process dies). Only one still live after this long is another
+# client's, which the first dial would evict.
+START_SETTLE_SECS = 3.0
+START_POLL_SECS = 0.5
 # The brain's close code for a session a newer one evicted (gateway_server.TAKEN_CLOSE_CODE;
 # not imported: that pulls Pipecat into this process).
 TAKEN_CLOSE_CODE = 4001
@@ -919,16 +927,18 @@ def _url() -> str:
 
 
 def _status_url() -> str:
-    """/talk/status next to the /talk we dial (gateway_server.talk_status)."""
+    """/talk/status next to the /talk we dial (gateway_server.talk_status). No query:
+    the token goes as a header, where uvicorn's access log does not record it."""
     parts = urllib.parse.urlsplit(URL)
-    query = urllib.parse.urlencode({"token": GATEWAY_TOKEN}) if GATEWAY_TOKEN else ""
     return urllib.parse.urlunsplit(("https" if parts.scheme == "wss" else "http", parts.netloc,
-                                    parts.path.rstrip("/") + "/status", query, ""))
+                                    parts.path.rstrip("/") + "/status", "", ""))
 
 
 def _talk_active_sync() -> bool | None:
+    headers = {"Authorization": f"Bearer {GATEWAY_TOKEN}"} if GATEWAY_TOKEN else {}
     try:
-        with urllib.request.urlopen(_status_url(), timeout=3) as r:
+        with urllib.request.urlopen(urllib.request.Request(_status_url(), headers=headers),
+                                    timeout=3) as r:
             return bool(json.load(r).get("active"))
     except Exception:  # noqa: BLE001 — brain down or restarting, a brain without it: unknown
         return None
@@ -958,6 +968,17 @@ class Backoff:
     async def wait(self) -> None:
         while not self.over(await talk_active()):
             await asyncio.sleep(BACKOFF_POLL_SECS)
+
+
+async def taken_at_start() -> bool:
+    """Is the box another client's when this process starts? A Talk session still live
+    after START_SETTLE_SECS (see there); a brain that cannot say: no."""
+    deadline = time.monotonic() + START_SETTLE_SECS
+    while await talk_active():
+        if time.monotonic() >= deadline:
+            return True
+        await asyncio.sleep(START_POLL_SECS)
+    return False
 
 
 def taken(e: BaseException | None) -> bool:
@@ -1131,6 +1152,11 @@ async def run_bridge() -> None:
     connect_now = True  # the first session dials at once (and is greeted)
     backoff = None  # another client took the box: a Backoff to wait out (kept across card reopens)
     card_wait = dial_wait = RETRY_SECS
+    if BACKOFF_SECS > 0 and await taken_at_start():
+        # A restart (a crash, the config page) must not evict a session in use either.
+        connect_now, backoff = False, Backoff()
+        logger.info("a Talk session is live at start — backing off (no voice wake) until "
+                    f"no Talk session has been live for {BACKOFF_SECS:g} s")
     try:
         while True:
             card = Card(face, volume=volume)
@@ -1153,7 +1179,7 @@ async def run_bridge() -> None:
                             connect_now = True
                             card_wait = dial_wait = RETRY_SECS
                             continue
-                        if ended == "taken":
+                        if ended == "taken" and BACKOFF_SECS > 0:
                             backoff = Backoff()
                             logger.info("session taken by another Talk client — backing off "
                                         f"(no voice wake) until no Talk session has been live "

@@ -358,6 +358,10 @@ def _fake_card(monkeypatch, capture_script, flag):
     monkeypatch.setattr(la, "FACE_SOCK", os.path.join(tempfile.mkdtemp(), "face.sock"))
     monkeypatch.setattr(la, "VOLUME_FILE", os.path.join(tempfile.mkdtemp(), "volume.json"))
 
+    async def unknown():
+        return None                              # a brain that cannot say (no /talk/status here)
+    monkeypatch.setattr(la, "talk_active", unknown)
+
 
 async def _talk(on_connect):
     """A fake /talk; on_connect(ws, n) runs per connection. Returns (server, url)."""
@@ -476,13 +480,31 @@ def test_only_the_taken_close_code_is_taken():
     assert not la.taken(None)
 
 
-def test_status_url_sits_next_to_talk(monkeypatch):
+def test_status_is_asked_next_to_talk_with_the_token_in_a_header(monkeypatch):
+    """Never ?token=: uvicorn's access log would record it on every poll."""
+    import io
+    import urllib.request
+    sent = []
+
+    def urlopen(req, timeout):
+        sent.append(req)
+        return io.BytesIO(b'{"active": true}')
+    monkeypatch.setattr(urllib.request, "urlopen", urlopen)
     monkeypatch.setattr(la, "URL", "ws://127.0.0.1:7861/talk")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
-    assert la._status_url() == "http://127.0.0.1:7861/talk/status"
-    monkeypatch.setattr(la, "URL", "wss://box:443/talk/")
+    assert la._talk_active_sync() is True
+    assert sent[-1].full_url == "http://127.0.0.1:7861/talk/status"
+    assert not sent[-1].has_header("Authorization")
+    monkeypatch.setattr(la, "URL", "wss://box:443/talk/?x=1")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b")
-    assert la._status_url() == "https://box:443/talk/status?token=a%2Bb"
+    assert la._talk_active_sync() is True
+    assert sent[-1].full_url == "https://box:443/talk/status"
+    assert sent[-1].get_header("Authorization") == "Bearer a+b"
+
+    def refused(req, timeout):
+        raise OSError("connection refused")
+    monkeypatch.setattr(urllib.request, "urlopen", refused)
+    assert la._talk_active_sync() is None
 
 
 def _redials(monkeypatch, close_code, active):
@@ -492,15 +514,18 @@ def _redials(monkeypatch, close_code, active):
     flag = tempfile.mktemp()
     _fake_card(monkeypatch, ARECORD, flag)
     monkeypatch.setattr(la, "BACKOFF_POLL_SECS", 0.05)
-    polls = [0]
+    polls, conns = [0], [0]
 
     async def talk_active():
+        if not conns[0]:
+            return None                          # the start-up check: no session yet
         polls[0] += 1
         return active()
     monkeypatch.setattr(la, "talk_active", talk_active)
 
     async def run():
         async def on_connect(ws, n):
+            conns[0] = n
             if n == 1:
                 await ws.close(code=close_code)
                 return
@@ -545,6 +570,63 @@ def test_a_brain_restart_or_a_plain_end_redials_on_voice_as_before(monkeypatch):
     for code in (1000, 1012):
         count, polls = _redials(monkeypatch, code, lambda: True)
         assert count >= 2 and polls == 0, code
+
+
+def test_backoff_zero_treats_taken_as_any_end(monkeypatch):
+    """LOCAL_AUDIO_BACKOFF_SECS=0: no back-off at all, not one of 0 s — no poll, no lines."""
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0)
+    count, polls = _redials(monkeypatch, la.TAKEN_CLOSE_CODE, lambda: True)
+    assert count >= 2 and polls == 0
+
+
+def _first_dials(monkeypatch, active, secs=1.5):
+    """A bridge process starting while the brain reports active() (called per poll).
+    Returns (connections, voice-free) after `secs`, nobody speaking."""
+    flag = tempfile.mktemp()                     # never created: nobody speaks
+    _fake_card(monkeypatch, ARECORD, flag)
+    monkeypatch.setattr(la, "START_SETTLE_SECS", 0.5)
+    monkeypatch.setattr(la, "START_POLL_SECS", 0.05)
+    monkeypatch.setattr(la, "BACKOFF_POLL_SECS", 0.05)
+    monkeypatch.setattr(la, "BACKOFF_SECS", 60)
+    t0 = []
+
+    async def talk_active():
+        t0 or t0.append(asyncio.get_running_loop().time())
+        return active(asyncio.get_running_loop().time() - t0[0])
+    monkeypatch.setattr(la, "talk_active", talk_active)
+
+    async def run():
+        async def on_connect(ws, n):
+            try:
+                await ws.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        await asyncio.sleep(secs)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return count[0]
+
+    return asyncio.run(run())
+
+
+def test_a_bridge_restart_does_not_evict_a_session_in_use(monkeypatch):
+    """Started (a crash, a unit restart) while another client's session is live: no
+    first dial — it backs off like an evicted bridge."""
+    assert _first_dials(monkeypatch, lambda t: True) == 0
+
+
+def test_our_own_dying_session_does_not_hold_a_restart_off(monkeypatch):
+    """The previous process's session, still live for a moment after it died, is
+    waited out (START_SETTLE_SECS): the new process dials at once, as at any start."""
+    assert _first_dials(monkeypatch, lambda t: t < 0.2) == 1
+
+
+def test_a_start_with_no_brain_dials_at_once(monkeypatch):
+    assert _first_dials(monkeypatch, lambda t: None) == 1
 
 
 # ------------------------------------------------------ the brain's half of it
@@ -596,16 +678,67 @@ def test_an_evicted_talk_socket_is_closed_with_the_taken_code():
 
 
 def test_talk_status_says_whether_the_slot_is_held(monkeypatch):
+    from types import SimpleNamespace
+    from fastapi import HTTPException
     gs = _gateway()
     from teaport_brain import agent_session
-    monkeypatch.setattr(gs, "GATEWAY_TOKEN", "")
+
+    def req(token=None, bearer=None):
+        return SimpleNamespace(query_params={"token": token} if token else {},
+                               headers={"authorization": f"Bearer {bearer}"} if bearer else {})
+    monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
     monkeypatch.setattr(agent_session, "_active_session", None)
-    assert asyncio.run(gs.talk_status()) == {"active": False}
+    assert asyncio.run(gs.talk_status(req())) == {"active": False}
     monkeypatch.setattr(agent_session, "_active_session", (object(), None, None))
-    assert asyncio.run(gs.talk_status()) == {"active": True}
-    monkeypatch.setattr(gs, "GATEWAY_TOKEN", "secret")
-    assert asyncio.run(gs.talk_status(token="nope")).status_code == 401
-    assert asyncio.run(gs.talk_status(token="secret")) == {"active": True}
+    assert asyncio.run(gs.talk_status(req())) == {"active": True}
+    monkeypatch.setenv("GATEWAY_TOKEN", "secret")
+    for bad in (req(), req(token="nope"), req(bearer="nope")):
+        with pytest.raises(HTTPException) as e:
+            asyncio.run(gs.talk_status(bad))
+        assert e.value.status_code == 401
+    assert asyncio.run(gs.talk_status(req(bearer="secret"))) == {"active": True}
+    assert asyncio.run(gs.talk_status(req(token="secret"))) == {"active": True}
+
+
+def test_uvicorn_request_lines_never_carry_the_token():
+    """The access line of a ?token= request and the WebSocket [accepted] line of every
+    Talk connect, formatted the way uvicorn formats them."""
+    import logging
+    from uvicorn.logging import AccessFormatter, DefaultFormatter
+    gs = _gateway()
+    gs.redact_tokens_in_uvicorn_logs()
+    gs.redact_tokens_in_uvicorn_logs()           # idempotent
+    lines = []
+
+    class _Keep(logging.Handler):
+        def __init__(self, fmt):
+            super().__init__()
+            self.setFormatter(fmt)
+
+        def emit(self, record):
+            lines.append(self.format(record))
+    access, error = logging.getLogger("uvicorn.access"), logging.getLogger("uvicorn.error")
+    assert sum(type(f).__name__ == "_RedactTokens" for f in access.filters) == 1
+    handlers = {access: _Keep(AccessFormatter('%(client_addr)s - "%(request_line)s" %(status_code)s',
+                                              use_colors=False)),
+                error: _Keep(DefaultFormatter("%(message)s", use_colors=False))}
+    saved = {log: (log.level, log.propagate) for log in handlers}
+    try:
+        for log, h in handlers.items():
+            log.addHandler(h)
+            log.setLevel(logging.INFO)
+            log.propagate = False
+        access.info('%s - "%s %s HTTP/%s" %d', "127.0.0.1:5", "GET",
+                    "/talk/status?token=s3cr%2Bet&x=1", "1.1", 200)
+        error.info('%s - "WebSocket %s" [accepted]', "127.0.0.1:6",
+                   "/talk?features=volume,restart,local&token=s3cr%2Bet")
+    finally:
+        for log, h in handlers.items():
+            log.removeHandler(h)
+            log.setLevel(saved[log][0])
+            log.propagate = saved[log][1]
+    assert lines == ['127.0.0.1:5 - "GET /talk/status?token=<redacted>&x=1 HTTP/1.1" 200 OK',
+                     '127.0.0.1:6 - "WebSocket /talk?features=volume,restart,local&token=<redacted>" [accepted]'], lines
 
 
 def test_face_reply_tail_audio_is_not_the_thinking_sound():

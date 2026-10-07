@@ -28,13 +28,14 @@
 #
 import argparse
 import json
+import logging
 import os
+import re
 import sys
 import time
 
 import uvicorn
-from fastapi import FastAPI, WebSocket
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request, WebSocket
 from loguru import logger
 
 from pipecat.frames.frames import OutputTransportMessageUrgentFrame
@@ -193,12 +194,12 @@ async def health():
 
 
 @app.get("/talk/status")
-async def talk_status(token: str = ""):
+async def talk_status(request: Request):
     """Whether a /talk session holds the slot now. The local audio bridge, evicted by
     another client, polls it to stay off the box while that session is live. Same
-    token as /talk: who is talking is nobody else's business."""
-    if GATEWAY_TOKEN and token != GATEWAY_TOKEN:
-        return JSONResponse({"error": "bad or missing token"}, status_code=401)
+    token as /talk (and the config page, whose check this is): who is talking is
+    nobody else's business. The bridge sends it as a bearer header, out of the access log."""
+    config_ui._authorize(request)
     return {"active": slot_active()}
 
 
@@ -243,9 +244,37 @@ class _ReadyServer(uvicorn.Server):
             sdnotify.ready()
 
 
+# A ?token= in a request line uvicorn logs: the access line of an HTTP request, the
+# "WebSocket /talk?...&token=..." [accepted] line of every Talk connect.
+_TOKEN_IN_URL = re.compile(r"(token=)[^&\s\"']+")
+
+
+class _RedactTokens(logging.Filter):
+    """Blank the token in uvicorn's request lines, so the journal never holds it. Only
+    the arguments are rewritten: uvicorn's access formatter unpacks them by position."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_TOKEN_IN_URL.sub(r"\1<redacted>", a) if isinstance(a, str) else a
+                                for a in record.args)
+        if isinstance(record.msg, str):
+            record.msg = _TOKEN_IN_URL.sub(r"\1<redacted>", record.msg)
+        return True
+
+
+def redact_tokens_in_uvicorn_logs() -> None:
+    """After uvicorn.Config, which (re)configures these loggers."""
+    for name in ("uvicorn.access", "uvicorn.error"):
+        log = logging.getLogger(name)
+        if not any(isinstance(f, _RedactTokens) for f in log.filters):
+            log.addFilter(_RedactTokens())
+
+
 def serve(host: str, port: int) -> None:
     """uvicorn.run(app, host=, port=) with a readiness notification after the bind."""
-    server = _ReadyServer(uvicorn.Config(app, host=host, port=port))
+    config = uvicorn.Config(app, host=host, port=port)
+    redact_tokens_in_uvicorn_logs()
+    server = _ReadyServer(config)
     try:
         server.run()
     except KeyboardInterrupt:  # as uvicorn.run: it re-raises a Ctrl-C after shutting down
