@@ -81,8 +81,8 @@ msgstr "Sul telefono, connettiti alla rete Wi-Fi {ssid}. La password è {passwor
 msgid "You can also read these details on my screen."
 msgstr "Puoi leggere questi dati anche sul mio schermo."
 
-msgid "You can also scan the code on my screen to join."
-msgstr "Puoi anche scansionare il codice sul mio schermo per connetterti."
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "Puoi anche scansionare il codice sul mio schermo per connetterti, oppure leggere lì questi dati."
 
 msgid "the saved settings for it did not work"
 msgstr "le impostazioni salvate per quella rete non hanno funzionato"

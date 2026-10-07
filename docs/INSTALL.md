@@ -56,8 +56,13 @@ downloads. You bring your own Jetson and your own LLM.
   scratch (`restart_session`, a testing aid that is off until you set
   `TEAPORT_TOOL_RESTART_SESSION=1` in `/etc/teaport/brain.env`).
 - **Changing the box's Wi-Fi.** With the local mic (Step 6) running, say
-  **"set up Wi-Fi"** at the box. It works with no internet, because no language model is
-  involved. The box asks you to confirm, then opens a temporary setup network
+  **"set up Wi-Fi"** at the box. The phrase works with no internet, because no
+  language model is involved. While the box is online, the phrase goes to the
+  assistant like anything else you say, and the assistant can start the same setup.
+  The box decides whether it is online with NetworkManager's connectivity check. On
+  Ubuntu that check comes in the package `network-manager-config-connectivity-ubuntu`,
+  which the installer adds if it is missing. Without it, the box always counts as
+  offline, so the phrase always starts setup. The box asks you to confirm, then opens a temporary setup network
   named `teaport-` plus the last four characters of its Wi-Fi address, for example
   `teaport-9e35`. It says the network's name and password aloud. Join that
   network on your phone: a setup page opens by itself, or go to

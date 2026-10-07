@@ -1669,6 +1669,19 @@ phase_wifi_setup() {
     SUDO apt-get install -y avahi-utils \
       || warn "avahi-utils did not install — Wi-Fi setup works, but only via the captive page / 10.42.0.1"
   fi
+  # NM's connectivity check, which tells the brain whether the box is online (the spoken
+  # "set up Wi-Fi" works only offline: wifi_voice._box_online). Without one NM calls any
+  # default route "full" and the brain treats the box as offline for good; Ubuntu ships
+  # the check as its own package, which a minimal image can lack.
+  local probe=network-manager-config-connectivity-ubuntu status
+  status="$(dpkg-query -W -f='${Status}' "$probe" 2>/dev/null || true)"
+  if ! contains "ok installed" "$status"; then
+    if SUDO apt-get install -y "$probe"; then
+      SUDO nmcli general reload conf || warn "NetworkManager did not reload its config — the connectivity check starts at the next reboot"
+    else
+      warn "$probe did not install — the box counts as offline, so \"set up Wi-Fi\" always starts setup instead of going to the assistant"
+    fi
+  fi
   SUDO systemctl daemon-reload
 }
 

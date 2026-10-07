@@ -9,10 +9,11 @@
 # the attempt, read from the unit's status.json. While it runs it keeps the user's words
 # from the LLM and answers "repeat" and "cancel" itself.
 #
-# The phrase only works while the box is offline (NetworkManager's connectivity is not
-# "full"): online, the model is there, and "set up Wi-Fi" said in conversation goes to it
-# like any other words -- it decides, and its way in is the wifi_setup tool (tools.py),
-# which hands over to the same flow. Once setup is asking or running, its answers
+# The phrase only works while the box is offline (NetworkManager's connectivity check
+# does not say "full": _box_online): online, the model is there, and "set up Wi-Fi"
+# said in conversation goes to it like any other words -- it decides, and its way in is
+# the wifi_setup tool (tools.py), which hands over to the same flow. Once setup is
+# asking or running, its answers
 # ("yes", "repeat", "cancel") are taken here however it began. Both exist only where
 # that tool is active — TEAPORT_TOOL_WIFI_SETUP on, the
 # client announced "local" (the local audio bridge: someone is at the box, not a remote
@@ -79,6 +80,10 @@ DEADLINE_SECS = 16 * 60.0
 # An unanswered "do you want to set up Wi-Fi?" lapses: the next words, this long after
 # the question, are ordinary conversation again, not a yes or a no to it.
 CONFIRM_SECS = 30.0
+# How long the online check (_box_online) may take before the box counts as offline --
+# the phrase waits on it: a D-Bus read of NM's settings, then a fresh connectivity check.
+NM_PROPERTY_SECS = 1.0
+ONLINE_CHECK_SECS = 3.0
 # A yes is an answer, not a sentence that happens to hold "okay" or "please": at most
 # this many words (CJK: about three characters to a word) and no question mark.
 YES_MAX_WORDS = 4
@@ -224,9 +229,11 @@ def instructions(status: dict, t: i18n.T) -> str:
     said = t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
                "A setup page should open by itself. If it doesn't, go to {url}.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)
-    # The box's display has them too, and a code that joins (wifi_setup.py, display.py).
+    # The box's display has them too, and a code that joins if the avatar could draw it
+    # (wifi_setup.py, display.py) -- and with a code, a name it can only point at.
     if status.get("qr"):
-        said += " " + t._("You can also scan the code on my screen to join.")
+        said += " " + t._("You can also scan the code on my screen to join, "
+                          "or read these details there.")
     elif status.get("screen"):
         said += " " + t._("You can also read these details on my screen.")
     return said
@@ -591,19 +598,47 @@ async def _run_helper(action: str, unit: str) -> tuple[int, str]:
         return 1, repr(e)
 
 
-async def _box_online() -> bool:
-    """Is the box on the internet? NetworkManager's connectivity check (Ubuntu's: a
-    probe it runs on its own, so this is a cached answer, ~40 ms). Only "full" counts:
-    none, limited (no internet through it), portal and unknown (no check configured, or
-    nmcli failed) all leave the phrase working, which is the safe way to be wrong."""
+async def _output(*cmd: str, timeout: float) -> str | None:
+    """`cmd`'s stdout, stripped; None when it cannot run or takes longer than `timeout`.
+    One that overruns (or whose caller is cancelled, by a barge-in) is killed, not left
+    behind."""
     try:
         p = await asyncio.create_subprocess_exec(
-            "nmcli", "networking", "connectivity",
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
-        out, _ = await asyncio.wait_for(p.communicate(), 5)
-    except (OSError, asyncio.TimeoutError):
+            *cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+    except OSError:
+        return None
+    try:
+        out, _ = await asyncio.wait_for(p.communicate(), timeout)
+        return out.decode(errors="replace").strip()
+    except asyncio.TimeoutError:
+        return None
+    finally:
+        if p.returncode is None:
+            try:
+                p.kill()
+            except ProcessLookupError:
+                pass
+            await p.wait()
+
+
+async def _box_online() -> bool:
+    """Is the box on the internet? Asked only when the phrase was heard, and wrong on
+    the safe side: anything but a fresh "full" leaves the phrase working.
+
+    NetworkManager's connectivity check must be configured (Ubuntu's
+    network-manager-config-connectivity-ubuntu, which install.sh puts there): without
+    it NM says "full" whenever there is a default route, internet or not. Then a fresh
+    check, not the cached answer, which can be minutes old after the internet drops. A
+    dead link can make the check slow; past ONLINE_CHECK_SECS it counts as offline."""
+    enabled = await _output(
+        "busctl", "get-property", "org.freedesktop.NetworkManager",
+        "/org/freedesktop/NetworkManager", "org.freedesktop.NetworkManager",
+        "ConnectivityCheckEnabled", timeout=NM_PROPERTY_SECS)
+    if enabled != "b true":
         return False
-    return out.decode(errors="replace").strip() == "full"
+    state = await _output("nmcli", "networking", "connectivity", "check",
+                          timeout=ONLINE_CHECK_SECS)
+    return state == "full"
 
 
 async def _unit_active() -> bool | None:

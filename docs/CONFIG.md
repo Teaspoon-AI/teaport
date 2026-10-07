@@ -189,7 +189,7 @@ In `/etc/teaport/wifi-setup.env`. Say "set up Wi-Fi" at the box (the local audio
 | Setting | Default | Description |
 |---|---|---|
 | `WIFI_SETUP_PASSWORD` | — | The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Digits are easiest to say and type. Unset (or invalid): fresh random digits each setup, spoken aloud. *Set by the installer.* |
-| `WIFI_SETUP_SSID` | — | The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC. *Set by the installer.* |
+| `WIFI_SETUP_SSID` | — | The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC. A name made only of hex digits (0-9, a-f) is ignored with a warning, and the MAC-based name used: some phones' QR scanners read such a name as raw bytes. *Set by the installer.* |
 
 ## Talk client context notes
 

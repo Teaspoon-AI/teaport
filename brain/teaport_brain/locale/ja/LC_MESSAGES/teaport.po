@@ -73,8 +73,8 @@ msgstr "スマートフォンで、次のワイファイのネットワークに
 msgid "You can also read these details on my screen."
 msgstr "同じ情報は、本体の画面にも表示されています。"
 
-msgid "You can also scan the code on my screen to join."
-msgstr "本体の画面のコードを読み取って接続することもできます。"
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "本体の画面のコードを読み取って接続することも、画面で同じ情報を確認することもできます。"
 
 msgid "the saved settings for it did not work"
 msgstr "保存されていた設定では接続できませんでした"

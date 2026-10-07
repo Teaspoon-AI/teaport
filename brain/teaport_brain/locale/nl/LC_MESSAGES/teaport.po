@@ -73,8 +73,8 @@ msgstr "Verbind je telefoon met het wifinetwerk {ssid}. Het wachtwoord is {passw
 msgid "You can also read these details on my screen."
 msgstr "Je kunt deze gegevens ook op mijn scherm lezen."
 
-msgid "You can also scan the code on my screen to join."
-msgstr "Je kunt ook de code op mijn scherm scannen om verbinding te maken."
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "Je kunt ook de code op mijn scherm scannen om verbinding te maken, of deze gegevens daar lezen."
 
 msgid "the saved settings for it did not work"
 msgstr "de opgeslagen instellingen voor dat netwerk werkten niet"

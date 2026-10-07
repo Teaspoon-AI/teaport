@@ -146,10 +146,6 @@ def test_names_fold_to_printable_ascii(name, shown):
     assert all(" " <= c <= "~" for c in display.fold_ascii(name))
 
 
-if __name__ == "__main__":
-    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
-
-
 def test_a_qr_code_goes_with_the_screen_and_draws_asks_the_avatar():
     sent = []
     screen = display.Screen("t", send=lambda ev, path: sent.append(ev["screen"]) or True,
@@ -172,3 +168,22 @@ def test_features_reads_the_file_and_anything_else_is_none():
         with open(path + display.FEATURES_SUFFIX, "w") as f:
             f.write(content)
         assert display.features(path) == want
+
+
+@pytest.mark.parametrize("feats, text, fits", [
+    ({"screen": 1, "qr": 1, "qr_max_bytes": 38}, "WIFI:T:WPA;S:teaport-9e35;P:47190352;;", True),
+    ({"screen": 1, "qr": 1, "qr_max_bytes": 37}, "WIFI:T:WPA;S:teaport-9e35;P:47190352;;", False),
+    ({"screen": 1, "qr": 1, "qr_max_bytes": 6}, "東京", True),         # bytes, not characters
+    ({"screen": 1, "qr": 1, "qr_max_bytes": 5}, "東京", False),
+    ({"screen": 1, "qr": 1}, "x", False),                             # no limit said: none fits
+    ({"screen": 1, "qr": 1, "qr_max_bytes": "53"}, "x", False),       # nor a garbled one
+    ({"screen": 1, "qr_max_bytes": 53}, "x", False),                  # no QR codes at all
+    ({}, "x", False),
+])
+def test_a_qr_code_fits_only_within_what_the_avatar_says_it_draws(feats, text, fits):
+    screen, _ = _screen(features=lambda path: feats)
+    assert screen.fits_qr(text) is fits
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

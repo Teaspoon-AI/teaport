@@ -18,7 +18,9 @@
 # Fire-and-forget datagrams, as the local audio bridge's face events are, but only to
 # an avatar that says it draws screens: while it serves, it keeps a features file next
 # to its socket (FEATURES_SUFFIX: /run/oled-avatar/face.sock.features), JSON such as
-# {"screen": 1, "qr": 1} ("qr": it draws QR codes too), and removes it on exit. A datagram that is accepted proves nothing: an
+# {"screen": 1, "qr": 1, "qr_max_bytes": 53} ("qr": it draws QR codes too, up to that
+# many bytes of UTF-8 at a size a phone scans: fits_qr()), and removes it on exit. A
+# datagram that is accepted proves nothing: an
 # avatar too old to know screens takes it, draws nothing and logs it, password and all.
 # So nothing is sent, and show() says False, unless the file names "screen"; it is
 # read again before every send (a small file, every few seconds), so an avatar that
@@ -111,10 +113,21 @@ class Screen:
         """Whether the avatar is up and draws `feature` ("screen", "qr")."""
         return bool(self._features(self._path).get(feature))
 
+    def fits_qr(self, text: str) -> bool:
+        """Whether the avatar draws `text` as a QR code a phone can scan: it draws QR
+        codes, and `text` is no longer in UTF-8 than its "qr_max_bytes", the largest it
+        draws at a scannable size (a longer one it leaves out, showing the text alone).
+        An avatar that does not say: nothing fits."""
+        found = self._features(self._path)
+        limit = found.get("qr_max_bytes", 0)
+        return (bool(found.get("qr")) and isinstance(limit, int)
+                and len(text.encode()) <= limit)
+
     def show(self, title: str, lines: list[str], secs: float | None = None,
              qr: str | None = None) -> bool:
         """Up for `secs` seconds, or (None) held until clear() or close(), with a QR code
-        of `qr` if given (an avatar without "qr" shows the text alone). True when the
+        of `qr` if given (an avatar without "qr", or a `qr` too long for it, shows the
+        text alone: ask fits_qr() first to know which). True when the
         avatar took it (it is running and draws screens), so the voice can say where to
         look. A held screen is kept even when it is False: an avatar that comes up later
         gets it at the next refresh."""

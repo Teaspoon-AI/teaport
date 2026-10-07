@@ -61,11 +61,13 @@ Every tool the voice model can call follows one contract
   one up by re-sending it every few seconds, so a crashed sender's screen goes by
   itself. Screens go only to an avatar that says it draws them: while it runs it
   keeps a features file next to its socket (`face.sock.features`, JSON such as
-  `{"screen": 1, "qr": 1}`), and `display.py` reads it before every send; the
-  voice says "scan the code on my screen" only when it says `"qr"`. An older avatar
-  would take the event, draw nothing and log it, setup password included. The
-  avatar's built-in font is Latin only, so screens keep to ASCII: network names
-  are folded into it.
+  `{"screen": 1, "qr": 1, "qr_max_bytes": 53}`), and `display.py` reads it before
+  every send. A code goes only to an avatar that says `"qr"` and draws one that long
+  (in UTF-8 bytes) at a size a phone scans; only then does the voice say "scan the
+  code on my screen". An older avatar would take the event, draw nothing and log
+  it, setup password included. The avatar's built-in font is Latin only, so screens
+  keep to ASCII: network names are folded into it, and a setup network name that
+  folding would mangle shows as "(scan the code)" when the code is there.
 
 TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
 consult paths.

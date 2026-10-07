@@ -73,8 +73,8 @@ msgstr "En tu teléfono, conéctate a la red wifi {ssid}. La contraseña es {pas
 msgid "You can also read these details on my screen."
 msgstr "También puedes leer estos datos en mi pantalla."
 
-msgid "You can also scan the code on my screen to join."
-msgstr "También puedes escanear el código de mi pantalla para conectarte."
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "También puedes escanear el código de mi pantalla para conectarte, o leer ahí estos datos."
 
 msgid "the saved settings for it did not work"
 msgstr "los datos guardados de esa red ya no sirven"

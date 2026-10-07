@@ -78,8 +78,8 @@ msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي
 msgid "You can also read these details on my screen."
 msgstr "يمكنك أيضًا قراءة هذه التفاصيل على شاشتي."
 
-msgid "You can also scan the code on my screen to join."
-msgstr "يمكنك أيضًا مسح الرمز على شاشتي للانضمام."
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "يمكنك أيضًا مسح الرمز على شاشتي للانضمام، أو قراءة هذه التفاصيل عليها."
 
 msgid "the saved settings for it did not work"
 msgstr "لم تنجح الإعدادات المحفوظة لهذه الشبكة"

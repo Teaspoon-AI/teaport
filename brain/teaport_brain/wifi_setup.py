@@ -62,8 +62,8 @@ from teaport_brain import display, i18n
 from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
-# Where the page listens. teaport-wifi-setup.service redirects AP_ADDRESS:80 here with
-# an iptables rule for as long as it runs; phones only ever see port 80.
+# Where the page listens. teaport-wifi-setup.service sends AP_ADDRESS:80 here with an
+# iptables DNAT rule for as long as it runs; phones only ever see port 80.
 PAGE_PORT = 7869
 # The page is open to anyone on the setup network: a form is a few hundred bytes, a
 # request that dawdles is dropped, and only so many are served at once.
@@ -96,9 +96,17 @@ def log(msg: str) -> None:
 # ------------------------------------------------------------------ the box's identity
 
 def setup_ssid(mac: str, override: str = "") -> str:
-    """teaport-ab12 from the Wi-Fi MAC's last four hex digits (two boxes never clash)."""
-    if override.strip():
-        return override.strip()[:32]
+    """teaport-ab12 from the Wi-Fi MAC's last four hex digits (two boxes never clash).
+    An override that is all hex digits ("12345678", "cafe") is refused: ZXing-based
+    scanners (many Android camera apps) read such an SSID in the QR code as raw bytes,
+    and join a network that does not exist."""
+    name = override.strip()[:32]
+    if re.fullmatch(r"[0-9A-Fa-f]+", name):
+        log(f"WIFI_SETUP_SSID {name!r} is all hex digits, which some phones read as bytes "
+            "— using the MAC-based name")
+        name = ""
+    if name:
+        return name
     hexdigits = re.sub(r"[^0-9a-f]", "", mac.lower())
     return SSID_PREFIX + (hexdigits[-4:] if len(hexdigits) >= 4 else "0000")
 
@@ -522,13 +530,19 @@ class Setup:
             self.publish(ssid)
             # On the display first: the status says whether it got there, and with a code
             # to scan, and the voice points at it only then. The code carries the real
-            # name, whatever the font can draw.
-            shown = self._show([f"Network  {shown_ssid}", f"Password  {password}",
+            # name, whatever the font can draw -- and is sent only to an avatar that
+            # draws one that long at a size a phone scans (fits_qr). A name the font
+            # cannot draw as it is (folded, it would read wrong) points at the code
+            # when there is one.
+            code = wifi_qr(ssid, password)
+            code = code if self.screen and self.screen.fits_qr(code) else None
+            name = shown_ssid if shown_ssid == ssid or not code else "(scan the code)"
+            shown = self._show([f"Network  {name}", f"Password  {password}",
                                 url if shown_ssid == ssid else f"http://{self.address}"],
-                               qr=wifi_qr(ssid, password))
+                               qr=code)
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error, screen=shown,
-                            qr=shown and self.screen.draws("qr"))
+                            qr=shown and code is not None)
             self.request = None
             self.wake.clear()
             while not self.wake.wait(timeout=1.0):

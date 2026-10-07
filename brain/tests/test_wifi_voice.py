@@ -397,16 +397,70 @@ def test_online_a_setup_the_model_began_still_takes_its_answers(fast):
     assert v.calls == ["restart", "stop"] and v.state == "idle"
 
 
+def _tool(directory, name, script):
+    """A fake executable `name` in `directory` (put on PATH by the test)."""
+    exe = directory / name
+    exe.write_text("#!/bin/sh\n" + script)
+    exe.chmod(0o755)
+
+
 @pytest.mark.parametrize("answer, online", [
     ("full", True), ("limited", False), ("portal", False), ("none", False),
     ("unknown", False), (None, False)])
 def test_online_means_full_connectivity(answer, online, monkeypatch, tmp_path):
+    _tool(tmp_path, "busctl", "echo 'b true'\n")
     if answer is not None:   # None: no nmcli at all
-        nmcli = tmp_path / "nmcli"
-        nmcli.write_text(f"#!/bin/sh\necho {answer}\n")
-        nmcli.chmod(0o755)
+        # Only a fresh check counts: the cached answer can be minutes old.
+        _tool(tmp_path, "nmcli", f'[ "$*" = "networking connectivity check" ] && echo {answer}\n')
     monkeypatch.setenv("PATH", str(tmp_path))
     assert asyncio.run(wv._box_online()) is online
+
+
+@pytest.mark.parametrize("busctl", [
+    "echo 'b false'\n", "echo 'Failed to get property' >&2; exit 1\n", None])
+def test_without_nms_connectivity_check_full_means_nothing(busctl, monkeypatch, tmp_path):
+    # No check configured: NM says "full" whenever there is a default route.
+    if busctl is not None:   # None: no busctl at all
+        _tool(tmp_path, "busctl", busctl)
+    _tool(tmp_path, "nmcli", "echo full\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert asyncio.run(wv._box_online()) is False
+
+
+@pytest.mark.parametrize("slow", ["busctl", "nmcli"])
+def test_a_check_that_hangs_is_offline_in_time_and_killed(slow, monkeypatch, tmp_path):
+    # A dead link can stall the check: the phrase must still work, and soon.
+    monkeypatch.setattr(wv, "NM_PROPERTY_SECS", 0.3)
+    monkeypatch.setattr(wv, "ONLINE_CHECK_SECS", 0.3)
+    pid = tmp_path / "pid"
+    hang = f"echo $$ > {pid}\nexec sleep 30\n"
+    _tool(tmp_path, "busctl", hang if slow == "busctl" else "echo 'b true'\n")
+    _tool(tmp_path, "nmcli", hang if slow == "nmcli" else "echo full\n")
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")   # the fakes find sleep
+    started = time.monotonic()
+    assert asyncio.run(wv._box_online()) is False
+    assert time.monotonic() - started < 2
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid.read_text()), 0)   # killed and reaped, not left running
+
+
+def test_a_check_cancelled_mid_way_leaves_no_child(monkeypatch, tmp_path):
+    # A barge-in cancels the frame being processed, and the check with it.
+    pid = tmp_path / "pid"
+    _tool(tmp_path, "busctl", "echo 'b true'\n")
+    _tool(tmp_path, "nmcli", f"echo $$ > {pid}\nexec sleep 30\n")
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+
+    async def run():
+        task = asyncio.ensure_future(wv._box_online())
+        while not pid.exists():
+            await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(asyncio.wait_for(run(), 5))
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid.read_text()), 0)
 
 
 # ------------------------------------------------------------------ the box's own voice

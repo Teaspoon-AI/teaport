@@ -73,8 +73,8 @@ msgstr "Verbinde dein Handy mit dem WLAN {ssid}. Das Passwort ist {password}. Ei
 msgid "You can also read these details on my screen."
 msgstr "Du findest diese Angaben auch auf meinem Display."
 
-msgid "You can also scan the code on my screen to join."
-msgstr "Du kannst auch den Code auf meinem Display scannen, um dich zu verbinden."
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "Du kannst auch den Code auf meinem Display scannen, um dich zu verbinden, oder die Angaben dort ablesen."
 
 msgid "the saved settings for it did not work"
 msgstr "Die gespeicherten Einstellungen für dieses Netzwerk haben nicht funktioniert"

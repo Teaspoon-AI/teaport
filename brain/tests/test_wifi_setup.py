@@ -27,6 +27,14 @@ def test_ssid_from_the_mac_and_an_override():
     assert ws.setup_ssid("f8:3d:c6:1f:9e:35", "Kitchen Teaport") == "Kitchen Teaport"
 
 
+@pytest.mark.parametrize("override", ["12345678", "CafeBabe", " deadbeef "])
+def test_an_all_hex_override_is_refused_with_a_warning(override, capsys):
+    # A ZXing-based scanner reads an all-hex SSID in the QR code as raw bytes.
+    assert ws.setup_ssid("f8:3d:c6:1f:9e:35", override) == "teaport-9e35"
+    assert "all hex digits" in capsys.readouterr().out
+    assert ws.setup_ssid("f8:3d:c6:1f:9e:35", "Cafe-1") == "Cafe-1"   # not all hex: kept
+
+
 def test_the_flash_time_password_wins_when_valid():
     assert ws.setup_password("47190352") == "47190352"
     assert ws.setup_password(" Tito2017 ") == "Tito2017"
@@ -370,12 +378,19 @@ class _Recorded(ws.Status):
         self.history.append(dict(self.data))
 
 
+def _no_avahi(setup):
+    """No real avahi-publish from a test: it would announce a .local name on this machine."""
+    setup.publish = lambda name: None
+    setup.unpublish = lambda: None
+
+
 def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
     the exception instead when the run raised one."""
     status = _Recorded(tempfile.mkdtemp())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
+    _no_avahi(setup)
     result = {}
 
     def run():
@@ -446,9 +461,10 @@ def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
     assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
 
 
-def _screen(avatar=True, events=None, qr=True):
+def _screen(avatar=True, events=None, qr=True, qr_max=53):
     """A Screen recording what it sends (into `events` too, as ("screen", ...), when
-    given); `avatar`: whether a daemon that draws screens is there; `qr`: and QR codes."""
+    given); `avatar`: whether a daemon that draws screens is there; `qr`: and QR codes,
+    up to `qr_max` bytes."""
     sent = []
 
     def send(ev, path):
@@ -457,7 +473,7 @@ def _screen(avatar=True, events=None, qr=True):
             events.append(("screen", ev["screen"]))
         return True
 
-    feats = {"screen": 1, **({"qr": 1} if qr else {})} if avatar else {}
+    feats = {"screen": 1, **({"qr": 1, "qr_max_bytes": qr_max} if qr else {})} if avatar else {}
     return display.Screen("wifi-setup", send=send, features=lambda path: feats), sent
 
 
@@ -557,9 +573,28 @@ def test_network_names_reach_the_display_in_ascii():
                           post=[{"ssid": "Café ☕", "password": "homepass1"}])
     assert rc == 0 and seen[1]["ssid"] == "東京-box"     # the voice and page keep the name
     shown = [s["lines"] for s in sent if s.get("lines")]
+    # The name folded would read wrong ("-box"): the code beside it carries the real one.
     # The .local name cannot be shown in ASCII: the address that needs none instead.
-    assert shown[0] == ["Network  -box", "Password  47190352", f"http://{wifi.AP_ADDRESS}"]
+    assert shown[0] == ["Network  (scan the code)", "Password  47190352", f"http://{wifi.AP_ADDRESS}"]
     assert ["Joining", "Cafe"] in shown and shown[-1] == ["Connected to", "Cafe"]
+
+
+def test_a_folded_name_without_a_code_is_shown_folded():
+    screen, sent = _screen(qr=False)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid="東京-box")
+    assert seen[1]["qr"] is False
+    assert sent[0]["lines"][0] == "Network  -box" and "qr" not in sent[0]
+
+
+@pytest.mark.parametrize("qr_max", [0, 37])
+def test_a_code_too_long_for_the_avatar_is_not_sent_nor_claimed(qr_max):
+    # The join string here is 38 bytes: over the avatar's limit it would draw a code no
+    # phone scans, or none at all, while the voice says to scan it.
+    screen, sent = _screen(qr_max=qr_max)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    assert seen[1]["screen"] is True and seen[1]["qr"] is False
+    assert all("qr" not in s for s in sent)
+    assert sent[0]["lines"][0] == "Network  teaport-9e35"
 
 
 def test_sigterm_becomes_one_clean_stop():
@@ -631,6 +666,7 @@ def test_the_page_is_bound_to_the_setup_network_only():
 
 def _bound(nm):
     setup = ws.Setup(nm, _Recorded(tempfile.mkdtemp()), port=0, minutes=0.005)
+    _no_avahi(setup)
     assert setup.run("teaport-9e35", "47190352") == 2      # nobody came: timeout
     return setup.server.server_address[0], setup.status.history[1]["address"]
 
@@ -676,7 +712,7 @@ def test_the_voice_points_at_the_screen_only_when_it_got_there():
         " You can also read these details on my screen.")
     assert "screen" not in wv.instructions(dict(st, screen=False), EN)
     assert wv.instructions(dict(st, screen=True, qr=True), EN).endswith(
-        " You can also scan the code on my screen to join.")
+        " You can also scan the code on my screen to join, or read these details there.")
 
 
 @pytest.mark.parametrize("text,hit", [
