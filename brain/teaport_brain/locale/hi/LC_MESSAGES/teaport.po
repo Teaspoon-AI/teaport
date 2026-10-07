@@ -1,0 +1,253 @@
+# teaport — Hindi strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Machine-drafted (2026-10-07). NEEDS REVIEW by a native speaker before relying on it.
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: hi\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "क्या आप वाई-फ़ाई सेट अप करना चाहते हैं? जब तक आप इसे अपने फ़ोन पर करेंगे, मैं कुछ मिनट के लिए ऑफ़लाइन रहूँगा। हाँ या नहीं कहिए।"
+
+msgid "Wi-Fi setup is already running."
+msgstr "वाई-फ़ाई सेटअप पहले से चल रहा है।"
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "ठीक है। नेटवर्क ढूँढने के लिए मुझे एक पल दीजिए।"
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "माफ़ कीजिए, मैं इस डिवाइस पर वाई-फ़ाई सेटअप शुरू नहीं कर पाया।"
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "ठीक है, मैंने वाई-फ़ाई सेटअप रोक दिया है और सब कुछ पहले जैसा कर दिया है।"
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "वाई-फ़ाई सेटअप शुरू नहीं हुआ। कृपया थोड़ी देर में फिर से कोशिश कीजिए।"
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "मैं अब भी सेटअप पेज पर आपका इंतज़ार कर रहा हूँ।"
+
+msgid "That didn't work: {reason}."
+msgstr "यह काम नहीं किया: {reason}।"
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "समझ गया। मैं {network} से जुड़ रहा हूँ। अपने फ़ोन को वापस उसी नेटवर्क पर ले आइए।"
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "मैं {network} से जुड़ गया हूँ, और फिर से ऑनलाइन हूँ।"
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "वाई-फ़ाई सेटअप का समय खत्म हो गया, इसलिए मैंने सब कुछ पहले जैसा कर दिया है।"
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "वाई-फ़ाई सेटअप रुक गया: {reason}।"
+
+msgid "your network"
+msgstr "आपका नेटवर्क"
+
+msgid "something went wrong"
+msgstr "कुछ गड़बड़ हो गई"
+
+msgid "Okay, never mind."
+msgstr "ठीक है, रहने दीजिए।"
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "वाई-फ़ाई सेटअप शुरू करने के लिए हाँ कहिए, या नहीं।"
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "मैं वाई-फ़ाई सेटअप में हूँ। जानकारी फिर से सुनने के लिए दोहराओ कहिए, या रोकने के लिए रद्द कहिए।"
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "अपने फ़ोन पर वाई-फ़ाई नेटवर्क {ssid} से जुड़िए। पासवर्ड है {password}। सेटअप पेज अपने आप खुल जाना चाहिए। अगर नहीं खुलता, तो {url} पर जाइए।"
+
+msgid "the saved settings for it did not work"
+msgstr "उस नेटवर्क की सेव की गई सेटिंग काम नहीं आई"
+
+msgid "the password did not work"
+msgstr "पासवर्ड काम नहीं आया"
+
+msgid "the network was not found"
+msgstr "नेटवर्क नहीं मिला"
+
+msgid "it would not connect"
+msgstr "कनेक्ट नहीं हो पाया"
+
+msgid "it joined but there is no internet through it"
+msgstr "जुड़ तो गया, पर उस नेटवर्क पर इंटरनेट नहीं है"
+
+msgid "this box has no Wi-Fi device"
+msgstr "इस डिवाइस में वाई-फ़ाई नहीं है"
+
+msgid "the setup network would not start"
+msgstr "सेटअप नेटवर्क शुरू नहीं हुआ"
+
+msgid "the setup page could not start"
+msgstr "सेटअप पेज शुरू नहीं हुआ"
+
+msgid "open"
+msgstr "खुला"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "Teaport वाई-फ़ाई सेटअप"
+
+msgid "Connect to Wi-Fi"
+msgstr "वाई-फ़ाई से जुड़ें"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "अपना नेटवर्क चुनिए और उसका पासवर्ड लिखिए। Teaport यह सेटअप नेटवर्क छोड़कर आपके नेटवर्क से जुड़ेगा, और बोलकर बताएगा कि यह काम किया या नहीं।"
+
+msgid "No networks found — use Other."
+msgstr "कोई नेटवर्क नहीं मिला — दूसरा चुनें।"
+
+msgid "Other (hidden) network"
+msgstr "दूसरा (छिपा हुआ) नेटवर्क"
+
+msgid "Network name"
+msgstr "नेटवर्क का नाम"
+
+msgid "Password"
+msgstr "पासवर्ड"
+
+msgid "Show password"
+msgstr "पासवर्ड दिखाएँ"
+
+msgid "Connect"
+msgstr "जोड़ें"
+
+msgid "Teaport is joining"
+msgstr "Teaport जुड़ रहा है"
+
+msgid "Joining {network}…"
+msgstr "{network} से जुड़ रहा है…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "Teaport अब यह सेटअप नेटवर्क छोड़ रहा है। अपने फ़ोन को वापस {network} पर ले आइए। Teaport बोलकर बताएगा कि वह जुड़ा या नहीं; अगर नहीं जुड़ पाया, तो सेटअप नेटवर्क वापस आ जाएगा और आप फिर से कोशिश कर सकते हैं।"
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "{network} से नहीं जुड़ पाया: {reason}। फिर से कोशिश कीजिए।"
+
+msgid "Pick a network, or type its name under Other."
+msgstr "कोई नेटवर्क चुनिए, या दूसरा में उसका नाम लिखिए।"
+
+msgid "That network name is too long."
+msgstr "नेटवर्क का यह नाम बहुत लंबा है।"
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "वाई-फ़ाई पासवर्ड 8 से 63 अक्षरों के होते हैं।"
+
+msgctxt "digit"
+msgid "0"
+msgstr "शून्य"
+
+msgctxt "digit"
+msgid "1"
+msgstr "एक"
+
+msgctxt "digit"
+msgid "2"
+msgstr "दो"
+
+msgctxt "digit"
+msgid "3"
+msgstr "तीन"
+
+msgctxt "digit"
+msgid "4"
+msgstr "चार"
+
+msgctxt "digit"
+msgid "5"
+msgstr "पाँच"
+
+msgctxt "digit"
+msgid "6"
+msgstr "छह"
+
+msgctxt "digit"
+msgid "7"
+msgstr "सात"
+
+msgctxt "digit"
+msgid "8"
+msgstr "आठ"
+
+msgctxt "digit"
+msgid "9"
+msgstr "नौ"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "डैश"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "अंडरस्कोर"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "डॉट"
+
+msgctxt "spell"
+msgid "space"
+msgstr "स्पेस"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "एट"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "एक्सक्लेमेशन"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "हैश"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "एम्परसेंड"
+
+msgctxt "spell"
+msgid "star"
+msgstr "स्टार"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "कैपिटल {letter}"
+
+msgctxt "spell"
+msgid ", "
+msgstr ", "
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "(?:वाई-?फ़ाई|वाईफाई|वाई-?फाई|wi-?fi).{0,20}(?:सेट ?अप|सेटअप|कनेक्ट|बदल|जोड़)|(?:सेट ?अप|सेटअप|कनेक्ट|बदल|जोड़).{0,20}(?:वाई-?फ़ाई|वाईफाई|वाई-?फाई|wi-?fi)"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "(?:हाँ|हां|ठीक है|बिल्कुल|ज़रूर|जरूर|ok|okay)"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "(?:नहीं|नही|रहने दो|रहने दीजिए|रद्द)"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "(?:रद्द|रोको|रोक दो|बंद करो|रहने दो)"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "(?:दोबारा|फिर से|दोहराओ|दोहराइए|पासवर्ड|नेटवर्क का नाम)"

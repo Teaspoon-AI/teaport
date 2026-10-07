@@ -46,6 +46,8 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
+from teaport_brain import i18n
+from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service redirects AP_ADDRESS:80 here with
@@ -113,48 +115,73 @@ class Status:
 
 # ------------------------------------------------------------------ the page
 
-PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
+PAGE = """<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Teaport Wi-Fi setup</title><style>{css}</style></head><body><main>
+<title>{title}</title><style>{css}</style></head><body><main>
 <div class="logo">{logo}</div>
-<h1>Connect to Wi-Fi</h1>
-<p>Pick your network and type its password. Teaport will leave this setup network and
-join yours, and say out loud whether that worked.</p>
+<h1>{heading}</h1>
+<p>{intro}</p>
 {error}
 <form method="post" action="/connect">
 {networks}
 <label class="net"><input type="radio" name="ssid" value="" {other_checked}>
-<span>Other (hidden) network</span></label>
-<input type="text" name="other" placeholder="Network name" autocomplete="off" autocapitalize="none">
-<label class="f" for="pw">Password</label>
+<span>{other}</span></label>
+<input type="text" name="other" placeholder="{name}" autocomplete="off" autocapitalize="none">
+<label class="f" for="pw">{password}</label>
 <input type="password" id="pw" name="password" autocomplete="off" autocapitalize="none" spellcheck="false">
-<label class="show"><input type="checkbox" onclick="pw.type=this.checked?'text':'password'"> Show password</label>
-<button type="submit">Connect</button>
+<label class="show"><input type="checkbox" onclick="pw.type=this.checked?'text':'password'"> {show}</label>
+<button type="submit">{connect}</button>
 </form></main></body></html>"""
 
-JOINING = """<!doctype html><html lang="en"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width,initial-scale=1"><title>Teaport is joining</title>
+JOINING = """<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
 <style>{css}</style></head><body><main>
 <div class="logo">{logo}</div>
-<h1>Joining {ssid}…</h1>
-<p>Teaport is leaving this setup network now. Switch your phone back to
-<strong>{ssid}</strong>. Teaport will say out loud whether it connected; if it could not,
-the setup network comes back and you can try again.</p></main></body></html>"""
+<h1>{heading}</h1>
+<p>{body}</p></main></body></html>"""
 
 
-def render_page(networks: list[dict], error: str = "") -> str:
+def _lang_attr(t: i18n.T) -> str:
+    return t.lang.replace("_", "-")
+
+
+def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) -> str:
+    """The page, in t's language. `error` is already in that language."""
+    t = t or i18n.get(i18n.SOURCE_LANG)
     rows = []
     for i, n in enumerate(networks):
-        lock = "open" if n["open"] else "🔒"
+        lock = t._("open") if n["open"] else "🔒"
         rows.append(
             f'<label class="net"><input type="radio" name="ssid" value="{html.escape(n["ssid"], quote=True)}"'
             f'{" checked" if i == 0 else ""}><span>{html.escape(n["ssid"])}</span>'
             f"<small>{lock} {n['signal']}%</small></label>")
     return PAGE.format(
-        css=PAGE_CSS, logo=logo_html(),
+        lang=_lang_attr(t), css=PAGE_CSS, logo=logo_html(),
+        title=html.escape(t._("Teaport Wi-Fi setup")),
+        heading=html.escape(t._("Connect to Wi-Fi")),
+        intro=html.escape(t._("Pick your network and type its password. Teaport will leave "
+                              "this setup network and join yours, and say out loud whether "
+                              "that worked.")),
         error=f'<p class="err">{html.escape(error)}</p>' if error else "",
-        networks="\n".join(rows) or "<p>No networks found — use Other.</p>",
-        other_checked="" if networks else "checked")
+        networks="\n".join(rows) or f"<p>{html.escape(t._('No networks found — use Other.'))}</p>",
+        other_checked="" if networks else "checked",
+        other=html.escape(t._("Other (hidden) network")),
+        name=html.escape(t._("Network name"), quote=True),
+        password=html.escape(t._("Password")),
+        show=html.escape(t._("Show password")),
+        connect=html.escape(t._("Connect")))
+
+
+def render_joining(ssid: str, t: i18n.T) -> str:
+    strong = f"<strong>{html.escape(ssid)}</strong>"
+    return JOINING.format(
+        lang=_lang_attr(t), css=PAGE_CSS, logo=logo_html(),
+        title=html.escape(t._("Teaport is joining")),
+        heading=html.escape(t._("Joining {network}…")).format(network=html.escape(ssid)),
+        body=html.escape(t._("Teaport is leaving this setup network now. Switch your phone "
+                             "back to {network}. Teaport will say out loud whether it "
+                             "connected; if it could not, the setup network comes back and "
+                             "you can try again.")).format(network=strong))
 
 
 def parse_form(body: bytes) -> tuple[str, str, bool, str]:
@@ -166,11 +193,11 @@ def parse_form(body: bytes) -> tuple[str, str, bool, str]:
     hidden = not ssid and bool(other)
     ssid = ssid or other
     if not ssid:
-        return "", "", False, "Pick a network, or type its name under Other."
+        return "", "", False, N_("Pick a network, or type its name under Other.")
     if len(ssid.encode()) > 32:
-        return "", "", False, "That network name is too long."
+        return "", "", False, N_("That network name is too long.")
     if password and not 8 <= len(password) <= 63:
-        return "", "", False, "Wi-Fi passwords are 8 to 63 characters."
+        return "", "", False, N_("Wi-Fi passwords are 8 to 63 characters.")
     return ssid, password, hidden, ""
 
 
@@ -181,7 +208,10 @@ class Setup:
         self.nm, self.status, self.port = nm, status, port
         self.deadline = time.monotonic() + minutes * 60
         self.networks: list[dict] = []
+        # The last failed join: (network, reason) — the reason an English msgid, put in
+        # the reader's language per request (error_text). "" in the status file for none.
         self.error = ""
+        self.failure: tuple[str, str] | None = None
         self.request: tuple[str, str, bool] | None = None
         self.wake = threading.Event()
         self.server: ThreadingHTTPServer | None = None
@@ -206,20 +236,25 @@ class Setup:
                 self.end_headers()
                 self.wfile.write(data)
 
+            def _t(self) -> i18n.T:
+                return i18n.for_accept_language(self.headers.get("Accept-Language"))
+
             def do_GET(self):
                 # Every path is the page: the captive-portal probes (Apple's
                 # hotspot-detect, Android's generate_204, Windows' connecttest) expect
                 # something else, so the phone shows this as a sign-in page.
                 if self.path.startswith("/generate_204") or self.path.startswith("/gen_204"):
                     return self._send(302, "", extra=[("Location", f"http://{AP_ADDRESS}/")])
-                self._send(200, render_page(setup.networks, setup.error))
+                t = self._t()
+                self._send(200, render_page(setup.networks, setup.error_text(t), t))
 
             def do_POST(self):
                 length = min(int(self.headers.get("Content-Length") or 0), 4096)
                 ssid, password, hidden, error = parse_form(self.rfile.read(length))
+                t = self._t()
                 if error:
-                    return self._send(200, render_page(setup.networks, error))
-                self._send(200, JOINING.format(css=PAGE_CSS, logo=logo_html(), ssid=html.escape(ssid)))
+                    return self._send(200, render_page(setup.networks, t._(error), t))
+                self._send(200, render_joining(ssid, t))
                 setup.request = (ssid, password, hidden)
                 setup.wake.set()
 
@@ -230,6 +265,13 @@ class Setup:
         self.port = self.server.server_address[1]  # the real one when asked for port 0
         self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def error_text(self, t: i18n.T) -> str:
+        if not self.failure:
+            return ""
+        network, reason = self.failure
+        return t._("Could not join {network}: {reason}. Try again.").format(
+            network=network, reason=t._(reason))
 
     # -- the network side (main thread)
     def publish(self, name: str) -> None:
@@ -251,7 +293,7 @@ class Setup:
     def run(self, ssid: str, password: str) -> int:
         dev = self.nm.wifi_device()
         if not dev:
-            self.status.set("error", reason="this box has no Wi-Fi device")
+            self.status.set("error", reason=N_("this box has no Wi-Fi device"))
             return 1
         previous = self.nm.active_wifi(dev)
         self.status.set("scanning")
@@ -260,7 +302,8 @@ class Setup:
         try:
             self.serve()
         except OSError as e:
-            self.status.set("error", reason=f"the setup page could not start ({e.strerror})")
+            log(f"the setup page could not start: {e}")
+            self.status.set("error", reason=N_("the setup page could not start"))
             return 1
         url = f"http://{ssid}.local"
         try:
@@ -268,7 +311,7 @@ class Setup:
                 ok, err = self.nm.ap_up(dev, ssid, password)
                 if not ok:
                     log(f"setup network failed: {err}")
-                    self.status.set("error", reason="the setup network would not start")
+                    self.status.set("error", reason=N_("the setup network would not start"))
                     return 1
                 self.publish(ssid)
                 self.status.set("ap_up", ssid=ssid, password=password, url=url,
@@ -293,10 +336,11 @@ class Setup:
                     self.status.set("connected", target=target)
                     return 0
                 if ok:
-                    why = "it joined but there is no internet through it"
+                    why = N_("it joined but there is no internet through it")
                 if created:
                     self.nm.delete(created)
-                self.error = f"Could not join {target}: {why}. Try again."
+                self.failure = (target, why)
+                self.error = self.error_text(i18n.get(i18n.SOURCE_LANG))
                 self.status.set("failed", target=target, reason=why)
                 if time.monotonic() >= self.deadline:
                     self.status.set("timeout")

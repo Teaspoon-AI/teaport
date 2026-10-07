@@ -1,0 +1,253 @@
+# teaport — Chinese (Mandarin, simplified) strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Machine-drafted (2026-10-07). NEEDS REVIEW by a native speaker before relying on it.
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: zh\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "要设置无线网络吗？你在手机上设置的这几分钟里，我会断开网络。请说是或不是。"
+
+msgid "Wi-Fi setup is already running."
+msgstr "无线网络设置已经在进行了。"
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "好的。请稍等，我来搜索网络。"
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "抱歉，我没能在这台设备上启动无线网络设置。"
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "好的，我已经停止无线网络设置，并恢复了原来的状态。"
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "无线网络设置没有启动。请稍后再试。"
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "我还在设置页面上等你。"
+
+msgid "That didn't work: {reason}."
+msgstr "没有成功：{reason}。"
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "明白了。我正在连接{network}。请把手机切回这个网络。"
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "我已经连上{network}，又可以上网了。"
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "无线网络设置超时了，所以我已经恢复了原来的状态。"
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "无线网络设置停止了：{reason}。"
+
+msgid "your network"
+msgstr "你的网络"
+
+msgid "something went wrong"
+msgstr "出了点问题"
+
+msgid "Okay, never mind."
+msgstr "好的，那就算了。"
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "说“是”开始设置无线网络，或者说“不”。"
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "我正在设置无线网络。说“重复”可以再听一遍，说“取消”可以停止。"
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "请在手机上连接无线网络{ssid}。密码是{password}。设置页面应该会自动打开。如果没有，请访问{url}。"
+
+msgid "the saved settings for it did not work"
+msgstr "这个网络保存的设置没有用"
+
+msgid "the password did not work"
+msgstr "密码不对"
+
+msgid "the network was not found"
+msgstr "找不到这个网络"
+
+msgid "it would not connect"
+msgstr "连接不上"
+
+msgid "it joined but there is no internet through it"
+msgstr "已经连上了，但这个网络上不了网"
+
+msgid "this box has no Wi-Fi device"
+msgstr "这台设备没有无线网络"
+
+msgid "the setup network would not start"
+msgstr "设置用的网络没有启动"
+
+msgid "the setup page could not start"
+msgstr "设置页面没有启动"
+
+msgid "open"
+msgstr "开放"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "Teaport 无线网络设置"
+
+msgid "Connect to Wi-Fi"
+msgstr "连接无线网络"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "选择你的网络并输入密码。Teaport 会离开这个设置网络，连接到你的网络，并大声告诉你是否成功。"
+
+msgid "No networks found — use Other."
+msgstr "没有找到网络——请使用“其他”。"
+
+msgid "Other (hidden) network"
+msgstr "其他（隐藏）网络"
+
+msgid "Network name"
+msgstr "网络名称"
+
+msgid "Password"
+msgstr "密码"
+
+msgid "Show password"
+msgstr "显示密码"
+
+msgid "Connect"
+msgstr "连接"
+
+msgid "Teaport is joining"
+msgstr "Teaport 正在连接"
+
+msgid "Joining {network}…"
+msgstr "正在连接 {network}…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "Teaport 现在要离开这个设置网络了。请把手机切回 {network}。Teaport 会大声告诉你是否连上；如果没连上，设置网络会重新出现，你可以再试一次。"
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "无法连接 {network}：{reason}。请再试一次。"
+
+msgid "Pick a network, or type its name under Other."
+msgstr "请选择一个网络，或在“其他”里输入它的名称。"
+
+msgid "That network name is too long."
+msgstr "这个网络名称太长了。"
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "无线网络密码是 8 到 63 个字符。"
+
+msgctxt "digit"
+msgid "0"
+msgstr "零"
+
+msgctxt "digit"
+msgid "1"
+msgstr "一"
+
+msgctxt "digit"
+msgid "2"
+msgstr "二"
+
+msgctxt "digit"
+msgid "3"
+msgstr "三"
+
+msgctxt "digit"
+msgid "4"
+msgstr "四"
+
+msgctxt "digit"
+msgid "5"
+msgstr "五"
+
+msgctxt "digit"
+msgid "6"
+msgstr "六"
+
+msgctxt "digit"
+msgid "7"
+msgstr "七"
+
+msgctxt "digit"
+msgid "8"
+msgstr "八"
+
+msgctxt "digit"
+msgid "9"
+msgstr "九"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "横杠"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "下划线"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "点"
+
+msgctxt "spell"
+msgid "space"
+msgstr "空格"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "艾特"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "感叹号"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "井号"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "and 符号"
+
+msgctxt "spell"
+msgid "star"
+msgstr "星号"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "大写{letter}"
+
+msgctxt "spell"
+msgid ", "
+msgstr "，"
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "(?:wi-?fi|无线网|无线|网络).{0,8}(?:设置|设定|连接|连上|切换|更改)|(?:设置|设定|设一下|连接|连上|连一下|切换|换).{0,8}(?:wi-?fi|无线网|网络)"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "(?:是|好|可以|行|对|嗯|确定|开始|ok)"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "(?:不|别|算了|取消)"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "(?:取消|停止|算了|退出)"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "(?:再说一遍|再说一次|重复|再来一遍|密码是什么|网络名)"

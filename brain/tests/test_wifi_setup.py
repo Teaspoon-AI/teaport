@@ -13,7 +13,7 @@ import urllib.request
 
 import pytest
 
-from teaport_brain import wifi
+from teaport_brain import i18n, wifi
 from teaport_brain import wifi_setup as ws
 from teaport_brain import wifi_voice as wv
 
@@ -236,11 +236,14 @@ def test_nobody_comes_and_the_previous_connection_is_put_back():
 
 # ------------------------------------------------------------------ the voice half
 
+EN = i18n.get("en")
+
+
 def test_the_details_are_spelled_for_the_voice():
-    assert wv.spell("teaport-9e35") == "teaport, dash, nine, E, three, five"
-    assert wv.spell("47190352") == "four, seven, one, nine, zero, three, five, two"
-    assert wv.spell("Tito2017") == "capital T, I, T, O, two, zero, one, seven"
-    text = wv.instructions({"ssid": "teaport-9e35", "password": "47190352"})
+    assert wv.spell("teaport-9e35", EN) == "teaport, dash, nine, E, three, five"
+    assert wv.spell("47190352", EN) == "four, seven, one, nine, zero, three, five, two"
+    assert wv.spell("Tito2017", EN) == "capital T, I, T, O, two, zero, one, seven"
+    text = wv.instructions({"ssid": "teaport-9e35", "password": "47190352"}, EN)
     assert "teaport, dash, nine, E, three, five" in text and "teaport dash nine E three five dot local" in text
 
 
@@ -249,7 +252,7 @@ def test_the_details_are_spelled_for_the_voice():
     ("switch to a different wifi", True), ("wifi setup", True), ("change my wifi", True),
     ("I love my wifi", False), ("the wifi is slow here", False), ("what's the weather", False)])
 def test_the_phrase(text, hit):
-    assert bool(wv.TRIGGER.search(text)) is hit
+    assert wv.heard("start", text, EN) is hit
 
 
 class _Voice(wv.WifiSetupVoice):

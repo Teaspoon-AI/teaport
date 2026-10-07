@@ -15,6 +15,8 @@ import re
 import socket
 import subprocess
 
+from teaport_brain.i18n import N_
+
 AP_CONNECTION = "teaport-setup"
 AP_ADDRESS = "10.42.0.1"  # NetworkManager's ipv4.method=shared default
 CONNECT_WAIT_SECS = 45
@@ -152,7 +154,7 @@ class NM:
         saved = self.saved_profile(ssid)
         if saved and not password:
             ok = self.up(saved)
-            return ok, "" if ok else "the saved settings for it did not work", None
+            return ok, "" if ok else N_("the saved settings for it did not work"), None
         if saved:
             _, old, _ = self.nmcli("-s", "-t", "-g", "802-11-wireless-security.psk",
                                    "connection", "show", "id", saved)
@@ -162,7 +164,7 @@ class NM:
                 return True, "", None
             if old.strip():
                 self.nmcli("connection", "modify", "id", saved, "wifi-sec.psk", old.strip())
-            return False, "the password did not work", None
+            return False, N_("the password did not work"), None
         args = ["--wait", str(CONNECT_WAIT_SECS), "device", "wifi", "connect", ssid,
                 "ifname", dev, "name", ssid]
         if password:
@@ -172,10 +174,10 @@ class NM:
         rc, _, err = self.nmcli(*args, timeout=CONNECT_WAIT_SECS + 15)
         if rc == 0:
             return True, "", ssid
-        why = "the password did not work" if re.search(
+        why = N_("the password did not work") if re.search(
             r"secrets|password|802-1x|psk", err, re.I) else (
-            "the network was not found" if re.search(r"not found|No network", err, re.I)
-            else "it would not connect")
+            N_("the network was not found") if re.search(r"not found|No network", err, re.I)
+            else N_("it would not connect"))
         return False, why, ssid
 
     def delete(self, profile: str) -> None:
@@ -204,7 +206,7 @@ def switch(nm: "NM", dev: str, ssid: str, password: str, hidden: bool) -> tuple[
     if ok and nm.online():
         return True, ""
     if ok:
-        why = "it joined but there is no internet through it"
+        why = N_("it joined but there is no internet through it")
     if created:
         nm.delete(created)
     if previous and previous != ssid:

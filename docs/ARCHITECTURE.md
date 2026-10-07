@@ -48,7 +48,9 @@ Every tool the voice model can call follows one contract
   phrase works offline. The `wifi_setup` tool is a second way in for when the box
   is online. Both start `teaport-wifi-setup` (`wifi_setup.py`): a temporary setup
   network with a page that phones open automatically. The brain reads the
-  setup's progress from a status file and speaks it.
+  setup's progress from a status file and speaks it. The spoken and displayed text is translated with
+  Python's standard `gettext` (`i18n.py`, one `.po` catalog per voice language),
+  because the brain says it itself rather than through the LLM.
 
 TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
 consult paths.

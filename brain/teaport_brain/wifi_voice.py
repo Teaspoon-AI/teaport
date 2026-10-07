@@ -15,6 +15,10 @@
 # Talk user or a phone caller who could cut the box off its own network), and the setup
 # unit is installed.
 #
+# It speaks the session's language — its voice's, read live, so a switch_voice mid-session
+# switches setup too — through the catalogs in i18n.py (the "start", "yes", ... phrases
+# included); the phone page (wifi_setup.py) follows the phone's own language.
+#
 import asyncio
 import json
 import os
@@ -32,6 +36,9 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain import i18n
+from teaport_brain.i18n import N_
+
 UNIT = "teaport-wifi-setup"
 UNIT_FILE = f"/etc/systemd/system/{UNIT}.service"
 # The root-owned config helper the installer puts in sudoers (config_ui.py uses it too).
@@ -43,15 +50,28 @@ REMIND_SECS = 120.0
 # No status this long after starting the unit: it did not start.
 START_TIMEOUT_SECS = 60.0
 
-TRIGGER = re.compile(
-    r"\b(?:set ?up|setup|configure|connect to|join|change|switch)\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\b"
-    r"|\bwi-?fi (?:set ?up|setup)\b", re.I)
-YES = re.compile(r"\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\b", re.I)
-NO = re.compile(r"\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\b", re.I)
-CANCEL = re.compile(r"\b(?:cancel|stop|quit|exit|abort|never ?mind)\b", re.I)
-REPEAT = re.compile(r"\b(?:repeat|again|what was|what's the|password|network name|say that)\b", re.I)
+# What the user says, by meaning. The English patterns are the msgids of the "pattern"
+# entries in each language's catalog (i18n.py), whose msgstr is that language's own
+# pattern: a session listens for its language's words and always for the English ones.
+PATTERNS = {
+    "start": r"\b(?:set ?up|setup|configure|connect to|join|change|switch)\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\b|\bwi-?fi (?:set ?up|setup)\b",
+    "yes": r"\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\b",
+    "no": r"\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\b",
+    "cancel": r"\b(?:cancel|stop|quit|exit|abort|never ?mind)\b",
+    "repeat": r"\b(?:repeat|again|what was|what's the|password|network name|say that)\b",
+}
 
-_DIGITS = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"]
+
+def heard(meaning: str, text: str, t: i18n.T) -> bool:
+    """Did the user say `meaning` ("start", "yes", ...) in English or in t's language?"""
+    english = PATTERNS[meaning]
+    for pattern in {english, t.p("pattern", english)}:
+        try:
+            if re.search(pattern, text, re.I):
+                return True
+        except re.error:
+            logger.warning(f"wifi setup: bad {t.lang} pattern for {meaning!r} — fix its .po entry")
+    return False
 
 
 def available() -> bool:
@@ -59,37 +79,48 @@ def available() -> bool:
     return os.path.exists(UNIT_FILE) and os.path.exists(APPLY_HELPER)
 
 
+# Characters that are neither digits nor letters, by the name a voice says (catalog
+# context "spell").
 _SYMBOLS = {"-": "dash", "_": "underscore", ".": "dot", " ": "space", "@": "at sign",
             "!": "exclamation mark", "#": "hash", "&": "ampersand", "*": "star"}
 
 
-def spell(text: str) -> str:
-    """Character by character, for the voice: 'teaport-9e35' -> 'teaport, dash, nine, E,
-    three, five'. A lowercase word before the first dash is said as a word; in a string
-    that mixes cases, uppercase letters are said as "capital X"."""
+def spell(text: str, t: i18n.T) -> str:
+    """Character by character, in t's language: 'teaport-9e35' -> 'teaport, dash, nine,
+    E, three, five'. A lowercase word before the first dash is said as a word; in a
+    string that mixes cases, uppercase letters are said as "capital X"."""
     head, sep, rest = text.partition("-")
     if sep and head.isalpha() and head.islower():
-        words, chars = [head, "dash"], rest
+        words, chars = [head, t.p("spell", "dash")], rest
     else:
         words, chars = [], text
     mixed = any(c.isupper() for c in chars) and any(c.islower() for c in chars)
     for c in chars:
-        if c.isdigit():
-            words.append(_DIGITS[int(c)])
+        if c.isdigit() and c.isascii():
+            words.append(t.p("digit", c))
         elif c.isalpha():
-            words.append(f"capital {c.upper()}" if mixed and c.isupper() else c.upper())
+            words.append(t.p("spell", "capital {letter}").format(letter=c.upper())
+                         if mixed and c.isupper() else c.upper())
+        elif c in _SYMBOLS:
+            words.append(t.p("spell", _SYMBOLS[c]))
         else:
-            words.append(_SYMBOLS.get(c, c))
-    return ", ".join(words)
+            words.append(c)
+    return t.p("spell", ", ").join(words)
 
 
-def instructions(status: dict) -> str:
+def instructions(status: dict, t: i18n.T) -> str:
     ssid, password = status.get("ssid", ""), status.get("password", "")
     name = ssid.split("-", 1)[1] if ssid.startswith("teaport-") else ""
-    url = f"teaport dash {spell(name).replace(', ', ' ')} dot local" if name else "ten dot forty-two dot zero dot one"
-    return (f"On your phone, join the Wi-Fi network {spell(ssid)}. "
-            f"The password is {spell(password)}. "
-            f"A setup page should open by itself. If it doesn't, go to {url}.")
+    if name:
+        parts = spell(name, t).split(t.p("spell", ", "))
+        url = " ".join(["teaport", t.p("spell", "dash"), *parts, t.p("spell", "dot"), "local"])
+    else:
+        url = " ".join([t.p("digit", "1") + t.p("digit", "0"), t.p("spell", "dot"),
+                        t.p("digit", "4") + t.p("digit", "2"), t.p("spell", "dot"),
+                        t.p("digit", "0"), t.p("spell", "dot"), t.p("digit", "1")])
+    return t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
+               "A setup page should open by itself. If it doesn't, go to {url}.").format(
+        ssid=spell(ssid, t), password=spell(password, t), url=url)
 
 
 class WifiSetupVoice(FrameProcessor):
@@ -97,8 +128,10 @@ class WifiSetupVoice(FrameProcessor):
     watching final transcripts for the setup phrase. Confirming or running: takes the
     user's final transcripts itself and speaks fixed sentences."""
 
-    def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.time, **kw):
+    def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.time,
+                 lang_fn=lambda: "en-us", **kw):
         super().__init__(**kw)
+        self._lang_fn = lang_fn  # the session's TTS language now ('en-us', 'es', ...)
         self._run = run or _run_helper
         self._status_path = status_path
         self._clock = clock
@@ -106,7 +139,12 @@ class WifiSetupVoice(FrameProcessor):
         self._unclear = 0
         self._started_at = 0.0
         self._last: dict = {}
+        self._why = ""  # the last failed attempt's reason (an English msgid)
         self._poller: asyncio.Task | None = None
+
+    @property
+    def t(self) -> i18n.T:
+        return i18n.for_espeak(self._lang_fn())
 
     # -- speaking
     async def say(self, text: str) -> None:
@@ -116,21 +154,22 @@ class WifiSetupVoice(FrameProcessor):
     async def begin(self) -> None:
         """Ask to confirm (the phrase, or the wifi_setup tool)."""
         if self.state == "running":
-            await self.say("Wi-Fi setup is already running. " + (instructions(self._last)
-                           if self._last.get("phase") == "ap_up" else ""))
+            t = self.t
+            await self.say(t._("Wi-Fi setup is already running.") + (
+                " " + instructions(self._last, t) if self._last.get("phase") == "ap_up" else ""))
             return
         self.state, self._unclear = "confirm", 0
-        await self.say("Do you want to set up Wi-Fi? I'll go offline for a few minutes "
-                       "while you do it on your phone. Say yes or no.")
+        await self.say(self.t._("Do you want to set up Wi-Fi? I'll go offline for a few "
+                                "minutes while you do it on your phone. Say yes or no."))
 
     async def _start(self) -> None:
         self.state, self._started_at, self._last = "running", self._clock(), {}
-        await self.say("Okay. Give me a moment to look for networks.")
+        await self.say(self.t._("Okay. Give me a moment to look for networks."))
         rc, err = await self._run("restart", UNIT)
         if rc != 0:
             logger.warning(f"wifi setup: could not start {UNIT}: {err}")
             self.state = "idle"
-            await self.say("Sorry, I couldn't start Wi-Fi setup on this box.")
+            await self.say(self.t._("Sorry, I couldn't start Wi-Fi setup on this box."))
             return
         logger.info("wifi setup: started")
         self._poller = self._spawn(self._follow())
@@ -141,7 +180,7 @@ class WifiSetupVoice(FrameProcessor):
             logger.warning(f"wifi setup: could not stop {UNIT}: {err}")
         await self._stop_following()
         self.state = "idle"
-        await self.say("Okay, I've stopped Wi-Fi setup and put things back as they were.")
+        await self.say(self.t._("Okay, I've stopped Wi-Fi setup and put things back as they were."))
 
     def _spawn(self, coro) -> asyncio.Task:
         return self.create_task(coro)  # pipecat's task manager (tests use asyncio's)
@@ -174,37 +213,45 @@ class WifiSetupVoice(FrameProcessor):
             if status is None:
                 if now - self._started_at > START_TIMEOUT_SECS:
                     self.state = "idle"
-                    await self.say("Wi-Fi setup didn't start. Please try again in a moment.")
+                    await self.say(self.t._("Wi-Fi setup didn't start. Please try again in a moment."))
                 continue
             if (status["phase"], status.get("error")) == (self._last.get("phase"), self._last.get("error")):
                 if status["phase"] == "ap_up" and now - reminded >= REMIND_SECS:
                     reminded = now
-                    await self.say("I'm still waiting for you on the setup page. " + instructions(status))
+                    t = self.t
+                    await self.say(t._("I'm still waiting for you on the setup page.") + " "
+                                   + instructions(status, t))
                 continue
+            if status["phase"] == "failed":
+                self._why = status.get("reason", "")
             self._last, reminded = status, now
             await self._announce(status)
 
     async def _announce(self, status: dict) -> None:
-        phase = status["phase"]
+        phase, t = status["phase"], self.t
+        network = status.get("target") or t._("your network")
         logger.info(f"wifi setup: {phase}")
         if phase == "ap_up":
-            lead = (f"That didn't work. " if status.get("error") else "")
-            await self.say(lead + instructions(status))
+            # The reasons are English msgids from wifi.py / wifi_setup.py.
+            lead = (t._("That didn't work: {reason}.").format(reason=t._(self._why)) + " "
+                    if status.get("error") and self._why else "")
+            await self.say(lead + instructions(status, t))
         elif phase == "joining":
-            await self.say(f"Got it. I'm joining {status.get('target', 'your network')}. "
-                           "Switch your phone back to it.")
+            await self.say(t._("Got it. I'm joining {network}. Switch your phone back to it.")
+                           .format(network=network))
         elif phase == "failed":
-            pass  # ap_up follows at once with the error and the instructions again
+            pass  # ap_up follows at once with the reason and the instructions again
         elif phase == "connected":
             self.state = "idle"
-            await self.say(f"I'm connected to {status.get('target', 'your network')}, "
-                           "and I'm online again.")
+            await self.say(t._("I'm connected to {network}, and I'm online again.")
+                           .format(network=network))
         elif phase == "timeout":
             self.state = "idle"
-            await self.say("Wi-Fi setup timed out, so I've put things back as they were.")
+            await self.say(t._("Wi-Fi setup timed out, so I've put things back as they were."))
         elif phase == "error":
             self.state = "idle"
-            await self.say(f"Wi-Fi setup stopped: {status.get('reason', 'something went wrong')}.")
+            await self.say(t._("Wi-Fi setup stopped: {reason}.").format(
+                reason=t._(status.get("reason") or N_("something went wrong"))))
 
     # -- the frames
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -218,32 +265,33 @@ class WifiSetupVoice(FrameProcessor):
         await self.push_frame(frame, direction)
 
     async def _heard(self, text: str) -> bool:
+        t = self.t
         if self.state == "idle":
-            if TRIGGER.search(text):
+            if heard("start", text, t):
                 await self.begin()
                 return True
             return False
         if self.state == "confirm":
-            if NO.search(text):
+            if heard("no", text, t):
                 self.state = "idle"
-                await self.say("Okay, never mind.")
-            elif YES.search(text):
+                await self.say(t._("Okay, never mind."))
+            elif heard("yes", text, t):
                 await self._start()
             else:
                 self._unclear += 1
                 if self._unclear >= 2:
                     self.state = "idle"
                     return False  # not about setup after all: the LLM takes it
-                await self.say("Say yes to start Wi-Fi setup, or no.")
+                await self.say(t._("Say yes to start Wi-Fi setup, or no."))
             return True
         # running
-        if CANCEL.search(text):
+        if heard("cancel", text, t):
             await self._cancel()
-        elif REPEAT.search(text) and self._last.get("phase") == "ap_up":
-            await self.say(instructions(self._last))
+        elif heard("repeat", text, t) and self._last.get("phase") == "ap_up":
+            await self.say(instructions(self._last, t))
         else:
-            await self.say("I'm in Wi-Fi setup. Say repeat to hear the details again, "
-                           "or cancel to stop.")
+            await self.say(t._("I'm in Wi-Fi setup. Say repeat to hear the details again, "
+                               "or cancel to stop."))
         return True
 
 

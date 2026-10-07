@@ -818,7 +818,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     logger.info(f"tools: {', '.join(t.name for t in session_tools) or 'none'}")
     # Wi-Fi setup's voice half: only where its tool is active (switched on, a local
     # client, the unit installed). It also answers the spoken phrase with no LLM.
-    wifi = WifiSetupVoice() if any(t.name == "wifi_setup" for t in session_tools) else None
+    # It speaks the voice's language, read live (a switch_voice switches it too).
+    wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
+            if any(t.name == "wifi_setup" for t in session_tools) else None)
     system_prompt = build_system_prompt(persona, tools=session_tools)
     # If a non-English voice/language was selected, tell the LLM to reply in it too
     # (the voice only changes pronunciation; the words still come from the LLM).

@@ -1,0 +1,253 @@
+# teaport — Italian strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Machine-drafted (2026-10-07). A native speaker's review is welcome.
+msgid ""
+msgstr ""
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: it\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "Vuoi configurare il wifi? Andrò offline per qualche minuto mentre lo fai dal telefono. Di' sì o no."
+
+msgid "Wi-Fi setup is already running."
+msgstr "La configurazione del wifi è già in corso."
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "Va bene. Dammi un momento per cercare le reti."
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "Mi dispiace, non sono riuscito ad avviare la configurazione del wifi su questo dispositivo."
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "Va bene, ho interrotto la configurazione del wifi e rimesso tutto com'era."
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "La configurazione del wifi non è partita. Riprova tra un momento."
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "Ti sto ancora aspettando sulla pagina di configurazione."
+
+msgid "That didn't work: {reason}."
+msgstr "Non ha funzionato: {reason}."
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "Ricevuto. Mi sto collegando a {network}. Ricollega il telefono a quella rete."
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "Sono collegato a {network} e sono di nuovo online."
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "Il tempo per la configurazione del wifi è scaduto, quindi ho rimesso tutto com'era."
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "La configurazione del wifi si è fermata: {reason}."
+
+msgid "your network"
+msgstr "la tua rete"
+
+msgid "something went wrong"
+msgstr "qualcosa è andato storto"
+
+msgid "Okay, never mind."
+msgstr "Va bene, lascia stare."
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "Di' sì per iniziare la configurazione del wifi, oppure no."
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "Sto configurando il wifi. Di' ripeti per riascoltare i dati, o annulla per fermarti."
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "Sul telefono, collegati alla rete wifi {ssid}. La password è {password}. Dovrebbe aprirsi da sola una pagina di configurazione. Se non succede, vai su {url}."
+
+msgid "the saved settings for it did not work"
+msgstr "le impostazioni salvate per quella rete non hanno funzionato"
+
+msgid "the password did not work"
+msgstr "la password non ha funzionato"
+
+msgid "the network was not found"
+msgstr "la rete non è stata trovata"
+
+msgid "it would not connect"
+msgstr "non è riuscito a collegarsi"
+
+msgid "it joined but there is no internet through it"
+msgstr "si è collegato, ma da quella rete non c'è internet"
+
+msgid "this box has no Wi-Fi device"
+msgstr "questo dispositivo non ha il wifi"
+
+msgid "the setup network would not start"
+msgstr "la rete di configurazione non è partita"
+
+msgid "the setup page could not start"
+msgstr "la pagina di configurazione non è partita"
+
+msgid "open"
+msgstr "aperta"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "Configurazione wifi di Teaport"
+
+msgid "Connect to Wi-Fi"
+msgstr "Collegati al wifi"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "Scegli la tua rete e scrivi la password. Teaport lascerà questa rete di configurazione, si collegherà alla tua e dirà ad alta voce se ha funzionato."
+
+msgid "No networks found — use Other."
+msgstr "Nessuna rete trovata: usa Altra."
+
+msgid "Other (hidden) network"
+msgstr "Altra rete (nascosta)"
+
+msgid "Network name"
+msgstr "Nome della rete"
+
+msgid "Password"
+msgstr "Password"
+
+msgid "Show password"
+msgstr "Mostra password"
+
+msgid "Connect"
+msgstr "Collegati"
+
+msgid "Teaport is joining"
+msgstr "Teaport si sta collegando"
+
+msgid "Joining {network}…"
+msgstr "Collegamento a {network}…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "Teaport sta lasciando ora questa rete di configurazione. Ricollega il telefono a {network}. Teaport dirà ad alta voce se si è collegato; se non ci è riuscito, la rete di configurazione torna e puoi riprovare."
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "Impossibile collegarsi a {network}: {reason}. Riprova."
+
+msgid "Pick a network, or type its name under Other."
+msgstr "Scegli una rete, o scrivi il suo nome sotto Altra."
+
+msgid "That network name is too long."
+msgstr "Quel nome di rete è troppo lungo."
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "Le password wifi hanno da 8 a 63 caratteri."
+
+msgctxt "digit"
+msgid "0"
+msgstr "zero"
+
+msgctxt "digit"
+msgid "1"
+msgstr "uno"
+
+msgctxt "digit"
+msgid "2"
+msgstr "due"
+
+msgctxt "digit"
+msgid "3"
+msgstr "tre"
+
+msgctxt "digit"
+msgid "4"
+msgstr "quattro"
+
+msgctxt "digit"
+msgid "5"
+msgstr "cinque"
+
+msgctxt "digit"
+msgid "6"
+msgstr "sei"
+
+msgctxt "digit"
+msgid "7"
+msgstr "sette"
+
+msgctxt "digit"
+msgid "8"
+msgstr "otto"
+
+msgctxt "digit"
+msgid "9"
+msgstr "nove"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "trattino"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "trattino basso"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "punto"
+
+msgctxt "spell"
+msgid "space"
+msgstr "spazio"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "chiocciola"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "punto esclamativo"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "cancelletto"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "e commerciale"
+
+msgctxt "spell"
+msgid "star"
+msgstr "asterisco"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "{letter} maiuscola"
+
+msgctxt "spell"
+msgid ", "
+msgstr ", "
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "\\b(?:configura\\w*|imposta\\w*|connett\\w*|collega\\w*|cambia\\w*)\\b(?: \\S+){0,3} ?wi-?fi\\b"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "\\b(?:sì|si|certo|va bene|ok|okay|vai|procedi|per favore)\\b"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "\\b(?:no|lascia stare|annulla)\\b"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "\\b(?:annulla|ferma\\w*|basta|stop|esci)\\b"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "\\b(?:ripeti\\w*|ancora|di nuovo|qual era|password|nome della rete)\\b"
