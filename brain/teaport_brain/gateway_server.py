@@ -28,12 +28,14 @@
 #
 import argparse
 import json
+import logging
 import os
+import re
 import sys
 import time
 
 import uvicorn
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from loguru import logger
 
 from pipecat.frames.frames import OutputTransportMessageUrgentFrame
@@ -67,6 +69,25 @@ LISTEN_PORT = int(os.getenv("GATEWAY_PORT", "7861"))
 # reach this port gets a full agent session (memory read/write tools included) and
 # can evict the live call, so we log a loud warning at startup.
 GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
+# The close code a /talk session gets when a newer one evicts it (4000-4999 is the
+# private range). Every other end — the session's own end, the idle timeout, a brain
+# shutdown — closes with 1000 or drops the socket, so a client can tell "another client
+# took the slot" apart and back off (the local audio bridge does: local_audio.py).
+# Clients that predate it see a plain close, as before.
+TAKEN_CLOSE_CODE = 4001
+TAKEN_CLOSE_REASON = "taken by another Talk session"
+
+
+def _close_as_taken(websocket) -> None:
+    """Make the transport's own close of `websocket` (pipecat closes it as the evicted
+    pipeline is cancelled, with no code) send TAKEN_CLOSE_CODE. Closing it here instead
+    would race that close: the second one raises in starlette."""
+    close = websocket.close
+
+    async def close_taken(code: int = 1000, reason: str | None = None):
+        await close(code=TAKEN_CLOSE_CODE, reason=TAKEN_CLOSE_REASON)
+
+    websocket.close = close_taken
 
 
 async def run_relay_bot(websocket: WebSocket):
@@ -153,7 +174,7 @@ async def run_relay_bot(websocket: WebSocket):
     # before starting ours, evict the previous pipeline (acquire_slot cancels it and
     # waits for its teardown so our STT can claim the slot). Pairs with the
     # STT-unavailable greeting warning as a backstop if a race slips.
-    _my_done, release = await acquire_slot(session.task)
+    _my_done, release = await acquire_slot(session.task, on_evicted=lambda: _close_as_taken(websocket))
     try:
         await PipelineRunner(handle_sigint=False).run(session.task)
     finally:
@@ -170,6 +191,16 @@ app.include_router(config_ui.router)
 @app.get("/health")
 async def health():
     return {"ok": True, "tts": "engine"}
+
+
+@app.get("/talk/status")
+async def talk_status(request: Request):
+    """Whether a /talk session holds the slot now. The local audio bridge, evicted by
+    another client, polls it to stay off the box while that session is live. Same
+    token as /talk (and the config page, whose check this is): who is talking is
+    nobody else's business. The bridge sends it as a bearer header, out of the access log."""
+    config_ui._authorize(request)
+    return {"active": slot_active()}
 
 
 @app.websocket("/talk")
@@ -213,9 +244,37 @@ class _ReadyServer(uvicorn.Server):
             sdnotify.ready()
 
 
+# A ?token= in a request line uvicorn logs: the access line of an HTTP request, the
+# "WebSocket /talk?...&token=..." [accepted] line of every Talk connect.
+_TOKEN_IN_URL = re.compile(r"(token=)[^&\s\"']+")
+
+
+class _RedactTokens(logging.Filter):
+    """Blank the token in uvicorn's request lines, so the journal never holds it. Only
+    the arguments are rewritten: uvicorn's access formatter unpacks them by position."""
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        if isinstance(record.args, tuple):
+            record.args = tuple(_TOKEN_IN_URL.sub(r"\1<redacted>", a) if isinstance(a, str) else a
+                                for a in record.args)
+        if isinstance(record.msg, str):
+            record.msg = _TOKEN_IN_URL.sub(r"\1<redacted>", record.msg)
+        return True
+
+
+def redact_tokens_in_uvicorn_logs() -> None:
+    """After uvicorn.Config, which (re)configures these loggers."""
+    for name in ("uvicorn.access", "uvicorn.error"):
+        log = logging.getLogger(name)
+        if not any(isinstance(f, _RedactTokens) for f in log.filters):
+            log.addFilter(_RedactTokens())
+
+
 def serve(host: str, port: int) -> None:
     """uvicorn.run(app, host=, port=) with a readiness notification after the bind."""
-    server = _ReadyServer(uvicorn.Config(app, host=host, port=port))
+    config = uvicorn.Config(app, host=host, port=port)
+    redact_tokens_in_uvicorn_logs()
+    server = _ReadyServer(config)
     try:
         server.run()
     except KeyboardInterrupt:  # as uvicorn.run: it re-raises a Ctrl-C after shutting down

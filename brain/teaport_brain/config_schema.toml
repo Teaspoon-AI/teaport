@@ -147,7 +147,7 @@ title = "Discord bridge"
 [[groups]]
 id = "local_audio"
 title = "Local audio bridge"
-blurb = "Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client sharing the one Talk slot: it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB) — which takes the slot from a dashboard Talk session, as a new dashboard session takes it from the bridge."
+blurb = "Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client sharing the one Talk slot: it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB). A dashboard (or other) Talk session takes the slot from the bridge; the bridge then backs off and does not take it back while that session is live (LOCAL_AUDIO_BACKOFF_SECS)."
 
 # ================================================================ brain.env
 
@@ -1139,7 +1139,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:264"
+source = "agent_session.py:268"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1603,7 +1603,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:62"
+source = "gateway_server.py:64"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1615,7 +1615,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:69"
+source = "gateway_server.py:71"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"
@@ -1995,7 +1995,7 @@ default = "hw:CARD=Array,DEV=0"
 read = "startup"
 tier = "setup"
 help = "The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others."
-source = "local_audio.py:85"
+source = "local_audio.py:93"
 
 [[settings]]
 name = "LOCAL_AUDIO_CAPTURE_CHANNEL"
@@ -2008,7 +2008,7 @@ max = 1
 read = "startup"
 tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
-source = "local_audio.py:86"
+source = "local_audio.py:94"
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
@@ -2022,7 +2022,21 @@ unit = "dB"
 read = "startup"
 tier = "tuning"
 help = "How loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never evicts a dashboard Talk session on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not."
-source = "local_audio.py:107"
+source = "local_audio.py:115"
+
+[[settings]]
+name = "LOCAL_AUDIO_BACKOFF_SECS"
+store = "local_audio_env"
+group = "local_audio"
+type = "float"
+default = 60.0
+min = 0.0
+max = 3600.0
+unit = "s"
+read = "startup"
+tier = "tuning"
+help = "When another client (the dashboard, grokani, a browser) takes the Talk session from the bridge, the box is theirs: the bridge stops listening for a voice until the brain has had no live Talk session for this long, so the room (or the dashboard user's own voice) cannot take it back. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off."
+source = "local_audio.py:122"
 
 [[settings]]
 name = "LOCAL_AUDIO_URL"
@@ -2033,7 +2047,7 @@ default = "ws://127.0.0.1:$BRAIN_PORT/talk"
 read = "startup"
 tier = "tuning"
 help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."
-source = "local_audio.py:88"
+source = "local_audio.py:96"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_SOCK"
@@ -2044,7 +2058,7 @@ default = "/run/oled-avatar/face.sock"
 read = "startup"
 tier = "tuning"
 help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes."
-source = "local_audio.py:122"
+source = "local_audio.py:143"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_ADVANCE_MS"
@@ -2058,7 +2072,7 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:155"
+source = "local_audio.py:176"
 
 # ================================================================ wifi-setup.env
 

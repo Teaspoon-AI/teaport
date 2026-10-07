@@ -183,7 +183,7 @@ async def _talk_input_processors(dump_dir):
     async def send_text(text):
         pass
 
-    async def acquire(task):
+    async def acquire(task, **_kw):
         async def release():
             pass
         return None, release

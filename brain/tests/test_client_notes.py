@@ -723,7 +723,7 @@ async def _run_talk(should_end=False):
         built.update(kw)
         return _Session()
 
-    async def acquire(task):
+    async def acquire(task, **_kw):
         order.append("slot")
 
         async def release():
