@@ -461,6 +461,27 @@ def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
     assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
 
 
+def test_a_stop_before_setup_began_is_a_clean_stop_with_nothing_to_put_back():
+    class StoppedEarly(FakeNM):
+        def active(self, dev): raise ws.Stopped()
+    nm = StoppedEarly([])
+    rc, seen = _run_setup(nm)
+    assert rc == 3 and [s["phase"] for s in seen] == ["stopped"]
+    assert nm.events == [("ap_delete",)]   # the old network was never touched
+
+
+def test_a_stop_during_the_clean_up_finishes_it_and_the_result_stands():
+    class StoppedInCleanUp(FakeNM):
+        def ap_delete(self):
+            super().ap_delete()
+            if self.events.count(("ap_delete",)) == 1:
+                raise ws.Stopped()
+    nm = StoppedInCleanUp([(True, "", "home")])
+    rc, seen = _run_setup(nm, post=[{"ssid": "home", "password": "homepass1"}])
+    assert rc == 0 and seen[-1]["phase"] == "connected"
+    assert nm.events[-2:] == [("ap_delete",), ("ap_delete",)]
+
+
 def _screen(avatar=True, events=None, qr=True, qr_max=53):
     """A Screen recording what it sends (into `events` too, as ("screen", ...), when
     given); `avatar`: whether a daemon that draws screens is there; `qr`: and QR codes,
