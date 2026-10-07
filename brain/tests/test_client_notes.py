@@ -675,6 +675,24 @@ async def test_the_session_places_it_and_a_note_gets_there():
         assert frame in seen, f"{type(p).__name__} swallowed the note"
 
 
+async def test_wifi_setup_tells_the_model_through_the_sessions_notes():
+    """Issue #97: how a Wi-Fi setup ended reaches the model this way (add_notice)."""
+    from teaport_brain import tools
+    from teaport_brain.agent_session import build_agent_session
+    from teaport_brain.wifi_voice import WifiSetupVoice
+
+    saved = tools.HOST_CHECKS["wifi_setup"]
+    tools.HOST_CHECKS["wifi_setup"] = lambda: True
+    try:
+        session = build_agent_session(_Transport(), context_notes=True,
+                                      client_features=frozenset({"local"}))
+    finally:
+        tools.HOST_CHECKS["wifi_setup"] = saved
+    inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
+    wifi = next(p for p in inner.processors if isinstance(p, WifiSetupVoice))
+    assert wifi.notes is session.client_notes is not None
+
+
 async def _run_talk(should_end=False):
     """run_relay_bot with fakes around it. Returns the order of what the plugin would
     see (the socket writes and the frames queued to the pipeline) and the session

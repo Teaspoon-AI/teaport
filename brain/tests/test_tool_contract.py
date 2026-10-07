@@ -285,7 +285,9 @@ def test_the_wifi_setup_tool_hands_over_and_keeps_the_model_quiet():
     class Voice:
         begun = 0
 
-        async def begin(self):
+        async def begin(self, by_model=False):
+            # The model began it: it is told how setup ends (wifi_voice._ended, #97).
+            assert by_model is True
             Voice.begun += 1
 
     async def run():

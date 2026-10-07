@@ -27,6 +27,7 @@ from pipecat.frames.frames import (  # noqa: E402
     BotStoppedSpeakingFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
+    LLMContextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
     UninterruptibleFrame,
@@ -40,7 +41,13 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
 from turn_harness import running_controller  # noqa: E402
 
+from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
+
 from teaport_brain import i18n  # noqa: E402
+from teaport_brain.client_notes import ClientNotes  # noqa: E402
+from teaport_brain.followup_gate import (  # noqa: E402
+    SYSTEM_NOTICE_TAG, FollowupGate, FollowupTrigger,
+)
 from teaport_brain import wifi_setup as ws  # noqa: E402
 from teaport_brain import wifi_voice as wv  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
@@ -613,6 +620,250 @@ def test_without_the_closer_the_turn_hangs_open():
     gives it no words, and a turn without words does not end -- nor can a new one start."""
     starts, stops, _ = asyncio.run(_turn(with_closer=False))
     assert stops == 0 and starts == 1
+
+
+# ------------------------------------------------------------------ telling the model
+
+# The user's own network password, as typed on the setup page. The voice never has it
+# (status.json does not carry it); it is planted in a status below to prove that a
+# field the note does not name never reaches it.
+USER_PASSWORD = "hunter2-lounge"
+
+
+class _Task:
+    def __init__(self):
+        self.queued = []
+
+    async def queue_frames(self, frames):
+        self.queued.extend(frames)
+
+
+def _notes(quiet_secs=0.02):
+    """The session's ClientNotes over a real context, gate and trigger, off-pipeline (as
+    test_client_notes builds it)."""
+    context = LLMContext([{"role": "system", "content": "persona"},
+                          {"role": "user", "content": "Can you set up the Wi-Fi?"}])
+    # A budget longer than the debounce: shorter, the gate's answer is an instant False.
+    gate = FollowupGate(quiet_secs=quiet_secs, max_wait=quiet_secs + 0.3, claim_secs=0.3)
+    notes = ClientNotes(context, gate, FollowupTrigger())
+    notes.task = _Task()
+
+    async def ignore(frame, direction=FrameDirection.DOWNSTREAM):
+        pass
+    notes.push_frame = gate.push_frame = ignore
+    notes.create_task = lambda coro, *a, **k: asyncio.get_running_loop().create_task(coro)
+    return notes, context
+
+
+def _notices(context):
+    return [m["content"] for m in context.get_messages()
+            if str(m.get("content", "")).startswith(SYSTEM_NOTICE_TAG)]
+
+
+async def _settle(notes):
+    for _ in range(25):
+        await asyncio.sleep(0.02)
+        if not notes._pending and (notes._drainer is None or notes._drainer.done()):
+            return
+
+
+async def _ask_did_it_work(notes, context):
+    """The user's next turn: its completion takes whatever notice is still pending."""
+    context.add_message({"role": "user", "content": "Did it work?"})
+    await notes.process_frame(LLMContextFrame(context=context), FrameDirection.DOWNSTREAM)
+
+
+async def _ends(path, outcome):
+    """Write the unit's statuses from ap_up to `outcome`'s last word."""
+    if outcome == "connected":
+        _write(path, phase="joining", target="#guinealounge")
+        await asyncio.sleep(0.03)
+        # A password field planted: the note names the network, never a field it is not
+        # built from.
+        _write(path, phase="connected", target="#guinealounge", password=USER_PASSWORD)
+    elif outcome == "timeout":
+        _write(path, phase="failed", target="#guinealounge",
+               reason="the password was not accepted")
+        await asyncio.sleep(0.03)
+        _write(path, phase="ap_up", **DETAILS)
+        await asyncio.sleep(0.03)
+        _write(path, phase="timeout")
+    elif outcome in ("stopped", "error"):
+        _write(path, phase=outcome, **({"reason": "the setup page could not start"}
+                                       if outcome == "error" else {}))
+
+
+NOTICE = SYSTEM_NOTICE_TAG + "\nWi-Fi setup ended: "
+ENDINGS = {
+    "connected": 'connected to "#guinealounge"; the box is online.',
+    "timeout": "it timed out; the box's Wi-Fi is back as it was before. The last attempt "
+               "to join failed: the password was not accepted.",
+    "stopped": "it was stopped from outside before it finished; the box's Wi-Fi is back as "
+               "it was before.",
+    "error": "it failed: the setup page could not start.",
+}
+
+
+@pytest.mark.parametrize("outcome", sorted(ENDINGS))
+def test_the_model_hears_how_a_setup_it_started_ended(outcome, fast):
+    """Issue #97: the tool hands over and the voice speaks everything after, out of the
+    context. Each ending puts one line in, with the network's name and no password."""
+    path = _path()
+
+    async def run():
+        notes, context = _notes(quiet_secs=5.0)  # no quiet moment: the next turn takes it
+        v = Voice(path, online=True)
+        v.notes = notes
+        await v.begin(by_model=True)
+        assert await v._heard("yes")
+        _write(path, phase="ap_up", **DETAILS)
+        await asyncio.sleep(0.05)
+        assert _notices(context) == [], "a notice before the end"
+        await _ends(path, outcome)
+        if outcome in ("stopped", "error"):
+            v.alive = False
+        await asyncio.sleep(0.2)
+        assert v.state == "idle"
+        await _ask_did_it_work(notes, context)
+        return v, notes, context
+
+    v, notes, context = asyncio.run(run())
+    msgs = [m["content"] for m in context.get_messages()]
+    assert msgs[-1] == "Did it work?", "the notice became the turn the model answers"
+    assert msgs[-2] == NOTICE + ENDINGS[outcome]
+    assert _notices(context) == [msgs[-2]], "one line per ending"
+    for secret in (DETAILS["password"], USER_PASSWORD):
+        assert secret not in "\n".join(msgs)
+    assert notes.task.queued == [], "the notice ran a turn of its own"
+    assert not any("ended" in s for s in v.said), "the notice was spoken"
+
+
+def test_the_notice_waits_for_a_quiet_moment_and_runs_no_turn(fast):
+    """The note-path's other moment: nobody speaks, the notice is appended at a quiet
+    moment -- and nothing answers it until the user does."""
+    path = _path()
+
+    async def run():
+        notes, context = _notes()
+        v = Voice(path, online=True)
+        v.notes = notes
+        await v.begin(by_model=True)
+        assert await v._heard("yes")
+        _write(path, phase="ap_up", **DETAILS)
+        await asyncio.sleep(0.05)
+        await _ends(path, "connected")
+        await asyncio.sleep(0.2)
+        await _settle(notes)
+        return notes, context
+
+    notes, context = asyncio.run(run())
+    assert context.get_messages()[-1]["content"] == NOTICE + ENDINGS["connected"]
+    assert notes.task.queued == []
+
+
+@pytest.mark.parametrize("answers, ending", [
+    (["cancel"], "the user cancelled it; the box's Wi-Fi is back as it was before."),
+    (["no"], "the user said no, so it never started."),
+    (["what's the weather", "tell me a joke"], "the user did not confirm, so it never started."),
+])
+def test_a_setup_the_model_started_that_never_ran_or_was_cancelled_is_told(answers, ending, fast):
+    """The model was told setup "is asking the user to confirm": a no, a cancel or a
+    question that never gets an answer end it too."""
+    path = _path()
+
+    async def run():
+        notes, context = _notes(quiet_secs=5.0)
+        v = Voice(path, online=True)
+        v.notes = notes
+        await v.begin(by_model=True)
+        if answers == ["cancel"]:
+            assert await v._heard("yes")
+            _write(path, phase="ap_up", **DETAILS)
+            await asyncio.sleep(0.05)
+        for text in answers:
+            await v._heard(text)
+        assert v.state == "idle"
+        await _ask_did_it_work(notes, context)
+        return context
+
+    context = asyncio.run(run())
+    assert _notices(context) == [NOTICE + ending]
+
+
+def test_a_lapsed_question_is_told_ahead_of_the_words_that_follow(fast):
+    async def run():
+        notes, context = _notes(quiet_secs=5.0)
+        clock = Clock()
+        v = Voice(_path(), online=True, clock=clock)
+        v.notes = notes
+        await v.begin(by_model=True)
+        clock.now += wv.CONFIRM_SECS + 1
+        assert not await v._heard("what time is it")  # the model's again
+        await _ask_did_it_work(notes, context)
+        return context
+
+    context = asyncio.run(run())
+    assert _notices(context) == [NOTICE + "the user did not confirm, so it never started."]
+
+
+@pytest.mark.parametrize("outcome", ["timeout", "stopped", "error"])
+def test_an_offline_phrase_setup_that_leaves_the_box_offline_adds_nothing(outcome, fast):
+    """The phrase works only with no internet; ending any way but connected leaves the
+    box offline: no model can read the line, and later it would be stale news."""
+    path = _path()
+
+    async def run():
+        notes, context = _notes(quiet_secs=5.0)
+        v = Voice(path)  # offline
+        v.notes = notes
+        await _running(v, path)
+        await _ends(path, outcome)
+        if outcome != "timeout":
+            v.alive = False
+        await asyncio.sleep(0.2)
+        assert v.state == "idle"
+        await _ask_did_it_work(notes, context)
+        return notes, context
+
+    notes, context = asyncio.run(run())
+    assert _notices(context) == [] and notes._pending == []
+
+
+def test_an_offline_phrase_setup_that_connects_is_told(fast):
+    """...but connected, the box is online and the model is back: it hears it."""
+    path = _path()
+
+    async def run():
+        notes, context = _notes(quiet_secs=5.0)
+        v = Voice(path)
+        v.notes = notes
+        await _running(v, path)
+        await _ends(path, "connected")
+        await asyncio.sleep(0.2)
+        await _ask_did_it_work(notes, context)
+        return context
+
+    assert _notices(asyncio.run(run())) == [NOTICE + ENDINGS["connected"]]
+
+
+def test_without_notes_there_is_no_one_to_tell(fast):
+    """A session without the notes path (no LLM context to reach): setup still ends
+    cleanly and says so aloud."""
+    path = _path()
+
+    async def run():
+        v = Voice(path, online=True)
+        assert v.notes is None
+        await v.begin(by_model=True)
+        assert await v._heard("yes")
+        _write(path, phase="ap_up", **DETAILS)
+        await asyncio.sleep(0.05)
+        await _ends(path, "connected")
+        await asyncio.sleep(0.2)
+        return v
+
+    v = asyncio.run(run())
+    assert v.state == "idle" and "online again" in v.said[-1]
 
 
 if __name__ == "__main__":

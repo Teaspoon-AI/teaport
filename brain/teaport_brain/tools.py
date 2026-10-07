@@ -868,10 +868,11 @@ async def _wifi_setup(params: FunctionCallParams, voice=None):
     if voice is None:
         await params.result_callback({"ok": False, "error": "Wi-Fi setup is not available here"})
         return
-    await voice.begin()
+    await voice.begin(by_model=True)
     # The setup flow speaks from here on; a model turn would talk over it.
     await params.result_callback(
-        {"ok": True, "note": "Wi-Fi setup has taken over and is asking the user to confirm."},
+        {"ok": True, "note": "Wi-Fi setup has taken over and is asking the user to confirm. "
+                             "It tells the user itself how it goes; you get a notice when it ends."},
         properties=no_inference())
 
 
