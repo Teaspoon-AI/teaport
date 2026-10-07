@@ -7,6 +7,7 @@ import sys
 import tempfile
 
 import numpy as np
+import pytest
 import soxr
 
 from teaport_brain import local_audio as la
@@ -533,3 +534,8 @@ def test_card_present_from_real_device_strings(tmp_path, monkeypatch):
     assert la.card_present("hw:CARD=Array,DEV=0") is True
     assert la.card_present("hw:CARD=Gone,DEV=0") is False
     assert la.card_present("plughw:Array") is None
+
+
+if __name__ == "__main__":
+    # test_suite.py runs this file as a script: without this it would pass having run nothing.
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
