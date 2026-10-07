@@ -34,6 +34,8 @@ ESPEAK_TO_LANG = {
     "pt-br": "pt_BR", "hi": "hi", "ja": "ja", "cmn": "zh",
 }
 SOURCE_LANG = "en"
+# Catalogs written right to left (the page sets dir="rtl" for them).
+RTL = frozenset({"ar"})
 
 
 def N_(msgid: str) -> str:
@@ -55,6 +57,10 @@ class T:
 
     def p(self, context: str, msgid: str) -> str:
         return self._t.pgettext(context, msgid)
+
+    @property
+    def dir(self) -> str:
+        return "rtl" if self.lang in RTL else "ltr"
 
 
 @functools.cache

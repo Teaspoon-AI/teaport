@@ -9,6 +9,8 @@
 # Placeholders like {network} must be kept as they are.
 msgid ""
 msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: en\n"
 

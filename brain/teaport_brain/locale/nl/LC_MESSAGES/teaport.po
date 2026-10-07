@@ -1,0 +1,255 @@
+# teaport — Dutch strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Translated by a model (2026-10-07). A native speaker's review is welcome.
+msgid ""
+msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: nl\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "Wil je de wifi instellen? Ik ben dan een paar minuten offline, terwijl jij het op je telefoon doet. Zeg ja of nee."
+
+msgid "Wi-Fi setup is already running."
+msgstr "Ik ben de wifi al aan het instellen."
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "Oké. Momentje, ik zoek naar netwerken."
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "Sorry, ik kon het instellen van de wifi op dit apparaat niet starten."
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "Oké, ik ben gestopt met het instellen van de wifi en heb alles teruggezet zoals het was."
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "Het instellen van de wifi is niet gestart. Probeer het zo nog een keer."
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "Ik wacht nog op je, op de instelpagina."
+
+msgid "That didn't work: {reason}."
+msgstr "Dat is niet gelukt: {reason}."
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "Begrepen. Ik maak nu verbinding met {network}. Zet je telefoon ook weer op dat netwerk."
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "Ik ben verbonden met {network} en weer online."
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "Het instellen van de wifi duurde te lang, dus ik heb alles teruggezet zoals het was."
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "Het instellen van de wifi is gestopt: {reason}."
+
+msgid "your network"
+msgstr "je netwerk"
+
+msgid "something went wrong"
+msgstr "er ging iets mis"
+
+msgid "Okay, never mind."
+msgstr "Oké, dan niet."
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "Zeg ja om de wifi in te stellen, of nee."
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "Ik ben de wifi aan het instellen. Zeg herhaal om de gegevens nog een keer te horen, of annuleer om te stoppen."
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "Verbind je telefoon met het wifi-netwerk {ssid}. Het wachtwoord is {password}. Er zou vanzelf een instelpagina moeten openen. Zo niet, ga dan naar {url}."
+
+msgid "the saved settings for it did not work"
+msgstr "de opgeslagen instellingen voor dat netwerk werkten niet"
+
+msgid "the password did not work"
+msgstr "het wachtwoord klopte niet"
+
+msgid "the network was not found"
+msgstr "het netwerk is niet gevonden"
+
+msgid "it would not connect"
+msgstr "de verbinding kwam niet tot stand"
+
+msgid "it joined but there is no internet through it"
+msgstr "de verbinding is gelukt, maar via dat netwerk is er geen internet"
+
+msgid "this box has no Wi-Fi device"
+msgstr "dit apparaat heeft geen wifi"
+
+msgid "the setup network would not start"
+msgstr "het instelnetwerk startte niet"
+
+msgid "the setup page could not start"
+msgstr "de instelpagina kon niet starten"
+
+msgid "open"
+msgstr "open"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "Teaport: wifi instellen"
+
+msgid "Connect to Wi-Fi"
+msgstr "Verbinden met wifi"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "Kies je netwerk en typ het wachtwoord. Teaport verlaat dan dit instelnetwerk, maakt verbinding met het jouwe en zegt hardop of dat gelukt is."
+
+msgid "No networks found — use Other."
+msgstr "Geen netwerken gevonden – kies ‘Ander’."
+
+msgid "Other (hidden) network"
+msgstr "Ander (verborgen) netwerk"
+
+msgid "Network name"
+msgstr "Netwerknaam"
+
+msgid "Password"
+msgstr "Wachtwoord"
+
+msgid "Show password"
+msgstr "Wachtwoord tonen"
+
+msgid "Connect"
+msgstr "Verbinden"
+
+msgid "Teaport is joining"
+msgstr "Teaport maakt verbinding"
+
+msgid "Joining {network}…"
+msgstr "Verbinden met {network}…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "Teaport verlaat nu dit instelnetwerk. Zet je telefoon weer op {network}. Teaport zegt hardop of de verbinding gelukt is; zo niet, dan komt het instelnetwerk terug en kun je het opnieuw proberen."
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "Kan geen verbinding maken met {network}: {reason}. Probeer het opnieuw."
+
+msgid "Pick a network, or type its name under Other."
+msgstr "Kies een netwerk, of typ de naam onder ‘Ander’."
+
+msgid "That network name is too long."
+msgstr "Die netwerknaam is te lang."
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "Wifi-wachtwoorden hebben 8 tot 63 tekens."
+
+msgctxt "digit"
+msgid "0"
+msgstr "nul"
+
+msgctxt "digit"
+msgid "1"
+msgstr "één"
+
+msgctxt "digit"
+msgid "2"
+msgstr "twee"
+
+msgctxt "digit"
+msgid "3"
+msgstr "drie"
+
+msgctxt "digit"
+msgid "4"
+msgstr "vier"
+
+msgctxt "digit"
+msgid "5"
+msgstr "vijf"
+
+msgctxt "digit"
+msgid "6"
+msgstr "zes"
+
+msgctxt "digit"
+msgid "7"
+msgstr "zeven"
+
+msgctxt "digit"
+msgid "8"
+msgstr "acht"
+
+msgctxt "digit"
+msgid "9"
+msgstr "negen"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "streepje"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "laag streepje"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "punt"
+
+msgctxt "spell"
+msgid "space"
+msgstr "spatie"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "apenstaartje"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "uitroepteken"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "hekje"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "en-teken"
+
+msgctxt "spell"
+msgid "star"
+msgstr "sterretje"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "hoofdletter {letter}"
+
+msgctxt "spell"
+msgid ", "
+msgstr ", "
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "\\b(?:configureer\\w*|configureren|verbind|verbinden|verbindt|wijzig(?:en)?|verander(?:en)?|wissel(?:en)?|koppel(?:en)?|maak verbinding|verbinding (?:maken|leggen)|instellen|in te stellen|inrichten|opzetten|op te zetten)\\b(?:\\W+\\w+){0,4}?\\W+(?:wi[\\s-]?fi|w[\\s-]?lan)|\\b(?:stel|stelt|zet|zetten)\\b(?:\\W+\\w+){0,3}?\\W+(?:wi[\\s-]?fi|w[\\s-]?lan)\\w*\\W+(?:\\w+\\W+){0,3}?(?:in|om)\\b|\\b(?:wi[\\s-]?fi|w[\\s-]?lan)\\w*(?:\\W+\\w+){0,3}?\\W*(?:instellen|in te stellen|configureren|inrichten|opzetten|op te zetten|set ?up|installatie|installeren|verbinden|wijzigen|veranderen|koppelen)\\b"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "\\b(?:ja|jawel|jazeker|jep|jup|zeker|oké|oke|okee|okay|ok|prima|graag|akkoord|natuurlijk|uiteraard|doe maar|doe het|ga je gang|ga (?:je )?door|ga maar|begin maar|start|starten|is goed|klinkt goed|goed zo|waarom (?:ook )?niet|top)\\b"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "\\b(?:nee|neen|nope|welnee|laat maar|laat (?:het|dat) (?:maar|zitten)|vergeet (?:het|dat)|annuleer\\w*|annuleren|stop|stoppen|geen (?:zin|behoefte)|hoeft niet)\\b|(?<!waarom )(?<!ook )\\bniet\\b"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "\\b(?:annuleer\\w*|annuleren|stop|stoppen|stopt|hou op|houd op|ophouden|afbreken|breek\\w*(?:\\W+\\w+){0,2}?\\W+af|laat maar|vergeet (?:het|dat)|kap ermee|kappen|klaar ermee|beëindig\\w*|beeindig\\w*|afsluiten|sluit af)\\b"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "\\b(?:herhaal\\w*|herhalen|herhaling|nog (?:een ?keer|eens|1 keer)|nogmaals|opnieuw|wat was|hoe was|wat zei je|wachtwoord\\w*|paswoord|netwerknaam|naam van (?:het|de) (?:netwerk|wifi)|wi[\\s-]?fi[\\s-]?naam|zeg (?:dat|het)|pardon|niet verstaan|langzamer)\\b"

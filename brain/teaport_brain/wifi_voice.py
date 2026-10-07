@@ -63,9 +63,14 @@ PATTERNS = {
 
 
 def heard(meaning: str, text: str, t: i18n.T) -> bool:
-    """Did the user say `meaning` ("start", "yes", ...) in English or in t's language?"""
+    """Did the user say `meaning` ("start", "yes", ...) in English or in t's language?
+    Except "no": in another language English's "no" is often an ordinary word (Portuguese
+    "no celular", Italian "come no" = of course), and a false "no" throws the setup away,
+    so there only the language's own "no" counts (every catalog has its word for it)."""
     english = PATTERNS[meaning]
-    for pattern in {english, t.p("pattern", english)}:
+    own = t.p("pattern", english)
+    patterns = {own} if meaning == "no" and t.lang != i18n.SOURCE_LANG else {english, own}
+    for pattern in patterns:
         try:
             if re.search(pattern, text, re.I):
                 return True
@@ -115,9 +120,9 @@ def instructions(status: dict, t: i18n.T) -> str:
         parts = spell(name, t).split(t.p("spell", ", "))
         url = " ".join(["teaport", t.p("spell", "dash"), *parts, t.p("spell", "dot"), "local"])
     else:
-        url = " ".join([t.p("digit", "1") + t.p("digit", "0"), t.p("spell", "dot"),
-                        t.p("digit", "4") + t.p("digit", "2"), t.p("spell", "dot"),
-                        t.p("digit", "0"), t.p("spell", "dot"), t.p("digit", "1")])
+        # The setup network's address, digit by digit: "one zero dot four two dot ...".
+        url = f" {t.p('spell', 'dot')} ".join(
+            " ".join(t.p("digit", d) for d in part) for part in "10.42.0.1".split("."))
     return t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
                "A setup page should open by itself. If it doesn't, go to {url}.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)

@@ -115,7 +115,7 @@ class Status:
 
 # ------------------------------------------------------------------ the page
 
-PAGE = """<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
+PAGE = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>{title}</title><style>{css}</style></head><body><main>
 <div class="logo">{logo}</div>
@@ -133,7 +133,7 @@ PAGE = """<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
 <button type="submit">{connect}</button>
 </form></main></body></html>"""
 
-JOINING = """<!doctype html><html lang="{lang}"><head><meta charset="utf-8">
+JOINING = """<!doctype html><html lang="{lang}" dir="{dir}"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>{title}</title>
 <style>{css}</style></head><body><main>
 <div class="logo">{logo}</div>
@@ -156,7 +156,7 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
             f'{" checked" if i == 0 else ""}><span>{html.escape(n["ssid"])}</span>'
             f"<small>{lock} {n['signal']}%</small></label>")
     return PAGE.format(
-        lang=_lang_attr(t), css=PAGE_CSS, logo=logo_html(),
+        lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
         title=html.escape(t._("Teaport Wi-Fi setup")),
         heading=html.escape(t._("Connect to Wi-Fi")),
         intro=html.escape(t._("Pick your network and type its password. Teaport will leave "
@@ -175,7 +175,7 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
 def render_joining(ssid: str, t: i18n.T) -> str:
     strong = f"<strong>{html.escape(ssid)}</strong>"
     return JOINING.format(
-        lang=_lang_attr(t), css=PAGE_CSS, logo=logo_html(),
+        lang=_lang_attr(t), dir=t.dir, css=PAGE_CSS, logo=logo_html(),
         title=html.escape(t._("Teaport is joining")),
         heading=html.escape(t._("Joining {network}…")).format(network=html.escape(ssid)),
         body=html.escape(t._("Teaport is leaving this setup network now. Switch your phone "

@@ -1,0 +1,255 @@
+# teaport — Arabic strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Translated by a model (2026-10-07). A native speaker's review is welcome.
+msgid ""
+msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ar\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "هل نبدأ إعداد الواي فاي؟ سينقطع اتصالي بالإنترنت بضع دقائق أثناء الإعداد من هاتفك. يُرجى الإجابة بنعم أو لا."
+
+msgid "Wi-Fi setup is already running."
+msgstr "إعداد الواي فاي جارٍ بالفعل."
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "حسنًا. لحظة واحدة لأبحث عن الشبكات."
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "عذرًا، تعذّر بدء إعداد الواي فاي على هذا الجهاز."
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "حسنًا، أوقفتُ إعداد الواي فاي وأعدتُ كل شيء كما كان."
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "لم يبدأ إعداد الواي فاي. يُرجى المحاولة مرة أخرى بعد قليل."
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "ما زلتُ في انتظارك على صفحة الإعداد."
+
+msgid "That didn't work: {reason}."
+msgstr "لم ينجح ذلك: {reason}."
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "فهمت. أنضمّ الآن إلى {network}. يُرجى إعادة توصيل هاتفك بهذه الشبكة."
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "انضممتُ إلى {network}، وعاد اتصالي بالإنترنت."
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "انتهت مهلة إعداد الواي فاي، لذا أعدتُ كل شيء كما كان."
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "توقف إعداد الواي فاي: {reason}."
+
+msgid "your network"
+msgstr "شبكتك"
+
+msgid "something went wrong"
+msgstr "حدث خطأ ما"
+
+msgid "Okay, never mind."
+msgstr "حسنًا، لا بأس."
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "يُرجى الإجابة بنعم لبدء إعداد الواي فاي، أو بلا."
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "أنا الآن في وضع إعداد الواي فاي. يُرجى قول «كرّر» لسماع التفاصيل مرة أخرى، أو «إلغاء» للإيقاف."
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. ستُفتح صفحة الإعداد تلقائيًا على الأرجح. وإن لم تُفتح، يُرجى الانتقال إلى {url}."
+
+msgid "the saved settings for it did not work"
+msgstr "لم تنجح الإعدادات المحفوظة لهذه الشبكة"
+
+msgid "the password did not work"
+msgstr "لم تنجح كلمة المرور"
+
+msgid "the network was not found"
+msgstr "لم يتم العثور على الشبكة"
+
+msgid "it would not connect"
+msgstr "تعذّر الاتصال"
+
+msgid "it joined but there is no internet through it"
+msgstr "تم الانضمام إليها، لكن لا يوجد اتصال بالإنترنت عبرها"
+
+msgid "this box has no Wi-Fi device"
+msgstr "لا يحتوي هذا الجهاز على وحدة واي فاي"
+
+msgid "the setup network would not start"
+msgstr "تعذّر تشغيل شبكة الإعداد"
+
+msgid "the setup page could not start"
+msgstr "تعذّر تشغيل صفحة الإعداد"
+
+msgid "open"
+msgstr "مفتوحة"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "إعداد Wi-Fi في Teaport"
+
+msgid "Connect to Wi-Fi"
+msgstr "الاتصال بشبكة Wi-Fi"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "اختر شبكتك وأدخل كلمة مرورها. سيغادر Teaport شبكة الإعداد هذه وينضم إلى شبكتك، ثم يُعلن بصوت مسموع ما إذا نجح ذلك."
+
+msgid "No networks found — use Other."
+msgstr "لم يتم العثور على شبكات — استخدم «شبكة أخرى»."
+
+msgid "Other (hidden) network"
+msgstr "شبكة أخرى (مخفية)"
+
+msgid "Network name"
+msgstr "اسم الشبكة"
+
+msgid "Password"
+msgstr "كلمة المرور"
+
+msgid "Show password"
+msgstr "إظهار كلمة المرور"
+
+msgid "Connect"
+msgstr "اتصال"
+
+msgid "Teaport is joining"
+msgstr "Teaport ينضم إلى الشبكة"
+
+msgid "Joining {network}…"
+msgstr "جارٍ الانضمام إلى {network}…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "يغادر Teaport شبكة الإعداد هذه الآن. أعِد توصيل هاتفك بشبكة {network}. سيُعلن Teaport بصوت مسموع ما إذا نجح الاتصال؛ وإن لم ينجح، فستعود شبكة الإعداد ويمكنك المحاولة مرة أخرى."
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "تعذّر الانضمام إلى {network}: {reason}. حاول مرة أخرى."
+
+msgid "Pick a network, or type its name under Other."
+msgstr "اختر شبكة، أو اكتب اسمها في «شبكة أخرى»."
+
+msgid "That network name is too long."
+msgstr "اسم الشبكة هذا طويل جدًا."
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "يجب أن تتكون كلمة مرور Wi-Fi من 8 إلى 63 حرفًا."
+
+msgctxt "digit"
+msgid "0"
+msgstr "صفر"
+
+msgctxt "digit"
+msgid "1"
+msgstr "واحد"
+
+msgctxt "digit"
+msgid "2"
+msgstr "اثنان"
+
+msgctxt "digit"
+msgid "3"
+msgstr "ثلاثة"
+
+msgctxt "digit"
+msgid "4"
+msgstr "أربعة"
+
+msgctxt "digit"
+msgid "5"
+msgstr "خمسة"
+
+msgctxt "digit"
+msgid "6"
+msgstr "ستة"
+
+msgctxt "digit"
+msgid "7"
+msgstr "سبعة"
+
+msgctxt "digit"
+msgid "8"
+msgstr "ثمانية"
+
+msgctxt "digit"
+msgid "9"
+msgstr "تسعة"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "شَرطة"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "شَرطة سفلية"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "نقطة"
+
+msgctxt "spell"
+msgid "space"
+msgstr "مسافة"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "علامة آت"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "علامة تعجب"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "علامة المربع"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "علامة العطف"
+
+msgctxt "spell"
+msgid "star"
+msgstr "نجمة"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "{letter} كبير"
+
+msgctxt "spell"
+msgid ", "
+msgstr "، "
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "(?:[اأإ]عداد|ضبط|تهيئ[ةه]|توصيل|وصّ?ل|[اأإ]تصل|[اأإ]تصال|[اأإ]نضم|تغيير|تبديل|ربط|جهّ?ز|تجهيز)\\S*(?:\\s+\\S+){0,3}?\\s+\\S*?(?:wi[- ]?fi|وا[يى] ?فا[يى]|لا ?سلكي)|(?:wi[- ]?fi|وا[يى] ?فا[يى])\\S*(?:\\s+\\S+)?\\s+\\S*?(?:[اأإ]عداد|ضبط|تهيئ[ةه])"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "\\b[وف]?(?:نعم|[اأ]جل|بلى|طبع[ًا]+|حسن[ًا]+|موافق[ةه]?|تمام|[اأ]كيد|بالت[اأ]كيد|[اإ]بدأ|[لف]?نبدأ|هيا|تفضل|[اأ]وك[يى]|[اأ]يو[هة]|من فضلك|لو سمحت|لا مشكل[ةه]|لا ب[اأ]س|لم لا|لما لا)\\b"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "\\b[وف]?(?:(?<!لم )(?<!لما )لا(?!\\s+(?:مشكل[ةه]|ب[اأ]س))|كلا|لأ|لاء|[اأ]بد[ًا]+|ليس الآن|ليس الان|[اإأ]لغ(?:ا[ءئ]|[يى]|ه)?|توقف|كفى|كفاي[ةه]|انس[ىي]?)\\b"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "\\b[وف]?(?:[اإأ]لغ(?:ا[ءئ]|[يى]|ه)?|توقف(?:ي|وا)?|[اأ]وقف(?:ه|ها|ي)?|[اإ]يقاف|كفى|كفاي[ةه]|اخرج|خروج|انس[ىي]?|[اإ]نهاء)\\b"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "\\b[وف]?(?:[اأإ]عد(?:ها|ه|ي)?|[اأ]عيدي?|[اإ]عاد[ةه]|كرّ?ر\\S*|تكرار|مر[ةه] [اأ]خر[ىي]|مر[ةه] ثاني[ةه]|من جديد|ماذا قلت|كلم[ةه] المرور|كلم[ةه] السر|الباسورد|اسم الشبك[ةه]|لم [اأ]سمع)\\b"

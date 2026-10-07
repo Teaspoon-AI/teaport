@@ -8,92 +8,94 @@
 # no / cancel / repeat. English phrases are always understood as well.
 # Placeholders like {network} must be kept as they are.
 #
-# Machine-drafted (2026-10-07). NEEDS REVIEW by a native speaker before relying on it.
+# Translated by a model (2026-10-07). NEEDS REVIEW by a native speaker before relying on it.
 msgid ""
 msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Language: ja\n"
 
 msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
-msgstr "Wi-Fiを設定しますか？スマートフォンで設定している間、数分ほどオフラインになります。はいか、いいえで答えてください。"
+msgstr "ワイファイを設定しますか？スマートフォンで設定しているあいだ、数分ほどオフラインになります。「はい」か「いいえ」で答えてください。"
 
 msgid "Wi-Fi setup is already running."
-msgstr "Wi-Fiの設定はすでに始まっています。"
+msgstr "ワイファイの設定は、もう始まっています。"
 
 msgid "Okay. Give me a moment to look for networks."
-msgstr "わかりました。ネットワークを探すので少しお待ちください。"
+msgstr "わかりました。ネットワークを探しますので、少しお待ちください。"
 
 msgid "Sorry, I couldn't start Wi-Fi setup on this box."
-msgstr "すみません、この端末でWi-Fiの設定を始められませんでした。"
+msgstr "すみません、この端末ではワイファイの設定を始められませんでした。"
 
 msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
-msgstr "わかりました。Wi-Fiの設定を中止して、元の状態に戻しました。"
+msgstr "わかりました。ワイファイの設定をやめて、元の状態に戻しました。"
 
 msgid "Wi-Fi setup didn't start. Please try again in a moment."
-msgstr "Wi-Fiの設定が始まりませんでした。少ししてからもう一度お試しください。"
+msgstr "ワイファイの設定を始められませんでした。少ししてから、もう一度お試しください。"
 
 msgid "I'm still waiting for you on the setup page."
-msgstr "設定ページでまだお待ちしています。"
+msgstr "設定ページでの操作を、引き続きお待ちしています。"
 
 msgid "That didn't work: {reason}."
 msgstr "うまくいきませんでした。{reason}。"
 
 msgid "Got it. I'm joining {network}. Switch your phone back to it."
-msgstr "わかりました。{network}に接続します。スマートフォンもそのネットワークに戻してください。"
+msgstr "わかりました。{network}に接続します。スマートフォンも、そのネットワークにつなぎ直してください。"
 
 msgid "I'm connected to {network}, and I'm online again."
-msgstr "{network}に接続しました。またオンラインになりました。"
+msgstr "{network}に接続して、オンラインに戻りました。"
 
 msgid "Wi-Fi setup timed out, so I've put things back as they were."
-msgstr "Wi-Fiの設定が時間切れになったので、元の状態に戻しました。"
+msgstr "ワイファイの設定が時間切れになったので、元の状態に戻しました。"
 
 msgid "Wi-Fi setup stopped: {reason}."
-msgstr "Wi-Fiの設定が止まりました。{reason}。"
+msgstr "ワイファイの設定が中断されました。{reason}。"
 
 msgid "your network"
-msgstr "お使いのネットワーク"
+msgstr "選んだネットワーク"
 
 msgid "something went wrong"
 msgstr "問題が発生しました"
 
 msgid "Okay, never mind."
-msgstr "わかりました、やめておきます。"
+msgstr "わかりました。設定はやめておきますね。"
 
 msgid "Say yes to start Wi-Fi setup, or no."
-msgstr "Wi-Fiの設定を始めるなら「はい」、やめるなら「いいえ」と言ってください。"
+msgstr "ワイファイの設定を始めるなら「はい」、やめるなら「いいえ」と言ってください。"
 
 msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
-msgstr "Wi-Fiの設定中です。もう一度聞くには「繰り返して」、やめるには「キャンセル」と言ってください。"
+msgstr "今、ワイファイの設定中です。案内をもう一度聞くには「もう一度」、やめるには「キャンセル」と言ってください。"
 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
-msgstr "スマートフォンでWi-Fiネットワーク{ssid}に接続してください。パスワードは{password}です。設定ページが自動で開くはずです。開かない場合は{url}にアクセスしてください。"
+msgstr "スマートフォンで、ワイファイのネットワーク、{ssid}に接続してください。パスワードは、{password}です。設定ページが自動で開くはずです。開かない場合は、ブラウザで{url}を開いてください。"
 
 msgid "the saved settings for it did not work"
-msgstr "保存されている設定ではつながりませんでした"
+msgstr "保存されていた設定が使えませんでした"
 
 msgid "the password did not work"
-msgstr "パスワードが違いました"
+msgstr "パスワードが違うようです"
 
 msgid "the network was not found"
 msgstr "ネットワークが見つかりませんでした"
 
 msgid "it would not connect"
-msgstr "接続できませんでした"
+msgstr "接続中にエラーが発生しました"
 
 msgid "it joined but there is no internet through it"
-msgstr "接続はできましたが、そのネットワークではインターネットが使えません"
+msgstr "接続はできましたが、インターネットにつながりませんでした"
 
 msgid "this box has no Wi-Fi device"
-msgstr "この端末にはWi-Fiがありません"
+msgstr "この端末にはワイファイ機能がありません"
 
 msgid "the setup network would not start"
-msgstr "設定用のネットワークを開始できませんでした"
+msgstr "設定用のネットワークを起動できませんでした"
 
 msgid "the setup page could not start"
-msgstr "設定ページを開始できませんでした"
+msgstr "設定ページを起動できませんでした"
 
 msgid "open"
-msgstr "オープン"
+msgstr "パスワードなし"
 
 msgid "Teaport Wi-Fi setup"
 msgstr "Teaport Wi-Fi設定"
@@ -102,13 +104,13 @@ msgid "Connect to Wi-Fi"
 msgstr "Wi-Fiに接続"
 
 msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
-msgstr "ネットワークを選んでパスワードを入力してください。Teaportはこの設定用ネットワークを離れてお使いのネットワークに接続し、うまくいったかを声でお知らせします。"
+msgstr "ネットワークを選んで、パスワードを入力してください。Teaportはこの設定用ネットワークから切断してお使いのネットワークに接続し、うまくいったかどうかを音声でお知らせします。"
 
 msgid "No networks found — use Other."
-msgstr "ネットワークが見つかりません。「その他」を使ってください。"
+msgstr "ネットワークが見つかりません。「その他」から入力してください。"
 
 msgid "Other (hidden) network"
-msgstr "その他（非公開）のネットワーク"
+msgstr "その他のネットワーク（非公開）"
 
 msgid "Network name"
 msgstr "ネットワーク名"
@@ -129,7 +131,7 @@ msgid "Joining {network}…"
 msgstr "{network}に接続しています…"
 
 msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
-msgstr "Teaportはこの設定用ネットワークを離れます。スマートフォンを{network}に戻してください。接続できたかどうかはTeaportが声でお知らせします。接続できなかった場合は設定用ネットワークが戻るので、もう一度お試しください。"
+msgstr "Teaportはこれから設定用ネットワークを離れます。スマートフォンを{network}につなぎ直してください。接続できたかどうかはTeaportが音声でお知らせします。接続できなかった場合は設定用ネットワークがまた現れるので、もう一度お試しください。"
 
 msgid "Could not join {network}: {reason}. Try again."
 msgstr "{network}に接続できませんでした。{reason}。もう一度お試しください。"
@@ -153,7 +155,7 @@ msgstr "いち"
 
 msgctxt "digit"
 msgid "2"
-msgstr "に"
+msgstr "にー"
 
 msgctxt "digit"
 msgid "3"
@@ -165,7 +167,7 @@ msgstr "よん"
 
 msgctxt "digit"
 msgid "5"
-msgstr "ご"
+msgstr "ごー"
 
 msgctxt "digit"
 msgid "6"
@@ -189,7 +191,7 @@ msgstr "ハイフン"
 
 msgctxt "spell"
 msgid "underscore"
-msgstr "アンダースコア"
+msgstr "アンダーバー"
 
 msgctxt "spell"
 msgid "dot"
@@ -230,24 +232,24 @@ msgstr "、"
 # the user means: start
 msgctxt "pattern"
 msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
-msgstr "(?:wi-?fi|ワイファイ|無線LAN|無線ラン).{0,10}(?:設定|セットアップ|接続|つな|変更|切り替)|(?:設定|セットアップ|接続|つな).{0,10}(?:wi-?fi|ワイファイ)"
+msgstr "(?:wi[-‐ ]?fi|ｗｉ[－‐-]?ｆｉ|ワイ ?ファイ|無線 ?(?:lan|ラン|ｌａｎ)).{0,8}?(?:設定|せってい|セッティング|セットアップ|接続し|接続す|つない|つなぎ|つなげ|繋い|繋ぎ|繋げ|変更|変え|替え|切り替|切りかえ|切替|きりかえ)"
 
 # the user means: yes
 msgctxt "pattern"
 msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
-msgstr "(?:はい|うん|ええ|お願い|おねがい|いいよ|オッケー|ok)"
+msgstr "(?<![いう])(?:はい(?![らりるれろっ])|うん|ええ(?!と|っと))|お願い|おねがい|(?<!もう)いいよ|いいですよ|オッケー|オーケー|了解|りょうかい|わかりました|分かりました|わかった|分かった|どうぞ|やって(?!ない|も|は)|始めて|はじめて|始めましょう|はじめましょう|始めよう|はじめよう|スタート|そうして|設定して|設定をお願い"
 
 # the user means: no
 msgctxt "pattern"
 msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
-msgstr "(?:いいえ|いや|やめ|だめ|キャンセル)"
+msgstr "いいえ|いえいえ|(?<!う)ううん|(?<![はか])いや(?=だ|です|$|[\\s、。,.!！?？]|いや)|嫌です|嫌だ|やめて|やめる|やめます|やめとく|やめておく|やめよう|やめたい|止めて|止めます|やらない(?!と)|やらなくて|しないで|しなくて|しません(?!か)|やりません(?!か)|だめ|ダメ|駄目|けっこうです|結構です|いらない|要らない|いりません|必要ない|キャンセル|中止|もういい"
 
 # the user means: cancel
 msgctxt "pattern"
 msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
-msgstr "(?:キャンセル|やめて|中止|ストップ|止めて)"
+msgstr "キャンセル|やめて|やめる|やめます|やめたい|やめよう|やめとく|やめておく|止めて|止めます|(?<!ま)とめて|中止|中断|ストップ|終了|終わりにして|おわりにして|もういい|取り消"
 
 # the user means: repeat
 msgctxt "pattern"
 msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
-msgstr "(?:もう一度|もう一回|繰り返|パスワード|ネットワーク名)"
+msgstr "もう一度|もういちど|もう[1１]度|もう一回|もういっかい|もう[1１]回|繰り返|くりかえ|リピート|なんだっけ|何だっけ|なんて言|何て言|聞こえなかった|聞き取れ|パスワード|ネットワーク名|ネットワークの名前"

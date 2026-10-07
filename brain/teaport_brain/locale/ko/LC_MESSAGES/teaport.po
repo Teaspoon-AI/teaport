@@ -1,0 +1,258 @@
+# teaport — Korean strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Spoken sentences are written for a Korean voice; the engine has none yet (the speech
+# recognizer and the phone page already work in Korean).
+#
+# Translated by a model (2026-10-07). NEEDS REVIEW by a native speaker before relying on it.
+msgid ""
+msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ko\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "와이파이를 설정하시겠어요? 휴대폰으로 설정하시는 동안 몇 분 정도 오프라인이 돼요. 네 또는 아니요로 대답해 주세요."
+
+msgid "Wi-Fi setup is already running."
+msgstr "와이파이 설정이 이미 진행 중이에요."
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "알겠어요. 네트워크를 찾아볼게요. 잠시만 기다려 주세요."
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "죄송해요, 이 기기에서 와이파이 설정을 시작하지 못했어요."
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "알겠어요. 와이파이 설정을 멈추고 원래대로 되돌려 놓았어요."
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "와이파이 설정이 시작되지 않았어요. 잠시 후에 다시 시도해 주세요."
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "설정 페이지에서 계속 기다리고 있어요."
+
+msgid "That didn't work: {reason}."
+msgstr "잘 안 됐어요. {reason}."
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "알겠어요. {network}에 연결할게요. 휴대폰도 다시 그 네트워크에 연결해 주세요."
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "{network}에 연결됐어요. 이제 다시 인터넷을 쓸 수 있어요."
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "와이파이 설정 시간이 지나서 원래대로 되돌려 놓았어요."
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "와이파이 설정이 중단됐어요. {reason}."
+
+msgid "your network"
+msgstr "선택한 네트워크"
+
+msgid "something went wrong"
+msgstr "문제가 생겼어요"
+
+msgid "Okay, never mind."
+msgstr "알겠어요. 그럼 설정하지 않을게요."
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "와이파이 설정을 시작하려면 네, 원하지 않으시면 아니요라고 말해 주세요."
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "지금 와이파이 설정 중이에요. 안내를 다시 들으시려면 '다시 말해 줘', 설정을 멈추려면 '취소'라고 말해 주세요."
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "휴대폰에서 와이파이 네트워크 {ssid}에 연결해 주세요. 비밀번호는 다음과 같아요. {password}. 설정 페이지가 저절로 열릴 거예요. 열리지 않으면 브라우저에서 {url}에 접속해 주세요."
+
+msgid "the saved settings for it did not work"
+msgstr "저장된 설정을 사용할 수 없었어요"
+
+msgid "the password did not work"
+msgstr "비밀번호가 맞지 않는 것 같아요"
+
+msgid "the network was not found"
+msgstr "네트워크를 찾지 못했어요"
+
+msgid "it would not connect"
+msgstr "연결하는 중에 오류가 생겼어요"
+
+msgid "it joined but there is no internet through it"
+msgstr "연결은 됐지만 인터넷이 되지 않아요"
+
+msgid "this box has no Wi-Fi device"
+msgstr "이 기기에는 와이파이 장치가 없어요"
+
+msgid "the setup network would not start"
+msgstr "설정용 네트워크를 시작하지 못했어요"
+
+msgid "the setup page could not start"
+msgstr "설정 페이지를 시작하지 못했어요"
+
+msgid "open"
+msgstr "비밀번호 없음"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "Teaport Wi-Fi 설정"
+
+msgid "Connect to Wi-Fi"
+msgstr "Wi-Fi에 연결"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "네트워크를 선택하고 비밀번호를 입력해 주세요. Teaport가 이 설정용 네트워크를 떠나 선택한 네트워크에 연결한 뒤, 연결됐는지 음성으로 알려 드려요."
+
+msgid "No networks found — use Other."
+msgstr "검색된 네트워크가 없어요. '기타'에서 직접 입력해 주세요."
+
+msgid "Other (hidden) network"
+msgstr "기타 네트워크(숨김)"
+
+msgid "Network name"
+msgstr "네트워크 이름"
+
+msgid "Password"
+msgstr "비밀번호"
+
+msgid "Show password"
+msgstr "비밀번호 표시"
+
+msgid "Connect"
+msgstr "연결"
+
+msgid "Teaport is joining"
+msgstr "Teaport 연결 중"
+
+msgid "Joining {network}…"
+msgstr "{network}에 연결하는 중…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "Teaport가 지금 이 설정용 네트워크를 떠나요. 휴대폰을 다시 {network}에 연결해 주세요. 연결됐는지는 Teaport가 음성으로 알려 드려요. 연결하지 못하면 설정용 네트워크가 다시 나타나니 다시 시도해 주세요."
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "{network}에 연결하지 못했어요. {reason}. 다시 시도해 주세요."
+
+msgid "Pick a network, or type its name under Other."
+msgstr "네트워크를 선택하거나 '기타'에 이름을 입력해 주세요."
+
+msgid "That network name is too long."
+msgstr "네트워크 이름이 너무 길어요."
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "Wi-Fi 비밀번호는 8자에서 63자 사이여야 해요."
+
+msgctxt "digit"
+msgid "0"
+msgstr "공"
+
+msgctxt "digit"
+msgid "1"
+msgstr "일"
+
+msgctxt "digit"
+msgid "2"
+msgstr "이"
+
+msgctxt "digit"
+msgid "3"
+msgstr "삼"
+
+msgctxt "digit"
+msgid "4"
+msgstr "사"
+
+msgctxt "digit"
+msgid "5"
+msgstr "오"
+
+msgctxt "digit"
+msgid "6"
+msgstr "육"
+
+msgctxt "digit"
+msgid "7"
+msgstr "칠"
+
+msgctxt "digit"
+msgid "8"
+msgstr "팔"
+
+msgctxt "digit"
+msgid "9"
+msgstr "구"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "하이픈"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "언더바"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "점"
+
+msgctxt "spell"
+msgid "space"
+msgstr "띄어쓰기"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "골뱅이"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "느낌표"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "샵"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "앤드"
+
+msgctxt "spell"
+msgid "star"
+msgstr "별표"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "대문자 {letter}"
+
+msgctxt "spell"
+msgid ", "
+msgstr ", "
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "(?:wi[-‐ ]?fi|와이 ?파이|무선 ?랜|무선 ?lan).{0,10}?(?:설정|세팅|셋팅|셋업|연결|접속|바꾸|바꿔|바꿀|변경|잡아)"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "(?<![가-힣])(?:네|예|응|넵|넹)+(?![가-힣])|그래(?!서|도)|그러(?:세요|자|죠|시죠)|좋아|좋습니다|좋죠|오케이|알겠|알았어|부탁|(?<!안 )(?<![가-힣])해 ?(?:줘|주세요)|설정해|진행해|시작해|시작하세요|시작하자|시작합시다|물론|당연하"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "아니|아뇨|싫어|싫습니다|싫은데|(?<![가-힣])됐(?:어|습니다)|(?<![가-힣])안 ?(?:해|할)|하지 ?마|하지 ?말|필요 ?없|그만|취소|나중에"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "취소|그만|중지|중단|멈춰|멈추세요|스톱|스탑|종료|끝내|하지 ?마|(?<![가-힣])안 ?할래|(?<![가-힣])됐어|나갈래"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "다시|한 ?번 ?더|한 ?번만 ?더|반복|되풀이|뭐라고|뭐였|비밀 ?번호|비번|패스워드|네트워크 ?이름|와이파이 ?이름|못 ?들었"
