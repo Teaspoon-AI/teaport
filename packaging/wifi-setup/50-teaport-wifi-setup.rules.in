@@ -1,14 +1,20 @@
 // teaport Wi-Fi setup (installed by install.sh): lets the teaport run user change the
-// box's Wi-Fi — scan, bring the setup network up and down, join and save networks — without
-// root. teaport-wifi-setup.service runs as that user (brain/teaport_brain/wifi_setup.py).
+// box's Wi-Fi — scan, bring the (WPA2) setup network up and down, join and save networks —
+// without root. teaport-wifi-setup.service runs as that user (brain/teaport_brain/
+// wifi_setup.py), and so does the brain, whose config page switches networks too
+// (config_ui.py /api/wifi/*).
+//
+// The trade-off: polkit sees a user, not a unit, so this is the brain user's for good,
+// and NetworkManager's actions are coarse. settings.modify.system covers every system
+// profile, not only Wi-Fi (Ethernet, VPN, DNS), and reading their saved secrets — which a
+// failed password change needs, to put the old one back. Narrowing it would take a
+// separate user for the setup unit, and the config page would lose its switch.
 polkit.addRule(function(action, subject) {
     if (subject.user == "@USER@" && (
             action.id == "org.freedesktop.NetworkManager.network-control" ||
             action.id == "org.freedesktop.NetworkManager.wifi.scan" ||
             action.id == "org.freedesktop.NetworkManager.settings.modify.system" ||
-            action.id == "org.freedesktop.NetworkManager.wifi.share.protected" ||
-            action.id == "org.freedesktop.NetworkManager.wifi.share.open" ||
-            action.id == "org.freedesktop.NetworkManager.enable-disable-wifi")) {
+            action.id == "org.freedesktop.NetworkManager.wifi.share.protected")) {
         return polkit.Result.YES;
     }
 });
