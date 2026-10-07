@@ -617,3 +617,7 @@ def test_a_unit_that_will_not_start_is_said_not_hidden():
 
     state, last = asyncio.run(run())
     assert state == "idle" and "couldn't start" in last
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
