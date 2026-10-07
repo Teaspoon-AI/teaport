@@ -241,6 +241,20 @@ RESTART_SESSION = FunctionSchema(
     required=[],
 )
 
+END_CONVERSATION = FunctionSchema(
+    name="end_conversation",
+    description=(
+        "End this conversation and go back to sleep (back to waiting for the wake word) "
+        "when the user is done with you: they say goodnight, that's all, thanks that's "
+        "it, go to sleep, stop listening, or the like, in any language. Not when they "
+        "merely mention sleep or ending something. Call it straight away, with no line "
+        "before it; when it returns, say one short goodbye — the box sleeps once that "
+        "has played. Woken again soon, you continue where you left off."
+    ),
+    properties={},
+    required=[],
+)
+
 WIFI_SETUP = FunctionSchema(
     name="wifi_setup",
     description=(
@@ -933,6 +947,12 @@ TOOLS: tuple[Tool, ...] = (
          env_flag("TEAPORT_TOOL_RESTART_SESSION", False), frozenset({"client:restart"}),
          hint="restart_session (start a fresh conversation, only when the user explicitly "
               "asks to restart or start over; once it returns, say one short goodbye)"),
+    # client:sleep -- the local audio bridge announces it only with wake words set: with
+    # none there is no sleep to go back to.
+    Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),
+         env_flag("TEAPORT_TOOL_END_CONVERSATION", True), frozenset({"client:sleep"}),
+         hint="end_conversation (go back to sleep when the user says they are done, "
+              "goodnight or go to sleep; once it returns, say one short goodbye)"),
 )
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 # The same guard for the switch: agent-first with ask_openclaw switched off would route

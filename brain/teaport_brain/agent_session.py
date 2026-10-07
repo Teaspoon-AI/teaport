@@ -673,8 +673,10 @@ class AgentSession:
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
         # client disconnect). False on a normal greeting.
         self.should_end = False
+        # Why it should end: "busy" (the engine's slot is held) or "unavailable".
+        self.end_reason: str | None = None
 
-    async def greet(self, resumed: bool = False):
+    async def greet(self, resumed: bool = False, *, speak: bool = True, hello: bool = True):
         """Greet the user with an LLM turn — but only through a working STT.
 
         `resumed` is for a session that picks up a call already in progress (the SIP
@@ -694,7 +696,13 @@ class AgentSession:
         On the busy path this sets self.should_end and queues the busy line but does NOT
         block: the front-end decides how to end (SIP waits for the line to play, then
         hangs up; OpenClaw leaves it to its existing client-disconnect path). The normal
-        (STT-available) greeting is unchanged."""
+        (STT-available) greeting is unchanged.
+
+        The mic path's wake sessions (wake_gate.py) pass speak=False: a box asleep in a
+        room must not announce a busy engine to it, so the line is not spoken and the
+        front-end ends the session quietly (end_reason says why). hello=False: the STT
+        check alone, no greeting (one asleep, or a conversation continued, is not
+        greeted)."""
         for _ in range(_STT_RESOLVE_POLLS):
             if self.stt.stt_available is not None:
                 break
@@ -709,14 +717,20 @@ class AgentSession:
             logger.warning(
                 ("STT slot held by another session at connect — " if busy else
                  "STT engine unavailable at connect (not a busy slot) — ")
-                + "speaking the warning and ending this session instead of greeting"
+                + ("speaking the warning and ending this session instead of greeting" if speak
+                   else "ending this session quietly (a mic session asleep: nobody asked)")
             )
             self.should_end = True
+            self.end_reason = "busy" if busy else "unavailable"
+            if not speak:
+                return
             # append_to_context=False: the pipeline talking, not the model -- never
             # an assistant message, and a marked filler for TranscriptLedger.
             await self.task.queue_frames([TTSSpeakFrame(
                 self._BUSY_MESSAGE if busy else self._UNAVAILABLE_MESSAGE,
                 append_to_context=False)])
+            return
+        if not hello:
             return
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
@@ -778,7 +792,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         caption_every_final: bool = False,
                         context_notes: bool = False,
                         reply_hold_enabled: bool = False,
-                        client_features: frozenset = frozenset()) -> AgentSession:
+                        client_features: frozenset = frozenset(),
+                        wake_gate=None) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -803,6 +818,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     - reply_hold_enabled: hold a reply's first audio while the caller is talking
       (reply_hold.py). Per front-end: sip_server passes reply_hold.SIP_ENABLED (on by
       default), gateway_server reply_hold.TALK_ENABLED (off by default).
+    - wake_gate: the mic path's wake words (wake_gate.WakeGate; /talk ?wake=, from the
+      local audio bridge). The STT consults it before it pushes any transcript, and it
+      gets this session's context, to continue the mic conversation in and greet into.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -820,6 +838,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     )
 
     stt = make_stt(makeup_db=stt_makeup_db)
+    if wake_gate is not None:
+        stt.wake_gate = wake_gate
     llm = make_llm()
     tts = make_tts(voice=voice, language=language)
 
@@ -849,6 +869,9 @@ def build_agent_session(transport, *, voice: str | None = None,
                                 tools=session_tools),
         tools=build_tools_schema(tool_ctx),
     )
+    if wake_gate is not None:
+        wake_gate.context = context
+        wake_gate.greeting = AgentSession._GREETING
     if AGENT_FIRST:
         logger.info("AGENT-FIRST mode active: every turn delegates to the OpenClaw agent")
     if lang_name:

@@ -23,14 +23,21 @@
 #     and the bridge waits for a VOICE in the room (LOCAL_AUDIO_WAKE_DB) before it dials
 #     again. The last PREROLL_SECS of mic audio go out first on the new connection, so
 #     the words that woke it reach the STT.
-#   * With wake words (LOCAL_AUDIO_WAKE_WORDS) it is a phrase, not a voice: nothing is
-#     dialled at start, and between sessions the mic goes only to a keyword spotter
-#     (WakeSpotter, on the CPU, in this process). A wake word dials /talk and sends the
-#     last WAKE_PREROLL_SECS first, so "hey teaport, what's the weather" arrives whole.
-#     The conversation then runs without the wake word until nobody (user or bot) has
-#     spoken for LOCAL_AUDIO_KEEPALIVE_SECS: the bridge goes deaf (the session is kept
-#     but hears silence, so the next wake word skips the redial and its greeting) and
-#     listens for the wake words again. The brain's idle timeout ends a deaf session.
+#   * With wake words (LOCAL_AUDIO_WAKE_WORDS) the room is heard, but only for them. The
+#     bridge holds a /talk session ASLEEP (?wake=): the brain's own STT transcribes the
+#     room, in any language the engine hears, and its wake gate (wake_gate.py) drops
+#     every word until a final holds a wake phrase -- inside the STT service, so nothing
+#     of it reaches the LLM, the agent, a caption or a log. A wake word wakes that
+#     session; what was said after it ("hey teaport, what's the weather") is the first
+#     turn. Awake, the conversation needs no wake word until nobody (user or bot) has
+#     spoken for LOCAL_AUDIO_KEEPALIVE_SECS, or LOCAL_AUDIO_AWAKE_MAX_SECS have passed
+#     since the last wake word, or the user sends the box to sleep (end_conversation):
+#     then the session ENDS and a new asleep one opens. The conversation itself goes on:
+#     a wake within LOCAL_AUDIO_CONVERSATION_SECS continues it, ungreeted (the brain
+#     keeps its messages). Nothing here falls back to listening without the wake words:
+#     a brain or STT that cannot be reached leaves the bridge deaf, retrying. A phone
+#     call takes the engine from an asleep session (/talk/call): the bridge stays off
+#     until the brain reports no call. The OLED face sleeps while the box does.
 #   * Unless another client took the slot (the brain closes our socket with
 #     TAKEN_CLOSE_CODE): then the box is theirs. The bridge does not listen for a voice —
 #     the dashboard user talking to their own session is a voice in the room too — until
@@ -77,7 +84,6 @@ import re
 import signal
 import socket
 import sys
-import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -88,6 +94,7 @@ import soxr
 from loguru import logger
 
 from teaport_brain import display
+from teaport_brain.wake_words import parse_phrases as wake_phrases
 
 DEVICE_RATE = 16000
 DEVICE_CHANNELS = 2
@@ -126,22 +133,21 @@ WAKE_SECS = 0.26
 WAKE_WINDOW_SECS = 0.4
 # Mic audio kept while waiting, sent first on the connection the voice opens.
 PREROLL_SECS = 1.0
-# Wake words: a comma-separated list of phrases ("hey teaport, computer"). Empty: the
-# voice wake above, always listening once a session is up.
+# Wake words: a comma-separated list of phrases, any language ("hey teaport, tea port").
+# Any value at all means wake mode; the brain matches them (wake_words.py).
 WAKE_WORDS = os.getenv("LOCAL_AUDIO_WAKE_WORDS", "")
-# The spotter: sherpa-onnx's streaming zipformer KWS model (install.sh fetches it with
-# the brain's `wake` extra), and its trigger threshold -- lower hears more, and more
-# that was not said.
-WAKE_MODEL = os.getenv("LOCAL_AUDIO_WAKE_MODEL",
-                       "/opt/teaport/models/kws/sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01")
-WAKE_THRESHOLD = float(os.getenv("LOCAL_AUDIO_WAKE_THRESHOLD", "0.25"))
-# The spotter reports a phrase ~1.4 s after it began (measured on the box: the phrase,
-# then the model's chunk and trailing blank). This much mic audio before the report goes
-# out first, so the session hears the wake word and what followed it.
-WAKE_PREROLL_SECS = 2.0
-# After a wake, the mic stays open while anyone (user or bot) has spoken within this.
+# Awake, the session ends once nobody (user or bot) has spoken for KEEPALIVE_SECS, or
+# AWAKE_MAX_SECS after the last wake word with the bot quiet: a TV the bot keeps
+# answering must not hold the room open for good. Saying a wake word again restarts it.
 KEEPALIVE_SECS = float(os.getenv("LOCAL_AUDIO_KEEPALIVE_SECS", "45"))
+AWAKE_MAX_SECS = float(os.getenv("LOCAL_AUDIO_AWAKE_MAX_SECS", "300"))
 KEEPALIVE_POLL_SECS = 0.25
+# A wake this soon after the last mic conversation ended continues it (the brain keeps
+# its messages) and is not greeted; later, a new conversation and a greeting.
+CONVERSATION_SECS = float(os.getenv("LOCAL_AUDIO_CONVERSATION_SECS", "7200"))
+# A wake session that ends this soon after it opened (the brain refused it, or went
+# away) is retried after a backoff, not at once.
+SHORT_SESSION_SECS = 5.0
 # Taken by another Talk client: no voice wake until the brain has had no live /talk
 # session for this long (Backoff), asked every BACKOFF_POLL_SECS. 0 or less: no back-off.
 BACKOFF_SECS = float(os.getenv("LOCAL_AUDIO_BACKOFF_SECS", "60"))
@@ -155,6 +161,10 @@ START_POLL_SECS = 0.5
 # The brain's close code for a session a newer one evicted (gateway_server.TAKEN_CLOSE_CODE;
 # not imported: that pulls Pipecat into this process).
 TAKEN_CLOSE_CODE = 4001
+# ...for an asleep session closed for a phone call (gateway_server.YIELD_CLOSE_CODE), and
+# for a wake session whose STT could not connect (STT_CLOSE_CODE; the reason says why).
+YIELD_CLOSE_CODE = 4002
+STT_CLOSE_CODE = 4003
 # Not listening for a voice until our own playback has been silent this long (the
 # card's AEC is good, not perfect: the tail of the STT-busy line must not redial).
 ECHO_TAIL_SECS = 0.3
@@ -176,6 +186,8 @@ DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audi
 # restart_session); local says someone is at the box itself, which Wi-Fi setup needs
 # (the brain runs that one). Each is offered only where its TEAPORT_TOOL_* switch is on.
 FEATURES = ("volume", "restart", "local")
+# ...and with wake words, end_conversation (back to sleep): with none there is no sleep.
+WAKE_FEATURES = ("sleep",)
 # set_volume: a percent kept across sessions and reboots. 100 is the card's own level
 # (no boost: it would clip); below it, a gain on the samples over VOLUME_RANGE_DB, and
 # 0 is silent. "louder"/"quieter" move it by VOLUME_STEP.
@@ -231,8 +243,10 @@ class FaceTap:
     speaking: leaving "speaking" shuts the mouth.
     """
 
-    def __init__(self, path: str | None = None, send=None, clock=time.monotonic):
+    def __init__(self, path: str | None = None, send=None, clock=time.monotonic,
+                 features=None):
         self._path = path or FACE_SOCK
+        self._features = features or (lambda: display.features(self._path))
         self._sock = None
         self._send = send or self._sendto
         self._clock = clock
@@ -335,11 +349,6 @@ class FaceTap:
         self._voiced, self._voiced_until = False, 0.0
         self.state("listening")
 
-    def woke(self) -> None:
-        """A wake word: listening, before the session (or its transcript) catches up."""
-        self._activity()
-        self.state("listening")
-
     def quiet(self) -> None:
         """The speech has been heard out: idle, or thinking while the thinking sound plays."""
         if self._state == "speaking":
@@ -370,6 +379,16 @@ class FaceTap:
         self._emit({"mouth": 0.0})
         self._state = "idle"
         self._emit({"state": "idle"})
+
+    def sleep(self) -> None:
+        """Waiting for a wake word: "sleeping" (closed eyes) where the avatar draws it --
+        it says so in its features file, read now, as display.py reads it -- else idle."""
+        self.state("sleeping" if self._features().get("sleep") else "idle")
+
+    def woke(self) -> None:
+        """A wake word: listening."""
+        self._activity()
+        self.state("listening")
 
 
 class Volume:
@@ -707,136 +726,6 @@ class VoiceGate:
         self._hits.clear()
 
 
-# ------------------------------------------------------------------- wake words
-
-def wake_phrases(text: str) -> list[str]:
-    """LOCAL_AUDIO_WAKE_WORDS -> its phrases, as the spotter's vocabulary spells them:
-    upper case, letters and apostrophes, single spaces; empty ones and repeats dropped."""
-    out: list[str] = []
-    for part in re.split(r"[,;\n]", text):
-        phrase = " ".join(re.sub(r"[^A-Z']", " ", part.upper()).split())
-        if phrase and phrase not in out:
-            out.append(phrase)
-    return out
-
-
-def keyword_variants(phrase: str, encode, vocab: set) -> list[list[str]]:
-    """The token sequences the spotter listens for, for one phrase: its own BPE spelling,
-    and each made-up compound also as two words split where both halves have 3+ letters
-    ("TEAPORT" as "TEA PORT"). The model hears a name it never saw as the words it
-    sounds like: on the box, "teaport" spelled only as one word woke on 7 of 96 test
-    utterances, with its split added on 57. A sequence with a token the model lacks
-    (a digit, say) is dropped. `encode` is the model's sentencepiece (text -> pieces)."""
-    words = phrase.split()
-    candidates = [encode(phrase)]
-    for i, word in enumerate(words):
-        pieces = [p.lstrip("▁") for p in encode(word)]
-        for cut in range(1, len(pieces)):
-            a, b = "".join(pieces[:cut]), "".join(pieces[cut:])
-            if len(a) >= 3 and len(b) >= 3:
-                candidates.append(encode(" ".join(words[:i] + [a, b] + words[i + 1:])))
-    out: list[list[str]] = []
-    for toks in candidates:
-        if toks and toks not in out and all(t in vocab for t in toks):
-            out.append(toks)
-    return out
-
-
-class WakeError(RuntimeError):
-    """The wake words cannot be spotted (no model, no sherpa-onnx, no usable phrase)."""
-
-
-class WakeSpotter:
-    """The wake words, heard by sherpa-onnx's open-vocabulary keyword spotter: a 3.3M
-    parameter streaming zipformer (int8, CPU, one thread) that takes its keywords as
-    text at start-up, so any phrase works without training a model for it.
-
-    Measured on the box (Orin Nano, Cortex-A78AE): ~6-7% of one core in real time, one
-    ~20 ms decode per 0.32 s of audio (inline on the event loop: well inside the
-    playback's LEAD_SECS), ~70 MB more resident in this process (the imports 11, the
-    model 38, the rest its working memory once running). sherpa_onnx and sentencepiece
-    come from the brain's optional `wake` extra and are imported here only, so a bridge
-    without wake words never loads them."""
-
-    FILES = {"tokens": "tokens.txt", "bpe": "bpe.model",
-             "encoder": "encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
-             "decoder": "decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx",
-             "joiner": "joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx"}
-
-    def __init__(self, phrases: list[str], model_dir: str = WAKE_MODEL,
-                 threshold: float = WAKE_THRESHOLD):
-        try:
-            import sentencepiece
-            import sherpa_onnx
-        except ImportError as e:
-            raise WakeError(f"{e.name} is not installed (the brain's `wake` extra: "
-                            "TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh)") from None
-        files = {k: os.path.join(model_dir, v) for k, v in self.FILES.items()}
-        missing = [p for p in files.values() if not os.path.isfile(p)]
-        if missing:
-            raise WakeError(f"no keyword model at {model_dir} (missing {os.path.basename(missing[0])}"
-                            " — TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh fetches it)")
-        sp = sentencepiece.SentencePieceProcessor(model_file=files["bpe"])
-        with open(files["tokens"], encoding="utf-8") as f:
-            vocab = {line.split()[0] for line in f if line.split()}
-        self.phrases: list[str] = []
-        lines = []
-        for phrase in phrases:
-            variants = keyword_variants(phrase, lambda t: sp.encode(t, out_type=str), vocab)
-            if not variants:
-                logger.warning(f'wake word "{phrase}" cannot be spotted (letters only) — ignored')
-                continue
-            # The label after @ is what the spotter reports: an index into self.phrases.
-            lines += [" ".join(v) + f" @{len(self.phrases)}" for v in variants]
-            self.phrases.append(phrase)
-        if not lines:
-            raise WakeError("none of the wake words can be spotted")
-        # The spotter reads its keywords from a file, once, here.
-        with tempfile.NamedTemporaryFile("w", suffix=".txt", encoding="utf-8") as kw:
-            kw.write("\n".join(lines) + "\n")
-            kw.flush()
-            self._kws = sherpa_onnx.KeywordSpotter(
-                tokens=files["tokens"], encoder=files["encoder"], decoder=files["decoder"],
-                joiner=files["joiner"], keywords_file=kw.name, num_threads=1,
-                keywords_threshold=threshold)
-        self._stream = self._kws.create_stream()
-
-    def feed(self, pcm: np.ndarray) -> str | None:
-        """16 kHz mono int16 -> the phrase it completed, if any."""
-        kws, s = self._kws, self._stream
-        s.accept_waveform(DEVICE_RATE, pcm.astype(np.float32) / 32768)
-        heard = None
-        while kws.is_ready(s):
-            kws.decode_stream(s)
-            label = kws.get_result(s)
-            if label:
-                heard = self.phrases[int(label)]
-                kws.reset_stream(s)
-        return heard
-
-
-def load_spotter(phrases: list[str]) -> WakeSpotter:
-    return WakeSpotter(phrases)
-
-
-class KeepAlive:
-    """After a wake: the conversation is alive while anyone has spoken within `secs`."""
-
-    def __init__(self, secs: float | None = None, clock=time.monotonic):
-        self._secs = KEEPALIVE_SECS if secs is None else secs
-        self._clock = clock
-        self._last = clock()
-
-    def activity(self) -> None:
-        self._last = self._clock()
-
-    def expired(self, busy: bool = False) -> bool:
-        """`busy`: the bot is still being heard (its audio, or the tail of it)."""
-        if busy:
-            self.activity()
-        return self._clock() - self._last >= self._secs
-
-
 class CardError(RuntimeError):
     """The sound card failed (would not open, or a stream died)."""
 
@@ -857,27 +746,17 @@ class Card:
 
     FMT = ["-f", "S16_LE", "-r", str(DEVICE_RATE), "-c", str(DEVICE_CHANNELS), "-q", "-t", "raw"]
 
-    def __init__(self, face: FaceTap, device: str | None = None, volume: Volume | None = None,
-                 spotter: WakeSpotter | None = None):
+    def __init__(self, face: FaceTap, device: str | None = None, volume: Volume | None = None):
         self.face = face
         self.volume = volume or Volume()
         self.device = device = device or DEVICE
         self.play: Playback | None = None
         self.failed: asyncio.Future = asyncio.get_running_loop().create_future()
-        # With wake words the spotter, not the voice gate, says when to listen.
-        self.spotter = spotter
-        preroll = WAKE_PREROLL_SECS if spotter else PREROLL_SECS
-        self.preroll: deque[bytes] = deque(maxlen=round(preroll * 1000 / CHUNK_MS))
+        self.preroll: deque[bytes] = deque(maxlen=round(PREROLL_SECS * 1000 / CHUNK_MS))
         self.gate = VoiceGate()
         self.voice = asyncio.Event()
-        # The wake word last heard, and the mic audio from it on, kept (and added to)
-        # until the session it dials takes it: the dial must not push it out of the ring.
-        self.wake_word: str | None = None
-        self.woke: list[bytes] | None = None
         # The live session's mic queue; None between sessions.
         self.sink: asyncio.Queue | None = None
-        # A session is held but the mic is off (keep-alive expired): it hears silence.
-        self.deaf = False
         self._aplay = None
         self._procs: list[asyncio.subprocess.Process] = []
         self._tails: dict[int, tuple[asyncio.Task, deque]] = {}
@@ -1055,58 +934,18 @@ class Card:
             mono = capture_channel(buf, CAPTURE_CHANNEL)
             relay = resampler.resample_chunk(mono).astype("<i2").tobytes()
             buf = b""
-            if self.sink is not None and not self.deaf:
-                self._send(relay)
-                continue
-            if self.woke is not None:
-                # Heard, and the session is being dialled: keep all of it.
-                if relay and len(self.woke) < MIC_QUEUE_CHUNKS:
-                    self.woke.append(relay)
+            if self.sink is not None:
+                if relay:
+                    if self.sink.full():
+                        self.sink.get_nowait()
+                    self.sink.put_nowait(relay)
                 continue
             if relay:
                 self.preroll.append(relay)
-                if self.sink is not None:
-                    self._send(bytes(len(relay)))  # deaf: a muted mic
-            echo_free = self.play.echo_free(time.monotonic())
-            if self.spotter is not None:
-                # The card's AEC is good, not perfect: while our own playback (or its
-                # tail) may be in the mic, the spotter hears silence instead.
-                heard = self.spotter.feed(mono if echo_free else np.zeros_like(mono))
-                if heard:
-                    self.wake(heard)
-            elif not echo_free:
+            if not self.play.echo_free(time.monotonic()):
                 self.gate.reset()
             elif self.gate.feed(level_db(mono)):
                 self.voice.set()
-
-    def _send(self, relay: bytes) -> None:
-        if relay:
-            if self.sink.full():
-                self.sink.get_nowait()
-            self.sink.put_nowait(relay)
-
-    def wake(self, phrase: str) -> None:
-        """A wake word: the mic audio from it on goes to the session — the one being
-        dialled (self.woke, taken by run_session), or straight in when one is held deaf."""
-        self.wake_word = phrase
-        self.woke = list(self.preroll)
-        self.preroll.clear()
-        if self.sink is not None:
-            for chunk in self.woke:
-                self._send(chunk)
-            self.woke = None
-            self.deaf = False
-        self.voice.set()
-
-    def deafen(self) -> None:
-        """Keep-alive over: the session stays, hearing silence, until a wake word."""
-        self.deaf = True
-        self.preroll.clear()  # stale: from before the session
-        self.voice.clear()
-
-    def hear(self) -> None:
-        """The bot spoke into a deaf session (a late follow-up): the conversation is on."""
-        self.deaf = False
 
     # -- waiting
     async def _until(self, aw) -> None:
@@ -1120,9 +959,7 @@ class Card:
         self._check()
 
     async def wait_for_voice(self) -> None:
-        """A voice in the room, or with wake words, a wake word."""
         self.gate.reset()
-        self.woke = None  # a wake whose dial failed: listen afresh
         self.voice.clear()
         await self._until(self.voice.wait())
 
@@ -1130,8 +967,19 @@ class Card:
         await self._until(asyncio.sleep(secs))
 
 
-def _url() -> str:
-    query = {"features": ",".join(FEATURES)}
+def wake_mode() -> bool:
+    """LOCAL_AUDIO_WAKE_WORDS set at all: wake words, and nothing heard without one."""
+    return bool(WAKE_WORDS.strip())
+
+
+def _url(awake: bool = False) -> str:
+    query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ()))}
+    if wake_mode():
+        # The phrases ride the URL (they are settings, not speech); the brain parses them.
+        query["wake"] = WAKE_WORDS
+        query["conversation_secs"] = f"{CONVERSATION_SECS:g}"
+        if awake:
+            query["awake"] = "1"
     if GATEWAY_TOKEN:
         query["token"] = GATEWAY_TOKEN
     return URL + ("&" if "?" in URL else "?") + urllib.parse.urlencode(
@@ -1146,19 +994,37 @@ def _status_url() -> str:
                                     parts.path.rstrip("/") + "/status", "", ""))
 
 
-def _talk_active_sync() -> bool | None:
+def _talk_status_sync() -> dict | None:
     headers = {"Authorization": f"Bearer {GATEWAY_TOKEN}"} if GATEWAY_TOKEN else {}
     try:
         with urllib.request.urlopen(urllib.request.Request(_status_url(), headers=headers),
                                     timeout=3) as r:
-            return bool(json.load(r).get("active"))
+            status = json.load(r)
+            return status if isinstance(status, dict) else None
     except Exception:  # noqa: BLE001 — brain down or restarting, a brain without it: unknown
         return None
+
+
+def _talk_active_sync() -> bool | None:
+    status = _talk_status_sync()
+    return None if status is None else bool(status.get("active"))
 
 
 async def talk_active() -> bool | None:
     """Does a /talk session hold the brain's slot? None when the brain cannot say."""
     return await asyncio.to_thread(_talk_active_sync)
+
+
+async def call_live() -> bool:
+    """Is a phone call up (the SIP brain's lease on /talk/call)? A brain that cannot
+    say: no -- an asleep session it then refuses says so with YIELD_CLOSE_CODE."""
+    status = await asyncio.to_thread(_talk_status_sync)
+    return bool(status and status.get("call"))
+
+
+async def wait_out_call() -> None:
+    while await call_live():
+        await asyncio.sleep(BACKOFF_POLL_SECS)
 
 
 class Backoff:
@@ -1193,12 +1059,50 @@ async def taken_at_start() -> bool:
     return False
 
 
-def taken(e: BaseException | None) -> bool:
-    """Did the brain end the session because another client took the slot?"""
+def close_code(e: BaseException | None) -> int | None:
+    """The code the brain closed our socket with, if that is how the session ended."""
     import websockets
 
-    return (isinstance(e, websockets.ConnectionClosed) and e.rcvd is not None
-            and e.rcvd.code == TAKEN_CLOSE_CODE)
+    if isinstance(e, websockets.ConnectionClosed) and e.rcvd is not None:
+        return e.rcvd.code
+    return None
+
+
+def taken(e: BaseException | None) -> bool:
+    """Did the brain end the session because another client took the slot?"""
+    return close_code(e) == TAKEN_CLOSE_CODE
+
+
+class KeepAlive:
+    """An awake wake-word conversation: over once nobody (user or bot) has spoken for
+    KEEPALIVE_SECS, or AWAKE_MAX_SECS after the last wake word with the bot quiet."""
+
+    def __init__(self, secs: float | None = None, cap_secs: float | None = None,
+                 clock=time.monotonic):
+        self._secs = KEEPALIVE_SECS if secs is None else secs
+        self._cap = AWAKE_MAX_SECS if cap_secs is None else cap_secs
+        self._clock = clock
+        self._last = self._woke = clock()
+
+    def activity(self) -> None:
+        self._last = self._clock()
+
+    def woke(self) -> None:
+        """A wake word (again): the cap counts from here."""
+        self._last = self._woke = self._clock()
+
+    def over(self, busy: bool = False) -> str | None:
+        """"keepalive" or "awake-max" once it is over, else None. `busy`: the bot is
+        still being heard -- that is speech, and no cap cuts a reply off."""
+        now = self._clock()
+        if busy:
+            self._last = now
+            return None
+        if now - self._last >= self._secs:
+            return "keepalive"
+        if now - self._woke >= self._cap:
+            return "awake-max"
+        return None
 
 
 # How often Restart looks at the speaker while it waits.
@@ -1223,10 +1127,14 @@ class Restart:
         self._before: set | None = None    # ... those seen when the restart was armed
         self.goodbye = False               # an utterance newer than that was captioned
         self.armed = asyncio.Event()
+        # What the session ends for: "restart" (a fresh one at once) or "sleep"
+        # (end_conversation: back to waiting for a wake word).
+        self.kind = "restart"
 
-    def arm(self) -> None:
+    def arm(self, kind: str = "restart") -> None:
         if self._before is None:
             self._before = set(self._seen)
+            self.kind = kind
             self.armed.set()
 
     def caption(self, utterance) -> None:
@@ -1265,33 +1173,45 @@ def client_tool(card: "Card", m: dict, restart: Restart) -> dict:
             restart.arm()
             return {"ok": True, "note": "Now say one short goodbye; the session restarts "
                                         "with a fresh conversation once it has played."}
+        if name == "end_conversation" and wake_mode():
+            restart.arm("sleep")
+            return {"ok": True, "note": "Now say one short goodbye; the box goes back to "
+                                        "sleep once it has played."}
         return {"ok": False, "error": f"this device cannot do {name}"}
     except Exception as e:  # noqa: BLE001 — one bad request must not end the session
         logger.warning(f"client_tool {name}: {e!r}")
         return {"ok": False, "error": f"{name} failed on the device"}
 
 
-async def run_session(card: Card, preroll: bool) -> str | None:
+async def run_session(card: Card, preroll: bool, wake: bool = False,
+                      awake: bool = False) -> str | None:
     """One /talk connection over an open card. Raises DialError when the brain cannot be
     reached, CardError when the card dies; returns (or raises the socket's error) when
     the session ends — "restart" when the model asked for a fresh one, "taken" when
-    another client took the slot."""
+    another client took the slot.
+
+    `wake`: a wake-word session, opened asleep (or `awake`: restart_session's fresh
+    conversation). It also ends "sleep" (end_conversation), "keepalive" / "awake-max"
+    (KeepAlive), "yield" (a phone call took the engine) or "stt:<reason>" (its STT
+    could not connect)."""
     import websockets
 
     face, play = card.face, card.play
     try:
-        ws = await websockets.connect(_url(), max_size=None, open_timeout=10)
+        ws = await websockets.connect(_url(awake=wake and awake), max_size=None, open_timeout=10)
     except Exception as e:  # noqa: BLE001 — refused, timed out, 403: all "not reachable"
         raise DialError(repr(e)) from e
     logger.info(f"connected to {URL}")
-    if card.woke is not None:
-        early, card.woke = card.woke, None  # from the wake word on
-    else:
-        early = list(card.preroll) if preroll else []
+    early = list(card.preroll) if preroll else []
     card.preroll.clear()
-    card.voice.clear()
     card.sink = asyncio.Queue(maxsize=MIC_QUEUE_CHUNKS)
-    alive = KeepAlive()
+    # Wake mode: None while asleep, the conversation's KeepAlive once awake.
+    alive = KeepAlive() if wake and awake else None
+    if wake:
+        if awake:
+            face.woke()
+        else:
+            face.sleep()
 
     async def send_mic():
         # The words that woke us first (they are ~1 s behind; the STT takes them as a burst).
@@ -1301,14 +1221,13 @@ async def run_session(card: Card, preroll: bool) -> str | None:
             await ws.send(await card.sink.get())
 
     async def receive():
+        nonlocal alive
         async for msg in ws:
             if isinstance(msg, bytes):
                 play.push(msg, voiced=face.voiced)
                 face.audio()
-                alive.activity()
-                if card.deaf:
-                    card.hear()
-                    logger.info("the bot spoke into the deaf session — mic on (keep-alive)")
+                if alive is not None:
+                    alive.activity()
                 continue
             try:
                 m = json.loads(msg)
@@ -1322,6 +1241,19 @@ async def run_session(card: Card, preroll: bool) -> str | None:
                 face.interrupted()
             elif kind == "ready":
                 logger.info("session ready")
+            elif kind == "wake" and wake:
+                # The brain's wake gate heard a wake phrase (wake_gate.py). Only its name
+                # is logged, never what was said around it.
+                if alive is None:
+                    alive = KeepAlive()
+                    face.woke()
+                    logger.info(f'wake word "{m.get("phrase")}" heard — '
+                                + ("continuing the conversation" if m.get("resumed")
+                                   else "a new conversation"))
+                else:
+                    alive.woke()
+                    logger.info(f'wake word "{m.get("phrase")}" heard again — '
+                                f"awake for up to {AWAKE_MAX_SECS:g} s more")
             elif kind == "client_tool":
                 result = client_tool(card, m, restart)
                 await ws.send(json.dumps({"type": "tool_result", "call_id": m.get("call_id"),
@@ -1330,7 +1262,7 @@ async def run_session(card: Card, preroll: bool) -> str | None:
                 role, text, final = m.get("role"), m.get("text") or "", bool(m.get("final"))
                 if role == "assistant" and text.startswith(DEBUG_CHIP_PREFIXES):
                     continue
-                if role == "assistant" or text.strip():
+                if alive is not None and (role == "assistant" or text.strip()):
                     alive.activity()
                 if role == "assistant":
                     restart.caption(m.get("utterance"))
@@ -1345,40 +1277,52 @@ async def run_session(card: Card, preroll: bool) -> str | None:
 
     async def restart_when_heard_out():
         await restart.wait()
-        logger.info("restart requested — ending this session for a fresh one")
+        logger.info("going to sleep, as asked — ending this session"
+                    if restart.kind == "sleep" else
+                    "restart requested — ending this session for a fresh one")
 
     async def keep_alive():
-        # Wake words only: the mic goes deaf once nobody has spoken for KEEPALIVE_SECS,
-        # and a wake word (Card.wake, from the capture) turns it back on.
+        # Awake wake-word conversations only: their end (see KeepAlive).
         while True:
             await asyncio.sleep(KEEPALIVE_POLL_SECS)
-            if card.voice.is_set():
-                card.voice.clear()
-                alive.activity()
-                face.woke()
-                logger.info(f'wake word "{card.wake_word}" heard — listening')
-            if not card.deaf and alive.expired(
-                    busy=play.speaking or face.voiced or not play.echo_free(time.monotonic())):
-                card.deafen()
-                face.state("idle")
-                logger.info(f"keep-alive: no speech for {KEEPALIVE_SECS:g} s — mic off, "
-                            "listening for the wake words")
+            if alive is None:
+                continue
+            why = alive.over(busy=play.speaking or face.voiced
+                             or not play.echo_free(time.monotonic()))
+            if why:
+                logger.info(f"no speech for {KEEPALIVE_SECS:g} s — the conversation sleeps"
+                            if why == "keepalive" else
+                            f"{AWAKE_MAX_SECS:g} s since the last wake word — the "
+                            "conversation sleeps")
+                return why
 
     restarter = asyncio.create_task(restart_when_heard_out())
     tasks = [asyncio.create_task(send_mic()), asyncio.create_task(receive()), restarter]
-    if card.spotter is not None:
-        tasks.append(asyncio.create_task(keep_alive()))
+    sleeper = asyncio.create_task(keep_alive()) if wake else None
+    if sleeper is not None:
+        tasks.append(sleeper)
     try:
         done, _ = await asyncio.wait([*tasks, card.failed], return_when=asyncio.FIRST_COMPLETED)
         card._check()
-        if any(taken(t.exception()) for t in done if not t.cancelled()):
+        codes = [close_code(t.exception()) for t in done if not t.cancelled()]
+        if TAKEN_CLOSE_CODE in codes:
             return "taken"
+        if wake:
+            if YIELD_CLOSE_CODE in codes:
+                return "yield"
+            for t in done:
+                e = None if t.cancelled() else t.exception()
+                if close_code(e) == STT_CLOSE_CODE:
+                    return f"stt:{e.rcvd.reason or 'unavailable'}"
+            if sleeper in done:
+                return sleeper.result()
         for t in done:
             t.result()
-        return "restart" if restarter in done else None
+        if restarter in done:
+            return "sleep" if restart.kind == "sleep" else "restart"
+        return None
     finally:
         card.sink = None
-        card.deaf = False
         for t in tasks:
             t.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
@@ -1386,80 +1330,145 @@ async def run_session(card: Card, preroll: bool) -> str | None:
         face.ended()
 
 
+class WakeState:
+    """What a wake-word bridge carries from one session (and one card) to the next."""
+
+    def __init__(self, backoff: "Backoff | None" = None):
+        self.backoff = backoff     # another Talk client has the box (#95)
+        self.restart = False       # restart_session: the next dial is awake -- ONCE
+        self.wait = RETRY_SECS     # backoff for a brain or STT that will not take us
+
+
+async def run_wake_sessions(card: Card, st: WakeState) -> None:
+    """Wake words: an asleep session on the open card, again and again; forever, or
+    until the card fails (CardError). Fail closed: whatever goes wrong, the bridge is
+    deaf until a session is up again -- it never listens without its wake words."""
+    face = card.face
+    while True:
+        if st.backoff is not None:
+            await card._until(st.backoff.wait())
+            st.backoff = None
+            logger.info(f"no other Talk session for {BACKOFF_SECS:g} s — back-off over, "
+                        "asleep again")
+        # One-shot: whatever this dial does -- a session, a DialError, a CardError --
+        # the next one is asleep, so nothing reopens the room without a wake word.
+        awake, st.restart = st.restart, False
+        opened = time.monotonic()
+        try:
+            ended = await run_session(card, preroll=False, wake=True, awake=awake)
+        except DialError as e:
+            logger.warning(f"brain not reachable ({e}) — not listening; retrying in {st.wait:g} s")
+            face.sleep()
+            await card.idle_for(st.wait)
+            st.wait = min(st.wait * 2, RETRY_MAX_SECS)
+            continue
+        except CardError:
+            raise
+        except Exception as e:  # noqa: BLE001 — the socket broke: as good as ended
+            logger.warning(f"session ended ({e!r})")
+            ended = None
+        face.sleep()
+        if ended == "restart":
+            st.restart = True
+            st.wait = RETRY_SECS
+            continue
+        if ended == "taken" and BACKOFF_SECS > 0:
+            st.backoff = Backoff()
+            logger.info("session taken by another Talk client — backing off (asleep, no "
+                        f"wake) until no Talk session has been live for {BACKOFF_SECS:g} s")
+            continue
+        if ended == "yield":
+            logger.info("a phone call needs the speech engine — not listening until it ends")
+            await card._until(wait_out_call())
+            logger.info("the phone call is over — asleep again")
+            continue
+        if ended and ended.startswith("stt:"):
+            logger.warning(f"speech recognition {ended[4:]} — not listening; retrying in "
+                           f"{st.wait:g} s")
+            await card.idle_for(st.wait)
+            st.wait = min(st.wait * 2, RETRY_MAX_SECS)
+            continue
+        if ended in ("sleep", "keepalive", "awake-max"):
+            st.wait = RETRY_SECS
+            continue
+        # The brain ended it (a restart of its own, an error): open the next one, but
+        # not in a tight loop against a brain that keeps refusing.
+        if time.monotonic() - opened < SHORT_SESSION_SECS:
+            logger.warning(f"session ended at once — retrying in {st.wait:g} s")
+            await card.idle_for(st.wait)
+            st.wait = min(st.wait * 2, RETRY_MAX_SECS)
+        else:
+            st.wait = RETRY_SECS
+
+
 async def run_bridge() -> None:
-    """Open the card, dial, and after every session wait for a voice (or a wake word); forever."""
+    """Open the card, dial, and after every session wait for a voice (or, with wake
+    words, hold an asleep session: run_wake_sessions); forever."""
     face = FaceTap()
     face.state("idle")
     volume = Volume()
     logger.info(f"volume: {volume.percent}%")
-    spotter = None
-    if phrases := wake_phrases(WAKE_WORDS):
-        try:
-            spotter = await asyncio.to_thread(load_spotter, phrases)
-        except Exception as e:  # noqa: BLE001 — WakeError, or the model's own refusal
-            # Wake words were asked for so that the room is NOT heard: listening for any
-            # voice instead would be the opposite. Hold nothing, dial nothing, say why.
-            logger.error(f"wake words ({', '.join(phrases)}) cannot be spotted: {e} — the "
-                         "bridge is not listening at all until that is fixed")
-            await asyncio.Event().wait()
-        logger.info(f"wake words: {', '.join(spotter.phrases)} (threshold {WAKE_THRESHOLD:g}, "
-                    f"keep-alive {KEEPALIVE_SECS:g} s)")
-    wait_for = "a wake word" if spotter else "voice"
-    # The first session dials at once (and is greeted) -- with wake words, not before one.
-    connect_now = spotter is None
+    connect_now = True  # the first session dials at once (and is greeted)
     backoff = None  # another client took the box: a Backoff to wait out (kept across card reopens)
     card_wait = dial_wait = RETRY_SECS
     if BACKOFF_SECS > 0 and await taken_at_start():
         # A restart (a crash, the config page) must not evict a session in use either.
         connect_now, backoff = False, Backoff()
-        logger.info(f"a Talk session is live at start — backing off (no {wait_for} wake) until "
+        logger.info("a Talk session is live at start — backing off (no voice wake) until "
                     f"no Talk session has been live for {BACKOFF_SECS:g} s")
+    wake = WakeState(backoff) if wake_mode() else None
+    if wake is not None:
+        phrases = wake_phrases(WAKE_WORDS)
+        logger.info(f"wake words: {', '.join(phrases) or 'NONE usable'} (keep-alive "
+                    f"{KEEPALIVE_SECS:g} s, awake at most {AWAKE_MAX_SECS:g} s, "
+                    f"conversation kept {CONVERSATION_SECS:g} s)")
+        if not phrases:
+            logger.warning(f"LOCAL_AUDIO_WAKE_WORDS={WAKE_WORDS!r} holds no word to listen "
+                           "for: the box will never wake (clear it to listen without one)")
+        face.sleep()
     try:
         while True:
-            card = Card(face, volume=volume, spotter=spotter)
+            card = Card(face, volume=volume)
             try:
                 await card.open()
                 logger.info(f"card ready: {card.device}")
+                if wake is not None:
+                    await run_wake_sessions(card, wake)
                 while True:
                     if backoff is not None:
                         await card._until(backoff.wait())
                         backoff = None
                         logger.info(f"no other Talk session for {BACKOFF_SECS:g} s — "
-                                    f"back-off over, waiting for {wait_for}")
+                                    "back-off over, waiting for voice")
                     if not connect_now:
                         await card.wait_for_voice()
-                        if spotter:
-                            face.woke()
-                            logger.info(f'wake word "{card.wake_word}" heard — connecting')
-                        else:
-                            logger.info("voice detected — connecting")
+                        logger.info("voice detected — connecting")
                     try:
                         ended = await run_session(card, preroll=not connect_now)
                         if ended == "restart":
-                            # Dial straight back: a fresh context and a greeting, no voice
-                            # (or wake word) wait.
+                            # Dial straight back: a fresh context and a greeting, no voice wait.
                             connect_now = True
                             card_wait = dial_wait = RETRY_SECS
                             continue
                         if ended == "taken" and BACKOFF_SECS > 0:
                             backoff = Backoff()
                             logger.info("session taken by another Talk client — backing off "
-                                        f"(no {wait_for} wake) until no Talk session has been live "
+                                        f"(no voice wake) until no Talk session has been live "
                                         f"for {BACKOFF_SECS:g} s")
                         else:
-                            logger.info(f"session ended — waiting for {wait_for}")
+                            logger.info("session ended — waiting for voice")
                     except DialError as e:
                         if connect_now:
                             logger.warning(f"brain not reachable ({e}) — retrying in {dial_wait:g} s")
                             await card.idle_for(dial_wait)
                             dial_wait = min(dial_wait * 2, RETRY_MAX_SECS)
                         else:
-                            logger.warning(f"brain not reachable ({e}) — waiting for {wait_for}")
+                            logger.warning(f"brain not reachable ({e}) — waiting for voice")
                         continue
                     except CardError:
                         raise
                     except Exception as e:  # noqa: BLE001 — the socket broke: as good as ended
-                        logger.warning(f"session ended ({e!r}) — waiting for {wait_for}")
+                        logger.warning(f"session ended ({e!r}) — waiting for voice")
                     connect_now = False
                     card_wait = dial_wait = RETRY_SECS  # a good session
             except CardError as e:
@@ -1481,7 +1490,7 @@ async def main() -> None:
     loop = asyncio.get_running_loop()
     for s in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(s, stop.set)
-    wake = "wake words" if wake_phrases(WAKE_WORDS) else f"wake={WAKE_DB:g} dBFS"
+    wake = "wake words" if wake_mode() else f"wake={WAKE_DB:g} dBFS"
     logger.info(f"local audio bridge: device={DEVICE} channel={CAPTURE_CHANNEL} {wake} url={URL}")
     bridge = asyncio.create_task(run_bridge())
     stopper = asyncio.create_task(stop.wait())

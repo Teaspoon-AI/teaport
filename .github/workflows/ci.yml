@@ -81,13 +81,6 @@ jobs:
           UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/brain-prod" \
             uv sync --locked --no-editable --no-dev --project brain
           cd / && "$RUNNER_TEMP/brain-prod/bin/python" -m teaport_brain.selfcheck
-      - name: The wake extra imports (what install.sh adds on a box with the local audio bridge)
-        # sherpa-onnx's native libraries come in a second wheel that uv's lock only
-        # carries because pyproject names it: a venv synced without it fails to import.
-        run: |
-          UV_PROJECT_ENVIRONMENT="$RUNNER_TEMP/brain-wake" \
-            uv sync --locked --no-editable --no-dev --extra wake --project brain
-          cd / && "$RUNNER_TEMP/brain-wake/bin/python" -c "import sherpa_onnx, sentencepiece; print('wake extra ok', sherpa_onnx.__version__)"
       - name: Hermetic tests
         # No -k denylist. test_suite.py runs each test_*.py as a subprocess, and a
         # script whose dependency is absent exits appliance.SKIP_EXIT, which the

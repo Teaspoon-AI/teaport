@@ -1,0 +1,367 @@
+#
+# The mic path's wake words on the brain side (wake_gate.py, wake_words.py): matching in
+# any script, the privacy guarantee (nothing the room said before a wake word becomes a
+# frame, a context message or a log line), the cut at the wake phrase, the mic
+# conversation kept across short sleeps, the quiet STT failure, the phone call's yield
+# of the engine, and the end_conversation tool's gating.
+#
+# Run: python test_wake_gate.py   (or via pytest test_suite.py)
+#
+import asyncio
+import os
+import sys
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from pinned_pipecat import require_pinned  # noqa: E402
+
+require_pinned()
+
+for k, v in (("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime"),
+             ("LLM_BASE_URL", "http://127.0.0.1:9/v1"), ("LLM_API_KEY", "not-a-real-key")):
+    os.environ.setdefault(k, v)
+
+from loguru import logger  # noqa: E402
+from pipecat.frames.frames import (  # noqa: E402
+    InterimTranscriptionFrame,
+    LLMRunFrame,
+    OutputTransportMessageUrgentFrame,
+    TranscriptionFrame,
+    TTSSpeakFrame,
+)
+from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
+
+from teaport_brain import wake_gate  # noqa: E402
+from teaport_brain.endpointing import SegmentDoneFrame  # noqa: E402
+from teaport_brain.stt import TeaportSTTService  # noqa: E402
+from teaport_brain.wake_words import find_wake, parse_phrases  # noqa: E402
+
+ROOM = "the neighbours were arguing about money again"
+
+
+class Recorder(TeaportSTTService):
+    """Real _handle_message, frames captured instead of pushed."""
+
+    def __init__(self):
+        super().__init__(url="ws://127.0.0.1:1/none")
+        self.pushed = []
+
+    async def push_frame(self, frame, direction=None):
+        self.pushed.append(frame)
+
+    async def stop_processing_metrics(self):
+        pass
+
+
+class Clock:
+    t = 1000.0
+
+    def __call__(self):
+        return self.t
+
+
+def _session(phrases="hey teaport, tea port", store=None, asleep=True):
+    stt = Recorder()
+    gate = wake_gate.WakeGate(parse_phrases(phrases), asleep=asleep, greeting="(greet me)",
+                              store=store or wake_gate.MicConversation())
+    gate.context = LLMContext([{"role": "system", "content": "persona"}])
+    stt.wake_gate = gate
+    return stt, gate
+
+
+async def _say(stt, text, final=None):
+    """The engine streams `text` word by word, then closes the segment with `final`."""
+    for word in text.split():
+        await stt._handle_message({"type": "transcription.delta", "delta": word + " "})
+    await stt._handle_message({"type": "transcription.done",
+                               "text": text if final is None else final})
+
+
+def _texts(frames):
+    return [f.text for f in frames if isinstance(f, (TranscriptionFrame, InterimTranscriptionFrame))]
+
+
+def _messages(frames):
+    return [f.message for f in frames if isinstance(f, OutputTransportMessageUrgentFrame)]
+
+
+# ---------------------------------------------------------------- matching
+
+def test_matching_any_script_whole_words_no_fuzz():
+    ph = parse_phrases("hey teaport, tea port，привет чайник、你好茶壶; Straße")
+    assert ph == ["hey teaport", "tea port", "привет чайник", "你好茶壶", "strasse"]
+    assert find_wake("So anyway. Hey Teaport, what's the weather?", ph) == \
+        ("hey teaport", "what's the weather?")
+    assert find_wake("Привет, чайник! Какая погода?", ph) == ("привет чайник", "Какая погода?")
+    assert find_wake("嗯你好茶壶今天天气怎么样", ph) == ("你好茶壶", "今天天气怎么样")
+    assert find_wake("hey tea-port: set a timer", ph) == ("tea port", "set a timer")
+    assert find_wake("ＨＥＹ　ＴＥＡＰＯＲＴ", ph) == ("hey teaport", "")      # NFKC
+    for miss in ("the teapot is hot", "teaports", "hey tea", "a heytea portrait"):
+        assert find_wake(miss, ph) is None, miss                            # no fuzz
+    assert parse_phrases(" , ;") == []
+
+
+# ---------------------------------------------------------------- privacy
+
+async def test_nothing_before_a_wake_word_becomes_a_frame_a_message_or_a_log():
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="TRACE")
+    try:
+        stt, gate = _session()
+        before = list(gate.context.get_messages())
+        await _say(stt, ROOM)
+        await _say(stt, "", final=None)                      # a wordless close too
+        await stt._handle_message({"type": "transcription.delta", "delta": "secret "})
+        await stt._handle_message({"type": "transcription.done", "text": ""})  # interim fallback
+    finally:
+        logger.remove(sink)
+    assert gate.asleep
+    assert _texts(stt.pushed) == []                          # no interim, no final
+    assert all(isinstance(f, SegmentDoneFrame) for f in stt.pushed), stt.pushed
+    assert gate.context.get_messages() == before             # the LLM context untouched
+    assert not any("neighbours" in ln or "secret" in ln for ln in lines), lines
+
+
+async def test_the_wake_phrase_cuts_the_final_and_what_follows_is_the_first_turn():
+    stt, gate = _session()
+    await _say(stt, "money again. Hey Teaport, what's the weather")
+    assert not gate.asleep
+    assert _texts(stt.pushed) == ["what's the weather"]      # the room's half is dropped
+    wake = _messages(stt.pushed)[0]
+    assert wake["type"] == "wake" and wake["phrase"] == "hey teaport" and wake["greeted"]
+    # A new conversation is greeted: the cue goes in before the turn; the turn runs it.
+    assert gate.context.get_messages()[-1] == {"role": "user", "content": "(greet me)"}
+    assert not any(isinstance(f, LLMRunFrame) for f in stt.pushed)
+    # Awake, every word goes through, interims included.
+    stt.pushed.clear()
+    await _say(stt, "and tomorrow")
+    assert _texts(stt.pushed)[-1] == "and tomorrow" and len(_texts(stt.pushed)) == 3
+
+
+async def test_a_wake_word_alone_greets_with_a_run_of_its_own():
+    stt, gate = _session()
+    await _say(stt, "Hey teaport.")
+    assert _texts(stt.pushed) == []
+    assert any(isinstance(f, SegmentDoneFrame) for f in stt.pushed)
+    assert any(isinstance(f, LLMRunFrame) for f in stt.pushed)
+
+
+async def test_a_non_latin_wake_word_works():
+    stt, gate = _session("привет чайник")
+    await _say(stt, "ну и вот. Привет, чайник! Какая завтра погода?")
+    assert not gate.asleep
+    assert _texts(stt.pushed) == ["Какая завтра погода?"]
+
+
+async def test_a_wake_word_said_again_while_awake_restarts_the_bridges_cap():
+    stt, gate = _session(asleep=False)
+    await _say(stt, "tea port, one more thing")
+    assert _texts(stt.pushed)[-1] == "tea port, one more thing"   # nothing cut when awake
+    assert _messages(stt.pushed) == [{"type": "wake", "phrase": "tea port", "again": True}]
+
+
+# ---------------------------------------------------------------- the mic conversation
+
+async def test_a_wake_within_the_window_continues_the_conversation_ungreeted():
+    clock = Clock()
+    store = wake_gate.MicConversation(clock=clock)
+    stt, gate = _session(store=store)
+    await _say(stt, "hey teaport what's the weather today")
+    gate.context.add_message({"role": "user", "content": "what's the weather today"})
+    gate.context.add_message({"role": "assistant", "content": "Sunny, 21 degrees."})
+    gate.ended()                                    # the keep-alive ran out
+    clock.t += 180                                  # three minutes asleep
+    stt2, gate2 = _session(store=store)
+    gate2.conversation_secs = 7200
+    await _say(stt2, "hey teaport what about tomorrow")
+    msgs = gate2.context.get_messages()
+    assert msgs[0]["role"] == "system"              # its own system prompt, not the old one
+    assert {"role": "assistant", "content": "Sunny, 21 degrees."} in msgs
+    assert msgs.count({"role": "user", "content": "(greet me)"}) == 1   # the first time only
+    wake = _messages(stt2.pushed)[0]
+    assert wake["greeted"] is False and wake["resumed"] is True
+    assert _texts(stt2.pushed) == ["what about tomorrow"]
+
+
+async def test_a_wake_after_the_window_starts_fresh_and_greets():
+    clock = Clock()
+    store = wake_gate.MicConversation(clock=clock)
+    stt, gate = _session(store=store)
+    await _say(stt, "hey teaport hi")
+    gate.context.add_message({"role": "assistant", "content": "an old answer"})
+    gate.ended()
+    clock.t += 7201
+    stt2, gate2 = _session(store=store)
+    await _say(stt2, "hey teaport hello")
+    msgs = gate2.context.get_messages()
+    assert {"role": "assistant", "content": "an old answer"} not in msgs
+    assert msgs[-1] == {"role": "user", "content": "(greet me)"}
+    assert _messages(stt2.pushed)[0]["greeted"] is True
+    assert store.take(7200) is None                 # forgotten, not kept for later
+
+
+async def test_a_session_that_never_woke_saves_nothing_and_the_store_is_capped():
+    store = wake_gate.MicConversation()
+    stt, gate = _session(store=store)
+    gate.ended()
+    assert store.take(7200) is None
+    many = [{"role": "user" if i % 2 == 0 else "assistant", "content": "x" * 100}
+            for i in range(200)]
+    store.save([{"role": "system", "content": "persona"}, *many])
+    kept = store.take(7200)
+    assert len(kept) <= wake_gate.KEEP_MESSAGES and kept[0]["role"] == "user"
+    assert all(m["role"] != "system" for m in kept)
+
+
+def test_only_the_box_s_own_mic_shares_the_store():
+    """gateway_server: ?features=local keeps the mic conversation; any other client gets
+    a store of its own, so no client is ever handed another's context."""
+    import inspect
+    from teaport_brain import gateway_server
+    src = inspect.getsource(gateway_server.run_relay_bot)
+    assert 'wake_gate.MIC if "local" in features else wake_gate.MicConversation()' in src
+
+
+# ---------------------------------------------------------------- failing closed
+
+class _Task:
+    def __init__(self):
+        self.queued = []
+
+    async def queue_frames(self, frames):
+        self.queued += frames
+
+
+class _Stt:
+    stt_available = False
+    slot_busy = True
+
+
+async def test_a_wake_session_whose_stt_is_down_ends_quietly_and_never_greets():
+    from teaport_brain.agent_session import AgentSession
+    s = AgentSession(task=_Task(), context=LLMContext([]), stt=_Stt(), tts=None, llm=None,
+                     ledger=None, followup_gate=None)
+    await s.greet(speak=False, hello=False)
+    assert s.should_end and s.end_reason == "busy"
+    assert not any(isinstance(f, TTSSpeakFrame) for f in s.task.queued)   # the room hears nothing
+    s2 = AgentSession(task=_Task(), context=LLMContext([]), stt=_Stt(), tts=None, llm=None,
+                      ledger=None, followup_gate=None)
+    await s2.greet()                                     # every other client: as before
+    assert any(isinstance(f, TTSSpeakFrame) for f in s2.task.queued)
+
+
+# ---------------------------------------------------------------- one conversation at a time
+
+class _WS:
+    def __init__(self):
+        self.closed = []
+
+    async def close(self, code=1000, reason=None):
+        self.closed.append((code, reason))
+
+
+class _PipelineTask:
+    def __init__(self, ws):
+        self.ws = ws
+        self.cancelled = False
+
+    async def cancel(self):
+        self.cancelled = True
+        await self.ws.close()                          # what pipecat does as it goes
+
+
+def _request(body):
+    class R:
+        query_params, headers = {}, {}
+
+        async def json(self):
+            return body
+    return R()
+
+
+async def test_a_phone_call_closes_the_asleep_mic_session_and_holds_the_room_off():
+    from types import SimpleNamespace
+    from teaport_brain import gateway_server as gs
+    os.environ.pop("GATEWAY_TOKEN", None)
+    asleep_ws, awake_ws = _WS(), _WS()
+    asleep = SimpleNamespace(task=_PipelineTask(asleep_ws))
+    awake = SimpleNamespace(task=_PipelineTask(awake_ws))
+    gs._wake_sessions.clear()
+    gs._wake_sessions[asleep_ws] = (wake_gate.WakeGate(["x"], asleep=True), asleep)
+    gs._wake_sessions[awake_ws] = (wake_gate.WakeGate(["x"], asleep=False), awake)
+    try:
+        answer = await gs.talk_call(_request({"state": "start"}))
+        assert answer == {"call": True, "yielded": 1}
+        assert asleep.task.cancelled and asleep_ws.closed == [(gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)]
+        assert not awake.task.cancelled                 # a conversation is not cut (#58)
+        assert gs.call_live()
+        status = await gs.talk_status(_request(None))
+        assert status["call"] is True
+        await gs.talk_call(_request({"state": "end"}))
+        assert not gs.call_live()
+        await gs.talk_call(_request({"state": "refresh"}))
+        gs._call_until -= gs.CALL_LEASE_SECS + 1        # a SIP brain that died mid-call
+        assert not gs.call_live()
+    finally:
+        gs._wake_sessions.clear()
+        gs._call_until = 0.0
+
+
+async def test_an_asleep_session_is_refused_while_a_call_is_live():
+    import time as _time
+    from teaport_brain import gateway_server as gs
+
+    class WS(_WS):
+        query_params = {"wake": "hey teaport", "features": "local,sleep"}
+    ws = WS()
+    gs._call_until = _time.monotonic() + 30
+    try:
+        await gs.run_relay_bot(ws)
+    finally:
+        gs._call_until = 0.0
+    assert ws.closed == [(gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)]
+
+
+async def test_the_sip_brain_holds_a_lease_for_the_length_of_the_call():
+    from teaport_brain import sip_server
+    told = []
+
+    async def tell(state):
+        told.append(state)
+        return {"yielded": 1} if state == "start" else {}
+    sip_server.CALL_REFRESH_SECS, old = 0.05, sip_server.CALL_REFRESH_SECS
+    try:
+        p = sip_server.CallPresence(tell=tell)
+        await p.start()
+        await asyncio.sleep(0.12)
+        await p.end()
+        await p.end()                                   # twice: harmless
+        await asyncio.sleep(0.1)
+    finally:
+        sip_server.CALL_REFRESH_SECS = old
+    assert told[0] == "start" and told[-1] == "end" and told.count("end") == 1
+    assert "refresh" in told
+
+
+# ---------------------------------------------------------------- end_conversation
+
+def test_end_conversation_is_offered_only_to_a_client_that_can_sleep():
+    from teaport_brain.tools import CLIENT_FEATURES, ToolContext, active_tools
+    assert "sleep" in CLIENT_FEATURES
+    names = lambda feats: {t.name for t in active_tools(ToolContext(client_features=frozenset(feats)))}
+    assert "end_conversation" not in names({"volume", "restart", "local"})
+    assert "end_conversation" in names({"volume", "restart", "local", "sleep"})
+
+
+def main():
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    for fn in fns:
+        if asyncio.iscoroutinefunction(fn):
+            asyncio.run(fn())
+        else:
+            fn()
+        print(f"  ok {fn.__name__}")
+
+
+if __name__ == "__main__":
+    main()
+    print("ALL PASS")

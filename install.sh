@@ -19,8 +19,6 @@
 # units that were running and checks they come back — rolling back on its own if they
 # do not. No EULA, no system packages, no engine download, no credential prompts, no
 # unit or env rendering: engine, agent, front door, bridge and SIP are left as they are.
-# (On a box with the local audio bridge, the brain's own wake-word pieces come along:
-# its `wake` extra in the venv and the keyword model — see fetch_wake_model.)
 # A brain change that needs a new unit or env setting ships with a full install run
 # instead: that builds the release the same way, then — once every unit and env file is
 # written — points the link at it and restarts the engine and every brain process (the
@@ -539,14 +537,10 @@ brain_stage() {
   # caches meant a sudo install and an operator repair each grew their own ~0.5GB invisibly,
   # on a box whose own preflight warns below 15GB free. The cache is also what makes a
   # fresh venv per install cheap: after the first, a build is a copy, not a download.
-  # --extra wake: the local audio bridge's wake-word spotter (sherpa-onnx, sentencepiece;
-  #                         pyproject.toml), only on a box with the bridge (local_audio_on).
-  local extras=()
-  if local_audio_on; then extras=(--extra wake); fi
-  log "uv sync --locked ${extras[*]:+${extras[*]} }$src -> $STAGED"
+  log "uv sync --locked $src -> $STAGED"
   SUDO mkdir -p "$STATE/uv-cache"; SUDO chown -R "$RUN_USER" "$STATE/uv-cache"
   if ! run env UV_PROJECT_ENVIRONMENT="$STAGED" UV_CACHE_DIR="$STATE/uv-cache" \
-      "$UV" sync --locked --no-editable --no-dev --link-mode copy "${extras[@]}" \
+      "$UV" sync --locked --no-editable --no-dev --link-mode copy \
       --reinstall-package teaport-brain \
       --python 3.12 --python-preference only-system --project "$src"; then
     rm -rf "$STAGED"
@@ -1725,46 +1719,9 @@ phase_oled_avatar() {
   fi
 }
 
-# Is the local audio bridge on this box — being enabled now, or set up before (its env
-# file, the unit's ConditionPathExists)? Then the brain venv gets the `wake` extra and
-# the box the keyword model, so wake words (LOCAL_AUDIO_WAKE_WORDS) work when set.
-local_audio_on() { [ "${TEAPORT_ENABLE_LOCAL_AUDIO:-0}" = 1 ] || [ -f "$ETC/local-audio.env" ]; }
-
-# The wake-word model (local_audio.WakeSpotter): sherpa-onnx's English streaming zipformer
-# keyword spotter (3.3M parameters, trained on GigaSpeech; Apache-2.0), pinned and
-# sha256-verified from its upstream release like uv. Only the int8 model and its tokens
-# are kept (~5 MB of the 17 MB archive). Never fatal: without it the bridge works as
-# before, and says, if wake words are set, that it cannot hear them.
-KWS_MODEL="sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01"
-KWS_URL="https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/$KWS_MODEL.tar.bz2"
-KWS_SHA256="f170013b4716e41b62b9bfd809687c207cef798ef9bc6534d524e17af9b6561a"
-KWS_FILES=(tokens.txt bpe.model encoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx
-           decoder-epoch-12-avg-2-chunk-16-left-64.int8.onnx joiner-epoch-12-avg-2-chunk-16-left-64.int8.onnx)
-fetch_wake_model() {
-  local dir="$PREFIX/models/kws/$KWS_MODEL" f have_all=1 tmp
-  for f in "${KWS_FILES[@]}"; do [ -f "$dir/$f" ] || have_all=0; done
-  if [ "$have_all" = 1 ]; then log "have wake-word model $KWS_MODEL"; return 0; fi
-  tmp="$(mktemp -d)"
-  # A subshell: download() dies on a failure, and this one is only worth a warning.
-  if ! (download "$KWS_URL" "$tmp/$KWS_MODEL.tar.bz2" "$KWS_SHA256"); then
-    rm -rf "$tmp"
-    warn "wake-word model not fetched — wake words (LOCAL_AUDIO_WAKE_WORDS) will not work until a re-run fetches it"
-    return 0
-  fi
-  SUDO mkdir -p "$dir"; SUDO chown "$RUN_USER" "$PREFIX/models" "$PREFIX/models/kws" "$dir"
-  if run tar -xjf "$tmp/$KWS_MODEL.tar.bz2" -C "$tmp" "${KWS_FILES[@]/#/$KWS_MODEL/}" \
-     && run cp "${KWS_FILES[@]/#/$tmp/$KWS_MODEL/}" "$dir/"; then
-    log "wake-word model -> $dir"
-  else
-    warn "wake-word model did not unpack into $dir — wake words will not work until a re-run fetches it"
-  fi
-  rm -rf "$tmp"
-}
-
 phase_local_audio() {
   render_unit teaport-local-audio.service.in teaport-local-audio.service
   SUDO systemctl daemon-reload
-  if local_audio_on; then fetch_wake_model; fi
   if [ "${TEAPORT_ENABLE_LOCAL_AUDIO:-0}" != 1 ]; then
     if systemctl is-enabled --quiet teaport-local-audio.service 2>/dev/null; then
       log "local audio: on — restarting it onto the new brain"
@@ -1875,7 +1832,6 @@ main_brain_only() {
   fi
   check_brain_source
   phase_brain
-  if local_audio_on; then fetch_wake_model; fi   # before the swap restarts the bridge
   brain_swap "$STAGED" --auto-rollback
   brain_install_tools   # only now: the swap has been verified
   brain_prune

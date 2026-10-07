@@ -465,6 +465,10 @@ class TeaportSTTService(WebsocketSTTService):
         # Tracked from the transport output's broadcast; a VAD stop over the bot's own
         # voice does not wait for a verdict (see STT_COMMIT_ON).
         self._bot_speaking = False
+        # The mic path's wake words (wake_gate.WakeGate), set by build_agent_session for
+        # a session that opens asleep: asked before any transcript is pushed or logged,
+        # so the room's words never become a frame while it sleeps. None: every word goes.
+        self.wake_gate = None
 
         # STREAMING BACKEND (vLLM serving Voxtral-Mini-4B-Realtime).
         #
@@ -1216,6 +1220,8 @@ class TeaportSTTService(WebsocketSTTService):
             # announced as one.
             if self._streaming and not piece.strip():
                 return
+            if self.wake_gate is not None and self.wake_gate.asleep:
+                return  # asleep: a hypothesis of the room goes nowhere (wake_gate.py)
             await self.push_frame(
                 InterimTranscriptionFrame(
                     self._interim_buffer,
@@ -1288,7 +1294,8 @@ class TeaportSTTService(WebsocketSTTService):
             self._log_segment(msg, commit)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
-            if text and not engine_text:
+            asleep = self.wake_gate is not None and self.wake_gate.asleep
+            if text and not engine_text and not asleep:
                 logger.debug(f"{self}: empty final — falling back to the interim "
                              f"hypothesis {text[:60]!r} to close the turn")
             self._interim_buffer = ""
@@ -1351,6 +1358,9 @@ class TeaportSTTService(WebsocketSTTService):
                     logger.info(f"{self}: hearing speech again after "
                                 f"{self._empty_finals} empty finals")
                 self._empty_finals = 0
+            if text and self.wake_gate is not None:
+                # Asleep: no wake phrase -> nothing; one -> what follows it (wake_gate.py).
+                text = await self.wake_gate.final(text, self.push_frame)
             if text:
                 await self.push_frame(
                     FinalTranscriptionFrame(
