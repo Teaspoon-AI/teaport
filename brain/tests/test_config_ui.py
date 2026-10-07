@@ -18,6 +18,8 @@
 #     untouched operator line must never make the file unsaveable.
 #   - An unreadable store is reported, not a 500 for the whole page.
 #   - Every route 401s without the token when GATEWAY_TOKEN is set.
+#   - The token compare is constant-time (hmac.compare_digest) and total: a
+#     missing or non-ASCII token is a 401 / a closed /talk, never a 500.
 #
 # Run: python test_config_ui.py   (or via pytest)
 #
@@ -150,6 +152,43 @@ def test_get_masks_secrets_and_requires_token():
     # ?token= works too (what the page uses on first open)
     assert client.get("/api/config?token=t0k3n").status_code == 200
     assert client.get("/config", headers=H).headers["content-type"].startswith("text/html")
+
+
+def test_token_compare_is_constant_time_and_total():
+    import hmac
+    from unittest import mock
+    from fastapi.websockets import WebSocketDisconnect
+    from teaport_brain import gateway_server as gs
+
+    assert config_ui.token_matches("t0k3n", "t0k3n")
+    for got in ("t0k3", "t0k3n ", "", None, "t\u00f6k3n"):
+        assert not config_ui.token_matches(got, "t0k3n"), got
+    assert config_ui.token_matches(None, "") and config_ui.token_matches("", None)
+    seen = []
+    real = hmac.compare_digest
+    with mock.patch.object(hmac, "compare_digest", lambda a, b: seen.append((a, b)) or real(a, b)):
+        config_ui.token_matches("x", "t0k3n")
+    assert seen == [(b"x", b"t0k3n")], seen
+
+    client, *_ = setup()
+    # non-ASCII in the query string: compare_digest on str would raise -> 500
+    assert client.get("/api/config?token=t%C3%B6k3n").status_code == 401
+    assert client.get("/api/config", headers={"authorization": "Bearer "}).status_code == 401
+
+    # /talk/status and /talk on the gateway app, same token
+    gw = TestClient(gs.app)
+    assert gw.get("/talk/status").status_code == 401
+    assert gw.get("/talk/status", headers={"authorization": "Bearer wrong"}).status_code == 401
+    assert gw.get("/talk/status", headers=H).status_code == 200
+    with mock.patch.object(gs, "GATEWAY_TOKEN", "t0k3n"), \
+            mock.patch.object(gs, "run_relay_bot", side_effect=AssertionError("auth let it through")):
+        for q in ("", "?token=wrong", "?token=t%C3%B6k3n"):
+            try:
+                with gw.websocket_connect("/talk" + q) as ws:
+                    ws.receive_text()
+                raise AssertionError(f"/talk{q} was accepted")
+            except WebSocketDisconnect as e:
+                assert e.code == 1008, (q, e.code)
 
 
 def test_put_validation():
@@ -453,7 +492,8 @@ def test_apply_helper_stop_also_cancels_a_scheduled_start():
 
 
 def main() -> int:
-    for fn in (test_env_roundtrip, test_get_masks_secrets_and_requires_token, test_put_validation,
+    for fn in (test_env_roundtrip, test_get_masks_secrets_and_requires_token,
+               test_token_compare_is_constant_time_and_total, test_put_validation,
                test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
                test_apply_helper_backup_ring_spares_operator_backups,
                test_unreadable_store_is_reported_not_fatal, test_secret_file_pending_for_startup_readers,

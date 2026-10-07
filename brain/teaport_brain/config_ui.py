@@ -36,6 +36,7 @@ still holds the old value until they restart).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import math
 import os
@@ -83,6 +84,13 @@ def _token() -> str:
     return os.getenv("GATEWAY_TOKEN", "")
 
 
+def token_matches(got: str | None, want: str | None) -> bool:
+    """Constant-time compare of a presented token against the configured one, so
+    the time a wrong guess takes says nothing about how much of it was right.
+    Bytes, not str: compare_digest refuses non-ASCII str. None counts as empty."""
+    return hmac.compare_digest((got or "").encode(), (want or "").encode())
+
+
 def _authorize(request: Request) -> None:
     want = _token()
     if not want:
@@ -91,7 +99,7 @@ def _authorize(request: Request) -> None:
     auth = request.headers.get("authorization", "")
     if auth.lower().startswith("bearer "):
         got = auth[7:].strip()
-    if got != want:
+    if not token_matches(got, want):
         raise HTTPException(status_code=401, detail="bad or missing token")
 
 
