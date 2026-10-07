@@ -99,6 +99,27 @@
 (* saying there were none, come before it -- under which it is sound;        *)
 (* FALSE is the timer as it is, and the stale reply it still lets through   *)
 (* is the accepted residual.                                                *)
+(*                                                                          *)
+(* The barge-in pause (barge_pause.py, #86). With the bot audible, caller   *)
+(* speech PAUSES playout at the transport; their words then cancel the      *)
+(* reply as before (min words, or while paused a stop word), and no words   *)
+(* resume it. A pause holds back the reply's own end, so the bot counts as  *)
+(* speaking until the resume.                                               *)
+(*                                                                          *)
+(* PAUSE = "off"             -- before #86.                                 *)
+(* PAUSE = "asWritten"       -- #86 as first written: pauses at any point,  *)
+(*                              a paused bot is a speaking bot.             *)
+(* PAUSE = "aOnly"           -- only the near-end rule: no pause in a       *)
+(*                              reply's last half second.                   *)
+(* PAUSE = "tailAtPause"     -- plus the would-have-ended rule, with the    *)
+(*                              tail known only if synthesis was over at    *)
+(*                              the pause (the round-1 fix).                *)
+(* PAUSE = "shipped"         -- plus a tail learned DURING the pause (the   *)
+(*                              transport re-announces the pause when the   *)
+(*                              reply's synthesis completes).               *)
+(* PAUSE = "noStopWord"      -- the shipped pause without the stop word.    *)
+(* PAUSE = "keepOnInterrupt" -- a transport that keeps its pause when the   *)
+(*                              interruption cancels the reply.             *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -107,9 +128,10 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
           SPEC,
           MaxCtxWrites,    \* bound on context writes under a live speculation
           HOLD,            \* the reply hold's design (see the header)
-          WORDS_IN_TIME    \* ASSUMPTION, for the gate's holding row: a resumed caller's
+          WORDS_IN_TIME,   \* ASSUMPTION, for the gate's holding row: a resumed caller's
                            \* words (or the STT's word-less close) arrive before the
                            \* release timer or the cap. FALSE: the timers as they are
+          PAUSE            \* the barge-in pause's design (see the header)
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -149,9 +171,30 @@ VARIABLES
 
 holdVars == <<reply, armed, held, paused, resumed, mergePending, unanswered, endQueued,
               replyOverResume, splitTurn>>
+VARIABLES
+    \* --- the barge-in pause (barge_pause.py) ---
+    pausedP,         \* the output transport has stopped writing the bot's audio
+    left,            \* how much of the playing reply is left, against the two
+                     \* thresholds that matter: "short" (<= 0.5 s: no pause there),
+                     \* "mid" (0.5 s up to the ~1 s a final takes to land: a pause is
+                     \* allowed, and the rest would have played out before the
+                     \* caller's final arrives), "long"
+    synthDone,       \* the reply's synthesis is over (its TTSStoppedFrame is at the
+                     \* transport): only then is `left` known to the brain
+    tailKnown,       \* paused, and the start strategy has been told the held-back tail
+    wouldEnd,        \* ground truth: paused, and without the pause the reply would
+                     \* have ended by now
+    stopHeard,       \* a stop utterance landed while the bot was paused for it
+    answerLost       \* monitor: a one-word answer that, without the pause, would have
+                     \* been a turn (the reply would have ended), started none
+pauseVars == <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard, answerLost>>
+
+NearEndRule  == PAUSE \notin {"off", "asWritten"}
+Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
+LateTail     == PAUSE \in {"shipped", "noStopWord", "keepOnInterrupt"}
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
           stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply,
-          holdVars>>
+          holdVars, pauseVars>>
 
 Gated == HOLD /= "none"
 
@@ -172,6 +215,20 @@ Init ==
     /\ reply = FALSE /\ armed = FALSE /\ held = FALSE /\ paused = FALSE
     /\ resumed = FALSE /\ mergePending = FALSE /\ unanswered = 0 /\ endQueued = FALSE
     /\ replyOverResume = FALSE /\ splitTurn = FALSE
+    /\ pausedP = FALSE /\ left = "long" /\ synthDone = FALSE /\ tailKnown = FALSE
+    /\ wouldEnd = FALSE /\ stopHeard = FALSE /\ answerLost = FALSE
+
+\* Caller speech while the bot is audible pauses playout -- not, with the near-end
+\* rule, when the reply is fully synthesized and in its last half second. The pause
+\* frame carries the tail when synthesis is over.
+MayPause == PAUSE /= "off" /\ botSpeaking /\ ~pausedP
+            /\ ~(NearEndRule /\ synthDone /\ left = "short")
+TakePause ==
+    /\ pausedP' = TRUE
+    /\ tailKnown' = (Counterfact /\ synthDone)
+    /\ UNCHANGED <<left, synthDone, wouldEnd, stopHeard, answerLost>>
+PauseOnSpeech ==
+    IF MayPause THEN TakePause ELSE UNCHANGED pauseVars
 
 \* The caller starts speaking: the gate holds an armed reply (the VAD start, or the
 \* faster onset test -- one event here), and the speech counts as a resumption if
@@ -203,6 +260,7 @@ VadStart ==
     /\ watchdog' = FALSE                       \* the inactivity timer is reset
     /\ spec' = FALSE                           \* the caller resumed: the text will differ
     /\ HoldOnSpeech
+    /\ PauseOnSpeech
     /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
                    specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
@@ -224,10 +282,39 @@ VadStop ==
     /\ UNCHANGED <<botSpeaking, stopInFlight, turns, spec, specGen, gen,
                    missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
 
 (***************************************************************************)
 (* The turn.                                                               *)
 (***************************************************************************)
+
+\* MinWordsUserTurnStartStrategy fired: >= INTERRUPT_MIN_WORDS of transcript.
+\* This is the ONLY producer of an interruption in the brain.
+\* A user turn starts, and with it the interruption: the bot is cut. One definition
+\* for every transcript that starts a turn (Interject, and the pause's one-word answer
+\* and stop word below).
+StartTurn ==
+    /\ userTurn' = TRUE
+    /\ botSpeaking' = FALSE
+    /\ inference' = FALSE
+    /\ turns' = turns + 1
+    /\ spec' = FALSE               \* a new turn: whatever was asked is not this
+    \* The words were for speech that began after the commit, and a reply is
+    \* playing that started over it: the stale reply, cut only now.
+    /\ replyOverResume' = (replyOverResume \/ (botSpeaking /\ resumed))
+    \* The interruption cancels the reply. A held one is dropped: pipecat's
+    \* reset empties the queue; the gate lifts the pause itself -- except as
+    \* first written, where an Uninterruptible frame in hand left it paused.
+    /\ reply' = FALSE /\ armed' = FALSE /\ held' = FALSE /\ resumed' = FALSE
+    /\ paused' = (HOLD = "gateNoResume" /\ held)
+    \* None of the last commit's reply was played: the next commit finishes it.
+    /\ mergePending' = (mergePending \/ (armed /\ HOLD \notin {"none", "gateNoMerge"}))
+    /\ UNCHANGED <<unanswered, endQueued, splitTurn>>
+    \* The interruption reaches the transport: the queued audio is dropped and, with
+    \* it, the pause -- except in a transport that keeps it.
+    /\ pausedP' = (PAUSE = "keepOnInterrupt" /\ pausedP)
+    /\ tailKnown' = FALSE /\ wouldEnd' = FALSE /\ stopHeard' = FALSE
+    /\ UNCHANGED <<left, synthDone, answerLost>>
 
 \* MinWordsUserTurnStartStrategy fired: >= INTERRUPT_MIN_WORDS of transcript.
 \* This is the ONLY producer of an interruption in the brain.
@@ -245,26 +332,100 @@ Interject ==
               /\ missedBargeIn' = (missedBargeIn \/ (inference /\ ~owed /\ botSpeaking))
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec>>
               /\ UNCHANGED holdVars
-         ELSE \* A turn starts, and with it the interruption: the bot is cut.
-              /\ userTurn' = TRUE
-              /\ botSpeaking' = FALSE
-              /\ inference' = FALSE
-              /\ turns' = turns + 1
-              /\ spec' = FALSE               \* a new turn: whatever was asked is not this
+              /\ UNCHANGED pauseVars
+         ELSE /\ StartTurn
               /\ UNCHANGED missedBargeIn
-              \* The words were for speech that began after the commit, and a reply is
-              \* playing that started over it: the stale reply, cut only now.
-              /\ replyOverResume' = (replyOverResume \/ (botSpeaking /\ resumed))
-              \* The interruption cancels the reply. A held one is dropped: pipecat's
-              \* reset empties the queue; the gate lifts the pause itself -- except as
-              \* first written, where an Uninterruptible frame in hand left it paused.
-              /\ reply' = FALSE /\ armed' = FALSE /\ held' = FALSE /\ resumed' = FALSE
-              /\ paused' = (HOLD = "gateNoResume" /\ held)
-              \* None of the last commit's reply was played: the next commit finishes it.
-              /\ mergePending' = (mergePending \/ (armed /\ HOLD \notin {"none", "gateNoMerge"}))
-              /\ UNCHANGED <<unanswered, endQueued, splitTurn>>
     /\ watchdog' = FALSE
     /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, gen, staleReply>>
+
+(***************************************************************************)
+(* The barge-in pause.                                                     *)
+(***************************************************************************)
+
+\* The reply plays on: its rest shrinks past the two thresholds.
+Progress ==
+    /\ ~endQueued
+    /\ PAUSE /= "off" /\ botSpeaking /\ ~pausedP /\ left /= "short"
+    /\ left' = IF left = "long" THEN "mid" ELSE "short"
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED <<pausedP, synthDone, tailKnown, wouldEnd, stopHeard, answerLost>>
+
+\* The reply's synthesis completes (its TTSStoppedFrame reaches the transport). During
+\* a pause, as shipped, the transport re-announces the pause with the tail it now
+\* knows, and the strategy learns it.
+SynthDone ==
+    /\ ~endQueued
+    /\ PAUSE /= "off" /\ botSpeaking /\ ~synthDone
+    /\ synthDone' = TRUE
+    /\ tailKnown' = (tailKnown \/ (pausedP /\ LateTail))
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED <<pausedP, left, wouldEnd, stopHeard, answerLost>>
+
+\* Ground truth: paused with the whole reply synthesized and less than a final's
+\* latency of it left, the held-back rest would have played out by now. (With a long
+\* rest, or more still to be synthesized, it would not.)
+TailElapsed ==
+    /\ ~endQueued
+    /\ pausedP /\ synthDone /\ left /= "long" /\ ~wouldEnd
+    /\ wouldEnd' = TRUE
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, stopHeard, answerLost>>
+
+\* No words: the line is quiet and playout resumes from where it stopped. A bot that
+\* resumes after the caller said stop to it has not been stopped: that OUTCOME is
+\* the missed barge-in, whatever path got there.
+ResumeP ==
+    /\ ~endQueued
+    /\ pausedP /\ ~userSpeaking
+    /\ pausedP' = FALSE /\ wouldEnd' = FALSE /\ tailKnown' = FALSE /\ stopHeard' = FALSE
+    /\ missedBargeIn' = (missedBargeIn \/ stopHeard)
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, gen, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED <<left, synthDone, answerLost>>
+
+\* A one-word final (not a stop word) lands after the caller's VAD stop -- "Yes.".
+\* What the strategy does with it (`Starts`) is the design; what it SHOULD have done
+\* is the ground truth -- without the pause, would the bot have been silent? -- and
+\* the monitor compares the outcome with that, not with the design's own branch.
+OneWordStarts ==
+    \/ ~botSpeaking
+    \/ (Counterfact /\ pausedP /\ tailKnown /\ wouldEnd)
+OneWord ==
+    /\ ~endQueued
+    /\ PAUSE /= "off"
+    /\ turns < MaxTurns /\ ~userTurn /\ ~userSpeaking /\ ~stopInFlight
+    /\ IF OneWordStarts
+         THEN /\ StartTurn
+              /\ UNCHANGED missedBargeIn
+         ELSE /\ answerLost' = (answerLost \/ (pausedP /\ wouldEnd))
+              /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
+              /\ UNCHANGED holdVars
+              /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard>>
+    /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, gen, staleReply>>
+
+\* A transcript made only of stop words ("Stop.") over the speaking bot. Under the
+\* 2-word guard; as shipped, a stop utterance to a PAUSED bot starts the turn. If it
+\* does not, the caller said stop to a bot that went quiet for them, and ResumeP
+\* records what happens next.
+StopWord ==
+    /\ ~endQueued
+    /\ PAUSE /= "off"
+    /\ turns < MaxTurns /\ ~userTurn /\ botSpeaking /\ ~stopInFlight
+    /\ IF pausedP /\ PAUSE /= "noStopWord"
+         THEN /\ StartTurn
+              /\ UNCHANGED missedBargeIn
+         ELSE /\ stopHeard' = (stopHeard \/ pausedP)
+              /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
+              /\ UNCHANGED holdVars
+              /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
+    /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, gen, staleReply>>
 
 (***************************************************************************)
 (* The speculative reply.                                                  *)
@@ -284,6 +445,7 @@ SpecStart ==
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
 
 \* Something else writes the context while a speculation is live. A free action,
 \* deliberately: HeardContextCorrector._reconcile on the very LLMContextFrame that
@@ -296,6 +458,7 @@ CtxChange ==
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
 
 \* trigger_user_turn_stopped(), first await: the stop strategy has decided, the
 \* aggregation is pushed and the LLM is asked. The controller gates this on the turn
@@ -340,6 +503,7 @@ Inference ==
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, gen,
                    missedBargeIn>>
     /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
+    /\ UNCHANGED pauseVars
 
 \* The gap between the two awaits: push_aggregation()'s trip across the pipeline,
 \* during which the aggregator's input task can run a queued VAD start. This is
@@ -354,6 +518,7 @@ Resume ==
                    spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
                    splitTurn>>
+    /\ UNCHANGED pauseVars
 
 \* trigger_user_turn_stopped(), second await.
 Finalize ==
@@ -371,6 +536,7 @@ Finalize ==
     /\ UNCHANGED <<userSpeaking, watchdog, botSpeaking, turns, spec, specGen, gen,
                    missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
 
 \* The reply the inference produced reaches the transport. It cannot overtake the
 \* finalize in practice -- an LLM round trip plus synthesis against two awaits --
@@ -387,6 +553,15 @@ BotStart ==
                    owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<held, paused, resumed, mergePending, endQueued, replyOverResume,
                    splitTurn>>
+    \* A new reply: any length, synthesized or not yet. As shipped, a caller already
+    \* talking as the bot starts is paused at the start (with what is known of it).
+    /\ \E l \in {"long", "mid", "short"}, d \in BOOLEAN :
+         /\ left' = IF PAUSE = "off" THEN "long" ELSE l
+         /\ synthDone' = (PAUSE /= "off" /\ d)
+         /\ pausedP' = (PAUSE = "shipped" /\ userSpeaking
+                        /\ ~(synthDone' /\ left' = "short"))
+         /\ tailKnown' = (pausedP' /\ synthDone')
+    /\ UNCHANGED <<wouldEnd, stopHeard, answerLost>>
 
 (***************************************************************************)
 (* The reply hold.                                                         *)
@@ -401,6 +576,7 @@ Wordless ==
                    stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, held, paused, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
+    /\ UNCHANGED pauseVars
 
 \* The release timer: TEAPORT_REPLY_HOLD_RELEASE_S after the caller goes quiet, the
 \* held reply plays. A timer knows nothing of the words: under WORDS_IN_TIME they have
@@ -413,6 +589,7 @@ Release ==
                    stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
+    /\ UNCHANGED pauseVars
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
 Cap ==
@@ -423,6 +600,7 @@ Cap ==
                    stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
+    /\ UNCHANGED pauseVars
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
 \* Every other action but the caller's speech is guarded by ~endQueued: what TLC
@@ -438,14 +616,16 @@ Hangup ==
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
+    /\ UNCHANGED pauseVars
 
 BotStop ==
     /\ ~endQueued                             \* the session has not ended
-    /\ botSpeaking
+    /\ botSpeaking /\ ~pausedP                  \* a paused reply cannot finish
     /\ botSpeaking' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
                    owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)
@@ -460,6 +640,7 @@ Arm ==
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
 
 \* The watchdog's stop is a commit too: _trigger_user_turn_stop pushes the
 \* aggregation, which reaches get_chat_completions and Speculator.take, so a live
@@ -476,6 +657,7 @@ ForceStop ==
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, gen,
                    missedBargeIn>>
     /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
 
 Next ==
     \/ VadStart \/ VadStop \/ Interject
@@ -484,6 +666,7 @@ Next ==
     \/ Arm \/ ForceStop
     \/ SpecStart \/ CtxChange
     \/ Wordless \/ Release \/ Cap \/ Hangup
+    \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP \/ OneWord \/ StopWord
 
 Spec == Init /\ [][Next]_vars
 
@@ -520,6 +703,20 @@ NoSilencedBot == ~(paused /\ ~held)
 \* The session's End never waits behind a hold.
 NoEndBehindHold == ~(endQueued /\ paused)
 
+\* The barge-in pause never loses an answer: a one-word final the caller would have
+\* had as a turn without the pause (the reply would already have ended) is one.
+NoLostAnswer == ~answerLost
+
+\* A pause is never left with nothing to resume: playout is paused only while the
+\* bot is in the middle of a reply.
+NoStuckPause == ~(pausedP /\ ~botSpeaking)
+
+\* Reachability witnesses: rows that expect these to FAIL prove the window the
+\* answer-loss fix is about is reachable in the design they run -- a pause with the
+\* rest of the reply in the 0.5-1 s band, and a tail that elapses during it.
+NoPauseInTailBand == ~(pausedP /\ left = "mid")
+NoTailElapsed == ~wouldEnd
+
 TypeOK ==
     /\ userTurn \in BOOLEAN /\ userSpeaking \in BOOLEAN /\ watchdog \in BOOLEAN
     /\ botSpeaking \in BOOLEAN /\ inference \in BOOLEAN /\ stopInFlight \in BOOLEAN
@@ -536,4 +733,10 @@ TypeOK ==
     /\ resumed \in BOOLEAN /\ mergePending \in BOOLEAN /\ unanswered \in 0..2
     /\ endQueued \in BOOLEAN /\ replyOverResume \in BOOLEAN /\ splitTurn \in BOOLEAN
     /\ (~Gated => ~armed /\ ~held /\ ~paused)
+    /\ PAUSE \in {"off", "asWritten", "aOnly", "tailAtPause", "shipped", "noStopWord",
+                  "keepOnInterrupt"}
+    /\ pausedP \in BOOLEAN /\ left \in {"long", "mid", "short"} /\ synthDone \in BOOLEAN
+    /\ tailKnown \in BOOLEAN /\ wouldEnd \in BOOLEAN /\ stopHeard \in BOOLEAN
+    /\ answerLost \in BOOLEAN
+    /\ (PAUSE = "off" => ~pausedP)
 =============================================================================

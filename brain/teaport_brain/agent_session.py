@@ -35,7 +35,6 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
     LLMUserAggregatorParams,
 )
-from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
 from teaport_brain.captions import (
@@ -62,6 +61,7 @@ from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard
 from teaport_brain import agent_backend
+from teaport_brain import barge_pause
 from teaport_brain import raw_llm_capture
 from teaport_brain import reply_hold
 from teaport_brain import speculate
@@ -848,6 +848,15 @@ def build_agent_session(transport, *, voice: str | None = None,
         )
     )
 
+    # The pauser below is built after the aggregator (it needs the transport's output);
+    # the start strategy tells it when the caller's speech came back with no turn in it.
+    pause_link: dict = {}
+
+    async def _final_without_turn():
+        pauser = pause_link.get("pauser")
+        if pauser is not None:
+            await pauser.on_final_without_turn()
+
     # Barge-in is the whole point of this surface (the OpenClaw Talk client does its
     # own echo cancellation), so we do NOT mute the user while the bot speaks —
     # smart-turn endpointing handles turn-taking instead.
@@ -862,7 +871,13 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # silent, so normal turns are unaffected). Replaces the default
                 # [VAD, Transcription] start — VAD-start would interrupt on any
                 # sound, defeating the guard.
-                start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
+                #
+                # PauseAware: the same rule, plus a single stop word while playout is
+                # paused by the barge-in pauser below (barge_pause.py); without a
+                # pause it is MinWordsUserTurnStartStrategy exactly.
+                start=[barge_pause.PauseAwareMinWordsStrategy(
+                    min_words=INTERRUPT_MIN_WORDS,
+                    on_final_without_turn=_final_without_turn)],
                 stop=[stop_strategy],
             ),
         ),
@@ -910,6 +925,19 @@ def build_agent_session(transport, *, voice: str | None = None,
                 "wait the speculation would use, so no final lands before the commit and "
                 "it will find nothing to do. Set TEAPORT_STT_COMMIT_ON=vad-stop to use it "
                 "(see speculate.py for the trade)")
+    # Pauses playout the moment the caller starts talking over the bot, and resumes it
+    # if no words follow (barge_pause.py). Only where the transport can pause without
+    # losing audio: SIP. The Talk relay's client buffers what we send and can only
+    # clear it, so there is no pauser on that path.
+    barge_pauser = (barge_pause.BargeInPauser(transport_output)
+                    if barge_pause.ENABLED
+                    and getattr(transport_output, "supports_playout_pause", False)
+                    else None)
+    if barge_pauser is not None:
+        pause_link["pauser"] = barge_pauser
+        vad_analyzer.onset_listeners.append(barge_pauser.on_onset)
+        logger.info("barge-in pause ON (TEAPORT_BARGE_PAUSE): playout pauses on caller "
+                    "speech and resumes if no words follow")
     if reply_gate is not None:
         vad_analyzer.onset_listeners.append(reply_gate.on_onset)
 
@@ -1006,6 +1034,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # Fill the dead air of a long ask_openclaw consult with a soft typing bed;
         # stops the instant the reply's first audio arrives. No-op for fast tools.
         ThinkingSound() if thinking_sound.ENABLED else None,
+        # Directly above the transport: it reads the transport's upstream
+        # Bot{Started,Stopped}SpeakingFrames and pauses the transport itself.
+        barge_pauser,
         transport_output,
         followup_gate,  # track user/bot/LLM activity → hold async follow-ups for a clear moment
         CaptionTap(activity, every_final=caption_every_final),  # AFTER the transport: playout-paced partials + per-utterance finals
