@@ -78,16 +78,50 @@ def get(lang: str) -> T:
     return T(lang if lang in catalogs() or lang == SOURCE_LANG else SOURCE_LANG)
 
 
+def _have() -> dict[str, str]:
+    """Every catalog (and the source language) by its lowercased name: 'pt_br' -> 'pt_BR'."""
+    return {lang.lower(): lang for lang in (*catalogs(), SOURCE_LANG)}
+
+
 def chosen(lang: str | None) -> T | None:
-    """An explicit choice (?lang=, a cookie): its catalog, or None if it names none."""
-    if lang == SOURCE_LANG or lang in catalogs():
-        return get(lang)
+    """An explicit choice (?lang=, a cookie): its catalog, or None if it names none.
+    Exactly a catalog's name, in any case and with - or _ ('pt_BR', 'pt-br')."""
+    found = _have().get((lang or "").strip().replace("-", "_").lower())
+    return get(found) if found else None
+
+
+# Language tags whose catalog is not named after them.
+_ALIASES = {
+    "pt": "pt_BR",  # the one Portuguese the voice speaks (and has a catalog)
+    "cmn": "zh",    # the engine's Mandarin (espeak's code)
+    # Chinese of every script and region gets the Simplified catalog, the only one
+    # there is: zh-TW, zh-HK and zh-Hant readers too. Deliberate -- a Traditional reader
+    # can read Simplified far more easily than English; a zh_Hant catalog would be
+    # the real fix, and would win here by name ("zh_TW" / "zh_Hant") once it exists.
+    "zh": "zh",
+}
+
+
+def _best(tag: str) -> str | None:
+    """The catalog for one language tag ('es-MX', 'fr_fr', 'PT', 'zh-Hant-TW', 'cmn'):
+    the tag itself, else its language with the region dropped, else an alias."""
+    have = _have()
+    tag = tag.strip().replace("-", "_").lower()
+    lang = tag.split("_", 1)[0]
+    for candidate in (tag, lang, _ALIASES.get(lang, "").lower()):
+        if candidate and candidate in have:
+            return have[candidate]
     return None
 
 
 def for_espeak(code: str | None) -> T:
-    """The strings for a session whose TTS speaks `code` ('en-us', 'es', 'cmn', ...)."""
-    return get(ESPEAK_TO_LANG.get((code or "").lower(), SOURCE_LANG))
+    """The strings for a session whose TTS speaks `code` ('en-us', 'es', 'cmn', ...).
+    TTS_LANGUAGE / ?language= also give plain or regional codes ('fr', 'es-MX', 'ja-JP',
+    'pt'): those find their language's catalog the way a browser's tag does."""
+    code = (code or "").strip().lower()
+    if code in ESPEAK_TO_LANG:
+        return get(ESPEAK_TO_LANG[code])
+    return get(_best(code) or SOURCE_LANG)
 
 
 def for_accept_language(header: str | None) -> T:
@@ -96,22 +130,19 @@ def for_accept_language(header: str | None) -> T:
     for i, part in enumerate((header or "").split(",")):
         tag, _, params = part.strip().partition(";")
         q = 1.0
-        m = re.search(r"q=([0-9.]+)", params)
+        # The weight is the q parameter, case-insensitively (RFC 9110 12.4.2): "Q=0" refuses too.
+        m = re.search(r"(?:^|;)\s*q\s*=\s*([0-9.]+)", params, re.I)
         if m:
             try:
                 q = float(m.group(1))
             except ValueError:
                 q = 0.0
-        if tag and q > 0:
-            choices.append((-q, i, tag.strip().replace("-", "_")))
-    have = set(catalogs()) | {SOURCE_LANG}
+        if tag.strip() and q > 0:
+            choices.append((-q, i, tag.strip()))
     for _, _, tag in sorted(choices):
-        lang, _, region = tag.partition("_")
-        for candidate in (f"{lang.lower()}_{region.upper()}" if region else "", lang.lower()):
-            if candidate in have:
-                return get(candidate)
-        if lang.lower() == "pt" and "pt_BR" in have:
-            return get("pt_BR")  # the one Portuguese the voice speaks
+        found = _best(tag)
+        if found:
+            return get(found)
     return get(SOURCE_LANG)
 
 
@@ -144,29 +175,42 @@ def _unquote(s: str) -> str:
 
 def parse_po(text: str) -> dict[str, str]:
     """{key: msgstr}; key is msgid, or msgctxt + '\\x04' + msgid (gettext's convention).
-    Untranslated entries (empty msgstr) are left out, so they fall back to English."""
+    Untranslated entries (empty msgstr) are left out, so they fall back to English, and
+    so are fuzzy ones (a PO editor's "#, fuzzy": a guess nobody has checked), as msgfmt
+    leaves them out -- except the header, which msgfmt keeps fuzzy or not."""
     entries: dict[str, str] = {}
     cur: dict[str, str] = {}
+    fuzzy = False
     field = None
 
     def flush():
-        if "msgid" in cur and cur.get("msgstr"):
+        nonlocal fuzzy
+        if "msgid" in cur and cur.get("msgstr") and not (fuzzy and cur["msgid"]):
             key = cur["msgid"] if "msgctxt" not in cur else cur["msgctxt"] + "\x04" + cur["msgid"]
             entries[key] = cur["msgstr"]
         cur.clear()
+        fuzzy = False
 
     for n, raw in enumerate(text.splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
-            if not line and cur.get("msgstr") is not None:
+            # A blank line ends an entry; so does a comment after its msgstr (the next
+            # entry's comments, with no blank line between).
+            if cur.get("msgstr") is not None:
                 flush()
                 field = None
+            if line.startswith("#,") and "fuzzy" in re.split(r"[\s,]+", line[2:]):
+                fuzzy = True
             continue
         m = re.match(r"(msgctxt|msgid|msgstr)\s+(\".*\")$", line)
         try:
             if m:
                 if m.group(1) in ("msgctxt", "msgid") and "msgstr" in cur:
                     flush()
+                elif m.group(1) in cur or (m.group(1) == "msgctxt" and "msgid" in cur):
+                    # A second msgid (or a msgctxt after one) before any msgstr: the
+                    # entry before has none, and its msgctxt must not become this one's.
+                    raise ValueError(f"{m.group(1)} before the entry above has a msgstr")
                 field = m.group(1)
                 cur[field] = _unquote(m.group(2))
             elif line.startswith('"') and field:
