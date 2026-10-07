@@ -2069,7 +2069,7 @@ group = "wifi_setup"
 type = "secret"
 read = "startup"
 tier = "installer"
-help = "The setup network's WPA2 password, written at flash time so the paper insert can print it. Digits are easiest to say and type; 8 to 63 characters. Unset (or invalid): fresh random digits each setup, spoken aloud."
+help = "The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Digits are easiest to say and type. Unset (or invalid): fresh random digits each setup, spoken aloud."
 source = "wifi_setup.py:65"
 
 [[settings]]

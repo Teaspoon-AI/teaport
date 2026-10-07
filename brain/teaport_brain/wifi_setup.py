@@ -80,13 +80,22 @@ def setup_ssid(mac: str, override: str = "") -> str:
     return SSID_PREFIX + (hexdigits[-4:] if len(hexdigits) >= 4 else "0000")
 
 
+# The symbols the voice can name when it spells the password (wifi_voice._SYMBOLS; kept
+# apart because this module must not import Pipecat). Any other symbol would reach the
+# voice bare, and a comma or a slash read aloud is a pause or nothing.
+PASSWORD_SYMBOLS = frozenset("-_.@!#&* ")
+
+
 def setup_password(fixed: str = "") -> str:
-    """The flash-time password if valid (WPA2: 8 to 63 printable ASCII), else digits."""
+    """The flash-time password if valid -- 8 to 63 characters (WPA2), every one an ASCII
+    letter, a digit or one of PASSWORD_SYMBOLS, so the voice can spell it -- else digits."""
     fixed = fixed.strip()
     if fixed:
-        if 8 <= len(fixed) <= 63 and all(32 <= ord(c) < 127 for c in fixed):
+        if 8 <= len(fixed) <= 63 and all(
+                (c.isascii() and c.isalnum()) or c in PASSWORD_SYMBOLS for c in fixed):
             return fixed
-        log("WIFI_SETUP_PASSWORD is not 8-63 printable characters — using random digits")
+        log("WIFI_SETUP_PASSWORD is not 8-63 letters, digits and - _ . @ ! # & * or space "
+            "— using random digits")
     return "".join(secrets.choice("0123456789") for _ in range(PASSWORD_DIGITS))
 
 
