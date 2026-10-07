@@ -72,6 +72,27 @@ def test_every_script_on_disk_is_collected():
     assert SCRIPTS, "no test scripts discovered — is this running from brain/tests?"
 
 
+def _runs_its_tests(path: str) -> bool:
+    """A script that defines test_* functions must run them when executed: test_script
+    runs each file as `python <file>`, and a pytest-style file with no __main__ exits 0
+    having run nothing — a silent pass for every test in it (test_local_audio.py and
+    test_wifi_setup.py both shipped like that). A file with no test_* functions is a
+    plain script and runs top to bottom anyway."""
+    with open(path, encoding="utf-8") as f:
+        tree = ast.parse(f.read(), filename=path)
+    has_tests = any(isinstance(n, (ast.FunctionDef, ast.AsyncFunctionDef)) and n.name.startswith("test_")
+                    for n in tree.body)
+    has_main = any(isinstance(n, ast.If) and "__main__" in ast.unparse(n.test) for n in tree.body)
+    return has_main or not has_tests
+
+
+def test_every_script_runs_its_tests_when_executed():
+    silent = sorted(name for name, _ in SCRIPTS if not _runs_its_tests(os.path.join(HERE, name)))
+    assert not silent, (
+        f"these define test_* functions but have no `if __name__ == \"__main__\":` to run "
+        f"them, so the gate passes them without running a single test: {silent}")
+
+
 def _calls_appliance_guard(path: str) -> bool:
     """True if the script at `path` actually calls appliance.require_env /
     require_reachable — including through `from appliance import require_env as x`.
