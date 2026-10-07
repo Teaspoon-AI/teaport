@@ -33,6 +33,15 @@ Notable transitive dependencies of `pipecat-ai`:
 | loudness | ITU-R BS.1770 loudness measurement for the VAD's volume gate (pipecat ≥ 1.8.0; replaced pyloudnorm + scipy) | MIT |
 | onnx model weights | Silero VAD + smart-turn-v3, shipped inside the pipecat wheel | see pipecat |
 
+The optional `wake` extra — installed only on a box with the local audio bridge, for
+its wake words (`local_audio.WakeSpotter`):
+
+| Component | Why it is here | License |
+|---|---|---|
+| sherpa-onnx, sherpa-onnx-core | streaming keyword spotter; the core wheel carries its own onnxruntime library (MIT), loaded only by the bridge | Apache-2.0 |
+| sentencepiece | spells the wake phrases in the model's BPE tokens | Apache-2.0 |
+| sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01 | the keyword model (int8), fetched by install.sh from the sherpa-onnx release, sha256-pinned | Apache-2.0 |
+
 This list is the unconditional closure of `pipecat-ai[websocket]` in `brain/uv.lock`,
 not everything pipecat can pull: `transformers` used to be listed here for Smart Turn's
 `WhisperFeatureExtractor` and is in neither the lock nor the venv — pipecat only

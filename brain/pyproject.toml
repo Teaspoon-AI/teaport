@@ -75,6 +75,22 @@ dependencies = [
   "openai",
 ]
 
+[project.optional-dependencies]
+# The local audio bridge's wake words (local_audio.WakeSpotter, LOCAL_AUDIO_WAKE_WORDS):
+# sherpa-onnx's keyword spotter (its wheel carries its own onnxruntime library, loaded
+# only by the bridge, never beside pipecat's in a brain) and the sentencepiece that
+# spells the phrases in the model's tokens. install.sh syncs this extra only on a box
+# with the bridge (TEAPORT_ENABLE_LOCAL_AUDIO=1, or local-audio.env already there):
+# ~50 MB nobody else needs. All three ship cp312 manylinux aarch64 wheels; Apache-2.0.
+# sherpa-onnx-core (the native libraries, onnxruntime's among them) is named although
+# sherpa-onnx's wheels require it: uv locks sherpa-onnx from metadata that omits it, and
+# a venv synced without it fails to import (libonnxruntime.so not found).
+wake = [
+  "sherpa-onnx==1.13.8",
+  "sherpa-onnx-core==1.13.8",
+  "sentencepiece>=0.2,<0.3",
+]
+
 [dependency-groups]
 # Synced by default (CI and dev boxes get the LOCKED pytest, not a fresh resolve) and
 # EXCLUDED on the appliance — install.sh passes --no-dev — so the production venv stays
