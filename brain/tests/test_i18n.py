@@ -14,8 +14,68 @@ import pytest
 
 from teaport_brain import i18n, wifi_setup, wifi_voice
 
-SOURCES = ["wifi_voice.py", "wifi_setup.py", "wifi.py"]
 PKG = os.path.dirname(os.path.abspath(i18n.__file__))
+
+
+def _modules() -> list[tuple[str, ast.Module]]:
+    """Every module of the package that imports i18n: where translatable text can be."""
+    out = []
+    for name in sorted(os.listdir(PKG)):
+        if not name.endswith(".py") or name == "i18n.py":
+            continue
+        tree = ast.parse(open(os.path.join(PKG, name), encoding="utf-8").read())
+        if any((isinstance(n, ast.ImportFrom) and (n.module == "teaport_brain.i18n" or (
+                n.module == "teaport_brain" and any(a.name == "i18n" for a in n.names))))
+               or (isinstance(n, ast.Import) and any(a.name == "teaport_brain.i18n" for a in n.names))
+               for n in ast.walk(tree)):
+            out.append((name, tree))
+    return out
+
+
+# The calls that translate a msgid the code computes, by module and source, and where
+# their msgids come from. _used() adds the tables; the reasons are N_() literals in the
+# modules that set them. Any other non-literal argument fails the test: an f-string, a
+# concatenation or a variable is text that would ship untranslated with nothing red.
+DYNAMIC = {
+    "wifi_setup.py": {
+        "t._(reason)",                       # Setup.failure's reason: N_() in wifi.py / here
+        "t._(error)",                        # parse_form's messages: N_() here
+    },
+    "wifi_voice.py": {
+        "t.p('pattern', english)",           # PATTERNS
+        "t.p('digit', c)", "t.p('digit', d)",  # 0-9
+        "t.p('letter', c.upper())",          # A-Z, optional per catalog (LETTERS)
+        "t.p('spell', _SYMBOLS[c])",         # _SYMBOLS
+        "t._(self._why)",                    # status.json's reason: N_() in wifi.py / wifi_setup.py
+        "t._(status.get('reason') or N_('something went wrong'))",  # the same
+    },
+}
+
+
+def _calls():
+    """(module, call node, its name) for every _(), p() and N_() call in _modules()."""
+    for name, tree in _modules():
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call):
+                f = node.func
+                fname = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
+                if fname in ("_", "N_", "p"):
+                    yield name, node, fname
+
+
+def _literal(node) -> bool:
+    return isinstance(node, ast.Constant) and isinstance(node.value, str)
+
+
+def test_every_translated_string_is_one_the_tests_can_see():
+    unknown = sorted(f"{name}: {ast.unparse(node)}" for name, node, _ in _calls()
+                     if not all(_literal(a) for a in node.args) or node.keywords
+                     if ast.unparse(node) not in DYNAMIC.get(name, set()))
+    assert not unknown, ("translation calls with a computed argument -- make it a literal, "
+                         f"or add it to DYNAMIC with where its msgids come from: {unknown}")
+    stale = {f"{name}: {src}" for name, srcs in DYNAMIC.items() for src in srcs} - {
+        f"{name}: {ast.unparse(node)}" for name, node, _ in _calls()}
+    assert not stale, f"DYNAMIC lists calls that are gone: {sorted(stale)}"
 
 
 def _used() -> set[str]:
@@ -23,18 +83,14 @@ def _used() -> set[str]:
     arguments (ast: adjacent literals are already one string), plus the ones the code
     builds from tables: digits, symbol names, and the English patterns."""
     keys = set()
-    for name in SOURCES:
-        tree = ast.parse(open(os.path.join(PKG, name), encoding="utf-8").read())
-        for node in ast.walk(tree):
-            if not isinstance(node, ast.Call):
-                continue
-            f = node.func
-            fname = f.attr if isinstance(f, ast.Attribute) else getattr(f, "id", None)
-            args = [a.value for a in node.args if isinstance(a, ast.Constant) and isinstance(a.value, str)]
-            if fname in ("_", "N_") and len(args) == 1 and len(node.args) == 1:
-                keys.add(args[0])
-            elif fname == "p" and len(args) == 2 and len(node.args) == 2:
-                keys.add(args[0] + "\x04" + args[1])
+    for _name, node, fname in _calls():
+        if not all(_literal(a) for a in node.args):
+            continue  # DYNAMIC: the tables below, or N_() literals found here
+        args = [a.value for a in node.args]
+        if fname in ("_", "N_") and len(args) == 1:
+            keys.add(args[0])
+        elif fname == "p" and len(args) == 2:
+            keys.add(args[0] + "\x04" + args[1])
     keys |= {"digit\x04" + str(d) for d in range(10)}
     keys |= {"spell\x04" + s for s in wifi_voice._SYMBOLS.values()}
     keys |= {"pattern\x04" + p for p in wifi_voice.PATTERNS.values()}
@@ -151,6 +207,7 @@ def test_the_patterns_hear_their_language(lang):
     for meaning, english in wifi_voice.PATTERNS.items():
         re.compile(t.p("pattern", english))                      # a valid regex
         assert wifi_voice.heard(meaning, SAYS[lang][meaning], t), (lang, meaning)
+    assert wifi_voice.is_yes(SAYS[lang]["yes"], t)               # said as an answer
     assert wifi_voice.heard("start", "set up wifi", t)           # English works too...
     assert not wifi_voice.heard("start", SAYS[lang]["yes"], t)
     assert not wifi_voice.heard("yes", SAYS[lang]["no"], t) or wifi_voice.heard("no", SAYS[lang]["no"], t)
@@ -196,6 +253,10 @@ def test_the_session_language_picks_the_catalog():
         assert sep.join(t.p("digit", d) for d in "47190352") in text, (code, text)
         assert t.p("spell", "dash") in text
     assert i18n.for_espeak("xx").lang == "en"
+    # TTS_LANGUAGE / ?language= give plain and regional codes too, in any case.
+    for code, lang in (("fr", "fr"), ("es-MX", "es"), ("ja_JP", "ja"), ("pt", "pt_BR"),
+                       ("PT-BR", "pt_BR"), ("EN-US", "en"), ("zh-CN", "zh"), ("de", "de")):
+        assert i18n.for_espeak(code).lang == lang, code
     fr = i18n.get("fr")
     assert wifi_voice.spell("Tito2017", fr).startswith(fr.p("spell", "capital {letter}").format(letter="T"))
 
@@ -203,7 +264,10 @@ def test_the_session_language_picks_the_catalog():
 @pytest.mark.parametrize("header,lang", [
     ("es-MX,es;q=0.9,en;q=0.8", "es"), ("pt-PT,pt;q=0.9", "pt_BR"), ("ja-JP", "ja"),
     ("zh-CN,zh;q=0.9", "zh"), ("de-DE,de;q=0.9", "de"), ("ar-EG", "ar"), ("ko-KR,ko;q=0.9", "ko"),
-    ("sv-SE,sv;q=0.9", "en"), ("fr;q=0,it;q=0.5", "it"), (None, "en")])
+    ("sv-SE,sv;q=0.9", "en"), ("fr;q=0,it;q=0.5", "it"), (None, "en"),
+    ("es;Q=0, fr", "fr"), ("FR-ca", "fr"), ("*", "en"), ("de;level=1;q=0.3,it;q=0.4", "it"),
+    # Every Chinese gets the Simplified catalog, the only one (i18n._ALIASES says why).
+    ("zh-TW", "zh"), ("zh-Hant-HK,en;q=0.5", "zh")])
 def test_the_page_follows_the_phones_language(header, lang):
     assert i18n.for_accept_language(header).lang == lang
 
@@ -258,3 +322,35 @@ def test_the_language_picker_overrides_the_phone_and_is_remembered():
             assert f'<option value="{code}"' in page and i18n.ENDONYMS[code] in page
     finally:
         setup.server.shutdown()
+
+
+def test_a_choice_names_a_catalog_however_it_is_written():
+    assert i18n.chosen("pt-BR").lang == i18n.chosen("pt_br").lang == "pt_BR"
+    assert i18n.chosen("EN").lang == "en"
+    for bad in (None, "", "xx", "../en", "pt"):
+        assert i18n.chosen(bad) is None, bad
+
+
+HEADER = 'msgid ""\nmsgstr "Content-Type: text/plain; charset=UTF-8\\n"\n\n'
+
+
+def test_fuzzy_entries_are_left_out_as_msgfmt_leaves_them():
+    po = HEADER + '#, fuzzy\nmsgid "a"\nmsgstr "A"\n\n#, c-format, fuzzy\nmsgid "b"\nmsgstr "B"\n'
+    po += '#: x.py:1\nmsgid "c"\nmsgstr "C"\n#, fuzzy\nmsgid "d"\nmsgstr "D"\nmsgid "e"\nmsgstr "E"'
+    assert set(i18n.parse_po(po)) == {"", "c", "e"}
+    # The header is kept fuzzy or not, as msgfmt keeps it.
+    assert "" in i18n.parse_po("#, fuzzy\n" + HEADER)
+
+
+def test_an_entry_without_a_msgstr_is_an_error_not_a_context_for_the_next():
+    with pytest.raises(ValueError, match="line 4"):
+        i18n.parse_po('msgctxt "c"\nmsgid "a"\n\nmsgid "b"\nmsgstr "B"\n')
+    po = 'msgctxt "c"\nmsgid "a"\nmsgstr "A"\nmsgid "b"\nmsgstr "B"\n'  # no blank line
+    assert i18n.parse_po(po) == {"c\x04a": "A", "b": "B"}
+
+
+if __name__ == "__main__":
+    # test_suite.py runs every test file as a script: without this it would pass here
+    # having run nothing.
+    import sys
+    sys.exit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

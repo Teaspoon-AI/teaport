@@ -275,7 +275,8 @@ class Setup:
                 picked = i18n.chosen((query.get("lang") or [None])[0])
                 if picked:
                     return picked, [("Set-Cookie", f"teaport_lang={picked.lang}; Path=/; SameSite=Lax")]
-                cookie = re.search(r"(?:^|;\s*)teaport_lang=([A-Za-z_]+)", self.headers.get("Cookie") or "")
+                # Only a catalog's name gets through: chosen() checks it against them.
+                cookie = re.search(r"(?:^|;\s*)teaport_lang=([A-Za-z_-]+)", self.headers.get("Cookie") or "")
                 kept = i18n.chosen(cookie.group(1)) if cookie else None
                 return kept or i18n.for_accept_language(self.headers.get("Accept-Language")), []
 
