@@ -7,6 +7,7 @@ import sys
 import tempfile
 
 import numpy as np
+import pytest
 import soxr
 
 from teaport_brain import local_audio as la
@@ -668,3 +669,79 @@ def test_restart_session_redials_at_once_without_a_voice(monkeypatch):
     assert got["result"]["type"] == "tool_result" and got["result"]["call_id"] == "teaport-client-x"
     assert got["result"]["result"]["ok"] is True
     assert all("features=volume,restart,local" in p for p in got["paths"]), got["paths"]
+
+
+def test_card_present_follows_the_proc_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(la, "pcm_status_dir", lambda dev: str(tmp_path / "Array" / "pcm0p")
+                        if dev.startswith("hw:") else None)
+    assert la.card_present("hw:CARD=Array,DEV=0") is False
+    (tmp_path / "Array").mkdir()
+    assert la.card_present("hw:CARD=Array,DEV=0") is True
+    assert la.card_present("plughw:Array") is None
+
+
+def test_a_replugged_card_ends_the_backoff_early(monkeypatch, tmp_path):
+    card_dir = tmp_path / "Array"
+    monkeypatch.setattr(la, "pcm_status_dir", lambda dev: str(card_dir / "pcm0p"))
+    monkeypatch.setattr(la, "CARD_POLL_SECS", 0.05)
+    monkeypatch.setattr(la, "CARD_ABSENT_MIN_SECS", 0.1)
+
+    async def run():
+        async def plug_in_later():
+            await asyncio.sleep(0.2)
+            card_dir.mkdir()
+        asyncio.get_running_loop().create_task(plug_in_later())
+        t0 = asyncio.get_running_loop().time()
+        early = await la.wait_for_card("hw:CARD=Array,DEV=0", 30)
+        return early, asyncio.get_running_loop().time() - t0
+
+    early, took = asyncio.run(run())
+    assert early and took < 1.0                  # not the 30 s backoff
+
+    async def present_but_failing():
+        t0 = asyncio.get_running_loop().time()
+        early = await la.wait_for_card("hw:CARD=Array,DEV=0", 0.3)   # card_dir exists now
+        return early, asyncio.get_running_loop().time() - t0
+
+    early, took = asyncio.run(present_but_failing())
+    assert not early and took >= 0.29            # a card that is there waits it out
+
+
+def test_a_flapping_card_keeps_its_backoff(monkeypatch, tmp_path):
+    """A card that drops off and comes straight back (brownout, bad cable) is not a
+    replug: it waits out the backoff, which keeps growing, instead of being retried --
+    and the brain redialled between failures -- every few seconds."""
+    card_dir = tmp_path / "Array"
+    monkeypatch.setattr(la, "pcm_status_dir", lambda dev: str(card_dir / "pcm0p"))
+    monkeypatch.setattr(la, "CARD_POLL_SECS", 0.02)
+    monkeypatch.setattr(la, "CARD_ABSENT_MIN_SECS", 0.3)
+
+    async def run():
+        async def blink():
+            await asyncio.sleep(0.05)
+            card_dir.mkdir()                     # back after 0.05 s: a flap
+        asyncio.get_running_loop().create_task(blink())
+        t0 = asyncio.get_running_loop().time()
+        early = await la.wait_for_card("hw:CARD=Array,DEV=0", 0.6)
+        return early, asyncio.get_running_loop().time() - t0
+
+    early, took = asyncio.run(run())
+    assert not early and took >= 0.59
+
+
+def test_card_present_from_real_device_strings(tmp_path, monkeypatch):
+    """The /proc path from device strings as written, not a stub."""
+    (tmp_path / "card0").mkdir()
+    (tmp_path / "Array").mkdir()
+    real = la.pcm_status_dir
+    monkeypatch.setattr(la, "pcm_status_dir",
+                        lambda dev: (real(dev) or "").replace("/proc/asound", str(tmp_path)) or None)
+    assert la.card_present("hw:0,0") is True
+    assert la.card_present("hw:CARD=Array,DEV=0") is True
+    assert la.card_present("hw:CARD=Gone,DEV=0") is False
+    assert la.card_present("plughw:Array") is None
+
+
+if __name__ == "__main__":
+    # test_suite.py runs this file as a script: without this it would pass having run nothing.
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
