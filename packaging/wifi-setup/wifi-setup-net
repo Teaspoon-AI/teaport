@@ -18,6 +18,9 @@
 # (teaport-captive.conf). Change them together. Why DNAT and not REDIRECT, and why
 # iptables: systemd/teaport-wifi-setup.service.in.
 set -u
+# Root, with the unit's EnvironmentFile (wifi-setup.env) in the environment: the tools
+# come from the system's own directories only.
+PATH=/usr/sbin:/usr/bin:/sbin:/bin; export PATH
 
 ADDR=10.42.0.1
 PORT=7869
