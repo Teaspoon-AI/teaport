@@ -148,6 +148,9 @@ CONVERSATION_SECS = float(os.getenv("LOCAL_AUDIO_CONVERSATION_SECS", "7200"))
 # A wake session that ends this soon after it opened (the brain refused it, or went
 # away) is retried after a backoff, not at once.
 SHORT_SESSION_SECS = 5.0
+# A wake session sends no mic audio until the brain's hello says it gates the room
+# ("wake": "asleep"|"awake"); one that has not said so within this is left.
+HELLO_SECS = 15.0
 # Taken by another Talk client: no voice wake until the brain has had no live /talk
 # session for this long (Backoff), asked every BACKOFF_POLL_SECS. 0 or less: no back-off.
 BACKOFF_SECS = float(os.getenv("LOCAL_AUDIO_BACKOFF_SECS", "60"))
@@ -1073,6 +1076,10 @@ def taken(e: BaseException | None) -> bool:
     return close_code(e) == TAKEN_CLOSE_CODE
 
 
+class Ungated(RuntimeError):
+    """The brain did not say it gates the room (a brain older than wake words)."""
+
+
 class KeepAlive:
     """An awake wake-word conversation: over once nobody (user or bot) has spoken for
     KEEPALIVE_SECS, or AWAKE_MAX_SECS after the last wake word with the bot quiet."""
@@ -1207,6 +1214,13 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
     card.sink = asyncio.Queue(maxsize=MIC_QUEUE_CHUNKS)
     # Wake mode: None while asleep, the conversation's KeepAlive once awake.
     alive = KeepAlive() if wake and awake else None
+    # Wake mode: no mic audio until the brain's hello says it gates the room.
+    gated = asyncio.Event()
+    if not wake:
+        gated.set()
+    # Answers still owed (an async consult: the brain's "working"): call_id -> deadline.
+    # The conversation does not sleep on one.
+    owed: dict = {}
     if wake:
         if awake:
             face.woke()
@@ -1214,6 +1228,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
             face.sleep()
 
     async def send_mic():
+        await gated.wait()
         # The words that woke us first (they are ~1 s behind; the STT takes them as a burst).
         for chunk in early:
             await ws.send(chunk)
@@ -1241,6 +1256,19 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 face.interrupted()
             elif kind == "ready":
                 logger.info("session ready")
+            elif kind == "hello" and wake:
+                if m.get("wake") not in ("asleep", "awake"):
+                    raise Ungated("the brain's hello does not say it gates the room")
+                gated.set()
+            elif kind == "working":
+                if m.get("done"):
+                    owed.pop(m.get("call_id"), None)
+                else:
+                    try:
+                        secs = float(m.get("secs") or 0)
+                    except (TypeError, ValueError):
+                        secs = 0.0
+                    owed[m.get("call_id")] = time.monotonic() + max(0.0, min(secs, 600.0))
             elif kind == "wake" and wake:
                 # The brain's wake gate heard a wake phrase (wake_gate.py). Only its name
                 # is logged, never what was said around it.
@@ -1282,13 +1310,19 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                     "restart requested — ending this session for a fresh one")
 
     async def keep_alive():
-        # Awake wake-word conversations only: their end (see KeepAlive).
+        # Awake wake-word conversations only: their end (see KeepAlive). And the hello's
+        # deadline: a brain that has not said it gates the room is left.
+        opened = time.monotonic()
         while True:
             await asyncio.sleep(KEEPALIVE_POLL_SECS)
+            now = time.monotonic()
+            if not gated.is_set() and now - opened >= HELLO_SECS:
+                raise Ungated(f"no hello from the brain in {HELLO_SECS:g} s")
             if alive is None:
                 continue
-            why = alive.over(busy=play.speaking or face.voiced
-                             or not play.echo_free(time.monotonic()))
+            waiting = any(deadline > now for deadline in owed.values())
+            why = alive.over(busy=play.speaking or face.voiced or waiting
+                             or not play.echo_free(now))
             if why:
                 logger.info(f"no speech for {KEEPALIVE_SECS:g} s — the conversation sleeps"
                             if why == "keepalive" else
@@ -1308,6 +1342,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
         if TAKEN_CLOSE_CODE in codes:
             return "taken"
         if wake:
+            if any(isinstance(t.exception(), Ungated) for t in done if not t.cancelled()):
+                return "ungated"
             if YIELD_CLOSE_CODE in codes:
                 return "yield"
             for t in done:
@@ -1381,6 +1417,13 @@ async def run_wake_sessions(card: Card, st: WakeState) -> None:
             logger.info("a phone call needs the speech engine — not listening until it ends")
             await card._until(wait_out_call())
             logger.info("the phone call is over — asleep again")
+            continue
+        if ended == "ungated":
+            logger.error("the brain does not gate wake words (a release older than this "
+                         "bridge?) — not listening, so the room is not sent to it; retrying "
+                         f"in {st.wait:g} s")
+            await card.idle_for(st.wait)
+            st.wait = min(st.wait * 2, RETRY_MAX_SECS)
             continue
         if ended and ended.startswith("stt:"):
             logger.warning(f"speech recognition {ended[4:]} — not listening; retrying in "

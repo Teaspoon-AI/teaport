@@ -269,9 +269,12 @@ class _PipelineTask:
         await self.ws.close()                          # what pipecat does as it goes
 
 
-def _request(body):
+def _request(body, host="127.0.0.1"):
+    from types import SimpleNamespace
+
     class R:
         query_params, headers = {}, {}
+        client = SimpleNamespace(host=host)
 
         async def json(self):
             return body
@@ -343,6 +346,174 @@ async def test_the_sip_brain_holds_a_lease_for_the_length_of_the_call():
 
 
 # ---------------------------------------------------------------- end_conversation
+
+# ---------------------------------------------------------------- review fixes (#105)
+
+class TimedRecorder(Recorder):
+    """A Recorder whose timers run (the stranded-segment backstop needs them)."""
+
+    def create_task(self, coro, name=None):
+        return asyncio.get_running_loop().create_task(coro)
+
+    async def cancel_task(self, task, timeout=None):
+        task.cancel()
+
+
+async def test_the_backstop_never_quotes_the_room_and_still_watches_an_asleep_segment():
+    """A held segment the room resumes (VAD stop, then start) re-arms the backstop off
+    the asleep deltas; when it fires it names a count, not the words."""
+    from pipecat.frames.frames import VADUserStartedSpeakingFrame
+    from pipecat.processors.frame_processor import FrameDirection
+    from teaport_brain import stt as stt_mod
+    old = stt_mod._STRANDED_INTERIM_SECS
+    stt_mod._STRANDED_INTERIM_SECS = 0.2
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="TRACE")
+    try:
+        stt = TimedRecorder()
+        gate = wake_gate.WakeGate(parse_phrases("hey teaport"), store=wake_gate.MicConversation())
+        gate.context = LLMContext([])
+        stt.wake_gate = gate
+        for w in ROOM.split():
+            await stt._handle_message({"type": "transcription.delta", "delta": w + " "})
+        stt._commit_pending = True                    # verdict mode: the stop's hold
+        await stt.process_frame(VADUserStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+        for w in "and the rent".split():
+            await stt._handle_message({"type": "transcription.delta", "delta": w + " "})
+        await asyncio.sleep(0.4)
+    finally:
+        stt_mod._STRANDED_INTERIM_SECS = old
+        logger.remove(sink)
+    fired = [ln for ln in lines if "no final after" in ln]
+    assert fired and "chars" in fired[0]               # it fired, counting
+    assert not any("neighbours" in ln or "rent" in ln for ln in lines), fired
+    assert _texts(stt.pushed) == []
+
+
+async def test_the_wake_final_s_result_holds_only_what_is_kept():
+    stt, gate = _session()
+    await _say(stt, "money again. Hey Teaport, what's the weather")
+    final = [f for f in stt.pushed if isinstance(f, TranscriptionFrame)][0]
+    assert final.text == "what's the weather"
+    assert final.result["text"] == "what's the weather" and "money" not in str(final.result)
+
+
+async def test_a_wake_phrase_split_across_two_finals_still_wakes_and_cuts_clean():
+    clock = Clock()
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="TRACE")
+    try:
+        stt, gate = _session()
+        gate._clock = clock
+        await _say(stt, "the money again. Hey.")          # the STT closed mid-phrase
+        assert gate.asleep and _texts(stt.pushed) == []
+        clock.t += 1.0
+        await _say(stt, "Teaport, what's the weather")
+    finally:
+        logger.remove(sink)
+    assert not gate.asleep
+    assert _texts(stt.pushed) == ["what's the weather"]  # no "money", no "hey"
+    assert not any("money" in ln for ln in lines)
+    # Not across a pause: the carried words are gone after CARRY_SECS.
+    stt, gate = _session()
+    gate._clock = clock
+    await _say(stt, "Hey.")
+    clock.t += wake_gate.CARRY_SECS + 0.1
+    await _say(stt, "Teaport, what's the weather")
+    assert gate.asleep and _texts(stt.pushed) == []
+    # A script without spaces, split mid-phrase.
+    stt, gate = _session("你好茶壶")
+    gate._clock = clock
+    await _say(stt, "嗯你好")
+    await _say(stt, "茶壶今天天气怎么样")
+    assert _texts(stt.pushed) == ["今天天气怎么样"]
+    # The carry is the phrase's own length at most: nothing more of the room is held.
+    from teaport_brain.wake_words import carry_tail
+    assert carry_tail("the neighbours were arguing hey", parse_phrases("hey teaport")) == "hey"
+    assert carry_tail("anything at all", parse_phrases("computer")) == ""
+
+
+async def test_talk_call_is_for_the_box_itself_only():
+    from fastapi import HTTPException
+    from teaport_brain import gateway_server as gs
+    os.environ.pop("GATEWAY_TOKEN", None)
+    try:
+        for host in ("192.168.1.50", "10.0.0.2", None):
+            try:
+                await gs.talk_call(_request({"state": "start"}, host=host))
+            except HTTPException as e:
+                assert e.status_code == 403
+            else:
+                raise AssertionError(f"{host} was let in")
+        assert not gs.call_live()
+        assert (await gs.talk_call(_request({"state": "start"}, host="::1")))["call"] is True
+    finally:
+        gs._call_until = 0.0
+
+
+async def test_a_call_that_lands_while_a_wake_session_sets_up_never_meets_its_stt():
+    """Registered for /talk/call before its first await, and checked again after the
+    slot: a call that lands in between closes it (4002) before its pipeline runs."""
+    import time as _time
+    from teaport_brain import gateway_server as gs
+    seen = {}
+
+    class WS(_WS):
+        query_params = {"wake": "hey teaport", "features": "local,sleep"}
+
+        async def send_text(self, text):
+            seen["hello"] = __import__("json").loads(text)
+            seen["registered"] = self in gs._wake_sessions
+            gs._call_until = _time.monotonic() + 30        # the call lands now
+
+    released = []
+
+    async def acquire_slot(task, on_evicted=None):
+        async def release():
+            released.append(True)
+        return None, release
+
+    class Runner:
+        def __init__(self, **kw):
+            pass
+
+        async def run(self, task):
+            raise AssertionError("the pipeline ran under a live call")
+
+    saved = (gs.acquire_slot, gs.PipelineRunner)
+    gs.acquire_slot, gs.PipelineRunner = acquire_slot, Runner
+    ws = WS()
+    try:
+        await gs.run_relay_bot(ws)
+    finally:
+        gs.acquire_slot, gs.PipelineRunner = saved
+        gs._call_until = 0.0
+    assert seen["hello"]["wake"] == "asleep"            # the bridge may send the room now
+    assert seen["registered"] and ws not in gs._wake_sessions
+    assert released and ws.closed[-1][0] == gs.YIELD_CLOSE_CODE
+
+
+async def test_a_pending_consult_is_announced_to_the_client_until_it_is_delivered():
+    from teaport_brain import tools
+    pushed, delivered = [], []
+
+    class LLM:
+        async def push_frame(self, frame, direction=None):
+            pushed.append(frame)
+
+    async def followup(request, text, tool_call_id, failure=None, detail=None):
+        delivered.append(text)
+        assert [m["type"] for m in _messages(pushed)] == ["working"]   # still owed here
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result({"ok": True, "text": "the answer"})
+    await tools._consult_and_followup("call-1", fut, "a long question", followup, "tc-1",
+                                      llm=LLM())
+    working = [m for m in _messages(pushed) if m["type"] == "working"]
+    assert working[0]["call_id"] == "call-1" and working[0]["secs"] > tools._ASYNC_CONSULT_TIMEOUT
+    assert working[-1] == {"type": "working", "call_id": "call-1", "done": True}
+    assert delivered
+
 
 def test_end_conversation_is_offered_only_to_a_client_that_can_sleep():
     from teaport_brain.tools import CLIENT_FEATURES, ToolContext, active_tools

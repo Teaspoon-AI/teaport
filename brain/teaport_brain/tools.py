@@ -569,6 +569,22 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
     progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
                 if llm is not None else None)
 
+    async def working(done: bool) -> None:
+        # Tell the client an answer is still owed (and, at the end, that it no longer
+        # is): the local audio bridge must not put the conversation to sleep while one
+        # is on its way (local_audio.KeepAlive). `secs` bounds the wait. Best effort: a
+        # client that ignores it loses nothing, and a torn-down pipeline cannot take it.
+        if llm is None:
+            return
+        message = {"type": "working", "call_id": call_id}
+        message.update({"done": True} if done else {"secs": _ASYNC_CONSULT_TIMEOUT + 15})
+        try:
+            await llm.push_frame(OutputTransportMessageUrgentFrame(message=message))
+        except Exception:  # noqa: BLE001
+            pass
+
+    await working(False)
+
     async def deliver(outcome: oc.ConsultOutcome):
         """Hand the outcome to the injector, narrator first."""
         # Stop the narrator BEFORE the answer is spoken, not in the finally below. It
@@ -634,6 +650,7 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         if progress is not None:
             progress.cancel()
         consult_bridge.cancel(call_id)
+        await working(True)
 
 
 async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):

@@ -81,3 +81,33 @@ def find_wake(text: str, phrases: list[str]) -> tuple[str, str] | None:
     while i < len(rest) and (rest[i].isspace() or unicodedata.category(rest[i])[0] in "PZ"):
         i += 1
     return phrase, rest[i:].strip()
+
+
+def carry_tail(text: str, phrases: list[str]) -> str:
+    """The end of a final that held no wake phrase, normalized, as much as a phrase SPLIT
+    across two finals ("Hey." / "Teaport, what's ...") could have begun in: at most the
+    longest phrase's length less one character, whole words, and at most its word count
+    less one words (one run, for a phrase in a script without spaces). Empty when no
+    phrase can be split."""
+    norm = normalize(text)[0]
+    if not phrases or not norm:
+        return ""
+    unspaced = any(_unspaced(c) for p in phrases for c in p)
+    chars = max(len(p) for p in phrases) - 1
+    words = max(max(len(p.split()) for p in phrases) - 1, 1 if unspaced else 0)
+    if chars <= 0 or words <= 0:
+        return ""
+    tail = norm[-chars:]
+    if len(norm) > chars and norm[-chars - 1] != " " and not _unspaced(tail[0]):
+        tail = tail.split(" ", 1)[1] if " " in tail else ""  # no half word at its start
+    return " ".join(tail.split()[-words:])
+
+
+def join_carry(tail: str, text: str) -> str:
+    """`tail` (carry_tail of the previous final) and the next final, as one text: no
+    space between them where both sides are in a script written without spaces."""
+    if not tail:
+        return text
+    head = normalize(text)[0][:1]
+    sep = "" if head and _unspaced(tail[-1]) and _unspaced(head) else " "
+    return tail + sep + text

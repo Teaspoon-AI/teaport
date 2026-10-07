@@ -1257,7 +1257,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The machine's live free memory, CPU load and speech-engine decode speed."
-source = "tools.py:904"
+source = "tools.py:921"
 
 [[settings]]
 name = "TEAPORT_TOOL_GET_CURRENT_TIME"
@@ -1268,7 +1268,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The local date and time."
-source = "tools.py:907"
+source = "tools.py:924"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_SEARCH"
@@ -1279,7 +1279,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:910"
+source = "tools.py:927"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_FETCH"
@@ -1290,7 +1290,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:913"
+source = "tools.py:930"
 
 [[settings]]
 name = "TEAPORT_TOOL_SEARCH_MEMORY"
@@ -1301,7 +1301,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:916"
+source = "tools.py:933"
 
 [[settings]]
 name = "TEAPORT_TOOL_REMEMBER"
@@ -1312,7 +1312,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:919"
+source = "tools.py:936"
 
 [[settings]]
 name = "TEAPORT_TOOL_ASK_OPENCLAW"
@@ -1323,7 +1323,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
-source = "tools.py:926"
+source = "tools.py:943"
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"
@@ -1334,7 +1334,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "List the speaking voices."
-source = "tools.py:931"
+source = "tools.py:948"
 
 [[settings]]
 name = "TEAPORT_TOOL_SWITCH_VOICE"
@@ -1345,7 +1345,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Change the speaking voice (and with it the reply language)."
-source = "tools.py:934"
+source = "tools.py:951"
 
 [[settings]]
 name = "TEAPORT_TOOL_SET_VOLUME"
@@ -1356,7 +1356,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions."
-source = "tools.py:942"
+source = "tools.py:959"
 
 [[settings]]
 name = "TEAPORT_TOOL_RESTART_SESSION"
@@ -1367,7 +1367,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge)."
-source = "tools.py:947"
+source = "tools.py:964"
 
 
 [[settings]]
@@ -1379,7 +1379,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them)."
-source = "tools.py:953"
+source = "tools.py:970"
 
 # ---- talk client context notes
 
@@ -1393,7 +1393,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
-source = "tools.py:938"
+source = "tools.py:955"
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"
@@ -2101,7 +2101,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "When another client (the dashboard, grokani, a browser) takes the Talk session from the bridge, the box is theirs: the bridge stops listening for a voice until the brain has had no live Talk session for this long, so the room (or the dashboard user's own voice) cannot take it back. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off."
-source = "local_audio.py:153"
+source = "local_audio.py:156"
 
 [[settings]]
 name = "LOCAL_AUDIO_URL"
@@ -2123,7 +2123,7 @@ default = "/run/oled-avatar/face.sock"
 read = "startup"
 tier = "tuning"
 help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes."
-source = "local_audio.py:178"
+source = "local_audio.py:181"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_ADVANCE_MS"
@@ -2137,7 +2137,7 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:213"
+source = "local_audio.py:216"
 
 # ================================================================ wifi-setup.env
 

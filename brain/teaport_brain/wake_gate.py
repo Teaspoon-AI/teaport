@@ -34,13 +34,19 @@ import time
 from loguru import logger
 from pipecat.frames.frames import LLMRunFrame, OutputTransportMessageUrgentFrame
 
-from teaport_brain.wake_words import find_wake, normalize, parse_phrases  # noqa: F401
+from teaport_brain.wake_words import carry_tail, find_wake, join_carry, normalize, parse_phrases  # noqa: F401
 
 # The kept conversation: at most this many messages and characters, the newest. There is
 # no context cap elsewhere in the brain (a session is one sitting); one that is carried
 # across sittings for hours needs one, on a box this short of memory.
 KEEP_MESSAGES = 40
 KEEP_CHARS = 24000
+# A wake phrase the STT split across two finals ("Hey." / "Teaport, what's ...") still
+# wakes it: the end of an asleep final (wake_words.carry_tail: never more than the
+# longest phrase less a word) is held this long, in memory only, and matched joined to
+# the next. Never logged; never pushed unless it is part of the phrase, which the cut
+# then drops with everything before it.
+CARRY_SECS = 2.0
 
 def _cap(messages: list) -> list:
     """The newest of `messages` within KEEP_MESSAGES / KEEP_CHARS, starting at a user
@@ -94,7 +100,7 @@ class WakeGate:
 
     def __init__(self, phrases: list[str], *, asleep: bool = True,
                  conversation_secs: float = 7200.0, greeting: str = "",
-                 store: MicConversation | None = None):
+                 store: MicConversation | None = None, clock=time.monotonic):
         self.phrases = phrases
         self.asleep = asleep
         self.conversation_secs = conversation_secs
@@ -102,18 +108,28 @@ class WakeGate:
         self.store = store or MIC
         self.context = None   # the session's LLMContext, set by build_agent_session
         self.woke = not asleep
+        self._clock = clock
+        self._carry: tuple[str, float] | None = None   # (tail, when) -- see CARRY_SECS
 
     async def final(self, text: str, push) -> str | None:
         """The text to push as this final, or None for a wordless close. `push` pushes a
         frame downstream from the STT."""
-        found = find_wake(text, self.phrases)
         if not self.asleep:
+            found = find_wake(text, self.phrases)
             if found:
                 # A wake phrase in the conversation: the bridge's cap counts from it.
                 await push(OutputTransportMessageUrgentFrame(
                     message={"type": "wake", "phrase": found[0], "again": True}))
             return text
+        carry, self._carry = self._carry, None
+        joined = text
+        if carry is not None and self._clock() - carry[1] <= CARRY_SECS:
+            joined = join_carry(carry[0], text)
+        found = find_wake(joined, self.phrases)
         if not found:
+            tail = carry_tail(text, self.phrases)
+            if tail:
+                self._carry = (tail, self._clock())
             return None
         phrase, rest = found
         self.asleep = False

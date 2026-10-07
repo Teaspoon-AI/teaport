@@ -36,7 +36,7 @@ import sys
 import time
 
 import uvicorn
-from fastapi import FastAPI, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Request, WebSocket
 from loguru import logger
 
 from pipecat.frames.frames import OutputTransportMessageUrgentFrame
@@ -194,10 +194,20 @@ async def run_relay_bot(websocket: WebSocket):
     # writes to the socket until the pipeline runs. A plugin that predates context
     # notes ignores both types. The brain and the plugin ship together: a plugin from
     # before "ready" took the hello for it and sent notes into a session not yet up.
-    await websocket.send_text(json.dumps({
-        "type": "hello",
-        "features": {"context": session.client_notes.limits()},
-    }))
+    # "wake": a wake session says it is gating (asleep or awake). The local audio bridge
+    # sends no mic audio until it reads this, so a brain that predates wake words --
+    # which would greet the room and hear everything -- is never fed the room.
+    hello = {"type": "hello", "features": {"context": session.client_notes.limits()}}
+    if gate is not None:
+        hello["wake"] = "asleep" if gate.asleep else "awake"
+        # Known to /talk/call from here, before this session's first await: a call that
+        # lands while it is still being set up finds it (and see the check before the run).
+        _wake_sessions[websocket] = (gate, session)
+    try:
+        await websocket.send_text(json.dumps(hello))
+    except Exception:
+        _wake_sessions.pop(websocket, None)
+        raise
 
     @transport.event_handler("on_client_connected")
     async def on_client_connected(_transport, _client):
@@ -243,9 +253,18 @@ async def run_relay_bot(websocket: WebSocket):
     # before starting ours, evict the previous pipeline (acquire_slot cancels it and
     # waits for its teardown so our STT can claim the slot). Pairs with the
     # STT-unavailable greeting warning as a backstop if a race slips.
-    _my_done, release = await acquire_slot(session.task, on_evicted=lambda: _close_as_taken(websocket))
-    if gate is not None:
-        _wake_sessions[websocket] = (gate, session)
+    try:
+        _my_done, release = await acquire_slot(session.task, on_evicted=lambda: _close_as_taken(websocket))
+    except BaseException:
+        _wake_sessions.pop(websocket, None)
+        raise
+    if gate is not None and gate.asleep and call_live():
+        # A call landed while this session waited for the slot: it must not take the
+        # engine now. Nothing has run yet -- no STT connected -- so just go.
+        await release()
+        _wake_sessions.pop(websocket, None)
+        await websocket.close(code=YIELD_CLOSE_CODE, reason=YIELD_CLOSE_REASON)
+        return
     try:
         await PipelineRunner(handle_sigint=False).run(session.task)
     finally:
@@ -279,6 +298,7 @@ async def talk_status(request: Request):
 
 # How long /talk/call waits for a yielded room listener to let the engine's slot go.
 YIELD_WAIT_SECS = 4.0
+LOCAL_HOSTS = {"127.0.0.1", "::1"}
 
 
 @app.post("/talk/call")
@@ -292,6 +312,10 @@ async def talk_call(request: Request):
     -- the hold/decline prompt for that is #58's."""
     global _call_until
     config_ui._authorize(request)
+    # Its one caller is the SIP brain on this box: a call is not something the LAN says.
+    client = getattr(request, "client", None)
+    if getattr(client, "host", None) not in LOCAL_HOSTS:
+        raise HTTPException(status_code=403, detail="local only")
     try:
         state = (await request.json()).get("state")
     except Exception:  # noqa: BLE001 — a body that is not a JSON object

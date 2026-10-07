@@ -900,8 +900,8 @@ class TeaportSTTService(WebsocketSTTService):
         # only papers over. Silence here would hide it exactly as it was hidden before.
         logger.warning(
             f"{self}: no final after {_STRANDED_INTERIM_SECS}s of interim quiet — the "
-            f"VAD stop never came; committing {self._interim_buffer.strip()[:60]!r} "
-            "myself so the turn is answered late rather than lost"
+            f"VAD stop never came; committing its {len(self._interim_buffer.strip())} "
+            "chars myself so the turn is answered late rather than lost"
         )
         await self._send_commit(final=True, why="backstop")
 
@@ -1196,7 +1196,7 @@ class TeaportSTTService(WebsocketSTTService):
             try:
                 msg = json.loads(message)
             except (json.JSONDecodeError, TypeError):
-                logger.warning(f"{self}: non-JSON message: {message!r}")
+                logger.warning(f"{self}: non-JSON message ({len(message)} chars)")
                 continue
             await self._handle_message(msg)
 
@@ -1220,17 +1220,18 @@ class TeaportSTTService(WebsocketSTTService):
             # announced as one.
             if self._streaming and not piece.strip():
                 return
-            if self.wake_gate is not None and self.wake_gate.asleep:
-                return  # asleep: a hypothesis of the room goes nowhere (wake_gate.py)
-            await self.push_frame(
-                InterimTranscriptionFrame(
-                    self._interim_buffer,
-                    self._user_id,
-                    time_now_iso8601(),
-                    self._language,
-                    result=msg,
+            # Asleep, a hypothesis of the room goes nowhere (wake_gate.py) -- but it is
+            # still a segment streaming, which the backstop below must keep watching.
+            if self.wake_gate is None or not self.wake_gate.asleep:
+                await self.push_frame(
+                    InterimTranscriptionFrame(
+                        self._interim_buffer,
+                        self._user_id,
+                        time_now_iso8601(),
+                        self._language,
+                        result=msg,
+                    )
                 )
-            )
             self._seg_interims += 1
             # Every delta re-arms: while the user is still talking this can never fire.
             await self._arm_stranded_commit()
@@ -1294,10 +1295,10 @@ class TeaportSTTService(WebsocketSTTService):
             self._log_segment(msg, commit)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
-            asleep = self.wake_gate is not None and self.wake_gate.asleep
-            if text and not engine_text and not asleep:
+            # Counts, never words: this line runs before the wake gate does.
+            if text and not engine_text:
                 logger.debug(f"{self}: empty final — falling back to the interim "
-                             f"hypothesis {text[:60]!r} to close the turn")
+                             f"hypothesis ({len(text)} chars) to close the turn")
             self._interim_buffer = ""
             # The stamp the final (or the SegmentDoneFrame) below carries: the VAD stop
             # this close answers, for the stop strategy to hold against its own count
@@ -1358,9 +1359,14 @@ class TeaportSTTService(WebsocketSTTService):
                     logger.info(f"{self}: hearing speech again after "
                                 f"{self._empty_finals} empty finals")
                 self._empty_finals = 0
+            result = msg
             if text and self.wake_gate is not None:
                 # Asleep: no wake phrase -> nothing; one -> what follows it (wake_gate.py).
-                text = await self.wake_gate.final(text, self.push_frame)
+                gated = await self.wake_gate.final(text, self.push_frame)
+                if gated != text:
+                    # The engine's message carries the whole utterance: not what is kept.
+                    result = {**msg, "text": gated or ""}
+                text = gated
             if text:
                 await self.push_frame(
                     FinalTranscriptionFrame(
@@ -1368,7 +1374,7 @@ class TeaportSTTService(WebsocketSTTService):
                         self._user_id,
                         time_now_iso8601(),
                         self._language,
-                        result=msg,
+                        result=result,
                         finalized=True,
                         stop_n=stop_n,
                     )

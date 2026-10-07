@@ -1102,6 +1102,10 @@ def test_keep_alive_ends_on_quiet_and_on_the_cap_since_the_last_wake_word():
     assert alive.over() is None
 
 
+# What a brain that gates the room says first (gateway_server's hello).
+HELLO = json.dumps({"type": "hello", "features": {}, "wake": "asleep"})
+
+
 def _wake_card(monkeypatch, **status):
     """A fake card in wake mode; /talk/status answers `status` (call: bool)."""
     flag = tempfile.mktemp()
@@ -1146,6 +1150,7 @@ def test_wake_mode_holds_an_asleep_session_and_sleeps_again_after_the_keep_alive
     async def run():
         async def on_connect(ws, n):
             got.append(_query(ws))
+            await ws.send(HELLO)
             if n == 1:
                 await _drain(ws, 0.6)                    # asleep: nothing ends it
                 await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport",
@@ -1264,6 +1269,7 @@ def test_end_conversation_sleeps_after_the_goodbye(monkeypatch):
 
     async def run():
         async def on_connect(ws, n):
+            await ws.send(HELLO)
             if n == 1:
                 await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport"}))
                 await ws.send(json.dumps({"type": "client_tool", "call_id": "teaport-client-y",
@@ -1288,6 +1294,70 @@ def test_end_conversation_sleeps_after_the_goodbye(monkeypatch):
     asyncio.run(run())
     assert got["result"]["ok"] is True
     assert "awake" not in got["second"]                 # asleep: no wake word, no mic
+
+
+def test_a_brain_that_does_not_gate_is_never_sent_the_room(monkeypatch):
+    """A brain older than wake words ignores ?wake= and would hear everything: its hello
+    lacks "wake", and the bridge sends it no audio, leaves, and stays deaf."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "RETRY_SECS", 5.0)
+    got = {"audio": 0}
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(json.dumps({"type": "hello", "features": {}}))   # no "wake"
+            try:
+                async for msg in ws:
+                    if isinstance(msg, bytes):
+                        got["audio"] += 1
+            except Exception:  # noqa: BLE001
+                pass
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        open(flag, "w").close()                          # the room is talking
+        bridge = asyncio.create_task(la.run_bridge())
+        await asyncio.sleep(1.5)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return count[0]
+
+    assert asyncio.run(run()) == 1                       # left, and backing off
+    assert got["audio"] == 0
+    dials, card = _drive(monkeypatch, ["ungated", None])
+    assert card.idled and card.idled[0] == la.RETRY_SECS
+
+
+def test_a_consult_still_on_its_way_keeps_the_conversation_awake(monkeypatch):
+    """The keep-alive must not put a conversation to sleep while the agent's answer is
+    still coming (ask_openclaw's async consult: the brain's "working")."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "KEEPALIVE_SECS", 0.3)
+    ends = []
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport"}))
+                await ws.send(json.dumps({"type": "working", "call_id": "c1", "secs": 30}))
+                await _drain(ws, 1.0)                   # 3x the keep-alive, answer pending
+                ends.append(("still up", asyncio.get_running_loop().time()))
+                await ws.send(json.dumps({"type": "working", "call_id": "c1", "done": True}))
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: ends, 3)
+        assert count[0] == 1                            # not slept while it was owed
+        assert await _until(lambda: count[0] == 2, 2)   # delivered: then it sleeps
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
 
 
 def test_end_conversation_without_wake_words_is_refused():
