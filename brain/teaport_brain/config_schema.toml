@@ -1139,7 +1139,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:263"
+source = "agent_session.py:264"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1257,7 +1257,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The machine's live free memory, CPU load and speech-engine decode speed."
-source = "tools.py:864"
+source = "tools.py:889"
 
 [[settings]]
 name = "TEAPORT_TOOL_GET_CURRENT_TIME"
@@ -1268,7 +1268,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The local date and time."
-source = "tools.py:867"
+source = "tools.py:892"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_SEARCH"
@@ -1279,7 +1279,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:870"
+source = "tools.py:895"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_FETCH"
@@ -1290,7 +1290,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:873"
+source = "tools.py:898"
 
 [[settings]]
 name = "TEAPORT_TOOL_SEARCH_MEMORY"
@@ -1301,7 +1301,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:876"
+source = "tools.py:901"
 
 [[settings]]
 name = "TEAPORT_TOOL_REMEMBER"
@@ -1312,7 +1312,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:879"
+source = "tools.py:904"
 
 [[settings]]
 name = "TEAPORT_TOOL_ASK_OPENCLAW"
@@ -1323,7 +1323,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
-source = "tools.py:886"
+source = "tools.py:911"
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"
@@ -1334,7 +1334,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "List the speaking voices."
-source = "tools.py:891"
+source = "tools.py:916"
 
 [[settings]]
 name = "TEAPORT_TOOL_SWITCH_VOICE"
@@ -1345,7 +1345,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Change the speaking voice (and with it the reply language)."
-source = "tools.py:894"
+source = "tools.py:919"
 
 [[settings]]
 name = "TEAPORT_TOOL_SET_VOLUME"
@@ -1356,7 +1356,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions."
-source = "tools.py:898"
+source = "tools.py:927"
 
 [[settings]]
 name = "TEAPORT_TOOL_RESTART_SESSION"
@@ -1367,7 +1367,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge)."
-source = "tools.py:903"
+source = "tools.py:932"
 
 # ---- talk client context notes
 
@@ -1381,7 +1381,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
-source = "tools.py:912"
+source = "tools.py:923"
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"
@@ -2070,7 +2070,7 @@ type = "secret"
 read = "startup"
 tier = "installer"
 help = "The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Digits are easiest to say and type. Unset (or invalid): fresh random digits each setup, spoken aloud."
-source = "wifi_setup.py:65"
+source = "wifi_setup.py:76"
 
 [[settings]]
 name = "WIFI_SETUP_SSID"

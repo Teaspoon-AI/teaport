@@ -138,6 +138,22 @@ def test_a_unit_that_dies_mid_setup_is_said_and_let_go(fast):
     asyncio.run(run())
 
 
+def test_a_unit_stopped_from_outside_says_it_put_things_back(fast):
+    """systemctl stop / the config page / a restart: the unit runs its restore path on
+    SIGTERM and writes "stopped" (wifi_setup.py). The voice takes that as the end."""
+    path = _path()
+
+    async def run():
+        v = Voice(path)
+        await _running(v, path)
+        _write(path, phase="stopped")
+        v.alive = False
+        await asyncio.sleep(0.2)
+        assert v.state == "idle"
+        assert v.said[-1] == "Okay, I've stopped Wi-Fi setup and put things back as they were."
+    asyncio.run(run())
+
+
 def test_its_last_words_win_over_its_absence(fast):
     path = _path()
 

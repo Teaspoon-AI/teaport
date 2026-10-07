@@ -488,6 +488,11 @@ class WifiSetupVoice(FrameProcessor):
         elif phase == "timeout":
             self.state = "idle"
             await self.say(t._("Wi-Fi setup timed out, so I've put things back as they were."))
+        elif phase == "stopped":
+            # The unit was stopped from outside (systemctl, the config page, a restart)
+            # and ran its restore path on the way out (wifi_setup.py, SIGTERM).
+            self.state = "idle"
+            await self.say(t._("Okay, I've stopped Wi-Fi setup and put things back as they were."))
         elif phase == "error":
             self.state = "idle"
             await self.say(t._("Wi-Fi setup stopped: {reason}.").format(
