@@ -70,6 +70,12 @@ msgstr "Ich bin gerade in der WLAN-Einrichtung. Sag wiederholen, um die Angaben 
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "Verbinde dein Handy mit dem WLAN {ssid}. Das Passwort ist {password}. Eine Einrichtungsseite sollte sich von selbst öffnen. Falls nicht, öffne {url}."
 
+msgid "You can also read these details on my screen."
+msgstr "Du findest diese Angaben auch auf meinem Display."
+
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "Du kannst auch den Code auf meinem Display scannen, um dich zu verbinden, oder die Angaben dort ablesen."
+
 msgid "the saved settings for it did not work"
 msgstr "Die gespeicherten Einstellungen für dieses Netzwerk haben nicht funktioniert"
 

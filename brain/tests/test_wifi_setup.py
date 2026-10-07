@@ -13,7 +13,7 @@ import urllib.request
 
 import pytest
 
-from teaport_brain import i18n, wifi
+from teaport_brain import display, i18n, wifi
 from teaport_brain import wifi_setup as ws
 from teaport_brain import wifi_voice as wv
 
@@ -25,6 +25,14 @@ def test_ssid_from_the_mac_and_an_override():
     assert ws.setup_ssid("F8:3D:C6:1F:9E:35") == "teaport-9e35"
     assert ws.setup_ssid("") == "teaport-0000"
     assert ws.setup_ssid("f8:3d:c6:1f:9e:35", "Kitchen Teaport") == "Kitchen Teaport"
+
+
+@pytest.mark.parametrize("override", ["12345678", "CafeBabe", " deadbeef "])
+def test_an_all_hex_override_is_refused_with_a_warning(override, capsys):
+    # A ZXing-based scanner reads an all-hex SSID in the QR code as raw bytes.
+    assert ws.setup_ssid("f8:3d:c6:1f:9e:35", override) == "teaport-9e35"
+    assert "all hex digits" in capsys.readouterr().out
+    assert ws.setup_ssid("f8:3d:c6:1f:9e:35", "Cafe-1") == "Cafe-1"   # not all hex: kept
 
 
 def test_the_flash_time_password_wins_when_valid():
@@ -329,16 +337,18 @@ def test_a_failed_new_password_for_the_network_it_is_on_brings_that_back():
 class FakeNM:
     """NetworkManager as a state: the AP, the joins, the connectivity."""
 
-    def __init__(self, join_results, online=True, previous="old-wifi", address="127.0.0.1"):
+    def __init__(self, join_results, online=True, previous="old-wifi", addresses=None):
         self.join_results, self._online, self.previous = list(join_results), online, previous
-        self._address = address
+        # What `nmcli device show` lists, one call after another (the last repeats).
+        self._addresses = list(addresses or [[wifi.AP_ADDRESS]])
         self.events = []
 
     def wifi_device(self): return "wlan0"
     def mac(self, dev): return "f8:3d:c6:1f:9e:35"
     def scan(self, dev): return [{"ssid": "home", "signal": 80, "open": False, "security": "WPA2"}]
     def active(self, dev): return {"name": self.previous, "uuid": "u-" + self.previous} if self.previous else None
-    def address(self, dev): return self._address
+    def addresses(self, dev):
+        return self._addresses.pop(0) if len(self._addresses) > 1 else self._addresses[0]
     def ap_up(self, dev, ssid, pw): self.events.append(("ap_up", ssid)); return True, ""
     def ap_down(self): self.events.append(("ap_down",))
     def ap_delete(self): self.events.append(("ap_delete",))
@@ -368,13 +378,28 @@ class _Recorded(ws.Status):
         self.history.append(dict(self.data))
 
 
-def _run_setup(nm, minutes=1.0, post=None):
+def _no_avahi(setup):
+    """No real avahi-publish from a test: it would announce a .local name on this machine."""
+    setup.publish = lambda name: None
+    setup.unpublish = lambda: None
+
+
+def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
-    page binds the address NM gives the setup network (FakeNM: 127.0.0.1)."""
+    page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
+    the exception instead when the run raised one."""
     status = _Recorded(tempfile.mkdtemp())
-    setup = ws.Setup(nm, status, port=0, minutes=minutes)
+    setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
+    _no_avahi(setup)
     result = {}
-    t = threading.Thread(target=lambda: result.setdefault("rc", setup.run("teaport-9e35", "47190352")))
+
+    def run():
+        try:
+            result["rc"] = setup.run(ssid, "47190352")
+        except Exception as e:
+            result["rc"] = e
+
+    t = threading.Thread(target=run)
     t.start()
     posted, deadline = 0, time.time() + 15
     while t.is_alive() and time.time() < deadline:
@@ -382,7 +407,7 @@ def _run_setup(nm, minutes=1.0, post=None):
         ups = sum(1 for s in list(status.history) if s["phase"] == "ap_up")
         if post and posted < len(post) and ups > posted:
             page = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/hotspot-detect.html").read().decode()
-            assert 'value="home"' in page and "teaport-9e35" not in page
+            assert 'value="home"' in page and ssid not in page
             body = urllib.parse.urlencode(post[posted]).encode()
             reply = urllib.request.urlopen(f"http://127.0.0.1:{setup.port}/connect", body).read().decode()
             assert "Joining" in reply
@@ -434,6 +459,142 @@ def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
     after = nm.events[nm.events.index(("join", "home", "homepass1", False)) + 1:]
     # The half-done join undone, the old network asked for without waiting (systemd is).
     assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
+
+
+def _screen(avatar=True, events=None, qr=True, qr_max=53):
+    """A Screen recording what it sends (into `events` too, as ("screen", ...), when
+    given); `avatar`: whether a daemon that draws screens is there; `qr`: and QR codes,
+    up to `qr_max` bytes."""
+    sent = []
+
+    def send(ev, path):
+        sent.append(ev["screen"])
+        if events is not None:
+            events.append(("screen", ev["screen"]))
+        return True
+
+    feats = {"screen": 1, **({"qr": 1, "qr_max_bytes": qr_max} if qr else {})} if avatar else {}
+    return display.Screen("wifi-setup", send=send, features=lambda path: feats), sent
+
+
+def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while():
+    screen, sent = _screen()
+    rc, seen = _run_setup(FakeNM([(True, "", "home")]), screen=screen,
+                          post=[{"ssid": "home", "password": "homepass1"}])
+    assert rc == 0
+    assert seen[1]["phase"] == "ap_up" and seen[1]["screen"] is True   # the voice says so
+    assert seen[1]["qr"] is True
+    shown = [s for s in sent if s.get("lines")]
+    assert shown[0]["qr"] == "WIFI:T:WPA;S:teaport-9e35;P:47190352;;"   # a phone joins
+    assert all("qr" not in s for s in shown[1:])                         # only then
+    assert shown[0]["lines"] == ["Network  teaport-9e35", "Password  47190352",
+                                 "http://teaport-9e35.local"]
+    assert shown[0]["title"] == "Wi-Fi setup" and shown[0]["ttl"] == display.HOLD_TTL_SECS
+    assert shown[1]["lines"] == ["Joining", "home"]
+    # The last word: up for its seconds after the unit has exited, not taken down.
+    assert sent[-1]["lines"] == ["Connected to", "home"]
+    assert sent[-1]["ttl"] == ws.CONNECTED_SCREEN_SECS
+    assert "homepass1" not in json.dumps(sent)       # the user's own password: never
+
+
+def test_no_avatar_and_the_status_says_no_screen():
+    screen, _ = _screen(avatar=False)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    assert seen[1]["phase"] == "ap_up" and seen[1]["screen"] is False
+    _, seen = _run_setup(FakeNM([]), minutes=0.01)                     # no Screen at all
+    assert seen[1]["screen"] is False and seen[1]["qr"] is False
+
+
+def test_an_avatar_without_qr_codes_and_the_status_says_text_only():
+    screen, _ = _screen(qr=False)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    assert seen[1]["screen"] is True and seen[1]["qr"] is False
+
+
+def test_the_join_string_escapes_what_it_must():
+    assert ws.wifi_qr("teaport-9e35", "47190352") == "WIFI:T:WPA;S:teaport-9e35;P:47190352;;"
+    assert ws.wifi_qr('a;b:c,d\\e"f', "p;w") == 'WIFI:T:WPA;S:a\\;b\\:c\\,d\\\\e\\"f;P:p\\;w;;'
+    assert ws.wifi_qr("Café ☕", "x") == "WIFI:T:WPA;S:Café ☕;P:x;;"   # the real name
+
+
+@pytest.mark.parametrize("join, minutes", [([ws.Stopped()], 1.0), ([], 0.01)])
+def test_a_stop_or_a_timeout_takes_the_screen_down(join, minutes):
+    screen, sent = _screen()
+    _run_setup(FakeNM(join), minutes=minutes, screen=screen,
+               post=[{"ssid": "home", "password": "homepass1"}] if join else None)
+    assert sent[0]["lines"][0] == "Network  teaport-9e35"
+    assert sent[-1] == {"id": "wifi-setup"}
+
+
+@pytest.mark.parametrize("join, minutes", [([ws.Stopped()], 1.0), ([], 0.01)])
+def test_the_screen_goes_before_the_old_network_is_waited_for(join, minutes):
+    # nm.up can wait up to 45 s: the password (or "Joining") must not stay up meanwhile.
+    nm = FakeNM(join)
+    screen, _ = _screen(events=nm.events)
+    _run_setup(nm, minutes=minutes, screen=screen,
+               post=[{"ssid": "home", "password": "homepass1"}] if join else None)
+    take_down = nm.events.index(("screen", {"id": "wifi-setup"}))
+    up = next(i for i, e in enumerate(nm.events) if e[0] == "up")
+    assert take_down < up
+    assert not any(e[0] == "screen" for e in nm.events[take_down + 1:])
+
+
+def test_a_failed_join_is_shown_until_the_setup_network_is_back():
+    screen, sent = _screen()
+    nm = FakeNM([(False, "the password did not work", "home"), (True, "", "home")])
+    rc, _ = _run_setup(nm, screen=screen, post=[{"ssid": "home", "password": "wrongpass"},
+                                                {"ssid": "home", "password": "homepass1"}])
+    assert rc == 0
+    shown = [(s["lines"], s["ttl"]) for s in sent if s.get("lines")]
+    details = ["Network  teaport-9e35", "Password  47190352", "http://teaport-9e35.local"]
+    hold = display.HOLD_TTL_SECS
+    # Refreshes aside, in order: each screen replaces the one before, nothing in between.
+    order = [x for i, x in enumerate(shown) if i == 0 or x != shown[i - 1]]
+    assert order == [(details, hold), (["Joining", "home"], hold),
+                     (["Could not join", "home"], hold),
+                     (details, hold), (["Joining", "home"], hold),
+                     (["Connected to", "home"], ws.CONNECTED_SCREEN_SECS)]
+    assert {"id": "wifi-setup"} not in sent
+
+
+def test_an_unexpected_error_takes_the_screen_down():
+    screen, sent = _screen()
+    rc, _ = _run_setup(FakeNM([RuntimeError("nmcli fell over")]), screen=screen,
+                       post=[{"ssid": "home", "password": "homepass1"}])
+    assert isinstance(rc, RuntimeError)
+    assert sent[-2]["lines"] == ["Joining", "home"] and sent[-1] == {"id": "wifi-setup"}
+    screen._thread.join(timeout=5)
+    assert not screen._thread.is_alive()
+
+
+def test_network_names_reach_the_display_in_ascii():
+    screen, sent = _screen()
+    rc, seen = _run_setup(FakeNM([(True, "", "Café ☕")]), screen=screen, ssid="東京-box",
+                          post=[{"ssid": "Café ☕", "password": "homepass1"}])
+    assert rc == 0 and seen[1]["ssid"] == "東京-box"     # the voice and page keep the name
+    shown = [s["lines"] for s in sent if s.get("lines")]
+    # The name folded would read wrong ("-box"): the code beside it carries the real one.
+    # The .local name cannot be shown in ASCII: the address that needs none instead.
+    assert shown[0] == ["Network  (scan the code)", "Password  47190352", f"http://{wifi.AP_ADDRESS}"]
+    assert ["Joining", "Cafe"] in shown and shown[-1] == ["Connected to", "Cafe"]
+
+
+def test_a_folded_name_without_a_code_is_shown_folded():
+    screen, sent = _screen(qr=False)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen, ssid="東京-box")
+    assert seen[1]["qr"] is False
+    assert sent[0]["lines"][0] == "Network  -box" and "qr" not in sent[0]
+
+
+@pytest.mark.parametrize("qr_max", [0, 37])
+def test_a_code_too_long_for_the_avatar_is_not_sent_nor_claimed(qr_max):
+    # The join string here is 38 bytes: over the avatar's limit it would draw a code no
+    # phone scans, or none at all, while the voice says to scan it.
+    screen, sent = _screen(qr_max=qr_max)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    assert seen[1]["screen"] is True and seen[1]["qr"] is False
+    assert all("qr" not in s for s in sent)
+    assert sent[0]["lines"][0] == "Network  teaport-9e35"
 
 
 def test_sigterm_becomes_one_clean_stop():
@@ -496,12 +657,32 @@ def test_a_slow_request_times_out_and_connections_are_capped(monkeypatch):
 def test_the_page_is_bound_to_the_setup_network_only():
     setup = ws.Setup(FakeNM([]), _Recorded(tempfile.mkdtemp()), port=0)
     assert setup.bind is None and setup.address == wifi.AP_ADDRESS   # never 0.0.0.0
-    setup.address = "127.0.0.1"   # as NM reports it once the network is up
-    setup.serve()
+    setup.serve()   # IP_FREEBIND: bound although this machine has no such address
     try:
-        assert setup.server.server_address[0] == "127.0.0.1"
+        assert setup.server.server_address[0] == wifi.AP_ADDRESS
     finally:
         setup.server.shutdown()
+
+
+def _bound(nm):
+    setup = ws.Setup(nm, _Recorded(tempfile.mkdtemp()), port=0, minutes=0.005)
+    _no_avahi(setup)
+    assert setup.run("teaport-9e35", "47190352") == 2      # nobody came: timeout
+    return setup.server.server_address[0], setup.status.history[1]["address"]
+
+
+def test_the_page_binds_the_pinned_address_while_nm_still_lists_the_old_one(capsys):
+    # 2026-10-07: just after the setup network came up NM still listed the home
+    # address first; the page bound that, and no phone on the setup network reached it.
+    nm = FakeNM([], addresses=[["192.168.1.105"], ["192.168.1.105"], [wifi.AP_ADDRESS]])
+    assert _bound(nm) == (wifi.AP_ADDRESS, wifi.AP_ADDRESS)
+    assert "phones may not reach" not in capsys.readouterr().out
+
+
+def test_an_address_that_never_arrives_is_logged_and_the_page_still_bound(monkeypatch, capsys):
+    monkeypatch.setattr(ws, "ADDRESS_WAIT_SECS", 0.3)
+    assert _bound(FakeNM([], addresses=[["192.168.1.105"]])) == (wifi.AP_ADDRESS, wifi.AP_ADDRESS)
+    assert "10.42.0.1 is not on wlan0" in capsys.readouterr().out
 
 
 def test_names_are_isolated_whole_and_once():
@@ -522,6 +703,16 @@ def test_the_details_are_spelled_for_the_voice():
     assert wv.spell("Tito2017", EN) == "capital T, I, T, O, two, zero, one, seven"
     text = wv.instructions({"ssid": "teaport-9e35", "password": "47190352"}, EN)
     assert "teaport, dash, nine, E, three, five" in text and "teaport dash nine E three five dot local" in text
+    assert "screen" not in text                      # no display: not mentioned
+
+
+def test_the_voice_points_at_the_screen_only_when_it_got_there():
+    st = {"ssid": "teaport-9e35", "password": "47190352"}
+    assert wv.instructions(dict(st, screen=True), EN).endswith(
+        " You can also read these details on my screen.")
+    assert "screen" not in wv.instructions(dict(st, screen=False), EN)
+    assert wv.instructions(dict(st, screen=True, qr=True), EN).endswith(
+        " You can also scan the code on my screen to join, or read these details there.")
 
 
 @pytest.mark.parametrize("text,hit", [
@@ -542,7 +733,10 @@ class _Voice(wv.WifiSetupVoice):
         async def run(action, unit):
             self.calls.append((action, unit))
             return results.get(action, (0, ""))
-        super().__init__(run=run, status_path=status_path)
+
+        async def offline():
+            return False
+        super().__init__(run=run, status_path=status_path, online=offline)
 
     async def say(self, text):
         self.said.append(text)

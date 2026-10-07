@@ -68,9 +68,9 @@ class Voice(wv.WifiSetupVoice):
     it, so say() itself runs), the unit helper and the liveness probe are fakes, and
     tasks are asyncio's. `gate`: {action: asyncio.Event} the helper waits on."""
 
-    def __init__(self, path, results=None, alive=True, gate=None, **kw):
+    def __init__(self, path, results=None, alive=True, gate=None, online=False, **kw):
         self.calls, self.pushed = [], []
-        self.alive = alive
+        self.alive, self.online = alive, online
         results, gate = results or {}, gate or {}
 
         async def run(action, unit):
@@ -82,7 +82,10 @@ class Voice(wv.WifiSetupVoice):
         async def is_alive():
             return self.alive
 
-        super().__init__(run=run, status_path=path, alive=is_alive, **kw)
+        async def is_online():
+            return self.online
+
+        super().__init__(run=run, status_path=path, alive=is_alive, online=is_online, **kw)
 
     @property
     def said(self):
@@ -361,6 +364,103 @@ def test_a_no_gives_nothing_back():
     v = asyncio.run(run())
     assert [f.text for f in v.pushed if isinstance(f, TranscriptionFrame)] == ["", ""]
     assert v.state == "idle" and v.said[-1] == "Okay, never mind."
+
+
+def test_online_the_phrase_is_the_models():
+    """Online, "set up Wi-Fi" in conversation goes on untouched: the model decides (it
+    has the wifi_setup tool). The phrase is the way in only for a box with no internet."""
+    async def run():
+        v = Voice(_path(), online=True)
+        frame = _final("can you set up the wifi later", 1)
+        await v.process_frame(frame, FrameDirection.DOWNSTREAM)
+        return v, frame
+    v, frame = asyncio.run(run())
+    assert v.pushed == [frame] and not wv.is_taken(frame)
+    assert v.said == [] and v.calls == [] and v.state == "idle"
+
+
+def test_online_a_setup_the_model_began_still_takes_its_answers(fast):
+    """The tool's way in: begin() asks, and the yes, the repeat and the cancel are setup's
+    even though the box is online (it is the model that started it)."""
+    async def run():
+        path = _path()
+        v = Voice(path, online=True)
+        await v.begin()
+        assert v.state == "confirm"
+        assert await v._heard("yes") and v.state == "running" and v.calls == ["restart"]
+        _write(path, phase="ap_up", **DETAILS)
+        await asyncio.sleep(0.05)
+        assert await v._heard("repeat that")
+        assert await v._heard("cancel")
+        return v
+    v = asyncio.run(run())
+    assert v.calls == ["restart", "stop"] and v.state == "idle"
+
+
+def _tool(directory, name, script):
+    """A fake executable `name` in `directory` (put on PATH by the test)."""
+    exe = directory / name
+    exe.write_text("#!/bin/sh\n" + script)
+    exe.chmod(0o755)
+
+
+@pytest.mark.parametrize("answer, online", [
+    ("full", True), ("limited", False), ("portal", False), ("none", False),
+    ("unknown", False), (None, False)])
+def test_online_means_full_connectivity(answer, online, monkeypatch, tmp_path):
+    _tool(tmp_path, "busctl", "echo 'b true'\n")
+    if answer is not None:   # None: no nmcli at all
+        # Only a fresh check counts: the cached answer can be minutes old.
+        _tool(tmp_path, "nmcli", f'[ "$*" = "networking connectivity check" ] && echo {answer}\n')
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert asyncio.run(wv._box_online()) is online
+
+
+@pytest.mark.parametrize("busctl", [
+    "echo 'b false'\n", "echo 'Failed to get property' >&2; exit 1\n", None])
+def test_without_nms_connectivity_check_full_means_nothing(busctl, monkeypatch, tmp_path):
+    # No check configured: NM says "full" whenever there is a default route.
+    if busctl is not None:   # None: no busctl at all
+        _tool(tmp_path, "busctl", busctl)
+    _tool(tmp_path, "nmcli", "echo full\n")
+    monkeypatch.setenv("PATH", str(tmp_path))
+    assert asyncio.run(wv._box_online()) is False
+
+
+@pytest.mark.parametrize("slow", ["busctl", "nmcli"])
+def test_a_check_that_hangs_is_offline_in_time_and_killed(slow, monkeypatch, tmp_path):
+    # A dead link can stall the check: the phrase must still work, and soon.
+    monkeypatch.setattr(wv, "NM_PROPERTY_SECS", 0.3)
+    monkeypatch.setattr(wv, "ONLINE_CHECK_SECS", 0.3)
+    pid = tmp_path / "pid"
+    hang = f"echo $$ > {pid}\nexec sleep 30\n"
+    _tool(tmp_path, "busctl", hang if slow == "busctl" else "echo 'b true'\n")
+    _tool(tmp_path, "nmcli", hang if slow == "nmcli" else "echo full\n")
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")   # the fakes find sleep
+    started = time.monotonic()
+    assert asyncio.run(wv._box_online()) is False
+    assert time.monotonic() - started < 2
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid.read_text()), 0)   # killed and reaped, not left running
+
+
+def test_a_check_cancelled_mid_way_leaves_no_child(monkeypatch, tmp_path):
+    # A barge-in cancels the frame being processed, and the check with it.
+    pid = tmp_path / "pid"
+    _tool(tmp_path, "busctl", "echo 'b true'\n")
+    _tool(tmp_path, "nmcli", f"echo $$ > {pid}\nexec sleep 30\n")
+    monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+
+    async def run():
+        task = asyncio.ensure_future(wv._box_online())
+        while not pid.exists():
+            await asyncio.sleep(0.02)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+    asyncio.run(asyncio.wait_for(run(), 5))
+    with pytest.raises(ProcessLookupError):
+        os.kill(int(pid.read_text()), 0)
 
 
 # ------------------------------------------------------------------ the box's own voice

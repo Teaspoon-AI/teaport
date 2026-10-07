@@ -78,6 +78,12 @@ msgstr "Сейчас идёт настройка вай-фая. Скажите �
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "На телефоне подключитесь к сети вай-фай {ssid}. Пароль такой: {password}. Страница настройки должна открыться сама. Если не откроется, перейдите по адресу {url}."
 
+msgid "You can also read these details on my screen."
+msgstr "Эти данные можно также прочитать на моём экране."
+
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "Можно также отсканировать код на моём экране, чтобы подключиться, или прочитать там эти данные."
+
 msgid "the saved settings for it did not work"
 msgstr "сохранённые настройки для этой сети не подошли"
 

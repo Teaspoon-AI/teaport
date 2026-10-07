@@ -70,6 +70,12 @@ msgstr "今、ワイファイの設定中です。案内をもう一度聞くに
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "スマートフォンで、次のワイファイのネットワークに接続してください。ネットワーク名は、{ssid}です。パスワードは、{password}です。設定ページが自動で開くはずです。開かない場合は、ブラウザで{url}を開いてください。"
 
+msgid "You can also read these details on my screen."
+msgstr "同じ情報は、本体の画面にも表示されています。"
+
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "本体の画面のコードを読み取って接続することも、画面で同じ情報を確認することもできます。"
+
 msgid "the saved settings for it did not work"
 msgstr "保存されていた設定では接続できませんでした"
 

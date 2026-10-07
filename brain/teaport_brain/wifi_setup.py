@@ -24,6 +24,12 @@
 #      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
 #
+# The setup network's name and password, and then how the join goes, are also on the
+# box's display if it has one (display.py: the OLED avatar's screens), with a QR code
+# that a phone camera joins the setup network from (wifi_qr) — the text in English and
+# ASCII, which its built-in font draws (network names folded into it); the voice and
+# the page speak the user's language.
+#
 # The brain (wifi_voice.py) starts this unit, speaks the network, the password and the
 # address, and follows status.json in the unit's RuntimeDirectory (phase: scanning,
 # ap_up, joining, connected, failed, timeout, error) to say what happened — the phone
@@ -52,18 +58,21 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from teaport_brain import i18n
+from teaport_brain import display, i18n
 from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
-# Where the page listens. teaport-wifi-setup.service redirects AP_ADDRESS:80 here with
-# an iptables rule for as long as it runs; phones only ever see port 80.
+# Where the page listens. teaport-wifi-setup.service sends AP_ADDRESS:80 here with an
+# iptables DNAT rule for as long as it runs; phones only ever see port 80.
 PAGE_PORT = 7869
 # The page is open to anyone on the setup network: a form is a few hundred bytes, a
 # request that dawdles is dropped, and only so many are served at once.
 MAX_FORM_BYTES = 4096
 REQUEST_TIMEOUT_SECS = 10
 MAX_CLIENTS = 32
+# How long the setup network's address may take to show on the device once NM says the
+# network is up (only a warning when it does not: the page is bound to it regardless).
+ADDRESS_WAIT_SECS = 5.0
 SSID_PREFIX = "teaport-"
 MINUTES = 10
 PASSWORD_DIGITS = 8
@@ -71,6 +80,9 @@ STATUS_FILE = "status.json"
 # The unit's RuntimeDirectory=teaport-wifi-setup (kept after the run with
 # RuntimeDirectoryPreserve=yes, so the brain reads how it ended).
 STATUS_DIR = "/run/teaport-wifi-setup"
+# The display's lines: what wifi_voice says aloud, for reading off the box.
+SCREEN_TITLE = "Wi-Fi setup"
+CONNECTED_SCREEN_SECS = 10
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
 PASSWORD = os.getenv("WIFI_SETUP_PASSWORD", "")
@@ -84,9 +96,17 @@ def log(msg: str) -> None:
 # ------------------------------------------------------------------ the box's identity
 
 def setup_ssid(mac: str, override: str = "") -> str:
-    """teaport-ab12 from the Wi-Fi MAC's last four hex digits (two boxes never clash)."""
-    if override.strip():
-        return override.strip()[:32]
+    """teaport-ab12 from the Wi-Fi MAC's last four hex digits (two boxes never clash).
+    An override that is all hex digits ("12345678", "cafe") is refused: ZXing-based
+    scanners (many Android camera apps) read such an SSID in the QR code as raw bytes,
+    and join a network that does not exist."""
+    name = override.strip()[:32]
+    if re.fullmatch(r"[0-9A-Fa-f]+", name):
+        log(f"WIFI_SETUP_SSID {name!r} is all hex digits, which some phones read as bytes "
+            "— using the MAC-based name")
+        name = ""
+    if name:
+        return name
     hexdigits = re.sub(r"[^0-9a-f]", "", mac.lower())
     return SSID_PREFIX + (hexdigits[-4:] if len(hexdigits) >= 4 else "0000")
 
@@ -256,6 +276,17 @@ def parse_form(body: bytes) -> tuple[str, str, bool, str]:
     return ssid, password, hidden, ""
 
 
+# What the Wi-Fi join string escapes with a backslash: the backslash itself, ; , : and ".
+_QR_SPECIAL = re.compile(r'([\\;,:"])')
+
+
+def wifi_qr(ssid: str, password: str) -> str:
+    """The Wi-Fi join string a phone camera reads off a QR code (the iPhone camera, and
+    Android's, offer "Join network ..."), for the WPA setup network."""
+    ssid, password = (_QR_SPECIAL.sub(r"\\\1", x) for x in (ssid, password))
+    return f"WIFI:T:WPA;S:{ssid};P:{password};;"
+
+
 class Stopped(Exception):
     """SIGTERM: systemctl stop (a spoken "cancel"), a restart, or RuntimeMaxSec."""
 
@@ -303,11 +334,12 @@ class Setup:
     """One run: the access point, the page, and the join attempts."""
 
     def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES,
-                 bind: str | None = None):
+                 bind: str | None = None, screen: display.Screen | None = None):
         self.nm, self.status, self.port = nm, status, port
-        # Where the page listens: the setup network's own address (read from NM once it
-        # is up), never 0.0.0.0 — the box's other networks must not reach a page that
-        # changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
+        self.screen = screen
+        # Where the page listens: the setup network's own address (AP_ADDRESS, pinned in
+        # its profile), never 0.0.0.0 — the box's other networks must not reach a page
+        # that changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
         self.bind = bind
         self.address = AP_ADDRESS
         self.previous: dict | None = None  # the profile to put back, {"name", "uuid"}
@@ -429,15 +461,31 @@ class Setup:
             self._put_back(quick=True)
             return 3
         finally:
+            if self.screen:
+                self.screen.close()  # a "connected" screen stays its few seconds
             self.unpublish()
             if self.server:
                 self.server.shutdown()
             self.nm.ap_delete()
 
+    def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None) -> bool:
+        return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs, qr=qr))
+
+    def _address_arrives(self, dev: str) -> bool:
+        deadline = time.monotonic() + ADDRESS_WAIT_SECS
+        while AP_ADDRESS not in self.nm.addresses(dev):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+        return True
+
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup
         network down, a half-done join undone, and the old connection back up. `quick`
-        (a stop: systemd is waiting) asks NM for the old connection without waiting."""
+        (a stop: systemd is waiting) asks NM for the old connection without waiting.
+        The screen goes first: the password must not stay up while NM takes its time."""
+        if self.screen:
+            self.screen.clear()
         self.unpublish()
         self.nm.ap_down()
         self.nm.undo()
@@ -453,6 +501,9 @@ class Setup:
         log(f"{len(self.networks)} networks in range; previous connection: "
             f"{self.previous['name'] if self.previous else 'none'}")
         url = f"http://{ssid}.local"
+        # The display's font draws ASCII only: a name outside it is folded, and the
+        # address shown is then the one that needs no name.
+        shown_ssid = display.fold_ascii(ssid)
         while True:
             ok, err = self.nm.ap_up(dev, ssid, password)
             if not ok:
@@ -461,10 +512,14 @@ class Setup:
                 self._put_back()
                 return 1
             if not self.server:
-                self.address = self.nm.address(dev) or AP_ADDRESS
-                if self.address != AP_ADDRESS:
-                    log(f"the setup network came up at {self.address}, not {AP_ADDRESS}: "
-                        "the port-80 redirect and the captive DNS answer will miss it")
+                # The page binds AP_ADDRESS, which the setup profile pins: IP_FREEBIND
+                # lets it bind before the address is on the device. Not whatever address
+                # NM lists first right after the network comes up — that can still be the
+                # old network's, and then no phone reaches the page (seen 2026-10-07: it
+                # bound the home address and the captive page never opened).
+                if not self._address_arrives(dev):
+                    log(f"{AP_ADDRESS} is not on {dev} after {ADDRESS_WAIT_SECS:.0f} s: "
+                        "phones may not reach the page")
                 try:
                     self.serve()
                 except OSError as e:
@@ -473,8 +528,21 @@ class Setup:
                     self._put_back()
                     return 1
             self.publish(ssid)
+            # On the display first: the status says whether it got there, and with a code
+            # to scan, and the voice points at it only then. The code carries the real
+            # name, whatever the font can draw -- and is sent only to an avatar that
+            # draws one that long at a size a phone scans (fits_qr). A name the font
+            # cannot draw as it is (folded, it would read wrong) points at the code
+            # when there is one.
+            code = wifi_qr(ssid, password)
+            code = code if self.screen and self.screen.fits_qr(code) else None
+            name = shown_ssid if shown_ssid == ssid or not code else "(scan the code)"
+            shown = self._show([f"Network  {name}", f"Password  {password}",
+                                url if shown_ssid == ssid else f"http://{self.address}"],
+                               qr=code)
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
-                            address=self.address, error=self.error)
+                            address=self.address, error=self.error, screen=shown,
+                            qr=shown and code is not None)
             self.request = None
             self.wake.clear()
             while not self.wake.wait(timeout=1.0):
@@ -485,12 +553,14 @@ class Setup:
             target, pw, hidden = self.request
             time.sleep(1.5)  # let the "joining" page reach the phone first
             self.status.set("joining", target=target)
+            self._show(["Joining", display.fold_ascii(target)])
             self.unpublish()
             self.nm.ap_down()
             ok, why, self.created = self.nm.join(dev, target, pw, hidden)
             if ok and self.nm.online(dev):
                 self.created = None  # kept: it is the box's network now
                 self.status.set("connected", target=target)
+                self._show(["Connected to", display.fold_ascii(target)], secs=CONNECTED_SCREEN_SECS)
                 return 0
             if ok:
                 why = N_("it joined but there is no internet through it")
@@ -500,6 +570,9 @@ class Setup:
             self.failure = (target, why)
             self.error = self.error_text(i18n.get(i18n.SOURCE_LANG))
             self.status.set("failed", target=target, reason=why)
+            # Held until the setup network is back and its details replace it (or the
+            # way out takes it down).
+            self._show(["Could not join", display.fold_ascii(target)])
             if time.monotonic() >= self.deadline:
                 self.status.set("timeout")
                 self._put_back()
@@ -522,7 +595,8 @@ def main(argv=None) -> int:
     status = Status(args.status_dir, run_id)
     log(f"run {run_id}: setup network {ssid}, page on port {args.port}, "
         f"{'flash-time' if PASSWORD.strip() == password else 'random'} password")
-    setup = Setup(nm, status, port=args.port, minutes=args.minutes)
+    setup = Setup(nm, status, port=args.port, minutes=args.minutes,
+                  screen=display.Screen("wifi-setup"))
     signal.signal(signal.SIGTERM, _on_sigterm)
     return setup.run(ssid, password)
 

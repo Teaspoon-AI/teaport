@@ -109,7 +109,7 @@ blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRA
 [[groups]]
 id = "wifi_setup"
 title = "Wi-Fi setup"
-blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline. The wifi_setup tool (Tools) is its switch. These two are flash-time settings for the paper insert."
+blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert."
 
 [[groups]]
 id = "talk_client"
@@ -1380,7 +1380,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
+help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
 source = "tools.py:923"
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
@@ -1995,7 +1995,7 @@ default = "hw:CARD=Array,DEV=0"
 read = "startup"
 tier = "setup"
 help = "The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others."
-source = "local_audio.py:83"
+source = "local_audio.py:85"
 
 [[settings]]
 name = "LOCAL_AUDIO_CAPTURE_CHANNEL"
@@ -2008,7 +2008,7 @@ max = 1
 read = "startup"
 tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
-source = "local_audio.py:84"
+source = "local_audio.py:86"
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
@@ -2022,7 +2022,7 @@ unit = "dB"
 read = "startup"
 tier = "tuning"
 help = "How loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never evicts a dashboard Talk session on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not."
-source = "local_audio.py:105"
+source = "local_audio.py:107"
 
 [[settings]]
 name = "LOCAL_AUDIO_URL"
@@ -2033,7 +2033,7 @@ default = "ws://127.0.0.1:$BRAIN_PORT/talk"
 read = "startup"
 tier = "tuning"
 help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."
-source = "local_audio.py:86"
+source = "local_audio.py:88"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_SOCK"
@@ -2044,7 +2044,7 @@ default = "/run/oled-avatar/face.sock"
 read = "startup"
 tier = "tuning"
 help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes."
-source = "local_audio.py:119"
+source = "local_audio.py:122"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_ADVANCE_MS"
@@ -2058,7 +2058,7 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:152"
+source = "local_audio.py:155"
 
 # ================================================================ wifi-setup.env
 
@@ -2070,7 +2070,7 @@ type = "secret"
 read = "startup"
 tier = "installer"
 help = "The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Digits are easiest to say and type. Unset (or invalid): fresh random digits each setup, spoken aloud."
-source = "wifi_setup.py:76"
+source = "wifi_setup.py:88"
 
 [[settings]]
 name = "WIFI_SETUP_SSID"
@@ -2079,5 +2079,5 @@ group = "wifi_setup"
 type = "string"
 read = "startup"
 tier = "installer"
-help = "The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC."
-source = "wifi_setup.py:77"
+help = "The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC. A name made only of hex digits (0-9, a-f) is ignored with a warning, and the MAC-based name used: some phones' QR scanners read such a name as raw bytes."
+source = "wifi_setup.py:89"

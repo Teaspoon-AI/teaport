@@ -70,6 +70,12 @@ msgstr "我正在设置无线网络。想再听一遍就说重复，想停下来
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "请用手机连接无线网络{ssid}。密码是{password}。设置页面应该会自动弹出。如果没有弹出，请在浏览器里打开{url}。"
 
+msgid "You can also read these details on my screen."
+msgstr "这些信息也显示在我的屏幕上。"
+
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "你也可以扫描我屏幕上的二维码来连接，或者在屏幕上查看这些信息。"
+
 msgid "the saved settings for it did not work"
 msgstr "这个网络之前保存的设置不起作用"
 

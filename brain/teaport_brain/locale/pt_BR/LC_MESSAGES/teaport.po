@@ -70,6 +70,12 @@ msgstr "Estou configurando o wi-fi. Diga repetir para ouvir os dados de novo, ou
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "No seu celular, conecte-se à rede wi-fi {ssid}. A senha é {password}. Uma página de configuração deve abrir sozinha. Se não abrir, acesse {url}."
 
+msgid "You can also read these details on my screen."
+msgstr "Você também pode ver esses dados na minha tela."
+
+msgid "You can also scan the code on my screen to join, or read these details there."
+msgstr "Você também pode escanear o código na minha tela para se conectar, ou ver esses dados lá."
+
 msgid "the saved settings for it did not work"
 msgstr "os dados salvos dessa rede não funcionaram"
 

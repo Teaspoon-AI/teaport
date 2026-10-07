@@ -5,6 +5,9 @@
 # it exits by itself — connected, cancelled, or after ten minutes. Rendered by
 # install.sh (@USER@/@PREFIX@/@ETC@).
 #
+# The network's name and password are also shown on the OLED avatar if the box has one
+# (teaport_brain/display.py, its socket /run/oled-avatar/face.sock).
+#
 # The password is the flash-time one in @ETC@/wifi-setup.env (WIFI_SETUP_PASSWORD, for
 # the paper insert; WIFI_SETUP_SSID overrides the name) if present, else fresh random
 # digits per run. NetworkManager lets @USER@ make these changes through
@@ -14,7 +17,7 @@
 # phone open the page by itself.
 #
 # 10.42.0.1 below is wifi.AP_ADDRESS, which the code pins in the setup network's profile
-# (ipv4.addresses): the redirect and the captive DNS answer need it before the network
+# (ipv4.addresses): the port-80 rule and the captive DNS answer need it before the network
 # exists. Change them together.
 [Unit]
 Description=teaport Wi-Fi setup (temporary setup network + phone page)
@@ -29,12 +32,17 @@ RuntimeDirectory=teaport-wifi-setup
 RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 # Captive-portal probes go to port 80, which is the front door's (Caddy). While this
-# runs, port 80 on the setup network's address is redirected to the page (PAGE_PORT in
-# wifi_setup.py); "+" runs these as root, the page itself does not need to be. iptables,
-# not an nft rule: the Jetson kernel has no nft redirect (CONFIG_NFT_REDIR is off), but
-# the xt REDIRECT target iptables-nft uses is there.
+# runs, port 80 on the setup network's address is sent to the page (PAGE_PORT in
+# wifi_setup.py); "+" runs these as root, the page itself does not need to be. DNAT to
+# the pinned address, not REDIRECT: REDIRECT rewrites to the incoming interface's FIRST
+# IPv4 address, which just after the setup network comes up can still be the old home
+# network's, where the page is not bound. iptables, not an nft rule: the Jetson kernel
+# has no nft redirect (CONFIG_NFT_REDIR is off); iptables-nft runs DNAT through its xt
+# target, as it ran REDIRECT (the Orin's kernel takes the rule: checked 2026-10-07).
+# The first line removes a REDIRECT rule an earlier version of this unit may have left.
 ExecStartPre=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports 7869
-ExecStartPre=+/usr/sbin/iptables -t nat -A PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports 7869
+ExecStartPre=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j DNAT --to-destination 10.42.0.1:7869
+ExecStartPre=+/usr/sbin/iptables -t nat -A PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j DNAT --to-destination 10.42.0.1:7869
 # Captive DNS only while this runs. NM gives every shared-mode dnsmasq the same
 # dnsmasq-shared.d, and a dnsmasq option cannot be scoped to one connection, so a
 # permanent file would answer 10.42.0.1 for every name on any other shared network the
@@ -49,11 +57,11 @@ ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teap
 # A stop (SIGTERM) makes the code take the setup network down, undo a half-done join and
 # ask for the old connection back; it needs a moment for nmcli, not systemd's 90 s.
 TimeoutStopSec=60
-# Belt and braces: never leave the setup network, the redirect or the captive DNS behind
+# Belt and braces: never leave the setup network, the port-80 rule or the captive DNS behind
 # (the code takes the network down itself).
 ExecStopPost=-/usr/bin/nmcli connection down id teaport-setup
 ExecStopPost=-/usr/bin/nmcli connection delete id teaport-setup
-ExecStopPost=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports 7869
+ExecStopPost=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j DNAT --to-destination 10.42.0.1:7869
 ExecStopPost=-+/bin/rm -f /etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf
 # The code gives up after ten minutes; this is the hard stop above it.
 RuntimeMaxSec=900
