@@ -437,6 +437,177 @@ def test_first_session_dials_at_once_later_ones_wait_for_a_voice(monkeypatch):
     assert got["preroll"] >= 48 * la.WAKE_SECS * 1000 * 0.9, got
 
 
+# ------------------------------------- back-off when another Talk client takes the box
+
+def test_backoff_holds_while_a_session_is_live_and_for_the_grace_after():
+    clock = _Clock()
+    b = la.Backoff(60, clock=clock)
+    assert not b.over(True)
+    clock.t += 59
+    assert not b.over(False)                    # none live, but the taker was live 59 s ago
+    clock.t += 30
+    assert not b.over(True)                     # live again: the grace starts over
+    clock.t += 59
+    assert not b.over(None)
+    clock.t += 1
+    assert b.over(None)                         # a brain that cannot say counts as none
+
+
+def test_backoff_counts_from_the_eviction_itself():
+    clock = _Clock()
+    b = la.Backoff(60, clock=clock)
+    clock.t += 10
+    assert not b.over(False)                    # gone 10 s after it took the box: still theirs
+    clock.t += 50
+    assert b.over(False)
+
+
+def test_only_the_taken_close_code_is_taken():
+    from websockets.exceptions import ConnectionClosedError, ConnectionClosedOK
+    from websockets.frames import Close
+
+    def closed(code, cls=ConnectionClosedError):
+        return cls(Close(code, ""), Close(code, ""), True)
+    assert la.taken(closed(la.TAKEN_CLOSE_CODE))
+    assert not la.taken(closed(1000, ConnectionClosedOK))   # ended: idle timeout, STT busy
+    assert not la.taken(closed(1012))                       # brain restarting
+    assert not la.taken(ConnectionClosedError(None, None))  # dropped (network, crash)
+    assert not la.taken(OSError("boom"))
+    assert not la.taken(None)
+
+
+def test_status_url_sits_next_to_talk(monkeypatch):
+    monkeypatch.setattr(la, "URL", "ws://127.0.0.1:7861/talk")
+    monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
+    assert la._status_url() == "http://127.0.0.1:7861/talk/status"
+    monkeypatch.setattr(la, "URL", "wss://box:443/talk/")
+    monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b")
+    assert la._status_url() == "https://box:443/talk/status?token=a%2Bb"
+
+
+def _redials(monkeypatch, close_code, active):
+    """A first session the brain closes with `close_code`, then someone talking near the
+    box (the flag) while the brain reports `active()` for /talk/status. Returns the
+    connection count after 1 s of voice."""
+    flag = tempfile.mktemp()
+    _fake_card(monkeypatch, ARECORD, flag)
+    monkeypatch.setattr(la, "BACKOFF_POLL_SECS", 0.05)
+    polls = [0]
+
+    async def talk_active():
+        polls[0] += 1
+        return active()
+    monkeypatch.setattr(la, "talk_active", talk_active)
+
+    async def run():
+        async def on_connect(ws, n):
+            if n == 1:
+                await ws.close(code=close_code)
+                return
+            await ws.close()
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        for _ in range(100):
+            await asyncio.sleep(0.05)
+            if count[0]:
+                break
+        await asyncio.sleep(0.3)
+        open(flag, "w").close()                  # someone speaks, and keeps speaking
+        await asyncio.sleep(1.0)
+        os.unlink(flag)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return count[0]
+
+    return asyncio.run(run()), polls[0]
+
+
+def test_taken_by_another_client_no_voice_redial_while_it_is_live(monkeypatch):
+    """The dashboard took the box and is in use: a voice in the room (its own user,
+    say) must not take it back, and the bridge only polls the brain meanwhile."""
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0.2)
+    count, polls = _redials(monkeypatch, la.TAKEN_CLOSE_CODE, lambda: True)
+    assert count == 1 and polls >= 5
+
+
+def test_taken_then_the_other_session_ends_voice_redials_after_the_grace(monkeypatch):
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0.2)
+    count, _ = _redials(monkeypatch, la.TAKEN_CLOSE_CODE, lambda: False)
+    assert count >= 2
+
+
+def test_a_brain_restart_or_a_plain_end_redials_on_voice_as_before(monkeypatch):
+    """Not taken: no back-off, the brain is not even asked."""
+    monkeypatch.setattr(la, "BACKOFF_SECS", 3600)
+    for code in (1000, 1012):
+        count, polls = _redials(monkeypatch, code, lambda: True)
+        assert count >= 2 and polls == 0, code
+
+
+# ------------------------------------------------------ the brain's half of it
+
+def _gateway():
+    for k, v in (("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime"),
+                 ("LLM_BASE_URL", "http://127.0.0.1:9/v1"), ("LLM_API_KEY", "not-a-real-key")):
+        os.environ.setdefault(k, v)
+    from teaport_brain import gateway_server
+    return gateway_server
+
+
+def test_an_evicted_talk_socket_is_closed_with_the_taken_code():
+    """acquire_slot tells the evicted session before cancelling it, and the gateway
+    turns the transport's own close of that socket into the taken code."""
+    gs = _gateway()
+    from teaport_brain import agent_session
+    assert gs.TAKEN_CLOSE_CODE == la.TAKEN_CLOSE_CODE
+    closes, order = [], []
+
+    class _Socket:
+        async def close(self, code=1000, reason=None):
+            closes.append((code, reason))
+
+    class _Task:
+        def __init__(self, name):
+            self.name = name
+
+        async def cancel(self):
+            order.append(f"cancel {self.name}")
+            await sock.close()                   # what pipecat does as the pipeline goes
+
+    sock = _Socket()
+
+    async def run():
+        _, release_a = await agent_session.acquire_slot(
+            _Task("a"), on_evicted=lambda: (order.append("evicted a"), gs._close_as_taken(sock)))
+        a_done = agent_session._active_session[1]
+        a_done.set()                             # a's teardown finishes at once
+        _, release_b = await agent_session.acquire_slot(_Task("b"))
+        await release_a()
+        assert agent_session.slot_active()       # a's late release leaves b's slot alone
+        await release_b()
+        assert not agent_session.slot_active()
+
+    asyncio.run(run())
+    assert order == ["evicted a", "cancel a"]
+    assert closes == [(gs.TAKEN_CLOSE_CODE, gs.TAKEN_CLOSE_REASON)]
+
+
+def test_talk_status_says_whether_the_slot_is_held(monkeypatch):
+    gs = _gateway()
+    from teaport_brain import agent_session
+    monkeypatch.setattr(gs, "GATEWAY_TOKEN", "")
+    monkeypatch.setattr(agent_session, "_active_session", None)
+    assert asyncio.run(gs.talk_status()) == {"active": False}
+    monkeypatch.setattr(agent_session, "_active_session", (object(), None, None))
+    assert asyncio.run(gs.talk_status()) == {"active": True}
+    monkeypatch.setattr(gs, "GATEWAY_TOKEN", "secret")
+    assert asyncio.run(gs.talk_status(token="nope")).status_code == 401
+    assert asyncio.run(gs.talk_status(token="secret")) == {"active": True}
+
+
 def test_face_reply_tail_audio_is_not_the_thinking_sound():
     """The final caption lands at the last word; that word's audio follows it. Those
     trailing frames must not read as the thinking sound (the face then sat in

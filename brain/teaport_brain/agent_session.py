@@ -193,20 +193,24 @@ def slot_active() -> bool:
     return _active_session is not None
 
 
-async def acquire_slot(task):
+async def acquire_slot(task, on_evicted=None):
     """Claim the single STT slot for `task`, evicting whatever held it before.
 
     Cancels the previous pipeline and waits for its teardown (STT _disconnect closes
     the engine socket) so this task's STT can claim the slot; pairs with the
-    STT-unavailable greeting warning as a backstop if a race slips. Returns
-    (done_event, release): await release() in a finally to relinquish the slot."""
+    STT-unavailable greeting warning as a backstop if a race slips. `on_evicted`, if
+    given, is called (sync) should a later session evict this one, before its pipeline
+    is cancelled: gateway_server uses it to close the socket with a code that says so.
+    Returns (done_event, release): await release() in a finally to relinquish the slot."""
     global _active_session
     my_done = asyncio.Event()
     async with _session_lock:
         prev = _active_session
         if prev is not None:
-            prev_task, prev_done = prev
+            prev_task, prev_done, prev_evicted = prev
             logger.info("new client — evicting the previous pipeline to free the STT slot")
+            if prev_evicted is not None:
+                prev_evicted()
             try:
                 await prev_task.cancel()
                 await asyncio.wait_for(prev_done.wait(), timeout=5.0)
@@ -215,7 +219,7 @@ async def acquire_slot(task):
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"evict: error cancelling previous pipeline: {e!r}")
             await asyncio.sleep(0.3)  # let the engine process the close + free the slot
-        _active_session = (task, my_done)
+        _active_session = (task, my_done, on_evicted)
 
     async def release():
         global _active_session
