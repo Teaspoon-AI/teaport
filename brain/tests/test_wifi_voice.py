@@ -790,6 +790,38 @@ def test_a_setup_the_model_started_that_never_ran_or_was_cancelled_is_told(answe
     assert _notices(context) == [NOTICE + ending]
 
 
+def test_a_cancel_the_unit_reports_before_its_stop_returns_is_still_the_users(fast):
+    """The unit writes "stopped" on SIGTERM, before systemctl stop returns: a poll in that
+    gap announces it. The model must hear the user cancelled, not a stop from outside."""
+    path = _path()
+    gate = {}
+
+    async def run():
+        gate["stop"] = asyncio.Event()
+        notes, context = _notes(quiet_secs=5.0)
+        v = Voice(path, online=True, gate=gate)
+        v.notes = notes
+        await v.begin(by_model=True)
+        assert await v._heard("yes")
+        _write(path, phase="ap_up", **DETAILS)
+        await asyncio.sleep(0.05)
+        cancel = asyncio.create_task(v._heard("cancel"))
+        await asyncio.sleep(0.02)
+        _write(path, phase="stopped")  # the unit's SIGTERM handler
+        await asyncio.sleep(0.05)
+        assert v.state == "idle", "the poll did not land in the gap"
+        gate["stop"].set()  # systemctl stop returns once the unit has exited
+        await cancel
+        await _ask_did_it_work(notes, context)
+        return v, context
+
+    v, context = asyncio.run(run())
+    assert _notices(context) == [
+        NOTICE + "the user cancelled it; the box's Wi-Fi is back as it was before."]
+    assert v.said[-1] == "Okay, I've stopped Wi-Fi setup and put things back as they were."
+    assert not v._cancelling
+
+
 def test_a_lapsed_question_is_told_ahead_of_the_words_that_follow(fast):
     async def run():
         notes, context = _notes(quiet_secs=5.0)

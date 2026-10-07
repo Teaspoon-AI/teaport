@@ -327,6 +327,7 @@ class WifiSetupVoice(FrameProcessor):
         # exists (agent_session.py); None, and the model is told nothing.
         self.notes = None
         self._by_model = False  # this setup began with the wifi_setup tool
+        self._cancelling = False  # the user's cancel is stopping the unit (_cancel)
 
     @property
     def t(self) -> i18n.T:
@@ -393,7 +394,13 @@ class WifiSetupVoice(FrameProcessor):
         self._poller = self._spawn(self._follow())
 
     async def _cancel(self) -> None:
-        rc, err = await self._run("stop", UNIT)
+        # The unit writes "stopped" on SIGTERM, before the stop returns: a poll in that
+        # gap announces it, and it is the user's cancel, not a stop from outside.
+        self._cancelling = True
+        try:
+            rc, err = await self._run("stop", UNIT)
+        finally:
+            self._cancelling = False
         if self.state != "running":
             return  # it ended on its own meanwhile, and has said so
         if rc != 0:
@@ -549,7 +556,8 @@ class WifiSetupVoice(FrameProcessor):
             # The unit was stopped from outside (systemctl, the config page, a restart)
             # and ran its restore path on the way out (wifi_setup.py, SIGTERM).
             self.state = "idle"
-            self._ended(f"it was stopped from outside before it finished; {_PUT_BACK}")
+            self._ended(f"the user cancelled it; {_PUT_BACK}" if self._cancelling else
+                        f"it was stopped from outside before it finished; {_PUT_BACK}")
             await self.say(t._("Okay, I've stopped Wi-Fi setup and put things back as they were."))
         elif phase == "error":
             self.state = "idle"
