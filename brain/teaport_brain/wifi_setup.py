@@ -46,7 +46,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from teaport_brain.wifi import AP_ADDRESS, NM, PAGE_CSS
+from teaport_brain.wifi import AP_ADDRESS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service redirects AP_ADDRESS:80 here with
 # an iptables rule for as long as it runs; phones only ever see port 80.
@@ -116,7 +116,7 @@ class Status:
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Teaport Wi-Fi setup</title><style>{css}</style></head><body><main>
-<div class="eyebrow">Teaport</div>
+<div class="logo">{logo}</div>
 <h1>Connect to Wi-Fi</h1>
 <p>Pick your network and type its password. Teaport will leave this setup network and
 join yours, and say out loud whether that worked.</p>
@@ -135,7 +135,7 @@ join yours, and say out loud whether that worked.</p>
 JOINING = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Teaport is joining</title>
 <style>{css}</style></head><body><main>
-<div class="eyebrow">Teaport</div>
+<div class="logo">{logo}</div>
 <h1>Joining {ssid}…</h1>
 <p>Teaport is leaving this setup network now. Switch your phone back to
 <strong>{ssid}</strong>. Teaport will say out loud whether it connected; if it could not,
@@ -151,7 +151,7 @@ def render_page(networks: list[dict], error: str = "") -> str:
             f'{" checked" if i == 0 else ""}><span>{html.escape(n["ssid"])}</span>'
             f"<small>{lock} {n['signal']}%</small></label>")
     return PAGE.format(
-        css=PAGE_CSS,
+        css=PAGE_CSS, logo=logo_html(),
         error=f'<p class="err">{html.escape(error)}</p>' if error else "",
         networks="\n".join(rows) or "<p>No networks found — use Other.</p>",
         other_checked="" if networks else "checked")
@@ -219,7 +219,7 @@ class Setup:
                 ssid, password, hidden, error = parse_form(self.rfile.read(length))
                 if error:
                     return self._send(200, render_page(setup.networks, error))
-                self._send(200, JOINING.format(css=PAGE_CSS, ssid=html.escape(ssid)))
+                self._send(200, JOINING.format(css=PAGE_CSS, logo=logo_html(), ssid=html.escape(ssid)))
                 setup.request = (ssid, password, hidden)
                 setup.wake.set()
 

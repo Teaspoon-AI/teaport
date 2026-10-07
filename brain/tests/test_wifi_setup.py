@@ -52,6 +52,15 @@ def test_scan_keeps_each_named_network_once_strongest_first():
 
 # ------------------------------------------------------------------ the page
 
+def test_the_page_carries_both_logos_inline():
+    page = ws.render_page([])
+    # The marketing site's switch: the dark-background logo in dark mode, else the light.
+    assert '<source srcset="data:image/svg+xml;base64,' in page
+    assert 'media="(prefers-color-scheme: dark)"' in page
+    assert '<img src="data:image/svg+xml;base64,' in page and 'alt="Teaport"' in page
+    assert "/config/logo.svg" not in page          # offline: nothing to fetch
+
+
 def test_the_page_escapes_network_names():
     page = ws.render_page([{"ssid": '<script>"x"</script>', "signal": 60, "open": False}])
     assert "<script>" not in page and "&lt;script&gt;" in page and "&quot;x&quot;" in page

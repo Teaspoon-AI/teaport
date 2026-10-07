@@ -8,6 +8,9 @@
 # down (50-teaport-wifi-setup.rules) is what lets that user change the Wi-Fi. No
 # Pipecat import: the setup unit runs this alone on a box short of memory.
 #
+import base64
+import functools
+import os
 import re
 import socket
 import subprocess
@@ -209,6 +212,28 @@ def switch(nm: "NM", dev: str, ssid: str, password: str, hidden: bool) -> tuple[
     return False, why
 
 
+@functools.cache
+def logo_html() -> str:
+    """The Teaport logo as the marketing site shows it: the on-light-background version,
+    and the on-dark-background one when the phone is in dark mode (a <picture>, as on
+    teaport.astro). Both SVGs ride inside the page as data URIs: the setup page is
+    served offline by its own little server, so it carries its images itself (and two
+    inline SVGs would collide on their shared gradient ids)."""
+    static = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+    uris = {}
+    for key, name in (("light", "teaport-logo.svg"), ("dark", "teaport-logo-dark.svg")):
+        try:
+            with open(os.path.join(static, name), "rb") as f:
+                uris[key] = "data:image/svg+xml;base64," + base64.b64encode(f.read()).decode()
+        except OSError:
+            pass
+    if "light" not in uris:
+        return ""
+    dark = (f'<source srcset="{uris["dark"]}" media="(prefers-color-scheme: dark)">'
+            if "dark" in uris else "")
+    return f'<picture>{dark}<img src="{uris["light"]}" alt="Teaport" width="89" height="50"></picture>'
+
+
 # The setup page's look: the config page's tokens (static/config.html), with system
 # fonts — the box is offline when this page is shown, so no web font can load.
 PAGE_CSS = """
@@ -221,7 +246,7 @@ PAGE_CSS = """
 --err-ink:#fca5a5;--err-bg:#3b1414;--btn-bg:#38bdf8;--btn-fg:#04121f}}
 body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 var(--sans)}
 main{max-width:32rem;margin:0 auto;padding:28px 16px 48px}
-.eyebrow{font-size:13px;letter-spacing:.08em;text-transform:uppercase;color:var(--accent);font-weight:700}
+.logo{margin:0 0 18px}.logo img{display:block;height:50px;width:auto}
 h1{font-size:28px;line-height:1.15;margin:6px 0 8px}
 p{color:var(--muted);margin:0 0 16px}
 .net{display:flex;align-items:center;gap:12px;padding:12px 14px;background:var(--surface);
