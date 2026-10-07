@@ -84,6 +84,7 @@ from teaport_brain.raw_llm_capture import RawLLMCapture
 from teaport_brain.services import make_llm, make_stt, make_tts
 from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
+from teaport_brain.wifi_voice import WifiSetupVoice
 from teaport_brain.tools import (
     AGENT_FIRST,
     ToolContext,
@@ -815,6 +816,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features))
     session_tools = active_tools(tool_ctx)
     logger.info(f"tools: {', '.join(t.name for t in session_tools) or 'none'}")
+    # Wi-Fi setup's voice half: only where its tool is active (switched on, a local
+    # client, the unit installed). It also answers the spoken phrase with no LLM.
+    wifi = WifiSetupVoice() if any(t.name == "wifi_setup" for t in session_tools) else None
     system_prompt = build_system_prompt(persona, tools=session_tools)
     # If a non-English voice/language was selected, tell the LLM to reply in it too
     # (the voice only changes pronunciation; the words still come from the LLM).
@@ -944,6 +948,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         # see the turn begin, and only one of the three may arm it.
         TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
         UserTranscriptEmitter(activity),
+        # Below the caption emitter (the user still sees their words), above everything
+        # that feeds the LLM: while Wi-Fi setup runs, the user's words are its, not the
+        # model's (wifi_voice.py).
+        wifi,
         # fire memory_search on interim, inject before the LLM. Only with a gateway:
         # without one every search returns None after its full timeout, for nothing.
         MemoryRecall(context) if agent_backend.HAS_AGENT else None,
@@ -1077,7 +1085,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                    # Lets the consult narrator fit its progress lines into a gap
                    # rather than talking over the user (see _consult_progress).
                    gate=followup_gate,
-                   client_features=tool_ctx.client_features)
+                   client_features=tool_ctx.client_features,
+                   wifi_voice=wifi)
 
     return AgentSession(
         task=task,

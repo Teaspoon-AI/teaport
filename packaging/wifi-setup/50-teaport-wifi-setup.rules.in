@@ -1,0 +1,13 @@
+// teaport Wi-Fi setup (installed by install.sh): lets the teaport run user change the
+// box's Wi-Fi — bring the setup network up and down, join and save networks — without
+// root. teaport-wifi-setup.service runs as that user (brain/teaport_brain/wifi_setup.py).
+polkit.addRule(function(action, subject) {
+    if (subject.user == "@USER@" && (
+            action.id == "org.freedesktop.NetworkManager.network-control" ||
+            action.id == "org.freedesktop.NetworkManager.settings.modify.system" ||
+            action.id == "org.freedesktop.NetworkManager.wifi.share.protected" ||
+            action.id == "org.freedesktop.NetworkManager.wifi.share.open" ||
+            action.id == "org.freedesktop.NetworkManager.enable-disable-wifi")) {
+        return polkit.Result.YES;
+    }
+});

@@ -111,10 +111,11 @@ FACE_SOCK = os.getenv("LOCAL_AUDIO_FACE_SOCK", "/run/oled-avatar/face.sock")
 # bubbles (tools._wrap). Kept here rather than imported: importing either pulls Pipecat
 # into this process.
 DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audio", "> 🔧", "> ⚠️")
-# The client tools this bridge performs (tools.py, THE TOOL CONTRACT), announced on
-# /talk as ?features=. The brain offers set_volume / restart_session only to a client
-# that announced them, and only where their TEAPORT_TOOL_* switch is on.
-FEATURES = ("volume", "restart")
+# What this client can do, announced on /talk as ?features= (tools.py, THE TOOL
+# CONTRACT): volume and restart are client tools it performs (set_volume,
+# restart_session); local says someone is at the box itself, which Wi-Fi setup needs
+# (the brain runs that one). Each is offered only where its TEAPORT_TOOL_* switch is on.
+FEATURES = ("volume", "restart", "local")
 # set_volume: a percent kept across sessions and reboots. 100 is the card's own level
 # (no boost: it would clip); below it, a gain on the samples over VOLUME_RANGE_DB, and
 # 0 is silent. "louder"/"quieter" move it by VOLUME_STEP.

@@ -55,6 +55,21 @@ downloads. You bring your own Jetson and your own LLM.
   (`set_volume`, kept across restarts), and restart the conversation from
   scratch (`restart_session`, a testing aid that is off until you set
   `TEAPORT_TOOL_RESTART_SESSION=1` in `/etc/teaport/brain.env`).
+- **Changing the box's Wi-Fi.** With the local mic (Step 6) running, say
+  **"set up Wi-Fi"** at the box. It works with no internet, because no language model is
+  involved. The box asks you to confirm, then opens a temporary setup network
+  named `teaport-` plus the last four characters of its Wi-Fi address, for example
+  `teaport-9e35`. It says the network's name and password aloud. Join that
+  network on your phone: a setup page opens by itself, or go to
+  `http://teaport-9e35.local`. Pick your network, type its password, and the box
+  switches over and tells you whether it worked. If it fails, the setup network
+  comes back so you can try again. After ten minutes it gives up and puts the old
+  connection back. Say "repeat" to hear the details again, or "cancel" to stop.
+  **For an image with a paper insert:** have the flashing step write
+  `/etc/teaport/wifi-setup.env` containing `WIFI_SETUP_PASSWORD=<8+ digits>`, and
+  optionally `WIFI_SETUP_SSID=<name>`. The setup network then always uses that
+  password, so it can be printed. Without that file, each setup uses fresh random
+  digits. The installer never writes or overwrites this file.
 - **Step 7 (optional) — Give it a face.** Wire a 128x64 SSD1306 OLED to the
   Jetson's I2C header and re-run the installer with
   `TEAPORT_ENABLE_OLED_AVATAR=1`. It fetches

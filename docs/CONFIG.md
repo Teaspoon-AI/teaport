@@ -34,6 +34,7 @@ column of the schema names the file and line.
 | `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on\|off` flips the echo canceller and restarts the pair for you. |
 | `/etc/teaport/bridge.env` | `teaport-discord-bridge` | systemctl restart teaport-discord-bridge. |
 | `/etc/teaport/local-audio.env` | `teaport-local-audio` | systemctl restart teaport-local-audio (ends the local session; it redials the brain at once). |
+| `/etc/teaport/wifi-setup.env` | `teaport-wifi-setup` | Read at each Wi-Fi setup (the unit runs only on request): nothing to restart. Written when the drive is flashed, so the paper insert can print the password; install.sh never writes it. |
 
 Nothing hot-reloads: every value is fixed when its service starts, so a change
 is a restart of the service(s) in the second column.
@@ -175,6 +176,16 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_SWITCH_VOICE` | **on** | Change the speaking voice (and with it the reply language). |
 | `TEAPORT_TOOL_SET_VOLUME` | **on** | Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions. |
 | `TEAPORT_TOOL_RESTART_SESSION` | **off** | End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge). |
+| `TEAPORT_TOOL_WIFI_SETUP` | **on** | Wi-Fi setup by voice: the spoken phrase ("set up Wi-Fi", no LLM needed) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup. |
+
+## Wi-Fi setup
+
+In `/etc/teaport/wifi-setup.env`. Say "set up Wi-Fi" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline. The wifi_setup tool (Tools) is its switch. These two are flash-time settings for the paper insert.
+
+| Setting | Default | Description |
+|---|---|---|
+| `WIFI_SETUP_PASSWORD` | — | The setup network's WPA2 password, written at flash time so the paper insert can print it. Digits are easiest to say and type; 8 to 63 characters. Unset (or invalid): fresh random digits each setup, spoken aloud. *Set by the installer.* |
+| `WIFI_SETUP_SSID` | — | The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC. *Set by the installer.* |
 
 ## Talk client context notes
 

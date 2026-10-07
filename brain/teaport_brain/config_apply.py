@@ -20,6 +20,11 @@ and python puts the script's own (root-owned) directory first on sys.path.
 
     python3 config_apply.py write brain.env   < new-content
     python3 config_apply.py restart teaport-brain
+    python3 config_apply.py stop teaport-wifi-setup
+
+The brain (wifi_voice.py) uses restart to START teaport-wifi-setup, which is a
+stopped on-demand unit (restart starts a stopped unit), and stop to cancel it:
+only that unit is STOPPABLE.
 
 write: keeps a .bak beside the file (a bounded ring of BACKUPS, newest last —
 the files carry tokens, so they must not pile up in /etc), writes a temp file
@@ -49,7 +54,9 @@ import time
 ETC = "/etc/teaport"
 FILES = ("engine.env", "brain.env", "bridge.env", "local-audio.env")
 UNITS = ("teaport-engine", "teaport-brain", "teaport-sip", "teaport-sip-brain",
-         "teaport-discord-bridge", "teaport-local-audio")
+         "teaport-discord-bridge", "teaport-local-audio", "teaport-wifi-setup")
+# Units the brain may also stop: Wi-Fi setup, which the user can cancel by voice.
+STOPPABLE = ("teaport-wifi-setup",)
 MAX_BYTES = 64 * 1024
 BACKUPS = 5
 # Only backups THIS code named are ever pruned. Operators keep their own beside
@@ -124,6 +131,12 @@ def restart(unit: str) -> None:
     )
 
 
+def stop(unit: str) -> None:
+    if unit not in STOPPABLE:
+        raise SystemExit(f"refusing to stop {unit!r}: not one of {STOPPABLE}")
+    subprocess.run(["systemctl", "stop", "--no-block", unit], check=True)
+
+
 def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "write":
         print(write(argv[1], sys.stdin.read()))
@@ -131,8 +144,11 @@ def main(argv: list[str]) -> int:
     if len(argv) == 2 and argv[0] == "restart":
         restart(argv[1])
         return 0
+    if len(argv) == 2 and argv[0] == "stop":
+        stop(argv[1])
+        return 0
     print(__doc__.split("\n\n")[0], file=sys.stderr)
-    print("usage: write <engine.env|brain.env|bridge.env|local-audio.env> < content | restart <unit>", file=sys.stderr)
+    print("usage: write <engine.env|brain.env|bridge.env|local-audio.env> < content | restart <unit> | stop <unit>", file=sys.stderr)
     return 2
 
 

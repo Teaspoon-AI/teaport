@@ -1,0 +1,38 @@
+# teaport-wifi-setup — Wi-Fi setup on demand (brain/teaport_brain/wifi_setup.py): a
+# temporary WPA2 setup network (teaport-ab12) with a page on port 80 where a phone
+# picks the box's Wi-Fi and types its password. Never enabled: the brain starts it when
+# the user says "set up Wi-Fi" (wifi_voice.py, through config_apply's sudoers line) and
+# it exits by itself — connected, cancelled, or after ten minutes. Rendered by
+# install.sh (@USER@/@PREFIX@/@ETC@).
+#
+# The password is the flash-time one in @ETC@/wifi-setup.env (WIFI_SETUP_PASSWORD, for
+# the paper insert; WIFI_SETUP_SSID overrides the name) if present, else fresh random
+# digits per run. NetworkManager lets @USER@ make these changes through
+# /etc/polkit-1/rules.d/50-teaport-wifi-setup.rules; NM's dnsmasq answers every name
+# with the box on the setup network (/etc/NetworkManager/dnsmasq-shared.d/
+# teaport-captive.conf), which is what makes a phone open the page by itself.
+[Unit]
+Description=teaport Wi-Fi setup (temporary setup network + phone page)
+After=NetworkManager.service
+
+[Service]
+Type=simple
+User=@USER@
+EnvironmentFile=-@ETC@/wifi-setup.env
+# status.json for the brain; kept after the run so it can read how it ended.
+RuntimeDirectory=teaport-wifi-setup
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+# Port 80 (captive-portal probes go there) without running as root.
+AmbientCapabilities=CAP_NET_BIND_SERVICE
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+NoNewPrivileges=yes
+SyslogIdentifier=teaport-wifi-setup
+# Venv resolved once, as in teaport-sip-brain.service ($$ = a literal $ to systemd).
+ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.wifi_setup'
+# Belt and braces: never leave the setup network up (the code takes it down itself).
+ExecStopPost=-/usr/bin/nmcli connection down id teaport-setup
+ExecStopPost=-/usr/bin/nmcli connection delete id teaport-setup
+# The code gives up after ten minutes; this is the hard stop above it.
+RuntimeMaxSec=900
+Restart=no

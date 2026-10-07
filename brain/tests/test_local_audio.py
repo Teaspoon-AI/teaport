@@ -327,7 +327,7 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == "ws://h/talk?features=volume,restart&token=a%2Bb%26c%3Dd%20%25"
+    assert la._url() == "ws://h/talk?features=volume,restart,local&token=a%2Bb%26c%3Dd%20%25"
 
 
 # ------------------------------------------------- the reconnect policy, end to end
@@ -547,4 +547,4 @@ def test_restart_session_redials_at_once_without_a_voice(monkeypatch):
     assert asyncio.run(run()) == 2
     assert got["result"]["type"] == "tool_result" and got["result"]["call_id"] == "teaport-client-x"
     assert got["result"]["result"]["ok"] is True
-    assert all("features=volume,restart" in p for p in got["paths"]), got["paths"]
+    assert all("features=volume,restart,local" in p for p in got["paths"]), got["paths"]
