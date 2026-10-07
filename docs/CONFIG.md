@@ -175,7 +175,7 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_WEB_FETCH` | **on** | Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw. |
 | `TEAPORT_TOOL_SEARCH_MEMORY` | **on** | Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw. |
 | `TEAPORT_TOOL_REMEMBER` | **on** | Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw. |
-| `TEAPORT_TOOL_ASK_OPENCLAW` | **on** | Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw; agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so turn both off together. |
+| `TEAPORT_TOOL_ASK_OPENCLAW` | **on** | Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal). |
 | `TEAPORT_TOOL_LIST_VOICES` | **on** | List the speaking voices. |
 | `TEAPORT_TOOL_SWITCH_VOICE` | **on** | Change the speaking voice (and with it the reply language). |
 | `TEAPORT_TOOL_SET_VOLUME` | **on** | Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions. |

@@ -179,14 +179,19 @@ _LOOKUP_TOOLS = frozenset({"web_search", "web_fetch", "search_memory", "ask_open
 
 
 def _join(items: list[str]) -> str:
-    return items[0] if len(items) == 1 else ", ".join(items[:-1]) + ", and " + items[-1]
+    if len(items) <= 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + ", and " + items[-1]
 
 
-def _compose_tools(tools) -> str:
+def _compose_tools(tools, device: bool = False) -> str:
+    """The paragraph for the standard tools `tools`. `device`: client tools get their
+    own sentence after it, so "you have no tools" would be untrue."""
     names = {t.name for t in tools}
     if not tools:
-        return ("You have no tools in this conversation. " + _NO_TOOL_NAME_INSTRUCTION
-                + " " + _CANNOT_LOOK_UP + " " + _GENERAL_CHAT_CLOSER)
+        return (("" if device else "You have no tools in this conversation. ")
+                + _NO_TOOL_NAME_INSTRUCTION + " " + _CANNOT_LOOK_UP + " "
+                + _GENERAL_CHAT_CLOSER)
     text = ("You have tools — use them instead of guessing: "
             + _join([t.hint or t.name for t in tools]) + ". "
             "When the user asks for something one of them covers, call it directly. ")
@@ -215,10 +220,11 @@ def tools_paragraph(tools) -> str:
     elif names == _TUNED_LOCAL:
         text = _TOOLS_LOCAL
     else:
-        text = _compose_tools(standard)
+        text = _compose_tools(standard, device=any(t.client for t in tools))
     device = [t for t in tools if t.client]
     if device:
-        text += ("On the device the user is talking to you through you can also use "
+        text += ("On the device the user is talking to you through you can "
+                 + ("also use " if standard else "use ")
                  + _join([t.hint or t.name for t in device])
                  + ": when they ask for one, call it directly, no preamble. ")
     return text

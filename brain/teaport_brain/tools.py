@@ -234,8 +234,8 @@ RESTART_SESSION = FunctionSchema(
     description=(
         "Start a fresh conversation: this session ends and a new one begins with an "
         "empty context and a greeting. Only when the user explicitly asks to restart, "
-        "reset, or start over. Say one short line first; the restart happens as soon "
-        "as you finish speaking."
+        "reset, or start over. Call it straight away, with no line before it; when it "
+        "returns, say one short goodbye — the restart happens once that has played."
     ),
     properties={},
     required=[],
@@ -787,7 +787,8 @@ CLIENT_CALL_PREFIX = "teaport-client-"
 
 
 def _client_tool(name: str):
-    """The handler for a tool the client performs: ask it, return what it answers."""
+    """The handler for a tool the client performs: ask it, return what it answers.
+    The model gets exactly one result for every call that is not itself cancelled."""
     async def handler(params: FunctionCallParams):
         call_id = CLIENT_CALL_PREFIX + uuid.uuid4().hex[:12]
         fut = consult_bridge.create(call_id)
@@ -797,12 +798,15 @@ def _client_tool(name: str):
                 "args": params.arguments or {}}))
             result = await asyncio.wait_for(fut, CLIENT_TOOL_TIMEOUT_S)
         except asyncio.TimeoutError:
-            consult_bridge.cancel(call_id)
             logger.warning(f"{name}: the client did not answer within {CLIENT_TOOL_TIMEOUT_S:g}s")
             result = {"ok": False, "error": "the device did not respond"}
-        except asyncio.CancelledError:
-            consult_bridge.cancel(call_id)  # the call itself was cancelled: no result
-            raise
+        except Exception as e:  # noqa: BLE001 — the request never reached the client
+            logger.warning(f"{name}: could not ask the client ({e!r})")
+            result = {"ok": False, "error": "the device could not be reached"}
+        finally:
+            # Every way out, a cancel (the call itself was cancelled: no result) among
+            # them. A no-op once the client answered: resolve already took the entry.
+            consult_bridge.cancel(call_id)
         if not isinstance(result, dict):
             result = {"ok": True, "result": result}
         logger.info(f"{name}: {result}")
@@ -847,6 +851,13 @@ class Tool:
     def client(self) -> bool:
         """Performed by the client (the prompt names these in their own sentence)."""
         return any(n.startswith("client:") for n in self.needs)
+
+    @property
+    def direct(self) -> bool:
+        """One of the session's own controls — its voice, or the device it speaks
+        through — not a source of answers: agent-first mode lets the model call these
+        itself rather than through ask_openclaw (agent_session.agent_first_directive)."""
+        return self.client or "tts" in self.needs
 
 
 def _plain(handler):
@@ -920,9 +931,15 @@ TOOLS: tuple[Tool, ...] = (
     Tool(RESTART_SESSION, _plain(_client_tool("restart_session")),
          env_flag("TEAPORT_TOOL_RESTART_SESSION", False), frozenset({"client:restart"}),
          hint="restart_session (start a fresh conversation, only when the user explicitly "
-              "asks to restart or start over)"),
+              "asks to restart or start over; once it returns, say one short goodbye)"),
 )
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
+# The same guard for the switch: agent-first with ask_openclaw switched off would route
+# every turn to a tool the model is not offered.
+if AGENT_FIRST and not TOOLS_BY_NAME["ask_openclaw"].enabled:
+    logger.warning("TEAPORT_AGENT_FIRST is on but TEAPORT_TOOL_ASK_OPENCLAW is off — "
+                   "ignoring it (agent-first routes every turn through ask_openclaw)")
+    AGENT_FIRST = False
 # The client features a /talk client may announce (?features=): one per client tool.
 CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
                             if n.startswith("client:"))
@@ -960,14 +977,16 @@ def _has(need: str, ctx: ToolContext) -> bool:
 
 
 def active_tools(ctx: ToolContext | None = None) -> list[Tool]:
-    """THE tools this session has: switched on, with everything they need."""
-    ctx = ctx or ToolContext(has_tts=True)
+    """THE tools this session has: switched on, with everything they need. Without a
+    context: no voice and a client that announced nothing — what register_tools(llm)
+    registers when it is given no tts, so the bare defaults agree too. A session passes
+    its own (agent_session: its tts and the client's features)."""
+    ctx = ctx or ToolContext()
     return [t for t in TOOLS if t.enabled and all(_has(n, ctx) for n in t.needs)]
 
 
 def build_tools_schema(ctx: ToolContext | None = None) -> ToolsSchema:
-    """The schema the model is offered. Without a context: a session with a voice and a
-    client that announced nothing (what SIP and the OpenClaw plugin get)."""
+    """The schema the model is offered: active_tools(ctx)."""
     return ToolsSchema(standard_tools=[t.schema for t in active_tools(ctx)])
 
 

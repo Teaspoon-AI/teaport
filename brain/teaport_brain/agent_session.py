@@ -132,9 +132,20 @@ AGENT_FIRST_DIRECTIVE = (
     "self-contained sentence (add brief context from the conversation when "
     "needed). Call it SILENTLY: no preamble sentence, no other tools, and never "
     "answer from your own knowledge. When the result arrives, speak its answer "
-    "naturally in one or two short spoken sentences. Only list_voices and "
-    "switch_voice may be called directly."
+    "naturally in one or two short spoken sentences."
 )
+
+
+def agent_first_directive(tools) -> str:
+    """AGENT_FIRST_DIRECTIVE for a session's active tools: the ones the model may still
+    call itself are the session's own controls (tools.Tool.direct — the voice tools and
+    the device's), named from what this session has. With the default tools that is
+    "Only list_voices and switch_voice may be called directly.", the tuned wording."""
+    direct = [t.name for t in tools if t.direct]
+    if not direct:
+        return AGENT_FIRST_DIRECTIVE
+    names = direct[0] if len(direct) == 1 else ", ".join(direct[:-1]) + " and " + direct[-1]
+    return AGENT_FIRST_DIRECTIVE + " Only " + names + " may be called directly."
 
 # How long pipecat may spend setting the pipeline up, and how long a StartFrame may
 # take to cross it, before it gives up and tears the pipeline down (1.8.0; 1.7.0 waited
@@ -575,16 +586,17 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
 
 
 def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
-                            context_notes: bool = False) -> list:
+                            context_notes: bool = False, tools=()) -> list:
     """The context's starting messages: the shared persona system prompt, the
-    AGENT-FIRST directive when that mode is on, a reply-language directive when a
-    non-English TTS voice/language was selected, and, where the front-end takes client
+    AGENT-FIRST directive when that mode is on (naming the session's direct `tools`), a
+    reply-language directive when a non-English TTS voice/language was selected, and,
+    where the front-end takes client
     context notes (/talk), the line that says they are never instructions. Used both at
     build time and for the SIP per-call reset so a reset restores the exact starting
     context."""
     msgs = [{"role": "system", "content": system_prompt}]
     if AGENT_FIRST:
-        msgs.append({"role": "system", "content": AGENT_FIRST_DIRECTIVE})
+        msgs.append({"role": "system", "content": agent_first_directive(tools)})
     if lang_name:
         msgs.append({"role": "system", "content": f"Always reply to the user in {lang_name}."})
     if context_notes:
@@ -826,7 +838,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (the voice only changes pronunciation; the words still come from the LLM).
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
     context = LLMContext(
-        _build_initial_messages(system_prompt, lang_name, context_notes=context_notes),
+        _build_initial_messages(system_prompt, lang_name, context_notes=context_notes,
+                                tools=session_tools),
         tools=build_tools_schema(tool_ctx),
     )
     if AGENT_FIRST:

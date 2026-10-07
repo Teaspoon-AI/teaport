@@ -122,8 +122,8 @@ FEATURES = ("volume", "restart", "local")
 VOLUME_FILE = os.path.expanduser("~/.local/state/teaport/local-audio.json")
 VOLUME_STEP = 10
 VOLUME_RANGE_DB = 40.0
-# restart_session: the model says one line, then the session restarts. Wait this long
-# for that line to start playing before restarting without it.
+# restart_session: the model calls it, says one goodbye, and the session restarts once
+# that has played (Restart). Wait this long for the goodbye before restarting without it.
 RESTART_SPEECH_WAIT_SECS = 5.0
 # The speaker has been quiet this long after a reply: the face goes back to idle (or
 # to thinking, while the thinking sound plays).
@@ -315,9 +315,12 @@ class Volume:
         self.percent = 100
         try:
             with open(self._path) as f:
-                self.percent = max(0, min(100, int(json.load(f)["volume"])))
-        except (OSError, ValueError, KeyError, TypeError):
-            pass  # first run, or a file we cannot read: full volume
+                saved = json.load(f)
+        except (OSError, ValueError):
+            return  # first run, or a file we cannot read: full volume
+        percent = _percent(saved.get("volume") if isinstance(saved, dict) else None)
+        if percent is not None:
+            self.percent = percent  # anything else in the file: full volume
 
     @property
     def gain(self) -> float:
@@ -325,31 +328,65 @@ class Volume:
             return 0.0
         return 10 ** (-VOLUME_RANGE_DB * (1 - self.percent / 100) / 20)
 
-    def apply(self, args: dict) -> dict:
-        """The set_volume tool: {"direction": "louder"|"quieter"} or {"level": 0..100}."""
+    def apply(self, args) -> dict:
+        """The set_volume tool: {"direction": "louder"|"quieter"} or {"level": 0..100}.
+        Given both, the level wins (it is the exact one) and the note says so."""
+        if not isinstance(args, dict):
+            return {"ok": False, "error": "give a direction (louder or quieter) or a level"}
         direction, level = args.get("direction"), args.get("level")
+        note = None
         if level is not None:
-            try:
-                target = int(level)
-            except (TypeError, ValueError):
+            target = _percent(level)
+            if target is None:
                 return {"ok": False, "error": f"level must be 0 to 100, not {level!r}"}
+            if direction is not None:
+                note = f"set to the level given; the direction ({direction}) was ignored"
         elif direction in ("louder", "quieter"):
-            target = self.percent + (VOLUME_STEP if direction == "louder" else -VOLUME_STEP)
+            target = max(0, min(100, self.percent
+                                + (VOLUME_STEP if direction == "louder" else -VOLUME_STEP)))
+            if target == self.percent:
+                note = f"already at the {'top' if direction == 'louder' else 'bottom'}"
         else:
             return {"ok": False, "error": "give a direction (louder or quieter) or a level"}
-        target = max(0, min(100, target))
         result = {"ok": True, "volume": target}
-        if target == self.percent and direction:
-            result["note"] = f"already at the {'top' if target == 100 else 'bottom'}"
+        if note:
+            result["note"] = note
         self.percent = target
-        try:
-            os.makedirs(os.path.dirname(self._path), exist_ok=True)
-            with open(self._path, "w") as f:
-                json.dump({"volume": target}, f)
-        except OSError as e:
-            logger.warning(f"volume {target}% applied but not saved ({e})")
+        self._save()
         logger.info(f"volume -> {target}%")
         return result
+
+    def _save(self) -> None:
+        # Written aside and renamed over the old file: a kill or a power cut mid-write
+        # leaves the old level, never an empty file (which would read back as 100%).
+        tmp = f"{self._path}.{os.getpid()}.tmp"
+        try:
+            os.makedirs(os.path.dirname(self._path), exist_ok=True)
+            with open(tmp, "w") as f:
+                json.dump({"volume": self.percent}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, self._path)
+        except OSError as e:
+            logger.warning(f"volume {self.percent}% applied but not saved ({e})")
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+
+
+def _percent(value) -> int | None:
+    """A volume level, 0..100 (clamped), from a number or a numeric string; None for
+    anything else (a bool, NaN, infinity, a list, ...)."""
+    if isinstance(value, bool):
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    if not np.isfinite(f):
+        return None
+    return max(0, min(100, round(f)))
 
 
 def capture_to_relay(raw: bytes, resampler: "soxr.ResampleStream", channel: int) -> bytes:
@@ -826,17 +863,74 @@ def _url() -> str:
         query, safe=",", quote_via=urllib.parse.quote)
 
 
-def client_tool(card: "Card", m: dict, restart: asyncio.Event) -> dict:
+# How often Restart looks at the speaker while it waits.
+RESTART_POLL_SECS = 0.05
+
+
+class Restart:
+    """restart_session on this side: armed by the tool, it ends the session once the
+    goodbye has been heard out.
+
+    The goodbye is the model's reply to the tool result, so it is a NEW utterance
+    (captions carry their TTS context id as "utterance", and are released as their words
+    play). A line the model spoke before calling the tool, still playing when the result
+    goes back, is not it: the goodbye can queue right behind that line, and ending at
+    the gap between the two would cut it off. So: wait for an utterance that started
+    after the restart was armed (up to RESTART_SPEECH_WAIT_SECS — the model may say
+    nothing), then for the speaker to go quiet."""
+
+    def __init__(self, play: "Playback", face: FaceTap, clock=time.monotonic):
+        self._play, self._face, self._clock = play, face, clock
+        self._seen: set = set()            # assistant utterances captioned so far
+        self._before: set | None = None    # ... those seen when the restart was armed
+        self.goodbye = False               # an utterance newer than that was captioned
+        self.armed = asyncio.Event()
+
+    def arm(self) -> None:
+        if self._before is None:
+            self._before = set(self._seen)
+            self.armed.set()
+
+    def caption(self, utterance) -> None:
+        """An assistant caption (partial or final) of `utterance` arrived."""
+        if utterance is None:
+            return
+        self._seen.add(utterance)
+        if self._before is not None and utterance not in self._before:
+            self.goodbye = True
+
+    def _heard_out(self) -> bool:
+        play, face = self._play, self._face
+        return not (play.speaking or face.voiced) and play.echo_free(self._clock())
+
+    async def wait(self) -> None:
+        await self.armed.wait()
+        deadline = self._clock() + RESTART_SPEECH_WAIT_SECS
+        while not self.goodbye and self._clock() < deadline:
+            await asyncio.sleep(RESTART_POLL_SECS)
+        while not self._heard_out():
+            await asyncio.sleep(RESTART_POLL_SECS)
+
+
+def client_tool(card: "Card", m: dict, restart: Restart) -> dict:
     """Perform one client_tool request from the brain (tools.py, THE TOOL CONTRACT);
-    the result goes back as a tool_result for the model to speak around."""
-    name, args = m.get("name"), m.get("args") or {}
-    if name == "set_volume":
-        return card.volume.apply(args)
-    if name == "restart_session":
-        restart.set()
-        return {"ok": True, "note": "Say one short line now; the session restarts "
-                                    "with a fresh conversation as soon as you finish."}
-    return {"ok": False, "error": f"this device cannot do {name}"}
+    the result goes back as a tool_result for the model to speak around. Never raises:
+    a request this bridge cannot carry out is an error result, not a dead session."""
+    name, args = m.get("name"), m.get("args")
+    try:
+        if args is not None and not isinstance(args, dict):
+            return {"ok": False, "error": f"{name}: args must be an object, not {args!r}"}
+        args = args or {}
+        if name == "set_volume":
+            return card.volume.apply(args)
+        if name == "restart_session":
+            restart.arm()
+            return {"ok": True, "note": "Now say one short goodbye; the session restarts "
+                                        "with a fresh conversation once it has played."}
+        return {"ok": False, "error": f"this device cannot do {name}"}
+    except Exception as e:  # noqa: BLE001 — one bad request must not end the session
+        logger.warning(f"client_tool {name}: {e!r}")
+        return {"ok": False, "error": f"{name} failed on the device"}
 
 
 async def run_session(card: Card, preroll: bool) -> str | None:
@@ -872,6 +966,8 @@ async def run_session(card: Card, preroll: bool) -> str | None:
                 m = json.loads(msg)
             except ValueError:
                 continue
+            if not isinstance(m, dict):
+                continue
             kind = m.get("type")
             if kind == "clear":
                 play.clear()
@@ -886,6 +982,8 @@ async def run_session(card: Card, preroll: bool) -> str | None:
                 role, text, final = m.get("role"), m.get("text") or "", bool(m.get("final"))
                 if role == "assistant" and text.startswith(DEBUG_CHIP_PREFIXES):
                     continue
+                if role == "assistant":
+                    restart.caption(m.get("utterance"))
                 if role == "user":
                     face.user(text, final)
                 elif role == "assistant" and face.assistant(text, final):
@@ -893,17 +991,10 @@ async def run_session(card: Card, preroll: bool) -> str | None:
                 if final:
                     logger.info(f"{role}: {text}")
 
-    restart = asyncio.Event()
+    restart = Restart(play, face)
 
     async def restart_when_heard_out():
-        # restart_session: let the model's one line play (it starts once the tool result
-        # is back and the reply is synthesized), then end the session.
         await restart.wait()
-        deadline = time.monotonic() + RESTART_SPEECH_WAIT_SECS
-        while not (play.speaking or face.voiced) and time.monotonic() < deadline:
-            await asyncio.sleep(0.05)
-        while play.speaking or face.voiced or not play.echo_free(time.monotonic()):
-            await asyncio.sleep(0.05)
         logger.info("restart requested — ending this session for a fresh one")
 
     restarter = asyncio.create_task(restart_when_heard_out())

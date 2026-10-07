@@ -59,7 +59,7 @@ def test_every_tool_has_a_switch_row_and_a_hint():
 
 def test_defaults_keep_todays_tools_and_offer_client_tools_only_when_announced(monkeypatch):
     monkeypatch.setitem(tools.HOST_CHECKS, "wifi_setup", lambda: False)
-    base = _names(tools.active_tools())
+    base = _names(tools.active_tools(tools.ToolContext(has_tts=True)))
     assert "set_volume" not in base and "restart_session" not in base
     with_volume = _names(tools.active_tools(tools.ToolContext(
         has_tts=True, client_features=frozenset({"volume"}))))
@@ -180,6 +180,88 @@ def test_the_serializer_routes_a_client_tool_result():
 
     frame, result = asyncio.run(run())
     assert frame is None and result == {"ok": True}
+
+
+def test_a_client_tool_that_cannot_ask_still_answers_once_and_leaves_nothing_behind():
+    class _Broken(_LLM):
+        async def push_frame(self, frame, *a, **kw):
+            raise RuntimeError("pipeline is gone")
+
+    async def run():
+        params = _Params(_Broken(), {"level": 10})
+        await tools._client_tool("set_volume")(params)
+        return params.results, dict(consult_bridge._pending)
+
+    results, pending = asyncio.run(run())
+    assert results == [{"ok": False, "error": "the device could not be reached"}]
+    assert not pending
+
+
+def test_a_cancelled_client_tool_gives_no_result_and_leaves_nothing_behind():
+    async def run():
+        params = _Params(_LLM(), {})
+        call = asyncio.create_task(tools._client_tool("set_volume")(params))
+        await asyncio.sleep(0.02)
+        call.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await call
+        return params.results, dict(consult_bridge._pending)
+
+    results, pending = asyncio.run(run())
+    assert results == [] and not pending
+
+
+def test_the_bare_defaults_offer_exactly_what_they_register():
+    """build_tools_schema() and register_tools(llm), both given nothing, agree (no voice,
+    no client); a session gives both its own tts and features."""
+    llm = _LLM()
+    tools.register_tools(llm)
+    assert _names(tools.build_tools_schema().standard_tools) == list(llm.registered)
+    assert "list_voices" not in llm.registered
+
+
+def test_device_tools_alone_are_not_announced_as_no_tools(monkeypatch):
+    _with(monkeypatch, **{t.name: False for t in tools.TOOLS if not t.client})
+    only = tools.active_tools(tools.ToolContext(has_tts=True, client_features=ALL_FEATURES))
+    assert _names(only) == ["set_volume"]
+    text = persona.tools_paragraph(only)
+    assert "no tools" not in text and "you can use set_volume" in text
+    assert persona._CANNOT_LOOK_UP in text
+
+
+def test_restart_session_tells_the_model_one_thing(monkeypatch):
+    """Schema, prompt and the bridge's result (test_local_audio) agree: call it with no
+    preamble, then one goodbye — the bridge waits for that reply to play."""
+    desc = tools.RESTART_SESSION.description
+    assert "no line before it" in desc and "goodbye" in desc and "first" not in desc
+    _with(monkeypatch, restart_session=True)
+    active = tools.active_tools(tools.ToolContext(has_tts=True, client_features=ALL_FEATURES))
+    paragraph = persona.tools_paragraph(active)
+    device = paragraph[paragraph.index("On the device"):]
+    assert "restart_session" in device and "goodbye" in device and "no preamble" in device
+
+
+def test_the_agent_first_directive_names_the_sessions_direct_tools():
+    from teaport_brain.agent_session import AGENT_FIRST_DIRECTIVE, agent_first_directive
+    tuned = "Only list_voices and switch_voice may be called directly."
+    default = tools.active_tools(tools.ToolContext(has_tts=True))
+    assert agent_first_directive(default) == AGENT_FIRST_DIRECTIVE + " " + tuned
+    with_device = tools.active_tools(tools.ToolContext(has_tts=True,
+                                                       client_features=ALL_FEATURES))
+    assert agent_first_directive(with_device).endswith(
+        " Only list_voices, switch_voice and set_volume may be called directly.")
+    assert agent_first_directive([]) == AGENT_FIRST_DIRECTIVE
+
+
+def test_agent_first_is_ignored_while_ask_openclaw_is_switched_off():
+    import subprocess
+    import sys
+    env = dict(os.environ, TEAPORT_AGENT="openclaw", TEAPORT_AGENT_FIRST="1")
+    probe = "from teaport_brain import tools; print(tools.AGENT_FIRST)"
+    for switch, expected in (("0", "False"), ("1", "True")):
+        out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
+                             env=dict(env, TEAPORT_TOOL_ASK_OPENCLAW=switch), timeout=120)
+        assert out.stdout.strip().splitlines()[-1] == expected, (switch, out.stderr[-500:])
 
 
 if __name__ == "__main__":
