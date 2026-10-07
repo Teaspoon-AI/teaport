@@ -84,7 +84,7 @@ from teaport_brain.raw_llm_capture import RawLLMCapture
 from teaport_brain.services import make_llm, make_stt, make_tts
 from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
-from teaport_brain.wifi_voice import WifiSetupVoice
+from teaport_brain.wifi_voice import SetupTurnCloser, WifiSetupVoice
 from teaport_brain.tools import (
     AGENT_FIRST,
     ToolContext,
@@ -821,6 +821,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     # It speaks the voice's language, read live (a switch_voice switches it too).
     wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
             if any(t.name == "wifi_setup" for t in session_tools) else None)
+    # The words it takes go on emptied, and this ends the turn they opened (wifi_voice.py:
+    # otherwise the stop strategy waits on words that never come, barge-in dead).
+    wifi_closer = SetupTurnCloser() if wifi is not None else None
     system_prompt = build_system_prompt(persona, tools=session_tools)
     # If a non-English voice/language was selected, tell the LLM to reply in it too
     # (the voice only changes pronunciation; the words still come from the LLM).
@@ -878,7 +881,9 @@ def build_agent_session(transport, *, voice: str | None = None,
                 start=[barge_pause.PauseAwareMinWordsStrategy(
                     min_words=INTERRUPT_MIN_WORDS,
                     on_final_without_turn=_final_without_turn)],
-                stop=[stop_strategy],
+                # The closer FIRST: it ends the turn before the brain's strategy could
+                # speculate on the turn's earlier words; that one still sees the frame.
+                stop=[s for s in (wifi_closer, stop_strategy) if s is not None],
             ),
         ),
     )
@@ -892,6 +897,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # both the refusal and the frame that lifts it. It raises AttributeError here, at
     # session build, if a pipecat bump moves any of it.
     keep_barge_in_reachable(context_aggregator.user()._user_turn_controller)
+    if wifi_closer is not None:
+        wifi_closer.aggregator = context_aggregator.user()
 
     # The ledger reads the LLM stream at the TTS's sighting (the text the TTS is
     # actually handed, after the guard) and tells the thinking bed's audio, pushed
