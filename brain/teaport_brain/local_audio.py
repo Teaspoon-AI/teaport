@@ -15,7 +15,8 @@
 # greets the newcomer). So the bridge never dials on a timer:
 #   * The card comes first. aplay and arecord are opened, and capture must deliver
 #     data, BEFORE /talk is dialled: a dead or unplugged card evicts nobody. A card that
-#     fails is retried with a backoff (RETRY_SECS doubling to RETRY_MAX_SECS).
+#     fails is retried with a backoff (RETRY_SECS doubling to RETRY_MAX_SECS) — but a
+#     card that was unplugged is retried the moment it is plugged back in (CARD_POLL_SECS).
 #   * The first session after start dials at once (and so is greeted). After any session
 #     ends — the brain hung up, its idle timeout, another client took the slot, the
 #     STT-busy line — the card stays open and the bridge waits for a VOICE in the room
@@ -86,6 +87,10 @@ URL = os.getenv("LOCAL_AUDIO_URL") or f"ws://127.0.0.1:{os.getenv('BRAIN_PORT', 
 # after, doubling per consecutive failure up to the max; a good session resets it.
 RETRY_SECS = 3.0
 RETRY_MAX_SECS = 60.0
+# While a card that is not plugged in waits out its backoff, look for it this often: it
+# is retried as soon as it appears (a replug is noticed in seconds, not a minute).
+# Looking costs nothing and dials nobody, so the backoff still protects other sessions.
+CARD_POLL_SECS = 2.0
 # Capture must deliver its first byte within this, or the card counts as dead.
 CAPTURE_START_SECS = 5.0
 # A voice in the room, between sessions: chunks louder than WAKE_DB (dBFS RMS on the
@@ -320,6 +325,27 @@ def relay_to_device(raw: bytes, resampler: "soxr.ResampleStream") -> bytes:
 # hw_ptr and appl_ptr. hw_ptr counts the frames the hardware has taken; appl_ptr those
 # the application has written; delay = (appl_ptr - hw_ptr) plus what the driver still
 # holds past hw_ptr (snd-usb-audio's URBs in flight).
+
+def card_present(device: str) -> bool | None:
+    """Is the card `device` names plugged in? None when the device string does not name
+    one card (plughw:, default, a pipewire alias...): then nobody can tell."""
+    pcm_dir = pcm_status_dir(device)
+    return None if pcm_dir is None else os.path.isdir(os.path.dirname(pcm_dir))
+
+
+async def wait_for_card(device: str, secs: float) -> bool:
+    """Wait out a card backoff of `secs`, ending early (True) if a card that was missing
+    is plugged in meanwhile. A card that is there but failed waits the whole backoff."""
+    if card_present(device) is not False:
+        await asyncio.sleep(secs)
+        return False
+    deadline = time.monotonic() + secs
+    while time.monotonic() < deadline:
+        await asyncio.sleep(min(CARD_POLL_SECS, max(0.0, deadline - time.monotonic())))
+        if card_present(device):
+            return True
+    return False
+
 
 def pcm_status_dir(device: str) -> str | None:
     """`hw:` ALSA device string -> its playback PCM's /proc dir; None for anything else
@@ -858,8 +884,11 @@ async def run_bridge() -> None:
                 logger.warning(f"sound card {card.device}: {e} — retrying in {card_wait:g} s")
             finally:
                 await card.close()
-            await asyncio.sleep(card_wait)
-            card_wait = min(card_wait * 2, RETRY_MAX_SECS)
+            if await wait_for_card(card.device, card_wait):
+                logger.info(f"sound card {card.device} plugged in — retrying now")
+                card_wait = RETRY_SECS
+            else:
+                card_wait = min(card_wait * 2, RETRY_MAX_SECS)
     finally:
         face.ended()
 

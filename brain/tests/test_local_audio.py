@@ -462,3 +462,38 @@ def test_face_thinking_sound_after_a_reply_still_shows_thinking():
         clock.t += 0.03
     face.quiet()
     assert sent[-1] == {"state": "thinking"}
+
+
+def test_card_present_follows_the_proc_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(la, "pcm_status_dir", lambda dev: str(tmp_path / "Array" / "pcm0p")
+                        if dev.startswith("hw:") else None)
+    assert la.card_present("hw:CARD=Array,DEV=0") is False
+    (tmp_path / "Array").mkdir()
+    assert la.card_present("hw:CARD=Array,DEV=0") is True
+    assert la.card_present("plughw:Array") is None
+
+
+def test_a_replugged_card_ends_the_backoff_early(monkeypatch, tmp_path):
+    card_dir = tmp_path / "Array"
+    monkeypatch.setattr(la, "pcm_status_dir", lambda dev: str(card_dir / "pcm0p"))
+    monkeypatch.setattr(la, "CARD_POLL_SECS", 0.05)
+
+    async def run():
+        async def plug_in_later():
+            await asyncio.sleep(0.2)
+            card_dir.mkdir()
+        asyncio.get_running_loop().create_task(plug_in_later())
+        t0 = asyncio.get_running_loop().time()
+        early = await la.wait_for_card("hw:CARD=Array,DEV=0", 30)
+        return early, asyncio.get_running_loop().time() - t0
+
+    early, took = asyncio.run(run())
+    assert early and took < 1.0                  # not the 30 s backoff
+
+    async def present_but_failing():
+        t0 = asyncio.get_running_loop().time()
+        early = await la.wait_for_card("hw:CARD=Array,DEV=0", 0.3)   # card_dir exists now
+        return early, asyncio.get_running_loop().time() - t0
+
+    early, took = asyncio.run(present_but_failing())
+    assert not early and took >= 0.29            # a card that is there waits it out
