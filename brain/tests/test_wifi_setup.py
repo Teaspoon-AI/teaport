@@ -91,54 +91,237 @@ class FakeRun:
         return 0, "", ""
 
 
+def _esc(v):
+    return v.replace("\\", "\\\\").replace(":", "\\:")
+
+
+class FakeNmcli:
+    """nmcli against a pretend NetworkManager: saved profiles by UUID, the networks in
+    the air (ssid -> password, None for open), and the radio's scan list — empty to
+    begin with, as it is right after access-point mode."""
+
+    def __init__(self, air, profiles=(), visible=()):
+        self.air, self.visible, self.calls = dict(air), set(visible), []
+        self.profiles = {}
+        for p in profiles:
+            self.profiles[p.get("uuid") or f"uuid-{len(self.profiles)}"] = {
+                "id": p["ssid"], "mode": "infrastructure", "key_mgmt": "wpa-psk",
+                "psk": "", "psk_flags": "0", **p}
+        self.active = None
+
+    def _new(self, **p):
+        uuid = f"uuid-new-{len(self.calls)}"
+        self.profiles[uuid] = {"mode": "infrastructure", "psk_flags": "0", **p}
+        return uuid
+
+    def _works(self, uuid):
+        p = self.profiles[uuid]
+        want = self.air.get(p["ssid"], "absent")
+        ok = want != "absent" and (want is None if p["key_mgmt"] == "" else p["psk"] == want)
+        self.active = uuid if ok else None
+        return ok
+
+    def __call__(self, argv, timeout=60):
+        self.calls.append(argv)
+        a = argv[1:]
+        if a[:5] == ["-t", "-f", "UUID,TYPE", "connection", "show"]:
+            return 0, "".join(f"{u}:802-11-wireless\n" for u in self.profiles), ""
+        if "connection" in a and "show" in a and "uuid" in a:
+            p = self.profiles.get(a[-1])
+            if not p:
+                return 10, "", "Error: no such profile"
+            values = {"connection.id": p["id"], "802-11-wireless.ssid": p["ssid"],
+                      "802-11-wireless.mode": p["mode"]}
+            if p["key_mgmt"]:
+                values["802-11-wireless-security.key-mgmt"] = p["key_mgmt"]
+                values["802-11-wireless-security.psk-flags"] = p["psk_flags"]
+                if a[0] == "-s":
+                    values["802-11-wireless-security.psk"] = p["psk"]
+            fields = a[a.index("-f") + 1].split(",")
+            return 0, "".join(f"{f}:{_esc(values[f])}\n" for f in fields if f in values), ""
+        if a[:2] == ["-t", "-f"] and "wifi" in a and "list" in a:
+            if a[-1] == "yes":
+                self.visible = set(self.air)
+            return 0, "".join(f"{_esc(s)}:70:WPA2\n" for s in sorted(self.visible)), ""
+        if a[:3] == ["connection", "modify", "uuid"]:
+            p, kv = self.profiles[a[3]], a[4:]
+            for k, v in zip(kv[::2], kv[1::2]):
+                p[{"wifi-sec.psk": "psk", "wifi-sec.psk-flags": "psk_flags"}[k]] = v
+            return 0, "", ""
+        if a[2:5] == ["connection", "up", "uuid"]:
+            return (0, "", "") if self._works(a[5]) else (4, "", "Error: Secrets were required")
+        if a[2:5] == ["device", "wifi", "connect"]:
+            ssid = a[5]
+            hidden = a[-2:] == ["hidden", "yes"]
+            if ssid not in self.visible and not hidden:
+                return 10, "", f"Error: No network with SSID '{ssid}' found."
+            pw = a[a.index("password") + 1] if "password" in a else ""
+            uuid = self._new(id=a[a.index("name") + 1], ssid=ssid,
+                             key_mgmt="wpa-psk" if pw else "", psk=pw)
+            return (0, f"Device 'wlan0' successfully activated with '{uuid}'.", "") if self._works(uuid) \
+                else (4, "", "Error: Connection activation failed: Secrets were required")
+        if a[:3] == ["connection", "delete", "uuid"]:
+            self.profiles.pop(a[3], None)
+            return 0, "", ""
+        return 0, "", ""
+
+
+def test_saved_profiles_are_found_by_their_real_ssid():
+    nm = FakeNmcli({}, profiles=[{"ssid": "my\\net:5G", "uuid": "u1"}, {"ssid": "ap", "mode": "ap", "uuid": "u2"}])
+    assert wifi.NM(nm).saved_profile("my\\net:5G") == {"uuid": "u1", "key_mgmt": "wpa-psk"}
+    assert wifi.NM(nm).saved_profile("ap") is None             # an access point is not joined
+    assert wifi.NM(nm).saved_profile(" my\\net:5G") is None    # spaces are part of a name
+
+
 def test_join_uses_a_saved_profile_without_a_password():
-    run = FakeRun([(("-t", "-f", "NAME,TYPE"), (0, "home:802-11-wireless\n", "")),
-                   (("-t", "-g", "802-11-wireless.ssid"), (0, "home\n", ""))])
-    assert wifi.NM(run).join("wlan0", "home", "", False) == (True, "", None)
-    assert ["nmcli", "--wait", "45", "connection", "up", "id", "home"] in run.calls
+    nm = FakeNmcli({"home": "homepass1"}, profiles=[{"ssid": "home", "psk": "homepass1", "uuid": "u1"}])
+    assert wifi.NM(nm).join("wlan0", "home", "", False) == (True, "", None)
+    assert ["nmcli", "--wait", "45", "connection", "up", "uuid", "u1"] in nm.calls
+    assert ["nmcli", "-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list", "ifname", "wlan0",
+            "--rescan", "yes"] in nm.calls   # the empty list after AP mode is refreshed first
 
 
-def test_a_wrong_new_password_on_a_saved_profile_puts_the_old_one_back():
-    run = FakeRun([(("-t", "-f", "NAME,TYPE"), (0, "home:802-11-wireless\n", "")),
-                   (("-t", "-g", "802-11-wireless.ssid"), (0, "home\n", "")),
-                   (("-s", "-t", "-g"), (0, "oldpass99\n", "")),
-                   (("--wait", "45", "connection", "up"), (4, "", "Secrets were required"))])
-    ok, why, created = wifi.NM(run).join("wlan0", "home", "newpass99", False)
-    assert (ok, created) == (False, None) and "password" in why
-    modifies = [c for c in run.calls if c[1:3] == ["connection", "modify"]]
-    assert modifies[0][-1] == "newpass99" and modifies[-1][-1] == "oldpass99"
+def test_a_wrong_new_password_puts_the_old_one_back_exactly():
+    # A password with the characters nmcli escapes, and spaces at both ends.
+    old = r" pa:ss\word "
+    nm = FakeNmcli({"home": "realpass1"},
+                   profiles=[{"ssid": "home", "psk": old, "psk_flags": "1", "uuid": "u1"}])
+    ok, why, created = wifi.NM(nm).join("wlan0", "home", "newpass99", False)
+    assert (ok, created) == (False, None) and why == "the password did not work"
+    assert nm.profiles["u1"]["psk"] == old and nm.profiles["u1"]["psk_flags"] == "1"
+    assert nm.profiles["u1"]["key_mgmt"] == "wpa-psk"
+    ok, _, _ = wifi.NM(nm).join("wlan0", "home", "realpass1", False)
+    assert ok and nm.profiles["u1"]["psk"] == "realpass1" and len(nm.profiles) == 1
 
 
-def test_a_new_network_is_created_and_reported_for_cleanup():
-    run = FakeRun([(("--wait", "45", "device", "wifi", "connect"),
-                    (10, "", "Error: Connection activation failed: Secrets were required"))])
-    ok, why, created = wifi.NM(run).join("wlan0", "cafe", "badpass1", False)
-    assert (ok, created) == (False, "cafe") and why == "the password did not work"
-    run2 = FakeRun([(("--wait", "45", "device", "wifi", "connect"), (10, "", "Error: No network with SSID 'x' found."))])
-    assert wifi.NM(run2).join("wlan0", "x", "", True)[1] == "the network was not found"
-    connect = [c for c in run2.calls if "connect" in c][0]
+@pytest.mark.parametrize("kind", ["", "wpa-eap", "owe"])
+def test_open_and_enterprise_profiles_are_never_changed(kind):
+    nm = FakeNmcli({"cafe": "cafepass1"}, profiles=[{"ssid": "cafe", "key_mgmt": kind, "uuid": "u1"}])
+    before = dict(nm.profiles["u1"])
+    ok, why, created = wifi.NM(nm).join("wlan0", "cafe", "wrongpass", False)
+    assert not ok and created and created != "u1"            # a separate profile, to drop
+    assert nm.profiles["u1"] == before
+    assert not any(c[1:3] == ["connection", "modify"] for c in nm.calls)
+
+
+def test_a_wpa3_profile_keeps_its_key_management():
+    nm = FakeNmcli({"home": "newpass99"}, profiles=[{"ssid": "home", "key_mgmt": "sae", "psk": "oldpass99", "uuid": "u1"}])
+    assert wifi.NM(nm).join("wlan0", "home", "newpass99", False) == (True, "", None)
+    assert nm.profiles["u1"]["key_mgmt"] == "sae" and nm.profiles["u1"]["psk"] == "newpass99"
+
+
+def test_a_new_network_is_reported_by_uuid_and_a_namesake_survives_its_removal():
+    # The user's own profile is named "cafe" but saved for another network: deleting the
+    # failed new one by name would take it too.
+    nm = FakeNmcli({"cafe": "cafepass1"}, profiles=[{"id": "cafe", "ssid": "cafe-old", "uuid": "mine"}])
+    n = wifi.NM(nm)
+    ok, why, created = n.join("wlan0", "cafe", "badpass1", False)
+    assert (ok, why) == (False, "the password did not work") and created.startswith("uuid-new")
+    n.delete(created)
+    assert list(nm.profiles) == ["mine"]
+    assert not any("id" in c and "delete" in c for c in nm.calls)
+
+
+def test_a_stale_scan_list_is_refreshed_and_the_join_tried_again():
+    nm = FakeNmcli({"cafe": "cafepass1"})
+    n = wifi.NM(nm)
+    n.visible = lambda dev, ssid: True     # the list looked fine, but "not found" anyway
+    ok, _, created = n.join("wlan0", "cafe", "cafepass1", False)
+    assert ok and created and sum("connect" in c for c in nm.calls) == 2
+    nm2 = FakeNmcli({})
+    ok, why, created = wifi.NM(nm2).join("wlan0", "x", "", True)   # hidden, and not there
+    connect = [c for c in nm2.calls if "connect" in c][0]
     assert connect[-2:] == ["hidden", "yes"]
 
 
-def test_an_online_switch_that_fails_puts_the_old_network_back():
-    class NM:
-        def __init__(self, join, online=True):
-            self._join, self._online, self.events = join, online, []
-        def active_wifi(self, dev): return "home"
-        def join(self, dev, ssid, pw, hidden): return self._join
-        def online(self): return self._online
-        def delete(self, p): self.events.append(("delete", p))
-        def up(self, p): self.events.append(("up", p)); return True
+def test_a_name_nmcli_would_take_for_an_option_is_refused():
+    nm = FakeNmcli({"-s": "pass12345"})
+    assert wifi.NM(nm).join("wlan0", "-s", "pass12345", False) == (False, "it would not connect", None)
+    assert not any("connect" in c for c in nm.calls)
 
-    good = NM((True, "", "cafe"))
+
+def test_undo_drops_what_an_interrupted_join_made():
+    nm = FakeNmcli({"cafe": "cafepass1"})
+    n = wifi.NM(nm)
+    n._pending = ("new", set(), "cafe")
+    nm._new(id="cafe", ssid="cafe", key_mgmt="wpa-psk", psk="x")
+    n.undo()
+    assert nm.profiles == {} and n._pending is None
+    nm = FakeNmcli({}, profiles=[{"ssid": "home", "psk": "old:pass", "uuid": "u1"}])
+    n = wifi.NM(nm)
+    n._pending = ("psk", "u1", "0", "old:pass")
+    nm.profiles["u1"]["psk"] = "half-done"
+    n.undo()
+    assert nm.profiles["u1"]["psk"] == "old:pass"
+
+
+def test_online_means_through_the_wifi(monkeypatch):
+    def run(state):
+        return FakeRun([(("networking", "connectivity", "check"), (0, "full\n", "")),
+                        (("-t", "-f", "GENERAL.IP4-CONNECTIVITY"), (0, f"GENERAL.IP4-CONNECTIVITY:{state}\n", ""))])
+    probes = []
+    monkeypatch.setattr(wifi, "_reachable", lambda host, dev: probes.append((host, dev)) or False)
+    # NM says the box is online (Ethernet), but not through wlan0: not online.
+    assert wifi.NM(run("1 (none)")).online("wlan0") is False
+    assert probes and all(dev == "wlan0" for _, dev in probes)
+    assert wifi.NM(run("4 (full)")).online("wlan0") is True
+
+
+def test_the_reachability_probe_is_bound_to_the_device(monkeypatch):
+    seen = []
+
+    class Sock:
+        def __init__(self, *a): pass
+        def settimeout(self, t): pass
+        def setsockopt(self, level, opt, value): seen.append((opt, value))
+        def connect(self, addr): seen.append(addr)
+        def close(self): pass
+    monkeypatch.setattr(wifi.socket, "socket", Sock)
+    assert wifi._reachable("1.1.1.1", "wlan0")
+    assert seen == [(wifi.socket.SO_BINDTODEVICE, b"wlan0"), ("1.1.1.1", 443)]
+
+    class Unprivileged(Sock):
+        def setsockopt(self, *a): raise PermissionError
+    monkeypatch.setattr(wifi.socket, "socket", Unprivileged)
+    assert wifi._reachable("1.1.1.1", "wlan0") is False   # cannot prove the device: no
+
+
+class _SwitchNM:
+    def __init__(self, join, online=True, after=None):
+        self._join, self._online, self.events = join, online, []
+        self.now = {"name": "home", "uuid": "u-home"}
+        self._after = after  # what the device is on once the join is over
+    def active(self, dev):
+        return self.now
+    def join(self, dev, ssid, pw, hidden):
+        self.now = self._after
+        return self._join
+    def online(self, dev): return self._online
+    def delete(self, p): self.events.append(("delete", p))
+    def up(self, p, wait=45): self.events.append(("up", p)); return True
+
+
+def test_an_online_switch_that_fails_puts_the_old_network_back():
+    good = _SwitchNM((True, "", "u-cafe"), after={"name": "cafe", "uuid": "u-cafe"})
     assert wifi.switch(good, "wlan0", "cafe", "pw123456", False) == (True, "")
     assert good.events == []
-    bad = NM((False, "the password did not work", "cafe"))
+    bad = _SwitchNM((False, "the password did not work", "u-cafe"))
     assert wifi.switch(bad, "wlan0", "cafe", "x" * 8, False) == (False, "the password did not work")
-    assert bad.events == [("delete", "cafe"), ("up", "home")]
-    dead = NM((True, "", "cafe"), online=False)
+    assert bad.events == [("delete", "u-cafe"), ("up", "u-home")]
+    dead = _SwitchNM((True, "", "u-cafe"), online=False, after={"name": "cafe", "uuid": "u-cafe"})
     ok, why = wifi.switch(dead, "wlan0", "cafe", "x" * 8, False)
-    assert not ok and "no internet" in why and ("up", "home") in dead.events
+    assert not ok and "no internet" in why and ("up", "u-home") in dead.events
+
+
+def test_a_failed_new_password_for_the_network_it_is_on_brings_that_back():
+    # The profile "home" is both the one to put back and the one whose password failed:
+    # compared by UUID, it is brought back up (it was skipped when compared by name).
+    same = _SwitchNM((False, "the password did not work", None), after=None)
+    assert not wifi.switch(same, "wlan0", "home", "wrongpass", False)[0]
+    assert same.events == [("up", "u-home")]
+    back = _SwitchNM((False, "the password did not work", None), after={"name": "home", "uuid": "u-home"})
+    wifi.switch(back, "wlan0", "home", "wrongpass", False)
+    assert back.events == []   # NM has it up again already
 
 
 # ------------------------------------------------------------------ the whole run
@@ -146,24 +329,30 @@ def test_an_online_switch_that_fails_puts_the_old_network_back():
 class FakeNM:
     """NetworkManager as a state: the AP, the joins, the connectivity."""
 
-    def __init__(self, join_results, online=True, previous="old-wifi"):
+    def __init__(self, join_results, online=True, previous="old-wifi", address="127.0.0.1"):
         self.join_results, self._online, self.previous = list(join_results), online, previous
+        self._address = address
         self.events = []
 
     def wifi_device(self): return "wlan0"
     def mac(self, dev): return "f8:3d:c6:1f:9e:35"
     def scan(self, dev): return [{"ssid": "home", "signal": 80, "open": False, "security": "WPA2"}]
-    def active_wifi(self, dev): return self.previous
+    def active(self, dev): return {"name": self.previous, "uuid": "u-" + self.previous} if self.previous else None
+    def address(self, dev): return self._address
     def ap_up(self, dev, ssid, pw): self.events.append(("ap_up", ssid)); return True, ""
     def ap_down(self): self.events.append(("ap_down",))
     def ap_delete(self): self.events.append(("ap_delete",))
-    def up(self, profile): self.events.append(("up", profile)); return True
+    def up(self, profile, wait=45): self.events.append(("up", profile, wait)); return True
     def delete(self, profile): self.events.append(("delete", profile))
-    def online(self): return self._online
+    def undo(self): self.events.append(("undo",))
+    def online(self, dev): return self._online
 
     def join(self, dev, ssid, pw, hidden):
         self.events.append(("join", ssid, pw, hidden))
-        return self.join_results.pop(0)
+        result = self.join_results.pop(0)
+        if isinstance(result, BaseException):
+            raise result
+        return result
 
 
 class _Recorded(ws.Status):
@@ -180,7 +369,8 @@ class _Recorded(ws.Status):
 
 
 def _run_setup(nm, minutes=1.0, post=None):
-    """Run a Setup in a thread on a free port; post(form) each time the AP comes up."""
+    """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
+    page binds the address NM gives the setup network (FakeNM: 127.0.0.1)."""
     status = _Recorded(tempfile.mkdtemp())
     setup = ws.Setup(nm, status, port=0, minutes=minutes)
     result = {}
@@ -198,6 +388,7 @@ def _run_setup(nm, minutes=1.0, post=None):
             assert "Joining" in reply
             posted += 1
     t.join(5)
+    assert setup.server is None or setup.server.server_address[0] == "127.0.0.1"
     return result.get("rc"), status.history
 
 
@@ -219,6 +410,7 @@ def test_a_failed_join_brings_the_setup_network_back_with_the_reason():
     assert phases == ["scanning", "ap_up", "joining", "failed", "ap_up", "joining", "connected"]
     assert "password did not work" in seen[4]["error"]
     assert ("delete", "home") in nm.events          # the wrong-password profile is dropped
+    assert not any(e[0] == "up" for e in nm.events)  # the old network stays down: retrying
 
 
 def test_joined_without_internet_counts_as_failed():
@@ -231,7 +423,92 @@ def test_nobody_comes_and_the_previous_connection_is_put_back():
     nm = FakeNM([])
     rc, seen = _run_setup(nm, minutes=0.01)
     assert rc == 2 and seen[-1]["phase"] == "timeout"
-    assert ("up", "old-wifi") in nm.events and nm.events[-1] == ("ap_delete",)
+    assert ("up", "u-old-wifi", 45) in nm.events and nm.events[-1] == ("ap_delete",)
+
+
+def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
+    # SIGTERM (a spoken "cancel": systemctl stop) arriving while nmcli joins.
+    nm = FakeNM([ws.Stopped()])
+    rc, seen = _run_setup(nm, post=[{"ssid": "home", "password": "homepass1"}])
+    assert rc == 3 and seen[-1]["phase"] == "stopped"
+    after = nm.events[nm.events.index(("join", "home", "homepass1", False)) + 1:]
+    # The half-done join undone, the old network asked for without waiting (systemd is).
+    assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
+
+
+def test_sigterm_becomes_one_clean_stop():
+    import signal
+    old = signal.signal(signal.SIGTERM, ws._on_sigterm)
+    try:
+        with pytest.raises(ws.Stopped):
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)
+        assert signal.getsignal(signal.SIGTERM) == signal.SIG_IGN   # a second one waits
+    finally:
+        signal.signal(signal.SIGTERM, old)
+
+
+# ------------------------------------------------------------------ the page's server
+
+def _setup_server():
+    setup = ws.Setup(FakeNM([]), _Recorded(tempfile.mkdtemp()), port=0, bind="127.0.0.1")
+    setup.serve()
+    return setup
+
+
+def _raw(port, request):
+    import socket
+    with socket.create_connection(("127.0.0.1", port), timeout=5) as c:
+        c.sendall(request)
+        return c.recv(200).decode(errors="replace")
+
+
+def test_a_bad_content_length_is_refused_not_read():
+    setup = _setup_server()
+    try:
+        for length, code in (("-1", "400"), ("abc", "400"), (str(ws.MAX_FORM_BYTES + 1), "413")):
+            reply = _raw(setup.port, b"POST /connect HTTP/1.1\r\nHost: x\r\nContent-Length: "
+                         + length.encode() + b"\r\n\r\n")
+            assert reply.startswith(f"HTTP/1.0 {code}"), (length, reply)
+        assert setup.request is None
+    finally:
+        setup.server.shutdown()
+
+
+def test_a_slow_request_times_out_and_connections_are_capped(monkeypatch):
+    import socket
+    monkeypatch.setattr(ws, "REQUEST_TIMEOUT_SECS", 0.3)
+    monkeypatch.setattr(ws, "MAX_CLIENTS", 2)
+    setup = _setup_server()
+    try:
+        idle = [socket.create_connection(("127.0.0.1", setup.port)) for _ in range(2)]
+        time.sleep(0.1)
+        with socket.create_connection(("127.0.0.1", setup.port), timeout=5) as third:
+            assert third.recv(10) == b""          # full: dropped at once
+        time.sleep(0.5)                           # the idle two time out and free their slots
+        assert _raw(setup.port, b"GET / HTTP/1.0\r\n\r\n").startswith("HTTP/1.0 200")
+        for c in idle:
+            c.close()
+    finally:
+        setup.server.shutdown()
+
+
+def test_the_page_is_bound_to_the_setup_network_only():
+    setup = ws.Setup(FakeNM([]), _Recorded(tempfile.mkdtemp()), port=0)
+    assert setup.bind is None and setup.address == wifi.AP_ADDRESS   # never 0.0.0.0
+    setup.address = "127.0.0.1"   # as NM reports it once the network is up
+    setup.serve()
+    try:
+        assert setup.server.server_address[0] == "127.0.0.1"
+    finally:
+        setup.server.shutdown()
+
+
+def test_names_are_isolated_whole_and_once():
+    out = ws._isolate("Could not join R&D: the password did not work. Try again.", ["R&D", "amp", "a", "bdi"])
+    assert out == "Could not join <bdi>R&amp;D</bdi>: the password did not work. Try again."
+    assert ws._isolate("homeに接続できません", ["home"]) == "<bdi>home</bdi>に接続できません"
+    assert ws._isolate("<x> & a", ["<x>"]) == "<bdi>&lt;x&gt;</bdi> &amp; a"
 
 
 # ------------------------------------------------------------------ the voice half
@@ -340,3 +617,7 @@ def test_a_unit_that_will_not_start_is_said_not_hidden():
 
     state, last = asyncio.run(run())
     assert state == "idle" and "couldn't start" in last
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

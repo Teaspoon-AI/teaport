@@ -1,0 +1,5 @@
+# teaport Wi-Fi setup (installed by install.sh as /etc/tmpfiles.d/teaport-wifi-setup.conf):
+# the captive DNS file exists only while teaport-wifi-setup runs (its ExecStartPre puts
+# it there, ExecStopPost removes it). If the box lost power mid-setup, remove it at boot,
+# before NetworkManager starts any shared network that would read it.
+r /etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf

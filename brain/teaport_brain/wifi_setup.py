@@ -9,16 +9,19 @@
 #      WPA2 with a password of digits — the one written at flash time for the paper
 #      insert (WIFI_SETUP_PASSWORD in /etc/teaport/wifi-setup.env), else fresh random
 #      digits each time
-#   3. serve the setup page at 10.42.0.1, where NetworkManager's shared mode puts us:
-#      on PAGE_PORT, which the unit's iptables rule makes port 80 for that address (port
-#      80 itself is the front door's — Caddy's http->https redirect). NM's dnsmasq answers every name with that address
-#      (/etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf, from install.sh), so a
+#   3. serve the setup page at 10.42.0.1 (wifi.AP_ADDRESS, pinned in the setup profile),
+#      and only there — never on the box's other networks: on PAGE_PORT, which the
+#      unit's iptables rule makes port 80 for that address (port 80 itself is the front
+#      door's — Caddy's http->https redirect). NM's dnsmasq answers every name with that
+#      address (/etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf, put there by
+#      the unit for as long as it runs), so a
 #      phone's captive-portal probe lands here and the OS opens the page by itself;
 #      http://teaport-ab12.local is the fallback (avahi-publish, while the network is up)
 #   4. the user picks a network and types its password on the phone; the access point
 #      goes down and the box joins it. Internet confirmed: done. Otherwise the network's
 #      new profile is dropped, the access point comes back and the page says why.
-#   5. ten minutes without success: the access point goes down and the connection the
+#   5. ten minutes without success, or the unit stopped (a spoken "cancel", SIGTERM):
+#      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
 #
 # The brain (wifi_voice.py) starts this unit, speaks the network, the password and the
@@ -39,6 +42,9 @@ import random
 import re
 import secrets
 import shutil
+import signal
+import socket
+import socketserver
 import subprocess
 import sys
 import threading
@@ -48,11 +54,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from teaport_brain import i18n
 from teaport_brain.i18n import N_
-from teaport_brain.wifi import AP_ADDRESS, NM, PAGE_CSS, logo_html
+from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service redirects AP_ADDRESS:80 here with
 # an iptables rule for as long as it runs; phones only ever see port 80.
 PAGE_PORT = 7869
+# The page is open to anyone on the setup network: a form is a few hundred bytes, a
+# request that dawdles is dropped, and only so many are served at once.
+MAX_FORM_BYTES = 4096
+REQUEST_TIMEOUT_SECS = 10
+MAX_CLIENTS = 32
 SSID_PREFIX = "teaport-"
 MINUTES = 10
 PASSWORD_DIGITS = 8
@@ -187,11 +198,24 @@ def render_page(networks: list[dict], error: str = "", t: i18n.T | None = None) 
 
 def _isolate(text: str, names: list[str]) -> str:
     """Escape `text`, wrapping each network name in it in <bdi>: a Latin name inside
-    Arabic (right-to-left) text keeps its own direction instead of being reordered."""
-    out = html.escape(text)
-    for name in sorted({n for n in names if n}, key=len, reverse=True):
-        out = out.replace(html.escape(name), f"<bdi>{html.escape(name)}</bdi>")
-    return out
+    Arabic (right-to-left) text keeps its own direction instead of being reordered.
+    One pass over the plain text, longest name first, whole occurrences only (a network
+    called "a" is not every "a" in the sentence), escaping as it goes — so a name never
+    lands inside an entity or a tag this put in."""
+    names = sorted({n for n in names if n}, key=len, reverse=True)
+    if not names:
+        return html.escape(text)
+    # "Whole" by ASCII letters and digits only: a name runs straight into Japanese or
+    # Chinese text, which has no spaces, and must still be found there.
+    edge = re.compile(r"[A-Za-z0-9]")
+    pattern = re.compile("|".join(
+        ("(?<![A-Za-z0-9])" if edge.match(n[0]) else "") + re.escape(n)
+        + ("(?![A-Za-z0-9])" if edge.match(n[-1]) else "") for n in names))
+    out, pos = [], 0
+    for m in pattern.finditer(text):
+        out += [html.escape(text[pos:m.start()]), f"<bdi>{html.escape(m.group())}</bdi>"]
+        pos = m.end()
+    return "".join(out) + html.escape(text[pos:])
 
 
 def render_joining(ssid: str, t: i18n.T) -> str:
@@ -223,11 +247,62 @@ def parse_form(body: bytes) -> tuple[str, str, bool, str]:
     return ssid, password, hidden, ""
 
 
+class Stopped(Exception):
+    """SIGTERM: systemctl stop (a spoken "cancel"), a restart, or RuntimeMaxSec."""
+
+
+def _on_sigterm(signum, frame):
+    # Python's default for SIGTERM is to die on the spot, past every finally: the box
+    # would stay off its old network. Raise instead, once — the clean-up must not be
+    # interrupted by a second one.
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise Stopped()
+
+
+class _Server(ThreadingHTTPServer):
+    """The page's server: bound to one address that comes and goes (the setup network is
+    down while the box tries a join), with a cap on connections served at once."""
+
+    daemon_threads = True
+
+    def __init__(self, address, handler):
+        self._slots = threading.BoundedSemaphore(MAX_CLIENTS)
+        super().__init__(address, handler)
+
+    def server_bind(self):
+        # IP_FREEBIND (15 on Linux; not in the socket module): bind even while the
+        # address is not on any interface. No getfqdn() either, as HTTPServer would do:
+        # a reverse lookup on a box with no network is just a wait.
+        self.socket.setsockopt(socket.IPPROTO_IP, getattr(socket, "IP_FREEBIND", 15), 1)
+        socketserver.TCPServer.server_bind(self)
+        self.server_name, self.server_port = self.server_address[:2]
+
+    def process_request(self, request, client_address):
+        if not self._slots.acquire(blocking=False):
+            self.shutdown_request(request)  # full: this one is dropped, not queued
+            return
+        super().process_request(request, client_address)
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self._slots.release()
+
+
 class Setup:
     """One run: the access point, the page, and the join attempts."""
 
-    def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES):
+    def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES,
+                 bind: str | None = None):
         self.nm, self.status, self.port = nm, status, port
+        # Where the page listens: the setup network's own address (read from NM once it
+        # is up), never 0.0.0.0 — the box's other networks must not reach a page that
+        # changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
+        self.bind = bind
+        self.address = AP_ADDRESS
+        self.previous: dict | None = None  # the profile to put back, {"name", "uuid"}
+        self.created: str | None = None    # a profile the last join made, until dropped
         self.deadline = time.monotonic() + minutes * 60
         self.networks: list[dict] = []
         # The last failed join: (network, reason) — the reason an English msgid, put in
@@ -244,6 +319,8 @@ class Setup:
         setup = self
 
         class Handler(BaseHTTPRequestHandler):
+            timeout = REQUEST_TIMEOUT_SECS  # a socket timeout per request
+
             def log_message(self, *a):  # no request log: paths are noise, bodies secret
                 pass
 
@@ -275,13 +352,21 @@ class Setup:
                 # hotspot-detect, Android's generate_204, Windows' connecttest) expect
                 # something else, so the phone shows this as a sign-in page.
                 if self.path.startswith("/generate_204") or self.path.startswith("/gen_204"):
-                    return self._send(302, "", extra=[("Location", f"http://{AP_ADDRESS}/")])
+                    return self._send(302, "", extra=[("Location", f"http://{setup.address}/")])
                 t, remember = self._t()
                 self._send(200, render_page(setup.networks, setup.error_text(t), t), extra=remember)
 
             def do_POST(self):
-                length = min(int(self.headers.get("Content-Length") or 0), 4096)
-                ssid, password, hidden, error = parse_form(self.rfile.read(length))
+                raw = (self.headers.get("Content-Length") or "0").strip()
+                if not (raw.isascii() and raw.isdigit()):
+                    return self.send_error(400)  # read(-1) would read until the client stops
+                if int(raw) > MAX_FORM_BYTES:
+                    return self.send_error(413)
+                try:
+                    body = self.rfile.read(int(raw))
+                except OSError:  # the timeout, or the phone left
+                    return
+                ssid, password, hidden, error = parse_form(body)
                 t, remember = self._t()
                 if error:
                     return self._send(200, render_page(setup.networks, t._(error), t), extra=remember)
@@ -292,9 +377,8 @@ class Setup:
         return Handler
 
     def serve(self) -> None:
-        self.server = ThreadingHTTPServer(("0.0.0.0", self.port), self.handler())
+        self.server = _Server((self.bind or self.address, self.port), self.handler())
         self.port = self.server.server_address[1]  # the real one when asked for port 0
-        self.server.daemon_threads = True
         threading.Thread(target=self.server.serve_forever, daemon=True).start()
 
     def error_text(self, t: i18n.T) -> str:
@@ -311,7 +395,7 @@ class Setup:
             log("avahi-publish not installed — only the captive page and 10.42.0.1 work")
             return
         try:
-            self.avahi = subprocess.Popen([exe, "-a", "-R", f"{name}.local", AP_ADDRESS],
+            self.avahi = subprocess.Popen([exe, "-a", "-R", f"{name}.local", self.address],
                                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except OSError as e:
             log(f"avahi-publish failed ({e})")
@@ -326,63 +410,90 @@ class Setup:
         if not dev:
             self.status.set("error", reason=N_("this box has no Wi-Fi device"))
             return 1
-        previous = self.nm.active_wifi(dev)
-        self.status.set("scanning")
-        self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
-        log(f"{len(self.networks)} networks in range; previous connection: {previous or 'none'}")
+        self.previous = self.nm.active(dev)
         try:
-            self.serve()
-        except OSError as e:
-            log(f"the setup page could not start: {e}")
-            self.status.set("error", reason=N_("the setup page could not start"))
-            return 1
-        url = f"http://{ssid}.local"
-        try:
-            while True:
-                ok, err = self.nm.ap_up(dev, ssid, password)
-                if not ok:
-                    log(f"setup network failed: {err}")
-                    self.status.set("error", reason=N_("the setup network would not start"))
-                    return 1
-                self.publish(ssid)
-                self.status.set("ap_up", ssid=ssid, password=password, url=url,
-                                address=AP_ADDRESS, error=self.error)
-                self.request = None
-                self.wake.clear()
-                while not self.wake.wait(timeout=1.0):
-                    if time.monotonic() >= self.deadline:
-                        self.status.set("timeout")
-                        self.unpublish()
-                        self.nm.ap_down()
-                        if previous:
-                            self.nm.up(previous)
-                        return 2
-                target, pw, hidden = self.request
-                time.sleep(1.5)  # let the "joining" page reach the phone first
-                self.status.set("joining", target=target)
-                self.unpublish()
-                self.nm.ap_down()
-                ok, why, created = self.nm.join(dev, target, pw, hidden)
-                if ok and self.nm.online():
-                    self.status.set("connected", target=target)
-                    return 0
-                if ok:
-                    why = N_("it joined but there is no internet through it")
-                if created:
-                    self.nm.delete(created)
-                self.failure = (target, why)
-                self.error = self.error_text(i18n.get(i18n.SOURCE_LANG))
-                self.status.set("failed", target=target, reason=why)
-                if time.monotonic() >= self.deadline:
-                    self.status.set("timeout")
-                    if previous:
-                        self.nm.up(previous)
-                    return 2
+            return self._run(dev, ssid, password)
+        except Stopped:
+            log("stopped — putting the previous connection back")
+            self.status.set("stopped")
+            self._put_back(quick=True)
+            return 3
         finally:
             self.unpublish()
             if self.server:
                 self.server.shutdown()
             self.nm.ap_delete()
+
+    def _put_back(self, quick: bool = False) -> None:
+        """The way out without a new network (the timeout, a stop, an error): the setup
+        network down, a half-done join undone, and the old connection back up. `quick`
+        (a stop: systemd is waiting) asks NM for the old connection without waiting."""
+        self.unpublish()
+        self.nm.ap_down()
+        self.nm.undo()
+        if self.created:
+            self.nm.delete(self.created)
+            self.created = None
+        if self.previous:
+            self.nm.up(self.previous["uuid"], wait=0 if quick else CONNECT_WAIT_SECS)
+
+    def _run(self, dev: str, ssid: str, password: str) -> int:
+        self.status.set("scanning")
+        self.networks = [n for n in self.nm.scan(dev) if n["ssid"] != ssid]
+        log(f"{len(self.networks)} networks in range; previous connection: "
+            f"{self.previous['name'] if self.previous else 'none'}")
+        url = f"http://{ssid}.local"
+        while True:
+            ok, err = self.nm.ap_up(dev, ssid, password)
+            if not ok:
+                log(f"setup network failed: {err}")
+                self.status.set("error", reason=N_("the setup network would not start"))
+                self._put_back()
+                return 1
+            if not self.server:
+                self.address = self.nm.address(dev) or AP_ADDRESS
+                if self.address != AP_ADDRESS:
+                    log(f"the setup network came up at {self.address}, not {AP_ADDRESS}: "
+                        "the port-80 redirect and the captive DNS answer will miss it")
+                try:
+                    self.serve()
+                except OSError as e:
+                    log(f"the setup page could not start: {e}")
+                    self.status.set("error", reason=N_("the setup page could not start"))
+                    self._put_back()
+                    return 1
+            self.publish(ssid)
+            self.status.set("ap_up", ssid=ssid, password=password, url=url,
+                            address=self.address, error=self.error)
+            self.request = None
+            self.wake.clear()
+            while not self.wake.wait(timeout=1.0):
+                if time.monotonic() >= self.deadline:
+                    self.status.set("timeout")
+                    self._put_back()
+                    return 2
+            target, pw, hidden = self.request
+            time.sleep(1.5)  # let the "joining" page reach the phone first
+            self.status.set("joining", target=target)
+            self.unpublish()
+            self.nm.ap_down()
+            ok, why, self.created = self.nm.join(dev, target, pw, hidden)
+            if ok and self.nm.online(dev):
+                self.created = None  # kept: it is the box's network now
+                self.status.set("connected", target=target)
+                return 0
+            if ok:
+                why = N_("it joined but there is no internet through it")
+            if self.created:
+                self.nm.delete(self.created)
+                self.created = None
+            self.failure = (target, why)
+            self.error = self.error_text(i18n.get(i18n.SOURCE_LANG))
+            self.status.set("failed", target=target, reason=why)
+            if time.monotonic() >= self.deadline:
+                self.status.set("timeout")
+                self._put_back()
+                return 2
 
 
 def main(argv=None) -> int:
@@ -401,7 +512,9 @@ def main(argv=None) -> int:
     status = Status(args.status_dir, run_id)
     log(f"run {run_id}: setup network {ssid}, page on port {args.port}, "
         f"{'flash-time' if PASSWORD.strip() == password else 'random'} password")
-    return Setup(nm, status, port=args.port, minutes=args.minutes).run(ssid, password)
+    setup = Setup(nm, status, port=args.port, minutes=args.minutes)
+    signal.signal(signal.SIGTERM, _on_sigterm)
+    return setup.run(ssid, password)
 
 
 if __name__ == "__main__":

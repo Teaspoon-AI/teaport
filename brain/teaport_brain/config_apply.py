@@ -24,7 +24,8 @@ and python puts the script's own (root-owned) directory first on sys.path.
 
 The brain (wifi_voice.py) uses restart to START teaport-wifi-setup, which is a
 stopped on-demand unit (restart starts a stopped unit), and stop to cancel it:
-only that unit is STOPPABLE.
+only that unit is STOPPABLE. stop also cancels a start restart() has scheduled
+and not yet run (its two-second timer).
 
 write: keeps a .bak beside the file (a bounded ring of BACKUPS, newest last —
 the files carry tokens, so they must not pile up in /etc), writes a temp file
@@ -131,10 +132,18 @@ def restart(unit: str) -> None:
     )
 
 
+def _restart_timer(unit: str) -> str:
+    """The glob that names restart()'s transient timers for `unit`."""
+    return f"teaport-config-restart-{unit}-*.timer"
+
+
 def stop(unit: str) -> None:
+    """Stop `unit`, and a start of it restart() has scheduled but not yet run: a "cancel"
+    within restart's two seconds would otherwise stop nothing, and the start would come
+    after it. systemctl expands the glob itself (no shell), among loaded units only."""
     if unit not in STOPPABLE:
         raise SystemExit(f"refusing to stop {unit!r}: not one of {STOPPABLE}")
-    subprocess.run(["systemctl", "stop", "--no-block", unit], check=True)
+    subprocess.run(["systemctl", "stop", "--no-block", "--", _restart_timer(unit), unit], check=True)
 
 
 def main(argv: list[str]) -> int:

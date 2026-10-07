@@ -209,7 +209,7 @@ def test_the_page_follows_the_phones_language(header, lang):
 
 
 def test_the_page_is_served_in_the_phones_language():
-    setup = wifi_setup.Setup(nm=None, status=None, port=0)
+    setup = wifi_setup.Setup(nm=None, status=None, port=0, bind="127.0.0.1")
     setup.networks = [{"ssid": "home", "signal": 80, "open": True, "security": "open"}]
     setup.failure = ("home", "the password did not work")
     setup.serve()
@@ -234,7 +234,7 @@ def test_the_page_is_served_in_the_phones_language():
 
 
 def test_the_language_picker_overrides_the_phone_and_is_remembered():
-    setup = wifi_setup.Setup(nm=None, status=None, port=0)
+    setup = wifi_setup.Setup(nm=None, status=None, port=0, bind="127.0.0.1")
     setup.networks = [{"ssid": "home", "signal": 80, "open": False, "security": "WPA2"}]
     setup.serve()
     base = f"http://127.0.0.1:{setup.port}"

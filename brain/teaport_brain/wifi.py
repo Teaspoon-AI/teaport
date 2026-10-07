@@ -18,8 +18,17 @@ import subprocess
 from teaport_brain.i18n import N_
 
 AP_CONNECTION = "teaport-setup"
-AP_ADDRESS = "10.42.0.1"  # NetworkManager's ipv4.method=shared default
+# The setup network's address, pinned in its profile (ipv4.addresses) rather than left to
+# NetworkManager's pick: the unit's iptables redirect (systemd/teaport-wifi-setup.service.in)
+# and the captive DNS answer (packaging/wifi-setup/teaport-captive.conf) name it before the
+# network exists. It is NM's own shared-mode default; change all three together.
+AP_ADDRESS = "10.42.0.1"
+AP_PREFIX = 24
 CONNECT_WAIT_SECS = 45
+WIFI_TYPE = "802-11-wireless"
+# Key managements whose secret is a passphrase (802-11-wireless-security.psk): a saved
+# profile of these takes a new password, and gets its old one back if that fails.
+PSK_KINDS = ("wpa-psk", "sae")
 
 
 def split_terse(line: str) -> list[str]:
@@ -61,11 +70,47 @@ def parse_scan(out: str) -> list[dict]:
     return sorted(best.values(), key=lambda n: -n["signal"])
 
 
+def _terse_fields(out: str) -> dict[str, str]:
+    """`nmcli -t -f a,b ... show` (one "field:value" per line) -> {field: value}, unescaped.
+    A setting the profile does not have is simply missing (nmcli leaves it out)."""
+    fields = {}
+    for line in out.splitlines():
+        f = split_terse(line)
+        if len(f) >= 2:
+            fields[f[0]] = ":".join(f[1:])
+    return fields
+
+
+def _reachable(host: str, dev: str) -> bool:
+    """A TCP connect to `host`:443 that can only leave through `dev`. Unprivileged
+    SO_BINDTODEVICE needs Linux 5.7+ (JetPack 7 runs 6.8); without it nothing here
+    could prove which network the answer came through, so the answer is no."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.settimeout(4)
+        try:
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_BINDTODEVICE, dev.encode())
+        except OSError:
+            return False
+        s.connect((host, 443))
+        return True
+    except OSError:
+        return False
+    finally:
+        s.close()
+
+
 class NM:
-    """The nmcli calls setup needs. `run(argv) -> (rc, stdout, stderr)` is injectable."""
+    """The nmcli calls setup needs. `run(argv) -> (rc, stdout, stderr)` is injectable.
+
+    Profiles are named by UUID throughout: names repeat (NM names a new profile after its
+    network, and `connection delete id X` deletes every profile called X)."""
 
     def __init__(self, run=None):
         self._run = run or self._subprocess
+        # What the join in progress has changed, for undo(): ("psk", uuid, flags, psk)
+        # or ("new", uuids before it, ssid). None when nothing is half-done.
+        self._pending: tuple | None = None
 
     @staticmethod
     def _subprocess(argv: list[str], timeout: float = 60) -> tuple[int, str, str]:
@@ -98,26 +143,58 @@ class NM:
                                "ifname", dev, "--rescan", "yes", timeout=45)
         return parse_scan(out)
 
+    def visible(self, dev: str, ssid: str) -> bool:
+        """`ssid` is in the radio's last scan (no new scan)."""
+        _, out, _ = self.nmcli("-t", "-f", "SSID", "device", "wifi", "list", "ifname", dev,
+                               "--rescan", "no")
+        return any(split_terse(line)[0] == ssid for line in out.splitlines())
+
+    def active(self, dev: str) -> dict | None:
+        """The profile `dev` is on now, {"name", "uuid"} (to put back), if any."""
+        _, out, _ = self.nmcli("-t", "-f", "GENERAL.CONNECTION,GENERAL.CON-UUID",
+                               "device", "show", dev)
+        f = _terse_fields(out)
+        name, uuid = f.get("GENERAL.CONNECTION", ""), f.get("GENERAL.CON-UUID", "")
+        if uuid in ("", "--"):
+            return None
+        return {"name": name, "uuid": uuid}
+
     def active_wifi(self, dev: str) -> str | None:
-        """The connection profile `dev` is on now (to put back), if any."""
-        rc, out, _ = self.nmcli("-t", "-f", "GENERAL.CONNECTION", "device", "show", dev)
+        """The name of the profile `dev` is on now, for showing."""
+        now = self.active(dev)
+        return now["name"] if now else None
+
+    def address(self, dev: str) -> str | None:
+        """`dev`'s IPv4 address now: the setup network's own, while that is up."""
+        _, out, _ = self.nmcli("-g", "IP4.ADDRESS", "device", "show", dev)
         for line in out.splitlines():
-            f = split_terse(line)
-            if len(f) >= 2 and f[0] == "GENERAL.CONNECTION" and f[1] not in ("", "--"):
-                return f[1]
+            addr = line.split("|")[0].strip().split("/")[0]
+            if addr:
+                return addr
         return None
 
-    def saved_profile(self, ssid: str) -> str | None:
-        """A saved Wi-Fi profile for `ssid` (joined without a password), if any."""
-        rc, out, _ = self.nmcli("-t", "-f", "NAME,TYPE", "connection", "show")
-        for line in out.splitlines():
-            f = split_terse(line)
-            if len(f) < 2 or f[1] != "802-11-wireless" or f[0] == AP_CONNECTION:
+    def fields(self, uuid: str, *names: str, secrets: bool = False) -> dict[str, str] | None:
+        """Profile `uuid`'s settings `names`, unescaped; None if nmcli fails."""
+        rc, out, _ = self.nmcli(*(["-s"] if secrets else []), "-t", "-f", ",".join(names),
+                                "connection", "show", "uuid", uuid)
+        return _terse_fields(out) if rc == 0 else None
+
+    def wifi_profiles(self) -> list[str]:
+        """Every saved Wi-Fi profile's UUID."""
+        _, out, _ = self.nmcli("-t", "-f", "UUID,TYPE", "connection", "show")
+        return [f[0] for f in map(split_terse, out.splitlines())
+                if len(f) >= 2 and f[1] == WIFI_TYPE]
+
+    def saved_profile(self, ssid: str) -> dict | None:
+        """A saved profile for joining `ssid` (not an access point of ours or anyone's):
+        {"uuid", "key_mgmt"}, key_mgmt "" for an open network."""
+        for uuid in self.wifi_profiles():
+            f = self.fields(uuid, "connection.id", "802-11-wireless.ssid", "802-11-wireless.mode",
+                            "802-11-wireless-security.key-mgmt") or {}
+            if f.get("connection.id") == AP_CONNECTION or f.get("802-11-wireless.mode") == "ap":
                 continue
-            _, ssid_out, _ = self.nmcli("-t", "-g", "802-11-wireless.ssid", "connection",
-                                        "show", "id", f[0])
-            if ssid_out.strip().replace("\\:", ":") == ssid:
-                return f[0]
+            if f.get("802-11-wireless.ssid") == ssid:
+                return {"uuid": uuid, "key_mgmt": f.get("802-11-wireless-security.key-mgmt", "")}
         return None
 
     def ap_up(self, dev: str, ssid: str, password: str) -> tuple[bool, str]:
@@ -126,7 +203,8 @@ class NM:
             "connection", "add", "type", "wifi", "ifname", dev, "con-name", AP_CONNECTION,
             "autoconnect", "no", "ssid", ssid,
             "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
-            "ipv4.method", "shared", "ipv6.method", "disabled",
+            "ipv4.method", "shared", "ipv4.addresses", f"{AP_ADDRESS}/{AP_PREFIX}",
+            "ipv6.method", "disabled",
             "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.proto", "rsn",
             "wifi-sec.pairwise", "ccmp", "wifi-sec.group", "ccmp",
             "wifi-sec.psk", password)
@@ -142,29 +220,58 @@ class NM:
     def ap_delete(self) -> None:
         self.nmcli("connection", "delete", "id", AP_CONNECTION)
 
-    def up(self, profile: str) -> bool:
-        rc, _, _ = self.nmcli("--wait", str(CONNECT_WAIT_SECS), "connection", "up", "id",
-                              profile, timeout=CONNECT_WAIT_SECS + 15)
+    def up(self, uuid: str, wait: int = CONNECT_WAIT_SECS) -> bool:
+        """Activate profile `uuid`; wait=0 asks for it and returns at once."""
+        rc, _, _ = self.nmcli("--wait", str(wait), "connection", "up", "uuid", uuid,
+                              timeout=wait + 15)
         return rc == 0
 
+    def delete(self, uuid: str) -> None:
+        self.nmcli("connection", "delete", "uuid", uuid)
+
     def join(self, dev: str, ssid: str, password: str, hidden: bool) -> tuple[bool, str, str | None]:
-        """Join `ssid`. Returns (ok, why-not, profile created for it — dropped on failure).
-        A saved profile and no password: just bring it up. A saved profile and a new
-        password: update it (and put the old one back on failure)."""
+        """Join `ssid`. Returns (ok, why-not, UUID of a profile created for it — the
+        caller drops it if it does not keep it).
+
+        A saved profile and no password: just bring it up. A saved WPA2/WPA3-Personal
+        profile and a password: change its password, and put the old one back if it does
+        not work. Any other saved profile (open, enterprise, WEP, OWE) is never changed —
+        a password for it makes a separate new profile instead."""
+        self._pending = None
+        if not hidden and not self.visible(dev, ssid):
+            # Just out of access-point mode the radio's scan list is empty (seen on a
+            # Jetson: 9 networks before, 0 right after), and nmcli then says "not found".
+            self.scan(dev)
         saved = self.saved_profile(ssid)
         if saved and not password:
-            ok = self.up(saved)
+            ok = self.up(saved["uuid"])
             return ok, "" if ok else N_("the saved settings for it did not work"), None
-        if saved:
-            _, old, _ = self.nmcli("-s", "-t", "-g", "802-11-wireless-security.psk",
-                                   "connection", "show", "id", saved)
-            self.nmcli("connection", "modify", "id", saved, "wifi-sec.key-mgmt", "wpa-psk",
-                       "wifi-sec.psk", password)
-            if self.up(saved):
-                return True, "", None
-            if old.strip():
-                self.nmcli("connection", "modify", "id", saved, "wifi-sec.psk", old.strip())
-            return False, N_("the password did not work"), None
+        if saved and saved["key_mgmt"] in PSK_KINDS:
+            return self._new_password(saved["uuid"], password)
+        return self._create(dev, ssid, password, hidden)
+
+    def _new_password(self, uuid: str, password: str) -> tuple[bool, str, None]:
+        sec = "802-11-wireless-security"
+        old = self.fields(uuid, f"{sec}.psk", f"{sec}.psk-flags", secrets=True)
+        if old is None:  # no copy of the old password: leave the profile alone
+            return False, N_("it would not connect"), None
+        flags = (old.get(f"{sec}.psk-flags") or "0").split()[0]
+        self._pending = ("psk", uuid, flags, old.get(f"{sec}.psk", ""))
+        rc, _, _ = self.nmcli("connection", "modify", "uuid", uuid,
+                              "wifi-sec.psk-flags", "0", "wifi-sec.psk", password)
+        if rc == 0 and self.up(uuid):
+            self._pending = None
+            return True, "", None
+        self.undo()
+        return False, (N_("the password did not work") if rc == 0 else N_("it would not connect")), None
+
+    def _create(self, dev: str, ssid: str, password: str, hidden: bool) -> tuple[bool, str, str | None]:
+        if ssid.startswith("-"):
+            # nmcli reads a leading dash here as one of its own options (--ask,
+            # --show-secrets) and has no "--" to stop that.
+            return False, N_("it would not connect"), None
+        before = set(self.wifi_profiles())
+        self._pending = ("new", before, ssid)
         args = ["--wait", str(CONNECT_WAIT_SECS), "device", "wifi", "connect", ssid,
                 "ifname", dev, "name", ssid]
         if password:
@@ -172,45 +279,69 @@ class NM:
         if hidden:
             args += ["hidden", "yes"]
         rc, _, err = self.nmcli(*args, timeout=CONNECT_WAIT_SECS + 15)
+        if rc != 0 and not hidden and re.search(r"No network with SSID", err):
+            for uuid in self._new_profiles(before, ssid):  # a stale list: once more, freshly
+                self.delete(uuid)
+            self.scan(dev)
+            rc, _, err = self.nmcli(*args, timeout=CONNECT_WAIT_SECS + 15)
+        created = next(iter(self._new_profiles(before, ssid)), None)
+        self._pending = None
         if rc == 0:
-            return True, "", ssid
+            return True, "", created
         why = N_("the password did not work") if re.search(
             r"secrets|password|802-1x|psk", err, re.I) else (
             N_("the network was not found") if re.search(r"not found|No network", err, re.I)
             else N_("it would not connect"))
-        return False, why, ssid
+        return False, why, created
 
-    def delete(self, profile: str) -> None:
-        self.nmcli("connection", "delete", "id", profile)
+    def _new_profiles(self, before: set[str], ssid: str) -> list[str]:
+        """The Wi-Fi profiles for `ssid` that were not there `before`."""
+        return [uuid for uuid in self.wifi_profiles() if uuid not in before
+                and (self.fields(uuid, "802-11-wireless.ssid") or {}).get("802-11-wireless.ssid") == ssid]
 
-    def online(self) -> bool:
-        """Internet, not just a link: NM's own check, else a TCP connect to a resolver."""
-        rc, out, _ = self.nmcli("networking", "connectivity", "check", timeout=20)
-        if out.strip() == "full":
+    def undo(self) -> None:
+        """Put back what the join in progress changed — after a password that did not
+        work, or when the unit is stopped in the middle of a join: the profile's old
+        password, or no profile created for it."""
+        pending, self._pending = self._pending, None
+        if not pending:
+            return
+        if pending[0] == "psk":
+            _, uuid, flags, psk = pending
+            self.nmcli("connection", "modify", "uuid", uuid,
+                       "wifi-sec.psk-flags", flags, "wifi-sec.psk", psk)
+        else:
+            _, before, ssid = pending
+            for uuid in self._new_profiles(before, ssid):
+                self.delete(uuid)
+
+    def online(self, dev: str) -> bool:
+        """Internet through `dev` — not merely somewhere: a box on Ethernet is always
+        online, whatever the Wi-Fi joined. NM's per-device check first (after asking for
+        a fresh one), else a TCP connect that can only leave through `dev`."""
+        self.nmcli("networking", "connectivity", "check", timeout=20)
+        _, out, _ = self.nmcli("-t", "-f", "GENERAL.IP4-CONNECTIVITY", "device", "show", dev)
+        if "full" in _terse_fields(out).get("GENERAL.IP4-CONNECTIVITY", ""):
             return True
-        for host in ("1.1.1.1", "8.8.8.8"):
-            try:
-                socket.create_connection((host, 443), timeout=4).close()
-                return True
-            except OSError:
-                continue
-        return False
-
+        return any(_reachable(host, dev) for host in ("1.1.1.1", "8.8.8.8"))
 
 
 def switch(nm: "NM", dev: str, ssid: str, password: str, hidden: bool) -> tuple[bool, str]:
     """Move an ONLINE box to another network, or leave it where it was: join, confirm
-    internet, and on any failure drop the new profile and bring the old connection back."""
-    previous = nm.active_wifi(dev)
+    internet through the Wi-Fi, and on any failure drop the new profile and bring the old
+    connection back — unless it is already back (the same profile, its password restored
+    and NM quicker than us)."""
+    previous = nm.active(dev)
     ok, why, created = nm.join(dev, ssid, password, hidden)
-    if ok and nm.online():
+    if ok and nm.online(dev):
         return True, ""
     if ok:
         why = N_("it joined but there is no internet through it")
     if created:
         nm.delete(created)
-    if previous and previous != ssid:
-        nm.up(previous)
+    now = nm.active(dev)
+    if previous and (now or {}).get("uuid") != previous["uuid"]:
+        nm.up(previous["uuid"])
     return False, why
 
 

@@ -575,11 +575,25 @@ async def restart(request: Request):
 # the unauthenticated one, and it is a separate, short-lived process.
 
 _wifi_lock = asyncio.Lock()
+_SETUP_BUSY = "Wi-Fi setup is running on this box"
 
 
 def _wifi_nm():
     from teaport_brain.wifi import NM
     return NM()
+
+
+async def _wifi_setup_busy() -> bool:
+    """The setup unit has the radio: running, starting, stopping, or about to start
+    (config_apply's restart runs it from a two-second timer). Replaced in tests."""
+    from teaport_brain import config_apply, wifi_voice
+    _, out, _ = await _run("systemctl", "show", "-p", "ActiveState", "--value", "--",
+                           wifi_voice.UNIT + ".service")
+    if out.strip() in ("active", "activating", "deactivating", "reloading"):
+        return True
+    _, out, _ = await _run("systemctl", "list-units", "--plain", "--no-legend", "--state=waiting",
+                           "--", config_apply._restart_timer(wifi_voice.UNIT))
+    return bool(out.strip())
 
 
 def _wifi_state(nm) -> dict:
@@ -594,8 +608,9 @@ def _wifi_state(nm) -> dict:
             setup = {k: v for k, v in json.load(f).items() if k != "password"}
     except (OSError, ValueError):
         pass
+    # Online through the Wi-Fi itself: on Ethernet the box is online whatever the Wi-Fi does.
     return {"available": True, "device": dev, "connection": connection,
-            "online": nm.online() if connection else False,
+            "online": nm.online(dev) if connection else False,
             "setup_installed": wifi_voice.available(), "setup_last": setup}
 
 
@@ -608,6 +623,8 @@ async def wifi_state(request: Request):
 @router.post("/api/wifi/scan")
 async def wifi_scan(request: Request):
     _authorize(request)
+    if await _wifi_setup_busy():  # the radio is an access point: it cannot scan
+        raise HTTPException(status_code=409, detail=_SETUP_BUSY)
     nm = _wifi_nm()
     dev = await asyncio.to_thread(nm.wifi_device)
     if not dev:
@@ -629,6 +646,9 @@ async def wifi_connect(request: Request):
     if _wifi_lock.locked():
         raise HTTPException(status_code=409, detail="a Wi-Fi change is already in progress")
     async with _wifi_lock:
+        # Its timeout would put back the network it found, undoing this switch.
+        if await _wifi_setup_busy():
+            raise HTTPException(status_code=409, detail=_SETUP_BUSY)
         from teaport_brain.wifi import switch
         nm = _wifi_nm()
         dev = await asyncio.to_thread(nm.wifi_device)
@@ -645,6 +665,12 @@ async def wifi_setup_start(request: Request):
     from teaport_brain import wifi_voice
     if not wifi_voice.available():
         raise HTTPException(status_code=404, detail="Wi-Fi setup is not installed on this box")
-    await _privileged("restart", wifi_voice.UNIT)
+    if _wifi_lock.locked():
+        raise HTTPException(status_code=409, detail="a Wi-Fi change is already in progress")
+    async with _wifi_lock:
+        # "restart" on a running unit would stop it mid-setup and start it over.
+        if await _wifi_setup_busy():
+            raise HTTPException(status_code=409, detail=_SETUP_BUSY)
+        await _privileged("restart", wifi_voice.UNIT)
     logger.info("config: Wi-Fi setup network started from the config page")
     return {"ok": True}
