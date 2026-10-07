@@ -70,15 +70,20 @@ AUDIO_SECS = 0.6            # the stubbed clip; short, so the run is quick
 DEADLINE_SECS = BOT_VAD_STOP_FALLBACK_SECS + 3.0   # room for the fallback AND slack
 
 
-async def _fake_segments(text: str):
-    """What _synth_text returns for one clause: a tone (not silence, so the seam trim
+async def _fake_segments(text: str, eager: bool = True):
+    """What _synth_text streams for one clause: a tone (not silence, so the seam trim
     keeps it whole) and per-word start times spread over the clip."""
     n = int(AUDIO_SECS * _SAMPLE_RATE)
     t = np.arange(n, dtype=np.float32) / _SAMPLE_RATE
     audio = (0.3 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
     words = text.split()
     step = AUDIO_SECS / max(1, len(words))
-    return [(audio, [(w, i * step) for i, w in enumerate(words)])]
+    # The real stream awaits its engine connect before any audio: anything the pipeline
+    # does meanwhile (a previous reply's playout ending) lands inside run_tts.
+    await asyncio.sleep(0.01)
+    timed = [(w, i * step) for i, w in enumerate(words)]
+    yield "audio", audio, timed    # per-chunk words (teagram-engine#77)
+    yield "end", timed
 
 
 class StubOutput(BaseOutputTransport):
@@ -270,6 +275,46 @@ async def test_a_reply_queued_behind_audio_is_scheduled_from_that_audios_end():
           f"after a barge-in +{(p3 - p2) / 1e9:.2f}s")
 
 
+async def test_back_to_back_replies_place_words_from_their_own_audio():
+    """Two replies queued together: the second's run_tts is already waiting on its engine
+    connect when the first's playout ends and the base resets its word baseline. Its
+    words must be timed from its own audio, not from a running total that included the
+    first reply's (PR #81 review: a shared total put them a whole reply late)."""
+    tts = EngineTTSService(voice="af_heart")
+    tts._synth_text = _fake_segments
+    ledger_side = Probe()
+    out = StubOutput()
+    task = PipelineTask(Pipeline([tts, ledger_side, out]), observers=[])
+    runner = PipelineRunner(handle_sigint=False)
+    running = asyncio.create_task(runner.run(task))
+    await asyncio.sleep(0.5)
+    try:
+        await task.queue_frames([
+            LLMFullResponseStartFrame(), LLMTextFrame("Alpha reply here."),
+            LLMFullResponseEndFrame(),
+            LLMFullResponseStartFrame(), LLMTextFrame("Bravo reply here."),
+            LLMFullResponseEndFrame()])
+        deadline = time.monotonic() + 5.0
+        firsts: dict = {}
+        while time.monotonic() < deadline and len(firsts) < 2:
+            await asyncio.sleep(0.05)
+            for _, f in ledger_side.seen:
+                if isinstance(f, TTSTextFrame) and f.context_id is not None:
+                    firsts.setdefault(f.context_id, (f.text, f.pts))
+        assert len(firsts) == 2, f"both replies must schedule words, got {firsts}"
+        (w1, p1), (w2, p2) = firsts.values()
+        assert (w1, w2) == ("Alpha", "Bravo"), f"unexpected first words {w1!r}, {w2!r}"
+        gap = (p2 - p1) / 1e9
+        assert AUDIO_SECS - 0.05 <= gap < AUDIO_SECS + 0.3, (
+            f"'Bravo' scheduled {gap:.2f}s after 'Alpha'; it plays when Alpha's "
+            f"{AUDIO_SECS}s clip ends (a gap near {2 * AUDIO_SECS}s is the stale-base bug)")
+    finally:
+        await task.cancel()
+        await running
+    print(f"  PASS back-to-back replies: second reply's words +{gap:.2f}s "
+          f"(clip {AUDIO_SECS}s)")
+
+
 def test_tts_stop_frame():
     require_pinned()
 
@@ -277,6 +322,7 @@ def test_tts_stop_frame():
         await test_stop_frame_ends_bot_speaking_at_audio_end()
         await test_without_stop_frame_transport_waits_out_the_fallback()
         await test_a_reply_queued_behind_audio_is_scheduled_from_that_audios_end()
+        await test_back_to_back_replies_place_words_from_their_own_audio()
     asyncio.run(main())
 
 

@@ -255,11 +255,12 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
     chunking there has no audible seam — and a sentence up to `soft_max` chars is
     still never split.
 
-    Above `soft_max` the trade flips. The engine synthesizes a chunk whole before
-    any of it can play, so a long sentence IS the first-audio latency: measured live
-    2026-09-04, a 236-char sentence (18.8 s of audio) began 4.6 s after the model
-    finished it, a ~30 s one 6.6 s — 8 s of silence that the user read as "it's
-    done" and talked over. gpt-oss writes list answers as one comma-chained sentence,
+    Above `soft_max` the trade flips. First audio scales with the chunk's length, so
+    a long sentence IS the first-audio latency: measured live 2026-09-04 (on an engine
+    several times slower than today's, and before the brain played a chunk's audio as
+    it streamed -- issue #14), a 236-char sentence (18.8 s of audio) began 4.6 s
+    after the model finished it, a ~30 s one 6.6 s — 8 s of silence that the user
+    read as "it's done" and talked over. gpt-oss writes list answers as one comma-chained sentence,
     so this is the common shape for a consult delivery, not an edge. A sentence over
     `soft_max` is therefore split at its clause boundaries (", ; : — –", and the
     CJK "，、；："), and the pieces ride the same ramp as sentences do — a comma seam

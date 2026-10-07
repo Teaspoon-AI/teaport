@@ -48,7 +48,7 @@ from teaport_brain.agent_session import (
     build_agent_session,
     slot_active,
 )
-from teaport_brain import agent_backend, audio_dump, config_ui, sdnotify
+from teaport_brain import agent_backend, audio_dump, config_ui, reply_hold, sdnotify
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
@@ -100,6 +100,8 @@ async def run_relay_bot(websocket: WebSocket):
         caption_every_final=sends_every_final(qp.get("captions")),
         context_notes=True,
         input_processors=input_procs,
+        # Off by default on Talk until measured there (reply_hold.TALK_ENABLED).
+        reply_hold_enabled=reply_hold.TALK_ENABLED,
     )
 
     # What this brain accepts beyond audio, so the plugin can tell a Talk client
