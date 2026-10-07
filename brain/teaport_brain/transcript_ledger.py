@@ -63,6 +63,7 @@ from typing import List, Optional
 
 from loguru import logger
 
+from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech
 
 from pipecat.frames.frames import (
@@ -267,6 +268,11 @@ class TranscriptLedger(BaseObserver):
         # playing the head, None while no window is open.
         self._fifo: List[list] = []
         self._win_t0: Optional[float] = None
+        # A playout pause (barge_pause.py; the transport stopped writing and will go on
+        # from the same sample): when it began, None while playing. Nothing plays during
+        # it, so the layout is read at that instant, and every queued chunk plays that
+        # much later.
+        self._paused_at: Optional[float] = None
         self._seen: OrderedDict = OrderedDict()
         self._traced = set()
 
@@ -433,6 +439,12 @@ class TranscriptLedger(BaseObserver):
 
         elif isinstance(f, BotStoppedSpeakingFrame):
             self._window_closed(t)
+
+        elif isinstance(f, PlayoutPauseFrame):
+            if f.paused:
+                self._pause(t + getattr(f, "lag_secs", 0.0))
+            else:
+                self._resume(t)
 
     def _llm_side(self, f, t: float):
         """The LLM stream and spoken notices, once each, at the TTS's sighting."""
@@ -633,6 +645,11 @@ class TranscriptLedger(BaseObserver):
                 "played": 0.0,        # seconds played out in windows already closed
                 "synth_done": False,  # all of its audio has been pushed
                 "spoken": [],         # (word, pts) from its TTSTextFrames
+                # Playout pauses since it opened: added to the cut before comparing
+                # pts. A turn that opens after a pause starts at 0 -- the TTS moved
+                # the anchor of a reply queued behind the paused one by the pause
+                # (engine_tts._freeze_playout), so its pts already account for it.
+                "pts_shift": 0.0,
                 "ifs": False}         # its word frames carry their own spacing
         if entry is not None:
             entry["turn"] = turn
@@ -691,6 +708,16 @@ class TranscriptLedger(BaseObserver):
         the turns that are over -- oldest first, stopping at one that is not
         (still queued, its synthesis stalled, or its first chunk has not come;
         the next window continues it)."""
+        self._credit(self._play_t(t))
+        self._close_ready(t)
+
+    def _play_t(self, t: float) -> float:
+        """Playout time at `t`: `t`, or the instant a pause still in force began."""
+        return min(t, self._paused_at) if self._paused_at is not None else t
+
+    def _credit(self, t: float):
+        """Credit each open turn with what of its queued audio had played by `t`, and
+        re-time the rest to play from `t` (see _window_closed)."""
         if self._win_t0 is not None:
             remaining = []
             for item, start, end in self._layout():
@@ -714,7 +741,37 @@ class TranscriptLedger(BaseObserver):
             self._win_t0 = t if remaining else None
         else:
             self._fifo.clear()
+
+    def _pause(self, t: float):
+        """The transport stopped writing: credit what played up to now and hold the
+        layout there. Turns stay open -- the rest of their audio is still to play --
+        and so does the window: the transport is still speaking, and no
+        BotStartedSpeaking will reopen it."""
+        if self._paused_at is not None:
+            return
+        was_open = self._win_t0 is not None
+        self._credit(t)
+        if was_open and self._win_t0 is None:
+            self._win_t0 = t
+        self._paused_at = t
         self._close_ready(t)
+
+    def _resume(self, t: float):
+        """Writing again: everything still queued plays from now, and every open turn's
+        words play that much later than they were scheduled."""
+        if self._paused_at is None:
+            return
+        shift = max(0.0, t - self._paused_at)
+        self._paused_at = None
+        if self._win_t0 is not None:
+            self._win_t0 = t
+        for turn in self._turns:
+            # Only a turn with audio already pushed was scheduled on the pre-pause clock.
+            # One whose first audio comes after the resume is anchored by the TTS on its
+            # moved clock (engine_tts._freeze_playout moves _prev_audio_end_ns), so
+            # shifting it here would count the pause twice.
+            if turn["pushed"] > 0:
+                turn["pts_shift"] += shift
 
     def _close_ready(self, t: float):
         """Chart every open turn that is over -- all of its audio played out and
@@ -737,14 +794,15 @@ class TranscriptLedger(BaseObserver):
         so nothing expected will be spoken -- neither text may wait for a later
         turn to claim it."""
         portions: dict = {}
+        tp = self._play_t(t)
         for item, start, end in self._layout():
             turn = self._turn_for_item(item)
             if turn is None:
                 continue
-            played = min(item[1], max(0.0, t - start))
+            played = min(item[1], max(0.0, tp - start))
             portions[id(turn)] = portions.get(id(turn), 0.0) + played
             if played > 0:
-                turn["last_end"] = min(end, t)
+                turn["last_end"] = min(end, tp)
         for turn in list(self._turns):
             self._finish(turn, t, heard=turn["played"] + portions.get(id(turn), 0.0),
                          interrupted=True)
@@ -753,6 +811,7 @@ class TranscriptLedger(BaseObserver):
         self._queue.clear()
         self._fifo.clear()
         self._win_t0 = None
+        self._paused_at = None
 
     # ------------------------------------------------------------------ chart
 
@@ -802,7 +861,10 @@ class TranscriptLedger(BaseObserver):
         if any(p is not None for _, p in spoken):
             # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
             # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
-            cut_ns = (t - _PTS_LEAD_SECS) * 1e9
+            # A playout pause stops the clock the words were scheduled on: the cut is
+            # read where playout stood (the pause's start, if one is in force), on the
+            # schedule's own time (less the pausing it has had since).
+            cut_ns = (self._play_t(t) - turn["pts_shift"] - _PTS_LEAD_SECS) * 1e9
             # Rejoin the matched words with the spacing the frames declare: a
             # frame set that includes its inter-frame spaces (a CJK voice's
             # character tokens) is concatenated; one that does not (the engine's
@@ -842,7 +904,7 @@ class TranscriptLedger(BaseObserver):
         if never or turn["audio_start"] is None:
             t_end = t_start if never else t
         elif interrupted:
-            t_end = t
+            t_end = self._play_t(t)
         else:
             t_end = turn["last_end"] if turn["last_end"] is not None else t
         t_end = max(t_start, min(t, t_end))
