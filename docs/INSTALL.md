@@ -86,7 +86,8 @@ downloads. You bring your own Jetson and your own LLM.
   runs its installer, which finds the panel (`0x3c`/`0x3d` on any I2C bus;
   `TEAPORT_OLED_PORT`/`TEAPORT_OLED_ADDR` to name it) and enables
   `teaport-oled-avatar`. With the local mic bridge (Step 6) running, the eyes
-  follow the conversation and the mouth moves with the voice. No panel found:
+  follow the conversation and the mouth moves with the voice. During Wi-Fi setup
+  the panel shows the setup network's name and password. No panel found:
   the service is installed but left off. Re-run with the flag to update it.
 
 ## Updating the brain

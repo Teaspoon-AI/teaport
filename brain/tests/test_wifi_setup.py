@@ -13,7 +13,7 @@ import urllib.request
 
 import pytest
 
-from teaport_brain import i18n, wifi
+from teaport_brain import display, i18n, wifi
 from teaport_brain import wifi_setup as ws
 from teaport_brain import wifi_voice as wv
 
@@ -368,11 +368,11 @@ class _Recorded(ws.Status):
         self.history.append(dict(self.data))
 
 
-def _run_setup(nm, minutes=1.0, post=None):
+def _run_setup(nm, minutes=1.0, post=None, screen=None):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page binds the address NM gives the setup network (FakeNM: 127.0.0.1)."""
     status = _Recorded(tempfile.mkdtemp())
-    setup = ws.Setup(nm, status, port=0, minutes=minutes)
+    setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen)
     result = {}
     t = threading.Thread(target=lambda: result.setdefault("rc", setup.run("teaport-9e35", "47190352")))
     t.start()
@@ -434,6 +434,36 @@ def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
     after = nm.events[nm.events.index(("join", "home", "homepass1", False)) + 1:]
     # The half-done join undone, the old network asked for without waiting (systemd is).
     assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
+
+
+def _screen():
+    sent = []
+    return display.Screen("wifi-setup", send=lambda ev, path: sent.append(ev["screen"])), sent
+
+
+def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while():
+    screen, sent = _screen()
+    rc, _ = _run_setup(FakeNM([(True, "", "home")]), screen=screen,
+                       post=[{"ssid": "home", "password": "homepass1"}])
+    assert rc == 0
+    shown = [s for s in sent if s.get("lines")]
+    assert shown[0]["lines"] == ["Network  teaport-9e35", "Password  47190352",
+                                 "http://teaport-9e35.local"]
+    assert shown[0]["title"] == "Wi-Fi setup" and shown[0]["ttl"] == display.HOLD_TTL_SECS
+    assert shown[1]["lines"] == ["Joining", "home"]
+    # The last word: up for its seconds after the unit has exited, not taken down.
+    assert sent[-1]["lines"] == ["Connected to", "home"]
+    assert sent[-1]["ttl"] == ws.CONNECTED_SCREEN_SECS
+    assert "homepass1" not in json.dumps(sent)       # the user's own password: never
+
+
+@pytest.mark.parametrize("join, minutes", [([ws.Stopped()], 1.0), ([], 0.01)])
+def test_a_stop_or_a_timeout_takes_the_screen_down(join, minutes):
+    screen, sent = _screen()
+    _run_setup(FakeNM(join), minutes=minutes, screen=screen,
+               post=[{"ssid": "home", "password": "homepass1"}] if join else None)
+    assert sent[0]["lines"][0] == "Network  teaport-9e35"
+    assert sent[-1] == {"id": "wifi-setup"}
 
 
 def test_sigterm_becomes_one_clean_stop():

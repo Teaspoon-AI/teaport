@@ -51,6 +51,12 @@ Every tool the voice model can call follows one contract
   setup's progress from a status file and speaks it. The spoken and displayed text is translated with
   Python's standard `gettext` (`i18n.py`, one `.po` catalog per voice language),
   because the brain says it itself rather than through the LLM.
+- **Text on the box's display** goes through `display.py`. A box with the OLED
+  avatar shows a "screen" (a title and a few lines) over the face for whatever a
+  person has to read off it; Wi-Fi setup shows the setup network's name, password
+  and address, then the join. A screen has an id and a time to live: a sender holds
+  one up by re-sending it every few seconds, so a crashed sender's screen goes by
+  itself. The avatar's built-in font is Latin only, so screens keep to ASCII.
 
 TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
 consult paths.

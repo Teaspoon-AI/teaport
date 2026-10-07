@@ -5,6 +5,9 @@
 # it exits by itself — connected, cancelled, or after ten minutes. Rendered by
 # install.sh (@USER@/@PREFIX@/@ETC@).
 #
+# The network's name and password are also shown on the OLED avatar if the box has one
+# (teaport_brain/display.py, its socket /run/oled-avatar/face.sock).
+#
 # The password is the flash-time one in @ETC@/wifi-setup.env (WIFI_SETUP_PASSWORD, for
 # the paper insert; WIFI_SETUP_SSID overrides the name) if present, else fresh random
 # digits per run. NetworkManager lets @USER@ make these changes through

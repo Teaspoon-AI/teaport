@@ -24,6 +24,10 @@
 #      the access point goes down, a half-done join is undone, and the connection the
 #      box had before is brought back up.
 #
+# The setup network's name and password, and then how the join goes, are also on the
+# box's display if it has one (display.py: the OLED avatar's screens) — in English and
+# ASCII, which its built-in font draws; the voice and the page speak the user's language.
+#
 # The brain (wifi_voice.py) starts this unit, speaks the network, the password and the
 # address, and follows status.json in the unit's RuntimeDirectory (phase: scanning,
 # ap_up, joining, connected, failed, timeout, error) to say what happened — the phone
@@ -52,7 +56,7 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-from teaport_brain import i18n
+from teaport_brain import display, i18n
 from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
@@ -71,6 +75,9 @@ STATUS_FILE = "status.json"
 # The unit's RuntimeDirectory=teaport-wifi-setup (kept after the run with
 # RuntimeDirectoryPreserve=yes, so the brain reads how it ended).
 STATUS_DIR = "/run/teaport-wifi-setup"
+# The display's lines: what wifi_voice says aloud, for reading off the box.
+SCREEN_TITLE = "Wi-Fi setup"
+CONNECTED_SCREEN_SECS = 10
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
 PASSWORD = os.getenv("WIFI_SETUP_PASSWORD", "")
@@ -303,8 +310,9 @@ class Setup:
     """One run: the access point, the page, and the join attempts."""
 
     def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES,
-                 bind: str | None = None):
+                 bind: str | None = None, screen: display.Screen | None = None):
         self.nm, self.status, self.port = nm, status, port
+        self.screen = screen
         # Where the page listens: the setup network's own address (read from NM once it
         # is up), never 0.0.0.0 — the box's other networks must not reach a page that
         # changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
@@ -429,10 +437,16 @@ class Setup:
             self._put_back(quick=True)
             return 3
         finally:
+            if self.screen:
+                self.screen.close()  # a "connected" screen stays its few seconds
             self.unpublish()
             if self.server:
                 self.server.shutdown()
             self.nm.ap_delete()
+
+    def _show(self, lines: list[str], secs: float | None = None) -> None:
+        if self.screen:
+            self.screen.show(SCREEN_TITLE, lines, secs)
 
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup
@@ -475,6 +489,7 @@ class Setup:
             self.publish(ssid)
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
                             address=self.address, error=self.error)
+            self._show([f"Network  {ssid}", f"Password  {password}", url])
             self.request = None
             self.wake.clear()
             while not self.wake.wait(timeout=1.0):
@@ -485,12 +500,14 @@ class Setup:
             target, pw, hidden = self.request
             time.sleep(1.5)  # let the "joining" page reach the phone first
             self.status.set("joining", target=target)
+            self._show(["Joining", target])
             self.unpublish()
             self.nm.ap_down()
             ok, why, self.created = self.nm.join(dev, target, pw, hidden)
             if ok and self.nm.online(dev):
                 self.created = None  # kept: it is the box's network now
                 self.status.set("connected", target=target)
+                self._show(["Connected to", target], secs=CONNECTED_SCREEN_SECS)
                 return 0
             if ok:
                 why = N_("it joined but there is no internet through it")
@@ -522,7 +539,8 @@ def main(argv=None) -> int:
     status = Status(args.status_dir, run_id)
     log(f"run {run_id}: setup network {ssid}, page on port {args.port}, "
         f"{'flash-time' if PASSWORD.strip() == password else 'random'} password")
-    setup = Setup(nm, status, port=args.port, minutes=args.minutes)
+    setup = Setup(nm, status, port=args.port, minutes=args.minutes,
+                  screen=display.Screen("wifi-setup"))
     signal.signal(signal.SIGTERM, _on_sigterm)
     return setup.run(ssid, password)
 
