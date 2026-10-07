@@ -60,7 +60,12 @@ SYSTEM_PYTHON = "/usr/bin/python3"
 # install.sh's dry-run transcript). A schema row that is not a secret is shown.
 _SECRET_LOOKING = re.compile(r".*(TOKEN|KEY|SECRET|PASSWORD)$", re.IGNORECASE)
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
-STORE_FILES = {"engine_env": "engine.env", "brain_env": "brain.env", "bridge_env": "bridge.env"}
+STORE_FILES = {"engine_env": "engine.env", "brain_env": "brain.env", "bridge_env": "bridge.env",
+               "local_audio_env": "local-audio.env"}
+# Stores whose file IS the feature's on-switch (the unit's ConditionPathExists, and what
+# makes an installer repair keep the feature): the page edits them once the installer
+# has made them, and never creates one — saving a row would quietly opt the box in.
+OPT_IN_STORES = ("local_audio_env",)
 SIP_CONF = "~/.config/teaport/teaport-sip.conf"
 # What env_flag accepts (pipecat's env_truthy table), for validating flag rows.
 FLAG_WORDS = {"0", "1", "true", "false", "yes", "no", "on", "off", "y", "n"}
@@ -413,6 +418,7 @@ async def get_config(request: Request):
         values[store] = {k: v for k, v in parsed[store].items() if not _is_hidden(k, rows)}
         mtimes[store] = _mtime(path)
 
+    absent = [s for s in OPT_IN_STORES if not os.path.exists(_store_path(s))]
     secrets = {name: _secret_is_set(row, parsed.get(row["store"], {}))
                for name, row in rows.items() if row["type"] == "secret"}
 
@@ -444,8 +450,9 @@ async def get_config(request: Request):
         "services": {u: s["state"] for u, s in states.items()},
         "pending": pending,
         "auth": bool(_token()),
-        "writable": [s for s in STORE_FILES if s not in unreadable],
+        "writable": [s for s in STORE_FILES if s not in unreadable and s not in absent],
         "unreadable": unreadable,
+        "absent": absent,
     }
 
 
@@ -497,6 +504,8 @@ async def put_config(request: Request):
         return JSONResponse(status_code=400, content={"errors": errors})
 
     path = _store_path(store)
+    if store in OPT_IN_STORES and not os.path.exists(path):
+        raise HTTPException(status_code=409, detail=f"{STORE_FILES[store]} is not set up on this box — the installer creates it when the feature is turned on")
     current = await asyncio.to_thread(_read_text, path)
     if current is None:
         raise HTTPException(status_code=500, detail=f"{STORE_FILES[store]} is not readable by the brain")

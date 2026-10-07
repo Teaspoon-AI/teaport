@@ -39,6 +39,27 @@ downloads. You bring your own Jetson and your own LLM.
   `teaport sip restart`, `teaport sip aec on|off` and `teaport sip disable`. The
   local assistant and the phone line share one speech slot; see **docs/CONFIG.md
   → SIP telephony** for how that works and how to dedicate a box to the phone.
+- **Step 6 (optional) — Talk to the box itself.** Plug a USB mic array into the
+  Jetson (built for the ReSpeaker XVF3800; put the speaker on its 3.5 mm jack so
+  its echo canceller hears what plays) and re-run the installer with
+  `TEAPORT_ENABLE_LOCAL_AUDIO=1`. It enables `teaport-local-audio`, which pipes
+  the card to the assistant and plays the replies back. The device and mic
+  channel live in `/etc/teaport/local-audio.env` (**docs/CONFIG.md → Local audio
+  bridge**). It shares the Talk slot: it dials the assistant when it starts,
+  and once a session ends (a browser Talk session took the slot, or the
+  assistant hung up) it waits until someone speaks near the mic before dialling
+  again — which takes the slot back from a browser session. Turn it off with
+  `sudo systemctl disable --now teaport-local-audio`; re-running the installer
+  keeps it off until you pass `TEAPORT_ENABLE_LOCAL_AUDIO=1` again.
+- **Step 7 (optional) — Give it a face.** Wire a 128x64 SSD1306 OLED to the
+  Jetson's I2C header and re-run the installer with
+  `TEAPORT_ENABLE_OLED_AVATAR=1`. It fetches
+  [teaport-oled-avatar](https://github.com/Teaspoon-AI/teaport-oled-avatar) and
+  runs its installer, which finds the panel (`0x3c`/`0x3d` on any I2C bus;
+  `TEAPORT_OLED_PORT`/`TEAPORT_OLED_ADDR` to name it) and enables
+  `teaport-oled-avatar`. With the local mic bridge (Step 6) running, the eyes
+  follow the conversation and the mouth moves with the voice. No panel found:
+  the service is installed but left off. Re-run with the flag to update it.
 
 ## Updating the brain
 

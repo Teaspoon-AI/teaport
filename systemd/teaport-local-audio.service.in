@@ -1,0 +1,29 @@
+# teaport-local-audio — talk to the agent through a sound card on the box itself (opt-in),
+# e.g. a ReSpeaker XVF3800 USB mic array with a speaker on its 3.5 mm jack. A /talk client
+# like the Discord bridge: it pipes the card's mic to the brain's /talk WS and plays the
+# replies back out. Rendered by install.sh (@USER@/@PREFIX@/@ETC@); ${VARS} (GATEWAY_TOKEN,
+# BRAIN_PORT) come from @ETC@/brain.env, the card and channel from @ETC@/local-audio.env.
+# Laid down INERT (ConditionPathExists on local-audio.env): `systemctl enable --now` it
+# once the env file exists. /talk holds one session, so this evicts a dashboard Talk
+# session and vice versa. Needs alsa-utils (arecord/aplay) and @USER@ in the audio group.
+[Unit]
+Description=teaport local audio bridge (mic array + speaker -> brain /talk)
+# Soft dep only: the bridge redials the brain, so a brain restart must not stop it.
+After=teaport-brain.service sound.target
+Wants=teaport-brain.service
+ConditionPathExists=@ETC@/local-audio.env
+
+[Service]
+Type=simple
+User=@USER@
+SupplementaryGroups=audio
+EnvironmentFile=@ETC@/brain.env
+EnvironmentFile=@ETC@/local-audio.env
+# Venv resolved once, as in teaport-sip-brain.service ($$ = a literal $ to systemd).
+SyslogIdentifier=teaport-local-audio
+ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.local_audio'
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

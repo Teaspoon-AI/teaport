@@ -47,9 +47,9 @@ import tempfile
 import time
 
 ETC = "/etc/teaport"
-FILES = ("engine.env", "brain.env", "bridge.env")
+FILES = ("engine.env", "brain.env", "bridge.env", "local-audio.env")
 UNITS = ("teaport-engine", "teaport-brain", "teaport-sip", "teaport-sip-brain",
-         "teaport-discord-bridge")
+         "teaport-discord-bridge", "teaport-local-audio")
 MAX_BYTES = 64 * 1024
 BACKUPS = 5
 # Only backups THIS code named are ever pruned. Operators keep their own beside
@@ -132,7 +132,7 @@ def main(argv: list[str]) -> int:
         restart(argv[1])
         return 0
     print(__doc__.split("\n\n")[0], file=sys.stderr)
-    print("usage: write <engine.env|brain.env|bridge.env> < content | restart <unit>", file=sys.stderr)
+    print("usage: write <engine.env|brain.env|bridge.env|local-audio.env> < content | restart <unit>", file=sys.stderr)
     return 2
 
 
