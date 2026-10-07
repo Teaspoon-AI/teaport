@@ -109,7 +109,12 @@ _UNCONFIRMED = "the user did not confirm, so it never started."
 # entries in each language's catalog (i18n.py), whose msgstr is that language's own
 # pattern: a session listens for its language's words and always for the English ones.
 PATTERNS = {
-    "start": r"\b(?:set ?up|setup|configure|connect to|join|change|switch)\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\b|\bwi-?fi (?:set ?up|setup)\b",
+    # "set up / setting up / connect (me) to / switching (to) ... the wifi / a new network",
+    # verb first: talk about Wi-Fi ("my wifi is slow", "what network am I on?") has none.
+    "start": r"\b(?:set(?:s|ting)? ?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?"
+             r"|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\b(?: (?:the|a|my|your|our|this"
+             r"|that|to|onto|new|another|different|other|home|me|us|it|yourself|the box|back)){0,4}"
+             r" ?(?:wi[- ]?fi|wireless|network|hotspot)s?\b|\bwi[- ]?fi (?:set ?up|setup)\b",
     "yes": r"\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\b",
     "no": r"\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\b",
     "cancel": r"\b(?:cancel|stop|quit|exit|abort|never ?mind)\b",
@@ -125,7 +130,8 @@ PATTERNS = {
 _NOT_A_REQUEST = re.compile(
     r"\b(?:how|why|can['’]?t|cannot|couldn['’]?t|won['’]?t|doesn['’]?t|didn['’]?t|isn['’]?t"
     r"|wasn['’]?t|unable|trouble|problem)\b"
-    r"|\bwi-?fi (?:password|passcode|settings?|name|network name|is|was|keeps)\b"
+    r"|\b(?:wi[- ]?fi|wireless|network|hotspot) (?:password|passcode|settings?|name|network name"
+    r"|is|was|keeps)\b"
     r"|\bon (?:my|his|her|their|our|the|this) (?:phone|laptop|computer|tablet|tv|mac|pc"
     r"|ipad|iphone|kindle)\b", re.I)
 

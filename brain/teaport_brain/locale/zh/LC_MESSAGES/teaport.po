@@ -237,7 +237,7 @@ msgstr "，"
 
 # the user means: start
 msgctxt "pattern"
-msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgid "\\b(?:set(?:s|ting)? ?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\\b(?: (?:the|a|my|your|our|this|that|to|onto|new|another|different|other|home|me|us|it|yourself|the box|back)){0,4} ?(?:wi[- ]?fi|wireless|network|hotspot)s?\\b|\\bwi[- ]?fi (?:set ?up|setup)\\b"
 msgstr "(?:设置|设定|配置|重新设置|重设|连接|连上|连一下|重连|重新连接?|切换|换|更换|更改|改一下|修改)(?![的了过])[^，。？！,.?!]{0,6}?(?:wi\\s?-?\\s?fi|wlan|无线网|无线局域网)|(?:wi\\s?-?\\s?fi|wlan|无线网|无线局域网)[^，。？！,.?!]{0,3}?(?:设置|设定|配置|重连|重新连|切换|更换|换一?个|换一下|改一下|修改)|配网|配个网|配一下网|(?:设置|配置|重新设置)(?:一下)?网络"
 
 # the user means: yes

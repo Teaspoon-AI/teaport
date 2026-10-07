@@ -213,6 +213,34 @@ def test_the_patterns_hear_their_language(lang):
     assert not wifi_voice.heard("yes", SAYS[lang]["no"], t) or wifi_voice.heard("no", SAYS[lang]["no"], t)
 
 
+START = {  # more ways to ask for setup, inflected forms first (#96), and talk that isn't
+    "es": (["configurando el wifi", "conectándome a la red wifi", "cambiando de wifi"],
+           ["mi wifi va lento", "¿qué wifi es este?"]),
+    "pt_BR": (["configurando o wi-fi", "conectando no wi-fi", "trocando de wi-fi", "mudando o wifi"],
+              ["meu wi-fi está lento", "a rede caiu"]),
+    "fr": (["en configurant le wifi", "connectant au wi-fi"], ["mon wifi est lent"]),
+    "it": (["configurando il wi-fi", "collegando al wifi"], ["il mio wifi è lento"]),
+    "de": (["Verbind dich mit dem WLAN", "WLAN einrichten"], ["Mein WLAN ist langsam"]),
+    "nl": (["verbind met de wifi", "wifi instellen"], ["mijn wifi is traag"]),
+    "ru": (["давай настраивать вайфай", "подключайся к вайфаю", "переключаться на другой вайфай",
+            "меняй вайфай"],
+           ["у меня вайфай плохой", "вайфай тормозит", "телефон не подключается к вайфаю"]),
+    "ar": (["اتصل بالواي فاي"], ["الواي فاي بطيء"]),
+    "hi": (["वाई-फ़ाई कनेक्ट करो"], ["मेरा वाई-फ़ाई धीमा है"]),
+    "zh": (["连接无线网", "切换wifi"], ["我的wifi很慢"]),
+    "ja": (["Wi-Fiに接続して", "Wi-Fiを切り替えて"], ["Wi-Fiが遅い"]),
+    "ko": (["와이파이 연결해 줘", "와이파이 바꿔 줘"], ["와이파이가 느려"]),
+}
+
+
+@pytest.mark.parametrize("lang", LANGS)
+def test_the_start_pattern_hears_requests_not_talk(lang):
+    t = i18n.get(lang)
+    heard, talk = START[lang]
+    assert [s for s in heard if not wifi_voice.heard("start", s, t)] == []
+    assert [s for s in talk if wifi_voice.heard("start", s, t)] == []
+
+
 def test_arabic_is_heard_with_or_without_its_diacritics():
     ar = i18n.get("ar")
     for vocalised in ("نَعَم", "نعم"):

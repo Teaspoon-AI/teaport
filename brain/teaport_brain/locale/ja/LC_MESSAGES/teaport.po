@@ -237,7 +237,7 @@ msgstr "、"
 
 # the user means: start
 msgctxt "pattern"
-msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgid "\\b(?:set(?:s|ting)? ?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\\b(?: (?:the|a|my|your|our|this|that|to|onto|new|another|different|other|home|me|us|it|yourself|the box|back)){0,4} ?(?:wi[- ]?fi|wireless|network|hotspot)s?\\b|\\bwi[- ]?fi (?:set ?up|setup)\\b"
 msgstr "(?:wi[-‐‑ ]?fi|ｗｉ[－‐-]?ｆｉ|ワイ ?ファイ|無線 ?(?:lan|ラン|ｌａｎ)).{0,8}?(?:設定|せってい|セッティング|セットアップ|接続し|接続す|つない|つなぎ|つなげ|繋い|繋ぎ|繋げ|変更|変え|替え|切り替|切りかえ|切替|きりかえ)"
 
 # the user means: yes

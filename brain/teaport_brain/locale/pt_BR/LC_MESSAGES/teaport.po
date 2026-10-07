@@ -237,8 +237,8 @@ msgstr ", "
 
 # the user means: start
 msgctxt "pattern"
-msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
-msgstr "\\b(?:(?:re)?configur(?:a|ar|e|o|emos|amos)(?:-(?:lo|la|me|se))?|configura[cç](?:[aã]o|[oõ]es)|conect(?:a|ar|e|o|emos)(?:-(?:se|me|nos))?|troc(?:a|ar|amos)|troque(?:mos)?|mud(?:a|ar|e|amos)|entr(?:a|ar))\\b(?:[\\s,]+(?:o|a|os|as|um|uma|no|na|nos|nas|ao|à|em|de|do|da|meu|minha|seu|sua|outro|outra|novo|nova|rede|pra|para|esse|essa|este|esta|nesse|nessa|se|me)\\b){0,4}[\\s,]+(?:(?:wi|wai|uai)[- ]?fa?i|redes? sem fio)\\b|\\b(?:(?:wi|wai|uai)[- ]?fa?i|redes? sem fio)\\b.{0,30}?\\b(?:re)?configur(?:a|ar|e|emos|[aá]-l[oa])\\b"
+msgid "\\b(?:set(?:s|ting)? ?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\\b(?: (?:the|a|my|your|our|this|that|to|onto|new|another|different|other|home|me|us|it|yourself|the box|back)){0,4} ?(?:wi[- ]?fi|wireless|network|hotspot)s?\\b|\\bwi[- ]?fi (?:set ?up|setup)\\b"
+msgstr "\\b(?:(?:re)?configur(?:a|ar|e|o|emos|amos|ando)(?:-(?:lo|la|me|se))?|configura[cç](?:[aã]o|[oõ]es)|conect(?:a|ar|e|o|emos|ando)(?:-(?:se|me|nos))?|troc(?:a|ar|amos|ando)|troque(?:mos)?|mud(?:a|ar|e|amos|ando)|entr(?:a|ar|ando))\\b(?:[\\s,]+(?:o|a|os|as|um|uma|no|na|nos|nas|ao|à|em|de|do|da|meu|minha|seu|sua|outro|outra|novo|nova|rede|pra|para|esse|essa|este|esta|nesse|nessa|se|me)\\b){0,4}[\\s,]+(?:(?:wi|wai|uai)[- ]?fa?i|redes? sem fio)\\b|\\b(?:(?:wi|wai|uai)[- ]?fa?i|redes? sem fio)\\b.{0,30}?\\b(?:re)?configur(?:a|ar|e|emos|[aá]-l[oa])\\b"
 
 # the user means: yes
 msgctxt "pattern"

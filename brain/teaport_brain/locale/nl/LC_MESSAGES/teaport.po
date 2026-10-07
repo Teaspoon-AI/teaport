@@ -237,7 +237,7 @@ msgstr ", "
 
 # the user means: start
 msgctxt "pattern"
-msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgid "\\b(?:set(?:s|ting)? ?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\\b(?: (?:the|a|my|your|our|this|that|to|onto|new|another|different|other|home|me|us|it|yourself|the box|back)){0,4} ?(?:wi[- ]?fi|wireless|network|hotspot)s?\\b|\\bwi[- ]?fi (?:set ?up|setup)\\b"
 msgstr "\\b(?:configureer\\w*|configureren|verbind|verbinden|verbindt|wijzig(?:en)?|verander(?:en)?|wissel(?:en)?|koppel(?:en)?|maak verbinding|verbinding (?:maken|leggen)|instellen|in te stellen|inrichten|opzetten|op te zetten)\\b(?:\\W+\\w+){0,4}?\\W+(?:wi[\\s-]?fi|w[\\s-]?lan)|\\b(?:stel|stelt|zet|zetten)\\b(?:\\W+\\w+){0,3}?\\W+(?:wi[\\s-]?fi|w[\\s-]?lan)\\w*\\W+(?:\\w+\\W+){0,3}?(?:in|om)\\b|\\b(?:wi[\\s-]?fi|w[\\s-]?lan)\\w*(?:\\W+\\w+){0,3}?\\W*(?:instellen|in te stellen|configureren|inrichten|opzetten|op te zetten|set ?up|installatie|installeren|verbinden|wijzigen|veranderen|koppelen)\\b"
 
 # the user means: yes

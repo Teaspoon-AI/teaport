@@ -59,7 +59,8 @@ downloads. You bring your own Jetson and your own LLM.
   scratch (`restart_session`, a testing aid that is off until you set
   `TEAPORT_TOOL_RESTART_SESSION=1` in `/etc/teaport/brain.env`).
 - **Changing the box's Wi-Fi.** With the local mic (Step 6) running, say
-  **"set up Wi-Fi"** at the box. The phrase works with no internet, because no
+  **"set up Wi-Fi"** at the box (or "connect to a new Wi-Fi", "switch the
+  Wi-Fi", "connect me to Wi-Fi" and the like). The phrase works with no internet, because no
   language model is involved. While the box is online, the phrase goes to the
   assistant like anything else you say, and the assistant can start the same setup.
   The box decides whether it is online with NetworkManager's connectivity check. On
