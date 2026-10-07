@@ -329,16 +329,18 @@ def test_a_failed_new_password_for_the_network_it_is_on_brings_that_back():
 class FakeNM:
     """NetworkManager as a state: the AP, the joins, the connectivity."""
 
-    def __init__(self, join_results, online=True, previous="old-wifi", address="127.0.0.1"):
+    def __init__(self, join_results, online=True, previous="old-wifi", addresses=None):
         self.join_results, self._online, self.previous = list(join_results), online, previous
-        self._address = address
+        # What `nmcli device show` lists, one call after another (the last repeats).
+        self._addresses = list(addresses or [[wifi.AP_ADDRESS]])
         self.events = []
 
     def wifi_device(self): return "wlan0"
     def mac(self, dev): return "f8:3d:c6:1f:9e:35"
     def scan(self, dev): return [{"ssid": "home", "signal": 80, "open": False, "security": "WPA2"}]
     def active(self, dev): return {"name": self.previous, "uuid": "u-" + self.previous} if self.previous else None
-    def address(self, dev): return self._address
+    def addresses(self, dev):
+        return self._addresses.pop(0) if len(self._addresses) > 1 else self._addresses[0]
     def ap_up(self, dev, ssid, pw): self.events.append(("ap_up", ssid)); return True, ""
     def ap_down(self): self.events.append(("ap_down",))
     def ap_delete(self): self.events.append(("ap_delete",))
@@ -370,10 +372,10 @@ class _Recorded(ws.Status):
 
 def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
-    page binds the address NM gives the setup network (FakeNM: 127.0.0.1). The return
-    code is the exception instead when the run raised one."""
+    page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
+    the exception instead when the run raised one."""
     status = _Recorded(tempfile.mkdtemp())
-    setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen)
+    setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
     result = {}
 
     def run():
@@ -556,7 +558,7 @@ def test_network_names_reach_the_display_in_ascii():
     assert rc == 0 and seen[1]["ssid"] == "東京-box"     # the voice and page keep the name
     shown = [s["lines"] for s in sent if s.get("lines")]
     # The .local name cannot be shown in ASCII: the address that needs none instead.
-    assert shown[0] == ["Network  -box", "Password  47190352", "http://127.0.0.1"]
+    assert shown[0] == ["Network  -box", "Password  47190352", f"http://{wifi.AP_ADDRESS}"]
     assert ["Joining", "Cafe"] in shown and shown[-1] == ["Connected to", "Cafe"]
 
 
@@ -620,12 +622,31 @@ def test_a_slow_request_times_out_and_connections_are_capped(monkeypatch):
 def test_the_page_is_bound_to_the_setup_network_only():
     setup = ws.Setup(FakeNM([]), _Recorded(tempfile.mkdtemp()), port=0)
     assert setup.bind is None and setup.address == wifi.AP_ADDRESS   # never 0.0.0.0
-    setup.address = "127.0.0.1"   # as NM reports it once the network is up
-    setup.serve()
+    setup.serve()   # IP_FREEBIND: bound although this machine has no such address
     try:
-        assert setup.server.server_address[0] == "127.0.0.1"
+        assert setup.server.server_address[0] == wifi.AP_ADDRESS
     finally:
         setup.server.shutdown()
+
+
+def _bound(nm):
+    setup = ws.Setup(nm, _Recorded(tempfile.mkdtemp()), port=0, minutes=0.005)
+    assert setup.run("teaport-9e35", "47190352") == 2      # nobody came: timeout
+    return setup.server.server_address[0], setup.status.history[1]["address"]
+
+
+def test_the_page_binds_the_pinned_address_while_nm_still_lists_the_old_one(capsys):
+    # 2026-10-07: just after the setup network came up NM still listed the home
+    # address first; the page bound that, and no phone on the setup network reached it.
+    nm = FakeNM([], addresses=[["192.168.1.105"], ["192.168.1.105"], [wifi.AP_ADDRESS]])
+    assert _bound(nm) == (wifi.AP_ADDRESS, wifi.AP_ADDRESS)
+    assert "phones may not reach" not in capsys.readouterr().out
+
+
+def test_an_address_that_never_arrives_is_logged_and_the_page_still_bound(monkeypatch, capsys):
+    monkeypatch.setattr(ws, "ADDRESS_WAIT_SECS", 0.3)
+    assert _bound(FakeNM([], addresses=[["192.168.1.105"]])) == (wifi.AP_ADDRESS, wifi.AP_ADDRESS)
+    assert "10.42.0.1 is not on wlan0" in capsys.readouterr().out
 
 
 def test_names_are_isolated_whole_and_once():

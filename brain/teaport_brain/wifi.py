@@ -164,14 +164,12 @@ class NM:
         now = self.active(dev)
         return now["name"] if now else None
 
-    def address(self, dev: str) -> str | None:
-        """`dev`'s IPv4 address now: the setup network's own, while that is up."""
+    def addresses(self, dev: str) -> list[str]:
+        """`dev`'s IPv4 addresses now. Just after the setup network comes up this can
+        still be the old network's: the setup network's arrives a moment later."""
         _, out, _ = self.nmcli("-g", "IP4.ADDRESS", "device", "show", dev)
-        for line in out.splitlines():
-            addr = line.split("|")[0].strip().split("/")[0]
-            if addr:
-                return addr
-        return None
+        return [a for line in out.splitlines() for a in
+                (part.strip().split("/")[0] for part in line.split("|")) if a]
 
     def fields(self, uuid: str, *names: str, secrets: bool = False) -> dict[str, str] | None:
         """Profile `uuid`'s settings `names`, unescaped; None if nmcli fails."""

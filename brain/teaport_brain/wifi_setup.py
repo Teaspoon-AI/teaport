@@ -70,6 +70,9 @@ PAGE_PORT = 7869
 MAX_FORM_BYTES = 4096
 REQUEST_TIMEOUT_SECS = 10
 MAX_CLIENTS = 32
+# How long the setup network's address may take to show on the device once NM says the
+# network is up (only a warning when it does not: the page is bound to it regardless).
+ADDRESS_WAIT_SECS = 5.0
 SSID_PREFIX = "teaport-"
 MINUTES = 10
 PASSWORD_DIGITS = 8
@@ -326,9 +329,9 @@ class Setup:
                  bind: str | None = None, screen: display.Screen | None = None):
         self.nm, self.status, self.port = nm, status, port
         self.screen = screen
-        # Where the page listens: the setup network's own address (read from NM once it
-        # is up), never 0.0.0.0 — the box's other networks must not reach a page that
-        # changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
+        # Where the page listens: the setup network's own address (AP_ADDRESS, pinned in
+        # its profile), never 0.0.0.0 — the box's other networks must not reach a page
+        # that changes its Wi-Fi without a password. `bind` is for tests (127.0.0.1).
         self.bind = bind
         self.address = AP_ADDRESS
         self.previous: dict | None = None  # the profile to put back, {"name", "uuid"}
@@ -460,6 +463,14 @@ class Setup:
     def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None) -> bool:
         return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs, qr=qr))
 
+    def _address_arrives(self, dev: str) -> bool:
+        deadline = time.monotonic() + ADDRESS_WAIT_SECS
+        while AP_ADDRESS not in self.nm.addresses(dev):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.2)
+        return True
+
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup
         network down, a half-done join undone, and the old connection back up. `quick`
@@ -493,10 +504,14 @@ class Setup:
                 self._put_back()
                 return 1
             if not self.server:
-                self.address = self.nm.address(dev) or AP_ADDRESS
-                if self.address != AP_ADDRESS:
-                    log(f"the setup network came up at {self.address}, not {AP_ADDRESS}: "
-                        "the port-80 redirect and the captive DNS answer will miss it")
+                # The page binds AP_ADDRESS, which the setup profile pins: IP_FREEBIND
+                # lets it bind before the address is on the device. Not whatever address
+                # NM lists first right after the network comes up — that can still be the
+                # old network's, and then no phone reaches the page (seen 2026-10-07: it
+                # bound the home address and the captive page never opened).
+                if not self._address_arrives(dev):
+                    log(f"{AP_ADDRESS} is not on {dev} after {ADDRESS_WAIT_SECS:.0f} s: "
+                        "phones may not reach the page")
                 try:
                     self.serve()
                 except OSError as e:
