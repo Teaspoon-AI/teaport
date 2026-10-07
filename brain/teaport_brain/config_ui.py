@@ -87,8 +87,12 @@ def _token() -> str:
 def token_matches(got: str | None, want: str | None) -> bool:
     """Constant-time compare of a presented token against the configured one, so
     the time a wrong guess takes says nothing about how much of it was right.
-    Bytes, not str: compare_digest refuses non-ASCII str. None counts as empty."""
-    return hmac.compare_digest((got or "").encode(), (want or "").encode())
+    Bytes, not str: compare_digest refuses non-ASCII str. surrogateescape so an
+    env value that is not valid UTF-8 (os.environ decodes it to lone surrogates)
+    still compares instead of raising. None counts as empty."""
+    def b(s: str | None) -> bytes:
+        return (s or "").encode("utf-8", "surrogateescape")
+    return hmac.compare_digest(b(got), b(want))
 
 
 def _authorize(request: Request) -> None:

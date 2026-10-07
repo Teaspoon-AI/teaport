@@ -19,7 +19,8 @@
 #   - An unreadable store is reported, not a 500 for the whole page.
 #   - Every route 401s without the token when GATEWAY_TOKEN is set.
 #   - The token compare is constant-time (hmac.compare_digest) and total: a
-#     missing or non-ASCII token is a 401 / a closed /talk, never a 500.
+#     missing or non-ASCII token, or a GATEWAY_TOKEN that is not valid UTF-8,
+#     is a 401 / a closed /talk, never a 500.
 #
 # Run: python test_config_ui.py   (or via pytest)
 #
@@ -169,11 +170,25 @@ def test_token_compare_is_constant_time_and_total():
     with mock.patch.object(hmac, "compare_digest", lambda a, b: seen.append((a, b)) or real(a, b)):
         config_ui.token_matches("x", "t0k3n")
     assert seen == [(b"x", b"t0k3n")], seen
+    # a GATEWAY_TOKEN that is not valid UTF-8 (os.environ hands it over as lone
+    # surrogates) compares rather than raising
+    assert config_ui.token_matches("t\udcff", "t\udcff")
+    assert not config_ui.token_matches("t\ufffd", "t\udcff")
+    assert not config_ui.token_matches("t", "t\udcff")
 
     client, *_ = setup()
-    # non-ASCII in the query string: compare_digest on str would raise -> 500
+    # non-ASCII in the query string: a plain compare_digest(str, str) would raise
+    # on it (a 500); the bytes compare makes it an ordinary 401
     assert client.get("/api/config?token=t%C3%B6k3n").status_code == 401
     assert client.get("/api/config", headers={"authorization": "Bearer "}).status_code == 401
+    # a non-UTF-8 GATEWAY_TOKEN: still a 401 for a wrong token, not a 500 on every route
+    os.environb[b"GATEWAY_TOKEN"] = b"t\xff"
+    try:
+        assert os.environ["GATEWAY_TOKEN"] == "t\udcff"
+        assert client.get("/api/config?token=t%FF").status_code == 401
+        assert client.get("/api/config", headers=H).status_code == 401
+    finally:
+        os.environ["GATEWAY_TOKEN"] = "t0k3n"
 
     # /talk/status and /talk on the gateway app, same token
     gw = TestClient(gs.app)
@@ -183,6 +198,15 @@ def test_token_compare_is_constant_time_and_total():
     with mock.patch.object(gs, "GATEWAY_TOKEN", "t0k3n"), \
             mock.patch.object(gs, "run_relay_bot", side_effect=AssertionError("auth let it through")):
         for q in ("", "?token=wrong", "?token=t%C3%B6k3n"):
+            try:
+                with gw.websocket_connect("/talk" + q) as ws:
+                    ws.receive_text()
+                raise AssertionError(f"/talk{q} was accepted")
+            except WebSocketDisconnect as e:
+                assert e.code == 1008, (q, e.code)
+    with mock.patch.object(gs, "GATEWAY_TOKEN", "t\udcff"), \
+            mock.patch.object(gs, "run_relay_bot", side_effect=AssertionError("auth let it through")):
+        for q in ("", "?token=t%FF", "?token=t0k3n"):
             try:
                 with gw.websocket_connect("/talk" + q) as ws:
                     ws.receive_text()
