@@ -45,8 +45,10 @@ Every tool the voice model can call follows one contract
   OpenClaw plugin, SIP and Discord announce none and never see these tools.
 - **Wi-Fi setup** needs no LLM, because a box without internet has none. The
   brain listens for the phrase "set up Wi-Fi" itself (`wifi_voice.py`), so the
-  phrase works offline. The `wifi_setup` tool is a second way in for when the box
-  is online. Both start `teaport-wifi-setup` (`wifi_setup.py`): a temporary setup
+  phrase works offline — and only offline (NetworkManager's connectivity is not
+  "full"): online, the phrase goes to the model like any other words, and the model
+  decides whether to use the `wifi_setup` tool, the way in for when the box is
+  online. Both start `teaport-wifi-setup` (`wifi_setup.py`): a temporary setup
   network with a page that phones open automatically. The brain reads the
   setup's progress from a status file and speaks it. The spoken and displayed text is translated with
   Python's standard `gettext` (`i18n.py`, one `.po` catalog per voice language),

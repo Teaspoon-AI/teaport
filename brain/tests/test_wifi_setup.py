@@ -697,7 +697,10 @@ class _Voice(wv.WifiSetupVoice):
         async def run(action, unit):
             self.calls.append((action, unit))
             return results.get(action, (0, ""))
-        super().__init__(run=run, status_path=status_path)
+
+        async def offline():
+            return False
+        super().__init__(run=run, status_path=status_path, online=offline)
 
     async def say(self, text):
         self.said.append(text)

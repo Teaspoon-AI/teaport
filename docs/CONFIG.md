@@ -180,11 +180,11 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_SWITCH_VOICE` | **on** | Change the speaking voice (and with it the reply language). |
 | `TEAPORT_TOOL_SET_VOLUME` | **on** | Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions. |
 | `TEAPORT_TOOL_RESTART_SESSION` | **off** | End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge). |
-| `TEAPORT_TOOL_WIFI_SETUP` | **on** | Wi-Fi setup by voice: the spoken phrase ("set up Wi-Fi", no LLM needed) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup. |
+| `TEAPORT_TOOL_WIFI_SETUP` | **on** | Wi-Fi setup by voice: the spoken phrase ("set up Wi-Fi", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup. |
 
 ## Wi-Fi setup
 
-In `/etc/teaport/wifi-setup.env`. Say "set up Wi-Fi" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline. The wifi_setup tool (Tools) is its switch. These two are flash-time settings for the paper insert.
+In `/etc/teaport/wifi-setup.env`. Say "set up Wi-Fi" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert.
 
 | Setting | Default | Description |
 |---|---|---|

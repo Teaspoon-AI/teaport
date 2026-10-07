@@ -9,8 +9,12 @@
 # the attempt, read from the unit's status.json. While it runs it keeps the user's words
 # from the LLM and answers "repeat" and "cancel" itself.
 #
-# The online way in is the wifi_setup tool (tools.py): the model hands over to the same
-# flow. Both exist only where that tool is active — TEAPORT_TOOL_WIFI_SETUP on, the
+# The phrase only works while the box is offline (NetworkManager's connectivity is not
+# "full"): online, the model is there, and "set up Wi-Fi" said in conversation goes to it
+# like any other words -- it decides, and its way in is the wifi_setup tool (tools.py),
+# which hands over to the same flow. Once setup is asking or running, its answers
+# ("yes", "repeat", "cancel") are taken here however it began. Both exist only where
+# that tool is active — TEAPORT_TOOL_WIFI_SETUP on, the
 # client announced "local" (the local audio bridge: someone is at the box, not a remote
 # Talk user or a phone caller who could cut the box off its own network), and the setup
 # unit is installed.
@@ -281,11 +285,12 @@ class WifiSetupVoice(FrameProcessor):
     user's final transcripts itself and speaks fixed sentences."""
 
     def __init__(self, run=None, status_path: str = STATUS_PATH, clock=time.monotonic,
-                 lang_fn=lambda: "en-us", alive=None, **kw):
+                 lang_fn=lambda: "en-us", alive=None, online=None, **kw):
         super().__init__(**kw)
         self._lang_fn = lang_fn  # the session's TTS language now ('en-us', 'es', ...)
         self._run = run or _run_helper
         self._alive = alive or _unit_active
+        self._online = online or _box_online
         self._status_path = status_path
         self._clock = clock
         self.state = "idle"  # idle | confirm | running
@@ -536,11 +541,14 @@ class WifiSetupVoice(FrameProcessor):
             logger.info("wifi setup: the question went unanswered — back to conversation")
             self.state, self._held = "idle", []
         if self.state == "idle":
-            if heard("start", text, t):
-                await self.begin()
-                self._held = [text]
-                return True
-            return False
+            if not heard("start", text, t):
+                return False
+            if await self._online():
+                logger.info("wifi setup: the phrase, but the box is online — the model's call")
+                return False
+            await self.begin()
+            self._held = [text]
+            return True
         if self.state == "confirm":
             if heard("no", text, t):
                 # A no to the question asked: nothing goes back to the model, which
@@ -581,6 +589,21 @@ async def _run_helper(action: str, unit: str) -> tuple[int, str]:
         return p.returncode, (err or out).decode(errors="replace").strip()
     except (OSError, asyncio.TimeoutError) as e:
         return 1, repr(e)
+
+
+async def _box_online() -> bool:
+    """Is the box on the internet? NetworkManager's connectivity check (Ubuntu's: a
+    probe it runs on its own, so this is a cached answer, ~40 ms). Only "full" counts:
+    none, limited (no internet through it), portal and unknown (no check configured, or
+    nmcli failed) all leave the phrase working, which is the safe way to be wrong."""
+    try:
+        p = await asyncio.create_subprocess_exec(
+            "nmcli", "networking", "connectivity",
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL)
+        out, _ = await asyncio.wait_for(p.communicate(), 5)
+    except (OSError, asyncio.TimeoutError):
+        return False
+    return out.decode(errors="replace").strip() == "full"
 
 
 async def _unit_active() -> bool | None:

@@ -109,7 +109,7 @@ blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRA
 [[groups]]
 id = "wifi_setup"
 title = "Wi-Fi setup"
-blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline. The wifi_setup tool (Tools) is its switch. These two are flash-time settings for the paper insert."
+blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert."
 
 [[groups]]
 id = "talk_client"
@@ -1380,7 +1380,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
+help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
 source = "tools.py:923"
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
