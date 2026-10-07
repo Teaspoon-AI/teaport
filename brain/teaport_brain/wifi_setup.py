@@ -9,8 +9,9 @@
 #      WPA2 with a password of digits — the one written at flash time for the paper
 #      insert (WIFI_SETUP_PASSWORD in /etc/teaport/wifi-setup.env), else fresh random
 #      digits each time
-#   3. serve the setup page on port 80 at 10.42.0.1, where NetworkManager's shared mode
-#      puts us. NM's dnsmasq answers every name with that address
+#   3. serve the setup page at 10.42.0.1, where NetworkManager's shared mode puts us:
+#      on PAGE_PORT, which the unit's iptables rule makes port 80 for that address (port
+#      80 itself is the front door's — Caddy's http->https redirect). NM's dnsmasq answers every name with that address
 #      (/etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf, from install.sh), so a
 #      phone's captive-portal probe lands here and the OS opens the page by itself;
 #      http://teaport-ab12.local is the fallback (avahi-publish, while the network is up)
@@ -38,7 +39,6 @@ import random
 import re
 import secrets
 import shutil
-import socket
 import subprocess
 import sys
 import threading
@@ -46,8 +46,11 @@ import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-AP_CONNECTION = "teaport-setup"
-AP_ADDRESS = "10.42.0.1"  # NetworkManager's ipv4.method=shared default
+from teaport_brain.wifi import AP_ADDRESS, NM, PAGE_CSS
+
+# Where the page listens. teaport-wifi-setup.service redirects AP_ADDRESS:80 here with
+# an iptables rule for as long as it runs; phones only ever see port 80.
+PAGE_PORT = 7869
 SSID_PREFIX = "teaport-"
 MINUTES = 10
 PASSWORD_DIGITS = 8
@@ -55,7 +58,6 @@ STATUS_FILE = "status.json"
 # The unit's RuntimeDirectory=teaport-wifi-setup (kept after the run with
 # RuntimeDirectoryPreserve=yes, so the brain reads how it ended).
 STATUS_DIR = "/run/teaport-wifi-setup"
-CONNECT_WAIT_SECS = 45
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
 PASSWORD = os.getenv("WIFI_SETUP_PASSWORD", "")
@@ -86,183 +88,6 @@ def setup_password(fixed: str = "") -> str:
     return "".join(secrets.choice("0123456789") for _ in range(PASSWORD_DIGITS))
 
 
-# ------------------------------------------------------------------ NetworkManager
-
-def split_terse(line: str) -> list[str]:
-    """One line of `nmcli -t` output: ':'-separated, with '\\:' and '\\\\' escaped."""
-    fields, cur, i = [], [], 0
-    while i < len(line):
-        c = line[i]
-        if c == "\\" and i + 1 < len(line):
-            cur.append(line[i + 1])
-            i += 2
-            continue
-        if c == ":":
-            fields.append("".join(cur))
-            cur = []
-        else:
-            cur.append(c)
-        i += 1
-    fields.append("".join(cur))
-    return fields
-
-
-def parse_scan(out: str) -> list[dict]:
-    """`nmcli -t -f SSID,SIGNAL,SECURITY dev wifi list` -> one entry per named network,
-    its strongest access point, strongest first."""
-    best: dict[str, dict] = {}
-    for line in out.splitlines():
-        f = split_terse(line)
-        if len(f) < 3 or not f[0].strip():
-            continue
-        ssid, sec = f[0], f[2].strip()
-        try:
-            signal = int(f[1])
-        except ValueError:
-            signal = 0
-        open_ = sec in ("", "--")
-        if ssid not in best or signal > best[ssid]["signal"]:
-            best[ssid] = {"ssid": ssid, "signal": signal, "open": open_,
-                          "security": "open" if open_ else sec}
-    return sorted(best.values(), key=lambda n: -n["signal"])
-
-
-class NM:
-    """The nmcli calls setup needs. `run(argv) -> (rc, stdout, stderr)` is injectable."""
-
-    def __init__(self, run=None):
-        self._run = run or self._subprocess
-
-    @staticmethod
-    def _subprocess(argv: list[str], timeout: float = 60) -> tuple[int, str, str]:
-        try:
-            p = subprocess.run(argv, capture_output=True, text=True, timeout=timeout)
-            return p.returncode, p.stdout, p.stderr
-        except subprocess.TimeoutExpired:
-            return 124, "", f"{argv[0]} timed out"
-
-    def nmcli(self, *args: str, timeout: float = 60) -> tuple[int, str, str]:
-        return self._run(["nmcli", *args], timeout=timeout)
-
-    def wifi_device(self) -> str | None:
-        rc, out, _ = self.nmcli("-t", "-f", "DEVICE,TYPE", "device")
-        for line in out.splitlines():
-            f = split_terse(line)
-            if len(f) >= 2 and f[1] == "wifi":
-                return f[0]
-        return None
-
-    def mac(self, dev: str) -> str:
-        try:
-            with open(f"/sys/class/net/{dev}/address") as f:
-                return f.read().strip()
-        except OSError:
-            return ""
-
-    def scan(self, dev: str) -> list[dict]:
-        _, out, _ = self.nmcli("-t", "-f", "SSID,SIGNAL,SECURITY", "device", "wifi", "list",
-                               "ifname", dev, "--rescan", "yes", timeout=45)
-        return parse_scan(out)
-
-    def active_wifi(self, dev: str) -> str | None:
-        """The connection profile `dev` is on now (to put back), if any."""
-        rc, out, _ = self.nmcli("-t", "-f", "GENERAL.CONNECTION", "device", "show", dev)
-        for line in out.splitlines():
-            f = split_terse(line)
-            if len(f) >= 2 and f[0] == "GENERAL.CONNECTION" and f[1] not in ("", "--"):
-                return f[1]
-        return None
-
-    def saved_profile(self, ssid: str) -> str | None:
-        """A saved Wi-Fi profile for `ssid` (joined without a password), if any."""
-        rc, out, _ = self.nmcli("-t", "-f", "NAME,TYPE", "connection", "show")
-        for line in out.splitlines():
-            f = split_terse(line)
-            if len(f) < 2 or f[1] != "802-11-wireless" or f[0] == AP_CONNECTION:
-                continue
-            _, ssid_out, _ = self.nmcli("-t", "-g", "802-11-wireless.ssid", "connection",
-                                        "show", "id", f[0])
-            if ssid_out.strip().replace("\\:", ":") == ssid:
-                return f[0]
-        return None
-
-    def ap_up(self, dev: str, ssid: str, password: str) -> tuple[bool, str]:
-        self.nmcli("connection", "delete", "id", AP_CONNECTION)  # a leftover from a crash
-        rc, _, err = self.nmcli(
-            "connection", "add", "type", "wifi", "ifname", dev, "con-name", AP_CONNECTION,
-            "autoconnect", "no", "ssid", ssid,
-            "802-11-wireless.mode", "ap", "802-11-wireless.band", "bg",
-            "ipv4.method", "shared", "ipv6.method", "disabled",
-            "wifi-sec.key-mgmt", "wpa-psk", "wifi-sec.proto", "rsn",
-            "wifi-sec.pairwise", "ccmp", "wifi-sec.group", "ccmp",
-            "wifi-sec.psk", password)
-        if rc != 0:
-            return False, err.strip() or "could not create the setup network"
-        rc, _, err = self.nmcli("--wait", "30", "connection", "up", "id", AP_CONNECTION,
-                                timeout=45)
-        return rc == 0, err.strip()
-
-    def ap_down(self) -> None:
-        self.nmcli("--wait", "15", "connection", "down", "id", AP_CONNECTION, timeout=25)
-
-    def ap_delete(self) -> None:
-        self.nmcli("connection", "delete", "id", AP_CONNECTION)
-
-    def up(self, profile: str) -> bool:
-        rc, _, _ = self.nmcli("--wait", str(CONNECT_WAIT_SECS), "connection", "up", "id",
-                              profile, timeout=CONNECT_WAIT_SECS + 15)
-        return rc == 0
-
-    def join(self, dev: str, ssid: str, password: str, hidden: bool) -> tuple[bool, str, str | None]:
-        """Join `ssid`. Returns (ok, why-not, profile created for it — dropped on failure).
-        A saved profile and no password: just bring it up. A saved profile and a new
-        password: update it (and put the old one back on failure)."""
-        saved = self.saved_profile(ssid)
-        if saved and not password:
-            ok = self.up(saved)
-            return ok, "" if ok else "the saved settings for it did not work", None
-        if saved:
-            _, old, _ = self.nmcli("-s", "-t", "-g", "802-11-wireless-security.psk",
-                                   "connection", "show", "id", saved)
-            self.nmcli("connection", "modify", "id", saved, "wifi-sec.key-mgmt", "wpa-psk",
-                       "wifi-sec.psk", password)
-            if self.up(saved):
-                return True, "", None
-            if old.strip():
-                self.nmcli("connection", "modify", "id", saved, "wifi-sec.psk", old.strip())
-            return False, "the password did not work", None
-        args = ["--wait", str(CONNECT_WAIT_SECS), "device", "wifi", "connect", ssid,
-                "ifname", dev, "name", ssid]
-        if password:
-            args += ["password", password]
-        if hidden:
-            args += ["hidden", "yes"]
-        rc, _, err = self.nmcli(*args, timeout=CONNECT_WAIT_SECS + 15)
-        if rc == 0:
-            return True, "", ssid
-        why = "the password did not work" if re.search(
-            r"secrets|password|802-1x|psk", err, re.I) else (
-            "the network was not found" if re.search(r"not found|No network", err, re.I)
-            else "it would not connect")
-        return False, why, ssid
-
-    def delete(self, profile: str) -> None:
-        self.nmcli("connection", "delete", "id", profile)
-
-    def online(self) -> bool:
-        """Internet, not just a link: NM's own check, else a TCP connect to a resolver."""
-        rc, out, _ = self.nmcli("networking", "connectivity", "check", timeout=20)
-        if out.strip() == "full":
-            return True
-        for host in ("1.1.1.1", "8.8.8.8"):
-            try:
-                socket.create_connection((host, 443), timeout=4).close()
-                return True
-            except OSError:
-                continue
-        return False
-
-
 # ------------------------------------------------------------------ status for the brain
 
 class Status:
@@ -290,24 +115,11 @@ class Status:
 
 PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Teaport Wi-Fi setup</title><style>
-:root{{--bg:#faf8f5;--fg:#1d1b18;--mute:#6b665e;--line:#e2ddd5;--acc:#2f6b4f;--warn:#9a3b25}}
-@media (prefers-color-scheme:dark){{:root{{--bg:#191816;--fg:#efebe4;--mute:#a39d93;--line:#34312c;--acc:#7cc3a0;--warn:#e08a6d}}}}
-body{{margin:0;background:var(--bg);color:var(--fg);font:16px/1.45 system-ui,sans-serif}}
-main{{max-width:30rem;margin:0 auto;padding:1.5rem 1rem 3rem}}
-h1{{font-size:1.4rem;margin:0 0 .25rem}} p{{color:var(--mute);margin:.25rem 0 1rem}}
-.net{{display:flex;align-items:center;gap:.6rem;padding:.75rem;border:1px solid var(--line);
-border-radius:.6rem;margin:.4rem 0;cursor:pointer}} .net span{{flex:1;overflow-wrap:anywhere}}
-.net small{{color:var(--mute)}} input[type=text],input[type=password]{{width:100%;box-sizing:border-box;
-padding:.7rem;border:1px solid var(--line);border-radius:.5rem;background:transparent;color:inherit;font:inherit}}
-label.f{{display:block;margin:1rem 0 .3rem;font-weight:600}}
-button{{margin-top:1.2rem;width:100%;padding:.8rem;border:0;border-radius:.6rem;background:var(--acc);
-color:var(--bg);font:inherit;font-weight:600}} .err{{color:var(--warn);font-weight:600}}
-.show{{display:flex;gap:.4rem;align-items:center;color:var(--mute);margin-top:.4rem}}
-</style></head><body><main>
-<h1>Connect Teaport to Wi-Fi</h1>
+<title>Teaport Wi-Fi setup</title><style>{css}</style></head><body><main>
+<div class="eyebrow">Teaport</div>
+<h1>Connect to Wi-Fi</h1>
 <p>Pick your network and type its password. Teaport will leave this setup network and
-join yours; it says out loud whether that worked.</p>
+join yours, and say out loud whether that worked.</p>
 {error}
 <form method="post" action="/connect">
 {networks}
@@ -322,9 +134,8 @@ join yours; it says out loud whether that worked.</p>
 
 JOINING = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1"><title>Teaport is joining</title>
-<style>body{{margin:0;font:16px/1.45 system-ui,sans-serif;background:#faf8f5;color:#1d1b18}}
-@media (prefers-color-scheme:dark){{body{{background:#191816;color:#efebe4}}}}
-main{{max-width:30rem;margin:0 auto;padding:1.5rem 1rem}}</style></head><body><main>
+<style>{css}</style></head><body><main>
+<div class="eyebrow">Teaport</div>
 <h1>Joining {ssid}…</h1>
 <p>Teaport is leaving this setup network now. Switch your phone back to
 <strong>{ssid}</strong>. Teaport will say out loud whether it connected; if it could not,
@@ -340,6 +151,7 @@ def render_page(networks: list[dict], error: str = "") -> str:
             f'{" checked" if i == 0 else ""}><span>{html.escape(n["ssid"])}</span>'
             f"<small>{lock} {n['signal']}%</small></label>")
     return PAGE.format(
+        css=PAGE_CSS,
         error=f'<p class="err">{html.escape(error)}</p>' if error else "",
         networks="\n".join(rows) or "<p>No networks found — use Other.</p>",
         other_checked="" if networks else "checked")
@@ -365,7 +177,7 @@ def parse_form(body: bytes) -> tuple[str, str, bool, str]:
 class Setup:
     """One run: the access point, the page, and the join attempts."""
 
-    def __init__(self, nm: NM, status: Status, port: int = 80, minutes: float = MINUTES):
+    def __init__(self, nm: NM, status: Status, port: int = PAGE_PORT, minutes: float = MINUTES):
         self.nm, self.status, self.port = nm, status, port
         self.deadline = time.monotonic() + minutes * 60
         self.networks: list[dict] = []
@@ -407,7 +219,7 @@ class Setup:
                 ssid, password, hidden, error = parse_form(self.rfile.read(length))
                 if error:
                     return self._send(200, render_page(setup.networks, error))
-                self._send(200, JOINING.format(ssid=html.escape(ssid)))
+                self._send(200, JOINING.format(css=PAGE_CSS, ssid=html.escape(ssid)))
                 setup.request = (ssid, password, hidden)
                 setup.wake.set()
 
@@ -500,7 +312,7 @@ class Setup:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="teaport Wi-Fi setup (run by teaport-wifi-setup.service)")
-    ap.add_argument("--port", type=int, default=80)
+    ap.add_argument("--port", type=int, default=PAGE_PORT)
     ap.add_argument("--minutes", type=float, default=MINUTES)
     ap.add_argument("--status-dir", default=STATUS_DIR)
     ap.add_argument("--run-id", default="")

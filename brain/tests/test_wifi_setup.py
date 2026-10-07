@@ -13,6 +13,7 @@ import urllib.request
 
 import pytest
 
+from teaport_brain import wifi
 from teaport_brain import wifi_setup as ws
 from teaport_brain import wifi_voice as wv
 
@@ -38,12 +39,12 @@ def test_the_flash_time_password_wins_when_valid():
 # ------------------------------------------------------------------ nmcli output
 
 def test_terse_lines_unescape_colons_and_backslashes():
-    assert ws.split_terse(r"Stefano’s iPhone\: 13:75:WPA2") == ["Stefano’s iPhone: 13", "75", "WPA2"]
-    assert ws.split_terse(r"a\\b:1:") == ["a\\b", "1", ""]
+    assert wifi.split_terse(r"Stefano’s iPhone\: 13:75:WPA2") == ["Stefano’s iPhone: 13", "75", "WPA2"]
+    assert wifi.split_terse(r"a\\b:1:") == ["a\\b", "1", ""]
 
 
 def test_scan_keeps_each_named_network_once_strongest_first():
-    nets = ws.parse_scan("home:50:WPA2\ncafe:70:\nhome:80:WPA2 WPA3\n:90:WPA2\nx:bad:WPA2\n")
+    nets = wifi.parse_scan("home:50:WPA2\ncafe:70:\nhome:80:WPA2 WPA3\n:90:WPA2\nx:bad:WPA2\n")
     assert [n["ssid"] for n in nets] == ["home", "cafe", "x"]
     assert nets[0] == {"ssid": "home", "signal": 80, "open": False, "security": "WPA2 WPA3"}
     assert nets[1]["open"] and nets[1]["security"] == "open"
@@ -84,7 +85,7 @@ class FakeRun:
 def test_join_uses_a_saved_profile_without_a_password():
     run = FakeRun([(("-t", "-f", "NAME,TYPE"), (0, "home:802-11-wireless\n", "")),
                    (("-t", "-g", "802-11-wireless.ssid"), (0, "home\n", ""))])
-    assert ws.NM(run).join("wlan0", "home", "", False) == (True, "", None)
+    assert wifi.NM(run).join("wlan0", "home", "", False) == (True, "", None)
     assert ["nmcli", "--wait", "45", "connection", "up", "id", "home"] in run.calls
 
 
@@ -93,7 +94,7 @@ def test_a_wrong_new_password_on_a_saved_profile_puts_the_old_one_back():
                    (("-t", "-g", "802-11-wireless.ssid"), (0, "home\n", "")),
                    (("-s", "-t", "-g"), (0, "oldpass99\n", "")),
                    (("--wait", "45", "connection", "up"), (4, "", "Secrets were required"))])
-    ok, why, created = ws.NM(run).join("wlan0", "home", "newpass99", False)
+    ok, why, created = wifi.NM(run).join("wlan0", "home", "newpass99", False)
     assert (ok, created) == (False, None) and "password" in why
     modifies = [c for c in run.calls if c[1:3] == ["connection", "modify"]]
     assert modifies[0][-1] == "newpass99" and modifies[-1][-1] == "oldpass99"
@@ -102,12 +103,33 @@ def test_a_wrong_new_password_on_a_saved_profile_puts_the_old_one_back():
 def test_a_new_network_is_created_and_reported_for_cleanup():
     run = FakeRun([(("--wait", "45", "device", "wifi", "connect"),
                     (10, "", "Error: Connection activation failed: Secrets were required"))])
-    ok, why, created = ws.NM(run).join("wlan0", "cafe", "badpass1", False)
+    ok, why, created = wifi.NM(run).join("wlan0", "cafe", "badpass1", False)
     assert (ok, created) == (False, "cafe") and why == "the password did not work"
     run2 = FakeRun([(("--wait", "45", "device", "wifi", "connect"), (10, "", "Error: No network with SSID 'x' found."))])
-    assert ws.NM(run2).join("wlan0", "x", "", True)[1] == "the network was not found"
+    assert wifi.NM(run2).join("wlan0", "x", "", True)[1] == "the network was not found"
     connect = [c for c in run2.calls if "connect" in c][0]
     assert connect[-2:] == ["hidden", "yes"]
+
+
+def test_an_online_switch_that_fails_puts_the_old_network_back():
+    class NM:
+        def __init__(self, join, online=True):
+            self._join, self._online, self.events = join, online, []
+        def active_wifi(self, dev): return "home"
+        def join(self, dev, ssid, pw, hidden): return self._join
+        def online(self): return self._online
+        def delete(self, p): self.events.append(("delete", p))
+        def up(self, p): self.events.append(("up", p)); return True
+
+    good = NM((True, "", "cafe"))
+    assert wifi.switch(good, "wlan0", "cafe", "pw123456", False) == (True, "")
+    assert good.events == []
+    bad = NM((False, "the password did not work", "cafe"))
+    assert wifi.switch(bad, "wlan0", "cafe", "x" * 8, False) == (False, "the password did not work")
+    assert bad.events == [("delete", "cafe"), ("up", "home")]
+    dead = NM((True, "", "cafe"), online=False)
+    ok, why = wifi.switch(dead, "wlan0", "cafe", "x" * 8, False)
+    assert not ok and "no internet" in why and ("up", "home") in dead.events
 
 
 # ------------------------------------------------------------------ the whole run

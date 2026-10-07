@@ -70,6 +70,10 @@ SIP_CONF = "~/.config/teaport/teaport-sip.conf"
 # What env_flag accepts (pipecat's env_truthy table), for validating flag rows.
 FLAG_WORDS = {"0", "1", "true", "false", "yes", "no", "on", "off", "y", "n"}
 
+# Units that run only when asked and exit by themselves: not "services" the page shows
+# as up or down (an idle one is inactive by design, not broken).
+ON_DEMAND_UNITS = ("teaport-wifi-setup",)
+
 router = APIRouter()
 
 
@@ -422,7 +426,8 @@ async def get_config(request: Request):
     secrets = {name: _secret_is_set(row, parsed.get(row["store"], {}))
                for name, row in rows.items() if row["type"] == "secret"}
 
-    units = sorted({u for st in schema["stores"].values() for u in st["services"]})
+    units = sorted({u for st in schema["stores"].values() for u in st["services"]}
+                   - set(ON_DEMAND_UNITS))
     states = await _unit_states(units)
     pending: dict[str, list[str]] = {}
 
@@ -560,3 +565,86 @@ async def restart(request: Request):
     await _privileged("restart", unit)
     logger.info(f"config: restart of {unit} requested from the config page")
     return {"ok": True, "unit": unit, "in_seconds": 2}
+
+
+# ------------------------------------------------------------------ Wi-Fi
+# The online half of Wi-Fi setup (wifi.py): see the box's network, scan, switch — a
+# switch that fails puts the old connection back — or start the offline setup network
+# (teaport-wifi-setup, wifi_setup.py), which takes the box off its current network.
+# Behind the page's token like everything else here; the setup network's own page is
+# the unauthenticated one, and it is a separate, short-lived process.
+
+_wifi_lock = asyncio.Lock()
+
+
+def _wifi_nm():
+    from teaport_brain.wifi import NM
+    return NM()
+
+
+def _wifi_state(nm) -> dict:
+    dev = nm.wifi_device()
+    if not dev:
+        return {"available": False}
+    from teaport_brain import wifi_setup, wifi_voice
+    connection = nm.active_wifi(dev)
+    setup = None
+    try:
+        with open(os.path.join(wifi_setup.STATUS_DIR, wifi_setup.STATUS_FILE)) as f:
+            setup = {k: v for k, v in json.load(f).items() if k != "password"}
+    except (OSError, ValueError):
+        pass
+    return {"available": True, "device": dev, "connection": connection,
+            "online": nm.online() if connection else False,
+            "setup_installed": wifi_voice.available(), "setup_last": setup}
+
+
+@router.get("/api/wifi")
+async def wifi_state(request: Request):
+    _authorize(request)
+    return await asyncio.to_thread(_wifi_state, _wifi_nm())
+
+
+@router.post("/api/wifi/scan")
+async def wifi_scan(request: Request):
+    _authorize(request)
+    nm = _wifi_nm()
+    dev = await asyncio.to_thread(nm.wifi_device)
+    if not dev:
+        raise HTTPException(status_code=404, detail="this box has no Wi-Fi device")
+    return {"networks": await asyncio.to_thread(nm.scan, dev)}
+
+
+@router.post("/api/wifi/connect")
+async def wifi_connect(request: Request):
+    _authorize(request)
+    body = await request.json()
+    ssid = str(body.get("ssid") or "").strip()
+    password = str(body.get("password") or "")
+    hidden = bool(body.get("hidden"))
+    if not ssid or len(ssid.encode()) > 32:
+        raise HTTPException(status_code=400, detail="a network name of 1 to 32 bytes")
+    if password and not 8 <= len(password) <= 63:
+        raise HTTPException(status_code=400, detail="Wi-Fi passwords are 8 to 63 characters")
+    if _wifi_lock.locked():
+        raise HTTPException(status_code=409, detail="a Wi-Fi change is already in progress")
+    async with _wifi_lock:
+        from teaport_brain.wifi import switch
+        nm = _wifi_nm()
+        dev = await asyncio.to_thread(nm.wifi_device)
+        if not dev:
+            raise HTTPException(status_code=404, detail="this box has no Wi-Fi device")
+        ok, why = await asyncio.to_thread(switch, nm, dev, ssid, password, hidden)
+    logger.info(f"config: Wi-Fi switch to {ssid!r} from the config page: {'ok' if ok else why}")
+    return {"ok": ok, "ssid": ssid, "error": why or None}
+
+
+@router.post("/api/wifi/setup")
+async def wifi_setup_start(request: Request):
+    _authorize(request)
+    from teaport_brain import wifi_voice
+    if not wifi_voice.available():
+        raise HTTPException(status_code=404, detail="Wi-Fi setup is not installed on this box")
+    await _privileged("restart", wifi_voice.UNIT)
+    logger.info("config: Wi-Fi setup network started from the config page")
+    return {"ok": True}

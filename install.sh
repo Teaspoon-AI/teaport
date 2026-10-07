@@ -1637,8 +1637,8 @@ phase_sip() {
 # flashing step, never by this installer, so a repair leaves it alone. Without that file
 # each setup speaks fresh random digits.
 phase_wifi_setup() {
-  if ! have nmcli; then
-    log "wifi setup: no NetworkManager (nmcli) — skipped"
+  if ! have nmcli || [ ! -x /usr/sbin/iptables ]; then
+    log "wifi setup: needs NetworkManager (nmcli) and iptables (/usr/sbin/iptables) — skipped"
     return 0
   fi
   log "wifi setup: unit + polkit rule + captive DNS (runs only when asked)"
