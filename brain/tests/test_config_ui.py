@@ -46,6 +46,9 @@ OPENAI_API_KEY=sk-hand-added-must-not-leak
 """
 
 
+_REAL_WIFI_SETUP_BUSY = config_ui._wifi_setup_busy
+
+
 def setup():
     etc = tempfile.mkdtemp(prefix="teaport-etc-")
     home = tempfile.mkdtemp(prefix="teaport-home-")
@@ -73,6 +76,11 @@ def setup():
         return {u: {"state": "active", "active_since": 0.0} for u in units}
 
     config_ui._unit_states = fake_states
+
+    async def setup_idle():
+        return False
+
+    config_ui._wifi_setup_busy = setup_idle
 
     # The secret file the schema names for LLM_API_KEY, relative to $HOME.
     rows = config_ui._rows()
@@ -333,12 +341,124 @@ def test_opt_in_store_is_never_created_from_the_page():
     assert calls[-1][:2] == ("write", "local-audio.env") and "LOCAL_AUDIO_CAPTURE_CHANNEL=1" in calls[-1][2]
 
 
+class _WifiNM:
+    """NetworkManager as the config page sees it (wifi.NM's methods)."""
+
+    def __init__(self, join=(True, "", None), online=True):
+        self._join, self._online, self.events = join, online, []
+
+    def wifi_device(self): return "wlan0"
+    def active(self, dev): return {"name": "home", "uuid": "u-home"}
+    def active_wifi(self, dev): return "home"
+    def online(self, dev): self.events.append(("online", dev)); return self._online
+    def scan(self, dev): return [{"ssid": "cafe", "signal": 70, "open": False, "security": "WPA2"}]
+    def up(self, profile, wait=45): self.events.append(("up", profile)); return True
+    def delete(self, profile): self.events.append(("delete", profile))
+
+    def join(self, dev, ssid, pw, hidden):
+        self.events.append(("join", ssid, pw, hidden))
+        return self._join
+
+
+def test_wifi_section(monkeypatch=None):
+    client, etc, home, calls = setup()
+    from teaport_brain import wifi_setup, wifi_voice
+    status_dir = tempfile.mkdtemp()
+    with open(os.path.join(status_dir, wifi_setup.STATUS_FILE), "w") as f:
+        json.dump({"phase": "ap_up", "ssid": "teaport-9e35", "password": "47190352"}, f)
+    old = (config_ui._wifi_nm, wifi_setup.STATUS_DIR, wifi_voice.available)
+    nm = _WifiNM()
+    config_ui._wifi_nm = lambda: nm
+    wifi_setup.STATUS_DIR = status_dir
+    wifi_voice.available = lambda: True
+    try:
+        assert client.get("/api/wifi").status_code == 401
+        state = client.get("/api/wifi", headers=H).json()
+        assert state["available"] and state["connection"] == "home" and state["online"]
+        assert ("online", "wlan0") in nm.events   # through the Wi-Fi, not any uplink
+        assert state["setup_last"]["phase"] == "ap_up" and "password" not in state["setup_last"]
+        assert client.post("/api/wifi/scan", headers=H).json()["networks"][0]["ssid"] == "cafe"
+        r = client.post("/api/wifi/connect", headers=H, json={"ssid": "cafe", "password": "short"})
+        assert r.status_code == 400
+        r = client.post("/api/wifi/connect", headers=H, json={"ssid": "cafe", "password": "cafepass1"})
+        assert r.json() == {"ok": True, "ssid": "cafe", "error": None}
+        # A switch that does not work: the new profile goes, the old network comes back.
+        nm2 = _WifiNM(join=(False, "the password did not work", "u-cafe"))
+        config_ui._wifi_nm = lambda: nm2
+        r = client.post("/api/wifi/connect", headers=H, json={"ssid": "cafe", "password": "wrongpass"}).json()
+        assert r["ok"] is False and "password" in r["error"]
+        assert ("delete", "u-cafe") in nm2.events
+        # Starting the offline setup network goes through the sudo helper.
+        assert client.post("/api/wifi/setup", headers=H).json() == {"ok": True}
+        assert ("restart", "teaport-wifi-setup", None) in calls
+        wifi_voice.available = lambda: False
+        assert client.post("/api/wifi/setup", headers=H).status_code == 404
+        # The on-demand unit is not shown as a service that is up or down.
+        assert "teaport-wifi-setup" not in client.get("/api/config", headers=H).json()["services"]
+        # While the setup unit has the radio, the page neither scans, switches, nor
+        # restarts it (a restart would throw away the setup in progress).
+        wifi_voice.available = lambda: True
+
+        async def setup_busy():
+            return True
+        config_ui._wifi_setup_busy = setup_busy
+        n = len(calls)
+        assert client.post("/api/wifi/scan", headers=H).status_code == 409
+        assert client.post("/api/wifi/connect", headers=H, json={"ssid": "cafe", "password": "cafepass1"}).status_code == 409
+        assert client.post("/api/wifi/setup", headers=H).status_code == 409
+        assert len(calls) == n
+    finally:
+        config_ui._wifi_nm, wifi_setup.STATUS_DIR, wifi_voice.available = old
+
+
+def test_wifi_setup_busy_reads_the_unit_and_its_pending_start():
+    import asyncio
+    seen, answers = [], {}
+
+    async def fake_run(*argv, stdin=None):
+        seen.append(argv)
+        return 0, answers.get(argv[1], ""), ""
+    old = config_ui._run
+    config_ui._run = fake_run
+    busy = _REAL_WIFI_SETUP_BUSY  # setup() replaces the module's
+    try:
+        answers.update({"show": "inactive\n", "list-units": ""})
+        assert asyncio.run(busy()) is False
+        assert seen[-1][-1] == "teaport-config-restart-teaport-wifi-setup-*.timer"
+        assert "--state=waiting" in seen[-1]
+        answers["list-units"] = "teaport-config-restart-teaport-wifi-setup-1.timer loaded active waiting x\n"
+        assert asyncio.run(busy()) is True
+        answers.update({"show": "activating\n", "list-units": ""})
+        assert asyncio.run(busy()) is True
+    finally:
+        config_ui._run = old
+
+
+def test_apply_helper_stop_also_cancels_a_scheduled_start():
+    from teaport_brain import config_apply
+    seen = []
+    old = config_apply.subprocess.run
+    config_apply.subprocess.run = lambda argv, check: seen.append(argv)
+    try:
+        config_apply.stop("teaport-wifi-setup")
+        try:
+            config_apply.stop("teaport-brain")
+            raise AssertionError("stop accepted a unit outside STOPPABLE")
+        except SystemExit:
+            pass
+    finally:
+        config_apply.subprocess.run = old
+    assert seen == [["systemctl", "stop", "--no-block", "--",
+                     "teaport-config-restart-teaport-wifi-setup-*.timer", "teaport-wifi-setup"]]
+
+
 def main() -> int:
     for fn in (test_env_roundtrip, test_get_masks_secrets_and_requires_token, test_put_validation,
                test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
                test_apply_helper_backup_ring_spares_operator_backups,
                test_unreadable_store_is_reported_not_fatal, test_secret_file_pending_for_startup_readers,
-               test_opt_in_store_is_never_created_from_the_page):
+               test_opt_in_store_is_never_created_from_the_page, test_wifi_section,
+               test_apply_helper_stop_also_cancels_a_scheduled_start):
         fn()
         print("ok", fn.__name__)
     return 0

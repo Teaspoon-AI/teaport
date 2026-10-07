@@ -14,7 +14,7 @@ import pytest
 from teaport_brain import config_schema, consult_bridge, persona, tools
 from teaport_brain.agent_backend import HAS_AGENT
 
-ALL_FEATURES = frozenset({"volume", "restart"})
+ALL_FEATURES = frozenset({"volume", "restart", "local"})
 
 
 def _names(ts):
@@ -53,10 +53,12 @@ def test_every_tool_has_a_switch_row_and_a_hint():
             f"{flag}: schema default and code default disagree")
         assert t.hint.startswith(t.name), f"{t.name}: the prompt hint must name the tool"
         for need in t.needs:
-            assert need in ("agent", "tts") or re.fullmatch(r"client:[a-z]+", need), need
+            assert need in ("agent", "tts") or re.fullmatch(r"client:[a-z]+", need) or (
+                need.startswith("host:") and need[5:] in tools.HOST_CHECKS), need
 
 
-def test_defaults_keep_todays_tools_and_offer_client_tools_only_when_announced():
+def test_defaults_keep_todays_tools_and_offer_client_tools_only_when_announced(monkeypatch):
+    monkeypatch.setitem(tools.HOST_CHECKS, "wifi_setup", lambda: False)
     base = _names(tools.active_tools(tools.ToolContext(has_tts=True)))
     assert "set_volume" not in base and "restart_session" not in base
     with_volume = _names(tools.active_tools(tools.ToolContext(
@@ -120,7 +122,7 @@ def test_a_composed_paragraph_keeps_the_rules_its_tools_need(monkeypatch):
 
 
 def test_client_features_are_parsed_strictly():
-    assert tools.parse_client_features("volume, RESTART,teleport") == ALL_FEATURES
+    assert tools.parse_client_features("volume, RESTART,local,teleport") == ALL_FEATURES
     assert tools.parse_client_features(None) == frozenset()
     assert tools.CLIENT_FEATURES == ALL_FEATURES
 
@@ -264,3 +266,38 @@ def test_agent_first_is_ignored_while_ask_openclaw_is_switched_off():
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q"]))
+
+
+def test_wifi_setup_needs_someone_at_the_box_and_the_unit(monkeypatch):
+    local = tools.ToolContext(has_tts=True, client_features=frozenset({"local"}))
+    remote = tools.ToolContext(has_tts=True, client_features=frozenset({"volume"}))
+    monkeypatch.setitem(tools.HOST_CHECKS, "wifi_setup", lambda: True)
+    assert "wifi_setup" in _names(tools.active_tools(local))
+    assert "wifi_setup" not in _names(tools.active_tools(remote))   # a remote Talk user
+    monkeypatch.setitem(tools.HOST_CHECKS, "wifi_setup", lambda: False)
+    assert "wifi_setup" not in _names(tools.active_tools(local))    # not installed here
+    monkeypatch.setitem(tools.HOST_CHECKS, "wifi_setup", lambda: True)
+    _with(monkeypatch, wifi_setup=False)
+    assert "wifi_setup" not in _names(tools.active_tools(local))    # switched off
+
+
+def test_the_wifi_setup_tool_hands_over_and_keeps_the_model_quiet():
+    class Voice:
+        begun = 0
+
+        async def begin(self):
+            Voice.begun += 1
+
+    async def run():
+        params = _Params(_LLM(), {})
+        got = {}
+
+        async def cb(result, **kw):
+            got.update(result=result, **kw)
+        params.result_callback = cb
+        await tools._wifi_setup(params, voice=Voice())
+        return got
+
+    got = asyncio.run(run())
+    assert Voice.begun == 1 and got["result"]["ok"]
+    assert got["properties"].run_llm is False

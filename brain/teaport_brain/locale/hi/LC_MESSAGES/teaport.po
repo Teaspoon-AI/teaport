@@ -1,0 +1,259 @@
+# teaport — Hindi strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Translated by a model, reviewed by a second model (LQA, 2026-10-07). A native speaker's review is still recommended.
+msgid ""
+msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: hi\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "क्या वाई-फ़ाई सेट अप करना है? सेट अप आपके फ़ोन से होगा, और उस दौरान कुछ मिनट तक मेरा इंटरनेट बंद रहेगा। हाँ या नहीं बोलिए।"
+
+msgid "Wi-Fi setup is already running."
+msgstr "वाई-फ़ाई सेट अप पहले से चल रहा है।"
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "ठीक है। ज़रा रुकिए, मैं आस-पास के नेटवर्क ढूँढ लूँ।"
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "माफ़ कीजिए, इस डिवाइस पर वाई-फ़ाई सेट अप शुरू नहीं हो पाया।"
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "ठीक है, मैंने वाई-फ़ाई सेट अप रोक दिया है और सब कुछ पहले जैसा कर दिया है।"
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "वाई-फ़ाई सेट अप शुरू नहीं हुआ। थोड़ी देर बाद फिर से कोशिश कीजिए।"
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "मुझे अब भी सेट अप पेज पर आपका इंतज़ार है।"
+
+msgid "That didn't work: {reason}."
+msgstr "यह कोशिश कामयाब नहीं हुई, क्योंकि {reason}।"
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "ठीक है। अब {network} से कनेक्ट किया जा रहा है। अपने फ़ोन को भी वापस उसी नेटवर्क से जोड़ लीजिए।"
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "{network} से कनेक्शन हो गया है, और इंटरनेट फिर से चालू है।"
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "वाई-फ़ाई सेट अप का समय ख़त्म हो गया, इसलिए मैंने सब कुछ पहले जैसा कर दिया है।"
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "वाई-फ़ाई सेट अप रुक गया, क्योंकि {reason}।"
+
+msgid "your network"
+msgstr "आपके नेटवर्क"
+
+msgid "something went wrong"
+msgstr "कुछ गड़बड़ हो गई"
+
+msgid "Okay, never mind."
+msgstr "ठीक है, रहने देते हैं।"
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "वाई-फ़ाई सेट अप शुरू करना हो तो हाँ बोलिए, वरना नहीं।"
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "अभी वाई-फ़ाई सेट अप चल रहा है। जानकारी फिर से सुननी हो तो दोबारा बोलिए, और रोकना हो तो कैंसल बोलिए।"
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "अपने फ़ोन को उस वाई-फ़ाई नेटवर्क से जोड़िए, जिसका नाम है {ssid}। पासवर्ड है {password}। सेट अप पेज अपने आप खुल जाना चाहिए। अगर न खुले, तो ब्राउज़र में यह पता खोलिए, {url}।"
+
+msgid "the saved settings for it did not work"
+msgstr "उस नेटवर्क की सेव की हुई सेटिंग काम नहीं आई"
+
+msgid "the password did not work"
+msgstr "पासवर्ड सही नहीं निकला"
+
+msgid "the network was not found"
+msgstr "नेटवर्क नहीं मिला"
+
+msgid "it would not connect"
+msgstr "नेटवर्क से कनेक्शन नहीं बन पाया"
+
+msgid "it joined but there is no internet through it"
+msgstr "कनेक्शन तो हो गया, पर उस नेटवर्क पर इंटरनेट नहीं चल रहा"
+
+msgid "this box has no Wi-Fi device"
+msgstr "इस डिवाइस में वाई-फ़ाई नहीं है"
+
+msgid "the setup network would not start"
+msgstr "सेट अप वाला नेटवर्क चालू नहीं हो पाया"
+
+msgid "the setup page could not start"
+msgstr "सेट अप पेज चालू नहीं हो पाया"
+
+msgid "open"
+msgstr "बिना पासवर्ड"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "Teaport वाई-फ़ाई सेटअप"
+
+msgid "Connect to Wi-Fi"
+msgstr "वाई-फ़ाई से कनेक्ट करें"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "अपना नेटवर्क चुनें और उसका पासवर्ड डालें। Teaport यह सेटअप नेटवर्क छोड़कर आपके नेटवर्क से जुड़ेगा, और बोलकर बताएगा कि कनेक्शन हुआ या नहीं।"
+
+msgid "No networks found — use Other."
+msgstr "कोई नेटवर्क नहीं मिला — अन्य नेटवर्क चुनें।"
+
+msgid "Other (hidden) network"
+msgstr "अन्य (छिपा हुआ) नेटवर्क"
+
+msgid "Network name"
+msgstr "नेटवर्क का नाम"
+
+msgid "Password"
+msgstr "पासवर्ड"
+
+msgid "Show password"
+msgstr "पासवर्ड दिखाएँ"
+
+msgid "Connect"
+msgstr "कनेक्ट करें"
+
+msgid "Teaport is joining"
+msgstr "Teaport कनेक्ट हो रहा है"
+
+msgid "Joining {network}…"
+msgstr "{network} से कनेक्ट हो रहा है…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "Teaport अब यह सेटअप नेटवर्क छोड़ रहा है। अपने फ़ोन को वापस {network} से जोड़ें। Teaport बोलकर बताएगा कि कनेक्शन हुआ या नहीं। अगर नहीं हुआ, तो सेटअप नेटवर्क वापस आ जाएगा, तब फिर से कोशिश करें।"
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "{network} से कनेक्ट नहीं हो सका: {reason}। फिर से कोशिश करें।"
+
+msgid "Pick a network, or type its name under Other."
+msgstr "कोई नेटवर्क चुनें, या अन्य नेटवर्क में उसका नाम लिखें।"
+
+msgid "That network name is too long."
+msgstr "नेटवर्क का नाम बहुत लंबा है।"
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "वाई-फ़ाई पासवर्ड में 8 से 63 कैरेक्टर होने चाहिए।"
+
+msgctxt "digit"
+msgid "0"
+msgstr "ज़ीरो"
+
+msgctxt "digit"
+msgid "1"
+msgstr "एक"
+
+msgctxt "digit"
+msgid "2"
+msgstr "दो"
+
+msgctxt "digit"
+msgid "3"
+msgstr "तीन"
+
+msgctxt "digit"
+msgid "4"
+msgstr "चार"
+
+msgctxt "digit"
+msgid "5"
+msgstr "पाँच"
+
+msgctxt "digit"
+msgid "6"
+msgstr "छह"
+
+msgctxt "digit"
+msgid "7"
+msgstr "सात"
+
+msgctxt "digit"
+msgid "8"
+msgstr "आठ"
+
+msgctxt "digit"
+msgid "9"
+msgstr "नौ"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "डैश"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "अंडरस्कोर"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "डॉट"
+
+msgctxt "spell"
+msgid "space"
+msgstr "स्पेस"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "एट द रेट"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "एक्सक्लेमेशन मार्क"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "हैश"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "एंड का निशान"
+
+msgctxt "spell"
+msgid "star"
+msgstr "स्टार"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "कैपिटल {letter}"
+
+msgctxt "spell"
+msgid ", "
+msgstr ", "
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "(?:वा[ईइय]\\s?-?\\s?(?:फ़|फ़|फ)ा[ईइय]|\\bwi\\s?-?\\s?fi\\b|\\bwify\\b|\\bwai\\s?-?\\s?fai\\b).{0,15}?(?:सेट\\s?-?\\s?अप|सेट\\s?(?:कर|करो|करें|करे|कीजिए|करिए|करना|करनी|करवा|कर\\s?दो|कर\\s?दीजिए)|कनेक्ट\\s?(?:कर|करो|करें|करे|कीजिए|करिए|करना|करनी|करवा|कर\\s?दो|कर\\s?दीजिए)|कॉन्(?:फ़|फ़|फ)िगर|कान्(?:फ़|फ़|फ)िगर|जो(?:ड़|ड़|ड)(?:ो|ना|नी|ें|िए|\\s?दो|\\s?दीजिए|\\s?लो|$|\\s)|बदल(?:ो|ना|नी|ें|िए|\\s?दो|\\s?दीजिए|$|\\s)|लगा(?:ओ|ना|नी|इए|एं|ें|\\s?दो|\\s?दीजिए)|ठीक\\s?(?:कर|करो|करें|करे|कीजिए|करिए|करना|करनी|करवा|कर\\s?दो|कर\\s?दीजिए)|सेटिंग\\s?(?:(?:कर|करो|करें|करे|कीजिए|करिए|करना|करनी|करवा|कर\\s?दो|कर\\s?दीजिए)|बदल)|चेंज|स्विच|\\bset\\s?up|\\bsetup|\\bset\\s?kar|\\bconnect\\s?kar|\\bjo[dr]|\\bbadal|\\bbadlo|\\blagao|\\blagana|\\bth[ei]e?k\\s?kar|\\bconfigure|\\bchange|\\bswitch)|(?:सेट\\s?-?\\s?अप|कॉन्(?:फ़|फ़|फ)िगर|\\bset\\s?up|\\bsetup|\\bconfigure).{0,10}?(?:वा[ईइय]\\s?-?\\s?(?:फ़|फ़|फ)ा[ईइय]|\\bwi\\s?-?\\s?fi\\b|\\bwify\\b|\\bwai\\s?-?\\s?fai\\b)"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "(?<![\\u0900-\\u097F])हा[ँं]?(?:\\s?जी)?(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])जी(?![\\u0900-\\u097F])(?!\\s*(?:नहीं|नही|ना))|(?<![\\u0900-\\u097F])ठीक\\s?है[ंँ]?(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])बि(?:ल्|ल)कुल(?![\\u0900-\\u097F])(?!\\s*न)|(?<![\\u0900-\\u097F])(?:ज़|ज़|ज)रूर(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])ओके(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])क्य(?:ों|ूँ|ूं|ो)\\s?नहीं(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])चल(?:ो|िए|ें)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])(?:शुरू|स्टार्ट)\\s?(?:करो|करें|कीजिए|करिए|कर\\s?दो|कर\\s?दीजिए|करते\\s?हैं)(?![\\u0900-\\u097F])|\\b(?:ha|haa|han|haan|haanji|haan\\s?ji|ji\\s?haan|th[ei]e?k\\s?hai|bilkul(?!\\s*nahi)|zaroor|jaroor|zarur|jarur|shuru\\s?karo|start\\s?karo|chalo|kyo?u?n?\\s?nahi)\\b"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "^(?!.*(?:क्य(?:ों|ूँ|ूं|ो)\\s?नहीं|\\bkyo?u?n?\\s?nahi))(?:.*?(?:(?<![\\u0900-\\u097F])न(?:हीं|हीँ|हिं|ही)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])नो(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])मत(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])रहने\\s?(?:दो|दीजिए|दें|दे)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])छो(?:ड़|ड़|ड)(?:ो|\\s?दो|\\s?दीजिए|\\s?दें)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])कै(?:ं|न्)?स(?:ि)?ल(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])रद्द(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])बाद\\s?में\\s?(?:करेंगे|करना|करते|कर\\s?लेंगे|देखेंगे)(?![\\u0900-\\u097F])|\\b(?:no|nope|nahi|nahin|nahee|nhi|mat|rehne\\s?do|rahne\\s?do|chho?d\\s?do|chho?do|cancel|radd)\\b)|\\W*ना(?![\\u0900-\\u097F])|\\W*na\\b|\\W*बाद\\s?में(?![\\u0900-\\u097F])|\\W*baad\\s?m(?:e|ein|ei)\\b)"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "(?<![\\u0900-\\u097F])कै(?:ं|न्)?स(?:ि)?ल(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])स्टॉप(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])रद्द(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])रोक(?:ो|िए|ें|\\s?दो|\\s?दीजिए)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])बंद\\s?(?:करो|करें|कीजिए|करिए|कर\\s?दो|कर\\s?दीजिए)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])रहने\\s?(?:दो|दीजिए|दें)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])छो(?:ड़|ड़|ड)(?:ो|\\s?दो|\\s?दीजिए|\\s?दें)(?![\\u0900-\\u097F])|(?<![\\u0900-\\u097F])बस\\s?(?:करो|कीजिए|करें)(?![\\u0900-\\u097F])|\\b(?:cancel|radd|roko|rok\\s?do|band\\s?karo|band\\s?kar\\s?do|rehne\\s?do|rahne\\s?do|chho?d\\s?do|chho?do|bas\\s?karo)\\b"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "(?<![\\u0900-\\u097F])(?:दोबारा|दुबारा|फिर\\s?से|फिर\\s?(?:बोलो|बोलिए|बताओ|बताइए)|एक\\s?बार\\s?और|दोहरा(?:ओ|इए|एं|ना)|रिपीट|पासवर्ड|नेटवर्क\\s?का\\s?नाम|नाम\\s?क्या|क्या\\s?(?:था|बोला|कहा)|समझ\\s?नहीं|सुनाई\\s?नहीं|धीरे)(?![\\u0900-\\u097F])|^\\W*(?:क्या|जी|हैं)\\W*$|\\b(?:dobara|dobaara|dubara|phir\\s?se|fir\\s?se|ek\\s?ba+r\\s?aur|repeat|password|kya\\s?tha|kya\\s?bola|samajh\\s?nahi|sunai\\s?nahi|dohrao|dohraiye|dheere|dhire)\\b|^\\W*kya\\W*$"
+
+# The language picker on the setup page (its accessible label).
+msgid "Language"
+msgstr "भाषा"

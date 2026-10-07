@@ -1625,6 +1625,53 @@ phase_sip() {
 # TEAPORT_ENABLE_LOCAL_AUDIO=1 seeds that file and enables the unit. A repair without it
 # leaves the enabled state alone: an enabled bridge is restarted onto the new brain venv,
 # and one the operator turned off (systemctl disable --now teaport-local-audio) stays off.
+# Wi-Fi setup (always laid down, started only on request): when the user says "set up
+# Wi-Fi" at the box, the brain starts teaport-wifi-setup (brain/teaport_brain/
+# wifi_setup.py), a temporary setup network teaport-ab12 with a page where a phone picks
+# the network and types its password. Three system pieces make that work as the run user:
+#   - the unit (never enabled; exits by itself);
+#   - a polkit rule letting the run user change NetworkManager's Wi-Fi (its scope and
+#     trade-off: packaging/wifi-setup/50-teaport-wifi-setup.rules.in);
+#   - NM shared-mode DNS that answers every name with the box, so phones open the page.
+#     Kept here in /usr/local/lib/teaport (root-owned: dnsmasq runs what a conf names) and
+#     copied into /etc/NetworkManager/dnsmasq-shared.d only while the unit runs — NM gives
+#     that directory to EVERY shared-mode dnsmasq, and dnsmasq cannot scope an option to
+#     one connection. A tmpfiles.d line removes a copy a power cut left behind. Known
+#     limit: another shared network started while setup runs answers 10.42.0.1 too.
+# The setup network's password is the flash-time one in $ETC/wifi-setup.env
+# (WIFI_SETUP_PASSWORD=<digits>, printed on the paper insert) — written by the image /
+# flashing step, never by this installer, so a repair leaves it alone. Without that file
+# each setup speaks fresh random digits.
+phase_wifi_setup() {
+  if ! have nmcli || [ ! -x /usr/sbin/iptables ]; then
+    log "wifi setup: needs NetworkManager (nmcli) and iptables (/usr/sbin/iptables) — skipped"
+    return 0
+  fi
+  log "wifi setup: unit + polkit rule + captive DNS (runs only when asked)"
+  have pkaction || warn "wifi setup: polkit not found — the run user cannot change NetworkManager's Wi-Fi without it"
+  render_unit teaport-wifi-setup.service.in teaport-wifi-setup.service
+  local rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules pkg="$HERE/packaging/wifi-setup" tmp
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> %s\n' 50-teaport-wifi-setup.rules.in "$rules"
+  else
+    tmp="$(mktemp)"
+    sed -e "s#@USER@#$RUN_USER#g" "$pkg/50-teaport-wifi-setup.rules.in" > "$tmp"
+    SUDO install -D -m 0644 -o root -g root "$tmp" "$rules"
+    rm -f "$tmp"
+  fi
+  SUDO install -D -m 0644 -o root -g root "$pkg/teaport-captive.conf" /usr/local/lib/teaport/teaport-captive.conf
+  SUDO install -D -m 0644 -o root -g root "$pkg/teaport-wifi-setup.tmpfiles" /etc/tmpfiles.d/teaport-wifi-setup.conf
+  # An earlier version of this phase installed the captive DNS file for good.
+  if ! systemctl is-active --quiet teaport-wifi-setup 2>/dev/null; then
+    SUDO rm -f /etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf
+  fi
+  # The setup page's teaport-ab12.local name; the captive page works without it.
+  if ! have avahi-publish; then
+    SUDO apt-get install -y avahi-utils \
+      || warn "avahi-utils did not install — Wi-Fi setup works, but only via the captive page / 10.42.0.1"
+  fi
+  SUDO systemctl daemon-reload
+}
+
 # The OLED face (opt-in): github.com/Teaspoon-AI/teaport-oled-avatar, a separate MIT repo
 # that owns its own setup. Its install.sh copies the script and a venv into
 # /opt/teaport-oled-avatar, probes the I2C buses for the panel and installs
@@ -1811,6 +1858,7 @@ main() {
   phase_frontdoor
   phase_bridge
   phase_local_audio
+  phase_wifi_setup
   phase_oled_avatar
   phase_verify
   usage_footer

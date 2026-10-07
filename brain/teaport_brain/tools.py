@@ -16,9 +16,9 @@
 #   - an on/off switch, TEAPORT_TOOL_<NAME>, with a per-tool default (docs/CONFIG.md
 #     "Tools"; all of today's tools default on, restart_session off);
 #   - what it NEEDS to work: "agent" (the co-resident OpenClaw gateway,
-#     TEAPORT_AGENT=openclaw, see agent_backend.py), "tts" (the session's voice), or
+#     TEAPORT_AGENT=openclaw, see agent_backend.py), "tts" (the session's voice),
 #     "client:<feature>" (the connected client can do it, announced on /talk as
-#     ?features=...);
+#     ?features=...), or "host:<part>" (something installed on this box: HOST_CHECKS);
 #   - its call timeout and the phrase the system prompt names it with.
 # active_tools() is the ONE place that decides which tools a session has: the schema
 # the model is offered, the handlers registered on the LLM and the tools the system
@@ -236,6 +236,18 @@ RESTART_SESSION = FunctionSchema(
         "empty context and a greeting. Only when the user explicitly asks to restart, "
         "reset, or start over. Call it straight away, with no line before it; when it "
         "returns, say one short goodbye — the restart happens once that has played."
+    ),
+    properties={},
+    required=[],
+)
+
+WIFI_SETUP = FunctionSchema(
+    name="wifi_setup",
+    description=(
+        "Connect this box to a different Wi-Fi network when the user asks to set up, "
+        "change, or switch its Wi-Fi (for example to a phone hotspot). It takes over "
+        "the conversation, asks the user to confirm and talks them through it on their "
+        "phone; say nothing yourself."
     ),
     properties={},
     required=[],
@@ -813,6 +825,8 @@ class ToolContext:
     client_features: frozenset = frozenset()
     followup: Callable | None = None
     gate: object = None
+    # The session's WifiSetupVoice (wifi_voice.py), which the wifi_setup tool hands to.
+    wifi_voice: object = None
 
 
 @dataclass(frozen=True)
@@ -848,6 +862,17 @@ class Tool:
 
 def _plain(handler):
     return lambda ctx: handler
+
+
+async def _wifi_setup(params: FunctionCallParams, voice=None):
+    if voice is None:
+        await params.result_callback({"ok": False, "error": "Wi-Fi setup is not available here"})
+        return
+    await voice.begin()
+    # The setup flow speaks from here on; a model turn would talk over it.
+    await params.result_callback(
+        {"ok": True, "note": "Wi-Fi setup has taken over and is asking the user to confirm."},
+        properties=no_inference())
 
 
 def _bind_ask_openclaw(ctx: ToolContext):
@@ -894,6 +919,10 @@ TOOLS: tuple[Tool, ...] = (
          env_flag("TEAPORT_TOOL_SWITCH_VOICE", True), frozenset({"tts"}),
          hint="switch_voice (change your speaking voice; if the user starts speaking a "
               "different language, switch to a voice for that language and reply in it)"),
+    Tool(WIFI_SETUP, lambda ctx: functools.partial(_wifi_setup, voice=ctx.wifi_voice),
+         env_flag("TEAPORT_TOOL_WIFI_SETUP", True),
+         frozenset({"client:local", "host:wifi_setup"}),
+         hint="wifi_setup (connect this box to a different Wi-Fi network when the user asks)"),
     Tool(SET_VOLUME, _plain(_client_tool("set_volume")),
          env_flag("TEAPORT_TOOL_SET_VOLUME", True), frozenset({"client:volume"}),
          hint="set_volume (make your speaker louder or quieter when the user asks)"),
@@ -925,7 +954,19 @@ def parse_client_features(raw: str | None) -> frozenset:
     return frozenset(names & CLIENT_FEATURES)
 
 
+def _wifi_setup_installed() -> bool:
+    from teaport_brain import wifi_voice
+    return wifi_voice.available()
+
+
+# "host:<part>" needs: is that part installed on this box. Checked per session.
+HOST_CHECKS: dict[str, Callable[[], bool]] = {"wifi_setup": _wifi_setup_installed}
+
+
 def _has(need: str, ctx: ToolContext) -> bool:
+    if need.startswith("host:"):
+        check = HOST_CHECKS.get(need.split(":", 1)[1])
+        return bool(check and check())
     if need == "agent":
         return HAS_AGENT
     if need == "tts":
@@ -1072,7 +1113,7 @@ def _wrap(name, handler, lang_fn):
 
 
 def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
-                   client_features: frozenset = frozenset()) -> None:
+                   client_features: frozenset = frozenset(), wifi_voice=None) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `followup`, if
     given, is an async `(request, text|None) -> None` injector that speaks a background
@@ -1089,7 +1130,8 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
         def lang_fn():
             return (lang or "en-us").split("-")[0]
     ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
-                      followup=followup if HAS_AGENT else None, gate=gate)
+                      followup=followup if HAS_AGENT else None, gate=gate,
+                      wifi_voice=wifi_voice)
     for tool in active_tools(ctx):
         kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}
         llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn), **kw)

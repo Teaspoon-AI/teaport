@@ -1,0 +1,267 @@
+# teaport — Russian strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+#
+# Translated by a model, reviewed by a second model (LQA, 2026-10-07). A native speaker's review is still recommended.
+#
+# Conventions: the device addresses the user as «вы» (as Apple, Google and Yandex do in
+# setup); the quoted command words («повтори», «отмена») are what the user says to the
+# device, and users address assistants with «ты». Spoken lines say «вай-фай» and decline
+# it (вай-фая); the page writes «Wi-Fi», undeclined. No gendered past-tense verbs for
+# the device: present/future tense or impersonal forms.
+msgid ""
+msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: ru\n"
+
+msgid "Do you want to set up Wi-Fi? I'll go offline for a few minutes while you do it on your phone. Say yes or no."
+msgstr "Хотите настроить вай-фай? На несколько минут я останусь без интернета, пока вы будете всё настраивать на телефоне. Скажите «да» или «нет»."
+
+msgid "Wi-Fi setup is already running."
+msgstr "Настройка вай-фая уже идёт."
+
+msgid "Okay. Give me a moment to look for networks."
+msgstr "Хорошо. Минутку, поищу доступные сети."
+
+msgid "Sorry, I couldn't start Wi-Fi setup on this box."
+msgstr "Извините, на этом устройстве не получилось запустить настройку вай-фая."
+
+msgid "Okay, I've stopped Wi-Fi setup and put things back as they were."
+msgstr "Хорошо, настройка вай-фая остановлена, прежние настройки восстановлены."
+
+msgid "Wi-Fi setup didn't start. Please try again in a moment."
+msgstr "Настройка вай-фая не запустилась. Попробуйте ещё раз чуть позже."
+
+msgid "I'm still waiting for you on the setup page."
+msgstr "Я всё ещё жду вас на странице настройки."
+
+msgid "That didn't work: {reason}."
+msgstr "Не получилось: {reason}."
+
+msgid "Got it. I'm joining {network}. Switch your phone back to it."
+msgstr "Принято. Подключаюсь к {network}. Переключите телефон обратно на эту сеть."
+
+msgid "I'm connected to {network}, and I'm online again."
+msgstr "Готово, подключение к {network} установлено, и интернет снова есть."
+
+msgid "Wi-Fi setup timed out, so I've put things back as they were."
+msgstr "Время на настройку вай-фая истекло, прежние настройки восстановлены."
+
+msgid "Wi-Fi setup stopped: {reason}."
+msgstr "Настройка вай-фая прервалась: {reason}."
+
+# Used only as {network} in the spoken "Подключаюсь к {network}" / "подключение к
+# {network}" (every {network} slot follows «к»), hence the dative case.
+msgid "your network"
+msgstr "вашей сети"
+
+msgid "something went wrong"
+msgstr "что-то пошло не так"
+
+msgid "Okay, never mind."
+msgstr "Хорошо, тогда не будем."
+
+msgid "Say yes to start Wi-Fi setup, or no."
+msgstr "Скажите «да», чтобы начать настройку вай-фая, или «нет»."
+
+msgid "I'm in Wi-Fi setup. Say repeat to hear the details again, or cancel to stop."
+msgstr "Сейчас идёт настройка вай-фая. Скажите «повтори», чтобы услышать данные ещё раз, или «отмена», чтобы её прервать."
+
+msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
+msgstr "На телефоне подключитесь к сети вай-фай {ssid}. Пароль такой: {password}. Страница настройки должна открыться сама. Если не откроется, перейдите по адресу {url}."
+
+msgid "the saved settings for it did not work"
+msgstr "сохранённые настройки для этой сети не подошли"
+
+msgid "the password did not work"
+msgstr "пароль не подошёл"
+
+msgid "the network was not found"
+msgstr "сеть не найдена"
+
+msgid "it would not connect"
+msgstr "соединение не установилось"
+
+msgid "it joined but there is no internet through it"
+msgstr "подключение установлено, но доступа к интернету нет"
+
+msgid "this box has no Wi-Fi device"
+msgstr "в этом устройстве нет модуля вай-фай"
+
+msgid "the setup network would not start"
+msgstr "сеть для настройки не запустилась"
+
+msgid "the setup page could not start"
+msgstr "страница настройки не запустилась"
+
+msgid "open"
+msgstr "открытая"
+
+msgid "Teaport Wi-Fi setup"
+msgstr "Настройка Wi-Fi для Teaport"
+
+msgid "Connect to Wi-Fi"
+msgstr "Подключение к Wi-Fi"
+
+msgid "Pick your network and type its password. Teaport will leave this setup network and join yours, and say out loud whether that worked."
+msgstr "Выберите свою сеть и введите пароль. Teaport отключится от этой сети настройки, подключится к вашей и скажет вслух, удалось ли подключиться."
+
+msgid "No networks found — use Other."
+msgstr "Сети не найдены — выберите «Другая сеть»."
+
+msgid "Other (hidden) network"
+msgstr "Другая сеть (скрытая)"
+
+msgid "Network name"
+msgstr "Имя сети"
+
+msgid "Password"
+msgstr "Пароль"
+
+msgid "Show password"
+msgstr "Показать пароль"
+
+msgid "Connect"
+msgstr "Подключиться"
+
+msgid "Teaport is joining"
+msgstr "Teaport подключается"
+
+msgid "Joining {network}…"
+msgstr "Подключение к {network}…"
+
+msgid "Teaport is leaving this setup network now. Switch your phone back to {network}. Teaport will say out loud whether it connected; if it could not, the setup network comes back and you can try again."
+msgstr "Teaport сейчас отключается от этой сети настройки. Снова подключите телефон к {network}. Teaport скажет вслух, удалось ли подключиться; если нет, сеть настройки появится снова и можно будет попробовать ещё раз."
+
+msgid "Could not join {network}: {reason}. Try again."
+msgstr "Не удалось подключиться к {network}: {reason}. Попробуйте ещё раз."
+
+msgid "Pick a network, or type its name under Other."
+msgstr "Выберите сеть или введите её имя в пункте «Другая сеть»."
+
+msgid "That network name is too long."
+msgstr "Имя сети слишком длинное."
+
+msgid "Wi-Fi passwords are 8 to 63 characters."
+msgstr "Пароль Wi-Fi должен содержать от 8 до 63 символов."
+
+msgctxt "digit"
+msgid "0"
+msgstr "ноль"
+
+msgctxt "digit"
+msgid "1"
+msgstr "один"
+
+msgctxt "digit"
+msgid "2"
+msgstr "два"
+
+msgctxt "digit"
+msgid "3"
+msgstr "три"
+
+msgctxt "digit"
+msgid "4"
+msgstr "четыре"
+
+msgctxt "digit"
+msgid "5"
+msgstr "пять"
+
+msgctxt "digit"
+msgid "6"
+msgstr "шесть"
+
+msgctxt "digit"
+msgid "7"
+msgstr "семь"
+
+msgctxt "digit"
+msgid "8"
+msgstr "восемь"
+
+msgctxt "digit"
+msgid "9"
+msgstr "девять"
+
+msgctxt "spell"
+msgid "dash"
+msgstr "дефис"
+
+msgctxt "spell"
+msgid "underscore"
+msgstr "нижнее подчёркивание"
+
+msgctxt "spell"
+msgid "dot"
+msgstr "точка"
+
+msgctxt "spell"
+msgid "space"
+msgstr "пробел"
+
+msgctxt "spell"
+msgid "at sign"
+msgstr "собака"
+
+msgctxt "spell"
+msgid "exclamation mark"
+msgstr "восклицательный знак"
+
+msgctxt "spell"
+msgid "hash"
+msgstr "решётка"
+
+msgctxt "spell"
+msgid "ampersand"
+msgstr "амперсанд"
+
+msgctxt "spell"
+msgid "star"
+msgstr "звёздочка"
+
+msgctxt "spell"
+msgid "capital {letter}"
+msgstr "заглавная {letter}"
+
+msgctxt "spell"
+msgid ", "
+msgstr ", "
+
+# the user means: start
+msgctxt "pattern"
+msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgstr "\\b(?:настро(?:ить|й|йте|им|йка|йку|йки|йке)|подключи(?:ть|ться|сь|те|тесь|м|мся)?|переключи(?:ть|ться|сь|те|тесь|м)?|смени(?:ть|те|м)?|смена|смену|поменя(?:ть|й|йте|ем)|измени(?:ть|те)?)\\b(?:\\s+[\\w-]+){0,3}?\\s+(?:wi[- ]?fi|вай[- ]?фа\\w*)|(?:wi[- ]?fi|вай[- ]?фа\\w*)(?:\\s+\\w+)?\\s+(?:настро(?:ить|й|йте|им|йка|йку)|подключи(?:ть|ться|сь|те|тесь|м|мся)?)\\b"
+
+# the user means: yes
+msgctxt "pattern"
+msgid "\\b(?:yes|yeah|yep|sure|okay|ok|go ahead|do it|please|start)\\b"
+msgstr "\\b(?:да|ага|угу|конечно|давай(?:те)?(?!\\s+не\\b)|хорошо|ладно|окей|ок|согласен|согласна|разумеется|пожалуйста|поехали|вперёд|вперед|начина(?:й|йте|ем)|начни(?:те)?|запуска(?:й|йте)|без проблем|нет проблем|почему (?:бы )?(?:и )?нет)\\b"
+
+# the user means: no
+msgctxt "pattern"
+msgid "\\b(?:no|nope|don't|do not|never ?mind|cancel|stop)\\b"
+msgstr "\\b(?:(?<!почему )(?<!бы )(?<!и )нет(?!\\s+проблем)|неа|не надо|не нужно|не хочу|не будем|не стоит|не сейчас|не сегодня|потом|позже|попозже|в другой раз|ни за что|отмен\\w*|забудь\\w*|стоп|хватит|неважно|не важно)\\b"
+
+# the user means: cancel
+msgctxt "pattern"
+msgid "\\b(?:cancel|stop|quit|exit|abort|never ?mind)\\b"
+msgstr "\\b(?:отмен\\w*|стоп|хватит|прекрати(?:ть|те)?|останови(?:сь|те|тесь|ть)?|перестань(?:те)?|прерви(?:те)?|прервать|выход|выйти|выйди(?:те)?|забудь\\w*|не надо)\\b"
+
+# the user means: repeat
+msgctxt "pattern"
+msgid "\\b(?:repeat|again|what was|what's the|password|network name|say that)\\b"
+msgstr "\\b(?:повтор\\w*|ещё раз|еще раз|снова|заново|пароль|имя сети|название сети|как называется|что ты сказал\\w*|что вы сказали|не расслышал\\w*|не услышал\\w*|не понял\\w*)\\b"
+
+# The language picker on the setup page (its accessible label).
+msgid "Language"
+msgstr "Язык"

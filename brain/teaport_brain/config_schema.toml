@@ -64,6 +64,12 @@ owner = "installer+operator"
 services = ["teaport-local-audio"]
 apply = "systemctl restart teaport-local-audio (ends the local session; it redials the brain at once)."
 
+[stores.wifi_setup_env]
+path = "/etc/teaport/wifi-setup.env"
+owner = "the image / flashing step"
+services = ["teaport-wifi-setup"]
+apply = "Read at each Wi-Fi setup (the unit runs only on request): nothing to restart. Written when the drive is flashed, so the paper insert can print the password; install.sh never writes it."
+
 [stores.secrets]
 path = "~/.config/teaport"
 owner = "operator"
@@ -99,6 +105,11 @@ blurb = "TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; 
 id = "tools"
 title = "Tools"
 blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume and restart_session, a client that can do it itself (the local audio bridge announces both). A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions."
+
+[[groups]]
+id = "wifi_setup"
+title = "Wi-Fi setup"
+blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline. The wifi_setup tool (Tools) is its switch. These two are flash-time settings for the paper insert."
 
 [[groups]]
 id = "talk_client"
@@ -1050,7 +1061,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
-source = "tools.py:369"
+source = "tools.py:381"
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"
@@ -1063,7 +1074,7 @@ default = 45
 read = "startup"
 tier = "tuning"
 help = "How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves."
-source = "tools.py:364"
+source = "tools.py:376"
 
 [[settings]]
 name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
@@ -1076,7 +1087,7 @@ default = 55
 read = "startup"
 tier = "tuning"
 help = "The function-call timeout for ask_openclaw. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
-source = "tools.py:374"
+source = "tools.py:386"
 
 [[settings]]
 name = "TEAPORT_ASYNC_CONSULT_TIMEOUT"
@@ -1089,7 +1100,7 @@ default = 130
 read = "startup"
 tier = "tuning"
 help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
-source = "tools.py:387"
+source = "tools.py:399"
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"
@@ -1128,7 +1139,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:263"
+source = "agent_session.py:264"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1246,7 +1257,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The machine's live free memory, CPU load and speech-engine decode speed."
-source = "tools.py:864"
+source = "tools.py:889"
 
 [[settings]]
 name = "TEAPORT_TOOL_GET_CURRENT_TIME"
@@ -1257,7 +1268,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The local date and time."
-source = "tools.py:867"
+source = "tools.py:892"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_SEARCH"
@@ -1268,7 +1279,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:870"
+source = "tools.py:895"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_FETCH"
@@ -1279,7 +1290,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:873"
+source = "tools.py:898"
 
 [[settings]]
 name = "TEAPORT_TOOL_SEARCH_MEMORY"
@@ -1290,7 +1301,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:876"
+source = "tools.py:901"
 
 [[settings]]
 name = "TEAPORT_TOOL_REMEMBER"
@@ -1301,7 +1312,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:879"
+source = "tools.py:904"
 
 [[settings]]
 name = "TEAPORT_TOOL_ASK_OPENCLAW"
@@ -1312,7 +1323,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
-source = "tools.py:886"
+source = "tools.py:911"
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"
@@ -1323,7 +1334,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "List the speaking voices."
-source = "tools.py:891"
+source = "tools.py:916"
 
 [[settings]]
 name = "TEAPORT_TOOL_SWITCH_VOICE"
@@ -1334,7 +1345,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Change the speaking voice (and with it the reply language)."
-source = "tools.py:894"
+source = "tools.py:919"
 
 [[settings]]
 name = "TEAPORT_TOOL_SET_VOLUME"
@@ -1345,7 +1356,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions."
-source = "tools.py:898"
+source = "tools.py:927"
 
 [[settings]]
 name = "TEAPORT_TOOL_RESTART_SESSION"
@@ -1356,10 +1367,21 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge)."
-source = "tools.py:903"
+source = "tools.py:932"
 
 # ---- talk client context notes
 
+
+[[settings]]
+name = "TEAPORT_TOOL_WIFI_SETUP"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
+source = "tools.py:923"
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"
@@ -2036,4 +2058,26 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:151"
+source = "local_audio.py:152"
+
+# ================================================================ wifi-setup.env
+
+[[settings]]
+name = "WIFI_SETUP_PASSWORD"
+store = "wifi_setup_env"
+group = "wifi_setup"
+type = "secret"
+read = "startup"
+tier = "installer"
+help = "The setup network's WPA2 password, written at flash time so the paper insert can print it. 8 to 63 characters, each an ASCII letter, a digit, a space or one of - _ . @ ! # & * (the symbols the voice can name when it spells the password). Digits are easiest to say and type. Unset (or invalid): fresh random digits each setup, spoken aloud."
+source = "wifi_setup.py:76"
+
+[[settings]]
+name = "WIFI_SETUP_SSID"
+store = "wifi_setup_env"
+group = "wifi_setup"
+type = "string"
+read = "startup"
+tier = "installer"
+help = "The setup network's name, for an insert printed before the MAC is known. Unset: teaport- and the last four hex digits of the Wi-Fi MAC."
+source = "wifi_setup.py:77"

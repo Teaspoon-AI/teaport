@@ -1,0 +1,55 @@
+# teaport — English strings for what the brain says and shows without the LLM
+# (Wi-Fi setup). Source: English msgids in wifi_voice.py, wifi_setup.py and wifi.py.
+# Edit here (any PO editor), then: python -m teaport_brain.i18n  (recompiles the .mo).
+#
+# Contexts: "digit" — how a digit is said; "spell" — symbol names, the separator
+# between spelled characters, and how an uppercase letter is said; "pattern" — a
+# Python regex (searched, case-insensitive) for the user's words meaning start / yes /
+# no / cancel / repeat. English phrases are always understood as well.
+# Placeholders like {network} must be kept as they are.
+msgid ""
+msgstr ""
+"Project-Id-Version: teaport\n"
+"PO-Revision-Date: 2026-10-07 00:00+0000\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Language: en\n"
+
+msgctxt "digit"
+msgid "0"
+msgstr "zero"
+
+msgctxt "digit"
+msgid "1"
+msgstr "one"
+
+msgctxt "digit"
+msgid "2"
+msgstr "two"
+
+msgctxt "digit"
+msgid "3"
+msgstr "three"
+
+msgctxt "digit"
+msgid "4"
+msgstr "four"
+
+msgctxt "digit"
+msgid "5"
+msgstr "five"
+
+msgctxt "digit"
+msgid "6"
+msgstr "six"
+
+msgctxt "digit"
+msgid "7"
+msgstr "seven"
+
+msgctxt "digit"
+msgid "8"
+msgstr "eight"
+
+msgctxt "digit"
+msgid "9"
+msgstr "nine"

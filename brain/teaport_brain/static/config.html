@@ -171,6 +171,16 @@
   dialog::backdrop { background: rgba(2, 6, 23, .35); }
   dialog ul { margin: 12px 0 0; padding-left: 20px; color: var(--muted); }
   dialog .actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 24px; flex-wrap: wrap; }
+
+  /* Wi-Fi */
+  .wifi-now { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin: 16px 0 0; }
+  .wifi-actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 16px 0 0; }
+  .wifi-nets { display: grid; gap: 8px; margin: 20px 0 0; max-width: 640px; }
+  .wifi-net { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: var(--surface); border: 1px solid var(--border-strong); border-radius: var(--control-radius); cursor: pointer; }
+  .wifi-net span { flex: 1; overflow-wrap: anywhere; } .wifi-net small { font-family: var(--mono); font-size: 13px; color: var(--faint); }
+  .wifi-form { display: grid; gap: 10px; max-width: 640px; margin: 16px 0 0; }
+  .wifi-form input { height: var(--btn-height); font: inherit; padding: 0 16px; border: 1px solid var(--border-strong); border-radius: var(--control-radius); background: var(--surface); color: var(--text); }
+  .wifi-msg { margin: 14px 0 0; }
 </style>
 </head>
 <body>
@@ -208,6 +218,7 @@
         </div>
         <div id="banners"></div>
       </header>
+      <section class="group" id="g-wifi" hidden></section>
       <div id="groups"></div>
       <footer class="foot">
         Rendered from <span class="mono">config_schema.toml</span> — the same table <span class="mono">docs/CONFIG.md</span> is generated from. Every setting is explained at length where it is read; the <span class="mono">file:line</span> under each one is that place.
@@ -400,10 +411,87 @@
         ...rows.map((r) => renderRow(r, writable)));
       groupsEl.append(sec);
     }
+    index.prepend(h('a', { href: '#g-wifi', 'data-group': 'wifi' }, 'Wi-Fi'));
     applyFilter();
     renderServices();
     renderBanners();
     refreshSavebar();
+  };
+
+  // ---- Wi-Fi (online: scan + switch, or start the offline setup network)
+  const confirmDialog = (title, items, okLabel) => new Promise((resolve) => {
+    const dlg = $('#dlg');
+    $('#dlgtitle').textContent = title;
+    $('#dlglist').replaceChildren(...items.map((m) => h('li', {}, m)));
+    const ok = $('#dlgok'), label = ok.textContent;
+    ok.textContent = okLabel;
+    const done = (v) => { ok.textContent = label; dlg.close(); resolve(v); };
+    ok.onclick = () => done(true);
+    $('#dlgcancel').onclick = () => done(false);
+    dlg.onclose = () => { ok.textContent = label; resolve(false); };
+    dlg.showModal();
+  });
+
+  const renderWifi = async (msg) => {
+    const sec = $('#g-wifi');
+    let w;
+    try { w = (await api('/api/wifi')).body; } catch (e) { sec.hidden = true; return; }
+    sec.hidden = false;
+    const head = h('div', { class: 'group-head' }, h('h2', {}, 'Wi-Fi'), w.device ? h('span', { class: 'file' }, w.device) : null);
+    if (!w.available) { sec.replaceChildren(head, h('p', { class: 'group-blurb' }, 'This box has no Wi-Fi device.')); return; }
+    const now = h('div', { class: 'wifi-now' },
+      h('span', { class: 'svc ' + (w.online ? 'active' : 'failed') }, w.online ? 'online' : 'offline'),
+      w.connection ? h('span', {}, 'Connected to ', h('strong', {}, w.connection)) : h('span', {}, 'Not connected to a network.'));
+    const nets = h('div', { class: 'wifi-nets' });
+    const form = h('form', { class: 'wifi-form', hidden: true });
+    const pw = h('input', { type: 'password', placeholder: 'Password (leave empty for a saved or open network)', autocomplete: 'off', 'aria-label': 'Wi-Fi password' });
+    const other = h('input', { type: 'text', placeholder: 'Hidden network name', autocomplete: 'off', 'aria-label': 'Hidden network name', hidden: true });
+    const out = h('p', { class: 'wifi-msg', 'aria-live': 'polite' }, msg || '');
+    const scanBtn = h('button', { class: 'btn-ghost', type: 'button' }, h('span', { class: 'btn-label' }, 'Scan for networks'));
+    const setupBtn = h('button', { class: 'btn-ghost', type: 'button', hidden: !w.setup_installed }, h('span', { class: 'btn-label' }, 'Start setup network'));
+    form.append(other, pw, h('div', {}, h('button', { class: 'btn-primary', type: 'submit' }, 'Connect')));
+    scanBtn.onclick = async () => {
+      scanBtn.disabled = true; out.textContent = 'Scanning…';
+      try {
+        const { networks } = (await api('/api/wifi/scan', { method: 'POST' })).body;
+        nets.replaceChildren(...networks.map((n, i) => h('label', { class: 'wifi-net' },
+          h('input', { type: 'radio', name: 'wifi-ssid', value: n.ssid, checked: i === 0, onchange: () => { other.hidden = true; } }),
+          h('span', {}, n.ssid), h('small', {}, (n.open ? 'open' : 'secured') + ' · ' + n.signal + '%'))),
+          h('label', { class: 'wifi-net' }, h('input', { type: 'radio', name: 'wifi-ssid', value: '', checked: !networks.length, onchange: () => { other.hidden = false; other.focus(); } }), h('span', {}, 'Other (hidden) network')));
+        other.hidden = !!networks.length;
+        form.hidden = false; out.textContent = networks.length ? '' : 'No networks found.';
+      } catch (e) { out.textContent = 'Scan failed: ' + e.message; }
+      finally { scanBtn.disabled = false; }
+    };
+    form.onsubmit = async (e) => {
+      e.preventDefault();
+      const picked = $('input[name="wifi-ssid"]:checked', nets);
+      const ssid = picked && picked.value ? picked.value : other.value.trim();
+      if (!ssid) { out.textContent = 'Pick a network, or type its name.'; return; }
+      const sure = await confirmDialog('Switch this box to ' + ssid + '?', [
+        'If this browser reaches the box over Wi-Fi, it may lose the page while the box changes networks.',
+        'If the new network does not work, the box goes back to the one it is on now.'], 'Switch');
+      if (!sure) return;
+      out.textContent = 'Switching to ' + ssid + '… this can take up to a minute.';
+      try {
+        const r = (await api('/api/wifi/connect', { method: 'POST', body: JSON.stringify({ ssid, password: pw.value, hidden: !(picked && picked.value) }) })).body;
+        pw.value = '';
+        renderWifi(r.ok ? 'Connected to ' + ssid + '.' : 'Could not switch to ' + ssid + ': ' + r.error + '. The box went back to its previous network.');
+      } catch (err) {
+        out.textContent = 'Lost the box while it switched networks. If it joined ' + ssid + ', find it there (teaport.local); if not, it went back to its old network.';
+      }
+    };
+    setupBtn.onclick = async () => {
+      const sure = await confirmDialog('Start the setup network?', [
+        'The box leaves its current network and opens its own, which a phone joins to pick a network. This page loses the box until it is back.',
+        'The box says the setup network name and password out loud. It gives up after ten minutes and goes back to its old network.'], 'Start setup');
+      if (!sure) return;
+      try { await api('/api/wifi/setup', { method: 'POST' }); out.textContent = 'Starting the setup network — listen to the box for its name and password.'; }
+      catch (e) { out.textContent = 'Could not start it: ' + e.message; }
+    };
+    sec.replaceChildren(head,
+      h('p', { class: 'group-blurb' }, 'Switch the network this box uses. A switch that does not get online is undone. With no network at all, say "set up Wi-Fi" to the box instead.'),
+      now, h('div', { class: 'wifi-actions' }, scanBtn, setupBtn), nets, form, out);
   };
 
   const renderServices = () => {
@@ -545,6 +633,7 @@
       data = res.body;
       $('#gate').hidden = true; $('#page').hidden = false;
       render();
+      renderWifi();
       if (banner) renderBanners(banner);
       document.querySelectorAll('section.group').forEach((s) => io.observe(s));
     } catch (e) {

@@ -1,0 +1,60 @@
+# teaport-wifi-setup — Wi-Fi setup on demand (brain/teaport_brain/wifi_setup.py): a
+# temporary WPA2 setup network (teaport-ab12) with a page where a phone
+# picks the box's Wi-Fi and types its password. Never enabled: the brain starts it when
+# the user says "set up Wi-Fi" (wifi_voice.py, through config_apply's sudoers line) and
+# it exits by itself — connected, cancelled, or after ten minutes. Rendered by
+# install.sh (@USER@/@PREFIX@/@ETC@).
+#
+# The password is the flash-time one in @ETC@/wifi-setup.env (WIFI_SETUP_PASSWORD, for
+# the paper insert; WIFI_SETUP_SSID overrides the name) if present, else fresh random
+# digits per run. NetworkManager lets @USER@ make these changes through
+# /etc/polkit-1/rules.d/50-teaport-wifi-setup.rules; NM's dnsmasq answers every name
+# with the box on the setup network (/etc/NetworkManager/dnsmasq-shared.d/
+# teaport-captive.conf, put there below for as long as this runs), which is what makes a
+# phone open the page by itself.
+#
+# 10.42.0.1 below is wifi.AP_ADDRESS, which the code pins in the setup network's profile
+# (ipv4.addresses): the redirect and the captive DNS answer need it before the network
+# exists. Change them together.
+[Unit]
+Description=teaport Wi-Fi setup (temporary setup network + phone page)
+After=NetworkManager.service
+
+[Service]
+Type=simple
+User=@USER@
+EnvironmentFile=-@ETC@/wifi-setup.env
+# status.json for the brain; kept after the run so it can read how it ended.
+RuntimeDirectory=teaport-wifi-setup
+RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
+# Captive-portal probes go to port 80, which is the front door's (Caddy). While this
+# runs, port 80 on the setup network's address is redirected to the page (PAGE_PORT in
+# wifi_setup.py); "+" runs these as root, the page itself does not need to be. iptables,
+# not an nft rule: the Jetson kernel has no nft redirect (CONFIG_NFT_REDIR is off), but
+# the xt REDIRECT target iptables-nft uses is there.
+ExecStartPre=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports 7869
+ExecStartPre=+/usr/sbin/iptables -t nat -A PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports 7869
+# Captive DNS only while this runs. NM gives every shared-mode dnsmasq the same
+# dnsmasq-shared.d, and a dnsmasq option cannot be scoped to one connection, so a
+# permanent file would answer 10.42.0.1 for every name on any other shared network the
+# box ever runs (a hotspot, shared Ethernet). Known limit: one started WHILE setup runs
+# gets it too. The source is root-owned — dnsmasq would run what a conf file names. A
+# copy left by a crash or power cut mid-setup is removed at boot (tmpfiles.d, install.sh).
+ExecStartPre=-+/usr/bin/install -D -m 0644 /usr/local/lib/teaport/teaport-captive.conf /etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf
+NoNewPrivileges=yes
+SyslogIdentifier=teaport-wifi-setup
+# Venv resolved once, as in teaport-sip-brain.service ($$ = a literal $ to systemd).
+ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.wifi_setup'
+# A stop (SIGTERM) makes the code take the setup network down, undo a half-done join and
+# ask for the old connection back; it needs a moment for nmcli, not systemd's 90 s.
+TimeoutStopSec=60
+# Belt and braces: never leave the setup network, the redirect or the captive DNS behind
+# (the code takes the network down itself).
+ExecStopPost=-/usr/bin/nmcli connection down id teaport-setup
+ExecStopPost=-/usr/bin/nmcli connection delete id teaport-setup
+ExecStopPost=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports 7869
+ExecStopPost=-+/bin/rm -f /etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf
+# The code gives up after ten minutes; this is the hard stop above it.
+RuntimeMaxSec=900
+Restart=no
