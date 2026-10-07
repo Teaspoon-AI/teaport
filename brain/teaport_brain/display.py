@@ -62,8 +62,9 @@ class Screen:
 
     # Every send is made under the lock (they never block): a refresh cannot land after
     # the clear or the newer show that replaced it.
-    def show(self, title: str, lines: list[str], secs: float | None = None) -> None:
-        """Up for `secs` seconds, or (None) held until clear() or close()."""
+    def show(self, title: str, lines: list[str], secs: float | None = None) -> bool:
+        """Up for `secs` seconds, or (None) held until clear() or close(). True when the
+        avatar took it (it is running), so the voice can say where to look."""
         event = {"screen": {"id": self.id, "title": title, "lines": list(lines),
                             "ttl": secs if secs is not None else HOLD_TTL_SECS}}
         with self._lock:
@@ -72,7 +73,7 @@ class Screen:
                 self._thread = threading.Thread(target=self._keep_up, daemon=True,
                                                 name=f"screen-{self.id}")
                 self._thread.start()
-            self._send(event, self._path)
+            return bool(self._send(event, self._path))
 
     def clear(self) -> None:
         with self._lock:

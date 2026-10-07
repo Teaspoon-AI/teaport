@@ -217,9 +217,12 @@ def instructions(status: dict, t: i18n.T) -> str:
         # The setup network's address, digit by digit: "one zero dot four two dot ...".
         url = f" {t.p('spell', 'dot')} ".join(
             " ".join(t.p("digit", d) for d in part) for part in "10.42.0.1".split("."))
-    return t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
+    said = t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
                "A setup page should open by itself. If it doesn't, go to {url}.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)
+    if status.get("screen"):  # the box's display has them too (wifi_setup.py, display.py)
+        said += " " + t._("You can also read these details on my screen.")
+    return said
 
 
 # ------------------------------------------------------------------ taken transcripts

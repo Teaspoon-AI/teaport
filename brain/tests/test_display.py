@@ -50,7 +50,7 @@ def test_close_takes_a_held_screen_down_and_stops_for_good():
 
 def test_no_avatar_is_not_an_error():
     assert display.send({"screen": {"id": "t"}}, "/nonexistent/face.sock") is False
-    display.Screen("t", path="/nonexistent/face.sock").show("T", ["x"], secs=1)
+    assert display.Screen("t", path="/nonexistent/face.sock").show("T", ["x"], secs=1) is False
 
 
 def test_the_event_reaches_a_listening_socket():
@@ -58,7 +58,7 @@ def test_the_event_reaches_a_listening_socket():
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
         s.bind(path)
         s.settimeout(2)
-        display.Screen("wifi-setup", path=path).show("Wi-Fi setup", ["Network  x"], secs=5)
+        assert display.Screen("wifi-setup", path=path).show("Wi-Fi setup", ["Network  x"], secs=5)
         ev = json.loads(s.recv(4096))
     assert ev == {"screen": {"id": "wifi-setup", "title": "Wi-Fi setup",
                              "lines": ["Network  x"], "ttl": 5}}

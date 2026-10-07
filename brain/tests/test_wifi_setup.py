@@ -436,16 +436,19 @@ def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
     assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
 
 
-def _screen():
+def _screen(avatar=True):
+    """A Screen recording what it sends; `avatar`: whether a daemon takes it."""
     sent = []
-    return display.Screen("wifi-setup", send=lambda ev, path: sent.append(ev["screen"])), sent
+    return display.Screen("wifi-setup",
+                          send=lambda ev, path: sent.append(ev["screen"]) or avatar), sent
 
 
 def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while():
     screen, sent = _screen()
-    rc, _ = _run_setup(FakeNM([(True, "", "home")]), screen=screen,
-                       post=[{"ssid": "home", "password": "homepass1"}])
+    rc, seen = _run_setup(FakeNM([(True, "", "home")]), screen=screen,
+                          post=[{"ssid": "home", "password": "homepass1"}])
     assert rc == 0
+    assert seen[1]["phase"] == "ap_up" and seen[1]["screen"] is True   # the voice says so
     shown = [s for s in sent if s.get("lines")]
     assert shown[0]["lines"] == ["Network  teaport-9e35", "Password  47190352",
                                  "http://teaport-9e35.local"]
@@ -455,6 +458,14 @@ def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while
     assert sent[-1]["lines"] == ["Connected to", "home"]
     assert sent[-1]["ttl"] == ws.CONNECTED_SCREEN_SECS
     assert "homepass1" not in json.dumps(sent)       # the user's own password: never
+
+
+def test_no_avatar_and_the_status_says_no_screen():
+    screen, _ = _screen(avatar=False)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    assert seen[1]["phase"] == "ap_up" and seen[1]["screen"] is False
+    _, seen = _run_setup(FakeNM([]), minutes=0.01)                     # no Screen at all
+    assert seen[1]["screen"] is False
 
 
 @pytest.mark.parametrize("join, minutes", [([ws.Stopped()], 1.0), ([], 0.01)])
@@ -552,6 +563,14 @@ def test_the_details_are_spelled_for_the_voice():
     assert wv.spell("Tito2017", EN) == "capital T, I, T, O, two, zero, one, seven"
     text = wv.instructions({"ssid": "teaport-9e35", "password": "47190352"}, EN)
     assert "teaport, dash, nine, E, three, five" in text and "teaport dash nine E three five dot local" in text
+    assert "screen" not in text                      # no display: not mentioned
+
+
+def test_the_voice_points_at_the_screen_only_when_it_got_there():
+    st = {"ssid": "teaport-9e35", "password": "47190352"}
+    assert wv.instructions(dict(st, screen=True), EN).endswith(
+        " You can also read these details on my screen.")
+    assert "screen" not in wv.instructions(dict(st, screen=False), EN)
 
 
 @pytest.mark.parametrize("text,hit", [

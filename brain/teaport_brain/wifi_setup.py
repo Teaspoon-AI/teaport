@@ -444,9 +444,8 @@ class Setup:
                 self.server.shutdown()
             self.nm.ap_delete()
 
-    def _show(self, lines: list[str], secs: float | None = None) -> None:
-        if self.screen:
-            self.screen.show(SCREEN_TITLE, lines, secs)
+    def _show(self, lines: list[str], secs: float | None = None) -> bool:
+        return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs))
 
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup
@@ -487,9 +486,11 @@ class Setup:
                     self._put_back()
                     return 1
             self.publish(ssid)
+            # On the display first: the status says whether it got there, and the voice
+            # points at it only then.
+            shown = self._show([f"Network  {ssid}", f"Password  {password}", url])
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
-                            address=self.address, error=self.error)
-            self._show([f"Network  {ssid}", f"Password  {password}", url])
+                            address=self.address, error=self.error, screen=shown)
             self.request = None
             self.wake.clear()
             while not self.wake.wait(timeout=1.0):

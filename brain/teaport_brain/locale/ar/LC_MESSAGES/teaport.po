@@ -75,6 +75,9 @@ msgstr "أنا الآن في وضع إعداد الواي فاي. يُرجى ق�
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "من هاتفك، يُرجى الانضمام إلى شبكة الواي فاي {ssid}. كلمة المرور هي {password}. يُفترض أن تُفتح صفحة الإعداد تلقائيًا، وإن لم تُفتح، فعنوانها {url}."
 
+msgid "You can also read these details on my screen."
+msgstr "يمكنك أيضًا قراءة هذه التفاصيل على شاشتي."
+
 msgid "the saved settings for it did not work"
 msgstr "لم تنجح الإعدادات المحفوظة لهذه الشبكة"
 

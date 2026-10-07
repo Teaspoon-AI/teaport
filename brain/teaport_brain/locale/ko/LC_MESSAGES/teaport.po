@@ -73,6 +73,9 @@ msgstr "지금 와이파이 설정 중이에요. 안내를 다시 들으시려�
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "휴대폰에서 다음 와이파이 네트워크에 연결해 주세요. {ssid}. 비밀번호는 다음과 같아요. {password}. 설정 페이지가 자동으로 열릴 거예요. 열리지 않으면 브라우저에서 {url}에 접속해 주세요."
 
+msgid "You can also read these details on my screen."
+msgstr "같은 내용이 제 화면에도 나와 있어요."
+
 msgid "the saved settings for it did not work"
 msgstr "저장된 설정으로는 연결하지 못했어요"
 

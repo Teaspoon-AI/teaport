@@ -70,6 +70,9 @@ msgstr "Ik ben de wifi aan het instellen. Zeg herhaal om de gegevens nog een kee
 msgid "On your phone, join the Wi-Fi network {ssid}. The password is {password}. A setup page should open by itself. If it doesn't, go to {url}."
 msgstr "Verbind je telefoon met het wifinetwerk {ssid}. Het wachtwoord is {password}. Er zou vanzelf een instelpagina moeten verschijnen. Zo niet, ga dan naar {url}."
 
+msgid "You can also read these details on my screen."
+msgstr "Je kunt deze gegevens ook op mijn scherm lezen."
+
 msgid "the saved settings for it did not work"
 msgstr "de opgeslagen instellingen voor dat netwerk werkten niet"
 
