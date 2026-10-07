@@ -52,5 +52,10 @@
   },
   "nemoclaw": {
     "tested_tag": "TODO"
+  },
+  "oled_avatar": {
+    "_note": "teaport-oled-avatar (MIT, separate repo): install.sh clones this and runs its own install.sh when TEAPORT_ENABLE_OLED_AVATAR=1. Pin to a release tag when one is cut, like brain.tag.",
+    "repo": "Teaspoon-AI/teaport-oled-avatar",
+    "tag": "main"
   }
 }

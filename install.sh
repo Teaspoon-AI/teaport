@@ -39,6 +39,9 @@
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
 #   TEAPORT_BRIDGE_SRC     install the bridge from this local dir instead of cloning
 #   TEAPORT_ENABLE_LOCAL_AUDIO=1  enable the opt-in local mic+speaker bridge (USB mic array)
+#   TEAPORT_ENABLE_OLED_AVATAR=1  install + enable the OLED face (teaport-oled-avatar, SSD1306 on I2C)
+#   TEAPORT_OLED_PORT / TEAPORT_OLED_ADDR  its I2C bus/address (default: probe for 0x3c/0x3d)
+#   TEAPORT_OLED_SRC       install the avatar from this local checkout instead of cloning
 #   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800;
 #                                 set, it overrides the device already in local-audio.env)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
@@ -56,6 +59,7 @@ ALLOW_NON_JETSON="${TEAPORT_ALLOW_NON_JETSON:-0}"
 BRAIN_SRC="${TEAPORT_BRAIN_SRC:-}"
 PLUGIN_SRC="${TEAPORT_PLUGIN_SRC:-}"
 BRIDGE_SRC="${TEAPORT_BRIDGE_SRC:-}"
+OLED_SRC="${TEAPORT_OLED_SRC:-}"
 ALLOW_STALE_SOURCE="${TEAPORT_ALLOW_STALE_SOURCE:-0}"
 DRY_RUN=0
 ONLY=""       # --only <component>: "" = the whole appliance
@@ -1621,6 +1625,37 @@ phase_sip() {
 # TEAPORT_ENABLE_LOCAL_AUDIO=1 seeds that file and enables the unit. A repair without it
 # leaves the enabled state alone: an enabled bridge is restarted onto the new brain venv,
 # and one the operator turned off (systemctl disable --now teaport-local-audio) stays off.
+# The OLED face (opt-in): github.com/Teaspoon-AI/teaport-oled-avatar, a separate MIT repo
+# that owns its own setup. Its install.sh copies the script and a venv into
+# /opt/teaport-oled-avatar, probes the I2C buses for the panel and installs
+# teaport-oled-avatar.service on /run/oled-avatar/face.sock, the socket the local audio
+# bridge drives (LOCAL_AUDIO_FACE_SOCK). No panel found: it installs the unit but leaves
+# it off. Run only on request — re-run with the flag to update it.
+phase_oled_avatar() {
+  if [ "${TEAPORT_ENABLE_OLED_AVATAR:-0}" != 1 ]; then
+    log "oled avatar: not requested — skipped (TEAPORT_ENABLE_OLED_AVATAR=1 to install the SSD1306 face)"
+    return 0
+  fi
+  log "oled avatar: install (teaport-oled-avatar, driven by the local audio bridge)"
+  local src="$OLED_SRC"
+  if [ -z "$src" ]; then
+    local repo tag; repo="$(mget oled_avatar.repo)"; tag="$(mget oled_avatar.tag)"
+    src="$STATE/oled-avatar-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
+    # Pure staging, like the bridge clone: install.sh copies what it runs into its prefix.
+    if [ -e "$src" ]; then run rm -rf "$src"; fi
+    run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$src"
+  fi
+  local args=(--user "$RUN_USER")
+  if [ -n "${TEAPORT_OLED_PORT:-}" ]; then args+=(--port "$TEAPORT_OLED_PORT"); fi
+  if [ -n "${TEAPORT_OLED_ADDR:-}" ]; then args+=(--addr "$TEAPORT_OLED_ADDR"); fi
+  if [ "$DRY_RUN" = 1 ]; then
+    printf '  [dry-run] sudo bash %s/install.sh %s\n' "$src" "${args[*]}"
+  else
+    SUDO bash "$src/install.sh" "${args[@]}" \
+      || warn "the OLED avatar did not install — see the output above; the rest of the box is unaffected"
+  fi
+}
+
 phase_local_audio() {
   render_unit teaport-local-audio.service.in teaport-local-audio.service
   SUDO systemctl daemon-reload
@@ -1634,7 +1669,7 @@ phase_local_audio() {
     fi
     return 0
   fi
-  have arecord && have aplay || die "local audio needs alsa-utils (arecord/aplay): sudo apt install alsa-utils"
+  { have arecord && have aplay; } || die "local audio needs alsa-utils (arecord/aplay): sudo apt install alsa-utils"
   log "local audio: enable (sound card -> brain /talk)"
   # The default device is a seed, so a device changed by hand or on the config page
   # survives a repair; one named in TEAPORT_LOCAL_AUDIO_DEVICE is an explicit answer and wins.
@@ -1776,6 +1811,7 @@ main() {
   phase_frontdoor
   phase_bridge
   phase_local_audio
+  phase_oled_avatar
   phase_verify
   usage_footer
 }

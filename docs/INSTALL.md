@@ -51,6 +51,15 @@ downloads. You bring your own Jetson and your own LLM.
   again — which takes the slot back from a browser session. Turn it off with
   `sudo systemctl disable --now teaport-local-audio`; re-running the installer
   keeps it off until you pass `TEAPORT_ENABLE_LOCAL_AUDIO=1` again.
+- **Step 7 (optional) — Give it a face.** Wire a 128x64 SSD1306 OLED to the
+  Jetson's I2C header and re-run the installer with
+  `TEAPORT_ENABLE_OLED_AVATAR=1`. It fetches
+  [teaport-oled-avatar](https://github.com/Teaspoon-AI/teaport-oled-avatar) and
+  runs its installer, which finds the panel (`0x3c`/`0x3d` on any I2C bus;
+  `TEAPORT_OLED_PORT`/`TEAPORT_OLED_ADDR` to name it) and enables
+  `teaport-oled-avatar`. With the local mic bridge (Step 6) running, the eyes
+  follow the conversation and the mouth moves with the voice. No panel found:
+  the service is installed but left off. Re-run with the flag to update it.
 
 ## Updating the brain
 
