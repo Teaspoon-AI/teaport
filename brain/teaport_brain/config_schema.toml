@@ -96,6 +96,11 @@ title = "Agent consult and follow-ups"
 blurb = "TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; every other row here applies only when it does."
 
 [[groups]]
+id = "tools"
+title = "Tools"
+blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume and restart_session, a client that can do it itself (the local audio bridge announces both). A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions."
+
+[[groups]]
 id = "talk_client"
 title = "Talk client context notes"
 blurb = "Limits on the notes a Talk client adds to the voice LLM's context through the plugin's `teaport.talk.context` method (client_notes.py). Read only by teaport-brain."
@@ -1006,7 +1011,7 @@ default = false
 read = "startup"
 tier = "setup"
 help = "Agent-first routing: install the strict router directive and drop the \"I'll work on that\" ack."
-source = "tools.py:49"
+source = "tools.py:72"
 
 [[settings]]
 name = "TEAPORT_RECALL_TIMEOUT"
@@ -1045,7 +1050,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
-source = "tools.py:318"
+source = "tools.py:369"
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"
@@ -1058,7 +1063,7 @@ default = 45
 read = "startup"
 tier = "tuning"
 help = "How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves."
-source = "tools.py:313"
+source = "tools.py:364"
 
 [[settings]]
 name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
@@ -1071,7 +1076,7 @@ default = 55
 read = "startup"
 tier = "tuning"
 help = "The function-call timeout for ask_openclaw. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
-source = "tools.py:323"
+source = "tools.py:374"
 
 [[settings]]
 name = "TEAPORT_ASYNC_CONSULT_TIMEOUT"
@@ -1084,7 +1089,7 @@ default = 130
 read = "startup"
 tier = "tuning"
 help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
-source = "tools.py:336"
+source = "tools.py:387"
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"
@@ -1123,7 +1128,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:250"
+source = "agent_session.py:263"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1184,7 +1189,7 @@ default = "~/.config/teaport/persona.md"
 read = "startup"
 tier = "installer"
 help = "The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir."
-source = "persona.py:161"
+source = "persona.py:236"
 
 [[settings]]
 name = "OPENCLAW_WORKSPACE"
@@ -1195,7 +1200,7 @@ default = "~/.openclaw/workspace"
 read = "startup"
 tier = "installer"
 help = "The OpenClaw workspace whose persona files the voice brain shares."
-source = "persona.py:174"
+source = "persona.py:249"
 
 [[settings]]
 name = "TEAPORT_WORKSPACE_FILES"
@@ -1206,7 +1211,7 @@ default = "SOUL.md,IDENTITY.md,USER.md,MEMORY.md"
 read = "startup"
 tier = "tuning"
 help = "Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design."
-source = "persona.py:178"
+source = "persona.py:253"
 
 [[settings]]
 name = "OPENCLAW_MEMORY_DIR"
@@ -1229,6 +1234,129 @@ read = "startup"
 tier = "tuning"
 help = "Your own 24 kHz mono wav for the thinking bed; the default is synthesized and cached next to the code."
 source = "thinking_sound.py:52"
+
+# ---- tools
+
+[[settings]]
+name = "TEAPORT_TOOL_GET_HOST_STATUS"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "The machine's live free memory, CPU load and speech-engine decode speed."
+source = "tools.py:864"
+
+[[settings]]
+name = "TEAPORT_TOOL_GET_CURRENT_TIME"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "The local date and time."
+source = "tools.py:867"
+
+[[settings]]
+name = "TEAPORT_TOOL_WEB_SEARCH"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
+source = "tools.py:870"
+
+[[settings]]
+name = "TEAPORT_TOOL_WEB_FETCH"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
+source = "tools.py:873"
+
+[[settings]]
+name = "TEAPORT_TOOL_SEARCH_MEMORY"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
+source = "tools.py:876"
+
+[[settings]]
+name = "TEAPORT_TOOL_REMEMBER"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
+source = "tools.py:879"
+
+[[settings]]
+name = "TEAPORT_TOOL_ASK_OPENCLAW"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
+source = "tools.py:886"
+
+[[settings]]
+name = "TEAPORT_TOOL_LIST_VOICES"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "List the speaking voices."
+source = "tools.py:891"
+
+[[settings]]
+name = "TEAPORT_TOOL_SWITCH_VOICE"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Change the speaking voice (and with it the reply language)."
+source = "tools.py:894"
+
+[[settings]]
+name = "TEAPORT_TOOL_SET_VOLUME"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions."
+source = "tools.py:898"
+
+[[settings]]
+name = "TEAPORT_TOOL_RESTART_SESSION"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = false
+read = "startup"
+tier = "tuning"
+help = "End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge)."
+source = "tools.py:903"
 
 # ---- talk client context notes
 
@@ -1423,7 +1551,7 @@ default = "~/teaport-engine.log"
 read = "startup"
 tier = "installer"
 help = "The engine's serve log, where the tools read decode ms/step."
-source = "tools.py:58"
+source = "tools.py:81"
 
 # ---- installer-owned
 
@@ -1453,7 +1581,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:61"
+source = "gateway_server.py:62"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1465,7 +1593,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:68"
+source = "gateway_server.py:69"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"
@@ -1908,4 +2036,4 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:137"
+source = "local_audio.py:151"

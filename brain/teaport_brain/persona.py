@@ -61,6 +61,26 @@ _GENERAL_CHAT_CLOSER = (
     "For everything else, just chat normally and helpfully — you "
     "are a capable conversational assistant, not only a tool caller. "
 )
+# The slow-tool preamble and the consult-in-progress rule, shared by the tuned
+# gateway paragraph and the composed one (tools_paragraph).
+_PREAMBLE_INSTRUCTION = (
+    "takes seconds, so "
+    "first say one short natural sentence about what you're doing — in your own "
+    "words, specific to this request, never a stock phrase — then call the tool "
+    "in the same response."
+)
+_CONSULT_IN_PROGRESS = (
+    "While an ask_openclaw request is still in progress you do not "
+    "yet know its answer: never guess or make one up, even if the user says 'go "
+    "ahead' or 'start' — say it is still in progress; you will be told the moment "
+    "it completes."
+)
+_CANNOT_LOOK_UP = (
+    "You cannot search "
+    "the web, open a web page, or recall earlier conversations: if the user asks "
+    "for something you would need to look up, say so plainly and help with what "
+    "you know rather than guessing or promising to check."
+)
 
 _TOOLS_WITH_AGENT = (
     "You have tools — use them instead of guessing: get_host_status (this "
@@ -74,14 +94,8 @@ _TOOLS_WITH_AGENT = (
     "status or the time, about something recent or factual you'd need to look up, "
     "a web page, or something they told you earlier, call the matching tool "
     "directly. Quick lookups (time, host status, memory) need no preamble — just "
-    "call silently. A web search, page fetch, or ask_openclaw takes seconds, so "
-    "first say one short natural sentence about what you're doing — in your own "
-    "words, specific to this request, never a stock phrase — then call the tool "
-    "in the same response. " + _NO_TOOL_NAME_INSTRUCTION + " "
-    "While an ask_openclaw request is still in progress you do not "
-    "yet know its answer: never guess or make one up, even if the user says 'go "
-    "ahead' or 'start' — say it is still in progress; you will be told the moment "
-    "it completes. " + _GENERAL_CHAT_CLOSER
+    "call silently. A web search, page fetch, or ask_openclaw " + _PREAMBLE_INSTRUCTION
+    + " " + _NO_TOOL_NAME_INSTRUCTION + " " + _CONSULT_IN_PROGRESS + " " + _GENERAL_CHAT_CLOSER
 )
 
 # The voice-only box: the same local tools, and an honest statement of what is not
@@ -93,10 +107,7 @@ _TOOLS_LOCAL = (
     + _VOICE_SWITCH_INSTRUCTION + " "
     "When the user asks about your status or the time, call the matching "
     "tool directly; these are quick, so no preamble — just call silently. "
-    + _NO_TOOL_NAME_INSTRUCTION + " You cannot search "
-    "the web, open a web page, or recall earlier conversations: if the user asks "
-    "for something you would need to look up, say so plainly and help with what "
-    "you know rather than guessing or promising to check. " + _GENERAL_CHAT_CLOSER
+    + _NO_TOOL_NAME_INSTRUCTION + " " + _CANNOT_LOOK_UP + " " + _GENERAL_CHAT_CLOSER
 )
 
 _DELIVERY = (
@@ -153,6 +164,70 @@ VOICE_OVERLAY_LOCAL = _TOOLS_LOCAL + _DELIVERY
 def voice_overlay() -> str:
     """The overlay for this box: gateway tools named only where there is a gateway."""
     return VOICE_OVERLAY if HAS_AGENT else VOICE_OVERLAY_LOCAL
+
+
+# The standard tools each tuned paragraph above is written for. A session whose
+# standard tools are exactly one of these sets gets that paragraph verbatim; any other
+# set (a tool switched off with its TEAPORT_TOOL_* flag) gets one composed from the
+# tools' own hints, so a tool that is off is never named.
+_TUNED_WITH_AGENT = frozenset({
+    "get_host_status", "get_current_time", "web_search", "web_fetch", "search_memory",
+    "remember", "ask_openclaw", "list_voices", "switch_voice"})
+_TUNED_LOCAL = frozenset({"get_host_status", "get_current_time", "list_voices", "switch_voice"})
+_SLOW_TOOLS = ("web_search", "web_fetch", "ask_openclaw")
+_LOOKUP_TOOLS = frozenset({"web_search", "web_fetch", "search_memory", "ask_openclaw"})
+
+
+def _join(items: list[str]) -> str:
+    if len(items) <= 2:
+        return " and ".join(items)
+    return ", ".join(items[:-1]) + ", and " + items[-1]
+
+
+def _compose_tools(tools, device: bool = False) -> str:
+    """The paragraph for the standard tools `tools`. `device`: client tools get their
+    own sentence after it, so "you have no tools" would be untrue."""
+    names = {t.name for t in tools}
+    if not tools:
+        return (("" if device else "You have no tools in this conversation. ")
+                + _NO_TOOL_NAME_INSTRUCTION + " " + _CANNOT_LOOK_UP + " "
+                + _GENERAL_CHAT_CLOSER)
+    text = ("You have tools — use them instead of guessing: "
+            + _join([t.hint or t.name for t in tools]) + ". "
+            "When the user asks for something one of them covers, call it directly. ")
+    slow = [n for n in _SLOW_TOOLS if n in names]
+    if len(slow) < len(names):
+        text += "Quick lookups need no preamble — just call silently. "
+    if slow:
+        text += "A " + " or ".join(n.replace("_", " ") for n in slow) + " " + _PREAMBLE_INSTRUCTION + " "
+    text += _NO_TOOL_NAME_INSTRUCTION + " "
+    if "ask_openclaw" in names:
+        text += _CONSULT_IN_PROGRESS + " "
+    if not names & _LOOKUP_TOOLS:
+        text += _CANNOT_LOOK_UP + " "
+    return text + _GENERAL_CHAT_CLOSER
+
+
+def tools_paragraph(tools) -> str:
+    """The tools part of the overlay for a session's active tools (tools.active_tools).
+
+    Standard tools: the tuned paragraph for that exact set, else a composed one. Client
+    tools (performed by the connected device) get their own sentence after it."""
+    standard = [t for t in tools if not t.client]
+    names = {t.name for t in standard}
+    if names == _TUNED_WITH_AGENT:
+        text = _TOOLS_WITH_AGENT
+    elif names == _TUNED_LOCAL:
+        text = _TOOLS_LOCAL
+    else:
+        text = _compose_tools(standard, device=any(t.client for t in tools))
+    device = [t for t in tools if t.client]
+    if device:
+        text += ("On the device the user is talking to you through you can "
+                 + ("also use " if standard else "use ")
+                 + _join([t.hint or t.name for t in device])
+                 + ": when they ask for one, call it directly, no preamble. ")
+    return text
 
 
 # Shared source of truth for identity. The OpenClaw text agent should read the same
@@ -217,8 +292,10 @@ def load_persona() -> str:
     return FALLBACK_PERSONA
 
 
-def build_system_prompt(persona: str | None = None) -> str:
+def build_system_prompt(persona: str | None = None, tools=None) -> str:
     """Compose the voice system prompt: shared identity + voice-only overlay.
-    Pass a persona (e.g. fetched at session start) or leave None to load it."""
+    Pass a persona (e.g. fetched at session start) or leave None to load it. `tools`
+    is the session's tools.active_tools(); None means this box's default set."""
     base = (persona or "").strip() or load_persona()
-    return base + "\n\n" + voice_overlay()
+    overlay = voice_overlay() if tools is None else tools_paragraph(tools) + _DELIVERY
+    return base + "\n\n" + overlay
