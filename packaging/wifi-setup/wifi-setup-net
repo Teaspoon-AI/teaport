@@ -1,0 +1,81 @@
+#!/bin/sh
+# teaport Wi-Fi setup: the unit's root-side network pieces (installed by install.sh as
+# /usr/local/lib/teaport/wifi-setup-net, root:root 0755; run as root by
+# teaport-wifi-setup.service). Plain sh outside the brain venv, so it runs even while
+# install.sh swaps the venv.
+#
+#   up    port 80 on the setup network's address to the page (an iptables DNAT rule)
+#         and the captive DNS file, after clearing any rule an earlier run left;
+#   down  remove both, and the setup network's profile if the run left it up (a kill -9,
+#         a crash: the code takes it down itself).
+#
+# Each piece is checked before it is removed, so a normal run logs nothing here — no
+# "not an active connection" or "Bad rule" lines — and anything left behind is named
+# in one line.
+#
+# 10.42.0.1 is wifi.AP_ADDRESS (pinned in the setup profile), 7869 wifi_setup.PAGE_PORT,
+# teaport-setup wifi.AP_CONNECTION; the captive DNS answer names the address too
+# (teaport-captive.conf). Change them together. Why DNAT and not REDIRECT, and why
+# iptables: systemd/teaport-wifi-setup.service.in.
+set -u
+
+ADDR=10.42.0.1
+PORT=7869
+PROFILE=teaport-setup
+CAPTIVE_SRC=/usr/local/lib/teaport/teaport-captive.conf
+CAPTIVE=/etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf
+
+log() { echo "[wifi-setup] $*"; }
+
+dnat() {  # dnat -A|-C|-D
+  iptables -t nat "$1" PREROUTING -d "$ADDR/32" -p tcp --dport 80 \
+    -m comment --comment teaport-wifi-setup -j DNAT --to-destination "$ADDR:$PORT"
+}
+# shellcheck disable=SC2329  # called through drop
+redirect() {  # the rule an earlier version of the unit used
+  iptables -t nat "$1" PREROUTING -d "$ADDR/32" -p tcp --dport 80 \
+    -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports "$PORT"
+}
+
+drop() {  # drop <rule-fn>: delete every copy; true if there was one
+  found=1
+  # -C is quiet only on the exit code: absent prints "Bad rule", and some iptables-nft
+  # builds print the matched rule.
+  while "$1" -C >/dev/null 2>&1; do
+    "$1" -D || break
+    found=0
+  done
+  return $found
+}
+
+case "${1:-}" in
+  up)
+    left=""
+    drop redirect && left="$left, the old REDIRECT rule"
+    drop dnat && left="$left, the port-80 rule"
+    [ -n "$left" ] && log "removed what an earlier run left: ${left#, }"
+    dnat -A || exit 1
+    install -D -m 0644 "$CAPTIVE_SRC" "$CAPTIVE" \
+      || log "the captive DNS file did not go in: phones will not open the page by themselves"
+    ;;
+  down)
+    removed=""
+    if nmcli -g NAME connection show 2>/dev/null | grep -qxF "$PROFILE"; then
+      nmcli connection delete id "$PROFILE" >/dev/null && removed="$removed, the setup network ($PROFILE)"
+    fi
+    drop dnat && removed="$removed, the port-80 rule"
+    if [ -e "$CAPTIVE" ]; then
+      rm -f "$CAPTIVE" && removed="$removed, the captive DNS file"
+    fi
+    # The rule and the file are this unit's own and always go here; the profile is the
+    # code's, so finding it means the run did not end by itself.
+    case "$removed" in
+      *"($PROFILE)"*) log "the run left the setup network behind; removed ${removed#, }" ;;
+    esac
+    ;;
+  *)
+    echo "usage: $0 up|down" >&2
+    exit 2
+    ;;
+esac
+exit 0

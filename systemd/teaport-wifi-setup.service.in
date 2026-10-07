@@ -16,9 +16,11 @@
 # teaport-captive.conf, put there below for as long as this runs), which is what makes a
 # phone open the page by itself.
 #
-# 10.42.0.1 below is wifi.AP_ADDRESS, which the code pins in the setup network's profile
-# (ipv4.addresses): the port-80 rule and the captive DNS answer need it before the network
-# exists. Change them together.
+# The root-side pieces (the port-80 rule, the captive DNS file, the clean-up) are
+# /usr/local/lib/teaport/wifi-setup-net (packaging/wifi-setup/, installed by install.sh):
+# plain sh, outside the brain venv. It names 10.42.0.1, which is wifi.AP_ADDRESS, the
+# address the code pins in the setup network's profile (ipv4.addresses): the port-80
+# rule and the captive DNS answer need it before the network exists. Change them together.
 [Unit]
 Description=teaport Wi-Fi setup (temporary setup network + phone page)
 After=NetworkManager.service
@@ -33,23 +35,23 @@ RuntimeDirectoryMode=0750
 RuntimeDirectoryPreserve=yes
 # Captive-portal probes go to port 80, which is the front door's (Caddy). While this
 # runs, port 80 on the setup network's address is sent to the page (PAGE_PORT in
-# wifi_setup.py); "+" runs these as root, the page itself does not need to be. DNAT to
+# wifi_setup.py); "+" runs this as root, the page itself does not need to be. DNAT to
 # the pinned address, not REDIRECT: REDIRECT rewrites to the incoming interface's FIRST
 # IPv4 address, which just after the setup network comes up can still be the old home
 # network's, where the page is not bound. iptables, not an nft rule: the Jetson kernel
 # has no nft redirect (CONFIG_NFT_REDIR is off); iptables-nft runs DNAT through its xt
 # target, as it ran REDIRECT (the Orin's kernel takes the rule: checked 2026-10-07).
-# The first line removes a REDIRECT rule an earlier version of this unit may have left.
-ExecStartPre=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j REDIRECT --to-ports 7869
-ExecStartPre=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j DNAT --to-destination 10.42.0.1:7869
-ExecStartPre=+/usr/sbin/iptables -t nat -A PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j DNAT --to-destination 10.42.0.1:7869
+# It first removes any such rule an earlier run (or a REDIRECT one an earlier version of
+# this unit) left. The rule not going in fails the start; the captive DNS file not going
+# in is only logged.
+#
 # Captive DNS only while this runs. NM gives every shared-mode dnsmasq the same
 # dnsmasq-shared.d, and a dnsmasq option cannot be scoped to one connection, so a
 # permanent file would answer 10.42.0.1 for every name on any other shared network the
 # box ever runs (a hotspot, shared Ethernet). Known limit: one started WHILE setup runs
 # gets it too. The source is root-owned — dnsmasq would run what a conf file names. A
 # copy left by a crash or power cut mid-setup is removed at boot (tmpfiles.d, install.sh).
-ExecStartPre=-+/usr/bin/install -D -m 0644 /usr/local/lib/teaport/teaport-captive.conf /etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf
+ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net up
 NoNewPrivileges=yes
 SyslogIdentifier=teaport-wifi-setup
 # Venv resolved once, as in teaport-sip-brain.service ($$ = a literal $ to systemd).
@@ -63,11 +65,9 @@ SuccessExitStatus=2 3
 # ask for the old connection back; it needs a moment for nmcli, not systemd's 90 s.
 TimeoutStopSec=60
 # Belt and braces: never leave the setup network, the port-80 rule or the captive DNS behind
-# (the code takes the network down itself).
-ExecStopPost=-/usr/bin/nmcli connection down id teaport-setup
-ExecStopPost=-/usr/bin/nmcli connection delete id teaport-setup
-ExecStopPost=-+/usr/sbin/iptables -t nat -D PREROUTING -d 10.42.0.1/32 -p tcp --dport 80 -m comment --comment teaport-wifi-setup -j DNAT --to-destination 10.42.0.1:7869
-ExecStopPost=-+/bin/rm -f /etc/NetworkManager/dnsmasq-shared.d/teaport-captive.conf
+# (the code takes the network down itself). Each is checked before it goes, so a normal
+# end logs nothing; a setup network left up (a kill -9) is named in one line.
+ExecStopPost=-+/usr/local/lib/teaport/wifi-setup-net down
 # The code gives up after ten minutes; this is the hard stop above it.
 RuntimeMaxSec=900
 Restart=no

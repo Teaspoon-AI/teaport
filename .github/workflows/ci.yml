@@ -266,10 +266,11 @@ jobs:
           bash -n install-bootstrap.sh
           bash -n cli/teaport
           bash -n packaging/build-deb.sh
+          sh -n packaging/wifi-setup/wifi-setup-net
           for f in brain/test/*.sh; do bash -n "$f"; done
       - name: shellcheck (advisory)
         continue-on-error: true
-        run: shellcheck install.sh install-bootstrap.sh cli/teaport packaging/build-deb.sh brain/test/*.sh
+        run: shellcheck install.sh install-bootstrap.sh cli/teaport packaging/build-deb.sh packaging/wifi-setup/wifi-setup-net brain/test/*.sh
       - name: Manifest JSON is valid
         run: |
           for m in manifest/*.json; do
