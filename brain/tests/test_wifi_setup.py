@@ -444,9 +444,9 @@ def test_a_stop_in_the_middle_of_a_join_puts_everything_back():
     assert after == [("ap_down",), ("undo",), ("up", "u-old-wifi", 0), ("ap_delete",)]
 
 
-def _screen(avatar=True, events=None):
+def _screen(avatar=True, events=None, qr=True):
     """A Screen recording what it sends (into `events` too, as ("screen", ...), when
-    given); `avatar`: whether a daemon that draws screens is there."""
+    given); `avatar`: whether a daemon that draws screens is there; `qr`: and QR codes."""
     sent = []
 
     def send(ev, path):
@@ -455,7 +455,8 @@ def _screen(avatar=True, events=None):
             events.append(("screen", ev["screen"]))
         return True
 
-    return display.Screen("wifi-setup", send=send, supports=lambda path: avatar), sent
+    feats = {"screen": 1, **({"qr": 1} if qr else {})} if avatar else {}
+    return display.Screen("wifi-setup", send=send, features=lambda path: feats), sent
 
 
 def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while():
@@ -464,7 +465,10 @@ def test_the_display_shows_the_details_then_the_join_and_keeps_connected_a_while
                           post=[{"ssid": "home", "password": "homepass1"}])
     assert rc == 0
     assert seen[1]["phase"] == "ap_up" and seen[1]["screen"] is True   # the voice says so
+    assert seen[1]["qr"] is True
     shown = [s for s in sent if s.get("lines")]
+    assert shown[0]["qr"] == "WIFI:T:WPA;S:teaport-9e35;P:47190352;;"   # a phone joins
+    assert all("qr" not in s for s in shown[1:])                         # only then
     assert shown[0]["lines"] == ["Network  teaport-9e35", "Password  47190352",
                                  "http://teaport-9e35.local"]
     assert shown[0]["title"] == "Wi-Fi setup" and shown[0]["ttl"] == display.HOLD_TTL_SECS
@@ -480,7 +484,19 @@ def test_no_avatar_and_the_status_says_no_screen():
     _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
     assert seen[1]["phase"] == "ap_up" and seen[1]["screen"] is False
     _, seen = _run_setup(FakeNM([]), minutes=0.01)                     # no Screen at all
-    assert seen[1]["screen"] is False
+    assert seen[1]["screen"] is False and seen[1]["qr"] is False
+
+
+def test_an_avatar_without_qr_codes_and_the_status_says_text_only():
+    screen, _ = _screen(qr=False)
+    _, seen = _run_setup(FakeNM([]), minutes=0.01, screen=screen)
+    assert seen[1]["screen"] is True and seen[1]["qr"] is False
+
+
+def test_the_join_string_escapes_what_it_must():
+    assert ws.wifi_qr("teaport-9e35", "47190352") == "WIFI:T:WPA;S:teaport-9e35;P:47190352;;"
+    assert ws.wifi_qr('a;b:c,d\\e"f', "p;w") == 'WIFI:T:WPA;S:a\\;b\\:c\\,d\\\\e\\"f;P:p\\;w;;'
+    assert ws.wifi_qr("Café ☕", "x") == "WIFI:T:WPA;S:Café ☕;P:x;;"   # the real name
 
 
 @pytest.mark.parametrize("join, minutes", [([ws.Stopped()], 1.0), ([], 0.01)])
@@ -638,6 +654,8 @@ def test_the_voice_points_at_the_screen_only_when_it_got_there():
     assert wv.instructions(dict(st, screen=True), EN).endswith(
         " You can also read these details on my screen.")
     assert "screen" not in wv.instructions(dict(st, screen=False), EN)
+    assert wv.instructions(dict(st, screen=True, qr=True), EN).endswith(
+        " You can also scan the code on my screen to join.")
 
 
 @pytest.mark.parametrize("text,hit", [

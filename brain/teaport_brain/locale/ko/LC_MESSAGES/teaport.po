@@ -76,6 +76,9 @@ msgstr "휴대폰에서 다음 와이파이 네트워크에 연결해 주세요.
 msgid "You can also read these details on my screen."
 msgstr "같은 내용이 제 화면에도 나와 있어요."
 
+msgid "You can also scan the code on my screen to join."
+msgstr "제 화면의 코드를 스캔해서 연결할 수도 있어요."
+
 msgid "the saved settings for it did not work"
 msgstr "저장된 설정으로는 연결하지 못했어요"
 

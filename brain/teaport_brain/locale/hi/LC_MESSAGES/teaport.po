@@ -73,6 +73,9 @@ msgstr "अपने फ़ोन को उस वाई-फ़ाई नेट
 msgid "You can also read these details on my screen."
 msgstr "यह जानकारी आप मेरी स्क्रीन पर भी देख सकते हैं।"
 
+msgid "You can also scan the code on my screen to join."
+msgstr "जुड़ने के लिए आप मेरी स्क्रीन पर दिख रहा कोड भी स्कैन कर सकते हैं।"
+
 msgid "the saved settings for it did not work"
 msgstr "उस नेटवर्क की सेव की हुई सेटिंग काम नहीं आई"
 

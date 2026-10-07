@@ -220,7 +220,10 @@ def instructions(status: dict, t: i18n.T) -> str:
     said = t._("On your phone, join the Wi-Fi network {ssid}. The password is {password}. "
                "A setup page should open by itself. If it doesn't, go to {url}.").format(
         ssid=spell(ssid, t), password=spell(password, t), url=url)
-    if status.get("screen"):  # the box's display has them too (wifi_setup.py, display.py)
+    # The box's display has them too, and a code that joins (wifi_setup.py, display.py).
+    if status.get("qr"):
+        said += " " + t._("You can also scan the code on my screen to join.")
+    elif status.get("screen"):
         said += " " + t._("You can also read these details on my screen.")
     return said
 

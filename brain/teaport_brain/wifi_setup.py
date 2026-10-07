@@ -25,7 +25,8 @@
 #      box had before is brought back up.
 #
 # The setup network's name and password, and then how the join goes, are also on the
-# box's display if it has one (display.py: the OLED avatar's screens) — in English and
+# box's display if it has one (display.py: the OLED avatar's screens), with a QR code
+# that a phone camera joins the setup network from (wifi_qr) — the text in English and
 # ASCII, which its built-in font draws (network names folded into it); the voice and
 # the page speak the user's language.
 #
@@ -264,6 +265,17 @@ def parse_form(body: bytes) -> tuple[str, str, bool, str]:
     return ssid, password, hidden, ""
 
 
+# What the Wi-Fi join string escapes with a backslash: the backslash itself, ; , : and ".
+_QR_SPECIAL = re.compile(r'([\\;,:"])')
+
+
+def wifi_qr(ssid: str, password: str) -> str:
+    """The Wi-Fi join string a phone camera reads off a QR code (the iPhone camera, and
+    Android's, offer "Join network ..."), for the WPA setup network."""
+    ssid, password = (_QR_SPECIAL.sub(r"\\\1", x) for x in (ssid, password))
+    return f"WIFI:T:WPA;S:{ssid};P:{password};;"
+
+
 class Stopped(Exception):
     """SIGTERM: systemctl stop (a spoken "cancel"), a restart, or RuntimeMaxSec."""
 
@@ -445,8 +457,8 @@ class Setup:
                 self.server.shutdown()
             self.nm.ap_delete()
 
-    def _show(self, lines: list[str], secs: float | None = None) -> bool:
-        return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs))
+    def _show(self, lines: list[str], secs: float | None = None, qr: str | None = None) -> bool:
+        return bool(self.screen and self.screen.show(SCREEN_TITLE, lines, secs, qr=qr))
 
     def _put_back(self, quick: bool = False) -> None:
         """The way out without a new network (the timeout, a stop, an error): the setup
@@ -493,12 +505,15 @@ class Setup:
                     self._put_back()
                     return 1
             self.publish(ssid)
-            # On the display first: the status says whether it got there, and the voice
-            # points at it only then.
+            # On the display first: the status says whether it got there, and with a code
+            # to scan, and the voice points at it only then. The code carries the real
+            # name, whatever the font can draw.
             shown = self._show([f"Network  {shown_ssid}", f"Password  {password}",
-                                url if shown_ssid == ssid else f"http://{self.address}"])
+                                url if shown_ssid == ssid else f"http://{self.address}"],
+                               qr=wifi_qr(ssid, password))
             self.status.set("ap_up", ssid=ssid, password=password, url=url,
-                            address=self.address, error=self.error, screen=shown)
+                            address=self.address, error=self.error, screen=shown,
+                            qr=shown and self.screen.draws("qr"))
             self.request = None
             self.wake.clear()
             while not self.wake.wait(timeout=1.0):

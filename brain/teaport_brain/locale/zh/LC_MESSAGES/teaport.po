@@ -73,6 +73,9 @@ msgstr "请用手机连接无线网络{ssid}。密码是{password}。设置页�
 msgid "You can also read these details on my screen."
 msgstr "这些信息也显示在我的屏幕上。"
 
+msgid "You can also scan the code on my screen to join."
+msgstr "你也可以扫描我屏幕上的二维码来连接。"
+
 msgid "the saved settings for it did not work"
 msgstr "这个网络之前保存的设置不起作用"
 

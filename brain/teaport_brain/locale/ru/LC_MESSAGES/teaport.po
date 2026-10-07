@@ -81,6 +81,9 @@ msgstr "На телефоне подключитесь к сети вай-фай
 msgid "You can also read these details on my screen."
 msgstr "Эти данные можно также прочитать на моём экране."
 
+msgid "You can also scan the code on my screen to join."
+msgstr "Можно также отсканировать код на моём экране, чтобы подключиться."
+
 msgid "the saved settings for it did not work"
 msgstr "сохранённые настройки для этой сети не подошли"
 

@@ -53,12 +53,14 @@ Every tool the voice model can call follows one contract
   because the brain says it itself rather than through the LLM.
 - **Text on the box's display** goes through `display.py`. A box with the OLED
   avatar shows a "screen" (a title and a few lines) over the face for whatever a
-  person has to read off it; Wi-Fi setup shows the setup network's name, password
-  and address, then the join. A screen has an id and a time to live: a sender holds
+  person has to read off it, and optionally a QR code; Wi-Fi setup shows the
+  setup network's name, password and address with a code a phone camera joins
+  from (`WIFI:T:WPA;S:…;P:…;;`), then the join. A screen has an id and a time to live: a sender holds
   one up by re-sending it every few seconds, so a crashed sender's screen goes by
   itself. Screens go only to an avatar that says it draws them: while it runs it
   keeps a features file next to its socket (`face.sock.features`, JSON such as
-  `{"screen": 1}`), and `display.py` reads it before every send. An older avatar
+  `{"screen": 1, "qr": 1}`), and `display.py` reads it before every send; the
+  voice says "scan the code on my screen" only when it says `"qr"`. An older avatar
   would take the event, draw nothing and log it, setup password included. The
   avatar's built-in font is Latin only, so screens keep to ASCII: network names
   are folded into it.

@@ -12,11 +12,13 @@
 #     ...                                  # held up (re-sent) until
 #     screen.close()                       # it is taken down
 #     screen.show("Wi-Fi setup", ["Connected"], secs=10)   # or up for a while, alone
+#     screen.show("Pair", ["Code 4821"], qr="https://...")  # with a QR code beside or
+#                                                           # in turn with the text
 #
 # Fire-and-forget datagrams, as the local audio bridge's face events are, but only to
 # an avatar that says it draws screens: while it serves, it keeps a features file next
 # to its socket (FEATURES_SUFFIX: /run/oled-avatar/face.sock.features), JSON such as
-# {"screen": 1}, and removes it on exit. A datagram that is accepted proves nothing: an
+# {"screen": 1, "qr": 1} ("qr": it draws QR codes too), and removes it on exit. A datagram that is accepted proves nothing: an
 # avatar too old to know screens takes it, draws nothing and logs it, password and all.
 # So nothing is sent, and show() says False, unless the file names "screen"; it is
 # read again before every send (a small file, every few seconds), so an avatar that
@@ -47,15 +49,20 @@ FEATURES_SUFFIX = ".features"
 FEATURES_MAX_BYTES = 4096
 
 
-def supports_screens(path: str = SOCK) -> bool:
-    """Whether the avatar on `path` is running and draws screens: its features file
-    names "screen". No file, or one that is not a JSON object, is no."""
+def features(path: str = SOCK) -> dict:
+    """What the avatar on `path` draws beyond its face, from its features file: {} when
+    it is not running, or the file is missing or not a JSON object."""
     try:
         with open(path + FEATURES_SUFFIX, "rb") as f:
-            features = json.loads(f.read(FEATURES_MAX_BYTES))
+            found = json.loads(f.read(FEATURES_MAX_BYTES))
     except (OSError, ValueError):
-        return False
-    return isinstance(features, dict) and bool(features.get("screen"))
+        return {}
+    return found if isinstance(found, dict) else {}
+
+
+def supports_screens(path: str = SOCK) -> bool:
+    """Whether the avatar on `path` is running and draws screens."""
+    return bool(features(path).get("screen"))
 
 
 def fold_ascii(text: str, fallback: str = "your network") -> str:
@@ -85,9 +92,9 @@ class Screen:
     with it, one shown for a few seconds runs out on its own."""
 
     def __init__(self, screen_id: str, path: str = SOCK, refresh_secs: float = REFRESH_SECS,
-                 send=send, supports=supports_screens):
+                 send=send, features=features):
         self.id, self._path, self._refresh, self._send = screen_id, path, refresh_secs, send
-        self._supports = supports
+        self._features = features
         self._held: dict | None = None
         self._lock = threading.Lock()
         self._wake = threading.Event()
@@ -98,15 +105,22 @@ class Screen:
     # the clear or the newer show that replaced it. And every one asks the avatar first:
     # one that does not draw screens is sent nothing, take-downs included.
     def _put(self, event: dict) -> bool:
-        return self._supports(self._path) and bool(self._send(event, self._path))
+        return self.draws("screen") and bool(self._send(event, self._path))
 
-    def show(self, title: str, lines: list[str], secs: float | None = None) -> bool:
-        """Up for `secs` seconds, or (None) held until clear() or close(). True when the
+    def draws(self, feature: str) -> bool:
+        """Whether the avatar is up and draws `feature` ("screen", "qr")."""
+        return bool(self._features(self._path).get(feature))
+
+    def show(self, title: str, lines: list[str], secs: float | None = None,
+             qr: str | None = None) -> bool:
+        """Up for `secs` seconds, or (None) held until clear() or close(), with a QR code
+        of `qr` if given (an avatar without "qr" shows the text alone). True when the
         avatar took it (it is running and draws screens), so the voice can say where to
         look. A held screen is kept even when it is False: an avatar that comes up later
         gets it at the next refresh."""
         event = {"screen": {"id": self.id, "title": title, "lines": list(lines),
-                            "ttl": secs if secs is not None else HOLD_TTL_SECS}}
+                            "ttl": secs if secs is not None else HOLD_TTL_SECS,
+                            **({"qr": qr} if qr else {})}}
         with self._lock:
             self._held = event if secs is None else None
             if self._held and self._thread is None and not self._closed:

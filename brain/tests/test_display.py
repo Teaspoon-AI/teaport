@@ -12,10 +12,10 @@ import pytest
 from teaport_brain import display
 
 
-def _screen(refresh=0.02, supports=lambda path: True):
+def _screen(refresh=0.02, features=lambda path: {"screen": 1}):
     """A Screen recording what it sends, to an avatar that draws screens unless told."""
     sent = []
-    return display.Screen("t", refresh_secs=refresh, supports=supports,
+    return display.Screen("t", refresh_secs=refresh, features=features,
                           send=lambda ev, path: sent.append(ev["screen"])), sent
 
 
@@ -27,7 +27,7 @@ def test_a_held_screen_is_resent_until_it_is_cleared():
         if len(sent) >= 3:
             three.set()
 
-    screen = display.Screen("t", refresh_secs=0.02, send=record, supports=lambda path: True)
+    screen = display.Screen("t", refresh_secs=0.02, send=record, features=lambda path: {"screen": 1})
     try:
         screen.show("Title", ["a", "b"])
         assert three.wait(timeout=5)                      # the show and two refreshes
@@ -148,3 +148,27 @@ def test_names_fold_to_printable_ascii(name, shown):
 
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+def test_a_qr_code_goes_with_the_screen_and_draws_asks_the_avatar():
+    sent = []
+    screen = display.Screen("t", send=lambda ev, path: sent.append(ev["screen"]) or True,
+                            features=lambda path: {"screen": 1, "qr": 1})
+    assert screen.show("Pair", ["Code 4821"], secs=5, qr="https://x.example/4821")
+    assert sent[-1]["qr"] == "https://x.example/4821"
+    assert screen.draws("qr") and screen.draws("screen") and not screen.draws("sound")
+    screen.show("Pair", ["Code 4821"], secs=5)
+    assert "qr" not in sent[-1]                      # none asked for: no key
+    old, _ = _screen(features=lambda path: {"screen": 1})
+    assert not old.draws("qr")
+
+
+def test_features_reads_the_file_and_anything_else_is_none():
+    d = tempfile.mkdtemp()
+    path = os.path.join(d, "face.sock")
+    assert display.features(path) == {}
+    for content, want in (('{"screen": 1, "qr": 1}', {"screen": 1, "qr": 1}),
+                          ("[1]", {}), ("not json", {})):
+        with open(path + display.FEATURES_SUFFIX, "w") as f:
+            f.write(content)
+        assert display.features(path) == want

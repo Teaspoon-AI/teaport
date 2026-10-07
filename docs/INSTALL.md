@@ -87,7 +87,8 @@ downloads. You bring your own Jetson and your own LLM.
   `TEAPORT_OLED_PORT`/`TEAPORT_OLED_ADDR` to name it) and enables
   `teaport-oled-avatar`. With the local mic bridge (Step 6) running, the eyes
   follow the conversation and the mouth moves with the voice. During Wi-Fi setup
-  the panel shows the setup network's name and password. No panel found:
+  the panel shows the setup network's name and password, and a QR code a phone
+  camera can join it from. No panel found:
   the service is installed but left off. Re-run with the flag to update it.
 
 ## Updating the brain

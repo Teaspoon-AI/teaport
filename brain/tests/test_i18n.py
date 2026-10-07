@@ -252,8 +252,9 @@ def test_the_session_language_picks_the_catalog():
         # The password digit by digit, in this language's digit words and separator.
         assert sep.join(t.p("digit", d) for d in "47190352") in text, (code, text)
         assert t.p("spell", "dash") in text
-        screen = wifi_voice.instructions(dict(st, screen=True), t)[len(text):]
-        assert screen.strip() and (lang == "en" or "screen" not in screen), (code, screen)
+        for extra in ({"screen": True}, {"screen": True, "qr": True}):
+            screen = wifi_voice.instructions(dict(st, **extra), t)[len(text):]
+            assert screen.strip() and (lang == "en" or "screen" not in screen), (code, screen)
     assert i18n.for_espeak("xx").lang == "en"
     # TTS_LANGUAGE / ?language= give plain and regional codes too, in any case.
     for code, lang in (("fr", "fr"), ("es-MX", "es"), ("ja_JP", "ja"), ("pt", "pt_BR"),

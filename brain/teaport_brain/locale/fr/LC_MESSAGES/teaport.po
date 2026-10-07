@@ -78,6 +78,9 @@ msgstr "Sur votre téléphone, connectez-vous au réseau Wi-Fi {ssid}. Le mot de
 msgid "You can also read these details on my screen."
 msgstr "Vous pouvez aussi lire ces informations sur mon écran."
 
+msgid "You can also scan the code on my screen to join."
+msgstr "Vous pouvez aussi scanner le code sur mon écran pour vous connecter."
+
 msgid "the saved settings for it did not work"
 msgstr "les réglages enregistrés pour ce réseau n'ont pas fonctionné"
 
