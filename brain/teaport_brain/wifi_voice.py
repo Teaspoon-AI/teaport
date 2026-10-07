@@ -31,6 +31,12 @@
 # carries, endpointing.py), and the turn would hang open for the aggregator's 5 s
 # inactivity timeout with barge-in dead -- the wedge stt.py describes for empty finals.
 #
+# The model hears none of this (say() keeps its lines out of the context), so when a
+# setup ends, one English line saying how goes into its context through the session's
+# notes (client_notes.py, add_notice): at the next turn boundary, never spoken, never a
+# turn of its own (issue #97; _ended has who gets it). It names the network joined and
+# never a password.
+#
 import asyncio
 import dataclasses
 import json
@@ -95,6 +101,9 @@ ECHO_TAIL_SECS = 1.5
 ECHO_LINES_SECS = 120.0
 # The setup network's name is teaport-<hex>: the word is said as a word.
 SSID_WORD = "teaport"
+# Pieces of the line the model gets when setup ends (_ended). English: it is context.
+_PUT_BACK = "the box's Wi-Fi is back as it was before."
+_UNCONFIRMED = "the user did not confirm, so it never started."
 
 # What the user says, by meaning. The English patterns are the msgids of the "pattern"
 # entries in each language's catalog (i18n.py), whose msgstr is that language's own
@@ -314,6 +323,11 @@ class WifiSetupVoice(FrameProcessor):
         self._bot_speaking = False
         self._quiet_since = -math.inf
         self._said: deque = deque(maxlen=8)  # (when, normalized line)
+        # Where the model hears how setup ended: the session's ClientNotes, set once it
+        # exists (agent_session.py); None, and the model is told nothing.
+        self.notes = None
+        self._by_model = False  # this setup began with the wifi_setup tool
+        self._cancelling = False  # the user's cancel is stopping the unit (_cancel)
 
     @property
     def t(self) -> i18n.T:
@@ -343,15 +357,16 @@ class WifiSetupVoice(FrameProcessor):
         return any(now - when <= ECHO_LINES_SECS and hit(line) for when, line in self._said)
 
     # -- the ways in
-    async def begin(self) -> None:
-        """Ask to confirm (the phrase, or the wifi_setup tool)."""
+    async def begin(self, by_model: bool = False) -> None:
+        """Ask to confirm (the phrase, or the wifi_setup tool: `by_model`)."""
         if self.state == "running":
+            self._by_model = self._by_model or by_model  # it asked: it hears the end
             t = self.t
             await self.say(t._("Wi-Fi setup is already running.") + (
                 " " + instructions(self._last, t) if self._last.get("phase") == "ap_up" else ""))
             return
         self.state, self._unclear, self._held = "confirm", 0, []
-        self._asked = self._clock()
+        self._asked, self._by_model = self._clock(), by_model
         await self.say(self.t._("Do you want to set up Wi-Fi? I'll go offline for a few "
                                 "minutes while you do it on your phone. Say yes or no."))
 
@@ -372,13 +387,20 @@ class WifiSetupVoice(FrameProcessor):
         if rc != 0:
             logger.warning(f"wifi setup: could not start {UNIT}: {err}")
             self.state = "idle"
+            self._ended("it could not start; nothing changed.")
             await self.say(self.t._("Sorry, I couldn't start Wi-Fi setup on this box."))
             return
         logger.info("wifi setup: started")
         self._poller = self._spawn(self._follow())
 
     async def _cancel(self) -> None:
-        rc, err = await self._run("stop", UNIT)
+        # The unit writes "stopped" on SIGTERM, before the stop returns: a poll in that
+        # gap announces it, and it is the user's cancel, not a stop from outside.
+        self._cancelling = True
+        try:
+            rc, err = await self._run("stop", UNIT)
+        finally:
+            self._cancelling = False
         if self.state != "running":
             return  # it ended on its own meanwhile, and has said so
         if rc != 0:
@@ -390,6 +412,7 @@ class WifiSetupVoice(FrameProcessor):
             return
         await self._stop_following()
         self.state = "idle"
+        self._ended(f"the user cancelled it; {_PUT_BACK}")
         await self.say(self.t._("Okay, I've stopped Wi-Fi setup and put things back as they were."))
 
     def _spawn(self, coro) -> asyncio.Task:
@@ -444,6 +467,7 @@ class WifiSetupVoice(FrameProcessor):
                 logger.warning(f"wifi setup: no status after {START_TIMEOUT_SECS:.0f}s")
                 await self._stop_unit()
                 self.state = "idle"
+                self._ended("it did not start; nothing changed.")
                 await self.say(self.t._("Wi-Fi setup didn't start. Please try again in a moment."))
                 return
             if now - started > DEADLINE_SECS:
@@ -482,8 +506,24 @@ class WifiSetupVoice(FrameProcessor):
         """The unit ended without saying how."""
         self.state = "idle"
         t = self.t
+        self._ended("it stopped without saying how (something went wrong).")
         await self.say(t._("Wi-Fi setup stopped: {reason}.").format(
             reason=t._("something went wrong")))
+
+    def _ended(self, outcome: str, online: bool = False) -> None:
+        """Tell the model how this setup ended: "Wi-Fi setup ended: <outcome>" into its
+        context (ClientNotes.add_notice). Only where the model is in the conversation: it
+        started this setup (the wifi_setup tool), or the setup left the box `online`.
+
+        A setup the phrase started (the box had no internet: the phrase works only then)
+        that ends any other way leaves the box as it was, offline, and adds nothing --
+        not even queued for later: no model can read it now, this one never heard of the
+        setup (its words were setup's), and by the time the box is online again the line
+        would be stale news out of nowhere. `outcome` is English (the context is) and
+        never holds a password."""
+        if self.notes is None or not (self._by_model or online):
+            return
+        self.notes.add_notice(f"Wi-Fi setup ended: {outcome}")
 
     async def _announce(self, status: dict) -> None:
         phase, t = status["phase"], self.t
@@ -501,18 +541,27 @@ class WifiSetupVoice(FrameProcessor):
             pass  # ap_up follows at once with the reason and the instructions again
         elif phase == "connected":
             self.state = "idle"
+            target = status.get("target")
+            self._ended((f"connected to {json.dumps(target, ensure_ascii=False)}"
+                         if target else "connected") + "; the box is online.", online=True)
             await self.say(t._("I'm connected to {network}, and I'm online again.")
                            .format(network=network))
         elif phase == "timeout":
             self.state = "idle"
+            # The reasons are English msgids (wifi.py / wifi_setup.py): no password.
+            self._ended(f"it timed out; {_PUT_BACK}" + (
+                f" The last attempt to join failed: {self._why}." if self._why else ""))
             await self.say(t._("Wi-Fi setup timed out, so I've put things back as they were."))
         elif phase == "stopped":
             # The unit was stopped from outside (systemctl, the config page, a restart)
             # and ran its restore path on the way out (wifi_setup.py, SIGTERM).
             self.state = "idle"
+            self._ended(f"the user cancelled it; {_PUT_BACK}" if self._cancelling else
+                        f"it was stopped from outside before it finished; {_PUT_BACK}")
             await self.say(t._("Okay, I've stopped Wi-Fi setup and put things back as they were."))
         elif phase == "error":
             self.state = "idle"
+            self._ended(f"it failed: {status.get('reason') or 'something went wrong'}.")
             await self.say(t._("Wi-Fi setup stopped: {reason}.").format(
                 reason=t._(status.get("reason") or N_("something went wrong"))))
 
@@ -547,6 +596,7 @@ class WifiSetupVoice(FrameProcessor):
         if self.state == "confirm" and self._clock() - self._asked > CONFIRM_SECS:
             logger.info("wifi setup: the question went unanswered — back to conversation")
             self.state, self._held = "idle", []
+            self._ended(_UNCONFIRMED)
         if self.state == "idle":
             if not heard("start", text, t):
                 return False
@@ -561,6 +611,7 @@ class WifiSetupVoice(FrameProcessor):
                 # A no to the question asked: nothing goes back to the model, which
                 # would only hand over again ("set up Wi-Fi" is a request for the tool).
                 self.state, self._held = "idle", []
+                self._ended("the user said no, so it never started.")
                 await self.say(t._("Okay, never mind."))
             elif is_yes(text, t):
                 self._held = []
@@ -571,6 +622,7 @@ class WifiSetupVoice(FrameProcessor):
                     # Not about setup after all: the model takes it, with what setup
                     # held back -- the words that started this and the answers since.
                     self.state, self._returning, self._held = "idle", self._held, []
+                    self._ended(_UNCONFIRMED)
                     return False
                 self._held.append(text)
                 await self.say(t._("Say yes to start Wi-Fi setup, or no."))

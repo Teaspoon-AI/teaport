@@ -991,6 +991,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     client_notes = (ClientNotes(context, followup_gate, followup_trigger,
                                 drop_messages=heard_corrector.drop_messages)
                     if context_notes else None)
+    if wifi is not None:
+        # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
+        # notes (no /talk), no line: the tool needs a local /talk client anyway.
+        wifi.notes = client_notes
 
     pipeline = Pipeline([p for p in [
         transport.input(),

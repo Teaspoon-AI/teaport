@@ -66,6 +66,12 @@
 # notes are refused within TEAPORT_CONTEXT_RESPOND_INTERVAL_S of the last one accepted,
 # and every note draws on a small burst allowance. Refusals are answered, never queued.
 #
+# The brain's own notices take the same way in (add_notice): something the model should
+# know that no one said to it, such as how a Wi-Fi setup it handed over ended (issue #97,
+# wifi_voice.py). Same moments, same retention, never a reaction. They are ours, so they
+# carry SYSTEM_NOTICE_TAG rather than the app-event tag, and no client limit or
+# context_result applies.
+#
 import json
 import re
 import time
@@ -176,6 +182,7 @@ class _Note:
     respond: bool
     kind: str | None
     deadline: float  # respond only: react by then or not at all
+    notice: bool = False  # the brain's own (add_notice), not a client's
 
 
 class _Bucket:
@@ -334,9 +341,25 @@ class ClientNotes(FrameProcessor):
                 reply["retry_after_ms"] = max(1, int(retry_after_s * 1000 + 0.999))
         await self.push_frame(OutputTransportMessageUrgentFrame(message=reply))
 
+    def add_notice(self, text: str):
+        """A notice of the brain's own into the context, at the next turn boundary like
+        a client's note (see the module comment); never spoken, never a turn of its own.
+        One line: what is not text is removed and whitespace folded."""
+        text = " ".join(_text_only(text).split())
+        if not text:
+            return
+        self._pending.append(_Note(text, False, None, 0.0, notice=True))
+        if len(self._pending) > self._max_notes:
+            del self._pending[: len(self._pending) - self._max_notes]
+        logger.info(f"brain notice ({len(text)} chars) -> "
+                    + ("applied" if self._gate.is_clear() else "queued"))
+        self._ensure_drainer()
+
     # ---- into the context ----------------------------------------------------
 
     def _message(self, note: _Note) -> dict:
+        if note.notice:
+            return {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n{note.text}"}
         # One line, quoted: the text is data after our tag, never a message of its own.
         return {"role": "user",
                 "content": f"{_TAG} {json.dumps(note.text, ensure_ascii=False)}"}

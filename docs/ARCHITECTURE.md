@@ -50,7 +50,11 @@ Every tool the voice model can call follows one contract
   decides whether to use the `wifi_setup` tool, the way in for when the box is
   online. Both start `teaport-wifi-setup` (`wifi_setup.py`): a temporary setup
   network with a page that phones open automatically. The brain reads the
-  setup's progress from a status file and speaks it. The spoken and displayed text is translated with
+  setup's progress from a status file and speaks it. None of that is in the model's
+  context, so when a setup the model started ends (or any setup leaves the box
+  online), one English line saying how goes into the context through the context
+  notes' path (`client_notes.py`), riding along with the next turn; it never names
+  a password. The spoken and displayed text is translated with
   Python's standard `gettext` (`i18n.py`, one `.po` catalog per voice language),
   because the brain says it itself rather than through the LLM.
 - **Text on the box's display** goes through `display.py`. A box with the OLED
