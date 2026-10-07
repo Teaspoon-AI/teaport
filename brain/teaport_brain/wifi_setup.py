@@ -63,7 +63,7 @@ from teaport_brain.i18n import N_
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service sends AP_ADDRESS:80 here with an
-# iptables DNAT rule for as long as it runs; phones only ever see port 80.
+# iptables DNAT rule while it runs (packaging/wifi-setup/wifi-setup-net names this port too).
 PAGE_PORT = 7869
 # The page is open to anyone on the setup network: a form is a few hundred bytes, a
 # request that dawdles is dropped, and only so many are served at once.

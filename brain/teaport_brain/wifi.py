@@ -19,7 +19,7 @@ from teaport_brain.i18n import N_
 
 AP_CONNECTION = "teaport-setup"
 # The setup network's address, pinned in its profile (ipv4.addresses) rather than left to
-# NetworkManager's pick: the unit's iptables DNAT (systemd/teaport-wifi-setup.service.in)
+# NetworkManager's pick: the unit's iptables DNAT (packaging/wifi-setup/wifi-setup-net)
 # and the captive DNS answer (packaging/wifi-setup/teaport-captive.conf) name it before the
 # network exists. It is NM's own shared-mode default; change all three together.
 AP_ADDRESS = "10.42.0.1"

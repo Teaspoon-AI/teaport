@@ -1629,7 +1629,8 @@ phase_sip() {
 # Wi-Fi" at the box, the brain starts teaport-wifi-setup (brain/teaport_brain/
 # wifi_setup.py), a temporary setup network teaport-ab12 with a page where a phone picks
 # the network and types its password. Three system pieces make that work as the run user:
-#   - the unit (never enabled; exits by itself);
+#   - the unit (never enabled; exits by itself) and its root-side steps, a small sh
+#     script in /usr/local/lib/teaport (wifi-setup-net), so they do not need the venv;
 #   - a polkit rule letting the run user change NetworkManager's Wi-Fi (its scope and
 #     trade-off: packaging/wifi-setup/50-teaport-wifi-setup.rules.in);
 #   - NM shared-mode DNS that answers every name with the box, so phones open the page.
@@ -1659,6 +1660,8 @@ phase_wifi_setup() {
     rm -f "$tmp"
   fi
   SUDO install -D -m 0644 -o root -g root "$pkg/teaport-captive.conf" /usr/local/lib/teaport/teaport-captive.conf
+  # The unit's root-side steps (port-80 rule, captive DNS, clean-up): sh, not the venv.
+  SUDO install -D -m 0755 -o root -g root "$pkg/wifi-setup-net" /usr/local/lib/teaport/wifi-setup-net
   SUDO install -D -m 0644 -o root -g root "$pkg/teaport-wifi-setup.tmpfiles" /etc/tmpfiles.d/teaport-wifi-setup.conf
   # An earlier version of this phase installed the captive DNS file for good.
   if ! systemctl is-active --quiet teaport-wifi-setup 2>/dev/null; then
