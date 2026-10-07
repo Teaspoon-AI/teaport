@@ -1128,7 +1128,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:252"
+source = "agent_session.py:263"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1189,7 +1189,7 @@ default = "~/.config/teaport/persona.md"
 read = "startup"
 tier = "installer"
 help = "The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir."
-source = "persona.py:230"
+source = "persona.py:236"
 
 [[settings]]
 name = "OPENCLAW_WORKSPACE"
@@ -1200,7 +1200,7 @@ default = "~/.openclaw/workspace"
 read = "startup"
 tier = "installer"
 help = "The OpenClaw workspace whose persona files the voice brain shares."
-source = "persona.py:243"
+source = "persona.py:249"
 
 [[settings]]
 name = "TEAPORT_WORKSPACE_FILES"
@@ -1211,7 +1211,7 @@ default = "SOUL.md,IDENTITY.md,USER.md,MEMORY.md"
 read = "startup"
 tier = "tuning"
 help = "Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design."
-source = "persona.py:247"
+source = "persona.py:253"
 
 [[settings]]
 name = "OPENCLAW_MEMORY_DIR"
@@ -1246,7 +1246,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The machine's live free memory, CPU load and speech-engine decode speed."
-source = "tools.py:853"
+source = "tools.py:864"
 
 [[settings]]
 name = "TEAPORT_TOOL_GET_CURRENT_TIME"
@@ -1257,7 +1257,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The local date and time."
-source = "tools.py:856"
+source = "tools.py:867"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_SEARCH"
@@ -1268,7 +1268,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:859"
+source = "tools.py:870"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_FETCH"
@@ -1279,7 +1279,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:862"
+source = "tools.py:873"
 
 [[settings]]
 name = "TEAPORT_TOOL_SEARCH_MEMORY"
@@ -1290,7 +1290,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:865"
+source = "tools.py:876"
 
 [[settings]]
 name = "TEAPORT_TOOL_REMEMBER"
@@ -1301,7 +1301,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:868"
+source = "tools.py:879"
 
 [[settings]]
 name = "TEAPORT_TOOL_ASK_OPENCLAW"
@@ -1311,8 +1311,8 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw; agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so turn both off together."
-source = "tools.py:875"
+help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
+source = "tools.py:886"
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"
@@ -1323,7 +1323,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "List the speaking voices."
-source = "tools.py:880"
+source = "tools.py:891"
 
 [[settings]]
 name = "TEAPORT_TOOL_SWITCH_VOICE"
@@ -1334,7 +1334,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Change the speaking voice (and with it the reply language)."
-source = "tools.py:883"
+source = "tools.py:894"
 
 [[settings]]
 name = "TEAPORT_TOOL_SET_VOLUME"
@@ -1345,7 +1345,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions."
-source = "tools.py:887"
+source = "tools.py:898"
 
 [[settings]]
 name = "TEAPORT_TOOL_RESTART_SESSION"
@@ -1356,7 +1356,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge)."
-source = "tools.py:892"
+source = "tools.py:903"
 
 # ---- talk client context notes
 

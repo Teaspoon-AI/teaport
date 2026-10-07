@@ -59,7 +59,8 @@ def test_the_mode_is_read_once_and_agent_first_is_ignored_without_a_gateway():
 
 
 def test_only_the_local_tools_are_advertised():
-    names = {t.name for t in tools.build_tools_schema().standard_tools}
+    voiced = tools.ToolContext(has_tts=True)  # a session's context always has its voice
+    names = {t.name for t in tools.build_tools_schema(voiced).standard_tools}
     assert names == LOCAL_TOOLS, f"advertised {sorted(names)}"
 
 

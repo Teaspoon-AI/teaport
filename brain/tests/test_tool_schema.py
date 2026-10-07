@@ -27,11 +27,14 @@ from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 
 from teaport_brain.engine_tts import ENGINE_VOICES  # noqa: E402
-from teaport_brain.tools import build_tools_schema  # noqa: E402
+from teaport_brain.tools import ToolContext, build_tools_schema  # noqa: E402
+
+# A session's context always has its voice (agent_session); the bare default has none.
+VOICED = ToolContext(has_tts=True)
 
 
 def _voice_param():
-    for tool in build_tools_schema().standard_tools:
+    for tool in build_tools_schema(VOICED).standard_tools:
         if tool.name == "switch_voice":
             return tool.properties["voice"]
     raise AssertionError("switch_voice is no longer advertised")
@@ -49,7 +52,7 @@ def test_the_advertised_voices_are_exactly_the_accepted_ones():
 def test_the_default_mode_advertises_the_gateway_tools():
     # TEAPORT_AGENT unset is `openclaw`; a box that never sets it must be unchanged.
     # test_agent_none.py pins the other mode.
-    names = {t.name for t in build_tools_schema().standard_tools}
+    names = {t.name for t in build_tools_schema(VOICED).standard_tools}
     assert names == {"get_host_status", "get_current_time", "web_search", "web_fetch",
                      "search_memory", "remember", "ask_openclaw", "list_voices",
                      "switch_voice"}, f"advertised {sorted(names)}"
