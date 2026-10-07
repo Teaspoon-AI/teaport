@@ -158,6 +158,24 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |
 | `TEAPORT_THINKING_WAV` | `<package>/assets/typing.wav` | Your own 24 kHz mono wav for the thinking bed; the default is synthesized and cached next to the code. |
 
+## Tools
+
+In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume and restart_session, a client that can do it itself (the local audio bridge announces both). A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TEAPORT_TOOL_GET_HOST_STATUS` | **on** | The machine's live free memory, CPU load and speech-engine decode speed. |
+| `TEAPORT_TOOL_GET_CURRENT_TIME` | **on** | The local date and time. |
+| `TEAPORT_TOOL_WEB_SEARCH` | **on** | Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw. |
+| `TEAPORT_TOOL_WEB_FETCH` | **on** | Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw. |
+| `TEAPORT_TOOL_SEARCH_MEMORY` | **on** | Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw. |
+| `TEAPORT_TOOL_REMEMBER` | **on** | Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw. |
+| `TEAPORT_TOOL_ASK_OPENCLAW` | **on** | Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw; agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so turn both off together. |
+| `TEAPORT_TOOL_LIST_VOICES` | **on** | List the speaking voices. |
+| `TEAPORT_TOOL_SWITCH_VOICE` | **on** | Change the speaking voice (and with it the reply language). |
+| `TEAPORT_TOOL_SET_VOLUME` | **on** | Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions. |
+| `TEAPORT_TOOL_RESTART_SESSION` | **off** | End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge). |
+
 ## Talk client context notes
 
 In `/etc/teaport/brain.env`. Limits on the notes a Talk client adds to the voice LLM's context through the plugin's `teaport.talk.context` method (client_notes.py). Read only by teaport-brain.

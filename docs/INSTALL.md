@@ -51,6 +51,10 @@ downloads. You bring your own Jetson and your own LLM.
   again — which takes the slot back from a browser session. Turn it off with
   `sudo systemctl disable --now teaport-local-audio`; re-running the installer
   keeps it off until you pass `TEAPORT_ENABLE_LOCAL_AUDIO=1` again.
+  Through it the assistant can also turn its speaker up or down when asked
+  (`set_volume`, kept across restarts), and restart the conversation from
+  scratch (`restart_session`, a testing aid that is off until you set
+  `TEAPORT_TOOL_RESTART_SESSION=1` in `/etc/teaport/brain.env`).
 - **Step 7 (optional) — Give it a face.** Wire a 128x64 SSD1306 OLED to the
   Jetson's I2C header and re-run the installer with
   `TEAPORT_ENABLE_OLED_AVATAR=1`. It fetches

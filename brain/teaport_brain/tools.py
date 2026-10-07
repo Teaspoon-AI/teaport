@@ -11,8 +11,27 @@
 # the model to speak around, never an exception into the realtime pipeline. The
 # gateway calls take ~0.5-2s; that's a brief, acceptable pause on a voice turn.
 #
-# The gateway tools exist only when the box has a gateway (TEAPORT_AGENT=openclaw, see
-# agent_backend.py). A voice-only box advertises and registers LOCAL_TOOLS alone.
+# THE TOOL CONTRACT. Every tool is one `Tool` record in TOOLS (bottom of the schemas):
+#   - its schema (what the model sees) and its handler (bound per session);
+#   - an on/off switch, TEAPORT_TOOL_<NAME>, with a per-tool default (docs/CONFIG.md
+#     "Tools"; all of today's tools default on, restart_session off);
+#   - what it NEEDS to work: "agent" (the co-resident OpenClaw gateway,
+#     TEAPORT_AGENT=openclaw, see agent_backend.py), "tts" (the session's voice), or
+#     "client:<feature>" (the connected client can do it, announced on /talk as
+#     ?features=...);
+#   - its call timeout and the phrase the system prompt names it with.
+# active_tools() is the ONE place that decides which tools a session has: the schema
+# the model is offered, the handlers registered on the LLM and the tools the system
+# prompt names (persona.build_system_prompt) all come from it, so they cannot disagree.
+# A tool switched off, or missing what it needs, is not offered, not registered and
+# not named.
+#
+# Client tools (needs "client:<feature>") are performed by the client, not here: the
+# handler sends {"type": "client_tool", "call_id", "name", "args"} and waits for the
+# client's {"type": "tool_result", "call_id", "result"} (the same message, and the same
+# consult_bridge registry, the plugin already answers consults with). Only a client
+# that announced the feature is ever asked; the local audio bridge
+# (local_audio.py) announces volume and restart.
 #
 
 import asyncio
@@ -20,6 +39,9 @@ import functools
 import os
 import re
 import time
+import uuid
+from dataclasses import dataclass, field
+from typing import Callable
 
 from loguru import logger
 
@@ -35,6 +57,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import FunctionCallParams
 
+from teaport_brain import consult_bridge
 from teaport_brain import openclaw_client as oc
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.env import env_flag
@@ -188,6 +211,34 @@ SWITCH_VOICE = FunctionSchema(
                        "the Nova voice is 'af_nova' and Liam is 'am_liam'.",
     }},
     required=["voice"],
+)
+
+SET_VOLUME = FunctionSchema(
+    name="set_volume",
+    description=(
+        "Change the volume of the speaker you talk through, when the user asks you to "
+        "be louder, quieter, or to set a level. Give either direction or level. "
+        "Returns the new level (percent) to mention in a few words."
+    ),
+    properties={
+        "direction": {"type": "string", "enum": ["louder", "quieter"],
+                      "description": "A step up or down"},
+        "level": {"type": "integer", "minimum": 0, "maximum": 100,
+                  "description": "An exact level in percent (0 is silent)"},
+    },
+    required=[],
+)
+
+RESTART_SESSION = FunctionSchema(
+    name="restart_session",
+    description=(
+        "Start a fresh conversation: this session ends and a new one begins with an "
+        "empty context and a greeting. Only when the user explicitly asks to restart, "
+        "reset, or start over. Say one short line first; the restart happens as soon "
+        "as you finish speaking."
+    ),
+    properties={},
+    required=[],
 )
 
 _BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mid-flight
@@ -714,31 +765,170 @@ async def _switch_voice(params: FunctionCallParams, tts=None):
     await params.result_callback(result)
 
 
-# The tools that read this box directly; what a gateway-less brain advertises.
-LOCAL_TOOLS = [HOST_STATUS, CURRENT_TIME, LIST_VOICES, SWITCH_VOICE]
-# The ones that call the co-resident OpenClaw gateway — advertised only when there is one.
-# Advertising them without it is not harmless: the model is told to use them, calls them,
-# and the caller hears a stall or an "I'll look into that" that goes nowhere.
-GATEWAY_TOOLS = [WEB_SEARCH, WEB_FETCH, SEARCH_MEMORY, REMEMBER, ASK_OPENCLAW]
+# ---------------------------------------------------------------- client tools
+# How long a client gets to answer a client_tool request. They are local and instant
+# (a volume change, arming a restart); a client that does not answer in this time is
+# treated as not having done it, and the model is told so.
+CLIENT_TOOL_TIMEOUT_S = 3.0
+# Every client_tool call_id starts with this (consult_bridge routes tool_results by id).
+CLIENT_CALL_PREFIX = "teaport-client-"
 
 
-def build_tools_schema() -> ToolsSchema:
-    tools = [HOST_STATUS, CURRENT_TIME]
-    if HAS_AGENT:
-        tools += GATEWAY_TOOLS
-    tools += [LIST_VOICES, SWITCH_VOICE]
-    return ToolsSchema(standard_tools=tools)
+def _client_tool(name: str):
+    """The handler for a tool the client performs: ask it, return what it answers."""
+    async def handler(params: FunctionCallParams):
+        call_id = CLIENT_CALL_PREFIX + uuid.uuid4().hex[:12]
+        fut = consult_bridge.create(call_id)
+        try:
+            await params.llm.push_frame(OutputTransportMessageUrgentFrame(message={
+                "type": "client_tool", "call_id": call_id, "name": name,
+                "args": params.arguments or {}}))
+            result = await asyncio.wait_for(fut, CLIENT_TOOL_TIMEOUT_S)
+        except asyncio.TimeoutError:
+            consult_bridge.cancel(call_id)
+            logger.warning(f"{name}: the client did not answer within {CLIENT_TOOL_TIMEOUT_S:g}s")
+            result = {"ok": False, "error": "the device did not respond"}
+        except asyncio.CancelledError:
+            consult_bridge.cancel(call_id)  # the call itself was cancelled: no result
+            raise
+        if not isinstance(result, dict):
+            result = {"ok": True, "result": result}
+        logger.info(f"{name}: {result}")
+        await params.result_callback(result)
+    return handler
 
 
-_HANDLERS = {
-    "get_host_status": _get_host_status,
-    "get_current_time": _get_current_time,
-    "web_search": _web_search,
-    "web_fetch": _web_fetch,
-    "search_memory": _search_memory,
-    "remember": _remember,
-    "ask_openclaw": _ask_openclaw,
-}
+# ---------------------------------------------------------------- the contract
+@dataclass(frozen=True)
+class ToolContext:
+    """What a session can offer its tools. The availability of a tool depends only on
+    tts and client_features, so a context built before the PipelineTask exists (for
+    the schema and the prompt) and the one register_tools builds later agree."""
+    tts: object = None
+    has_tts: bool = False
+    client_features: frozenset = frozenset()
+    followup: Callable | None = None
+    gate: object = None
+
+
+@dataclass(frozen=True)
+class Tool:
+    schema: FunctionSchema
+    # ctx -> the async handler(params) for this session.
+    bind: Callable
+    # The TEAPORT_TOOL_<NAME> switch, read at import (a literal env_flag per tool, so
+    # the config-schema drift test sees every one).
+    enabled: bool
+    needs: frozenset = frozenset()
+    timeout_secs: float | None = None
+    # How the system prompt names the tool when it composes the tools paragraph
+    # (persona.build_system_prompt). The default sets keep their tuned paragraphs.
+    hint: str = ""
+
+    @property
+    def name(self) -> str:
+        return self.schema.name
+
+    @property
+    def client(self) -> bool:
+        """Performed by the client (the prompt names these in their own sentence)."""
+        return any(n.startswith("client:") for n in self.needs)
+
+
+def _plain(handler):
+    return lambda ctx: handler
+
+
+def _bind_ask_openclaw(ctx: ToolContext):
+    # ASYNC consult (answer spoken later as a follow-up) when the session gave us the
+    # injector; agent-first passes none and consults synchronously on the turn.
+    if ctx.followup is not None:
+        return functools.partial(_ask_openclaw, followup=ctx.followup, gate=ctx.gate)
+    return _ask_openclaw
+
+
+# In the order the model is offered them.
+TOOLS: tuple[Tool, ...] = (
+    Tool(HOST_STATUS, _plain(_get_host_status),
+         env_flag("TEAPORT_TOOL_GET_HOST_STATUS", True),
+         hint="get_host_status (this machine's live free memory, CPU load, decode speed)"),
+    Tool(CURRENT_TIME, _plain(_get_current_time),
+         env_flag("TEAPORT_TOOL_GET_CURRENT_TIME", True),
+         hint="get_current_time"),
+    Tool(WEB_SEARCH, _plain(_web_search),
+         env_flag("TEAPORT_TOOL_WEB_SEARCH", True), frozenset({"agent"}),
+         hint="web_search (search the web for anything current, factual, or that you don't know)"),
+    Tool(WEB_FETCH, _plain(_web_fetch),
+         env_flag("TEAPORT_TOOL_WEB_FETCH", True), frozenset({"agent"}),
+         hint="web_fetch (read a specific web page)"),
+    Tool(SEARCH_MEMORY, _plain(_search_memory),
+         env_flag("TEAPORT_TOOL_SEARCH_MEMORY", True), frozenset({"agent"}),
+         hint="search_memory (recall what the user told you before, by voice or text)"),
+    Tool(REMEMBER, _plain(_remember),
+         env_flag("TEAPORT_TOOL_REMEMBER", True), frozenset({"agent"}),
+         hint="remember (save a fact the user asks you to remember)"),
+    # ask_openclaw runs a full agent turn (~15-35s); pipecat's default 10s
+    # function-call timeout abandons it mid-flight and discards the answer that
+    # arrives later (the "weather never came back" bug). Its ceiling sits above the
+    # handler's own consult caps; the fast tools keep pipecat's 10s.
+    Tool(ASK_OPENCLAW, _bind_ask_openclaw,
+         env_flag("TEAPORT_TOOL_ASK_OPENCLAW", True), frozenset({"agent"}),
+         timeout_secs=_ASK_OPENCLAW_TIMEOUT,
+         hint="ask_openclaw (your full desktop agent — every tool, deeper thinking; for "
+              "multi-step or open-ended requests your quick tools can't handle)"),
+    Tool(LIST_VOICES, lambda ctx: functools.partial(_list_voices, tts=ctx.tts),
+         env_flag("TEAPORT_TOOL_LIST_VOICES", True), frozenset({"tts"}),
+         hint="list_voices (your speaking voices)"),
+    Tool(SWITCH_VOICE, lambda ctx: functools.partial(_switch_voice, tts=ctx.tts),
+         env_flag("TEAPORT_TOOL_SWITCH_VOICE", True), frozenset({"tts"}),
+         hint="switch_voice (change your speaking voice; if the user starts speaking a "
+              "different language, switch to a voice for that language and reply in it)"),
+    Tool(SET_VOLUME, _plain(_client_tool("set_volume")),
+         env_flag("TEAPORT_TOOL_SET_VOLUME", True), frozenset({"client:volume"}),
+         hint="set_volume (make your speaker louder or quieter when the user asks)"),
+    # Off by default: a testing aid. On, the model can wipe a conversation on a request
+    # it misheard.
+    Tool(RESTART_SESSION, _plain(_client_tool("restart_session")),
+         env_flag("TEAPORT_TOOL_RESTART_SESSION", False), frozenset({"client:restart"}),
+         hint="restart_session (start a fresh conversation, only when the user explicitly "
+              "asks to restart or start over)"),
+)
+TOOLS_BY_NAME = {t.name: t for t in TOOLS}
+# The client features a /talk client may announce (?features=): one per client tool.
+CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
+                            if n.startswith("client:"))
+
+
+def parse_client_features(raw: str | None) -> frozenset:
+    """?features=volume,restart -> the known ones (an unknown name is ignored)."""
+    names = {f.strip().lower() for f in (raw or "").split(",") if f.strip()}
+    unknown = names - CLIENT_FEATURES
+    if unknown:
+        logger.warning(f"client announced unknown features {sorted(unknown)} — ignored")
+    return frozenset(names & CLIENT_FEATURES)
+
+
+def _has(need: str, ctx: ToolContext) -> bool:
+    if need == "agent":
+        return HAS_AGENT
+    if need == "tts":
+        return ctx.has_tts or ctx.tts is not None
+    if need.startswith("client:"):
+        return need.split(":", 1)[1] in ctx.client_features
+    raise ValueError(f"unknown tool need {need!r}")
+
+
+def active_tools(ctx: ToolContext | None = None) -> list[Tool]:
+    """THE tools this session has: switched on, with everything they need."""
+    ctx = ctx or ToolContext(has_tts=True)
+    return [t for t in TOOLS if t.enabled and all(_has(n, ctx) for n in t.needs)]
+
+
+def build_tools_schema(ctx: ToolContext | None = None) -> ToolsSchema:
+    """The schema the model is offered. Without a context: a session with a voice and a
+    client that announced nothing (what SIP and the OpenClaw plugin get)."""
+    return ToolsSchema(standard_tools=[t.schema for t in active_tools(ctx)])
+
 
 # "Working on it" speech is primarily the MODEL's job: VOICE_OVERLAY tells it to say
 # one short, request-specific line before a web search/fetch, so the wording varies
@@ -862,11 +1052,13 @@ def _wrap(name, handler, lang_fn):
     return wrapped
 
 
-def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None) -> None:
-    """Wire the tool handlers onto `llm`. `followup`, if given, is an async
-    `(request, text|None) -> None` injector that speaks a background consult's answer
-    as an unprompted turn; providing it switches ask_openclaw to the ASYNC path.
-    `gate` (a FollowupGate), if given, lets the consult narrator wait for a
+def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
+                   client_features: frozenset = frozenset()) -> None:
+    """Wire the handlers of active_tools() onto `llm` — exactly the tools
+    build_tools_schema offered for the same tts and client_features. `followup`, if
+    given, is an async `(request, text|None) -> None` injector that speaks a background
+    consult's answer as an unprompted turn; providing it switches ask_openclaw to the
+    ASYNC path. `gate` (a FollowupGate), if given, lets the consult narrator wait for a
     conversational gap before speaking its progress lines."""
     _install_spoke_tracker(llm)
     if tts is not None:
@@ -877,26 +1069,8 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None)
     else:
         def lang_fn():
             return (lang or "en-us").split("-")[0]
-    handlers = dict(_HANDLERS)
-    if not HAS_AGENT:
-        # Drop only the tools that NEED a gateway (a handler for one could still be
-        # reached by a model that hallucinates the name, and it would fail slowly
-        # against a gateway that is not there). Filtering against GATEWAY_TOOLS
-        # rather than requiring membership in LOCAL_TOOLS means a future local-only
-        # _HANDLERS entry is kept by default instead of silently dropped if someone
-        # forgets to also add it to LOCAL_TOOLS.
-        gateway_names = {t.name for t in GATEWAY_TOOLS}
-        handlers = {n: h for n, h in handlers.items() if n not in gateway_names}
-    if tts is not None:
-        handlers["list_voices"] = functools.partial(_list_voices, tts=tts)
-        handlers["switch_voice"] = functools.partial(_switch_voice, tts=tts)
-    if followup is not None and HAS_AGENT:
-        handlers["ask_openclaw"] = functools.partial(_ask_openclaw, followup=followup,
-                                                      gate=gate)
-    for name, handler in handlers.items():
-        # ask_openclaw runs a full agent turn (~15-35s); pipecat's default 10s
-        # function-call timeout abandons it mid-flight and discards the answer
-        # that arrives later (the "weather never came back" bug). Give it a
-        # ceiling above the handler's own consult caps; the fast tools keep 10s.
-        kw = {"timeout_secs": _ASK_OPENCLAW_TIMEOUT} if name == "ask_openclaw" else {}
-        llm.register_function(name, _wrap(name, handler, lang_fn), **kw)
+    ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
+                      followup=followup if HAS_AGENT else None, gate=gate)
+    for tool in active_tools(ctx):
+        kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}
+        llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn), **kw)

@@ -327,7 +327,7 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == "ws://h/talk?token=a%2Bb%26c%3Dd%20%25"
+    assert la._url() == "ws://h/talk?features=volume,restart&token=a%2Bb%26c%3Dd%20%25"
 
 
 # ------------------------------------------------- the reconnect policy, end to end
@@ -355,6 +355,7 @@ def _fake_card(monkeypatch, capture_script, flag):
     monkeypatch.setattr(la, "DEVICE", "fake")
     monkeypatch.setattr(la, "RETRY_SECS", 0.3)
     monkeypatch.setattr(la, "FACE_SOCK", os.path.join(tempfile.mkdtemp(), "face.sock"))
+    monkeypatch.setattr(la, "VOLUME_FILE", os.path.join(tempfile.mkdtemp(), "volume.json"))
 
 
 async def _talk(on_connect):
@@ -462,3 +463,88 @@ def test_face_thinking_sound_after_a_reply_still_shows_thinking():
         clock.t += 0.03
     face.quiet()
     assert sent[-1] == {"state": "thinking"}
+
+
+# ------------------------------------------------- client tools (tools.py's contract)
+
+def test_volume_steps_levels_and_persists(tmp_path):
+    path = str(tmp_path / "state" / "volume.json")
+    v = la.Volume(path)
+    assert v.percent == 100 and v.gain == 1.0                    # first run: full volume
+    assert v.apply({"direction": "louder"}) == {"ok": True, "volume": 100,
+                                                 "note": "already at the top"}
+    assert v.apply({"direction": "quieter"})["volume"] == 90
+    assert v.apply({"level": 35})["volume"] == 35
+    assert v.apply({"level": 250})["volume"] == 100              # clamped
+    assert v.apply({"level": 0})["volume"] == 0 and v.gain == 0.0
+    assert v.apply({"level": "loud"})["ok"] is False
+    assert v.apply({})["ok"] is False
+    v.apply({"level": 50})
+    again = la.Volume(path)                                      # a new session / reboot
+    assert again.percent == 50
+    assert abs(20 * np.log10(again.gain) + la.VOLUME_RANGE_DB / 2) < 1e-6
+
+
+def test_volume_scales_the_card_not_the_mouth():
+    clock, sunk = _Clock(), []
+    play = la.Playback(sunk.append, clock, gain=lambda: 0.1)
+    play.push(_tone(24000, 0.2).tobytes(), voiced=True)
+    play.pump()
+    out = np.frombuffer(b"".join(sunk), dtype="<i2")
+    assert 0 < np.abs(out).max() <= 0.1 * 8000 * 1.05           # 20 dB down at the card
+    assert play.mouth_due(clock.t) > 0.5                         # the mouth still opens fully
+
+
+def test_client_tools_dispatch():
+    class Card:
+        volume = la.Volume(os.path.join(tempfile.mkdtemp(), "v.json"))
+    restart = asyncio.Event()
+    r = la.client_tool(Card, {"name": "set_volume", "args": {"level": 40}}, restart)
+    assert r == {"ok": True, "volume": 40} and not restart.is_set()
+    r = la.client_tool(Card, {"name": "restart_session", "args": {}}, restart)
+    assert r["ok"] and restart.is_set()
+    r = la.client_tool(Card, {"name": "unlock_door"}, restart)
+    assert r == {"ok": False, "error": "this device cannot do unlock_door"}
+
+
+def test_restart_session_redials_at_once_without_a_voice(monkeypatch):
+    """restart_session: the bridge answers the tool, lets the goodbye play (none here,
+    so it waits RESTART_SPEECH_WAIT_SECS), ends the session and dials a fresh one
+    straight away — no voice needed, unlike a session the brain ended."""
+    flag = tempfile.mktemp()                       # never created: nobody speaks
+    _fake_card(monkeypatch, ARECORD, flag)
+    monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 0.3)
+    got = {}
+
+    async def run():
+        async def on_connect(ws, n):
+            got.setdefault("paths", []).append(ws.request.path)
+            if n == 1:
+                await ws.send(json.dumps({"type": "client_tool", "call_id": "teaport-client-x",
+                                          "name": "restart_session", "args": {}}))
+                while True:                        # skip mic audio to the tool_result
+                    msg = await asyncio.wait_for(ws.recv(), 2)
+                    if isinstance(msg, str):
+                        got["result"] = json.loads(msg)
+                        break
+            try:
+                await ws.wait_closed()             # the bridge hangs up, not us
+            except Exception:  # noqa: BLE001
+                pass
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        for _ in range(80):
+            await asyncio.sleep(0.05)
+            if count[0] == 2:
+                break
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return count[0]
+
+    assert asyncio.run(run()) == 2
+    assert got["result"]["type"] == "tool_result" and got["result"]["call_id"] == "teaport-client-x"
+    assert got["result"]["result"]["ok"] is True
+    assert all("features=volume,restart" in p for p in got["paths"]), got["paths"]

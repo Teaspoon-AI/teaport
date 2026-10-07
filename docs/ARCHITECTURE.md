@@ -21,5 +21,26 @@ One appliance, three parts:
 
 Your voice does not leave the device. The LLM runs where you point it.
 
+## Tools
+
+Every tool the voice model can call follows one contract
+(`brain/teaport_brain/tools.py`, *THE TOOL CONTRACT*):
+
+- **One record per tool.** Each tool has its schema, its handler, an on/off
+  switch (`TEAPORT_TOOL_<NAME>`, see docs/CONFIG.md → Tools), its call timeout
+  and the phrase the system prompt names it with.
+- **What it needs.** A tool can need the OpenClaw gateway (web, memory,
+  `ask_openclaw`), the session's voice (`list_voices`, `switch_voice`), or a
+  client that can do it itself (`set_volume`, `restart_session`).
+- **One decision.** `active_tools()` picks a session's tools, and three things
+  are built from that one list: the schema the model is offered, the handlers
+  on the LLM and the tools the system prompt names. A tool that is off, or
+  missing what it needs, appears in none of them.
+- **Client tools.** The client performs these, not the brain. A `/talk` client
+  announces what it can do (`?features=volume,restart`). The brain then sends it
+  `{"type":"client_tool", ...}` and waits for its `{"type":"tool_result", ...}`.
+  The local audio bridge is the only client that announces features; the
+  OpenClaw plugin, SIP and Discord announce none and never see these tools.
+
 TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
 consult paths.

@@ -11,7 +11,9 @@
 #       binary frame              raw PCM16 24 kHz mono  -> InputAudioRawFrame
 #       text {"type":"close"}                            -> EndFrame
 #       text {"type":"barge_in"}                         -> None (VAD owns barge-in)
-#       text {"type":"tool_result",...}                  -> None (consult_bridge)
+#       text {"type":"tool_result",...}                  -> None (consult_bridge: a
+#                                                           consult's answer, or a
+#                                                           client tool's result)
 #       text {"type":"context","id":...,"text":...,"respond":bool[,"kind":...]}
 #                                                        -> ClientContextFrame
 #                                                           (client_notes.py)
@@ -29,6 +31,12 @@
 #             adapts it to how the OpenClaw version merges transcripts.
 #             Assistant captions carry "utterance" (their TTS context id).
 #           {"type":"context_result","id":...,"ok":bool,...}  (answers a context note)
+#           {"type":"client_tool","call_id":...,"name":...,"args":{...}}
+#                                                         (a tool the client performs —
+#                                                           set_volume, restart_session —
+#                                                           sent only to a client that
+#                                                           announced it in ?features=;
+#                                                           answered with a tool_result)
 #
 # Pipecat serializes audio (write_audio_frame) and OutputTransportMessage frames
 # (send_message); it never serializes transcripts itself, so the emitters in

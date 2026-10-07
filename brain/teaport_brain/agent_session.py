@@ -86,6 +86,8 @@ from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.tools import (
     AGENT_FIRST,
+    ToolContext,
+    active_tools,
     build_tools_schema,
     register_tools,
 )
@@ -758,7 +760,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         stt_makeup_db: float = 0.0,
                         caption_every_final: bool = False,
                         context_notes: bool = False,
-                        reply_hold_enabled: bool = False) -> AgentSession:
+                        reply_hold_enabled: bool = False,
+                        client_features: frozenset = frozenset()) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -777,6 +780,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     - context_notes: the front-end takes a Talk client's context notes (/talk, the
       teaport.talk.context method): ClientNotes joins the pipeline and the system
       prompt gets its one line (client_notes.py). SIP leaves it off.
+    - client_features: what the connected client can do itself (a /talk client's
+      ?features=, tools.parse_client_features): offers the client tools that need
+      them (set_volume, restart_session). SIP passes none.
     - reply_hold_enabled: hold a reply's first audio while the caller is talking
       (reply_hold.py). Per front-end: sip_server passes reply_hold.SIP_ENABLED (on by
       default), gateway_server reply_hold.TALK_ENABLED (off by default).
@@ -805,13 +811,17 @@ def build_agent_session(transport, *, voice: str | None = None,
     # source is unreachable, so the loop never hard-fails on a persona lookup.
     persona = load_persona()
     logger.info(f"Phase 1: loaded shared persona ({len(persona)} chars)")
-    system_prompt = build_system_prompt(persona)
+    # One tool set for the schema, the prompt and (below) the handlers: tools.active_tools.
+    tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features))
+    session_tools = active_tools(tool_ctx)
+    logger.info(f"tools: {', '.join(t.name for t in session_tools) or 'none'}")
+    system_prompt = build_system_prompt(persona, tools=session_tools)
     # If a non-English voice/language was selected, tell the LLM to reply in it too
     # (the voice only changes pronunciation; the words still come from the LLM).
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
     context = LLMContext(
         _build_initial_messages(system_prompt, lang_name, context_notes=context_notes),
-        tools=build_tools_schema(),
+        tools=build_tools_schema(tool_ctx),
     )
     if AGENT_FIRST:
         logger.info("AGENT-FIRST mode active: every turn delegates to the OpenClaw agent")
@@ -1066,7 +1076,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                                                followup_trigger, ledger),
                    # Lets the consult narrator fit its progress lines into a gap
                    # rather than talking over the user (see _consult_progress).
-                   gate=followup_gate)
+                   gate=followup_gate,
+                   client_features=tool_ctx.client_features)
 
     return AgentSession(
         task=task,

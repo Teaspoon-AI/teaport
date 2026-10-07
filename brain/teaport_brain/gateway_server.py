@@ -55,6 +55,7 @@ from teaport_brain.gateway_serializer import (
     TeaportGatewaySerializer,
 )
 from teaport_brain.captions import sends_every_final
+from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 
@@ -99,6 +100,9 @@ async def run_relay_bot(websocket: WebSocket):
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),
         context_notes=True,
+        # What the client can do itself (the local audio bridge: volume, restart);
+        # the client tools that need it are offered only then (tools.py, THE TOOL CONTRACT).
+        client_features=parse_client_features(qp.get("features")),
         input_processors=input_procs,
         # Off by default on Talk until measured there (reply_hold.TALK_ENABLED).
         reply_hold_enabled=reply_hold.TALK_ENABLED,
