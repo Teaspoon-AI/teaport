@@ -117,6 +117,11 @@ title = "Talk client context notes"
 blurb = "Limits on the notes a Talk client adds to the voice LLM's context through the plugin's `teaport.talk.context` method (client_notes.py). Read only by teaport-brain."
 
 [[groups]]
+id = "busy_lamp"
+title = "Busy lamp"
+blurb = "The ReSpeaker XVF3800's LED ring as a busy lamp (BLF) for phone calls (xvf_led.py): solid red while a call is live, then back to what it showed before, normally the firmware's own listening effect (the direction of the voice it hears). It follows the session arbiter's call claim, so it also goes back to normal when the call is torn down with the SIP front-end or the brain restarts or dies (the look to restore is kept in /run/teaport-busy-lamp until it is put back). The ring is driven by USB control transfers beside the audio streams; install.sh lays down a udev rule (/etc/udev/rules.d/60-teaport-xvf3800.rules) giving the device to the teaport-hw group, and puts the run user in it. A box without an XVF3800 does nothing. Read only by teaport-brain."
+
+[[groups]]
 id = "sip_brain"
 title = "SIP front-end"
 blurb = "Read by teaport-brain's SIP front-end (phone calls); Talk sessions ignore them."
@@ -1529,6 +1534,33 @@ tier = "tuning"
 help = "Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited."
 source = "client_notes.py:101"
 
+# ---- busy lamp
+
+[[settings]]
+name = "TEAPORT_BUSY_LAMP"
+store = "brain_env"
+group = "busy_lamp"
+services = ["teaport-brain"]
+type = "enum"
+values = ["auto", "off"]
+default = "auto"
+read = "startup"
+tier = "setup"
+help = "auto lights the XVF3800's ring during a phone call when one is plugged in; off never touches the ring."
+source = "xvf_led.py:64"
+
+[[settings]]
+name = "TEAPORT_BUSY_LAMP_COLOR"
+store = "brain_env"
+group = "busy_lamp"
+services = ["teaport-brain"]
+type = "string"
+default = "ff0000"
+read = "startup"
+tier = "tuning"
+help = "The lamp's colour, as RRGGBB hex (ff0000 is red). Anything else warns and falls back to red."
+source = "xvf_led.py:78"
+
 # ---- sip brain
 
 [[settings]]
@@ -1709,7 +1741,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:67"
+source = "gateway_server.py:68"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1721,7 +1753,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can replace a client's session by claiming its id; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:75"
+source = "gateway_server.py:76"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"

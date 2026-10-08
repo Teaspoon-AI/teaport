@@ -821,6 +821,51 @@ brain_install_tools() {
     SUDO install -d -m 0755 -o root -g root "$(dirname "$CONFIG_HELPER")"
     SUDO install -m 0755 -o root -g root "$helper" "$CONFIG_HELPER"
   fi
+  install_busy_lamp
+}
+
+# The phone busy lamp (brain/teaport_brain/xvf_led.py): the brain turns a ReSpeaker
+# XVF3800's LED ring red during a call, with USB control transfers on the device's
+# usbfs node -- root's alone unless a udev rule hands it to the teaport-hw group, which
+# the run user is put in (teaport-brain.service.in names it too). A group of its own,
+# not plugdev: the node reaches every interface of the device, its DFU one included.
+# Laid down whether or not one is plugged in (the rule matches only its 2886:001a); here
+# rather than in phase_local_audio so that --only brain, which ships the lamp, ships its
+# access too. The trigger re-applies the rule to a device already plugged in, without a
+# replug: a "change" event on the USB device only, which leaves its audio driver bound.
+# The tmpfiles.d line makes the lamp's marker directory on /run (xvf_led.MARKER): kept
+# across a brain crash, cleared by a reboot.
+BUSY_LAMP_GROUP=teaport-hw
+install_busy_lamp() {
+  local rule=/etc/udev/rules.d/60-teaport-xvf3800.rules src
+  local tmpfiles=/etc/tmpfiles.d/teaport-busy-lamp.conf tmp
+  src="$(dirname "$SRC_DIR")/packaging/xvf3800/60-teaport-xvf3800.rules"
+  if [ ! -f "$src" ]; then src="$HERE/packaging/xvf3800/60-teaport-xvf3800.rules"; fi
+  # The group first, and whatever else is skipped: the brain unit names it
+  # (SupplementaryGroups=), and a unit naming a group that does not exist will not start.
+  if ! getent group "$BUSY_LAMP_GROUP" >/dev/null; then SUDO groupadd --system "$BUSY_LAMP_GROUP"; fi
+  if ! contains " $BUSY_LAMP_GROUP " " $(id -nG "$RUN_USER" 2>/dev/null) "; then
+    SUDO usermod -aG "$BUSY_LAMP_GROUP" "$RUN_USER"
+    warn "busy lamp: added $RUN_USER to $BUSY_LAMP_GROUP — the brain picks it up at its next restart (systemctl restart teaport-brain)"
+  fi
+  if [ ! -f "$src" ] || ! have udevadm; then
+    log "busy lamp: no udev rule source or no udevadm — skipped (the ring stays the room's)"
+    return 0
+  fi
+  log "busy lamp: udev rule -> $rule (group $BUSY_LAMP_GROUP may set the XVF3800's LED ring)"
+  SUDO install -D -m 0644 -o root -g root "$src" "$rule"
+  SUDO udevadm control --reload \
+    || warn "busy lamp: udevadm control --reload failed — the rule applies from the next boot"
+  SUDO udevadm trigger --action=change --subsystem-match=usb \
+    --attr-match=idVendor=2886 --attr-match=idProduct=001a \
+    || warn "busy lamp: udevadm trigger failed — replug the XVF3800 or reboot for the rule to apply"
+  tmp="$(mktemp)"
+  printf '%s\n' "# teaport busy lamp: the ring's look to restore after a brain crash (xvf_led.MARKER)" \
+    "d /run/teaport-busy-lamp 0700 $RUN_USER $RUN_USER -" > "$tmp"
+  SUDO install -D -m 0644 -o root -g root "$tmp" "$tmpfiles"
+  rm -f "$tmp"
+  SUDO systemd-tmpfiles --create "$tmpfiles" \
+    || warn "busy lamp: systemd-tmpfiles failed — /run/teaport-busy-lamp appears at the next boot"
 }
 
 # Which agent hosts the realtime-voice plugin: "nemoclaw" (OpenClaw inside NVIDIA's docker

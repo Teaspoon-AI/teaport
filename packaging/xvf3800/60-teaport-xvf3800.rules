@@ -1,0 +1,6 @@
+# teaport: the brain sets the ReSpeaker XVF3800's LED ring -- the phone busy lamp,
+# brain/teaport_brain/xvf_led.py -- with USB control transfers on its usbfs node, which
+# is root's alone without this. teaport-hw: a group of its own for it, which the
+# installer puts the run user in (plugdev would hand every user in it the whole device,
+# DFU interface included). Installed by install.sh (install_busy_lamp).
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ATTR{idVendor}=="2886", ATTR{idProduct}=="001a", MODE="0660", GROUP="teaport-hw"

@@ -35,6 +35,7 @@ import os
 import re
 import sys
 import time
+from contextlib import asynccontextmanager
 
 import uvicorn
 from fastapi import FastAPI, Request, WebSocket
@@ -51,7 +52,7 @@ from pipecat.transports.websocket.fastapi import (
 )
 
 from teaport_brain.agent_session import build_agent_session
-from teaport_brain import agent_backend, audio_dump, config_ui, reply_hold, sdnotify, wake_gate
+from teaport_brain import agent_backend, audio_dump, config_ui, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
 from teaport_brain.gateway_serializer import (
@@ -105,10 +106,50 @@ CALL_CLOSE_REASON = "a phone call came in"
 ROOM_KEEPALIVE_SECS = 45.0
 # How long a Talk session a call ends may take to say so before it is closed anyway.
 CALL_LINE_MAX_SECS = 8.0
+# Set whenever the session arbiter's holder changes, so the busy lamp follows a call's
+# start and end at once (_busy_lamp). Made by the lamp's own task, on the loop that
+# waits on it.
+_lamp_wake: asyncio.Event | None = None
+LAMP_POLL_SECS = 1.0    # during a call: how soon a re-enumerated ring is lit again
+LAMP_RETRY_SECS = 15.0  # after a failed write (logged once in xvf_led)
 
 
 def call_live() -> bool:
     return arb.ARBITER.call_live()
+
+
+async def _busy_lamp() -> None:
+    """The XVF3800's LED ring as the phone's busy lamp (xvf_led.py): red while a call
+    holds the engine (call_live, the session arbiter's call claim), the room's own effect
+    otherwise -- however the call ended: hung up, torn down with the SIP front-end, this
+    brain stopping (the finally, after the SIP teardown: _ReadyServer.shutdown) or dying
+    (the first pass of the next one restores the ring from xvf_led's marker). It follows
+    call_live() and nothing else, woken by the arbiter's holder changes, so this is the
+    one place the lamp is driven from. During a call it asks every pass, not only on a
+    change: busy() is idempotent, and a ring that re-enumerated mid-call (a replug, a
+    reset) comes back unlit."""
+    global _lamp_wake
+    _lamp_wake = wake = asyncio.Event()
+    arb.ARBITER.listeners.append(wake.set)  # sync, on this loop (SessionArbiter._set_holder)
+    shown, retry_at = None, 0.0
+    try:
+        while True:
+            live = call_live()
+            if (live or live is not shown) and time.monotonic() >= retry_at:
+                # Off the loop: a few ms of USB, up to xvf_led.TIMEOUT_MS on a wedged device.
+                if await asyncio.to_thread(xvf_led.busy, live):
+                    shown = live
+                else:
+                    retry_at = time.monotonic() + LAMP_RETRY_SECS
+            try:
+                await asyncio.wait_for(wake.wait(), LAMP_POLL_SECS)
+            except asyncio.TimeoutError:
+                pass
+            wake.clear()
+    finally:
+        arb.ARBITER.listeners.remove(wake.set)
+        _lamp_wake = None
+        await asyncio.to_thread(xvf_led.busy, False)  # a no-op unless it is lit
 
 
 def _close_with(websocket, code: int, reason: str) -> None:
@@ -385,7 +426,20 @@ async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) ->
             pass
 
 
-app = FastAPI()
+@asynccontextmanager
+async def _lifespan(_app):
+    lamp = asyncio.create_task(_busy_lamp())
+    try:
+        yield
+    finally:
+        lamp.cancel()
+        try:
+            await lamp
+        except asyncio.CancelledError:
+            pass
+
+
+app = FastAPI(lifespan=_lifespan)
 # The config page + its JSON routes ride this app rather than a process of their
 # own: on the 8 GB box a second Python service is memory the engine reserve
 # wants. They share /talk's GATEWAY_TOKEN. See config_ui.py.

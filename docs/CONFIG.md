@@ -210,6 +210,15 @@ In `/etc/teaport/brain.env`. Limits on the notes a Talk client adds to the voice
 | `TEAPORT_CONTEXT_MAX_NOTES` | **20** (≥ 1) | How many context notes stay in the LLM context; past it the oldest are removed. |
 | `TEAPORT_CONTEXT_RESPOND_INTERVAL_S` | **15** s (≥ 0) | Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited. |
 
+## Busy lamp
+
+In `/etc/teaport/brain.env`. The ReSpeaker XVF3800's LED ring as a busy lamp (BLF) for phone calls (xvf_led.py): solid red while a call is live, then back to what it showed before, normally the firmware's own listening effect (the direction of the voice it hears). It follows the session arbiter's call claim, so it also goes back to normal when the call is torn down with the SIP front-end or the brain restarts or dies (the look to restore is kept in /run/teaport-busy-lamp until it is put back). The ring is driven by USB control transfers beside the audio streams; install.sh lays down a udev rule (/etc/udev/rules.d/60-teaport-xvf3800.rules) giving the device to the teaport-hw group, and puts the run user in it. A box without an XVF3800 does nothing. Read only by teaport-brain.
+
+| Setting | Default | Description |
+|---|---|---|
+| `TEAPORT_BUSY_LAMP` | `auto` | auto lights the XVF3800's ring during a phone call when one is plugged in; off never touches the ring. One of `auto`, `off`. |
+| `TEAPORT_BUSY_LAMP_COLOR` | `ff0000` | The lamp's colour, as RRGGBB hex (ff0000 is red). Anything else warns and falls back to red. |
+
 ## SIP front-end
 
 In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls); Talk sessions ignore them.
