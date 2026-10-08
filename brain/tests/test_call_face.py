@@ -365,7 +365,7 @@ def test_caller_id_formatting():
             ('<tel:+1-346-234-8500>', SHOWN),
             ('<sip:+442071234567@x>', "+442071234567"),               # not NANP: as sent
             ('<sip:3462348500@x>', "3462348500"),                     # 10 digits: as sent
-            ('<sip:alice@example.com>', None),                         # no number to show
+            ('<sip:alice@example.com>', "alice"),
             ('"O\\"Brien" <sip:1@x>', 'O"Brien'),
             ('"  wireless   caller " <sip:13462348500@x>', SHOWN),
             ('"Unavailable" <sip:+13462348500@x>', SHOWN),           # no name: the number
@@ -382,7 +382,11 @@ def test_caller_id_formatting():
             ('"Blocked" <sip:13462348500@x>', SHOWN),
             ('"Caller ID blocked" <sip:13462348500@x>', SHOWN),
             ('"No Caller ID" <sip:13462348500@x>', SHOWN),
-            ('<sip:Restricted@x>', None),
+            ('<sip:Restricted@x>', None),                             # nothing identifying
+            ('"Anonymous" <sip:anonymous@x>', None),
+            ('"Private" <sip:unavailable@x>', None),
+            ('"Blocked" <sip:@x>', None),
+            ('"Withheld" <sip:bob.jones@x>', "bob.jones"),             # the user identifies
             ('"WIRELESS CALLER" <sip:anonymous@anonymous.invalid>', None),
             ('"Alice" <sip:13462348500@anonymous.invalid>', "Alice"),   # a name is a name
             ('"Alice" <sip:anonymous@x>', "Alice"),

@@ -265,8 +265,9 @@ _GATEWAY_POLL_S = 0.5
 CALL_FACE = display.CallFace()
 
 # Display names that stand in for a name the carrier does not have, or that say the
-# caller withheld one: shown as the number instead, whenever the From URI carries one
-# (the box works for its owner), or the handset alone when there is none.
+# caller withheld one: shown as the number (or SIP user) instead, whenever the From URI
+# carries one (the box works for its owner), or the handset alone when there is none.
+# As a URI user, the same words identify no one.
 _NO_NAME = frozenset({
     "", "WIRELESS CALLER", "UNKNOWN", "UNKNOWN CALLER", "UNKNOWN NAME", "UNAVAILABLE",
     "OUT OF AREA", "ANONYMOUS", "PRIVATE", "PRIVATE CALLER", "PRIVATE NUMBER",
@@ -279,8 +280,9 @@ def caller_id(from_header) -> str | None:
     """Who a call says it is from, for the face and the question: the display name in
     its SIP From header unless that is a placeholder ("WIRELESS CALLER", "Anonymous",
     "Restricted", ...), else the number in the URI, readable (+1 346 234 8500 for an
-    11-digit NANP number, as sent otherwise). None when there is no number to show
-    (anonymous@anonymous.invalid, a URI user with no digits)."""
+    11-digit NANP number, as sent otherwise), else the SIP user. None only when nothing
+    identifies the caller: an anonymous.invalid host, or a URI user that is itself a
+    placeholder (anonymous, restricted, unavailable, empty, ...)."""
     if not isinstance(from_header, str):
         return None
     m = _NAME_ADDR.match(from_header)
@@ -294,8 +296,8 @@ def caller_id(from_header) -> str | None:
         return name
     user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
     user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
-    if host.split(";", 1)[0].lower().startswith("anonymous.invalid") or not re.search(r"\d", user):
-        return None
+    if host.split(";", 1)[0].lower().startswith("anonymous.invalid") or user.upper() in _NO_NAME:
+        return None  # nothing identifying: no number, no name (anonymous, restricted, "")
     digits = re.sub(r"[\s().-]", "", user)
     if re.fullmatch(r"\+?1\d{10}", digits):
         d = digits.lstrip("+")
