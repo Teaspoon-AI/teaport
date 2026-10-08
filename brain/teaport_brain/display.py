@@ -159,3 +159,107 @@ class Screen:
             with self._lock:
                 if self._held:
                     self._put(self._held)
+
+
+# --- The phone line on the face ---------------------------------------------------------
+# {"call": {"state": "ringing", "caller": ..., "ttl": ...}} while a call rings (the whole
+# panel: a handset and who is calling), "active" while the box is on it (a small handset
+# under the left eye), "none" when it is over (the avatar's README, "call"). Held calls are
+# re-sent every CALL_REFRESH_SECS with a ttl of CALL_TTL_SECS, so a brain that dies mid-call
+# leaves the phone up for one ttl at most. The avatar keeps the face awake while a call is
+# up, and asleep again after it if that was the last state it was sent.
+#
+# Only to an avatar whose features file says "call": one from before calls takes the
+# datagram, draws nothing and logs it whole, caller id and all. The caller id is personal
+# data: nothing here logs it.
+CALL_REFRESH_SECS = 4.0
+CALL_TTL_SECS = 10.0
+RINGING, ACTIVE = "ringing", "active"
+
+
+class CallFace:
+    """The phone on the avatar's face, for one phone line: ringing(), active(), end().
+    Each is for a call id, and end() for another call than the one shown (a stale
+    hangup for a call the gateway has already replaced) changes nothing. `state` is what
+    is shown (RINGING, ACTIVE or None), whether or not an avatar draws it, and
+    `listeners` are called (sync, no arguments, on the caller's thread) when it changes:
+    the busy lamp follows the ringing from here."""
+
+    def __init__(self, path: str = SOCK, refresh_secs: float = CALL_REFRESH_SECS,
+                 send=send, features=features):
+        self._path, self._refresh, self._send, self._features = path, refresh_secs, send, features
+        self.state: str | None = None
+        self.call_id = None
+        self._caller: str | None = None
+        self.listeners: list = []
+        self._lock = threading.Lock()
+        self._kick = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    def ringing(self, call_id, caller: str | None) -> None:
+        """Call `call_id` is ringing; `caller` is who it says is calling (None: no caller
+        id, the handset alone)."""
+        self._show(call_id, RINGING, caller)
+
+    def active(self, call_id) -> None:
+        """The box is on call `call_id`."""
+        self._show(call_id, ACTIVE, None)
+
+    def end(self, call_id=None) -> None:
+        """Call `call_id` is over (None: whatever call is shown, as when the line itself
+        goes): the phone comes down."""
+        with self._lock:
+            if self.state is None or (call_id is not None and call_id != self.call_id):
+                return
+            self.state, self.call_id, self._caller = None, None, None
+            self._put({"call": {"state": "none"}})
+        self._kick.set()
+        self._changed()
+
+    def _show(self, call_id, state: str, caller: str | None) -> None:
+        with self._lock:
+            changed = state != self.state
+            self.state, self.call_id, self._caller = state, call_id, caller
+            if self._thread is None:
+                self._thread = threading.Thread(target=self._keep_up, daemon=True,
+                                                name="call-face")
+                self._thread.start()
+            self._put(self._event())
+        if changed:
+            self._changed()
+
+    def _event(self) -> dict:
+        call = {"state": self.state, "ttl": CALL_TTL_SECS}
+        if self.state == RINGING and self._caller:
+            # Sent with every ringing re-send (the avatar reads it only with ringing). An
+            # avatar without fallback fonts draws ASCII only: a name all in other scripts
+            # folds to nothing, and the handset is shown alone.
+            caller = (self._caller if self._features(self._path).get("unicode")
+                      else fold_ascii(self._caller, fallback=""))
+            if caller:
+                call["caller"] = caller
+        return {"call": call}
+
+    # Under the lock, as Screen's: a refresh cannot land after the end that replaced it.
+    def _put(self, event: dict) -> None:
+        if self._features(self._path).get("call"):
+            self._send(event, self._path)
+
+    def _changed(self) -> None:
+        for fn in list(self.listeners):
+            try:
+                fn()
+            except Exception:  # noqa: BLE001 — a listener's bug is not the face's
+                pass
+
+    def _keep_up(self) -> None:
+        # Re-sends the call's state while there is one; gone once it is over (the next
+        # call starts another).
+        while True:
+            self._kick.wait(self._refresh)
+            self._kick.clear()
+            with self._lock:
+                if self.state is None:
+                    self._thread = None
+                    return
+                self._put(self._event())

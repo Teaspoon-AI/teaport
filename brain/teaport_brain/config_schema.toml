@@ -119,7 +119,7 @@ blurb = "Limits on the notes a Talk client adds to the voice LLM's context throu
 [[groups]]
 id = "busy_lamp"
 title = "Busy lamp"
-blurb = "The ReSpeaker XVF3800's LED ring as a busy lamp (BLF) for phone calls (xvf_led.py): solid red while a call is live, then back to what it showed before, normally the firmware's own listening effect (the direction of the voice it hears). It follows the session arbiter's call claim, so it also goes back to normal when the call is torn down with the SIP front-end or the brain restarts or dies (the look to restore is kept in /run/teaport-busy-lamp until it is put back). The ring is driven by USB control transfers beside the audio streams; install.sh lays down a udev rule (/etc/udev/rules.d/60-teaport-xvf3800.rules) giving the device to the teaport-hw group, and puts the run user in it. A box without an XVF3800 does nothing. Read only by teaport-brain."
+blurb = "The ReSpeaker XVF3800's LED ring as a busy lamp (BLF) for phone calls (xvf_led.py): breathing red while a call rings, solid red while it is live, then back to what it showed before, normally the firmware's own listening effect (the direction of the voice it hears). It follows the session arbiter's call claim, so it also goes back to normal when the call is torn down with the SIP front-end or the brain restarts or dies (the look to restore is kept in /run/teaport-busy-lamp until it is put back). The ring is driven by USB control transfers beside the audio streams; install.sh lays down a udev rule (/etc/udev/rules.d/60-teaport-xvf3800.rules) giving the device to the teaport-hw group, and puts the run user in it. A box without an XVF3800 does nothing. Read only by teaport-brain."
 
 [[groups]]
 id = "sip_brain"
@@ -1573,7 +1573,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
-source = "sip_server.py:146"
+source = "sip_server.py:147"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -1587,7 +1587,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:147"
+source = "sip_server.py:148"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1602,7 +1602,7 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:157"
+source = "sip_server.py:158"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1614,7 +1614,7 @@ default = "/run/teaport/teaport-sip.sock"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off."
-source = "sip_server.py:205"
+source = "sip_server.py:206"
 
 # ---- diagnostics
 

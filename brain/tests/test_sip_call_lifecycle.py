@@ -56,7 +56,7 @@ import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong p
 
 from pipecat.frames.frames import EndFrame  # noqa: E402
 
-from teaport_brain import sip_server  # noqa: E402
+from teaport_brain import display, sip_server  # noqa: E402
 from teaport_brain.sip_serializer import encode_control  # noqa: E402
 from teaport_brain.sip_transport import SipConnection  # noqa: E402
 
@@ -210,6 +210,9 @@ class _Harness:
         self._orig_runner = sip_server.PipelineRunner
         self._orig_transport = sip_server.SipGatewayTransport
         self._orig_reclaim = sip_server.turn_reclaim
+        self._orig_face = sip_server.CALL_FACE
+        # No phone on a real face: run on the appliance, these calls would ring its OLED.
+        sip_server.CALL_FACE = display.CallFace(features=lambda path: {})
 
         def reclaim():
             self.reclaims.append(threading.current_thread() is threading.main_thread())
@@ -249,6 +252,7 @@ class _Harness:
         sip_server.PipelineRunner = self._orig_runner
         sip_server.SipGatewayTransport = self._orig_transport
         sip_server.turn_reclaim = self._orig_reclaim
+        sip_server.CALL_FACE = self._orig_face
 
     async def call_state(self, call_id, state, replay=False):
         if state == "confirmed":   # the only state that builds a pipeline

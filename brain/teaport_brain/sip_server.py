@@ -61,6 +61,7 @@
 import argparse
 import asyncio
 import os
+import re
 import socket
 import time
 
@@ -78,7 +79,7 @@ from teaport_brain import reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
-from teaport_brain import agent_backend, audio_dump, sdnotify
+from teaport_brain import agent_backend, audio_dump, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import (
@@ -219,6 +220,52 @@ def status() -> str:
 # appear. 30 s covers a cold gateway on a loaded box with room to spare.
 _GATEWAY_WAIT_S = 30.0
 _GATEWAY_POLL_S = 0.5
+
+
+# --- The phone on the OLED face (display.CallFace) ---------------------------------------
+# This front-end is the one owner of the face's call state, since it is where the call's
+# lifecycle is known: ringing from call.incoming until the session arbiter gives the call
+# the engine (the policy stays the arbiter's), active from then until the call is over,
+# and none at every end -- hung up, refused (busy), a bring-up that failed, a teardown,
+# the gateway going away, the brain stopping (serve() cancelled). The busy lamp
+# (gateway_server._busy_lamp) breathes red from here while it rings.
+CALL_FACE = display.CallFace()
+
+# Display names that say nothing about who is calling: the carrier's placeholders, shown
+# as the number instead (or the handset alone, when there is none).
+_PLACEHOLDER_NAMES = frozenset({
+    "", "WIRELESS CALLER", "UNKNOWN", "UNKNOWN CALLER", "UNKNOWN NAME", "ANONYMOUS",
+    "PRIVATE", "PRIVATE CALLER", "PRIVATE NUMBER", "RESTRICTED", "UNAVAILABLE",
+    "OUT OF AREA", "WITHHELD", "NO CALLER ID", "CALLER ID BLOCKED", "BLOCKED",
+})
+_NAME_ADDR = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|([^<]*?))\s*<([^>]*)>')
+
+
+def caller_id(from_header) -> str | None:
+    """Who a call says it is from, for the face: the display name in its SIP From
+    header unless that is a placeholder ("WIRELESS CALLER"), else the number, readable
+    (+1 346 234 8500 for an 11-digit NANP number, as sent otherwise), else the SIP user.
+    None when it says nothing (anonymous, or no header). Personal data: never logged."""
+    if not isinstance(from_header, str):
+        return None
+    m = _NAME_ADDR.match(from_header)
+    if m:
+        name = re.sub(r"\\(.)", r"\1", m.group(1)) if m.group(1) is not None else m.group(2)
+        uri = m.group(3)
+    else:
+        name, uri = "", from_header.split(";", 1)[0]
+    name = " ".join(name.split())
+    if name.upper() not in _PLACEHOLDER_NAMES and not re.fullmatch(r"\+?[\d\s().-]+", name):
+        return name
+    user = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).split("@", 1)[0]
+    user = user.split(";", 1)[0].strip()
+    if user.upper() in _PLACEHOLDER_NAMES:
+        return None
+    digits = re.sub(r"[\s().-]", "", user)
+    if re.fullmatch(r"\+?1\d{10}", digits):
+        d = digits.lstrip("+")
+        return f"+1 {d[1:4]} {d[4:7]} {d[7:]}"
+    return user or None
 
 
 async def answer_busy(connection, holder_kind: str, call_id) -> None:
@@ -453,6 +500,7 @@ async def run_connection(sock, on_ready=None):
         # next call's STT connects (mirrors session_arbiter.SETTLE_SECS).
         await asyncio.sleep(0.3)
         presence.end()
+        CALL_FACE.end(_call_id)
         if reclaim and not arb.ARBITER.held():
             # A CALL is a session, so this is the session end — the SIP twin of the
             # turn_reclaim in gateway_server's talk() finally, and the only place the
@@ -489,9 +537,17 @@ async def run_connection(sock, on_ready=None):
 
     @connection.event_handler("on_call_incoming")
     async def on_call_incoming(_connection, msg):
-        logger.info(f"call.incoming id={msg.get('call_id')} from={msg.get('from')} to={msg.get('to')}"
+        # The caller id (the From header) is personal data: it goes to the face, never
+        # to the journal; whether there was one is enough to read a call by.
+        caller = caller_id(msg.get("from"))
+        logger.info(f"call.incoming id={msg.get('call_id')} to={msg.get('to')} caller id "
+                    + ("given" if caller else "withheld")
                     + (" (replayed: the call was already up when this brain connected)"
                        if msg.get("replay") is True else ""))
+        if msg.get("replay") is not True:
+            # A replayed call was answered long ago: the face goes straight to active
+            # once it has the engine again.
+            CALL_FACE.ringing(msg.get("call_id"), caller)
 
     @connection.event_handler("on_dtmf")
     async def on_dtmf(_connection, call_id, digit):
@@ -528,6 +584,13 @@ async def run_connection(sock, on_ready=None):
                     + (" — RESUMING a call already in progress" if resumed else ""))
         try:
             await _bring_up(call_id, resumed)
+        except BaseException:
+            # Failed, or abandoned (a hangup, a newer call, the line going) before it had
+            # a pipeline to tear down, which would end it on the face: no call here any
+            # more. A newer call's ringing is its own (end() is for this call only).
+            if active["call"] is None or active["call"][0] != call_id:
+                CALL_FACE.end(call_id)
+            raise
         finally:
             # Retire our own entry once the bring-up is over, so `setup` means what its
             # name says: a bring-up STILL IN FLIGHT. Without this it stayed set for the
@@ -551,9 +614,13 @@ async def run_connection(sock, on_ready=None):
         if busy is not None:
             # Refused: no session is built for it. Building one (models, the STT connect)
             # on this event loop would stall the conversation that has the box, for a
-            # caller who is only to hear one line.
+            # caller who is only to hear one line. Nor is it the box's call: the phone
+            # comes down off the face before the busy line.
+            CALL_FACE.end(call_id)
             await answer_busy(connection, busy, call_id)
             return
+        # The call has the engine: on the face, the box is on the phone.
+        CALL_FACE.active(call_id)
         transport = SipGatewayTransport(connection, params)
         # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
@@ -678,6 +745,7 @@ async def run_connection(sock, on_ready=None):
             await cancel_active_call("call disconnected", call_id=call_id)
             if active["call"] is None and setup["task"] is None:
                 presence.end()  # a call that never got its pipeline
+            CALL_FACE.end(call_id)  # hung up while ringing, or refused and gone
 
     @connection.event_handler("on_client_disconnected")
     async def on_disconnected(_connection):
@@ -702,6 +770,7 @@ async def run_connection(sock, on_ready=None):
         await cancel_setup("connection closed")
         await cancel_active_call("connection closed")
         presence.end()
+        CALL_FACE.end()  # the line itself is gone (or this brain is stopping)
         connection.close()
     logger.info("SIP connection closed")
 
