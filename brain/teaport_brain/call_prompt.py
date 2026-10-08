@@ -49,7 +49,13 @@ STEP_AWAY_MAX_SECS = 8.0
 # How long whatever was being said gets to stop before the question is put.
 _SETTLE_SECS = 0.2
 
+# What answer() made of the user's answer. TAKEN / DECLINED: it answered the question.
+# Once the question has closed, an answer changes nothing and is told what did happen:
+# CLOSED_TAKEN (the call was taken: nobody answered in time, or the caller was already
+# connected), CLOSED_RINGING (it was left ringing), GONE (the caller hung up first), or
+# NONE (nothing was asked, or the conversation has been back from the call since).
 TAKEN, DECLINED, GONE, NONE = "taken", "declined", "gone", "none"
+CLOSED_TAKEN, CLOSED_RINGING = "closed-taken", "closed-ringing"
 
 
 class CallPrompt:
@@ -105,10 +111,11 @@ class CallPrompt:
                 take = fut.result()
                 logger.info("phone call prompt: the user said "
                             + ("take it" if take else "don't pick up"))
+                self._last = CLOSED_TAKEN if take else CLOSED_RINGING
                 return take
             take = PROMPT_DEFAULT == "take"
             fut.set_result(take)
-            self._last = TAKEN if take else DECLINED
+            self._last = CLOSED_TAKEN if take else CLOSED_RINGING
             logger.info(f"phone call prompt: no answer within {PROMPT_SECS:g} s — "
                         + ("taking the call" if take else "letting it ring")
                         + " (TEAPORT_CALL_PROMPT_DEFAULT)")
@@ -116,8 +123,10 @@ class CallPrompt:
         except asyncio.CancelledError:
             if not fut.done():
                 fut.cancel()
+                # Withdrawn: the caller hung up -- or got connected, and the call is
+                # taken all the same (the arbiter; hold() then says so).
                 self._last = GONE
-                logger.info("phone call prompt: withdrawn (the caller hung up)")
+                logger.info("phone call prompt: withdrawn")
             raise
         finally:
             if self._pending is fut:
@@ -125,19 +134,21 @@ class CallPrompt:
 
     def answer(self, take: bool) -> str:
         """The model's reading of the user's reply (the answer_phone_call tool): TAKEN or
-        DECLINED when it answered the question, GONE when the caller hung up first, NONE
-        when nothing was asked (or it was already decided)."""
+        DECLINED when it answered the open question; once it has closed, what did happen
+        (CLOSED_TAKEN, CLOSED_RINGING, GONE) or NONE -- see the outcome names above."""
         fut = self._pending
         if fut is None or fut.done():
             return self._last or NONE
         fut.set_result(bool(take))
-        self._last = TAKEN if take else DECLINED
-        return self._last
+        return TAKEN if take else DECLINED
 
     async def hold(self) -> None:
         """Taken: the agent says it is stepping away, and the conversation goes on hold."""
+        self._last = CLOSED_TAKEN
         await self.session.hold(arb.step_away_line(self._lang()), STEP_AWAY_MAX_SECS)
 
     async def resume(self) -> None:
-        """The call is over: back, with an apology for the wait."""
+        """The call is over: back, with an apology for the wait. The question is history:
+        an answer to it from here is answered as one to nothing."""
+        self._last = None
         await self.session.resume(arb.back_line(self._lang()))

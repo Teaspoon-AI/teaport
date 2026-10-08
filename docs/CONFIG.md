@@ -529,8 +529,8 @@ calls. Nobody is ever cut off without a word:
 | the same client's session is live (a reconnect) | The new connection replaces it. A client is "the same" by the id it sends (`?client=`): the OpenClaw plugin sends one per paired device, the Discord bridge `discord`, the mic bridge `local-audio`. The OpenClaw Control UI served over plain HTTP has no device identity, so its reload counts as a new client: the old session is ended once its socket closes (a reload closes it) or goes silent. |
 | another Talk session, or a conversation at the box, is live | They are refused: the agent says *"Sorry, I'm in another conversation right now…"* and the connection closes (code 4004). The conversation in progress goes on. |
 | the box's mic is asleep (waiting for a wake word; without wake words, until someone in the room has spoken, and again after `LOCAL_AUDIO_KEEPALIVE_SECS` with nobody speaking) | A Talk session or a phone call takes the engine; the mic bridge stays off while they last. A sleeping mic is not a conversation. |
-| a phone call comes in during a conversation (a remote Talk session, or the box's mic awake) | The caller hears it ring while the agent asks in that conversation, in its language: *"Someone's calling me — +1 346 234 8500. Should I step away for a moment?"* (*"…from a withheld number…"* without a caller ID). **Yes:** it says *"I'll take the call — back in a moment."*, the conversation goes on hold (its connection and what was said are kept; it hears nothing meanwhile), and the call is answered. When the call is over it comes back: *"Sorry about that — where were we?"*. **No:** the call is never answered; the caller hears it ring until they give up. **No answer** within `TEAPORT_CALL_PROMPT_SECS`: `TEAPORT_CALL_PROMPT_DEFAULT` (by default it takes the call). With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0` nobody is asked: a Talk session hears *"Sorry, a phone call is coming in and I have to take it…"* and closes (4005), and a conversation at the box keeps it (the caller hears the busy line). |
-| a phone call is live | A Talk client is refused: *"Sorry, I'm on a phone call right now…"*. |
+| a phone call comes in during a conversation (a remote Talk session, or the box's mic awake) | The caller hears it ring while the agent asks in that conversation, in its language: *"Someone's calling me — +1 346 234 8500. Should I step away for a moment?"* (*"…from a withheld number…"* without a caller ID). **Yes:** it says *"I'll take the call — back in a moment."*, the conversation goes on hold (its connection and what was said are kept; it hears nothing meanwhile), and the call is answered. When the call is over it comes back: *"Sorry about that — where were we?"*. **No:** the call is never answered; the caller hears it ring until they give up. **No answer** within `TEAPORT_CALL_PROMPT_SECS`: `TEAPORT_CALL_PROMPT_DEFAULT` (by default it takes the call). A call already connected (a gateway conf with `auto_answer=true`, or a call that was up when the brain restarted) is not asked about: the caller would wait on a silent line; it is taken, and the conversation held. With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0` nobody is asked: a Talk session hears *"Sorry, a phone call is coming in and I have to take it…"* and closes (4005), and a conversation at the box keeps it (the caller hears the busy line). |
+| a phone call is live | A Talk client is refused: *"Sorry, I'm on a phone call right now…"*. A second call is turned away by the gateway (486 Busy Here: the caller's side takes it, voicemail or a busy tone). |
 
 Phone calls and Talk run in the same brain process, so the arbiter sees both;
 anything else that holds the engine (a standalone test rig, say) is met first come,
@@ -544,8 +544,13 @@ than the brain (the brain is what answers calls): the box's microphone
 conversation to make way (and takes the engine if nobody answers); only a "no"
 keeps it out.
 
+Who is calling is said aloud in that question (at most 40 characters of the caller
+ID, letters, digits and a name's punctuation), and never written to the journal: the
+brain masks it in every log line, the ledger's and pipecat's debug lines included.
+
 A call **rings before it is answered**: the brain, not the gateway, answers it
-(`auto_answer=false` in the gateway's conf, which `teaport sip configure` writes),
+(`auto_answer=false` in the gateway's conf, which `teaport sip configure` writes;
+the gateway needs teaport-sip 0.6.0 or later for the caller to hear it ring),
 `SIP_ANSWER_AFTER_SECS` after it came in (a couple of rings), with the call's pipeline
 already built and its greeting already worded, so the greeting plays as soon as the
 caller is connected. A gateway conf from before this (`auto_answer=true`) still

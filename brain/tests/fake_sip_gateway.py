@@ -14,7 +14,13 @@
 #     without it, is --no-replay);
 #   * an inbound call as call.incoming {call_id, from, to}, then call.state incoming
 #     (ringing), connecting (200 OK sent) and confirmed (ACK, media up). With
-#     auto_answer off it waits in `incoming` for the brain's call.answer;
+#     auto_answer off it answers the INVITE 180 Ringing at once (call.state early, as
+#     teaport-sip >= 0.6.0 does) and waits there for the brain's call.answer;
+#   * one call at a time: a call placed while one rings or is up is turned away (486
+#     Busy Here) without a word to the brain, and the call in progress is untouched;
+#   * call.answer and call.hangup act on the call only when their call_id is its id
+#     (another call's is ignored); one with no call_id is acted on, as the gateway
+#     does, but flagged: this brain always sends it;
 #   * media at 50 frames/s on its own clock, both ways: one 640-byte audio_in per
 #     20 ms (the caller's WAV, then silence, as RTP keeps coming on a quiet line), and
 #     one frame popped per 20 ms from a bounded ~1 s playout queue that drops the
@@ -217,6 +223,7 @@ class Call:
         self.to_uri = to_uri
         self.state = ""                # the last call.state sent: the replay record
         self.answered = asyncio.Event()  # call.answer seen (auto_answer=False)
+        self.busy = False                # turned away: another call was in progress
         self.confirmed = asyncio.Event()
         self.ended = asyncio.Event()
         self.ended_by: str | None = None  # "caller" | "brain" | "gateway"
@@ -479,11 +486,17 @@ class FakeSipGateway:
         With auto_answer off it rings until the brain sends call.answer. A brain that
         declines it (call.hangup) or never answers (the caller gives up after
         `answer_timeout`) ends it unanswered: the call comes back with `ended` set,
-        `confirmed` not, and `ended_by` saying who."""
-        if self.call is not None and not self.call.ended.is_set():
-            raise RuntimeError("protocol v0 carries one call at a time; hang up first")
+        `confirmed` not, and `ended_by` saying who. A call placed while another rings
+        or is up is turned away (486): it comes back ended, `busy`, by the gateway."""
         c = Call(self, call_id or f"{uuid.uuid4().hex[:16]}@{DEFAULT_HOST}",
                  _sip_uri(caller), _sip_uri(to))
+        if self.call is not None and not self.call.ended.is_set():
+            c.busy, c.ended_by = True, "gateway"
+            c.ended.set()
+            self.calls.append(c)
+            self._event(f"INVITE from {c.from_uri} (call {c.call_id}): 486 Busy Here, "
+                        f"call {self.call.call_id} is in progress")
+            return c
         self.call = c
         self.calls.append(c)
         self._event(f"INVITE from {c.from_uri} (call {c.call_id})")
@@ -494,6 +507,7 @@ class FakeSipGateway:
         if self.auto_answer:
             await asyncio.sleep(ring_s)
         else:
+            await self._set_state(c, "early")   # 180 Ringing
             waits = [asyncio.ensure_future(e.wait()) for e in (c.answered, c.ended)]
             try:
                 await asyncio.wait(waits, timeout=answer_timeout,
@@ -649,11 +663,20 @@ class FakeSipGateway:
         mtype = msg["type"]
         if mtype == "hello":
             pass  # the brain's ack; nothing required
-        elif mtype == "call.answer":
-            if c is not None and not c.ended.is_set() and c.state == "incoming":
-                c.answered.set()
-        elif mtype == "call.hangup":
-            if c is not None and not c.ended.is_set():
+        elif mtype in ("call.answer", "call.hangup"):
+            if "call_id" not in msg:
+                self._violation(f"{mtype} without a call_id: the gateway acts on whatever "
+                                "call is active")
+            elif c is None or msg["call_id"] != c.call_id:
+                self._event(f"{mtype} for call {msg['call_id']}, which is not the active "
+                            "call: ignored")
+                return
+            if c is None or c.ended.is_set():
+                pass
+            elif mtype == "call.answer":
+                if c.state in ("incoming", "early"):
+                    c.answered.set()
+            else:
                 await self._hangup(c, "brain")
         else:
             self._event(f"unhandled control type: {mtype}")

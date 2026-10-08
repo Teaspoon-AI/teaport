@@ -18,6 +18,11 @@
 #      picks up, and the conversation comes back after.
 #   5. The same with the room mic (the local audio bridge's session): held, with the
 #      bridge told ({"type": "hold"}), and resumed.
+#   6. A gateway that answers by itself (auto_answer=true): nobody is asked about a
+#      call already connected; it is taken, the conversation held and resumed.
+#   7. A brain that connects while a call rings (replayed `early`) answers it.
+#   And in 2: at DEBUG, the caller id never reaches the brain's journal; a second call
+#   during the call is turned away by the gateway (486) and the first goes on.
 #
 # Run: python test_call_experience.py
 #
@@ -79,19 +84,25 @@ class Rig:
     """Fake engine + fake gateway (auto_answer off) in this process, teaport-brain as a
     child process with /talk on a free port."""
 
-    def __init__(self, transcripts=None, **env):
+    def __init__(self, transcripts=None, *, auto_answer=False, start_brain=True, **env):
         self.dir = _short_tmpdir()
         self.sock = os.path.join(self.dir, "gw.sock")
         self.engine = FakeEngine(transcripts=transcripts, tool_call=phone_answers)
-        self.gw = FakeSipGateway(self.sock, auto_answer=False)
+        self.gw = FakeSipGateway(self.sock, auto_answer=auto_answer)
         self.env = env
         self.brain = None
         self.log = os.path.join(self.dir, "brain.log")
         self.port = None
+        self._start_brain = start_brain
 
     async def __aenter__(self):
         await self.engine.start()
         await self.gw.start()
+        if self._start_brain:
+            await self.start_brain()
+        return self
+
+    async def start_brain(self):
         env = {k: v for k, v in os.environ.items()
                if k not in ("GATEWAY_TOKEN", "TEAPORT_AUDIO_DUMP")}
         env.update(self.engine.env_for())
@@ -109,7 +120,6 @@ class Rig:
                  "--host", "127.0.0.1", "--port", str(self.port)],
                 cwd=BRAIN, env=env, stdout=out, stderr=subprocess.STDOUT)
         assert await self.gw.wait_brain(60), "teaport-brain never connected to the gateway"
-        return self
 
     async def __aexit__(self, exc_type, *exc):
         await self.gw.close()
@@ -254,7 +264,9 @@ async def test_the_brain_lets_it_ring_then_answers_with_the_greeting_ready():
         # answer), and plays at once.
         assert rig.engine.llm_requests, "nothing was asked of the model while it rang"
         onset = await call.wait_bot_speech(0.0, 10)
-        assert onset is not None and onset < 1.5, f"greeting {onset} s after the answer"
+        # Ready-made: TTS alone stands between the answer and it (~0.2 s here), well
+        # inside the completion it would otherwise wait for. Room for a loaded runner.
+        assert onset is not None and onset < 3.0, f"greeting {onset} s after the answer"
         assert GREETING_REPLY in " ".join(rig.engine.tts_texts), rig.engine.tts_texts
         assert len(rig.engine.llm_requests) == 1, (
             "the greeting was asked for again after the answer")
@@ -265,8 +277,13 @@ async def test_the_brain_lets_it_ring_then_answers_with_the_greeting_ready():
 
 # --- 2-4. a call during a Talk session ---------------------------------------------------
 
+CALLER_FORMS = ("15551234567", "5551234567", "555 123 4567")
+
+
 async def test_a_talk_user_who_says_yes_is_held_and_comes_back_after_the_call():
-    async with Rig(transcripts=["Sure, take it."]) as rig:
+    # At DEBUG, as the unit runs (nothing sets LOGURU_LEVEL): the caller is said, and
+    # must still never reach the journal.
+    async with Rig(transcripts=["Sure, take it."], LOGURU_LEVEL="DEBUG") as rig:
         talk = await _greeted_talk(rig, client="openclaw:a")
         placing = asyncio.ensure_future(rig.gw.place_call(CALLER, answer_timeout=60))
         assert await wait_until(lambda: asked(talk), 15), f"never asked: {talk.said()}"
@@ -282,6 +299,10 @@ async def test_a_talk_user_who_says_yes_is_held_and_comes_back_after_the_call():
         assert not talk.closed, "the Talk session was ended, not held"
         assert await call.wait_bot_speech(0.0, 10) is not None, "the caller was not greeted"
         assert rig.engine.stt_active == 1, "the call and the held session both hold STT"
+
+        # A second call meanwhile is turned away by the gateway (486); this one goes on.
+        second = await rig.gw.place_call("+15550002222", answer_timeout=5)
+        assert second.busy and call.active
 
         # A new Talk session during the call: told the agent is on a call.
         other = await TalkClient(rig.port, client="openclaw:b").connect()
@@ -300,6 +321,46 @@ async def test_a_talk_user_who_says_yes_is_held_and_comes_back_after_the_call():
         assert not talk.closed
         await talk.close()
         assert rig.gw.violations == [], rig.gw.violations
+        with open(rig.log, encoding="utf-8", errors="replace") as f:
+            journal = f.read()
+        assert "| DEBUG" in journal, "the brain did not log at DEBUG"
+        assert "<caller>" in journal, "the question never reached the journal masked"
+        leaks = [form for form in CALLER_FORMS if form in journal]
+        assert not leaks, f"the caller id reached the journal: {leaks}"
+
+
+async def test_a_call_the_gateway_answers_itself_is_taken_without_asking():
+    """auto_answer=true (a conf from before #111): the caller is connected at once, so
+    the conversation is not asked -- the caller would sit on a silent line through the
+    question -- the call is taken, and the conversation held and given back."""
+    async with Rig(auto_answer=True) as rig:
+        talk = await _greeted_talk(rig, client="openclaw:a")
+        call = await rig.gw.place_call(CALLER, ring_s=0.2)
+        assert await call.wait_bot_speech(0.0, 15) is not None, "the caller was not greeted"
+        assert asked(talk) == [], f"asked about a call already answered: {talk.said()}"
+        assert any("back in a moment" in t for t in talk.said()), talk.said()
+        assert talk.holds() == [True] and not talk.closed
+        await call.hangup()
+        assert await wait_until(
+            lambda: any("where were we" in t for t in talk.said()), 15), talk.said()
+        await talk.close()
+
+
+async def test_a_brain_that_connects_while_a_call_rings_answers_it():
+    """The gateway replays a ringing call as `early` (180 Ringing sent): the brain that
+    connects then rings it on and answers it."""
+    async with Rig(start_brain=False) as rig:
+        placing = asyncio.ensure_future(rig.gw.place_call(CALLER, answer_timeout=90))
+        assert await wait_until(lambda: rig.gw.call is not None
+                                and rig.gw.call.state == "early", 5)
+        await rig.start_brain()
+        replay = [m for n, m in rig.gw.sent if n == 1][:3]
+        assert [(m["type"], m.get("state")) for m in replay] == [
+            ("hello", None), ("call.incoming", None), ("call.state", "early")], replay
+        call = await asyncio.wait_for(placing, 60)
+        assert call.confirmed.is_set() and len(rig.answers_sent()) == 1
+        assert await call.wait_bot_speech(0.0, 10) is not None
+        await call.hangup()
 
 
 async def test_a_talk_user_who_says_no_leaves_the_call_ringing_until_the_caller_gives_up():

@@ -288,6 +288,9 @@ msgstr "Извините, поступает звонок, и мне нужно 
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Мне звонят — {caller}. Можно я ненадолго отвлекусь и отвечу?"
 
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "Мне звонят. Можно я ненадолго отвлекусь и отвечу?"
+
 msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
 msgstr "Мне звонят со скрытого номера. Можно я ненадолго отвлекусь и отвечу?"
 

@@ -452,7 +452,7 @@ async def test_sip_end_to_end_a_call_during_an_awake_room_hears_busy_and_is_hung
     try:
         await rig.h.start()
         await rig.h.call_state("A", "confirmed")
-        assert await rig.lc.wait_until(lambda: {"type": "call.hangup"} in sent, 5)
+        assert await rig.lc.wait_until(lambda: {"type": "call.hangup", "call_id": "A"} in sent, 5)
         assert rig.lc._FakeSession.built == []                    # nothing built for it
         audio = []
         rig.h.peer.setblocking(False)

@@ -389,6 +389,9 @@ msgstr "죄송해요, 전화가 와서 받아야 해요. 통화가 끝나면 다
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "전화가 왔어요 — {caller}. 잠깐 받고 와도 될까요?"
 
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "전화가 왔어요. 잠깐 받고 와도 될까요?"
+
 msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
 msgstr "발신자 번호가 없는 전화가 왔어요. 잠깐 받고 와도 될까요?"
 

@@ -280,6 +280,9 @@ msgstr "Lo siento, está entrando una llamada y tengo que atenderla. Podemos seg
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Alguien me está llamando — {caller}. ¿Contesto un momento?"
 
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "Alguien me está llamando. ¿Contesto un momento?"
+
 msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
 msgstr "Alguien me está llamando desde un número oculto. ¿Contesto un momento?"
 

@@ -110,6 +110,7 @@ class Claim:
                  gone: Callable[[], bool] | None = None,
                  end: Callable[[str], Awaitable[None]] | None = None,
                  caller: str | None = None,
+                 answered: asyncio.Event | None = None,
                  ask: Callable[["Claim"], Awaitable[bool]] | None = None,
                  can_ask: Callable[[], bool] | None = None,
                  hold: Callable[[], Awaitable[None]] | None = None,
@@ -120,8 +121,11 @@ class Claim:
         self._asleep = asleep
         self._gone = gone
         self.end = end
-        # A call's: who it is from, for the prompt (None: withheld or unknown).
+        # A call's: who it is from, for the prompt (None: withheld or unknown), and set
+        # once the caller is connected (the gateway answered it by itself, or it was up
+        # before this brain started): such a call is not asked about, it is taken.
         self.caller = caller
+        self.answered = answered
         self.ask = ask
         self._can_ask = can_ask
         self.hold = hold
@@ -208,6 +212,10 @@ class SessionArbiter:
         # Ends in flight, by the holder being ended: held so a cancelled acquire cannot
         # drop one, and so a second newcomer waits on it rather than ending it again.
         self._endings: dict = {}
+        # Holds in flight, by the holder going on hold: a newcomer waits one out (the
+        # call it was for may be gone by then, and the conversation back) rather than
+        # deciding against -- and asking again -- a conversation saying goodbye.
+        self._holdings: dict = {}
         # Resumes in flight (held so the loop keeps a strong reference).
         self._resumes: set = set()
         # Calls asking for the slot right now (in acquire): status() counts one as a call
@@ -286,11 +294,13 @@ class SessionArbiter:
 
     async def _acquire(self, new: Claim) -> Refusal | None:
         holder = self._holder
-        while holder is not None and holder in self._endings:
+        while holder is not None and (holder in self._endings or holder in self._holdings):
             # Being ended already (a newcomer before this one gave up mid-way, and the
             # shielded end ran on): it is going, not a reason to refuse, and must not
             # be ended twice. Wait it out and decide against whoever holds it then.
-            await asyncio.shield(self._endings[holder])
+            # Likewise one going on hold for a call that gave up mid-way: by the end of
+            # it the conversation is held for nobody, and back.
+            await asyncio.shield(self._endings.get(holder) or self._holdings[holder])
             holder = self._holder
         why = decide(holder, new)
         if why == PROMPT:
@@ -341,19 +351,38 @@ class SessionArbiter:
 
     async def _ask(self, holder: Claim, new: Claim) -> bool | None:
         """The holder's answer to the call: True (take it), False (don't), or None when
-        the holder let the slot go while it was being asked (its client left)."""
+        the holder let the slot go while it was being asked (its client left). A call
+        whose caller is already connected is not asked about -- they would sit on a
+        silent line for the question, and a "no" would have to hang up on them -- and
+        one that gets connected while it is asked (the gateway answered it) stops the
+        question: either way it is taken."""
+        answered = new.answered
+        if answered is not None and answered.is_set():
+            logger.info(f"session arbiter: {new.label} is answered already — taking it "
+                        f"without asking {holder.label}")
+            return True
         logger.info(f"session arbiter: {new.label} — asking {holder.label} whether to take it")
         asking = asyncio.ensure_future(holder.ask(new))
         gone = asyncio.ensure_future(holder.released.wait())
+        waits = {asking, gone}
+        connected = None
+        if answered is not None:
+            connected = asyncio.ensure_future(answered.wait())
+            waits.add(connected)
         try:
-            await asyncio.wait({asking, gone}, return_when=asyncio.FIRST_COMPLETED)
+            await asyncio.wait(waits, return_when=asyncio.FIRST_COMPLETED)
         finally:
             gone.cancel()
+            if connected is not None:
+                connected.cancel()
             if not asking.done():
-                # The caller hung up (this acquire is cancelled), or the holder went:
-                # the question is withdrawn.
+                # The caller hung up (this acquire is cancelled), the holder went, or
+                # the caller got connected: the question is withdrawn.
                 asking.cancel()
                 await asyncio.gather(asking, return_exceptions=True)
+        if answered is not None and answered.is_set() and not holder.released.is_set():
+            logger.info(f"session arbiter: {new.label} got answered while asked — taking it")
+            return True
         if not asking.done() or asking.cancelled():
             return None
         if asking.exception() is not None:
@@ -367,7 +396,10 @@ class SessionArbiter:
         slot. False when it could not (it is to be ended instead). Shielded like _end: a
         caller who hangs up while the user hears "back in a moment" must not leave the
         conversation half held -- the hold runs on, and finds the call gone at its end."""
-        return await asyncio.shield(asyncio.ensure_future(self._holding(holder, new)))
+        holding = asyncio.ensure_future(self._holding(holder, new))
+        self._holdings[holder] = holding
+        holding.add_done_callback(lambda _t, h=holder: self._holdings.pop(h, None))
+        return await asyncio.shield(holding)
 
     async def _holding(self, holder: Claim, new: Claim) -> bool:
         try:
@@ -518,14 +550,43 @@ def call_line(espeak_language: str | None) -> str:
 # --- What the agent says when a call comes in during a conversation (issue #111) -----
 # In the conversation's own language. Consumer wording: what a person would say.
 
-def prompt_line(caller: str | None, espeak_language: str | None) -> str:
+# A caller id is the far end's to choose: said aloud and kept in the conversation's
+# context, it is cut to this many characters and to what a name or a number is made of.
+CALLER_MAX_CHARS = 40
+# Besides letters and digits (any script): spaces and the punctuation names and numbers
+# use. No full stop or question mark: the voice would split the question there.
+_CALLER_PUNCT = frozenset(" '’-+(),&")
+
+
+def speakable_caller(caller: str | None) -> str | None:
+    """`caller` (sip_server.caller_id) as the question may say it: only letters, digits,
+    spaces and a name's or number's punctuation, at most CALLER_MAX_CHARS (cut at a word
+    when it can be). None when nothing of it is left."""
+    if not isinstance(caller, str):
+        return None
+    kept = "".join(ch if (ch.isalnum() or ch in _CALLER_PUNCT) else " " for ch in caller)
+    kept = " ".join(kept.split())
+    if len(kept) > CALLER_MAX_CHARS:
+        cut = kept[:CALLER_MAX_CHARS + 1].rsplit(" ", 1)[0]
+        kept = cut if len(cut) >= CALLER_MAX_CHARS // 2 else kept[:CALLER_MAX_CHARS]
+    kept = kept.strip(" ,'’-&(")
+    return kept if any(ch.isalnum() for ch in kept) else None
+
+
+def prompt_line(caller: str | None, espeak_language: str | None, *,
+                withheld: bool | None = None) -> str:
     """The question put to a live conversation when a call comes in. `caller`: who the
-    call is from (sip_server.caller_id), None when withheld or unknown."""
+    call is from (sip_server.caller_id), None when withheld or unknown. `withheld`
+    (default: no caller) picks the withheld-number wording when there is no caller to
+    name; a caller id with nothing speakable in it is just "someone"."""
     t = i18n.for_espeak(espeak_language)
-    if caller:
+    said = speakable_caller(caller)
+    if said:
         # Translators: {caller} is a name or a phone number, as the caller ID gives it.
         return t._("Someone's calling me — {caller}. Should I step away for a moment?").format(
-            caller=caller)
+            caller=said)
+    if withheld is False or (withheld is None and caller):
+        return t._("Someone's calling me. Should I step away for a moment?")
     return t._("Someone's calling me from a withheld number. Should I step away for a moment?")
 
 

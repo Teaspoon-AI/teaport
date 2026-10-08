@@ -100,7 +100,7 @@ from teaport_brain import reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
-from teaport_brain import agent_backend, audio_dump, display, sdnotify
+from teaport_brain import agent_backend, audio_dump, display, privacy, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import (
@@ -279,6 +279,20 @@ _WITHHELD = frozenset({
 _NAME_ADDR = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|([^<]*?))\s*<([^>]*)>')
 
 
+def _from_parts(from_header: str) -> tuple[str, str, str]:
+    """A SIP From header's display name, URI user and host, unquoted."""
+    m = _NAME_ADDR.match(from_header)
+    if m:
+        name = re.sub(r"\\(.)", r"\1", m.group(1)) if m.group(1) is not None else m.group(2)
+        uri = m.group(3)
+    else:
+        name, uri = "", from_header.split(";", 1)[0]
+    name = " ".join(name.split())
+    user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
+    user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
+    return name, user, host
+
+
 def caller_id(from_header) -> str | None:
     """Who a call says it is from, for the face: the display name in its SIP From
     header unless that is a placeholder ("WIRELESS CALLER"), else the number, readable
@@ -288,17 +302,9 @@ def caller_id(from_header) -> str | None:
     Personal data: never logged."""
     if not isinstance(from_header, str):
         return None
-    m = _NAME_ADDR.match(from_header)
-    if m:
-        name = re.sub(r"\\(.)", r"\1", m.group(1)) if m.group(1) is not None else m.group(2)
-        uri = m.group(3)
-    else:
-        name, uri = "", from_header.split(";", 1)[0]
-    name = " ".join(name.split())
+    name, user, host = _from_parts(from_header)
     if name.upper() in _WITHHELD:
         return None
-    user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
-    user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
     if user.upper() in _WITHHELD or host.split(";", 1)[0].lower().startswith("anonymous.invalid"):
         return None
     if name.upper() not in _NO_NAME and not re.fullmatch(r"\+?[\d\s().-]+", name):
@@ -332,7 +338,7 @@ async def answer_busy(connection, holder_kind: str, call_id) -> None:
             # Real time: the gateway's playout queue is about a second deep.
             await asyncio.sleep(max(0.0, start + (n + 1) * 0.02 - loop.time()))
         await asyncio.sleep(0.3)  # the gateway's own backlog plays out
-    await connection.send_control({"type": "call.hangup"})
+    await connection.send_control({"type": "call.hangup", "call_id": call_id})
 
 
 class CallClaim:
@@ -347,16 +353,27 @@ class CallClaim:
     def __init__(self):
         self._claim = None
 
-    async def start(self, call_id, caller: str | None = None) -> "arb.Refusal | None":
+    async def start(self, call_id, caller: str | None = None,
+                    answered: asyncio.Event | None = None) -> "arb.Refusal | None":
         """None: the call has the engine. Otherwise the arbiter's Refusal: `declined`
         when the conversation said not to pick up (the call is to ring on), else the box
-        is busy (the caller gets the busy line). `caller` is for the question."""
+        is busy (the caller gets the busy line). `caller` is for the question; a set
+        `answered` (the caller is connected) means no question: the call is taken."""
         claim = arb.Claim(arb.CALL, client="sip", label=f"phone call {call_id}",
-                          end=lambda _why: self._release(claim), caller=caller)
+                          end=lambda _why: self._release(claim), caller=caller,
+                          answered=answered)
         # Held from before the ask: an end() while it waits (a Talk user is being told
         # about the call) releases it there, and the arbiter then installs nothing.
         self._claim = claim
-        refusal = await arb.ARBITER.acquire(claim)
+        try:
+            refusal = await arb.ARBITER.acquire(claim)
+        except BaseException:
+            # Abandoned (a hangup, a newer call): let it go here, since nothing else
+            # will -- a conversation put on hold for it would otherwise stay held.
+            if self._claim is claim:
+                self._claim = None
+            arb.ARBITER.release(claim)
+            raise
         if refusal is not None:
             if self._claim is claim:
                 self._claim = None
@@ -608,6 +625,10 @@ async def run_connection(sock, on_ready=None):
         # The caller id (the From header) is personal data: it goes to the face, never
         # to the journal; whether there was one is enough to read a call by.
         caller = caller_id(msg.get("from"))
+        if isinstance(msg.get("from"), str):
+            # From here on no log line can carry it (privacy.py): it will be said.
+            name, user, _host = _from_parts(msg["from"])
+            privacy.remember(str(msg.get("call_id")), caller, name, user)
         logger.info(f"call.incoming id={msg.get('call_id')} to={msg.get('to')} caller id "
                     + ("given" if caller else "withheld")
                     + (" (replayed: the call was already up when this brain connected)"
@@ -623,11 +644,13 @@ async def run_connection(sock, on_ready=None):
         current = active["call"]
         if (current is not None and current[0] != call_id
                 and rings.get(current[0]) is not None and rings[current[0]].answered.is_set()):
-            # A second INVITE over a call that is up (protocol v0 carries one): the call
-            # in progress goes on, and this one rings unanswered until its caller gives
-            # up -- its `disconnected` puts the face back to the call still on the line.
-            # Answered by the gateway itself (auto_answer=true), it replaces the first,
-            # as it always has (on_call_state).
+            # A second INVITE over a call that is up (protocol v0 carries one). A gateway
+            # since teaport-sip 0.6.0 turns it away itself (486) and never says so; an
+            # older one passes it on, and then: the call in progress goes on, and this
+            # one rings unanswered until its caller gives up -- its `disconnected` puts
+            # the face back to the call still on the line. Answered by the gateway
+            # itself (auto_answer=true), it replaces the first, as it always has
+            # (on_call_state).
             logger.info(f"call {call_id} rings over call {current[0]}, which is up: "
                         "left ringing (one call at a time)")
             return
@@ -745,7 +768,7 @@ async def run_connection(sock, on_ready=None):
             ring = rings[call_id] = _Ring(call_id, None, answered=True)
         # Before anything takes the engine: the session arbiter makes way for the call
         # (asking a live conversation first), or refuses it.
-        refusal = await presence.start(call_id, caller=ring.caller)
+        refusal = await presence.start(call_id, caller=ring.caller, answered=ring.answered)
         if refusal is not None:
             # No session is built for it. Building one (models, the STT connect) on this
             # event loop would stall the conversation that has the box, for a caller who
@@ -822,7 +845,7 @@ async def run_connection(sock, on_ready=None):
             logger.error(f"the pipeline for call {call_id} ended on its own on {frame} "
                          "(a service was written off, or a start/idle timeout fired) — "
                          "hanging the caller up rather than leaving them on a dead line")
-            await transport.send_control({"type": "call.hangup"})
+            await transport.send_control({"type": "call.hangup", "call_id": call_id})
             # As a TASK, not inline: this handler is awaited BY the runner task, and
             # cancel_active_call waits on that same task — inline it would wait on
             # itself and only get past on the 5s timeout.
@@ -842,7 +865,7 @@ async def run_connection(sock, on_ready=None):
             # Still ringing: the head start, then answer it.
             prepared = await ring_head_start(session, ring)
             if not await answer(ring):
-                await transport.send_control({"type": "call.hangup"})
+                await transport.send_control({"type": "call.hangup", "call_id": call_id})
                 await cancel_active_call("never confirmed", call_id=call_id)
                 return
             # Answered: on the face, the box is on the phone (it rang until now).
@@ -861,7 +884,7 @@ async def run_connection(sock, on_ready=None):
             logger.info(f"STT unavailable for call {call_id} — playing the warning, "
                         "then hanging up")
             await session.followup_gate.wait_until_delivered()
-            await transport.send_control({"type": "call.hangup"})
+            await transport.send_control({"type": "call.hangup", "call_id": call_id})
             await cancel_active_call("STT unavailable", call_id=call_id)
 
     @connection.event_handler("on_call_state")
@@ -974,6 +997,7 @@ async def run_connection(sock, on_ready=None):
 
 
 def main():
+    privacy.install()
     parser = argparse.ArgumentParser(
         description="teaport SIP front-end, standalone (test rigs; teaport-brain runs it itself)")
     parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),

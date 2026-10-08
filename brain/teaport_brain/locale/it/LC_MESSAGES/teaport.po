@@ -288,6 +288,9 @@ msgstr "Scusa, sta arrivando una telefonata e devo rispondere. Possiamo riprende
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Qualcuno mi sta chiamando — {caller}. Rispondo un attimo?"
 
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "Qualcuno mi sta chiamando. Rispondo un attimo?"
+
 msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
 msgstr "Qualcuno mi sta chiamando da un numero privato. Rispondo un attimo?"
 

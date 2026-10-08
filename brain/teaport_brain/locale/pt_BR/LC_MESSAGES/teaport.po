@@ -280,6 +280,9 @@ msgstr "Desculpe, está chegando uma ligação e preciso atender. Podemos conver
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "Alguém está me ligando — {caller}. Posso atender rapidinho?"
 
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "Alguém está me ligando. Posso atender rapidinho?"
+
 msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
 msgstr "Alguém está me ligando de um número privado. Posso atender rapidinho?"
 

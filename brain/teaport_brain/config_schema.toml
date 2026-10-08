@@ -1356,7 +1356,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The machine's live free memory, CPU load and speech-engine decode speed."
-source = "tools.py:969"
+source = "tools.py:982"
 
 [[settings]]
 name = "TEAPORT_TOOL_GET_CURRENT_TIME"
@@ -1367,7 +1367,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The local date and time."
-source = "tools.py:972"
+source = "tools.py:985"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_SEARCH"
@@ -1378,7 +1378,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:975"
+source = "tools.py:988"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_FETCH"
@@ -1389,7 +1389,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:978"
+source = "tools.py:991"
 
 [[settings]]
 name = "TEAPORT_TOOL_SEARCH_MEMORY"
@@ -1400,7 +1400,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:981"
+source = "tools.py:994"
 
 [[settings]]
 name = "TEAPORT_TOOL_REMEMBER"
@@ -1411,7 +1411,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:984"
+source = "tools.py:997"
 
 [[settings]]
 name = "TEAPORT_TOOL_ASK_OPENCLAW"
@@ -1422,7 +1422,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
-source = "tools.py:991"
+source = "tools.py:1004"
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"
@@ -1433,7 +1433,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "List the speaking voices."
-source = "tools.py:996"
+source = "tools.py:1009"
 
 [[settings]]
 name = "TEAPORT_TOOL_SWITCH_VOICE"
@@ -1444,7 +1444,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Change the speaking voice (and with it the reply language)."
-source = "tools.py:999"
+source = "tools.py:1012"
 
 [[settings]]
 name = "TEAPORT_TOOL_SET_VOLUME"
@@ -1455,7 +1455,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions."
-source = "tools.py:1007"
+source = "tools.py:1020"
 
 [[settings]]
 name = "TEAPORT_TOOL_RESTART_SESSION"
@@ -1466,7 +1466,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge)."
-source = "tools.py:1012"
+source = "tools.py:1025"
 
 
 [[settings]]
@@ -1478,7 +1478,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them)."
-source = "tools.py:1026"
+source = "tools.py:1039"
 
 [[settings]]
 name = "TEAPORT_TOOL_ANSWER_PHONE_CALL"
@@ -1489,7 +1489,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "How the user answers \"should I step away?\" when a phone call comes in during a Talk session or a room conversation, in any language: the model reads the reply and calls it. Off, a conversation is not asked: a call ends a Talk session with a spoken line, and is refused (the caller hears busy) while the room mic is awake."
-source = "tools.py:1020"
+source = "tools.py:1033"
 
 # ---- talk client context notes
 
@@ -1503,7 +1503,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
-source = "tools.py:1003"
+source = "tools.py:1016"
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"

@@ -280,6 +280,9 @@ msgstr "抱歉，有电话打进来，我得接一下。通话结束后我们再
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "有人给我打电话——{caller}。我先去接一下可以吗？"
 
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "有人给我打电话。我先去接一下可以吗？"
+
 msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
 msgstr "有人用隐藏号码给我打电话。我先去接一下可以吗？"
 

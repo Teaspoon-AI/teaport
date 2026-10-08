@@ -947,6 +947,19 @@ async def _answer_phone_call(params: FunctionCallParams, prompt=None):
             {"ok": True, "note": "The call is left ringing and you stay in this "
                                  "conversation. In a few words, say you'll let it ring, and "
                                  "carry on where you were."})
+    elif outcome == cp.CLOSED_TAKEN:
+        await params.result_callback(
+            {"ok": False, "error": "too late: the question had already closed, and you are "
+                                   "taking the call (no answer came in time, or the caller "
+                                   "was already connected). Say nothing about letting it "
+                                   "ring."},
+            properties=no_inference())
+    elif outcome == cp.CLOSED_RINGING:
+        await params.result_callback(
+            {"ok": False, "error": "too late: the question had already closed, and the call "
+                                   "was left ringing; you are not taking it. If the user "
+                                   "wanted you to, say in a few words that it is too late "
+                                   "for this one."})
     elif outcome == cp.GONE:
         await params.result_callback(
             {"ok": False, "error": "the caller hung up before you answered; nothing to do"})

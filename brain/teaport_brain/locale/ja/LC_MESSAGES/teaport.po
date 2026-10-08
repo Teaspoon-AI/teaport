@@ -280,6 +280,9 @@ msgstr "すみません、電話がかかってきたので出なければなり
 msgid "Someone's calling me — {caller}. Should I step away for a moment?"
 msgstr "電話がかかってきました — {caller}。少し席を外して出てもいいですか？"
 
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "電話がかかってきました。少し席を外して出てもいいですか？"
+
 msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
 msgstr "非通知の電話がかかってきました。少し席を外して出てもいいですか？"
 
