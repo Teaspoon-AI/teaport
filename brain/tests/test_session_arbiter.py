@@ -609,6 +609,22 @@ async def test_the_busy_line_is_captioned_first_and_synthesized_once():
     assert events == ["caption", "synth", "caption"]
 
 
+async def test_the_arbiter_says_when_nothing_is_live_anywhere():
+    """For the face ("a sleeping face means the voice loop is not active anywhere"): a
+    sleeping room is nothing live; a call or a Talk session is; listeners hear changes."""
+    _fresh()
+    seen = []
+    arb.ARBITER.listeners.append(lambda: seen.append(arb.ARBITER.anything_live()))
+    await _holding("room asleep", client="local-audio")
+    assert not arb.ARBITER.anything_live() and arb.ARBITER.status()["live"] is False
+    call = arb.Claim(arb.CALL, client="sip")
+    assert await arb.ARBITER.acquire(call) is None and arb.ARBITER.anything_live()
+    arb.ARBITER.release(call)
+    assert not arb.ARBITER.anything_live()
+    assert seen[:1] == [False] and True in seen and seen[-1] is False
+    _fresh()
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

@@ -427,8 +427,9 @@ async def health():
 @app.get("/talk/status")
 async def talk_status(request: Request):
     """Who holds the speech engine now (session_arbiter.ARBITER.status): "active" while
-    any session does, "call" while a phone call does, "holder" its kind (talk, room or
-    call) and "asleep" for a sleeping room mic. The local audio bridge, refused or
+    any session does, "call" while a phone call does, "live" while any conversation is
+    (anything but a sleeping room mic), "holder" its kind (talk, room or call) and
+    "asleep" for a sleeping room mic. The local audio bridge, refused or
     ended, polls it to stay off the box while that lasts. Same token as /talk (and the
     config page, whose check this is): who is talking is nobody else's business. The
     bridge sends it as a bearer header, out of the access log."""

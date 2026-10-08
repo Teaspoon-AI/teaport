@@ -157,6 +157,9 @@ class SessionArbiter:
         self._holder: Claim | None = None
         self._lock = asyncio.Lock()
         self._endings: set = set()  # ends in flight, held so a cancelled acquire cannot drop them
+        # Called (sync, no arguments) whenever the holder changes: who drives the face's
+        # sleep/awake state reads anything_live() from here.
+        self.listeners: list = []
 
     @property
     def holder(self) -> Claim | None:
@@ -164,6 +167,23 @@ class SessionArbiter:
 
     def held(self) -> bool:
         return self._holder is not None
+
+    def anything_live(self) -> bool:
+        """A conversation is live on some front-end: a holder that is not a sleeping room
+        mic. The face sleeps only when this is False ("a sleeping face means the voice
+        loop is not active anywhere"); the asleep/awake flip of a room session itself is
+        the room's to report."""
+        return self._holder is not None and self._holder.live
+
+    def _set_holder(self, claim) -> None:
+        if claim is self._holder:
+            return
+        self._holder = claim
+        for fn in list(self.listeners):
+            try:
+                fn()
+            except Exception as e:  # noqa: BLE001 — a listener's bug is not the arbiter's
+                logger.warning(f"session arbiter listener failed: {e!r}")
 
     def call_live(self) -> bool:
         return self._holder is not None and self._holder.kind == CALL
@@ -177,6 +197,7 @@ class SessionArbiter:
     def status(self) -> dict:
         h = self._holder
         return {"active": h is not None, "call": self.call_live(),
+                "live": self.anything_live(),
                 "holder": None if h is None else h.kind,
                 "asleep": bool(h is not None and h.asleep)}
 
@@ -206,7 +227,7 @@ class SessionArbiter:
                 # the engine, so nothing is left behind for nobody to end.
                 logger.info(f"session arbiter: {new.label} ended before it was granted")
                 return None
-            self._holder = new
+            self._set_holder(new)
             return None
 
     async def _end(self, holder: Claim, why: str) -> None:
@@ -230,7 +251,7 @@ class SessionArbiter:
             logger.warning(f"session arbiter: {holder.label} did not let the speech engine "
                            f"go within {END_WAIT_SECS:g} s")
         if self._holder is holder:
-            self._holder = None
+            self._set_holder(None)
         await asyncio.sleep(SETTLE_SECS)  # the engine processes the close, frees the slot
 
     def release(self, claim: Claim) -> None:
@@ -238,7 +259,7 @@ class SessionArbiter:
         the newer holder alone."""
         claim.released.set()
         if self._holder is claim:
-            self._holder = None
+            self._set_holder(None)
 
 
 # The one arbiter of this process.
@@ -255,6 +276,41 @@ def busy_line(holder_kind: str, espeak_language: str | None) -> str:
     if holder_kind == CALL:
         return t._("Sorry, I'm on a phone call right now. Please try again when it's over.")
     return t._("Sorry, I'm in another conversation right now. Please try again in a little while.")
+
+
+def tts_for(voice: str | None, language: str | None):
+    """A voice outside any pipeline, for a line said on a connection about to close (a
+    module function so tests stub it). Imported here, not at the top: this module stays
+    cheap."""
+    from teaport_brain.services import make_tts
+    return make_tts(voice=voice, language=language)
+
+
+# The busy lines already synthesized, by (voice, language, line): there are a handful of
+# them, and a refused client should not wait on (or load the engine with) a fresh synth.
+_BUSY_PCM: dict = {}
+# How long a busy line may take to synthesize; past it the client goes without it.
+BUSY_SYNTH_SECS = 6.0
+
+
+async def busy_line_audio(holder_kind: str, voice: str | None = None,
+                          language: str | None = None) -> tuple[str, bytes]:
+    """The busy line for a newcomer refused because `holder_kind` has the box, in its
+    voice's language, and its audio: PCM16 mono at 24 kHz (b"" when the engine cannot say
+    it). Cached in-process; a failed synth is not cached. For any front-end that refuses
+    without building a session (a /talk client, a phone call)."""
+    tts = tts_for(voice, language)
+    line = busy_line(holder_kind, getattr(tts, "espeak_language", None))
+    key = (voice, language, line)
+    pcm = _BUSY_PCM.get(key)
+    if pcm is None:
+        try:
+            pcm = await asyncio.wait_for(tts.synthesize(line), BUSY_SYNTH_SECS)
+            _BUSY_PCM[key] = pcm
+        except Exception as e:  # noqa: BLE001 — no voice: the refusal still happens
+            logger.warning(f"busy line not synthesized ({e!r}) — refusing without it")
+            pcm = b""
+    return line, pcm
 
 
 def call_line(espeak_language: str | None) -> str:

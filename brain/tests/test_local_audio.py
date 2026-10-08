@@ -724,10 +724,10 @@ def test_talk_status_says_who_holds_the_engine(monkeypatch):
     monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
     a = arb.SessionArbiter()
     monkeypatch.setattr(arb, "ARBITER", a)
-    assert asyncio.run(gs.talk_status(req())) == {"active": False, "call": False,
+    assert asyncio.run(gs.talk_status(req())) == {"active": False, "call": False, "live": False,
                                                   "holder": None, "asleep": False}
     a._holder = arb.Claim(arb.TALK)
-    live = {"active": True, "call": False, "holder": "talk", "asleep": False}
+    live = {"active": True, "call": False, "live": True, "holder": "talk", "asleep": False}
     assert asyncio.run(gs.talk_status(req())) == live
     monkeypatch.setenv("GATEWAY_TOKEN", "secret")
     for bad in (req(), req(token="nope"), req(bearer="nope")):
@@ -1315,6 +1315,83 @@ def test_a_refused_wake_session_backs_off_and_never_hammers(monkeypatch):
     monkeypatch.setattr(la, "BACKOFF_SECS", 0)
     dials, card = _drive(monkeypatch, ["busy", "busy", "busy"])
     assert card.idled == [la.RETRY_SECS, 2 * la.RETRY_SECS, 4 * la.RETRY_SECS]
+
+
+def _face_while_another_is_live(monkeypatch, code):
+    """Wake mode: the first session ends with `code` while another session (or a call)
+    is live for LIVE_S; the next dial is granted (hello + ready). Returns the face states
+    as (seconds since the first close, state), and when the brain stopped reporting live."""
+    flag, _ = _wake_card(monkeypatch)
+    import time
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0.1)
+    live_s, states, t = 0.6, [], {}
+
+    class Face(la.FaceTap):
+        """An avatar that draws sleeping; every state it is sent, timed from the close."""
+        def __init__(self, *a, **kw):
+            super().__init__(send=lambda d: None, features=lambda: {"sleep": True})
+
+        def state(self, st):
+            states.append((time.monotonic() - t.get("closed", time.monotonic()), st))
+            super().state(st)
+    monkeypatch.setattr(la, "FaceTap", Face)
+
+    def status():
+        live = "closed" in t and time.monotonic() - t["closed"] < live_s
+        return {"active": live, "call": live and code == la.YIELD_CLOSE_CODE, "live": live,
+                "asleep": False}
+    monkeypatch.setattr(la, "_talk_status_sync", status)
+
+    async def talk_active():
+        return status()["active"]
+    monkeypatch.setattr(la, "talk_active", talk_active)
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.close(code=code)
+                t["closed"] = time.monotonic()
+                return
+            await ws.send(json.dumps({"type": "ready"}))
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: count[0] >= 2 and any(s == "sleeping" and d > 0
+                                                          for d, s in states), 6)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+    return states, live_s
+
+
+def test_the_face_stays_awake_while_another_session_or_a_call_has_the_box(monkeypatch):
+    """A sleeping face means the voice loop is not active anywhere: after a yield (a
+    call), taken or busy end, the face is idle -- awake -- while that lasts, and sleeps
+    only once our next asleep session holds the engine (nothing else is live then)."""
+    for code in (la.YIELD_CLOSE_CODE, la.TAKEN_CLOSE_CODE, la.BUSY_CLOSE_CODE):
+        states, live_s = _face_while_another_is_live(monkeypatch, code)
+        after = [(d, s) for d, s in states if d >= 0]
+        assert after and after[0][1] == "idle", (code, states)
+        assert not any(s == "sleeping" and d < live_s for d, s in after), (code, states)
+        assert any(s == "sleeping" for d, s in after), (code, states)
+
+
+def test_between_sessions_the_face_sleeps_only_when_nothing_is_live(monkeypatch):
+    sent = []
+    face = la.FaceTap(send=lambda d: sent.append(json.loads(d)), features=lambda: {"sleep": True})
+    for status, want in (({"live": True}, "idle"), ({"live": False}, "sleeping"),
+                         (None, "sleeping"),                     # a brain that cannot say
+                         ({"active": True, "asleep": False}, "idle"),   # one without "live"
+                         ({"active": True, "asleep": True}, "sleeping"),
+                         ({"active": False, "call": True}, "idle")):
+        monkeypatch.setattr(la, "_talk_status_sync", lambda status=status: status)
+        asyncio.run(la.rest_face(face))
+        assert [m for m in sent if "state" in m][-1] == {"state": want}, status
 
 
 def test_end_conversation_sleeps_after_the_goodbye(monkeypatch):

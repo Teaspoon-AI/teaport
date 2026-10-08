@@ -39,7 +39,9 @@
 #     keeps its messages). Nothing here falls back to listening without the wake words:
 #     a brain or STT that cannot be reached leaves the bridge deaf, retrying. A phone
 #     call takes the engine from an asleep session (/talk/call): the bridge stays off
-#     until the brain reports no call. The OLED face sleeps while the box does.
+#     until the brain reports no call. The OLED face sleeps only while nothing is live
+#     anywhere (the brain's /talk/status "live"): while another session or a call has
+#     the box it stays awake, idle, and it sleeps once our asleep session is up again.
 #   * Unless another client has the box: a Talk session took it from an asleep mic
 #     (TAKEN_CLOSE_CODE), or the brain refused our dial because another conversation is
 #     live (BUSY_CLOSE_CODE). Then the box is theirs. The bridge does not listen for a
@@ -1038,6 +1040,32 @@ async def talk_active() -> bool | None:
     return await asyncio.to_thread(_talk_active_sync)
 
 
+def _live_sync() -> bool | None:
+    """Is a conversation live anywhere on the box (Talk, a call, the room awake)? None
+    when the brain cannot say. A brain without "live" is read from what it does report."""
+    status = _talk_status_sync()
+    if status is None:
+        return None
+    if "live" in status:
+        return bool(status["live"])
+    return bool(status.get("call") or (status.get("active") and not status.get("asleep")))
+
+
+async def anything_live() -> bool | None:
+    return await asyncio.to_thread(_live_sync)
+
+
+async def rest_face(face: "FaceTap") -> None:
+    """The face between sessions. Sleeping means the voice loop is not active anywhere
+    (the user's rule): so idle -- awake -- while another session or a call is live, and
+    sleeping only once the brain reports nothing live. A brain that cannot say: sleeping,
+    as before."""
+    if await anything_live():
+        face.state("idle")
+    else:
+        face.sleep()
+
+
 async def call_live() -> bool:
     """Is a phone call up (the SIP brain's lease on /talk/call)? A brain that cannot
     say: no -- an asleep session it then refuses says so with YIELD_CLOSE_CODE."""
@@ -1241,11 +1269,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
     # Answers still owed (an async consult: the brain's "working"): call_id -> deadline.
     # The conversation does not sleep on one.
     owed: dict = {}
-    if wake:
-        if awake:
-            face.woke()
-        else:
-            face.sleep()
+    if wake and awake:
+        face.woke()
 
     async def send_mic():
         await gated.wait()
@@ -1276,6 +1301,10 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 face.interrupted()
             elif kind == "ready":
                 logger.info("session ready")
+                if wake and alive is None:
+                    # Our asleep session has the engine, so nothing else is live: the face
+                    # may sleep now (not at the dial, which the brain may refuse).
+                    face.sleep()
             elif kind == "hello" and wake:
                 if m.get("wake") not in ("asleep", "awake"):
                     raise Ungated("the brain's hello does not say it gates the room")
@@ -1416,7 +1445,7 @@ async def run_wake_sessions(card: Card, st: WakeState) -> None:
             ended = await run_session(card, preroll=False, wake=True, awake=awake)
         except DialError as e:
             logger.warning(f"brain not reachable ({e}) — not listening; retrying in {st.wait:g} s")
-            face.sleep()
+            face.sleep()  # a brain that cannot be reached: nothing to say otherwise
             await card.idle_for(st.wait)
             st.wait = min(st.wait * 2, RETRY_MAX_SECS)
             continue
@@ -1425,7 +1454,12 @@ async def run_wake_sessions(card: Card, st: WakeState) -> None:
         except Exception as e:  # noqa: BLE001 — the socket broke: as good as ended
             logger.warning(f"session ended ({e!r})")
             ended = None
-        face.sleep()
+        if ended in ("yield", "taken", "busy"):
+            # Another session or a call has the box: awake (idle) while it lasts; the
+            # face sleeps once our next asleep session is up (run_session, "ready").
+            face.state("idle")
+        else:
+            await rest_face(face)
         if ended == "restart":
             st.restart = True
             st.wait = RETRY_SECS
@@ -1499,7 +1533,7 @@ async def run_bridge() -> None:
         if not phrases:
             logger.warning(f"LOCAL_AUDIO_WAKE_WORDS={WAKE_WORDS!r} holds no word to listen "
                            "for: the box will never wake (clear it to listen without one)")
-        face.sleep()
+        await rest_face(face)
     try:
         while True:
             card = Card(face, volume=volume)
