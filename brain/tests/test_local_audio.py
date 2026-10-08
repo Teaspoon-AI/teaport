@@ -328,7 +328,8 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == "ws://h/talk?features=volume,restart,local&token=a%2Bb%26c%3Dd%20%25"
+    assert la._url() == ("ws://h/talk?features=volume,restart,local&client=local-audio"
+                         f"&keepalive={la.KEEPALIVE_SECS:g}&token=a%2Bb%26c%3Dd%20%25")
 
 
 # ------------------------------------------------- the reconnect policy, end to end
@@ -579,6 +580,31 @@ def test_backoff_zero_treats_taken_as_any_end(monkeypatch):
     assert count >= 2 and polls == 0
 
 
+def test_refused_busy_backs_off_like_taken(monkeypatch):
+    """The brain's arbiter refused the dial (4004: another conversation is live): the
+    voice that dialled does not redial while that conversation lasts."""
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0.2)
+    count, polls = _redials(monkeypatch, la.BUSY_CLOSE_CODE, lambda: True)
+    assert count == 1 and polls >= 5
+    count, _ = _redials(monkeypatch, la.BUSY_CLOSE_CODE, lambda: False)
+    assert count >= 2                            # it ended: back to listening for a voice
+
+
+def test_without_wake_words_a_phone_call_holds_the_mic_off_until_it_ends(monkeypatch):
+    """4002 (refused for a call) or 4005 (a call ended the conversation): no voice redial
+    until the brain reports the call over."""
+    monkeypatch.setattr(la, "BACKOFF_SECS", 3600)
+    for code in (la.YIELD_CLOSE_CODE, la.CALL_CLOSE_CODE):
+        calls = []
+
+        async def call_live():
+            calls.append(1)
+            return len(calls) < 1000             # the call outlasts the test
+        monkeypatch.setattr(la, "call_live", call_live)
+        count, polls = _redials(monkeypatch, code, lambda: False)
+        assert count == 1 and calls and polls == 0, code
+
+
 def _first_dials(monkeypatch, active, secs=1.5):
     """A bridge process starting while the brain reports active() (called per poll).
     Returns (connections, voice-free) after `secs`, nobody speaking."""
@@ -639,65 +665,79 @@ def _gateway():
     return gateway_server
 
 
-def test_an_evicted_talk_socket_is_closed_with_the_taken_code():
-    """acquire_slot tells the evicted session before cancelling it, and the gateway
-    turns the transport's own close of that socket into the taken code."""
+def test_the_bridge_and_the_brain_agree_on_the_close_codes():
+    """The bridge keeps its own copies (importing gateway_server pulls Pipecat in)."""
     gs = _gateway()
-    from teaport_brain import agent_session
-    assert gs.TAKEN_CLOSE_CODE == la.TAKEN_CLOSE_CODE
+    assert (la.TAKEN_CLOSE_CODE, la.YIELD_CLOSE_CODE, la.STT_CLOSE_CODE, la.BUSY_CLOSE_CODE,
+            la.CALL_CLOSE_CODE) == (gs.TAKEN_CLOSE_CODE, gs.YIELD_CLOSE_CODE, gs.STT_CLOSE_CODE,
+                                    gs.BUSY_CLOSE_CODE, gs.CALL_CLOSE_CODE)
+    assert "client=local-audio" in la._url()             # the arbiter's same-client id
+
+
+def test_an_asleep_room_session_a_talk_session_takes_is_closed_with_the_taken_code():
+    """The arbiter ends the sleeping mic through its front-end, which turns the
+    transport's own close of that socket into the taken code."""
+    gs = _gateway()
+    from teaport_brain import session_arbiter as arb
     closes, order = [], []
 
     class _Socket:
         async def close(self, code=1000, reason=None):
             closes.append((code, reason))
 
-    class _Task:
-        def __init__(self, name):
-            self.name = name
-
-        async def cancel(self):
-            order.append(f"cancel {self.name}")
-            await sock.close()                   # what pipecat does as the pipeline goes
-
     sock = _Socket()
 
+    class _Task:
+        async def cancel(self):
+            order.append("cancel")
+            await sock.close()                   # what pipecat does as the pipeline goes
+
+    session = type("S", (), {"task": _Task()})()
+
     async def run():
-        _, release_a = await agent_session.acquire_slot(
-            _Task("a"), on_evicted=lambda: (order.append("evicted a"), gs._close_as_taken(sock)))
-        a_done = agent_session._active_session[1]
-        a_done.set()                             # a's teardown finishes at once
-        _, release_b = await agent_session.acquire_slot(_Task("b"))
-        await release_a()
-        assert agent_session.slot_active()       # a's late release leaves b's slot alone
-        await release_b()
-        assert not agent_session.slot_active()
+        a = arb.SessionArbiter()
+        room = arb.Claim(arb.ROOM, client="local-audio", asleep=lambda: True,
+                         end=lambda why: gs._end_for(sock, session, why, room=True, asleep=True))
+        assert await a.acquire(room) is None
+        room.released.set()                      # its teardown finishes at once
+        talk = arb.Claim(arb.TALK, client="openclaw:x")
+        assert await a.acquire(talk) is None
+        a.release(room)                          # a late release leaves the Talk slot alone
+        assert a.holder is talk
+        a.release(talk)
+        assert not a.held()
 
     asyncio.run(run())
-    assert order == ["evicted a", "cancel a"]
+    assert order == ["cancel"]
     assert closes == [(gs.TAKEN_CLOSE_CODE, gs.TAKEN_CLOSE_REASON)]
 
 
-def test_talk_status_says_whether_the_slot_is_held(monkeypatch):
+def test_talk_status_says_who_holds_the_engine(monkeypatch):
     from types import SimpleNamespace
     from fastapi import HTTPException
     gs = _gateway()
-    from teaport_brain import agent_session
+    from teaport_brain import session_arbiter as arb
 
     def req(token=None, bearer=None):
         return SimpleNamespace(query_params={"token": token} if token else {},
                                headers={"authorization": f"Bearer {bearer}"} if bearer else {})
     monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
-    monkeypatch.setattr(agent_session, "_active_session", None)
-    assert asyncio.run(gs.talk_status(req())) == {"active": False, "call": False}
-    monkeypatch.setattr(agent_session, "_active_session", (object(), None, None))
-    assert asyncio.run(gs.talk_status(req())) == {"active": True, "call": False}
+    a = arb.SessionArbiter()
+    monkeypatch.setattr(arb, "ARBITER", a)
+    assert asyncio.run(gs.talk_status(req())) == {"active": False, "call": False, "live": False,
+                                                  "holder": None, "asleep": False}
+    a._holder = arb.Claim(arb.TALK)
+    live = {"active": True, "call": False, "live": True, "holder": "talk", "asleep": False}
+    assert asyncio.run(gs.talk_status(req())) == live
     monkeypatch.setenv("GATEWAY_TOKEN", "secret")
     for bad in (req(), req(token="nope"), req(bearer="nope")):
         with pytest.raises(HTTPException) as e:
             asyncio.run(gs.talk_status(bad))
         assert e.value.status_code == 401
-    assert asyncio.run(gs.talk_status(req(bearer="secret"))) == {"active": True, "call": False}
-    assert asyncio.run(gs.talk_status(req(token="secret"))) == {"active": True, "call": False}
+    assert asyncio.run(gs.talk_status(req(bearer="secret"))) == live
+    assert asyncio.run(gs.talk_status(req(token="secret"))) == live
+    a._holder = arb.Claim(arb.CALL)
+    assert asyncio.run(gs.talk_status(req(token="secret")))["call"] is True
 
 
 def test_uvicorn_request_lines_never_carry_the_token():
@@ -1055,7 +1095,7 @@ def test_no_wake_words_is_the_bridge_as_before(monkeypatch):
     monkeypatch.setattr(la, "URL", "ws://h/talk")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     assert not la.wake_mode()
-    assert la._url() == "ws://h/talk?features=volume,restart,local"   # no sleep, no wake
+    assert la._url() == f"ws://h/talk?features=volume,restart,local&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
 
 
 def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
@@ -1258,6 +1298,100 @@ def test_a_phone_call_holds_the_room_off_until_it_ends(monkeypatch):
         return {"active": False, "call": len(polls) < 4}   # the call ends at the 4th poll
     dials, _ = _drive(monkeypatch, ["yield", None], status=status)
     assert dials == [False, False, False] and len(polls) >= 4
+
+
+def test_a_refused_wake_session_backs_off_and_never_hammers(monkeypatch):
+    """Refused (another conversation is live): back off while the brain reports a live
+    session; with no back-off configured, retry on the doubling wait -- never at once."""
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0.05)
+    monkeypatch.setattr(la, "SHORT_SESSION_SECS", 0.0)
+    polls = []
+
+    def status():
+        polls.append(1)
+        return {"active": len(polls) < 4, "call": False}
+    dials, card = _drive(monkeypatch, ["busy", None], status=status)
+    assert dials == [False, False, False] and len(polls) >= 4 and card.idled == []
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0)
+    dials, card = _drive(monkeypatch, ["busy", "busy", "busy"])
+    assert card.idled == [la.RETRY_SECS, 2 * la.RETRY_SECS, 4 * la.RETRY_SECS]
+
+
+def _face_while_another_is_live(monkeypatch, code):
+    """Wake mode: the first session ends with `code` while another session (or a call)
+    is live for LIVE_S; the next dial is granted (hello + ready). Returns the face states
+    as (seconds since the first close, state), and when the brain stopped reporting live."""
+    flag, _ = _wake_card(monkeypatch)
+    import time
+    monkeypatch.setattr(la, "BACKOFF_SECS", 0.1)
+    live_s, states, t = 0.6, [], {}
+
+    class Face(la.FaceTap):
+        """An avatar that draws sleeping; every state it is sent, timed from the close."""
+        def __init__(self, *a, **kw):
+            super().__init__(send=lambda d: None, features=lambda: {"sleep": True})
+
+        def state(self, st):
+            states.append((time.monotonic() - t.get("closed", time.monotonic()), st))
+            super().state(st)
+    monkeypatch.setattr(la, "FaceTap", Face)
+
+    def status():
+        live = "closed" in t and time.monotonic() - t["closed"] < live_s
+        return {"active": live, "call": live and code == la.YIELD_CLOSE_CODE, "live": live,
+                "asleep": False}
+    monkeypatch.setattr(la, "_talk_status_sync", status)
+
+    async def talk_active():
+        return status()["active"]
+    monkeypatch.setattr(la, "talk_active", talk_active)
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.close(code=code)
+                t["closed"] = time.monotonic()
+                return
+            await ws.send(json.dumps({"type": "ready"}))
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: count[0] >= 2 and any(s == "sleeping" and d > 0
+                                                          for d, s in states), 6)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+    return states, live_s
+
+
+def test_the_face_stays_awake_while_another_session_or_a_call_has_the_box(monkeypatch):
+    """A sleeping face means the voice loop is not active anywhere: after a yield (a
+    call), taken or busy end, the face is idle -- awake -- while that lasts, and sleeps
+    only once our next asleep session holds the engine (nothing else is live then)."""
+    for code in (la.YIELD_CLOSE_CODE, la.TAKEN_CLOSE_CODE, la.BUSY_CLOSE_CODE):
+        states, live_s = _face_while_another_is_live(monkeypatch, code)
+        after = [(d, s) for d, s in states if d >= 0]
+        assert after and after[0][1] == "idle", (code, states)
+        assert not any(s == "sleeping" and d < live_s for d, s in after), (code, states)
+        assert any(s == "sleeping" for d, s in after), (code, states)
+
+
+def test_between_sessions_the_face_sleeps_only_when_nothing_is_live(monkeypatch):
+    sent = []
+    face = la.FaceTap(send=lambda d: sent.append(json.loads(d)), features=lambda: {"sleep": True})
+    for status, want in (({"live": True}, "idle"), ({"live": False}, "sleeping"),
+                         (None, "sleeping"),                     # a brain that cannot say
+                         ({"active": True, "asleep": False}, "idle"),   # one without "live"
+                         ({"active": True, "asleep": True}, "sleeping"),
+                         ({"active": False, "call": True}, "idle")):
+        monkeypatch.setattr(la, "_talk_status_sync", lambda status=status: status)
+        asyncio.run(la.rest_face(face))
+        assert [m for m in sent if "state" in m][-1] == {"state": want}, status
 
 
 def test_end_conversation_sleeps_after_the_goodbye(monkeypatch):

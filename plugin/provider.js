@@ -32,8 +32,11 @@ const CAPTIONS_PROTOCOL = 2;
 
 /**
  * Append OpenClaw-selected TTS voice/language — and the gateway auth token — to the
- * brain's WS URL as query params, plus the caption protocol. The Pipecat brain reads
- * ?voice=&language=&token=&captions= per session (gateway_server.py). A Kokoro
+ * brain's WS URL as query params, plus the caption protocol and the client id. The
+ * Pipecat brain reads ?voice=&language=&token=&captions=&client= per session
+ * (gateway_server.py). `client` names the Talk client (the device) across its own
+ * reconnects: the brain's session arbiter lets a reconnect replace that client's own
+ * session, and refuses every other client while a conversation is live. A Kokoro
  * voice's prefix implies its language, so voice alone usually suffices; language is
  * an optional phonemizer override. Voice and language come from
  * talk.realtime.providers.teaport.*; token from the same config or the
@@ -45,6 +48,7 @@ export function withVoiceParams(url, cfg) {
   if (cfg && cfg.voice) q.push("voice=" + encodeURIComponent(cfg.voice));
   if (cfg && cfg.language) q.push("language=" + encodeURIComponent(cfg.language));
   if (cfg && cfg.token) q.push("token=" + encodeURIComponent(cfg.token));
+  if (cfg && cfg.client) q.push("client=" + encodeURIComponent(cfg.client));
   q.push(`captions=${CAPTIONS_PROTOCOL}`);
   return url + (url.includes("?") ? "&" : "?") + q.join("&");
 }
@@ -368,13 +372,15 @@ export class TalkTranscriptAdapter {
  * Build the RealtimeVoiceProviderPlugin object OpenClaw registers.
  * @param {{url?: string, voice?: string, language?: string, token?: string,
  *   assistantTranscripts?: string, hostVersion?: string | (() => string | undefined),
- *   log?: (msg: string) => void, sessions?: object}} defaults
+ *   log?: (msg: string) => void, sessions?: object, clientKey?: () => string | undefined}} defaults
  *   fallback config (mainly for tests); live config arrives per-session as
  *   req.providerConfig (talk.realtime.providers.teaport.*). hostVersion is the
  *   OpenClaw version, or a function that reads it (index.js reads api.runtime.version);
  *   it is read once, when a session first needs it. log reports how each session
  *   sends assistant captions. sessions is the TalkSessions registry (context.js)
- *   every bridge joins, so the context-note gateway methods can find it.
+ *   every bridge joins, so the context-note gateway methods can find it. clientKey names
+ *   the Talk client a session is created for (index.js: its paired device), sent as
+ *   ?client=; undefined sends none.
  */
 export function buildTeaportRealtimeProvider(defaults = {}) {
   let version = null; // { value } once read
@@ -412,10 +418,17 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
       const cfg = req.providerConfig || {};
       const base = cfg.url || defaults.url;
       // voice/language fall back to the plugin defaults if not set per-session.
+      let client;
+      try {
+        client = defaults.clientKey?.();
+      } catch {
+        client = undefined; // no id: the brain never lets this session replace another
+      }
       const url = withVoiceParams(base, {
         voice: cfg.voice || defaults.voice,
         language: cfg.language || defaults.language,
         token: cfg.token || defaults.token || process.env.TEAPORT_GATEWAY_TOKEN,
+        client,
       });
       const { deltas, reason } = pickAssistantTranscripts(
         cfg.assistantTranscripts ?? defaults.assistantTranscripts,
@@ -457,6 +470,9 @@ class TeaportBridge {
     this._contextSeq = 0;
     this._contextAcks = new Map();
     this._onEnd = null;
+    // A response the brain framed itself is open (its "response" start marker), until its
+    // done marker or the session's end.
+    this._responseOpen = false;
   }
 
   /** The brain's hello features ({context: {...}}), or null before/without one. */
@@ -623,6 +639,8 @@ class TeaportBridge {
         this._helloAt = Date.now();
       } else if (msg.type === "ready") {
         this._brainReady = true;
+      } else if (msg.type === "response") {
+        this._onResponseMarker(msg.state);
       } else if (msg.type === "context_result") {
         const pending = this._contextAcks.get(msg.id);
         if (pending) {
@@ -676,6 +694,26 @@ class TeaportBridge {
     }
     // binary: bot speech, PCM16/24k -> hand a Buffer to the relay
     if (this._req.onAudio) this._req.onAudio(Buffer.from(data));
+  }
+
+  // The brain frames an utterance that may come before the relay has any turn to hang it
+  // on: the busy line to a client it refuses (gateway_server._refuse), which it says at
+  // once, before any mic audio has reached the relay. OpenClaw's relay (2026.9.x,
+  // TalkRealtimeRelayOutputOwnership) attributes assistant output to the active turn,
+  // which it opens on the first mic chunk, and fails the whole session ("Realtime provider
+  // output has no live response owner") on output with none. response.created gives the
+  // utterance a turn of its own; it carries no responseId, so the relay stays in its
+  // turn-bound mode (#75). Only while no response of ours is open: the relay fails on a
+  // second created while one is owned. done ends it with onResponseDone, which is what
+  // releases ownership (a response.done event alone does not).
+  _onResponseMarker(state) {
+    if (state === "start" && !this._responseOpen) {
+      this._responseOpen = true;
+      this._req.onEvent?.({ direction: "server", type: "response.created" });
+    } else if (state === "done" && this._responseOpen) {
+      this._responseOpen = false;
+      this._req.onResponseDone?.({ status: "completed" });
+    }
   }
 
   _forward(events) {

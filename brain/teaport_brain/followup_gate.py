@@ -245,6 +245,14 @@ class FollowupGate(FrameProcessor):
         self._settled.set()
         # Replies being watched to completion — see Delivery and watch_delivery.
         self._deliveries: list = []
+        # For the session arbiter's view of a room mic without wake words: whether the
+        # user has taken a turn at all, and when anyone (user or bot) last spoke or the
+        # model last answered (time.monotonic(); refreshed while that is still going on).
+        self.user_heard = False
+        self.last_active = time.monotonic()
+        # Async consult answers still on their way (tools._consult_and_followup).
+        self.owed = 0
+        self._was_busy = False
 
     @property
     def quiet_secs(self) -> float:
@@ -320,6 +328,9 @@ class FollowupGate(FrameProcessor):
 
     def _refresh(self):
         busy = self._user or self._bot or self._llm
+        if busy or self._was_busy:
+            self.last_active = time.monotonic()
+        self._was_busy = busy
         if busy:
             self._idle.clear()
             self._busy.set()
@@ -339,6 +350,7 @@ class FollowupGate(FrameProcessor):
         await super().process_frame(frame, direction)
         if isinstance(frame, UserStartedSpeakingFrame):
             self._user = True
+            self.user_heard = True
             self._refresh()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user = False

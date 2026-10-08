@@ -30,6 +30,8 @@
 // This line read "none" until 2026-09-08, on the reasoning that Pipecat orchestrates and
 // OpenClaw should stay quiet. That confuses `brain` with response ownership, and cost
 // several rounds of flipping the value back and forth against a live gateway.
+import { createHash } from "node:crypto";
+
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { TalkSessions, contextMethods } from "./context.js";
@@ -59,6 +61,24 @@ function loadRequestScope() {
 }
 function currentConnId() {
   return getRequestScope ? getRequestScope()?.client?.connId : undefined;
+}
+
+// The Talk client a session is for, as the brain's ?client= (provider.js): the paired
+// device the client connected to the gateway as (connect.device.id), else its
+// self-reported instance id. The device id outlives a reconnect, which is the point: the
+// brain lets the same client replace its own session, so an app whose old connection
+// froze takes it back, while a different device is told the agent is busy. Not always:
+// the Control UI served over plain HTTP gets no device identity (that needs a secure
+// context) and a fresh instance id per page load, so its reload is a new client. That
+// case leans on the brain instead: a reload closes the old socket, and the brain's session
+// arbiter frees a session whose socket is closed or has gone silent (session_arbiter.py,
+// "reaped"). Hashed, so the brain's logs carry no device identifier; undefined when the
+// host shows neither.
+function currentClientKey() {
+  const connect = getRequestScope ? getRequestScope()?.client?.connect : undefined;
+  const id = connect?.device?.id || connect?.client?.instanceId;
+  if (!id) return undefined;
+  return "openclaw:" + createHash("sha256").update(String(id)).digest("hex").slice(0, 16);
 }
 
 // OpenClaw's own Talk session registry (src/gateway/talk-session-registry.ts, and
@@ -92,6 +112,7 @@ export default definePluginEntry({
         hostVersion: () => api.runtime?.version,
         log: (msg) => api.logger?.info?.(msg),
         sessions,
+        clientKey: currentClientKey,
       }),
     );
     // Context notes for live sessions (context.js). operator.talk is the scope OpenClaw

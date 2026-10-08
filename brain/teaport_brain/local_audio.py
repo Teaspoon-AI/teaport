@@ -10,9 +10,11 @@
 #   speaker <--aplay-- THIS <--binary PCM16 24k mono-- brain (TTS)
 #
 # It is a /talk client exactly like the OpenClaw plugin and the Discord bridge (the wire
-# format is gateway_serializer.py's), so the brain is unchanged. It shares /talk's
-# single-session slot: every connect evicts whatever session holds it (and the brain
-# greets the newcomer). So the bridge never dials on a timer:
+# format is gateway_serializer.py's), so the brain is unchanged. The brain's session
+# arbiter (session_arbiter.py) gives the engine to one conversation at a time: a dial
+# while another conversation is live is refused (BUSY_CLOSE_CODE; the room hears the busy
+# line if it asked to talk), and only the bridge's own reconnect (?client=local-audio)
+# replaces its session. Still, the bridge never dials on a timer:
 #   * The card comes first. aplay and arecord are opened, and capture must deliver
 #     data, BEFORE /talk is dialled: a dead or unplugged card evicts nobody. A card that
 #     fails is retried with a backoff (RETRY_SECS doubling to RETRY_MAX_SECS) — but a
@@ -37,14 +39,19 @@
 #     keeps its messages). Nothing here falls back to listening without the wake words:
 #     a brain or STT that cannot be reached leaves the bridge deaf, retrying. A phone
 #     call takes the engine from an asleep session (/talk/call): the bridge stays off
-#     until the brain reports no call. The OLED face sleeps while the box does.
-#   * Unless another client took the slot (the brain closes our socket with
-#     TAKEN_CLOSE_CODE): then the box is theirs. The bridge does not listen for a voice —
-#     the dashboard user talking to their own session is a voice in the room too — until
-#     the brain has reported no live Talk session (/talk/status) for LOCAL_AUDIO_BACKOFF_SECS.
-#     An unused session ends on the brain's idle timeout (~5 min), so this is bounded.
-#     A bridge that starts (a crash, a unit restart) while another client's session is
-#     live backs off the same way instead of dialling (taken_at_start).
+#     until the brain reports no call. The OLED face sleeps only while nothing is live
+#     anywhere (the brain's /talk/status "live"): while another session or a call has
+#     the box it stays awake, idle, and it sleeps once our asleep session is up again.
+#   * Unless another client has the box: a Talk session took it from an asleep mic
+#     (TAKEN_CLOSE_CODE), or the brain refused our dial because another conversation is
+#     live (BUSY_CLOSE_CODE). Then the box is theirs. The bridge does not listen for a
+#     voice — the dashboard user talking to their own session is a voice in the room too —
+#     until the brain has reported no live session (/talk/status) for
+#     LOCAL_AUDIO_BACKOFF_SECS. An unused session ends on the brain's idle timeout (~5 min),
+#     so this is bounded. A bridge that starts (a crash, a unit restart) while another
+#     client's session is live backs off the same way instead of dialling (taken_at_start).
+#     A dial refused for a phone call (YIELD_CLOSE_CODE), or a conversation a call ended
+#     (CALL_CLOSE_CODE), waits the call out instead.
 #
 # Two hardware facts shape it:
 #   * The XVF3800 only streams capture while a playback stream is open on the same
@@ -161,13 +168,22 @@ BACKOFF_POLL_SECS = 5.0
 # client's, which the first dial would evict.
 START_SETTLE_SECS = 3.0
 START_POLL_SECS = 0.5
-# The brain's close code for a session a newer one evicted (gateway_server.TAKEN_CLOSE_CODE;
-# not imported: that pulls Pipecat into this process).
+# The brain's close codes (gateway_server.*_CLOSE_CODE; not imported: that pulls Pipecat
+# into this process). TAKEN: our asleep session gave the box to a Talk session (or our own
+# reconnect replaced it).
 TAKEN_CLOSE_CODE = 4001
-# ...for an asleep session closed for a phone call (gateway_server.YIELD_CLOSE_CODE), and
-# for a wake session whose STT could not connect (STT_CLOSE_CODE; the reason says why).
+# ...an asleep session closed or refused for a phone call (YIELD), and a wake session
+# whose STT could not connect (STT_CLOSE_CODE; the reason says why).
 YIELD_CLOSE_CODE = 4002
 STT_CLOSE_CODE = 4003
+# ...a dial refused because another conversation is live (BUSY), and a conversation a
+# phone call ended (CALL; not sent to the room today -- a call is refused during an awake
+# room conversation -- but it means "wait the call out" if it ever is).
+BUSY_CLOSE_CODE = 4004
+CALL_CLOSE_CODE = 4005
+# Who we are to the brain's session arbiter (?client=): one bridge per box, so a restarted
+# bridge replaces its own previous session rather than being refused by it.
+CLIENT_ID = "local-audio"
 # Not listening for a voice until our own playback has been silent this long (the
 # card's AEC is good, not perfect: the tail of the STT-busy line must not redial).
 ECHO_TAIL_SECS = 0.3
@@ -976,7 +992,12 @@ def wake_mode() -> bool:
 
 
 def _url(awake: bool = False) -> str:
-    query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ()))}
+    query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ())),
+             "client": CLIENT_ID}
+    if not wake_mode():
+        # Without wake words the brain counts our session as asleep (a Talk client may take
+        # it) until someone speaks, and again after this long with nobody speaking.
+        query["keepalive"] = f"{KEEPALIVE_SECS:g}"
     if wake_mode():
         # The phrases ride the URL (they are settings, not speech); the brain parses them.
         query["wake"] = WAKE_WORDS
@@ -1009,6 +1030,7 @@ def _talk_status_sync() -> dict | None:
 
 
 def _talk_active_sync() -> bool | None:
+    # "active": any session holds the engine (a call included), not just a /talk one.
     status = _talk_status_sync()
     return None if status is None else bool(status.get("active"))
 
@@ -1016,6 +1038,32 @@ def _talk_active_sync() -> bool | None:
 async def talk_active() -> bool | None:
     """Does a /talk session hold the brain's slot? None when the brain cannot say."""
     return await asyncio.to_thread(_talk_active_sync)
+
+
+def _live_sync() -> bool | None:
+    """Is a conversation live anywhere on the box (Talk, a call, the room awake)? None
+    when the brain cannot say. A brain without "live" is read from what it does report."""
+    status = _talk_status_sync()
+    if status is None:
+        return None
+    if "live" in status:
+        return bool(status["live"])
+    return bool(status.get("call") or (status.get("active") and not status.get("asleep")))
+
+
+async def anything_live() -> bool | None:
+    return await asyncio.to_thread(_live_sync)
+
+
+async def rest_face(face: "FaceTap") -> None:
+    """The face between sessions. Sleeping means the voice loop is not active anywhere
+    (the user's rule): so idle -- awake -- while another session or a call is live, and
+    sleeping only once the brain reports nothing live. A brain that cannot say: sleeping,
+    as before."""
+    if await anything_live():
+        face.state("idle")
+    else:
+        face.sleep()
 
 
 async def call_live() -> bool:
@@ -1195,12 +1243,12 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
     """One /talk connection over an open card. Raises DialError when the brain cannot be
     reached, CardError when the card dies; returns (or raises the socket's error) when
     the session ends — "restart" when the model asked for a fresh one, "taken" when
-    another client took the slot.
+    another client took the slot, "busy" when the brain refused us (another
+    conversation is live), "yield" when a phone call has the engine.
 
     `wake`: a wake-word session, opened asleep (or `awake`: restart_session's fresh
     conversation). It also ends "sleep" (end_conversation), "keepalive" / "awake-max"
-    (KeepAlive), "yield" (a phone call took the engine) or "stt:<reason>" (its STT
-    could not connect)."""
+    (KeepAlive) or "stt:<reason>" (its STT could not connect)."""
     import websockets
 
     face, play = card.face, card.play
@@ -1221,11 +1269,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
     # Answers still owed (an async consult: the brain's "working"): call_id -> deadline.
     # The conversation does not sleep on one.
     owed: dict = {}
-    if wake:
-        if awake:
-            face.woke()
-        else:
-            face.sleep()
+    if wake and awake:
+        face.woke()
 
     async def send_mic():
         await gated.wait()
@@ -1256,6 +1301,10 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 face.interrupted()
             elif kind == "ready":
                 logger.info("session ready")
+                if wake and alive is None:
+                    # Our asleep session has the engine, so nothing else is live: the face
+                    # may sleep now (not at the dial, which the brain may refuse).
+                    face.sleep()
             elif kind == "hello" and wake:
                 if m.get("wake") not in ("asleep", "awake"):
                     raise Ungated("the brain's hello does not say it gates the room")
@@ -1341,11 +1390,13 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
         codes = [close_code(t.exception()) for t in done if not t.cancelled()]
         if TAKEN_CLOSE_CODE in codes:
             return "taken"
+        if BUSY_CLOSE_CODE in codes:
+            return "busy"
+        if YIELD_CLOSE_CODE in codes or CALL_CLOSE_CODE in codes:
+            return "yield"
         if wake:
             if any(isinstance(t.exception(), Ungated) for t in done if not t.cancelled()):
                 return "ungated"
-            if YIELD_CLOSE_CODE in codes:
-                return "yield"
             for t in done:
                 e = None if t.cancelled() else t.exception()
                 if close_code(e) == STT_CLOSE_CODE:
@@ -1394,7 +1445,7 @@ async def run_wake_sessions(card: Card, st: WakeState) -> None:
             ended = await run_session(card, preroll=False, wake=True, awake=awake)
         except DialError as e:
             logger.warning(f"brain not reachable ({e}) — not listening; retrying in {st.wait:g} s")
-            face.sleep()
+            face.sleep()  # a brain that cannot be reached: nothing to say otherwise
             await card.idle_for(st.wait)
             st.wait = min(st.wait * 2, RETRY_MAX_SECS)
             continue
@@ -1403,15 +1454,29 @@ async def run_wake_sessions(card: Card, st: WakeState) -> None:
         except Exception as e:  # noqa: BLE001 — the socket broke: as good as ended
             logger.warning(f"session ended ({e!r})")
             ended = None
-        face.sleep()
+        if ended in ("yield", "taken", "busy"):
+            # Another session or a call has the box: awake (idle) while it lasts; the
+            # face sleeps once our next asleep session is up (run_session, "ready").
+            face.state("idle")
+        else:
+            await rest_face(face)
         if ended == "restart":
             st.restart = True
             st.wait = RETRY_SECS
             continue
-        if ended == "taken" and BACKOFF_SECS > 0:
+        if ended in ("taken", "busy") and BACKOFF_SECS > 0:
             st.backoff = Backoff()
-            logger.info("session taken by another Talk client — backing off (asleep, no "
-                        f"wake) until no Talk session has been live for {BACKOFF_SECS:g} s")
+            logger.info(("session taken by another Talk client" if ended == "taken" else
+                         "refused: another conversation has the box")
+                        + " — backing off (asleep, no wake) until no session has been live "
+                        f"for {BACKOFF_SECS:g} s")
+            continue
+        if ended == "busy":
+            # No back-off configured, but a refusal is not to be redialled at once: the
+            # brain would only refuse again.
+            logger.info(f"refused: another conversation has the box — retrying in {st.wait:g} s")
+            await card.idle_for(st.wait)
+            st.wait = min(st.wait * 2, RETRY_MAX_SECS)
             continue
         if ended == "yield":
             logger.info("a phone call needs the speech engine — not listening until it ends")
@@ -1468,7 +1533,7 @@ async def run_bridge() -> None:
         if not phrases:
             logger.warning(f"LOCAL_AUDIO_WAKE_WORDS={WAKE_WORDS!r} holds no word to listen "
                            "for: the box will never wake (clear it to listen without one)")
-        face.sleep()
+        await rest_face(face)
     try:
         while True:
             card = Card(face, volume=volume)
@@ -1493,11 +1558,18 @@ async def run_bridge() -> None:
                             connect_now = True
                             card_wait = dial_wait = RETRY_SECS
                             continue
-                        if ended == "taken" and BACKOFF_SECS > 0:
+                        if ended in ("taken", "busy") and BACKOFF_SECS > 0:
                             backoff = Backoff()
-                            logger.info("session taken by another Talk client — backing off "
-                                        f"(no voice wake) until no Talk session has been live "
-                                        f"for {BACKOFF_SECS:g} s")
+                            logger.info(("session taken by another Talk client"
+                                         if ended == "taken" else
+                                         "refused: another conversation has the box")
+                                        + " — backing off (no voice wake) until no session "
+                                        f"has been live for {BACKOFF_SECS:g} s")
+                        elif ended == "yield":
+                            logger.info("a phone call has the speech engine — not listening "
+                                        "until it ends")
+                            await card._until(wait_out_call())
+                            logger.info("the phone call is over — waiting for voice")
                         else:
                             logger.info("session ended — waiting for voice")
                     except DialError as e:

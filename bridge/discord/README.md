@@ -13,8 +13,10 @@ Discord voice servers ⇄ UDP ⇄ bridge (host) ⇄ ws://127.0.0.1:7861/talk (br
 
 The bridge follows ONE configured user: when they join a voice channel in the
 configured server, the bot joins and bridges; when they leave, it leaves. The
-brain is single-session — a Discord call and a dashboard Talk session evict
-each other.
+brain holds one conversation at a time: while a dashboard Talk session (or a
+phone call) is live, the bot's dial is refused — the agent says it is busy and
+the bot leaves the channel — and a Discord session that is live refuses
+everyone else the same way. Re-joining replaces the bot's own session.
 
 ## Setup
 

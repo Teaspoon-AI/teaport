@@ -263,3 +263,13 @@ msgstr "もう一度|もういちど|もう[1１]度|もう一回|もういっ�
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "言語"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "すみません、今は電話中です。通話が終わってからもう一度お試しください。"
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "すみません、今は別の会話中です。少ししてからもう一度お試しください。"
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "すみません、電話がかかってきたので出なければなりません。通話が終わったらまたお話ししましょう。"

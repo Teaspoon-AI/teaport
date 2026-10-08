@@ -574,6 +574,10 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         # is): the local audio bridge must not put the conversation to sleep while one
         # is on its way (local_audio.KeepAlive). `secs` bounds the wait. Best effort: a
         # client that ignores it loses nothing, and a torn-down pipeline cannot take it.
+        if gate is not None:
+            # The session's own count of answers owed (a no-wake room session is not idle
+            # while one is: gateway_server.room_idle).
+            gate.owed = max(0, getattr(gate, "owed", 0) + (-1 if done else 1))
         if llm is None:
             return
         message = {"type": "working", "call_id": call_id}

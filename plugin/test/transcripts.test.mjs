@@ -388,6 +388,21 @@ test("the plugin tells the brain it speaks caption protocol 2", () => {
   assert.equal(new URL(bridge._url).searchParams.get("captions"), "2");
 });
 
+test("the plugin names the Talk client, so only its own reconnect replaces its session", () => {
+  const key = { value: "openclaw:0123456789abcdef" };
+  const provider = buildTeaportRealtimeProvider({
+    url: "ws://brain/talk", hostVersion: "2026.9.1", clientKey: () => key.value,
+  });
+  const url = (cfg) => new URL(provider.createBridge({ providerConfig: cfg })._url);
+  assert.equal(url({}).searchParams.get("client"), "openclaw:0123456789abcdef");
+  key.value = undefined; // the host shows no device: no id, never a replacement
+  assert.equal(url({}).searchParams.get("client"), null);
+  const throwing = buildTeaportRealtimeProvider({
+    url: "ws://brain/talk", hostVersion: "2026.9.1", clientKey: () => { throw new Error("no scope"); },
+  });
+  assert.equal(new URL(throwing.createBridge({ providerConfig: {} })._url).searchParams.get("client"), null);
+});
+
 test("the brain hanging up closes the bubble and sends the held cards", async (t) => {
   // A stand-in for the WebSocket the bridge opens, driven by the test.
   class FakeSocket extends EventTarget {
@@ -487,4 +502,66 @@ test("the plugin registers without reading the host version", async (t) => {
   registered[0].createBridge({ providerConfig: { url: "ws://brain/talk" } });
   assert.equal(runtimeReads, 1); // read once, on the first session
   assert.deepEqual(logs, Array(2).fill("teaport-realtime: assistant captions sent as deltas (auto, OpenClaw version unknown)"));
+});
+
+test("a refused client's busy line is framed as a response, so the relay owns and plays it", async (t) => {
+  // OpenClaw's relay fails the session on assistant output with no live owner: it opens a
+  // turn on the first mic chunk, and the brain says the busy line before any. A stand-in
+  // for its ownership rule (TalkRealtimeRelayOutputOwnership, 2026.9.7, turn-bound mode):
+  // response.created makes an owner, onResponseDone releases it, and output with none fails.
+  class FakeSocket extends EventTarget {
+    constructor(url) {
+      super();
+      FakeSocket.last = this;
+    }
+    send() {}
+    close() {}
+  }
+  const real = globalThis.WebSocket;
+  globalThis.WebSocket = FakeSocket;
+  t.after(() => {
+    globalThis.WebSocket = real;
+  });
+  const relay = { owner: false, failed: null, log: [] };
+  const own = (what) => {
+    if (!relay.owner) relay.failed ??= `${what} with no live response owner`;
+    relay.log.push(what);
+  };
+  const provider = buildTeaportRealtimeProvider({ url: "ws://brain/talk", hostVersion: "2026.9.7" });
+  const bridge = provider.createBridge({
+    providerConfig: {},
+    onEvent: (ev) => {
+      if (ev.direction === "server" && ev.type === "response.created") {
+        if (relay.owner) relay.failed ??= "a second response.created while one is owned";
+        assert.equal(ev.responseId, undefined); // turn-bound mode, never exact-response
+        relay.owner = true;
+        relay.log.push("created");
+      }
+    },
+    onResponseDone: (outcome) => {
+      relay.owner = false;
+      relay.log.push(`done:${outcome.status}`);
+    },
+    onTranscript: (role) => own(`transcript:${role}`),
+    onAudio: (buf) => own(`audio:${buf.length}`),
+    onClose: (reason) => relay.log.push(`close:${reason}`),
+  });
+  const connected = bridge.connect();
+  const ws = FakeSocket.last;
+  ws.dispatchEvent(new Event("open"));
+  await connected;
+  const send = (data) => {
+    const ev = new Event("message");
+    ev.data = data;
+    ws.dispatchEvent(ev);
+  };
+  // What gateway_server._refuse sends, in its order.
+  send(JSON.stringify({ type: "response", state: "start" }));
+  send(JSON.stringify({ type: "transcript", role: A, text: "Sorry, I'm busy.", final: true, utterance: "busy" }));
+  send(new Uint8Array(4800).buffer);
+  send(JSON.stringify({ type: "response", state: "done" }));
+  send(JSON.stringify({ type: "response", state: "done" })); // a repeat: nothing
+  ws.dispatchEvent(new Event("close"));
+  assert.equal(relay.failed, null);
+  assert.deepEqual(relay.log, ["created", "transcript:assistant", "audio:4800", "done:completed", "close:completed"]);
 });

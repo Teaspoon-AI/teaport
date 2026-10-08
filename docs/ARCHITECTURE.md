@@ -21,6 +21,17 @@ One appliance, three parts:
 
 Your voice does not leave the device. The LLM runs where you point it.
 
+## One conversation at a time
+
+The engine transcribes one session at a time, so the brain's session arbiter
+(`brain/teaport_brain/session_arbiter.py`) owns that slot and applies one policy
+to every front-end — `/talk` (the OpenClaw plugin, Discord, the box's mic
+bridge) and phone calls. A newcomer gets the engine only if nothing is live,
+if it is the same client reconnecting, if the box's mic is asleep, or if it is
+a call and the live session is a remote Talk session (whose user is told
+first). Everyone else is told the agent is busy. The table is in
+docs/CONFIG.md → One engine, one conversation.
+
 ## Tools
 
 Every tool the voice model can call follows one contract

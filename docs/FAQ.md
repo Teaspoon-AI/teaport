@@ -23,10 +23,14 @@
   box is a local voice assistant only; nothing binds a SIP port until you run
   `teaport sip configure` and point it at your trunk/SBC. See
   **docs/CONFIG.md → SIP telephony**.
-- **Why did my second session hear "the voice assistant is busy"?** The engine
-  serves one speech session at a time, and the local (OpenClaw) brain and the SIP
-  phone line share it. Whoever connects first holds it; the second connection
-  hears the busy message and ends. For a phone-dedicated box,
-  `sudo systemctl disable --now teaport-brain` so the line always wins the slot.
+- **Why did my second session hear "I'm in another conversation right now"?** The
+  box holds one conversation at a time: the app, the dashboard, Discord, the
+  box's own microphone and a phone call all share one speech engine. A new
+  session while another is live is told the agent is busy and closes; the
+  conversation in progress goes on. Only the same client reconnecting replaces
+  its own session, and a phone call ends a remote Talk session after telling its
+  user why. See **docs/CONFIG.md → One engine, one conversation**. For a
+  phone-dedicated box, `sudo systemctl disable --now teaport-brain` so the line
+  always has the engine.
 
 TODO: troubleshooting, updates, uninstall, multi-language notes.

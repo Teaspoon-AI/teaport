@@ -669,6 +669,17 @@ class EngineTTSService(TTSService):
                 "language_name": LANG_NAMES.get(self._espeak_lang,
                                                 self._espeak_lang)}
 
+    async def synthesize(self, text: str) -> bytes:
+        """All of `text` as PCM16 mono at 24 kHz, outside any pipeline: for a line the
+        brain says on a socket it then closes, with no session behind it (the session
+        arbiter's busy line to a refused /talk client). Raises _EngineError."""
+        blocks = [event[1] async for event in self._synth_text(text, eager=False)
+                  if event[0] == "audio"]
+        if not blocks:
+            return b""
+        pcm = np.clip(np.concatenate(blocks), -1.0, 1.0)
+        return (pcm * 32767.0).astype("<i2").tobytes()
+
     async def run_tts(self, text: str, context_id: str) -> AsyncGenerator[Frame, None]:
         logger.debug(f"{self}: engine TTS [{text}]")
         # Synthesize clause-by-clause so the (short) opening clause is the first-audio gate,

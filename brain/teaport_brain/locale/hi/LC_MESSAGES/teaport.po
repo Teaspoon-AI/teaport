@@ -263,3 +263,13 @@ msgstr "(?<![\\u0900-\\u097F])(?:दोबारा|दुबारा|फिर
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "भाषा"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "माफ़ कीजिए, मैं अभी फ़ोन कॉल पर हूँ। कॉल ख़त्म होने के बाद फिर से कोशिश कीजिए।"
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "माफ़ कीजिए, मैं अभी किसी और बातचीत में हूँ। थोड़ी देर में फिर से कोशिश कीजिए।"
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "माफ़ कीजिए, एक फ़ोन कॉल आ रही है और मुझे उसे उठाना होगा। कॉल ख़त्म होने के बाद हम फिर बात कर सकते हैं।"

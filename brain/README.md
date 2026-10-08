@@ -17,7 +17,9 @@ Config lives in the environment — see `docs/CONFIG.md`.
 `teaport-brain` console script) — nothing in it is reachable only from tests or dev
 harnesses. Some highlights:
 
-- `gateway_server` — the `/talk` WebSocket + `/health` app, session eviction, `main()`.
+- `gateway_server` — the `/talk` WebSocket + `/health` app, `main()`.
+- `session_arbiter` — one conversation at a time: who gets the engine's single STT slot
+  (Talk, the box's mic, a phone call), and what the others are told.
 - `services` — the LLM/STT/TTS factories (provider selection reads the env at call time).
 - `endpointing` — the endpointing policy: VAD gates, Smart Turn v3 threshold, barge-in guard.
 - `transcript_ledger` / `heard_context` — heard-grounding: what the user actually *heard*.

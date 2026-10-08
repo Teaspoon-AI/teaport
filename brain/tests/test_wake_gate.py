@@ -260,13 +260,16 @@ class _WS:
 
 
 class _PipelineTask:
-    def __init__(self, ws):
+    def __init__(self, ws, on_cancel=None):
         self.ws = ws
         self.cancelled = False
+        self.on_cancel = on_cancel
 
     async def cancel(self):
         self.cancelled = True
         await self.ws.close()                          # what pipecat does as it goes
+        if self.on_cancel:
+            self.on_cancel()                           # its runner's finally: release
 
 
 def _request(body, host="127.0.0.1"):
@@ -281,46 +284,77 @@ def _request(body, host="127.0.0.1"):
     return R()
 
 
-async def test_a_phone_call_closes_the_asleep_mic_session_and_holds_the_room_off():
-    from types import SimpleNamespace
+def _fresh_arbiter():
+    """A clean arbiter (and no call lease) for gateway_server; returns (gs, arb)."""
     from teaport_brain import gateway_server as gs
+    from teaport_brain import session_arbiter as arb
+    arb.ARBITER = arb.SessionArbiter()
+    gs._lease = None
+    return gs, arb
+
+
+async def _room_session(gs, arb, asleep: bool):
+    """A room mic session holding the arbiter, as run_relay_bot registers one."""
+    from types import SimpleNamespace
+    ws = _WS()
+    session = SimpleNamespace(task=None)
+    claim = arb.Claim(arb.ROOM, client="local-audio", asleep=lambda: asleep,
+                      end=lambda why: gs._end_for(ws, session, why, room=True, asleep=asleep))
+    session.task = _PipelineTask(ws, on_cancel=lambda: arb.ARBITER.release(claim))
+    assert await arb.ARBITER.acquire(claim) is None
+    return ws, session
+
+
+async def test_a_phone_call_closes_the_asleep_mic_session_and_holds_the_room_off():
     os.environ.pop("GATEWAY_TOKEN", None)
-    asleep_ws, awake_ws = _WS(), _WS()
-    asleep = SimpleNamespace(task=_PipelineTask(asleep_ws))
-    awake = SimpleNamespace(task=_PipelineTask(awake_ws))
-    gs._wake_sessions.clear()
-    gs._wake_sessions[asleep_ws] = (wake_gate.WakeGate(["x"], asleep=True), asleep)
-    gs._wake_sessions[awake_ws] = (wake_gate.WakeGate(["x"], asleep=False), awake)
+    gs, arb = _fresh_arbiter()
+    asleep_ws, asleep = await _room_session(gs, arb, asleep=True)
     try:
         answer = await gs.talk_call(_request({"state": "start"}))
         assert answer == {"call": True, "yielded": 1}
         assert asleep.task.cancelled and asleep_ws.closed == [(gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)]
-        assert not awake.task.cancelled                 # a conversation is not cut (#58)
         assert gs.call_live()
         status = await gs.talk_status(_request(None))
-        assert status["call"] is True
+        assert status["call"] is True and status["holder"] == "call"
+        assert (await gs.talk_call(_request({"state": "refresh"}))) == {"call": True, "yielded": 0}
         await gs.talk_call(_request({"state": "end"}))
-        assert not gs.call_live()
-        await gs.talk_call(_request({"state": "refresh"}))
-        gs._call_until -= gs.CALL_LEASE_SECS + 1        # a SIP brain that died mid-call
-        assert not gs.call_live()
+        assert not gs.call_live() and not arb.ARBITER.held()
+        await gs.talk_call(_request({"state": "start"}))
+        gs._lease.until = __import__("time").monotonic() - 1   # a SIP brain that died mid-call
+        for _ in range(40):
+            await asyncio.sleep(0.05)
+            if not gs.call_live():
+                break
+        assert not gs.call_live() and gs._lease is None
     finally:
-        gs._wake_sessions.clear()
-        gs._call_until = 0.0
+        _fresh_arbiter()
+
+
+async def test_an_awake_room_conversation_keeps_the_box_and_the_call_is_refused():
+    """For now: #58's take-the-call prompt replaces this refusal."""
+    os.environ.pop("GATEWAY_TOKEN", None)
+    gs, arb = _fresh_arbiter()
+    awake_ws, awake = await _room_session(gs, arb, asleep=False)
+    try:
+        answer = await gs.talk_call(_request({"state": "start"}))
+        assert answer == {"call": False, "busy": "room"}
+        assert not awake.task.cancelled and awake_ws.closed == []
+        assert not gs.call_live() and gs._lease is None
+    finally:
+        _fresh_arbiter()
 
 
 async def test_an_asleep_session_is_refused_while_a_call_is_live():
-    import time as _time
-    from teaport_brain import gateway_server as gs
+    gs, arb = _fresh_arbiter()
 
     class WS(_WS):
         query_params = {"wake": "hey teaport", "features": "local,sleep"}
     ws = WS()
-    gs._call_until = _time.monotonic() + 30
+    assert await arb.ARBITER.acquire(arb.Claim(arb.CALL, client="sip")) is None
     try:
         await gs.run_relay_bot(ws)
     finally:
-        gs._call_until = 0.0
+        _fresh_arbiter()
     assert ws.closed == [(gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)]
 
 
@@ -435,7 +469,7 @@ async def test_a_wake_phrase_split_across_two_finals_still_wakes_and_cuts_clean(
 
 async def test_talk_call_is_for_the_box_itself_only():
     from fastapi import HTTPException
-    from teaport_brain import gateway_server as gs
+    gs, arb = _fresh_arbiter()
     os.environ.pop("GATEWAY_TOKEN", None)
     try:
         for host in ("192.168.1.50", "10.0.0.2", None):
@@ -448,14 +482,13 @@ async def test_talk_call_is_for_the_box_itself_only():
         assert not gs.call_live()
         assert (await gs.talk_call(_request({"state": "start"}, host="::1")))["call"] is True
     finally:
-        gs._call_until = 0.0
+        _fresh_arbiter()
 
 
 async def test_a_call_that_lands_while_a_wake_session_sets_up_never_meets_its_stt():
-    """Registered for /talk/call before its first await, and checked again after the
-    slot: a call that lands in between closes it (4002) before its pipeline runs."""
-    import time as _time
-    from teaport_brain import gateway_server as gs
+    """The arbiter decides again after the session is built: a call that took the engine
+    in between refuses it (4002) before its pipeline runs."""
+    gs, arb = _fresh_arbiter()
     seen = {}
 
     class WS(_WS):
@@ -463,15 +496,7 @@ async def test_a_call_that_lands_while_a_wake_session_sets_up_never_meets_its_st
 
         async def send_text(self, text):
             seen["hello"] = __import__("json").loads(text)
-            seen["registered"] = self in gs._wake_sessions
-            gs._call_until = _time.monotonic() + 30        # the call lands now
-
-    released = []
-
-    async def acquire_slot(task, on_evicted=None):
-        async def release():
-            released.append(True)
-        return None, release
+            arb.ARBITER._holder = arb.Claim(arb.CALL, client="sip")   # the call lands now
 
     class Runner:
         def __init__(self, **kw):
@@ -480,17 +505,16 @@ async def test_a_call_that_lands_while_a_wake_session_sets_up_never_meets_its_st
         async def run(self, task):
             raise AssertionError("the pipeline ran under a live call")
 
-    saved = (gs.acquire_slot, gs.PipelineRunner)
-    gs.acquire_slot, gs.PipelineRunner = acquire_slot, Runner
+    saved = gs.PipelineRunner
+    gs.PipelineRunner = Runner
     ws = WS()
     try:
         await gs.run_relay_bot(ws)
     finally:
-        gs.acquire_slot, gs.PipelineRunner = saved
-        gs._call_until = 0.0
+        gs.PipelineRunner = saved
+        _fresh_arbiter()
     assert seen["hello"]["wake"] == "asleep"            # the bridge may send the room now
-    assert seen["registered"] and ws not in gs._wake_sessions
-    assert released and ws.closed[-1][0] == gs.YIELD_CLOSE_CODE
+    assert ws.closed[-1][0] == gs.YIELD_CLOSE_CODE
 
 
 async def test_a_pending_consult_is_announced_to_the_client_until_it_is_delivered():
