@@ -54,7 +54,9 @@ RuntimeDirectoryPreserve=yes
 ExecStartPre=+/usr/local/lib/teaport/wifi-setup-net up
 NoNewPrivileges=yes
 SyslogIdentifier=teaport-wifi-setup
-# Venv resolved once, as in teaport-sip-brain.service ($$ = a literal $ to systemd).
+# Venv resolved once ($$ = a literal $ to systemd): @PREFIX@/venv is a symlink install.sh
+# repoints at a new venv before it restarts this unit, and a python started through the
+# link would load a lazy import from the NEW venv into this old process.
 ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.wifi_setup'
 # wifi_setup.py exits 0 connected, 1 on an error, 2 timed out with nobody on the page,
 # 3 stopped (a spoken "cancel", the config page, systemctl stop). 2 and 3 are normal

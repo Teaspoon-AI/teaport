@@ -29,9 +29,9 @@ column of the schema names the file and line.
 
 | File | Read by | To apply a change |
 |---|---|---|
-| `/etc/teaport/engine.env` | `teaport-engine` | systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; both brains lose their engine session. |
-| `/etc/teaport/brain.env` | `teaport-brain`, `teaport-sip-brain` | Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: `teaport sip restart` — the gateway and the SIP brain together; a brain-only relaunch desyncs the gateway echo canceller. |
-| `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on\|off` flips the echo canceller and restarts the pair for you. |
+| `/etc/teaport/engine.env` | `teaport-engine` | systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; the brain loses its engine session (Talk and a live call alike). |
+| `/etc/teaport/brain.env` | `teaport-brain` | systemctl restart teaport-brain — drops the live Talk session; a live phone call stays up at the gateway and is picked up again by the restarted brain (it says sorry, it lost you for a moment). |
+| `~/.config/teaport/teaport-sip.conf` | `teaport-sip` | Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on\|off` flips the echo canceller and restarts the gateway for you. |
 | `/etc/teaport/bridge.env` | `teaport-discord-bridge` | systemctl restart teaport-discord-bridge. |
 | `/etc/teaport/local-audio.env` | `teaport-local-audio` | systemctl restart teaport-local-audio (ends the local session; it redials the brain at once). |
 | `/etc/teaport/wifi-setup.env` | `teaport-wifi-setup` | Read at each Wi-Fi setup (the unit runs only on request): nothing to restart. Written when the drive is flashed, so the paper insert can print the password; install.sh never writes it. |
@@ -113,6 +113,14 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | `VAD_MIN_VOLUME` | **0.6** (0–1) | Silero's volume gate. |
 | `VAD_SAMPLE_RATE` | `16000` | 8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample. One of `16000`, `8000`. |
 | `TEAPORT_INTERRUPT_MIN_WORDS` | **2** (≥ 1) | Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. On SIP, while the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough. |
+| `SIP_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. |
+| `SIP_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. |
+| `SIP_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
+| `SIP_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for phone calls (the SIP front-end) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
+| `TALK_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
+| `TALK_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
+| `TALK_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
+| `TALK_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
 | `TEAPORT_REPLY_HOLD` | — | Retired, never shipped in a release: the reply hold is set per front-end by TEAPORT_REPLY_HOLD_SIP and TEAPORT_REPLY_HOLD_TALK. If it is still set, the brain ignores it and logs a warning saying so. |
 | `TEAPORT_REPLY_HOLD_SIP` | **on** | Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed. |
 | `TEAPORT_REPLY_HOLD_TALK` | **off** | The same reply hold for the OpenClaw Talk path. Off until a Talk session has been measured with it: the only measurement so far is a telephony call. |
@@ -202,16 +210,16 @@ In `/etc/teaport/brain.env`. Limits on the notes a Talk client adds to the voice
 | `TEAPORT_CONTEXT_MAX_NOTES` | **20** (≥ 1) | How many context notes stay in the LLM context; past it the oldest are removed. |
 | `TEAPORT_CONTEXT_RESPOND_INTERVAL_S` | **15** s (≥ 0) | Minimum time between context notes that ask for a spoken reaction (respond:true); one sent sooner is refused as rate-limited. |
 
-## SIP brain
+## SIP front-end
 
-In `/etc/teaport/brain.env`. Read only by teaport-sip-brain; the Talk brain ignores them.
+In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls); Talk sessions ignore them.
 
 | Setting | Default | Description |
 |---|---|---|
-| `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks. On means no barge-in. The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins. |
+| `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks. On means no barge-in. |
 | `SIP_HALF_DUPLEX_TAIL_S` | **0.8** s (≥ 0) | The tail after the bot stops, when half-duplex is on. |
 | `SIP_STT_MAKEUP_DB` | **0** dB (0–20) | Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in "stop"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected. |
-| `TEAPORT_SIP_SOCKET` | — | Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only. *Set by the installer.* |
+| `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |
 
 ## Diagnostics
 
@@ -267,9 +275,9 @@ In `~/.config/teaport/teaport-sip.conf`. Written by `teaport sip configure`; see
 | `reg_timeout` | **300** s (≥ 30) | Registration refresh interval. |
 | `bind_addr` | `0.0.0.0` | *Set by the installer.* |
 | `sip_port` | — | The wizard test-registers on a throwaway port, never :5060 while a gateway runs. *Set by the installer.* |
-| `uds_path` | — | Must match the sip-brain's --socket. *Set by the installer.* |
+| `uds_path` | — | Must match the brain's TEAPORT_SIP_SOCKET. *Set by the installer.* |
 | `auto_answer` | **on** | Answer inbound calls. |
-| `aec` | **on** | The gateway's echo canceller. Keep it on; the sip-brain's makeup gain assumes it. |
+| `aec` | **on** | The gateway's echo canceller. Keep it on; the SIP front-end's makeup gain assumes it. |
 | `aec_tail_ms` | **256** ms (≥ 0) | Echo canceller tail. |
 | `log_level` | **3** (0–6) | pjsua log level. |
 | `app_log_level` | **3** (0–6) | Gateway app log level. |
@@ -322,9 +330,10 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 
 A teaport box is a local voice assistant by default; **SIP telephony is off
 until you turn it on**, the same way the Discord bridge is. The installer lays
-down two units — `teaport-sip` (the gateway) and `teaport-sip-brain` (a second
-front-end onto the same brain) — but both are gated on a config file that does
-not exist yet, so nothing starts.
+down the gateway unit, `teaport-sip`, gated on a config file that does not exist
+yet, so nothing starts. The calls are answered by `teaport-brain` itself: its SIP
+front-end connects to the gateway's socket whenever the gateway is up, and sits
+idle when it is not.
 
 Turn it on with the wizard:
 
@@ -337,9 +346,9 @@ teaport sip configure --host sbc.example.net --domain voip.example.net \
 It test-registers against your trunk (briefly, on a throwaway port — never
 `:5060`, so a running gateway is untouched) and only on a `200 OK` writes
 `~/.config/teaport/teaport-sip.conf` (mode `600`, holds the SIP password) and
-enables both units. On a failed register it writes nothing and leaves telephony
-off. `teaport sip status` shows the units, the config, and this run's
-registration; `teaport sip disable [--purge]` turns it back off.
+enables the gateway. On a failed register it writes nothing and leaves telephony
+off. `teaport sip status` shows the gateway, the brain's SIP front-end, the config,
+and this run's registration; `teaport sip disable [--purge]` turns it back off.
 
 Already have a gateway `.conf` — from a box that ran `teaport-sip` by hand, or
 carried over from another one? Adopt it instead of retyping it:
@@ -349,27 +358,27 @@ teaport sip configure --conf ~/my-trunk.conf
 ```
 
 It goes through the same test-register, then is installed as-is except for the
-three keys the units own (`sip_port` → 5060, `uds_path` → the socket the SIP brain
-is started with, `register` → true — the gateway's default and the sample's value
-are `false`). If a hand-launched gateway or SIP brain is still running, the
+three keys the units own (`sip_port` → 5060, `uds_path` → the socket the brain
+looks for, `register` → true — the gateway's default and the sample's value
+are `false`). If a hand-launched gateway or SIP front-end is still running, the
 command refuses and tells you what to stop: the unit it is about to enable needs
 `:5060` and the socket.
 
-Once configured, the line **survives reboots and crashes on its own**: both units
-are `enabled`, the gateway restarts with a backoff that will not hammer the
-registrar, and the SIP brain is bound to the gateway — stopped, started and
-restarted *with* it, never alone. That coupling is deliberate: the gateway's
-echo canceller references the brain's playout, and a brain relaunched under a
-running gateway leaves the canceller eating the caller's speech. So the day-2
-commands all work on the pair:
+Once configured, the line **survives reboots and crashes on its own**: the
+gateway is `enabled` and restarts with a backoff that will not hammer the
+registrar, and the brain reconnects to it whenever it comes back. The two
+restart independently: a brain restart (a brain update, a config change) keeps
+the call at the gateway, which hands it to the restarted brain — the caller hears
+a short "sorry, I lost you for a moment" — and a gateway restart is picked up by
+the brain within a couple of seconds. So the day-2 commands work on the gateway:
 
 ```
-teaport sip restart            # gateway + SIP brain together, then waits for the 200 OK
-teaport sip aec off            # A/B the echo canceller: flips aec= in the conf, restarts the pair
+teaport sip restart            # the gateway, then waits for the 200 OK (the brain reconnects)
+teaport sip aec off            # A/B the echo canceller: flips aec= in the conf, restarts the gateway
 teaport sip aec on
 teaport sip aec                # show the current setting
-teaport logs sip -f            # the gateway's journal (sip-brain for the brain's)
-teaport doctor                 # includes the pair + whether the trunk is registered
+teaport logs sip -f            # the gateway's journal (the calls' own lines are in `teaport logs brain`)
+teaport doctor                 # the gateway, the brain's SIP front-end, and whether the trunk is registered
 ```
 
 The `.conf` is the gateway's own `key=value` format (`registrar_uri`, `id_uri`,
@@ -377,6 +386,17 @@ The `.conf` is the gateway's own `key=value` format (`registrar_uri`, `id_uri`,
 is fine; `teaport sip restart` afterwards. Nothing about the line lives in
 `/tmp`: the conf is in `~/.config/teaport`, the socket in `/run/teaport` (created
 by the unit), the logs in journald.
+
+## Turn-taking per front-end
+
+Phone calls and Talk run in one brain process, but they were tuned apart (blind A/Bs:
+Talk stops at 0.2 s with a 0.6 s Smart Turn ceiling; the phone keeps 0.5 s / 1.0 s).
+So `ENDPOINT_STOP_SECS`, `SMARTTURN_STOP_SECS`, `SMARTTURN_COMPLETE_THRESHOLD` and
+`TEAPORT_INTERRUPT_MIN_WORDS` are the shared values, and each front-end can override
+them in `brain.env`: `SIP_ENDPOINT_STOP_SECS`, `TALK_ENDPOINT_STOP_SECS`, and so on
+(the interrupt count drops its `TEAPORT_` prefix: `SIP_INTERRUPT_MIN_WORDS`,
+`TALK_INTERRUPT_MIN_WORDS`). An unset or unreadable override falls back to the shared
+value. Each session logs the values it was built with (`turn-taking (sip): …`).
 
 ## One engine, one conversation
 
@@ -398,19 +418,13 @@ calls. Nobody is ever cut off without a word:
 | a phone call is live | A Talk client is refused: *"Sorry, I'm on a phone call right now…"*. |
 | a phone call comes in during a conversation at the box | For now the caller hears the busy line and the call hangs up. (The take-the-call-or-not prompt, with the room conversation on hold, is issue #58's next step.) |
 
-Until the SIP listener moves into `teaport-brain` (issue #58), the SIP brain
-(`teaport-sip-brain`) asks the arbiter over `POST /talk/call` on the box itself
-before each call's speech recognition starts, and keeps that claim as a lease
-while the call lasts. If `teaport-brain` is not running, the SIP brain contends
-for the engine on its own: whoever connects first holds it, and the second hears
-*"Sorry, the voice assistant is busy with another session right now — please try
-again in a moment."* (on a phone, the call then hangs up).
+Phone calls and Talk run in the same brain process, so the arbiter sees both;
+anything else that holds the engine (a standalone test rig, say) is met first come,
+first served, and the loser hears *"Sorry, the voice assistant is busy with another
+session right now — please try again in a moment."*
 
-For a box you want to dedicate to the phone:
-
-```
-sudo systemctl disable --now teaport-brain
-```
-
-Telephony then always wins the engine. (Re-enable `teaport-brain` to get the
-local assistant back.)
+For a box you want to dedicate to the phone, turn off the other front-ends rather
+than the brain (the brain is what answers calls): the box's microphone
+(`sudo systemctl disable --now teaport-local-audio`), the Discord bridge
+(`teaport-discord-bridge`), and Talk in OpenClaw. A call already outranks a remote
+Talk session; only a conversation at the box keeps it out.

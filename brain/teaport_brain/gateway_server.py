@@ -37,7 +37,7 @@ import sys
 import time
 
 import uvicorn
-from fastapi import FastAPI, HTTPException, Request, WebSocket
+from fastapi import FastAPI, Request, WebSocket
 from loguru import logger
 from starlette.websockets import WebSocketState
 
@@ -52,6 +52,7 @@ from pipecat.transports.websocket.fastapi import (
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, reply_hold, sdnotify, wake_gate
+from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
@@ -99,10 +100,6 @@ BUSY_CLOSE_CODE = 4004
 # A live Talk session ended because a phone call came in; its user heard why first.
 CALL_CLOSE_CODE = 4005
 CALL_CLOSE_REASON = "a phone call came in"
-# A phone call is live while the SIP brain has said so within this (POST /talk/call,
-# which it repeats every CALL_REFRESH_SECS for the length of the call). A lease, not a
-# flag: a SIP brain that dies mid-call leaves no call behind for longer than this.
-CALL_LEASE_SECS = 30.0
 # A room mic without wake words counts as asleep again once nobody has spoken for this
 # long (the bridge sends its own LOCAL_AUDIO_KEEPALIVE_SECS as ?keepalive=).
 ROOM_KEEPALIVE_SECS = 45.0
@@ -259,6 +256,8 @@ async def run_relay_bot(websocket: WebSocket):
         wake_gate=gate,
         # A wake session asleep for hours is not idle: the bridge ends it (keep-alive).
         cancel_on_idle_timeout=False if gate is not None else None,
+        # Talk's own turn-taking (TALK_* over the shared knobs; endpointing.turn_settings).
+        front_end="talk",
     )
     session_holder["s"] = session
 
@@ -395,7 +394,9 @@ app.include_router(config_ui.router)
 
 @app.get("/health")
 async def health():
-    return {"ok": True, "tts": "engine"}
+    # "sip": the SIP front-end's state (sip_server.status): off, waiting for a gateway,
+    # or connected to one. `teaport sip status` and `teaport doctor` read it.
+    return {"ok": True, "tts": "engine", "sip": sip_server.status()}
 
 
 @app.get("/talk/status")
@@ -409,97 +410,6 @@ async def talk_status(request: Request):
     bridge sends it as a bearer header, out of the access log."""
     config_ui._authorize(request)
     return arb.ARBITER.status()
-
-
-LOCAL_HOSTS = {"127.0.0.1", "::1"}
-
-
-class _CallLease:
-    """A phone call's hold on the arbiter, for a call this process does not run: the SIP
-    brain's lease (POST /talk/call), until it says "end" or stops refreshing it."""
-
-    def __init__(self):
-        self.claim = arb.Claim(arb.CALL, client="sip", label="phone call",
-                               end=self._replaced)
-        self.until = 0.0
-        self._watch = asyncio.create_task(self._expire())
-
-    async def _replaced(self, _why):
-        self.end()  # the SIP brain's next call (the same client) takes over
-
-    def refresh(self) -> None:
-        self.until = time.monotonic() + CALL_LEASE_SECS
-
-    async def _expire(self):
-        while time.monotonic() < self.until or self.until == 0.0:
-            await asyncio.sleep(max(0.05, min(1.0, self.until - time.monotonic())))
-        logger.warning(f"the phone call's lease ran out ({CALL_LEASE_SECS:g} s without word "
-                       "from the SIP brain) — releasing the speech engine")
-        self.end()
-
-    def end(self) -> None:
-        global _lease
-        if _lease is self:
-            _lease = None
-        self._watch.cancel()
-        arb.ARBITER.release(self.claim)
-
-
-_lease: _CallLease | None = None
-# A start still waiting in the arbiter (a Talk session is saying the call line): an "end"
-# that arrives meanwhile ends it there, so the start installs nothing.
-_pending: _CallLease | None = None
-
-
-@app.post("/talk/call")
-async def talk_call(request: Request):
-    """The SIP brain asks for the speech engine for a phone call ({"state": "start"}),
-    repeats it while the call lasts ("refresh"), and gives it back ("end"). The call goes
-    through the session arbiter like any front-end (session_arbiter.py): a sleeping room
-    mic yields, a remote Talk session is told and ended, and an awake room conversation
-    keeps the box -- the answer is then {"call": false, "busy": "room"} and the SIP brain
-    gives the caller the busy line. Answers once the engine is free for the call."""
-    global _lease, _pending
-    config_ui._authorize(request)
-    # Its one caller is the SIP brain on this box: a call is not something the LAN says.
-    client = getattr(request, "client", None)
-    if getattr(client, "host", None) not in LOCAL_HOSTS:
-        raise HTTPException(status_code=403, detail="local only")
-    try:
-        state = (await request.json()).get("state")
-    except Exception:  # noqa: BLE001 — a body that is not a JSON object
-        state = None
-    if state == "end":
-        if _pending is not None:
-            _pending.end()
-        if _lease is not None:
-            _lease.end()
-        return {"call": False, "yielded": 0}
-    if _lease is not None and arb.ARBITER.holder is _lease.claim:
-        _lease.refresh()
-        return {"call": True, "yielded": 0}
-    # A start, or a refresh with no lease here (this brain restarted mid-call): ask.
-    lease = _CallLease()
-    lease.refresh()
-    before = arb.ARBITER.holder
-    _pending = lease
-    try:
-        refusal = await arb.ARBITER.acquire(lease.claim)
-    finally:
-        if _pending is lease:
-            _pending = None
-    if refusal is not None:
-        lease.end()
-        return {"call": False, "busy": refusal.holder}
-    if lease.claim.released.is_set():
-        # Ended ("end" from the SIP brain, or the lease ran out) while the grant waited:
-        # the arbiter installed nothing.
-        lease.end()
-        return {"call": False, "yielded": 0}
-    if _lease is not None:
-        _lease.end()  # an older lease nobody ended (a start without the last call's end)
-    _lease = lease
-    return {"call": True, "yielded": int(before is not None)}
 
 
 @app.websocket("/talk")
@@ -540,7 +450,20 @@ class _ReadyServer(uvicorn.Server):
     async def startup(self, sockets=None):
         await super().startup(sockets=sockets)
         if self.started:
+            # The phone line's front-end, in this same event loop (sip_server.serve): it
+            # waits for the gateway's socket, and its calls go through the same session
+            # arbiter as /talk. A failure in it is contained there; Talk goes on.
+            self.sip = asyncio.create_task(sip_server.serve())
             sdnotify.ready()
+
+    async def shutdown(self, sockets=None):
+        sip = getattr(self, "sip", None)
+        if sip is not None:
+            # A live call is torn down (the gateway keeps the caller and replays the call
+            # to the next brain that connects).
+            sip.cancel()
+            await asyncio.gather(sip, return_exceptions=True)
+        await super().shutdown(sockets=sockets)
 
 
 # A ?token= in a request line uvicorn logs: the access line of an HTTP request, the

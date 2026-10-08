@@ -17,7 +17,9 @@ Config lives in the environment — see `docs/CONFIG.md`.
 `teaport-brain` console script) — nothing in it is reachable only from tests or dev
 harnesses. Some highlights:
 
-- `gateway_server` — the `/talk` WebSocket + `/health` app, `main()`.
+- `gateway_server` — the `/talk` WebSocket + `/health` app, `main()`; starts the SIP front-end.
+- `sip_server` — the SIP front-end: phone calls from the `teaport-sip` gateway's socket, in
+  the same process and event loop.
 - `session_arbiter` — one conversation at a time: who gets the engine's single STT slot
   (Talk, the box's mic, a phone call), and what the others are told.
 - `services` — the LLM/STT/TTS factories (provider selection reads the env at call time).

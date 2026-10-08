@@ -113,6 +113,82 @@ async def test_a_wrong_peer_is_not_retried():
         sip_server._GATEWAY_WAIT_S, sip_server._GATEWAY_POLL_S, sip_transport._verify_peer_uid = saved
 
 
+# --- inside teaport-brain: serve() never gives up, and never takes Talk down ----------
+
+async def _serving(path, connections, fail=False):
+    """serve() on `path`, its connections counted by a stub run_connection."""
+    async def run_connection(sock, on_ready=None):
+        connections.append(sock)
+        if fail:
+            raise RuntimeError("a bug in the SIP front-end")
+        loop = asyncio.get_running_loop()
+        while await loop.sock_recv(sock, 64):           # until the gateway hangs up
+            pass
+        sock.close()
+    saved = (sip_server.run_connection, sip_server._SERVE_POLL_S)
+    sip_server.run_connection, sip_server._SERVE_POLL_S = run_connection, 0.05
+    return saved, asyncio.create_task(sip_server.serve(path))
+
+
+async def test_serve_waits_for_the_gateway_and_comes_back_after_it_restarts():
+    """No socket: it looks, quietly, for as long as it takes. A gateway that goes away
+    (restarted on its own: the units no longer tie it to the brain) is connected to
+    again once it is back -- teaport-sip#3 replays a call in progress to it."""
+    connections = []
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "gw.sock")
+        saved, task = await _serving(path, connections)
+        try:
+            await asyncio.sleep(0.3)
+            assert connections == [] and not task.done()          # telephony off: dormant
+            assert sip_server.status() == "waiting"               # what /health reports
+            for n in (1, 2):                                       # up, down, up again
+                srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+                srv.bind(path)
+                srv.listen(1)
+                srv.setblocking(False)
+                loop = asyncio.get_running_loop()
+                peer, _ = await asyncio.wait_for(loop.sock_accept(srv), 3)
+                for _ in range(100):
+                    if len(connections) == n:
+                        break
+                    await asyncio.sleep(0.02)
+                assert len(connections) == n and sip_server.status() == "connected"
+                peer.close()                                       # the gateway stops
+                srv.close()
+                os.unlink(path)
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            sip_server.run_connection, sip_server._SERVE_POLL_S = saved
+        assert sip_server.status() == "off"
+
+
+async def test_a_failing_sip_front_end_is_contained_and_starts_over():
+    connections = []
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "gw.sock")
+        srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+        srv.bind(path)
+        srv.listen(8)
+        saved, task = await _serving(path, connections, fail=True)
+        try:
+            for _ in range(100):
+                if len(connections) >= 2:
+                    break
+                await asyncio.sleep(0.02)
+            assert len(connections) >= 2 and not task.done()       # it raised, and went on
+        finally:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            sip_server.run_connection, sip_server._SERVE_POLL_S = saved
+            srv.close()
+
+
+async def test_an_empty_socket_setting_turns_the_sip_front_end_off():
+    await asyncio.wait_for(sip_server.serve(""), 1)
+
+
 def main():
     aio = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and asyncio.iscoroutinefunction(v)]

@@ -30,7 +30,8 @@
   conversation in progress goes on. Only the same client reconnecting replaces
   its own session, and a phone call ends a remote Talk session after telling its
   user why. See **docs/CONFIG.md → One engine, one conversation**. For a
-  phone-dedicated box, `sudo systemctl disable --now teaport-brain` so the line
-  always has the engine.
+  phone-dedicated box, turn off the box's microphone bridge
+  (`sudo systemctl disable --now teaport-local-audio`): a call already outranks
+  a remote Talk session.
 
 TODO: troubleshooting, updates, uninstall, multi-language notes.

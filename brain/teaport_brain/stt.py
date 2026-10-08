@@ -435,6 +435,9 @@ class TeaportSTTService(WebsocketSTTService):
         self._url = url
         self._model = model
         self._language = language
+        # Smart Turn's silence ceiling for this session's front-end (the commit hold
+        # below waits it out); build_agent_session sets it from endpointing.turn_settings.
+        self.smartturn_stop_secs = SMARTTURN_STOP_SECS
         # Only the linear scale is kept, precomputed once; 0 dB -> 1.0 -> the fast no-op
         # path in _apply_makeup.
         self._makeup_scale = float(10.0 ** (makeup_db / 20.0)) if makeup_db else 1.0
@@ -765,7 +768,7 @@ class TeaportSTTService(WebsocketSTTService):
             await self._send_commit(final=True, why=frame.source)
         else:
             logger.debug(f"{self}: verdict INCOMPLETE -- holding the segment open for "
-                         f"the ceiling ({SMARTTURN_STOP_SECS}s) or the caller")
+                         f"the ceiling ({self.smartturn_stop_secs}s) or the caller")
 
     # ---- the hold's expiry ---------------------------------------------------
     # See STT_COMMIT_ON: a segment held on an INCOMPLETE verdict must still close if
@@ -785,11 +788,11 @@ class TeaportSTTService(WebsocketSTTService):
         await self._cancel_timer("_hold_task")
 
     async def _commit_when_hold_expires(self):
-        await asyncio.sleep(SMARTTURN_STOP_SECS + _HOLD_SLACK_SECS)
+        await asyncio.sleep(self.smartturn_stop_secs + _HOLD_SLACK_SECS)
         self._hold_task = None
         if not self._commit_pending:
             return
-        wait = f"{SMARTTURN_STOP_SECS + _HOLD_SLACK_SECS:.1f}s"
+        wait = f"{self.smartturn_stop_secs + _HOLD_SLACK_SECS:.1f}s"
         now = "committing the held segment so the turn is answered late rather than never"
         # "late or lost": from here the two look the same -- a verdict still queued
         # behind the aggregator's audio, or one that will never come. If it was late,

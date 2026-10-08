@@ -8,7 +8,10 @@ One appliance, three parts:
 - **Engine** (`:8000`) — speech-to-text and speech synthesis. The installer
   downloads it. Any engine works here if it is compatible with the
   teaport-engine interface.
-- **Brain** (`brain/teaport_brain`, `:7861/talk`) — the Pipecat pipeline. It
+- **Brain** (`brain/teaport_brain`, `:7861/talk` and the SIP gateway's socket) —
+  the Pipecat pipeline, in one process (`teaport-brain`) with two front-ends: the
+  `/talk` WebSocket and the phone line (`sip_server.py`, which connects to the
+  `teaport-sip` gateway whenever it is up). It
   connects your speech, your LLM, and the spoken reply. It owns barge-in, the
   heard-grounding ledger, memory recall, tools, and the persona. It sends
   plain text to the engine. It receives audio and per-word timestamps back.
@@ -26,7 +29,11 @@ Your voice does not leave the device. The LLM runs where you point it.
 The engine transcribes one session at a time, so the brain's session arbiter
 (`brain/teaport_brain/session_arbiter.py`) owns that slot and applies one policy
 to every front-end — `/talk` (the OpenClaw plugin, Discord, the box's mic
-bridge) and phone calls. A newcomer gets the engine only if nothing is live,
+bridge) and phone calls, all in the one brain process. A pipeline is still built
+per session, so a session's failure ends that session only; what one process gives
+up is isolation from a hard crash in native code, which now takes Talk and a live
+call down together (the gateway keeps the caller and hands the call to the
+restarted brain). A newcomer gets the engine only if nothing is live,
 if it is the same client reconnecting, if the box's mic is asleep, or if it is
 a call and the live session is a remote Talk session (whose user is told
 first). Everyone else is told the agent is busy. The table is in

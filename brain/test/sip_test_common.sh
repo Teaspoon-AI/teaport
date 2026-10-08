@@ -181,8 +181,9 @@ sip_test_clean_stale() {
   # ...and a brain left over from an interrupted run, which is just as damaging: it
   # is a client, so it races the fresh brain for the driver's single accept slot and
   # answers the call the real test was watching. Matched STRICTLY on the TEST socket.
-  # NEVER broaden this to a bare 'sip_server': teaport-sip-brain.service runs the same
-  # module on the live UDS, and a bare pattern kills the appliance's telephony.
+  # NEVER broaden this to a bare 'sip_server': a box not yet moved to one brain process
+  # runs the same module on the live UDS (teaport-sip-brain.service), and a bare pattern
+  # would kill its telephony.
   local brain_pat="teaport_brain\\.sip_server .*--socket $sock"
 
   # Name what is being killed. "No leftover sip_server / fake_gateway processes" is a

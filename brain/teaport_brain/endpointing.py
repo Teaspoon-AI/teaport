@@ -159,6 +159,64 @@ VAD_MIN_VOLUME = float(os.getenv("VAD_MIN_VOLUME", "0.6"))
 INTERRUPT_MIN_WORDS = int(os.getenv("TEAPORT_INTERRUPT_MIN_WORDS", "2"))
 
 
+# --- Per front-end -----------------------------------------------------------------
+# One brain process serves both the phone line and Talk (issue #58), and the two were
+# tuned apart in blind A/Bs (Talk: ENDPOINT_STOP_SECS 0.2 / SMARTTURN_STOP_SECS 0.6;
+# the phone stays on 0.5 / 1.0, with its own barge-in word count). So the four turn-taking
+# knobs above are the SHARED values, and each front-end may override them with its own
+# name: SIP_<name> for phone calls, TALK_<name> for /talk sessions (the interrupt count
+# drops its TEAPORT_ prefix: SIP_INTERRUPT_MIN_WORDS, TALK_INTERRUPT_MIN_WORDS). They are
+# read when a session is built (build_agent_session), not at import.
+
+
+@dataclass(frozen=True)
+class TurnSettings:
+    endpoint_stop_secs: float = ENDPOINT_STOP_SECS
+    smartturn_stop_secs: float = SMARTTURN_STOP_SECS
+    smartturn_complete_threshold: float = SMARTTURN_COMPLETE_THRESHOLD
+    interrupt_min_words: int = INTERRUPT_MIN_WORDS
+
+
+def _override(raw: str | None, name: str, shared, cast):
+    raw = (raw or "").strip()
+    if not raw:
+        return shared
+    try:
+        return cast(raw)
+    except ValueError:
+        logger.warning(f"{name}={raw!r} is not a number; using the shared value {shared}")
+        return shared
+
+
+def turn_settings(front_end: str | None) -> TurnSettings:
+    """The turn-taking knobs for a session of `front_end` ("sip" or "talk"): its own
+    SIP_/TALK_ override where set, else the shared value."""
+    if front_end == "sip":
+        raw = {"ENDPOINT_STOP_SECS": os.getenv("SIP_ENDPOINT_STOP_SECS"),
+               "SMARTTURN_STOP_SECS": os.getenv("SIP_SMARTTURN_STOP_SECS"),
+               "SMARTTURN_COMPLETE_THRESHOLD": os.getenv("SIP_SMARTTURN_COMPLETE_THRESHOLD"),
+               "INTERRUPT_MIN_WORDS": os.getenv("SIP_INTERRUPT_MIN_WORDS")}
+    elif front_end == "talk":
+        raw = {"ENDPOINT_STOP_SECS": os.getenv("TALK_ENDPOINT_STOP_SECS"),
+               "SMARTTURN_STOP_SECS": os.getenv("TALK_SMARTTURN_STOP_SECS"),
+               "SMARTTURN_COMPLETE_THRESHOLD": os.getenv("TALK_SMARTTURN_COMPLETE_THRESHOLD"),
+               "INTERRUPT_MIN_WORDS": os.getenv("TALK_INTERRUPT_MIN_WORDS")}
+    else:
+        return TurnSettings()
+    p = front_end.upper() + "_"
+    return TurnSettings(
+        endpoint_stop_secs=_override(raw["ENDPOINT_STOP_SECS"], p + "ENDPOINT_STOP_SECS",
+                                     ENDPOINT_STOP_SECS, float),
+        smartturn_stop_secs=_override(raw["SMARTTURN_STOP_SECS"], p + "SMARTTURN_STOP_SECS",
+                                      SMARTTURN_STOP_SECS, float),
+        smartturn_complete_threshold=_override(
+            raw["SMARTTURN_COMPLETE_THRESHOLD"], p + "SMARTTURN_COMPLETE_THRESHOLD",
+            SMARTTURN_COMPLETE_THRESHOLD, float),
+        interrupt_min_words=_override(raw["INTERRUPT_MIN_WORDS"], p + "INTERRUPT_MIN_WORDS",
+                                      INTERRUPT_MIN_WORDS, int),
+    )
+
+
 class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
     """Smart Turn v3 with a tunable end-of-turn probability threshold.
 

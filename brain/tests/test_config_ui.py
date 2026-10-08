@@ -147,7 +147,7 @@ def test_get_masks_secrets_and_requires_token():
     assert body["secrets"]["password"] is False
     assert body["auth"] is True
     assert body["services"]["teaport-brain"] == "active"
-    assert body["pending"] == {"teaport-brain": ["brain_env"], "teaport-sip-brain": ["brain_env"],
+    assert body["pending"] == {"teaport-brain": ["brain_env"],
                                "teaport-engine": ["engine_env"]}, body["pending"]
     assert config_ui.parse_env(open(os.path.join(etc, "brain.env")).read())["OPERATOR_ONLY"] == "keep me"
     # ?token= works too (what the page uses on first open)

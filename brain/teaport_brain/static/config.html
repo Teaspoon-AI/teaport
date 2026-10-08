@@ -289,7 +289,7 @@
   let data = null;               // last GET /api/config
   let rowsByName = {};
   let edits = {};                // name -> text | null (null = unset)
-  const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'sip', 'teaport-sip-brain': 'sip-brain', 'teaport-discord-bridge': 'bridge' };
+  const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'sip', 'teaport-discord-bridge': 'bridge' };
   const STORE_LABEL = { engine_env: 'engine.env', brain_env: 'brain.env', bridge_env: 'bridge.env', local_audio_env: 'local-audio.env', sip_conf: 'teaport-sip.conf', secrets: '~/.config/teaport' };
   const FLAG_ON = new Set(['1', 'true', 'yes', 'on', 'y']);
 
@@ -513,8 +513,6 @@
         actions.append(h('button', { class: 'btn-primary btn-sm', onclick: () => restart(unit) }, 'Restart ' + (UNIT_LABEL[unit] || unit)));
       }
       el.append(h('div', { class: 'banner warn' }, h('p', {}, h('strong', {}, 'Waiting for a restart: '), which + '. The file changed after the service started, so it is still running on the old values.'), actions));
-      const sipPair = pending.some(([u]) => u === 'teaport-sip-brain');
-      if (sipPair) el.append(h('div', { class: 'banner' }, h('p', {}, 'The SIP brain and the SIP gateway share an echo canceller: restart ', h('code', {}, 'teaport-sip'), ' too, or the gateway keeps cancelling against a brain that is gone and the caller goes quiet.')));
     }
     if (!data.auth) el.append(h('div', { class: 'banner err' }, h('p', {}, h('code', {}, 'GATEWAY_TOKEN'), ' is not set: this page, and the voice line, are open to anyone who can reach the port. It is set by the installer; re-run ', h('code', {}, 'install.sh'), '.')));
   };

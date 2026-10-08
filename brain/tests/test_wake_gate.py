@@ -272,24 +272,11 @@ class _PipelineTask:
             self.on_cancel()                           # its runner's finally: release
 
 
-def _request(body, host="127.0.0.1"):
-    from types import SimpleNamespace
-
-    class R:
-        query_params, headers = {}, {}
-        client = SimpleNamespace(host=host)
-
-        async def json(self):
-            return body
-    return R()
-
-
 def _fresh_arbiter():
-    """A clean arbiter (and no call lease) for gateway_server; returns (gs, arb)."""
+    """A clean arbiter for gateway_server; returns (gs, arb)."""
     from teaport_brain import gateway_server as gs
     from teaport_brain import session_arbiter as arb
     arb.ARBITER = arb.SessionArbiter()
-    gs._lease = None
     return gs, arb
 
 
@@ -306,40 +293,35 @@ async def _room_session(gs, arb, asleep: bool):
 
 
 async def test_a_phone_call_closes_the_asleep_mic_session_and_holds_the_room_off():
-    os.environ.pop("GATEWAY_TOKEN", None)
+    from teaport_brain import sip_server
     gs, arb = _fresh_arbiter()
     asleep_ws, asleep = await _room_session(gs, arb, asleep=True)
     try:
-        answer = await gs.talk_call(_request({"state": "start"}))
-        assert answer == {"call": True, "yielded": 1}
+        call = sip_server.CallClaim()
+        assert await call.start("c1") is None
         assert asleep.task.cancelled and asleep_ws.closed == [(gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)]
         assert gs.call_live()
-        status = await gs.talk_status(_request(None))
+        status = await gs.talk_status(type("R", (), {"query_params": {}, "headers": {}})())
         assert status["call"] is True and status["holder"] == "call"
-        assert (await gs.talk_call(_request({"state": "refresh"}))) == {"call": True, "yielded": 0}
-        await gs.talk_call(_request({"state": "end"}))
+        call.end()
+        call.end()                                     # twice: harmless
         assert not gs.call_live() and not arb.ARBITER.held()
-        await gs.talk_call(_request({"state": "start"}))
-        gs._lease.until = __import__("time").monotonic() - 1   # a SIP brain that died mid-call
-        for _ in range(40):
-            await asyncio.sleep(0.05)
-            if not gs.call_live():
-                break
-        assert not gs.call_live() and gs._lease is None
     finally:
         _fresh_arbiter()
 
 
 async def test_an_awake_room_conversation_keeps_the_box_and_the_call_is_refused():
     """For now: #58's take-the-call prompt replaces this refusal."""
-    os.environ.pop("GATEWAY_TOKEN", None)
+    from teaport_brain import sip_server
     gs, arb = _fresh_arbiter()
     awake_ws, awake = await _room_session(gs, arb, asleep=False)
     try:
-        answer = await gs.talk_call(_request({"state": "start"}))
-        assert answer == {"call": False, "busy": "room"}
+        call = sip_server.CallClaim()
+        assert await call.start("c1") == "room"
         assert not awake.task.cancelled and awake_ws.closed == []
-        assert not gs.call_live() and gs._lease is None
+        assert not gs.call_live()
+        call.end()                                     # nothing held: harmless
+        assert arb.ARBITER.holder is not None and arb.ARBITER.holder.kind == arb.ROOM
     finally:
         _fresh_arbiter()
 
@@ -356,27 +338,6 @@ async def test_an_asleep_session_is_refused_while_a_call_is_live():
     finally:
         _fresh_arbiter()
     assert ws.closed == [(gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)]
-
-
-async def test_the_sip_brain_holds_a_lease_for_the_length_of_the_call():
-    from teaport_brain import sip_server
-    told = []
-
-    async def tell(state):
-        told.append(state)
-        return {"yielded": 1} if state == "start" else {}
-    sip_server.CALL_REFRESH_SECS, old = 0.05, sip_server.CALL_REFRESH_SECS
-    try:
-        p = sip_server.CallPresence(tell=tell)
-        await p.start()
-        await asyncio.sleep(0.12)
-        await p.end()
-        await p.end()                                   # twice: harmless
-        await asyncio.sleep(0.1)
-    finally:
-        sip_server.CALL_REFRESH_SECS = old
-    assert told[0] == "start" and told[-1] == "end" and told.count("end") == 1
-    assert "refresh" in told
 
 
 # ---------------------------------------------------------------- end_conversation
@@ -465,24 +426,6 @@ async def test_a_wake_phrase_split_across_two_finals_still_wakes_and_cuts_clean(
     from teaport_brain.wake_words import carry_tail
     assert carry_tail("the neighbours were arguing hey", parse_phrases("hey teaport")) == "hey"
     assert carry_tail("anything at all", parse_phrases("computer")) == ""
-
-
-async def test_talk_call_is_for_the_box_itself_only():
-    from fastapi import HTTPException
-    gs, arb = _fresh_arbiter()
-    os.environ.pop("GATEWAY_TOKEN", None)
-    try:
-        for host in ("192.168.1.50", "10.0.0.2", None):
-            try:
-                await gs.talk_call(_request({"state": "start"}, host=host))
-            except HTTPException as e:
-                assert e.status_code == 403
-            else:
-                raise AssertionError(f"{host} was let in")
-        assert not gs.call_live()
-        assert (await gs.talk_call(_request({"state": "start"}, host="::1")))["call"] is True
-    finally:
-        _fresh_arbiter()
 
 
 async def test_a_call_that_lands_while_a_wake_session_sets_up_never_meets_its_stt():

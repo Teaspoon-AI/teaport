@@ -36,13 +36,13 @@ schema_version = 1
 path = "/etc/teaport/engine.env"
 owner = "installer"
 services = ["teaport-engine"]
-apply = "systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; both brains lose their engine session."
+apply = "systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; the brain loses its engine session (Talk and a live call alike)."
 
 [stores.brain_env]
 path = "/etc/teaport/brain.env"
 owner = "installer+operator"
-services = ["teaport-brain", "teaport-sip-brain"]
-apply = "Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: `teaport sip restart` — the gateway and the SIP brain together; a brain-only relaunch desyncs the gateway echo canceller."
+services = ["teaport-brain"]
+apply = "systemctl restart teaport-brain — drops the live Talk session; a live phone call stays up at the gateway and is picked up again by the restarted brain (it says sorry, it lost you for a moment)."
 
 [stores.sip_conf]
 path = "~/.config/teaport/teaport-sip.conf"
@@ -50,7 +50,7 @@ owner = "teaport sip configure"
 services = ["teaport-sip"]
 format = "keyvalue"
 mode = "600"
-apply = "Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on|off` flips the echo canceller and restarts the pair for you."
+apply = "Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on|off` flips the echo canceller and restarts the gateway for you."
 
 [stores.bridge_env]
 path = "/etc/teaport/bridge.env"
@@ -118,8 +118,8 @@ blurb = "Limits on the notes a Talk client adds to the voice LLM's context throu
 
 [[groups]]
 id = "sip_brain"
-title = "SIP brain"
-blurb = "Read only by teaport-sip-brain; the Talk brain ignores them."
+title = "SIP front-end"
+blurb = "Read by teaport-brain's SIP front-end (phone calls); Talk sessions ignore them."
 
 [[groups]]
 id = "diag"
@@ -718,7 +718,7 @@ default = "16000"
 read = "startup"
 tier = "tuning"
 help = "8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample."
-source = "endpointing.py:738"
+source = "endpointing.py:796"
 
 [[settings]]
 name = "TEAPORT_INTERRUPT_MIN_WORDS"
@@ -731,6 +731,100 @@ read = "startup"
 tier = "setup"
 help = "Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. On SIP, while the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough."
 source = "endpointing.py:159"
+
+[[settings]]
+name = "SIP_ENDPOINT_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0.1
+read = "startup"
+tier = "tuning"
+help = "ENDPOINT_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart."
+source = "endpointing.py:195"
+
+[[settings]]
+name = "SIP_SMARTTURN_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+read = "startup"
+tier = "tuning"
+help = "SMARTTURN_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart."
+source = "endpointing.py:196"
+
+[[settings]]
+name = "SIP_SMARTTURN_COMPLETE_THRESHOLD"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+min = 0
+max = 1
+read = "startup"
+tier = "tuning"
+help = "SMARTTURN_COMPLETE_THRESHOLD for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart."
+source = "endpointing.py:197"
+
+[[settings]]
+name = "SIP_INTERRUPT_MIN_WORDS"
+store = "brain_env"
+group = "turn_taking"
+type = "int"
+min = 1
+read = "startup"
+tier = "tuning"
+help = "TEAPORT_INTERRUPT_MIN_WORDS for phone calls (the SIP front-end) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart."
+source = "endpointing.py:198"
+
+[[settings]]
+name = "TALK_ENDPOINT_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0.1
+read = "startup"
+tier = "tuning"
+help = "ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0."
+source = "endpointing.py:200"
+
+[[settings]]
+name = "TALK_SMARTTURN_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+read = "startup"
+tier = "tuning"
+help = "SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0."
+source = "endpointing.py:201"
+
+[[settings]]
+name = "TALK_SMARTTURN_COMPLETE_THRESHOLD"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+min = 0
+max = 1
+read = "startup"
+tier = "tuning"
+help = "SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart."
+source = "endpointing.py:202"
+
+[[settings]]
+name = "TALK_INTERRUPT_MIN_WORDS"
+store = "brain_env"
+group = "turn_taking"
+type = "int"
+min = 1
+read = "startup"
+tier = "tuning"
+help = "TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart."
+source = "endpointing.py:203"
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD"
@@ -750,7 +844,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 help = "Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed."
 source = "reply_hold.py:127"
 
@@ -1139,7 +1233,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:214"
+source = "agent_session.py:210"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1441,20 +1535,19 @@ source = "client_notes.py:101"
 name = "SIP_HALF_DUPLEX"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
-note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
-source = "sip_server.py:136"
+source = "sip_server.py:146"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "float"
 unit = "s"
 min = 0
@@ -1462,13 +1555,13 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:137"
+source = "sip_server.py:147"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "float"
 unit = "dB"
 min = 0
@@ -1477,18 +1570,19 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:147"
+source = "sip_server.py:157"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "path"
+default = "/run/teaport/teaport-sip.sock"
 read = "startup"
 tier = "installer"
-help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:637"
+help = "Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off."
+source = "sip_server.py:205"
 
 # ---- diagnostics
 
@@ -1615,7 +1709,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:66"
+source = "gateway_server.py:67"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1627,7 +1721,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can replace a client's session by claiming its id; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:74"
+source = "gateway_server.py:75"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"
@@ -1815,7 +1909,7 @@ store = "sip_conf"
 group = "sip"
 type = "path"
 tier = "installer"
-help = "Must match the sip-brain's --socket."
+help = "Must match the brain's TEAPORT_SIP_SOCKET."
 source = "cli/teaport:170"
 
 [[settings]]
@@ -1835,7 +1929,7 @@ group = "sip"
 type = "flag"
 default = true
 tier = "tuning"
-help = "The gateway's echo canceller. Keep it on; the sip-brain's makeup gain assumes it."
+help = "The gateway's echo canceller. Keep it on; the SIP front-end's makeup gain assumes it."
 source = "cli/teaport:172"
 
 [[settings]]
@@ -2007,7 +2101,7 @@ default = "hw:CARD=Array,DEV=0"
 read = "startup"
 tier = "setup"
 help = "The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others."
-source = "local_audio.py:116"
+source = "local_audio.py:117"
 
 [[settings]]
 name = "LOCAL_AUDIO_CAPTURE_CHANNEL"
@@ -2020,7 +2114,7 @@ max = 1
 read = "startup"
 tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
-source = "local_audio.py:117"
+source = "local_audio.py:118"
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
@@ -2034,7 +2128,7 @@ unit = "dB"
 read = "startup"
 tier = "tuning"
 help = "Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not."
-source = "local_audio.py:138"
+source = "local_audio.py:139"
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_WORDS"
@@ -2045,7 +2139,7 @@ read = "startup"
 tier = "setup"
 help = "Wake words for the box's own mic, comma-separated, in any language the speech engine hears (e.g. `hey teaport, tea port, привет чайник`). Set, the box's speech recognition hears the room but every word is dropped, inside the brain's STT, before it can reach the model, the agent, a caption or a log — until a phrase from this list is said. Then what was said after it is the first turn (\"hey teaport, what's the weather\"), and the conversation needs no wake word until it sleeps again (LOCAL_AUDIO_KEEPALIVE_SECS, LOCAL_AUDIO_AWAKE_MAX_SECS, or \"go to sleep\"). Matching ignores case, punctuation and spacing but is otherwise exact: list the spellings you want (\"teaport, tea port\"); \"teapot\" wakes it only if listed. Empty: no wake words, the voice wake (LOCAL_AUDIO_WAKE_DB). SIP calls and dashboard/browser Talk sessions never need them."
 note = "Any value at all means wake mode, and it fails closed: if the brain or its speech recognition cannot be reached the bridge stays deaf and retries; it never falls back to listening without the wake words. While asleep the engine's speech recognition runs on the room (the GPU stays busy, one STT session held); a phone call takes it over (the bridge stays off until the call ends), but a call that lands DURING a conversation at the box still hears the busy line (until issue #58's take-the-call prompt)."
-source = "local_audio.py:145"
+source = "local_audio.py:146"
 
 [[settings]]
 name = "LOCAL_AUDIO_KEEPALIVE_SECS"
@@ -2059,7 +2153,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "With wake words: the conversation sleeps once nobody (you or the agent) has spoken for this long. Its session ends — the pipeline, the speech engine and the mic all go — and the box waits for a wake word again; the conversation itself is kept for LOCAL_AUDIO_CONVERSATION_SECS. Without wake words the session stays up, but after this long with nobody speaking (and until the first time someone does) it counts as a sleeping mic: a Talk client that connects takes the box from it quietly instead of being told the agent is busy."
-source = "local_audio.py:149"
+source = "local_audio.py:150"
 
 [[settings]]
 name = "LOCAL_AUDIO_AWAKE_MAX_SECS"
@@ -2073,7 +2167,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "With wake words: the conversation also sleeps this long after the last wake word, once the agent is not speaking — so a TV or a chat in the room that the agent keeps answering cannot hold it awake for good. Say the wake word again to keep going."
-source = "local_audio.py:150"
+source = "local_audio.py:151"
 
 [[settings]]
 name = "LOCAL_AUDIO_CONVERSATION_SECS"
@@ -2087,7 +2181,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "With wake words: one conversation at the box lasts until it has been asleep this long. A wake within it continues where it stopped (\"what about tomorrow?\" three minutes later still knows the question) and is not greeted; after it, a new conversation starts with a greeting. The brain keeps the last conversation's messages in memory (at most 40 messages / 24k characters), for the box's own mic only; a restart of teaport-brain forgets it."
-source = "local_audio.py:154"
+source = "local_audio.py:155"
 
 [[settings]]
 name = "LOCAL_AUDIO_BACKOFF_SECS"
@@ -2101,7 +2195,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "When another client (the dashboard, grokani, a browser) has the box -- it took the session from the sleeping bridge, or the brain refused the bridge because that client's conversation is live -- the box is theirs: the bridge stops listening for a voice until the brain has had no live session for this long, so the room (or the dashboard user's own voice) does not keep asking. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off (with wake words a refused bridge then retries on a doubling wait, never at once)."
-source = "local_audio.py:163"
+source = "local_audio.py:164"
 
 [[settings]]
 name = "LOCAL_AUDIO_URL"
@@ -2112,7 +2206,7 @@ default = "ws://127.0.0.1:$BRAIN_PORT/talk"
 read = "startup"
 tier = "tuning"
 help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."
-source = "local_audio.py:119"
+source = "local_audio.py:120"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_SOCK"
@@ -2123,7 +2217,7 @@ default = "/run/oled-avatar/face.sock"
 read = "startup"
 tier = "tuning"
 help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes."
-source = "local_audio.py:197"
+source = "local_audio.py:198"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_ADVANCE_MS"
@@ -2137,7 +2231,7 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:232"
+source = "local_audio.py:233"
 
 # ================================================================ wifi-setup.env
 

@@ -22,8 +22,8 @@ SAMPLE_RATE = 16000
 
 
 def _check_imports():
-    # Both front-ends: the OpenClaw relay (teaport-brain) and the SIP client
-    # (teaport-sip-brain). Importing each pulls in the shared pipeline and every service
+    # Both front-ends of teaport-brain: the /talk relay and the SIP listener. Importing
+    # each pulls in the shared pipeline and every service
     # module, so a missing or ABI-broken dependency anywhere in the tree fails here.
     for mod in ("teaport_brain.gateway_server", "teaport_brain.sip_server"):
         importlib.import_module(mod)

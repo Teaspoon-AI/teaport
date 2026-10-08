@@ -1,4 +1,5 @@
-# teaport-brain — the Pipecat voice brain (STT->LLM->TTS gateway on :${BRAIN_PORT}/talk).
+# teaport-brain — the Pipecat voice brain (STT->LLM->TTS): the /talk WebSocket on
+# :${BRAIN_PORT} and the SIP gateway's phone calls, one process, one session arbiter.
 # Rendered by install.sh; ${VARS} come from @ETC@/brain.env. Secrets (the LLM key, the
 # OpenClaw token) are read by the brain from ~/.config/teaport at call time, never here.
 [Unit]
@@ -10,6 +11,10 @@ Requires=teaport-engine.service
 [Service]
 Type=simple
 User=@USER@
+# The SIP gateway's socket (teaport-sip.service's RuntimeDirectory): the brain's SIP
+# front-end looks for it and connects whenever the gateway is up. A default box has no
+# gateway, and the front-end just waits. brain.env may override it (empty: SIP off).
+Environment=TEAPORT_SIP_SOCKET=@SIP_UDS@
 EnvironmentFile=@ETC@/brain.env
 ExecStart=@PREFIX@/venv/bin/teaport-brain --port ${BRAIN_PORT}
 Restart=on-failure

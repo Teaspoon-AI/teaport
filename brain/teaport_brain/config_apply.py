@@ -54,7 +54,7 @@ import time
 
 ETC = "/etc/teaport"
 FILES = ("engine.env", "brain.env", "bridge.env", "local-audio.env")
-UNITS = ("teaport-engine", "teaport-brain", "teaport-sip", "teaport-sip-brain",
+UNITS = ("teaport-engine", "teaport-brain", "teaport-sip",
          "teaport-discord-bridge", "teaport-local-audio", "teaport-wifi-setup")
 # Units the brain may also stop: Wi-Fi setup, which the user can cancel by voice.
 STOPPABLE = ("teaport-wifi-setup",)
