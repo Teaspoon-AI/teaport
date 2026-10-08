@@ -992,6 +992,10 @@ def wake_mode() -> bool:
 def _url(awake: bool = False) -> str:
     query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ())),
              "client": CLIENT_ID}
+    if not wake_mode():
+        # Without wake words the brain counts our session as asleep (a Talk client may take
+        # it) until someone speaks, and again after this long with nobody speaking.
+        query["keepalive"] = f"{KEEPALIVE_SECS:g}"
     if wake_mode():
         # The phrases ride the URL (they are settings, not speech); the brain parses them.
         query["wake"] = WAKE_WORDS

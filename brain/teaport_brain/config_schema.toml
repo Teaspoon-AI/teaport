@@ -1139,7 +1139,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:206"
+source = "agent_session.py:214"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1488,7 +1488,7 @@ type = "path"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:629"
+source = "sip_server.py:637"
 
 # ---- diagnostics
 
@@ -1615,7 +1615,7 @@ default = 7861
 read = "startup"
 tier = "installer"
 help = "Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob."
-source = "gateway_server.py:67"
+source = "gateway_server.py:66"
 
 [[settings]]
 name = "GATEWAY_TOKEN"
@@ -1627,7 +1627,7 @@ read = "startup"
 tier = "installer"
 help = "Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can replace a client's session by claiming its id; the brain warns loudly at startup."
 note = "Mirrored into the plugin config by install.sh. Never change one side alone."
-source = "gateway_server.py:75"
+source = "gateway_server.py:74"
 
 [[settings]]
 name = "MALLOC_ARENA_MAX"
@@ -2058,7 +2058,7 @@ max = 3600.0
 unit = "s"
 read = "startup"
 tier = "tuning"
-help = "With wake words: the conversation sleeps once nobody (you or the agent) has spoken for this long. Its session ends — the pipeline, the speech engine and the mic all go — and the box waits for a wake word again; the conversation itself is kept for LOCAL_AUDIO_CONVERSATION_SECS."
+help = "With wake words: the conversation sleeps once nobody (you or the agent) has spoken for this long. Its session ends — the pipeline, the speech engine and the mic all go — and the box waits for a wake word again; the conversation itself is kept for LOCAL_AUDIO_CONVERSATION_SECS. Without wake words the session stays up, but after this long with nobody speaking (and until the first time someone does) it counts as a sleeping mic: a Talk client that connects takes the box from it quietly instead of being told the agent is busy."
 source = "local_audio.py:147"
 
 [[settings]]

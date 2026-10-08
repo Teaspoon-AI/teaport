@@ -238,12 +238,18 @@ class CallPresence:
     def __init__(self, tell=None):
         self._tell = tell or _tell_talk_brain
         self._task = None
+        # "start" has been sent (it may still be waiting for its answer): end() owes the
+        # Talk brain an "end" from here, even if the start is cancelled (a caller who
+        # hangs up during the bring-up), or it would hold a lease for a call long gone.
+        self._started = False
 
     async def start(self) -> str | None:
         """None: the call may go on. Otherwise the arbiter refused it, and this names
         the kind of conversation that has the box ("room"): the caller gets the busy line."""
+        self._started = True
         answer = await self._tell("start")
         if answer and answer.get("call") is False and answer.get("busy"):
+            self._started = False
             logger.info(f"the Talk brain's session arbiter refused the call: a "
                         f"{answer['busy']} conversation has the box")
             return str(answer["busy"])
@@ -259,10 +265,12 @@ class CallPresence:
             await self._tell("refresh")
 
     async def end(self) -> None:
-        if self._task is None:
+        if not self._started:
             return
-        self._task.cancel()
-        self._task = None
+        self._started = False
+        if self._task is not None:
+            self._task.cancel()
+            self._task = None
         await self._tell("end")
 
 

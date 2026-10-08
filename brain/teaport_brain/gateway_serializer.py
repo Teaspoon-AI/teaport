@@ -45,6 +45,7 @@
 # pipeline events into OutputTransportMessage frames that land here.
 #
 import json
+import time
 
 from loguru import logger
 
@@ -87,6 +88,10 @@ class TeaportGatewaySerializer(FrameSerializer):
         # soxr streaming resampler: stateful across calls for this session, the same
         # role the audioop.ratecv running-state served (native pipecat; drops audioop-lts).
         self._in_resampler = create_stream_resampler()
+        # When the client last sent anything (time.monotonic()): every /talk client streams
+        # its microphone, so a long silence here means the client is gone (the session
+        # arbiter reaps such a session rather than refuse a newcomer for it).
+        self.last_rx = time.monotonic()
 
     async def serialize(self, frame: Frame):
         if isinstance(frame, OutputAudioRawFrame):
@@ -108,6 +113,7 @@ class TeaportGatewaySerializer(FrameSerializer):
         return None
 
     async def deserialize(self, data):
+        self.last_rx = time.monotonic()
         # One malformed message from the network must never kill the session:
         # anything we can't parse is logged and dropped, never raised.
         if isinstance(data, (bytes, bytearray)):

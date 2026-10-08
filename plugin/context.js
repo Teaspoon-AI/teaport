@@ -44,9 +44,10 @@ const CLOSED_IDS_KEPT = 64;
 // reached by a brain that sends none.
 export const HELLO_TIMEOUT_MS = 15000;
 // How long after the hello a bridge waits for "ready" before giving up on notes for
-// the session. The brain says ready once its slot is free (acquire_slot, up to ~5 s),
-// its pipeline runs and greet() found the STT (an unreachable engine takes ~10 s to
-// fail, and then the session ends instead). Past this the brain is wedged.
+// the session. The brain says ready once the session arbiter grants it the engine (up to
+// ~5 s, waiting out a session it ends), its pipeline runs and greet() found the STT (an
+// unreachable engine takes ~10 s to fail, and then the session ends instead). Past this
+// the brain is wedged.
 export const READY_TIMEOUT_MS = 30000;
 // How long a request waits for a bridge whose binding is still pending (a microtask
 // after createBridge; see TalkSessions.add) before reporting bridge_not_ready.
@@ -291,7 +292,7 @@ export function contextMethods(sessions, options = {}) {
       if (found.error) return respond(false, undefined, found.error);
       const { bridge } = found;
       // Only once the brain has said "ready". Before it, a note would wait in the socket
-      // while the brain sets up (acquire_slot waits out the previous session's
+      // while the brain sets up (the session arbiter waits out the previous session's
       // teardown), and could time out here yet still be applied there, so a retry
       // would add it twice; or it would be acked for a session about to end.
       switch (contextState(bridge, options)) {

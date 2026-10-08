@@ -328,7 +328,8 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == "ws://h/talk?features=volume,restart,local&client=local-audio&token=a%2Bb%26c%3Dd%20%25"
+    assert la._url() == ("ws://h/talk?features=volume,restart,local&client=local-audio"
+                         f"&keepalive={la.KEEPALIVE_SECS:g}&token=a%2Bb%26c%3Dd%20%25")
 
 
 # ------------------------------------------------- the reconnect policy, end to end
@@ -1094,7 +1095,7 @@ def test_no_wake_words_is_the_bridge_as_before(monkeypatch):
     monkeypatch.setattr(la, "URL", "ws://h/talk")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     assert not la.wake_mode()
-    assert la._url() == "ws://h/talk?features=volume,restart,local&client=local-audio"   # no sleep, no wake
+    assert la._url() == f"ws://h/talk?features=volume,restart,local&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
 
 
 def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):

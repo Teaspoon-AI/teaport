@@ -39,11 +39,10 @@ import time
 import uvicorn
 from fastapi import FastAPI, HTTPException, Request, WebSocket
 from loguru import logger
+from starlette.websockets import WebSocketState
 
 from pipecat.frames.frames import (
-    InterruptionWorkerFrame,
     OutputTransportMessageUrgentFrame,
-    TTSSpeakFrame,
 )
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.transports.websocket.fastapi import (
@@ -84,6 +83,7 @@ GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
 TAKEN_CLOSE_CODE = 4001
 TAKEN_CLOSE_REASON = "taken by another Talk session"
 REPLACED_CLOSE_REASON = "replaced by the same client's new session"
+REAPED_CLOSE_REASON = "the client stopped sending"
 # The mic path's asleep session (wake words, wake_gate.py) closed, or refused, for a phone
 # call: the call outranks the room, and the engine has one STT slot. The bridge stays off
 # until the brain reports no call (/talk/status "call").
@@ -103,6 +103,9 @@ CALL_CLOSE_REASON = "a phone call came in"
 # which it repeats every CALL_REFRESH_SECS for the length of the call). A lease, not a
 # flag: a SIP brain that dies mid-call leaves no call behind for longer than this.
 CALL_LEASE_SECS = 30.0
+# A room mic without wake words counts as asleep again once nobody has spoken for this
+# long (the bridge sends its own LOCAL_AUDIO_KEEPALIVE_SECS as ?keepalive=).
+ROOM_KEEPALIVE_SECS = 45.0
 # How long a Talk session a call ends may take to say so before it is closed anyway.
 CALL_LINE_MAX_SECS = 8.0
 # How long a refused client's busy line may take to synthesize; past it the client is
@@ -131,27 +134,47 @@ def _tts_for(voice: str | None, language: str | None):
     return make_tts(voice=voice, language=language)
 
 
-async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
-                  voice: str | None = None, language: str | None = None) -> None:
-    """End a /talk connection the arbiter refused. Nothing was built for it: no STT, no
-    pipeline. A client that asked to talk hears the busy line (synthesized here, sent in
-    the Talk wire format with its caption) before the close; a sleeping room mic, which
-    asked nothing, is closed at once. The code: YIELD for the room during a call (the
-    bridge waits the call out), BUSY otherwise (it backs off)."""
-    code = YIELD_CLOSE_CODE if room and refusal.holder == arb.CALL else BUSY_CLOSE_CODE
-    reason = YIELD_CLOSE_REASON if code == YIELD_CLOSE_CODE else refusal.reason
-    if speak:
-        tts = _tts_for(voice, language)
-        line = arb.busy_line(refusal.holder, getattr(tts, "espeak_language", None))
+# The busy lines already synthesized, by (voice, language, line): there are a handful of
+# them, and a refused client should not wait on (or load the engine with) a fresh synth.
+_BUSY_PCM: dict = {}
+
+
+async def busy_line_audio(holder_kind: str, voice: str | None,
+                          language: str | None) -> tuple[str, bytes]:
+    """The busy line for a client refused because `holder_kind` has the box, in its
+    voice's language, and its PCM16 24 kHz audio (b"" when the engine cannot say it).
+    Cached in-process; a failed synth is not cached."""
+    tts = _tts_for(voice, language)
+    line = arb.busy_line(holder_kind, getattr(tts, "espeak_language", None))
+    key = (voice, language, line)
+    pcm = _BUSY_PCM.get(key)
+    if pcm is None:
         try:
             pcm = await asyncio.wait_for(tts.synthesize(line), BUSY_SYNTH_SECS)
+            _BUSY_PCM[key] = pcm
         except Exception as e:  # noqa: BLE001 — no voice: the close reason still says it
             logger.warning(f"busy line not synthesized ({e!r}) — closing without it")
             pcm = b""
+    return line, pcm
+
+
+async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
+                  voice: str | None = None, language: str | None = None) -> None:
+    """End a /talk connection the arbiter refused. Nothing was built for it: no STT, no
+    pipeline. A client that asked to talk sees the busy line's caption at once and hears
+    it (synthesized once per voice, busy_line_audio) before the close; a sleeping room
+    mic, which asked nothing, is closed at once. The code: YIELD for the room during a
+    call (the bridge waits the call out), BUSY otherwise (it backs off)."""
+    code = YIELD_CLOSE_CODE if room and refusal.holder == arb.CALL else BUSY_CLOSE_CODE
+    reason = YIELD_CLOSE_REASON if code == YIELD_CLOSE_CODE else refusal.reason
+    if speak:
         try:
+            line = arb.busy_line(refusal.holder, getattr(_tts_for(voice, language),
+                                                         "espeak_language", None))
             await websocket.send_text(json.dumps(
                 {"type": "transcript", "role": "assistant", "text": line, "final": True,
                  "utterance": "busy"}))
+            _line, pcm = await busy_line_audio(refusal.holder, voice, language)
             if pcm:
                 await websocket.send_bytes(pcm)
                 # Played out before the close: a client may drop what it has not played.
@@ -194,17 +217,34 @@ async def run_relay_bot(websocket: WebSocket):
     # Who is asking for the engine (session_arbiter.py): the box's own mic (?features=
     # local, the local audio bridge) is the room, any other client a Talk session, and
     # ?client= is the id it keeps across its own reconnects. A room session is asleep
-    # while its wake gate is.
+    # while its wake gate is; without wake words, while nobody in the room has spoken yet
+    # and again once nobody (user or bot) has for the bridge's keep-alive (?keepalive=,
+    # its LOCAL_AUDIO_KEEPALIVE_SECS) -- the bridge greets an empty room at start, and
+    # that must not hold the box against a Talk client for the idle timeout.
     room = "local" in features
     client = (qp.get("client") or "").strip()[:128] or None
+    keepalive = _qp_float(qp.get("keepalive"), ROOM_KEEPALIVE_SECS)
+    serializer = TeaportGatewaySerializer()
     session_holder: dict = {}
+
+    def asleep() -> bool:
+        if gate is not None:
+            return gate.asleep
+        if not room:
+            return False
+        s = session_holder.get("s")
+        return s is None or room_idle(s.followup_gate, keepalive)
+
     claim = arb.Claim(
         arb.ROOM if room else arb.TALK, client=client,
         label=("room mic" if room else "Talk session") + (f" ({client})" if client else ""),
-        asleep=(lambda: gate.asleep) if gate is not None else None,
+        asleep=asleep,
+        gone=lambda: _client_gone(websocket, serializer),
         end=lambda why: _end_for(websocket, session_holder.get("s"), why, room=room,
-                                 asleep=gate is not None and gate.asleep))
-    speak_refusal = not (gate is not None and gate.asleep)  # a sleeping room asked nothing
+                                 asleep=asleep()))
+    # A sleeping wake-word room asked nothing; a dial without wake words is a voice in the
+    # room, and is told.
+    speak_refusal = not (gate is not None and gate.asleep)
     refusal = arb.ARBITER.would_refuse(claim)
     if refusal is not None:
         await _refuse(websocket, refusal, speak=speak_refusal, room=room,
@@ -220,7 +260,7 @@ async def run_relay_bot(websocket: WebSocket):
             audio_in_sample_rate=PIPELINE_SAMPLE_RATE,
             audio_out_sample_rate=RELAY_SAMPLE_RATE,
             add_wav_header=False,
-            serializer=TeaportGatewaySerializer(),
+            serializer=serializer,
         ),
     )
     # The caller-audio tap, as on the phone path (sip_server): first in the pipeline, so
@@ -323,19 +363,42 @@ async def run_relay_bot(websocket: WebSocket):
             gate.ended()  # the mic conversation, kept for the next wake (wake_gate.py)
 
 
+def room_idle(followup_gate, keepalive: float) -> bool:
+    """A room session without wake words counts as asleep: nobody has taken a turn yet,
+    or nobody (user or bot) has spoken for `keepalive` seconds and nothing is under way."""
+    if not getattr(followup_gate, "user_heard", False):
+        return True
+    return (followup_gate.is_clear()
+            and time.monotonic() - followup_gate.last_active >= keepalive)
+
+
+def _client_gone(websocket, serializer) -> bool:
+    """Has this session's client already left? Its socket is closed, or it has sent
+    nothing (not even its mic's silence) for session_arbiter.STALE_SECS."""
+    if WebSocketState.DISCONNECTED in (getattr(websocket, "client_state", None),
+                                       getattr(websocket, "application_state", None)):
+        return True
+    return time.monotonic() - serializer.last_rx >= arb.STALE_SECS
+
+
 async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) -> None:
     """A /talk session's end when the arbiter gives its slot to another (Claim.end).
-    Silent only where nothing is lost: a client replacing its own session, or a room mic
-    that was asleep. A live Talk session a phone call ends is told first."""
+    Silent only where nothing is lost: a client replacing its own session, one already
+    gone, or a room mic that was asleep. A live Talk session a phone call ends is told
+    first."""
     if why == arb.REPLACED:
         _close_with(websocket, TAKEN_CLOSE_CODE, REPLACED_CLOSE_REASON)
+    elif why == arb.REAPED:
+        logger.info("session arbiter: the client of the session holding the engine is gone "
+                    "— ending it")
+        _close_with(websocket, TAKEN_CLOSE_CODE, REAPED_CLOSE_REASON)
     elif why == arb.CALL_IN and (room or asleep):
         logger.info("phone call — closing the asleep mic session to free the speech engine")
         _close_with(websocket, YIELD_CLOSE_CODE, YIELD_CLOSE_REASON)
     elif why == arb.CALL_IN:
         logger.info("phone call — telling the Talk session, then ending it")
         if session is not None:
-            await _say_and_wait(session, arb.call_line(
+            await session.say_last_line(arb.call_line(
                 getattr(session.tts, "espeak_language", None)), CALL_LINE_MAX_SECS)
         _close_with(websocket, CALL_CLOSE_CODE, CALL_CLOSE_REASON)
     else:  # TAKEN: a sleeping room, and a Talk session wants to talk
@@ -347,18 +410,6 @@ async def _end_for(websocket, session, why: str, *, room: bool, asleep: bool) ->
             await websocket.close()
         except Exception:  # noqa: BLE001
             pass
-
-
-async def _say_and_wait(session, line: str, max_secs: float) -> None:
-    """Stop what the session is saying and say `line` instead, then wait (up to max_secs)
-    for it to play. The pipeline talking, not the model: never an assistant message."""
-    try:
-        await session.task.queue_frames([InterruptionWorkerFrame()])
-        await asyncio.sleep(0.2)  # the interruption clears the way before the line goes in
-        await session.task.queue_frames([TTSSpeakFrame(line, append_to_context=False)])
-        await asyncio.wait_for(session.followup_gate.wait_until_delivered(), max_secs)
-    except Exception as e:  # noqa: BLE001 — timed out or the session is going anyway
-        logger.info(f"the session's last line did not finish ({e!r}) — ending it anyway")
 
 
 app = FastAPI()
@@ -420,6 +471,9 @@ class _CallLease:
 
 
 _lease: _CallLease | None = None
+# A start still waiting in the arbiter (a Talk session is saying the call line): an "end"
+# that arrives meanwhile ends it there, so the start installs nothing.
+_pending: _CallLease | None = None
 
 
 @app.post("/talk/call")
@@ -430,7 +484,7 @@ async def talk_call(request: Request):
     mic yields, a remote Talk session is told and ended, and an awake room conversation
     keeps the box -- the answer is then {"call": false, "busy": "room"} and the SIP brain
     gives the caller the busy line. Answers once the engine is free for the call."""
-    global _lease
+    global _lease, _pending
     config_ui._authorize(request)
     # Its one caller is the SIP brain on this box: a call is not something the LAN says.
     client = getattr(request, "client", None)
@@ -441,6 +495,8 @@ async def talk_call(request: Request):
     except Exception:  # noqa: BLE001 — a body that is not a JSON object
         state = None
     if state == "end":
+        if _pending is not None:
+            _pending.end()
         if _lease is not None:
             _lease.end()
         return {"call": False, "yielded": 0}
@@ -451,13 +507,19 @@ async def talk_call(request: Request):
     lease = _CallLease()
     lease.refresh()
     before = arb.ARBITER.holder
-    refusal = await arb.ARBITER.acquire(lease.claim)
+    _pending = lease
+    try:
+        refusal = await arb.ARBITER.acquire(lease.claim)
+    finally:
+        if _pending is lease:
+            _pending = None
     if refusal is not None:
         lease.end()
         return {"call": False, "busy": refusal.holder}
     if lease.claim.released.is_set():
-        # It ran out (or was ended) while the grant waited: give the engine straight back.
-        arb.ARBITER.release(lease.claim)
+        # Ended ("end" from the SIP brain, or the lease ran out) while the grant waited:
+        # the arbiter installed nothing.
+        lease.end()
         return {"call": False, "yielded": 0}
     if _lease is not None:
         _lease.end()  # an older lease nobody ended (a start without the last call's end)

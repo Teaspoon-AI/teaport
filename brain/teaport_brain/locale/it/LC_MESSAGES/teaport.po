@@ -280,4 +280,4 @@ msgid "Sorry, I'm in another conversation right now. Please try again in a littl
 msgstr "Scusa, sono già in un'altra conversazione. Riprova tra poco."
 
 msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
-msgstr "Scusa, sta arrivando una telefonata e devo rispondere. Possiamo riparlarne quando ho finito."
+msgstr "Scusa, sta arrivando una telefonata e devo rispondere. Possiamo riprendere a parlare quando ho finito."

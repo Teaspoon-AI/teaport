@@ -398,8 +398,9 @@ async def test_a_pipeline_that_ends_on_its_own_hangs_the_caller_up():
 async def test_a_superseded_call_leaves_the_reclaim_to_its_replacement():
     """The teardown that has a next call pending must skip it: the bring-up starts on
     this same loop right behind it, and empty_cache can contend the CUDA allocator lock
-    against the greeting's synth. gateway_server spells this `if not slot_active()`,
-    which is inert in THIS process — the SIP path never calls acquire_slot."""
+    against the greeting's synth. gateway_server spells this `if not ARBITER.held()`;
+    this process has no Talk sessions in its arbiter, so here the rule is written at
+    the one call site that has a replacement call in hand."""
     h = _Harness()
     try:
         await h.start()

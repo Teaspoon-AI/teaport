@@ -26,10 +26,18 @@ from loguru import logger
 from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.frames.frames import LLMRunFrame, TTSSpeakFrame
+from pipecat.frames.frames import (
+    InputAudioRawFrame,
+    InterimTranscriptionFrame,
+    InterruptionWorkerFrame,
+    TranscriptionFrame,
+    LLMRunFrame,
+    TTSSpeakFrame,
+)
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask
 from pipecat.pipeline.worker import ProcessorUnusablePolicy
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import (
     LLMContextAggregatorPair,
@@ -595,7 +603,7 @@ class AgentSession:
     )
 
     def __init__(self, *, task, context, stt, tts, llm, ledger, followup_gate,
-                 client_notes=None):
+                 client_notes=None, input_mute=None):
         self.task = task
         self.context = context
         self.stt = stt
@@ -607,6 +615,8 @@ class AgentSession:
         # None unless built with context_notes. The OpenClaw front-end reads its limits
         # for the /talk hello.
         self.client_notes = client_notes
+        # Stops the user's audio reaching the pipeline (say_last_line).
+        self.input_mute = input_mute
         # Set by greet() when the STT slot is busy: the front-end reads it to end the
         # session cleanly after the busy line plays (SIP hangs up; OpenClaw lets its
         # client disconnect). False on a normal greeting.
@@ -674,6 +684,32 @@ class AgentSession:
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         await self.task.queue_frames([LLMRunFrame()])
 
+    # How long say_last_line lets the interruption clear the way before the line goes in.
+    _LAST_LINE_SETTLE_S = 0.2
+
+    async def say_last_line(self, line: str, max_secs: float) -> bool:
+        """Say `line` as this session's last words, heard in full: stop whatever is being
+        said, stop listening (so the user talking over it cannot barge in and cut it), say
+        the line, and wait -- up to max_secs -- until it has played. The pipeline
+        talking, not the model: never an assistant message. True when it played to the
+        end. The caller ends the session after (the session arbiter, for a phone call)."""
+        if self.input_mute is not None:
+            self.input_mute.muted = True
+        await self.task.queue_frames([InterruptionWorkerFrame()])
+        await asyncio.sleep(self._LAST_LINE_SETTLE_S)
+        # Armed after the interruption has gone through (it settles every watched reply
+        # as cut) and before the line is queued.
+        delivery = self.followup_gate.watch_delivery()
+        await self.task.queue_frames([TTSSpeakFrame(line, append_to_context=False)])
+        try:
+            await asyncio.wait_for(delivery.done.wait(), max_secs)
+        except asyncio.TimeoutError:
+            self.followup_gate.drop_delivery(delivery)
+            logger.info(f"the session's last line did not finish within {max_secs:g} s — "
+                        "ending it anyway")
+            return False
+        return not delivery.interrupted
+
     async def refuse(self, holder_kind: str):
         """The session arbiter refused this session (a phone call it could not take):
         say the agent is busy with `holder_kind` instead of greeting, and flag the
@@ -693,6 +729,36 @@ class AgentSession:
     # that would have broken silently on a rename. If a persistent pipeline ever
     # comes back, give HeardContextCorrector a public reset() rather than restoring
     # this.
+
+
+class InputMute(FrameProcessor):
+    """Drops the user's audio while `muted`: nothing reaches the STT or the VAD, so
+    nothing can barge in. Set for a session's last line (AgentSession.say_last_line).
+    `follow`: a second one, below the STT, muted with the first, that drops the
+    transcripts of audio the STT already had -- a final landing mid-line would otherwise
+    start a turn and cut it."""
+
+    def __init__(self, follow: "InputMute | None" = None,
+                 kinds: tuple = (InputAudioRawFrame,)):
+        super().__init__()
+        self._muted = False
+        self._follow = follow
+        self._kinds = kinds
+
+    @property
+    def muted(self) -> bool:
+        return self._follow.muted if self._follow is not None else self._muted
+
+    @muted.setter
+    def muted(self, value: bool) -> None:
+        self._muted = value
+
+    async def process_frame(self, frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if (self.muted and direction == FrameDirection.DOWNSTREAM
+                and isinstance(frame, self._kinds)):
+            return
+        await self.push_frame(frame, direction)
 
 
 def _end_session_when_unusable(service, what: str, task):
@@ -969,12 +1035,15 @@ def build_agent_session(transport, *, voice: str | None = None,
         # notes (no /talk), no line: the tool needs a local /talk client anyway.
         wifi.notes = client_notes
 
+    input_mute = InputMute()
     pipeline = Pipeline([p for p in [
         transport.input(),
         # Front-end input-side processors (SIP's HalfDuplexInputGate); none for OpenClaw.
         *(input_processors or []),
+        input_mute,
         ep_in,  # tap (debug): VAD-stop / turn-commit bubbles
         stt,
+        InputMute(follow=input_mute, kinds=(TranscriptionFrame, InterimTranscriptionFrame)),
         # This tap owns the silent-turn watchdog (see TurnTimer): it is the first to
         # see the turn begin, and only one of the three may arm it.
         TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
@@ -1131,4 +1200,5 @@ def build_agent_session(transport, *, voice: str | None = None,
         ledger=ledger,
         followup_gate=followup_gate,
         client_notes=client_notes,
+        input_mute=input_mute,
     )

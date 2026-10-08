@@ -8,11 +8,17 @@
 #
 #   front-ends   talk  a /talk client: the OpenClaw app or dashboard, the Discord bridge
 #                room  the box's own microphone (the local audio bridge, also /talk, with
-#                      ?features=local); ASLEEP while it waits for a wake word
+#                      ?features=local); ASLEEP while it waits for a wake word -- and,
+#                      without wake words, until someone in the room has spoken, and
+#                      again once nobody has for the bridge's keep-alive
 #                call  a phone call (for now the SIP brain's lease, POST /talk/call)
 #
 #   the policy, newcomer against the session holding the slot:
 #     * nobody holds it                    -> granted
+#     * a holder whose client is gone      -> granted; the dead session is REAPED (its
+#       (socket closed, or nothing           socket is already closed, or it has sent
+#       received for STALE_SECS)             nothing for STALE_SECS: every /talk client
+#                                            streams its mic, silence included)
 #     * the same client, reconnecting      -> granted; its old session is REPLACED
 #     * a room asleep, newcomer talk/call  -> granted; a sleeping mic is not a
 #                                             conversation, it yields (quietly)
@@ -33,7 +39,11 @@
 # client reconnecting, so it keeps that power over its own session and nobody else's. A
 # client that sends no id is never "the same" as anything: it can be refused, never
 # replace. The id is self-asserted, like everything a GATEWAY_TOKEN holder sends; it only
-# decides which of the token holder's own sessions a reconnect may end.
+# decides which of the token holder's own sessions a reconnect may end (a live session
+# replaced is logged as a warning, since a real reconnect usually finds its old one dead).
+# A client whose id does not survive its own reconnect -- the OpenClaw Control UI over
+# plain HTTP gets no device identity and a fresh instance id per page load -- is covered
+# by the reaping above: a reload closes the old socket, and a frozen one stops sending.
 #
 # Not here yet (#58's later steps), with their seams marked: a call that lands during an
 # AWAKE room conversation should ask the room "take the call?" and put the room on hold;
@@ -50,6 +60,7 @@ from teaport_brain import i18n
 TALK, ROOM, CALL = "talk", "room", "call"
 # Why a holder loses the slot (what its front-end's end() is told).
 REPLACED = "replaced"  # the same client opened a new session
+REAPED = "reaped"      # its client was already gone (socket closed, or silent)
 TAKEN = "taken"        # a sleeping room gave way to a Talk session
 CALL_IN = "call"       # a phone call needs the engine
 REFUSED = "refused"    # decide()'s answer when the newcomer does not get it
@@ -58,29 +69,40 @@ REFUSED = "refused"    # decide()'s answer when the newcomer does not get it
 # closes the engine socket), and how long after that the engine gets to free it.
 END_WAIT_SECS = 5.0
 SETTLE_SECS = 0.3
+# A holder whose client has sent nothing for this long is gone (every /talk client
+# streams its microphone continuously, silence included: the relay, the Discord bridge's
+# re-clocked uplink, the mic bridge). Well past any network hiccup.
+STALE_SECS = 20.0
 
 
 class Claim:
     """One session's ask for the slot, and its hold on it once granted.
 
     `end(why)` is how the arbiter ends this session when another takes the slot (why is
-    REPLACED, TAKEN or CALL_IN): the front-end says what it has to say, closes its
-    client with a code that says why, and cancels its pipeline; the arbiter then waits
-    for release(). `asleep()` says whether it is a sleeping room right now."""
+    REPLACED, REAPED, TAKEN or CALL_IN): the front-end says what it has to say, closes
+    its client with a code that says why, and cancels its pipeline; the arbiter then
+    waits for release(). `asleep()` says whether it is a sleeping room right now, and
+    `gone()` whether its client has already left (closed, or silent for STALE_SECS)."""
 
     def __init__(self, kind: str, *, client: str | None = None, label: str | None = None,
                  asleep: Callable[[], bool] | None = None,
+                 gone: Callable[[], bool] | None = None,
                  end: Callable[[str], Awaitable[None]] | None = None):
         self.kind = kind
         self.client = client or None
         self.label = label or kind
         self._asleep = asleep
+        self._gone = gone
         self.end = end
         self.released = asyncio.Event()
 
     @property
     def asleep(self) -> bool:
         return bool(self._asleep is not None and self._asleep())
+
+    @property
+    def gone(self) -> bool:
+        return bool(self._gone is not None and self._gone())
 
     @property
     def live(self) -> bool:
@@ -106,9 +128,11 @@ class Refusal:
 
 def decide(holder: Claim | None, new: Claim) -> str | None:
     """The policy. None: the slot is free, granted. Otherwise why the holder ends
-    (REPLACED, TAKEN, CALL_IN), or REFUSED when the newcomer does not get it."""
+    (REAPED, REPLACED, TAKEN, CALL_IN), or REFUSED when the newcomer does not get it."""
     if holder is None:
         return None
+    if holder.gone:
+        return REAPED
     if new.client is not None and new.client == holder.client and new.kind == holder.kind:
         return REPLACED
     if holder.kind == ROOM and holder.asleep:
@@ -132,6 +156,7 @@ class SessionArbiter:
     def __init__(self):
         self._holder: Claim | None = None
         self._lock = asyncio.Lock()
+        self._endings: set = set()  # ends in flight, held so a cancelled acquire cannot drop them
 
     @property
     def holder(self) -> Claim | None:
@@ -168,13 +193,32 @@ class SessionArbiter:
                             "speech engine (one conversation at a time)")
                 return Refusal(holder)
             if holder is not None:
+                if why == REPLACED and holder.live:
+                    # A reconnect usually finds its old session dead or asleep; a live one
+                    # replaced may be a second device claiming the same id.
+                    logger.warning(f"session arbiter: {new.label} replaces a LIVE session "
+                                   f"of the same client id ({holder.label})")
                 logger.info(f"session arbiter: {new.label} takes the speech engine from "
                             f"{holder.label} ({why})")
                 await self._end(holder, why)
+            if new.released.is_set():
+                # Ended while it waited (a call hung up during its start): it never holds
+                # the engine, so nothing is left behind for nobody to end.
+                logger.info(f"session arbiter: {new.label} ended before it was granted")
+                return None
             self._holder = new
             return None
 
     async def _end(self, holder: Claim, why: str) -> None:
+        # Shielded: a newcomer that gives up mid-way (a caller who hangs up while a Talk
+        # user is being told about the call) must not leave the holder half-ended, told
+        # but never closed. The end runs to completion either way.
+        ending = asyncio.ensure_future(self._ending(holder, why))
+        self._endings.add(ending)
+        ending.add_done_callback(self._endings.discard)
+        await asyncio.shield(ending)
+
+    async def _ending(self, holder: Claim, why: str) -> None:
         if holder.end is not None:
             try:
                 await holder.end(why)
