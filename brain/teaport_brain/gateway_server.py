@@ -139,6 +139,10 @@ async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
         try:
             line = arb.busy_line(refusal.holder, getattr(arb.tts_for(voice, language),
                                                          "espeak_language", None))
+            # Framed as a response of its own: it comes before any mic audio, so the
+            # client's side may have no turn to put it in yet, and OpenClaw's relay fails
+            # a session on output nobody owns (plugin/provider.js, _onResponseMarker).
+            await websocket.send_text(json.dumps({"type": "response", "state": "start"}))
             await websocket.send_text(json.dumps(
                 {"type": "transcript", "role": "assistant", "text": line, "final": True,
                  "utterance": "busy"}))
@@ -147,6 +151,7 @@ async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
                 await websocket.send_bytes(pcm)
                 # Played out before the close: a client may drop what it has not played.
                 await asyncio.sleep(len(pcm) / (2 * RELAY_SAMPLE_RATE) + 0.5)
+            await websocket.send_text(json.dumps({"type": "response", "state": "done"}))
         except Exception as e:  # noqa: BLE001 — the client left first
             logger.debug(f"busy line not delivered: {e!r}")
     try:

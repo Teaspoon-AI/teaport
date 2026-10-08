@@ -22,6 +22,10 @@
 #       OutputAudioRawFrame       -> binary raw PCM16 24 kHz  (bot speech)
 #       {"type":"hello","features":{"context":{limits}}}  (on accept, written straight
 #                                                           to the socket by gateway_server)
+#       {"type":"response","state":"start"|"done"}  (frames an utterance said outside
+#                                                     the pipeline: the busy line to a
+#                                                     refused client, written straight
+#                                                     to the socket by gateway_server)
 #       OutputTransportMessage[Urgent]Frame -> JSON text, the .message dict:
 #           {"type":"ready"}                              (notes may be sent: the pipeline
 #                                                           runs and the STT works)

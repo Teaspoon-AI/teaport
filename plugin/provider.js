@@ -470,6 +470,9 @@ class TeaportBridge {
     this._contextSeq = 0;
     this._contextAcks = new Map();
     this._onEnd = null;
+    // A response the brain framed itself is open (its "response" start marker), until its
+    // done marker or the session's end.
+    this._responseOpen = false;
   }
 
   /** The brain's hello features ({context: {...}}), or null before/without one. */
@@ -636,6 +639,8 @@ class TeaportBridge {
         this._helloAt = Date.now();
       } else if (msg.type === "ready") {
         this._brainReady = true;
+      } else if (msg.type === "response") {
+        this._onResponseMarker(msg.state);
       } else if (msg.type === "context_result") {
         const pending = this._contextAcks.get(msg.id);
         if (pending) {
@@ -689,6 +694,26 @@ class TeaportBridge {
     }
     // binary: bot speech, PCM16/24k -> hand a Buffer to the relay
     if (this._req.onAudio) this._req.onAudio(Buffer.from(data));
+  }
+
+  // The brain frames an utterance that may come before the relay has any turn to hang it
+  // on: the busy line to a client it refuses (gateway_server._refuse), which it says at
+  // once, before any mic audio has reached the relay. OpenClaw's relay (2026.9.x,
+  // TalkRealtimeRelayOutputOwnership) attributes assistant output to the active turn,
+  // which it opens on the first mic chunk, and fails the whole session ("Realtime provider
+  // output has no live response owner") on output with none. response.created gives the
+  // utterance a turn of its own; it carries no responseId, so the relay stays in its
+  // turn-bound mode (#75). Only while no response of ours is open: the relay fails on a
+  // second created while one is owned. done ends it with onResponseDone, which is what
+  // releases ownership (a response.done event alone does not).
+  _onResponseMarker(state) {
+    if (state === "start" && !this._responseOpen) {
+      this._responseOpen = true;
+      this._req.onEvent?.({ direction: "server", type: "response.created" });
+    } else if (state === "done" && this._responseOpen) {
+      this._responseOpen = false;
+      this._req.onResponseDone?.({ status: "completed" });
+    }
   }
 
   _forward(events) {

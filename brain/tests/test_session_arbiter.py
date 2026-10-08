@@ -597,7 +597,8 @@ async def test_the_busy_line_is_captioned_first_and_synthesized_once():
             orig = ws.send_text
 
             async def send_text(text, orig=orig):
-                events.append("caption")
+                if json.loads(text)["type"] == "transcript":
+                    events.append("caption")
                 await orig(text)
             ws.send_text = send_text
             await gs._refuse(ws, arb.ARBITER.would_refuse(arb.Claim(arb.TALK, client="b")),
@@ -680,6 +681,35 @@ def test_a_room_is_not_idle_while_a_consult_answer_is_owed():
     assert gs.room_idle(gate, 1.0)
     gate.owed = 1                                                  # ...but an answer is coming
     assert not gs.room_idle(gate, 1.0)
+
+
+async def test_the_busy_line_is_one_framed_response_closed_only_after_it_played():
+    """OpenClaw's relay plays assistant output only for a live response: the busy line
+    comes framed (start, caption, audio, done), and the close only after the done -- so
+    the line is heard, and the session ends cleanly instead of failing."""
+    _fresh()
+    await _holding("talk", client="openclaw:a")
+    ws = _WS({"client": "openclaw:b", "voice": "ef_dora"})
+    closed_at = {}
+    orig_close = ws.close
+
+    async def close(code=1000, reason=None):
+        closed_at["after"] = len(ws.sent)
+        await orig_close(code, reason)
+    ws.close = close
+    saved = arb.tts_for
+    arb.tts_for = _TTS
+    try:
+        await gs._refuse(ws, arb.ARBITER.would_refuse(arb.Claim(arb.TALK, client="b")),
+                         speak=True, room=False, voice="ef_dora")
+    finally:
+        arb.tts_for = saved
+    kinds = [m["type"] + (":" + m["state"] if m["type"] == "response" else "")
+             if isinstance(m, dict) else "audio" for m in ws.sent]
+    assert kinds == ["response:start", "transcript", "audio", "response:done"], kinds
+    assert closed_at["after"] == len(ws.sent)                      # nothing after the close
+    assert ws.sent[1]["text"] == arb.busy_line(arb.TALK, "es")     # the client's language
+    _fresh()
 
 
 def main():
