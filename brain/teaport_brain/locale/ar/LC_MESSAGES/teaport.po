@@ -274,3 +274,13 @@ msgstr "\\b[وف]?(?:[اأإ]عد(?:ها|ه|ي)?|[اأ]عيدي?|[اإ]عاد[ة
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "اللغة"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "عذرًا، أنا في مكالمة هاتفية الآن. يرجى المحاولة مرة أخرى عند انتهائها."
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "عذرًا، أنا في محادثة أخرى الآن. يرجى المحاولة مرة أخرى بعد قليل."
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "عذرًا، هناك مكالمة واردة ويجب أن أرد عليها. يمكننا التحدث مجددًا عند انتهائها."

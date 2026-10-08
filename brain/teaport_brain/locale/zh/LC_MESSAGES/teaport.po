@@ -263,3 +263,13 @@ msgstr "再(?:说|讲|念|读|播|来)一?(?:遍|次|下)|再说|重复|重说|�
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "语言"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "抱歉，我现在正在打电话。请在通话结束后再试。"
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "抱歉，我现在正在进行另一段对话。请稍后再试。"
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "抱歉，有电话打进来，我得接一下。通话结束后我们再聊。"

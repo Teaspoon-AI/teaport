@@ -236,7 +236,7 @@ In `/etc/teaport/brain.env`. Written by install.sh. Shown read-only.
 |---|---|---|
 | `BRAIN_PORT` | **7861** port (1–65535) | Passed as --port by the unit. Changing it means re-rendering the plugin config, bridge.env and Caddy. *Set by the installer.* |
 | `GATEWAY_PORT` | **7861** port (1–65535) | Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob. *Set by the installer.* |
-| `GATEWAY_TOKEN` | — | Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can evict the live call; the brain warns loudly at startup. Mirrored into the plugin config by install.sh. Never change one side alone. *Set by the installer.* |
+| `GATEWAY_TOKEN` | — | Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can replace a client's session by claiming its id; the brain warns loudly at startup. Mirrored into the plugin config by install.sh. Never change one side alone. *Set by the installer.* |
 | `MALLOC_ARENA_MAX` | **2** (≥ 1) | glibc arena cap; part of the memory budget. *Set by the installer.* |
 | `HF_HUB_OFFLINE` | `1` | Never fetch from the Hub on the appliance. Also set by the package at import. One of `1`. *Set by the installer.* |
 
@@ -291,18 +291,18 @@ In `/etc/teaport/bridge.env`.
 
 ## Local audio bridge
 
-In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client sharing the one Talk slot: it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB) — or, with wake words (LOCAL_AUDIO_WAKE_WORDS), it holds a session in which nothing the room says goes anywhere until a wake word is said. A dashboard (or other) Talk session takes the slot from the bridge; the bridge then backs off and does not take it back while that session is live (LOCAL_AUDIO_BACKOFF_SECS).
+In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client, and the brain holds one conversation at a time (docs/CONFIG.md, One engine, one conversation): it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB) — or, with wake words (LOCAL_AUDIO_WAKE_WORDS), it holds a session in which nothing the room says goes anywhere until a wake word is said. A dashboard (or other) Talk session takes the box only from a sleeping mic; while any other conversation is live the brain refuses the bridge (out loud if someone in the room asked to talk), and the bridge backs off while that conversation lasts (LOCAL_AUDIO_BACKOFF_SECS).
 
 | Setting | Default | Description |
 |---|---|---|
 | `LOCAL_AUDIO_DEVICE` | `hw:CARD=Array,DEV=0` | The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others. |
 | `LOCAL_AUDIO_CAPTURE_CHANNEL` | **0** (0–1) | Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam. |
-| `LOCAL_AUDIO_WAKE_DB` | **-40.0** dB (-70.0–0.0) | Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never evicts a dashboard Talk session on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not. |
-| `LOCAL_AUDIO_WAKE_WORDS` | — | Wake words for the box's own mic, comma-separated, in any language the speech engine hears (e.g. `hey teaport, tea port, привет чайник`). Set, the box's speech recognition hears the room but every word is dropped, inside the brain's STT, before it can reach the model, the agent, a caption or a log — until a phrase from this list is said. Then what was said after it is the first turn ("hey teaport, what's the weather"), and the conversation needs no wake word until it sleeps again (LOCAL_AUDIO_KEEPALIVE_SECS, LOCAL_AUDIO_AWAKE_MAX_SECS, or "go to sleep"). Matching ignores case, punctuation and spacing but is otherwise exact: list the spellings you want ("teaport, tea port"); "teapot" wakes it only if listed. Empty: no wake words, the voice wake (LOCAL_AUDIO_WAKE_DB). SIP calls and dashboard/browser Talk sessions never need them. Any value at all means wake mode, and it fails closed: if the brain or its speech recognition cannot be reached the bridge stays deaf and retries; it never falls back to listening without the wake words. While asleep the engine's speech recognition runs on the room (the GPU stays busy, one STT session held); a phone call takes it over (the bridge stays off until the call ends), but a call that lands DURING a conversation at the box still hears the busy line (issue #58). |
+| `LOCAL_AUDIO_WAKE_DB` | **-40.0** dB (-70.0–0.0) | Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not. |
+| `LOCAL_AUDIO_WAKE_WORDS` | — | Wake words for the box's own mic, comma-separated, in any language the speech engine hears (e.g. `hey teaport, tea port, привет чайник`). Set, the box's speech recognition hears the room but every word is dropped, inside the brain's STT, before it can reach the model, the agent, a caption or a log — until a phrase from this list is said. Then what was said after it is the first turn ("hey teaport, what's the weather"), and the conversation needs no wake word until it sleeps again (LOCAL_AUDIO_KEEPALIVE_SECS, LOCAL_AUDIO_AWAKE_MAX_SECS, or "go to sleep"). Matching ignores case, punctuation and spacing but is otherwise exact: list the spellings you want ("teaport, tea port"); "teapot" wakes it only if listed. Empty: no wake words, the voice wake (LOCAL_AUDIO_WAKE_DB). SIP calls and dashboard/browser Talk sessions never need them. Any value at all means wake mode, and it fails closed: if the brain or its speech recognition cannot be reached the bridge stays deaf and retries; it never falls back to listening without the wake words. While asleep the engine's speech recognition runs on the room (the GPU stays busy, one STT session held); a phone call takes it over (the bridge stays off until the call ends), but a call that lands DURING a conversation at the box still hears the busy line (until issue #58's take-the-call prompt). |
 | `LOCAL_AUDIO_KEEPALIVE_SECS` | **45.0** s (5.0–3600.0) | With wake words: the conversation sleeps once nobody (you or the agent) has spoken for this long. Its session ends — the pipeline, the speech engine and the mic all go — and the box waits for a wake word again; the conversation itself is kept for LOCAL_AUDIO_CONVERSATION_SECS. |
 | `LOCAL_AUDIO_AWAKE_MAX_SECS` | **300.0** s (30.0–86400.0) | With wake words: the conversation also sleeps this long after the last wake word, once the agent is not speaking — so a TV or a chat in the room that the agent keeps answering cannot hold it awake for good. Say the wake word again to keep going. |
 | `LOCAL_AUDIO_CONVERSATION_SECS` | **7200.0** s (0.0–604800.0) | With wake words: one conversation at the box lasts until it has been asleep this long. A wake within it continues where it stopped ("what about tomorrow?" three minutes later still knows the question) and is not greeted; after it, a new conversation starts with a greeting. The brain keeps the last conversation's messages in memory (at most 40 messages / 24k characters), for the box's own mic only; a restart of teaport-brain forgets it. |
-| `LOCAL_AUDIO_BACKOFF_SECS` | **60.0** s (0.0–3600.0) | When another client (the dashboard, grokani, a browser) takes the Talk session from the bridge, the box is theirs: the bridge stops listening for a voice until the brain has had no live Talk session for this long, so the room (or the dashboard user's own voice) cannot take it back. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off. |
+| `LOCAL_AUDIO_BACKOFF_SECS` | **60.0** s (0.0–3600.0) | When another client (the dashboard, grokani, a browser) has the box -- it took the session from the sleeping bridge, or the brain refused the bridge because that client's conversation is live -- the box is theirs: the bridge stops listening for a voice until the brain has had no live session for this long, so the room (or the dashboard user's own voice) does not keep asking. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off (with wake words a refused bridge then retries on a doubling wait, never at once). |
 | `LOCAL_AUDIO_URL` | `ws://127.0.0.1:$BRAIN_PORT/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
 | `LOCAL_AUDIO_FACE_SOCK` | `/run/oled-avatar/face.sock` | The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes. |
 | `LOCAL_AUDIO_FACE_ADVANCE_MS` | **50** ms (0–300) | How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads. |
@@ -378,22 +378,38 @@ is fine; `teaport sip restart` afterwards. Nothing about the line lives in
 `/tmp`: the conf is in `~/.config/teaport`, the socket in `/run/teaport` (created
 by the unit), the logs in journald.
 
-## One engine, one STT slot
+## One engine, one conversation
 
-The engine serves **a single speech-to-text session at a time**. The local
-OpenClaw brain (`teaport-brain`) and the SIP brain (`teaport-sip-brain`) share
-that one slot: **whoever connects first holds it**, and the second one to
-connect hears *"Sorry, the voice assistant is busy with another session right
-now — please try again in a moment."* On a phone that plays, then the call hangs
-up; in the OpenClaw app the session simply ends. This is expected — it is not a
-crash.
+The engine serves **a single speech-to-text session at a time**, and the box
+holds **one conversation at a time**. A session arbiter in `teaport-brain`
+(`brain/teaport_brain/session_arbiter.py`) decides who gets the engine, with one
+policy for every front-end: Talk clients (the OpenClaw app or dashboard, the
+Discord bridge), the box's own microphone (the local audio bridge) and phone
+calls. Nobody is ever cut off without a word:
 
-For a box you want to dedicate to the phone, stop the local brain from
-contending for the slot:
+| Someone new, while … | What happens |
+|---|---|
+| nothing is live | They get the agent. |
+| the same client's session is live (a reconnect) | The new connection replaces it. A client is "the same" by the id it sends (`?client=`): the OpenClaw plugin sends one per paired device, the Discord bridge `discord`, the mic bridge `local-audio`. |
+| another Talk session, or a conversation at the box, is live | They are refused: the agent says *"Sorry, I'm in another conversation right now…"* and the connection closes (code 4004). The conversation in progress goes on. |
+| the box's mic is asleep (waiting for a wake word) | A Talk session or a phone call takes the engine; the mic bridge stays off while they last. A sleeping mic is not a conversation. |
+| a phone call comes in during a remote Talk session | The Talk user hears *"Sorry, a phone call is coming in and I have to take it…"*, the session closes (4005), and the agent takes the call. |
+| a phone call is live | A Talk client is refused: *"Sorry, I'm on a phone call right now…"*. |
+| a phone call comes in during a conversation at the box | For now the caller hears the busy line and the call hangs up. (The take-the-call-or-not prompt, with the room conversation on hold, is issue #58's next step.) |
+
+Until the SIP listener moves into `teaport-brain` (issue #58), the SIP brain
+(`teaport-sip-brain`) asks the arbiter over `POST /talk/call` on the box itself
+before each call's speech recognition starts, and keeps that claim as a lease
+while the call lasts. If `teaport-brain` is not running, the SIP brain contends
+for the engine on its own: whoever connects first holds it, and the second hears
+*"Sorry, the voice assistant is busy with another session right now — please try
+again in a moment."* (on a phone, the call then hangs up).
+
+For a box you want to dedicate to the phone:
 
 ```
 sudo systemctl disable --now teaport-brain
 ```
 
-Telephony then always wins the slot. (Re-enable `teaport-brain` to get the local
-assistant back.)
+Telephony then always wins the engine. (Re-enable `teaport-brain` to get the
+local assistant back.)

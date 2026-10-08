@@ -76,9 +76,15 @@ function botToken() {
   return readFileSync(TOKEN_FILE, "utf-8").trim();
 }
 
+// Who this bridge is to the brain's session arbiter (?client=): one bridge per box, so a
+// re-join replaces its own previous session instead of being refused by it. Any other
+// client's live conversation refuses us: the brain says it is busy, and closes (4004).
+const CLIENT_ID = "discord";
+
 function brainUrl() {
-  if (!VOICE) return BRAIN_URL;
-  return BRAIN_URL + (BRAIN_URL.includes("?") ? "&" : "?") + "voice=" + encodeURIComponent(VOICE);
+  const q = ["client=" + CLIENT_ID];
+  if (VOICE) q.push("voice=" + encodeURIComponent(VOICE));
+  return BRAIN_URL + (BRAIN_URL.includes("?") ? "&" : "?") + q.join("&");
 }
 
 const log = (...args) => console.log(new Date().toISOString(), ...args);
@@ -284,10 +290,12 @@ async function startBridge(channel) {
     }
     downlink.enqueue(brainToDiscord(Buffer.from(ev.data)));
   });
-  ws.addEventListener("close", () => {
-    // Evicted (e.g. a dashboard Talk session took the single brain slot) or
-    // brain restarted. Leave the channel; re-join follows the user's next move.
-    teardown("brain socket closed");
+  ws.addEventListener("close", (ev) => {
+    // Refused (4004: another conversation is live; the brain said so first), ended for a
+    // phone call (4005), replaced by our own re-join (4001), or the brain restarted.
+    // Leave the channel; re-join follows the user's next move, so a refusal is never
+    // redialled on its own.
+    teardown(`brain socket closed (${ev?.code ?? "?"}${ev?.reason ? ": " + ev.reason : ""})`);
   });
   ws.addEventListener("error", (ev) => log("brain socket error:", ev?.message || "unknown"));
 

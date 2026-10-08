@@ -65,6 +65,7 @@ from teaport_brain import barge_pause
 from teaport_brain import raw_llm_capture
 from teaport_brain import reply_hold
 from teaport_brain import speculate
+from teaport_brain.session_arbiter import busy_line
 from teaport_brain.speech_onset import SpeechOnsetMixin
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
@@ -164,71 +165,8 @@ _PIPELINE_PHASE_TIMEOUT_S = _STT_CONNECT_BUDGET_S + 20.0
 _TTS_LANG_NAMES = {k: v for k, v in LANG_NAMES.items() if not k.startswith("en-")}
 
 
-# --- Single-slot arbiter (WITHIN ONE PROCESS) -----------------------------------
-# The engine STT serves a single session, so only one pipeline may hold it at a time.
-# Track the live (task, done-event) so a new connection can evict a stale one (e.g. a
-# frozen client whose disconnect was never detected, leaving the slot held).
-#
-# SCOPE, because the name oversells it: these are module globals, so this arbitrates
-# only among pipelines in the SAME PROCESS — i.e. among OpenClaw /talk connections.
-# teaport-brain.service and teaport-sip-brain.service are two separate units running
-# two separate processes, so acquire_slot() cannot evict a SIP call and slot_active()
-# cannot see one (nor the reverse). The SIP path contends for the same engine slot on
-# every call — it has since 2612baf made it per-call — it just cannot register here.
-#
-# The real cross-front-end contract is therefore NOT handoff but: FIRST CONNECT WINS,
-# and the loser hears the busy line. That is enforced by the engine returning 503, not
-# by any code here. stt.py retries a 503 briefly so a slot still settling from the
-# previous session's close is not mistaken for one genuinely in use; see
-# brain/formal/SttSlot.tla, which models both front-ends against the one engine slot
-# and the close-latency window between them.
-_active_session = None
-_session_lock = asyncio.Lock()
-
-
-def slot_active() -> bool:
-    """True while some pipeline holds the single STT slot. gateway_server reads this
-    in its outer finally to decide whether a session-end memory reclaim is safe (a
-    replacement session that already evicted us must run its own reclaim)."""
-    return _active_session is not None
-
-
-async def acquire_slot(task, on_evicted=None):
-    """Claim the single STT slot for `task`, evicting whatever held it before.
-
-    Cancels the previous pipeline and waits for its teardown (STT _disconnect closes
-    the engine socket) so this task's STT can claim the slot; pairs with the
-    STT-unavailable greeting warning as a backstop if a race slips. `on_evicted`, if
-    given, is called (sync) should a later session evict this one, before its pipeline
-    is cancelled: gateway_server uses it to close the socket with a code that says so.
-    Returns (done_event, release): await release() in a finally to relinquish the slot."""
-    global _active_session
-    my_done = asyncio.Event()
-    async with _session_lock:
-        prev = _active_session
-        if prev is not None:
-            prev_task, prev_done, prev_evicted = prev
-            logger.info("new client — evicting the previous pipeline to free the STT slot")
-            if prev_evicted is not None:
-                prev_evicted()
-            try:
-                await prev_task.cancel()
-                await asyncio.wait_for(prev_done.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
-                logger.warning("evict: previous pipeline did not finish within 5s")
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"evict: error cancelling previous pipeline: {e!r}")
-            await asyncio.sleep(0.3)  # let the engine process the close + free the slot
-        _active_session = (task, my_done, on_evicted)
-
-    async def release():
-        global _active_session
-        my_done.set()
-        async with _session_lock:
-            if _active_session is not None and _active_session[0] is task:
-                _active_session = None
-
-    return my_done, release
+# Who may hold the engine's single STT slot is not decided here: every front-end asks
+# the session arbiter (session_arbiter.py) before it runs the pipeline built below.
 
 
 # How many quiet windows to try before giving up on delivering a consult answer. A
@@ -735,6 +673,18 @@ class AgentSession:
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
         await self.task.queue_frames([LLMRunFrame()])
+
+    async def refuse(self, holder_kind: str):
+        """The session arbiter refused this session (a phone call it could not take):
+        say the agent is busy with `holder_kind` instead of greeting, and flag the
+        session to end, as greet() does for a busy engine."""
+        logger.info(f"refused by the session arbiter ({holder_kind} has the box) — "
+                    "speaking the busy line and ending this session")
+        self.should_end = True
+        self.end_reason = "busy"
+        await self.task.queue_frames([TTSSpeakFrame(
+            busy_line(holder_kind, getattr(self.tts, "espeak_language", None)),
+            append_to_context=False)])
 
     # There is no reset_context() here any more. It existed for the pre-2612baf
     # persistent SIP pipeline, which reset the context between calls; the per-call

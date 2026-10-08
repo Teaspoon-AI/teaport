@@ -741,12 +741,10 @@ async def _run_talk(should_end=False):
         built.update(kw)
         return _Session()
 
-    async def acquire(task, **_kw):
-        order.append("slot")
-
-        async def release():
-            pass
-        return None, release
+    class _Arbiter(gs.arb.SessionArbiter):
+        async def acquire(self, claim):
+            order.append("slot")
+            return await super().acquire(claim)
 
     class _Runner:
         def __init__(self, **kw):
@@ -759,16 +757,18 @@ async def _run_talk(should_end=False):
         order.append(json.loads(text))
 
     saved = {k: getattr(gs, k) for k in
-             ("FastAPIWebsocketTransport", "build_agent_session", "acquire_slot", "PipelineRunner")}
+             ("FastAPIWebsocketTransport", "build_agent_session", "PipelineRunner")}
+    saved_arbiter = gs.arb.ARBITER
     gs.FastAPIWebsocketTransport = make_transport
     gs.build_agent_session = build
-    gs.acquire_slot = acquire
+    gs.arb.ARBITER = _Arbiter()
     gs.PipelineRunner = _Runner
     try:
         await gs.run_relay_bot(SimpleNamespace(query_params={}, send_text=send_text))
     finally:
         for k, v in saved.items():
             setattr(gs, k, v)
+        gs.arb.ARBITER = saved_arbiter
     return order, built
 
 

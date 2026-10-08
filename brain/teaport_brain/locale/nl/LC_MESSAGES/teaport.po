@@ -263,3 +263,13 @@ msgstr "\\b(?:herhaal\\w*|herhalen|herhaling|nog (?:een ?keer|eens|1 keer)|nogma
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "Taal"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "Sorry, ik zit nu in een telefoongesprek. Probeer het opnieuw als het voorbij is."
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "Sorry, ik zit nu in een ander gesprek. Probeer het zo meteen opnieuw."
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "Sorry, er komt een telefoontje binnen en dat moet ik aannemen. We kunnen verder praten als het voorbij is."

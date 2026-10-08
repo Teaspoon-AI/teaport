@@ -263,3 +263,13 @@ msgstr "\\b(?:wiederhol\\w*|nochmal|nochmals|noch ?mal|noch einmal|(?:wie|was) w
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "Sprache"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "Tut mir leid, ich bin gerade in einem Telefonat. Bitte versuch es noch einmal, wenn es vorbei ist."
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "Tut mir leid, ich bin gerade in einem anderen Gespräch. Bitte versuch es gleich noch einmal."
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "Tut mir leid, gerade kommt ein Anruf rein, den ich annehmen muss. Wir können danach weiterreden."

@@ -388,6 +388,21 @@ test("the plugin tells the brain it speaks caption protocol 2", () => {
   assert.equal(new URL(bridge._url).searchParams.get("captions"), "2");
 });
 
+test("the plugin names the Talk client, so only its own reconnect replaces its session", () => {
+  const key = { value: "openclaw:0123456789abcdef" };
+  const provider = buildTeaportRealtimeProvider({
+    url: "ws://brain/talk", hostVersion: "2026.9.1", clientKey: () => key.value,
+  });
+  const url = (cfg) => new URL(provider.createBridge({ providerConfig: cfg })._url);
+  assert.equal(url({}).searchParams.get("client"), "openclaw:0123456789abcdef");
+  key.value = undefined; // the host shows no device: no id, never a replacement
+  assert.equal(url({}).searchParams.get("client"), null);
+  const throwing = buildTeaportRealtimeProvider({
+    url: "ws://brain/talk", hostVersion: "2026.9.1", clientKey: () => { throw new Error("no scope"); },
+  });
+  assert.equal(new URL(throwing.createBridge({ providerConfig: {} })._url).searchParams.get("client"), null);
+});
+
 test("the brain hanging up closes the bubble and sends the held cards", async (t) => {
   // A stand-in for the WebSocket the bridge opens, driven by the test.
   class FakeSocket extends EventTarget {

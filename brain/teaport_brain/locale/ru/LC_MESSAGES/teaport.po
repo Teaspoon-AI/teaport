@@ -271,3 +271,13 @@ msgstr "\\b(?:повтор\\w*|ещё раз|еще раз|снова|занов
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "Язык"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "Извините, я сейчас разговариваю по телефону. Попробуйте ещё раз, когда звонок закончится."
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "Извините, у меня сейчас другой разговор. Попробуйте ещё раз чуть позже."
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "Извините, поступает звонок, и мне нужно ответить. Поговорим, когда он закончится."

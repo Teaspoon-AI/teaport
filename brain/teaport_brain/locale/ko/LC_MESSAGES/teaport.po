@@ -372,3 +372,13 @@ msgstr "제트"
 # The language picker on the setup page (its accessible label).
 msgid "Language"
 msgstr "언어"
+
+# The session arbiter (session_arbiter.py): one conversation at a time.
+msgid "Sorry, I'm on a phone call right now. Please try again when it's over."
+msgstr "죄송해요, 지금 통화 중이에요. 통화가 끝나면 다시 시도해 주세요."
+
+msgid "Sorry, I'm in another conversation right now. Please try again in a little while."
+msgstr "죄송해요, 지금 다른 대화 중이에요. 잠시 후에 다시 시도해 주세요."
+
+msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
+msgstr "죄송해요, 전화가 와서 받아야 해요. 통화가 끝나면 다시 이야기해요."

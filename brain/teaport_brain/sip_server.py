@@ -200,14 +200,18 @@ _GATEWAY_WAIT_S = 30.0
 _GATEWAY_POLL_S = 0.5
 
 
-# One conversation at a time, and a phone call outranks the room (issue #58): the local
-# audio bridge's asleep wake session holds the engine's single STT slot, and would turn
-# every call away busy. So a call tells the Talk brain it is up before its own STT
-# connects -- the Talk brain closes that asleep session and frees the slot first
-# (gateway_server /talk/call) -- and keeps telling it, as a lease, until it is over. A
-# Talk brain that is down, or too old to know, costs nothing: the call goes on as before.
+# One conversation at a time (issue #58): the Talk brain's session arbiter
+# (session_arbiter.py) owns the engine's single STT slot, and a call asks it before its
+# own STT connects (gateway_server /talk/call). A sleeping room mic yields to the call and
+# a remote Talk session is told and ended, both before the answer comes back, so the
+# call's STT finds the engine free; an awake room conversation keeps the box, and the
+# call is answered busy. The call then keeps its claim as a lease, refreshed until it is
+# over. A Talk brain that is down, or too old to know, costs nothing: the call goes on as
+# before, contending for the engine on its own.
 CALL_REFRESH_SECS = 10.0
-_TALK_CALL_TIMEOUT_SECS = 6.0
+# Long enough for the arbiter to let a Talk session say why it is ending (up to
+# gateway_server.CALL_LINE_MAX_SECS) and wait its teardown out.
+_TALK_CALL_TIMEOUT_SECS = 20.0
 
 
 async def _tell_talk_brain(state: str) -> dict | None:
@@ -228,19 +232,26 @@ async def _tell_talk_brain(state: str) -> dict | None:
 
 class CallPresence:
     """The call's lease on the Talk brain: start() before the call's STT connects (it
-    returns once the room's asleep session has let the engine go), refreshed while the
-    call lasts, end() when it is over. end() twice is harmless."""
+    returns once whatever had the engine has let it go), refreshed while the call lasts,
+    end() when it is over. end() twice is harmless."""
 
     def __init__(self, tell=None):
         self._tell = tell or _tell_talk_brain
         self._task = None
 
-    async def start(self) -> None:
+    async def start(self) -> str | None:
+        """None: the call may go on. Otherwise the arbiter refused it, and this names
+        the kind of conversation that has the box ("room"): the caller gets the busy line."""
+        answer = await self._tell("start")
+        if answer and answer.get("call") is False and answer.get("busy"):
+            logger.info(f"the Talk brain's session arbiter refused the call: a "
+                        f"{answer['busy']} conversation has the box")
+            return str(answer["busy"])
         if self._task is None:
             self._task = asyncio.create_task(self._refresh())
-        answer = await self._tell("start")
         if answer and answer.get("yielded"):
-            logger.info("the room's asleep mic session made way for the call")
+            logger.info("the session that had the speech engine made way for the call")
+        return None
 
     async def _refresh(self) -> None:
         while True:
@@ -362,7 +373,7 @@ async def run(sock_path: str):
         except Exception as e:  # noqa: BLE001
             logger.warning(f"per-call pipeline runner ended with: {e!r}")
         # Let the engine process the STT close and free the single slot before the
-        # next call's STT connects (mirrors the OpenClaw path's acquire_slot settle).
+        # next call's STT connects (mirrors session_arbiter.SETTLE_SECS).
         await asyncio.sleep(0.3)
         await presence.end()
         if reclaim:
@@ -457,8 +468,9 @@ async def run(sock_path: str):
                 setup["call_id"] = None
 
     async def _bring_up(call_id, resumed: bool = False):
-        # Before anything takes the engine: the room's asleep mic session gives it up.
-        await presence.start()
+        # Before anything takes the engine: the session arbiter makes way for the call,
+        # or refuses it (an awake room conversation has the box).
+        busy = await presence.start()
         transport = SipGatewayTransport(connection, params)
         # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
@@ -525,16 +537,20 @@ async def run(sock_path: str):
         # Publish BEFORE greeting: from here a `disconnected` for this call can find
         # and tear down the pipeline even though the bring-up is still running.
         active["call"] = (call_id, session, runner_task, transport)
-        await session.greet(resumed=resumed)
+        if busy is not None:
+            await session.refuse(busy)
+        else:
+            await session.greet(resumed=resumed)
         if session.should_end:
-            # STT is unavailable — either the engine's single slot is held by another
-            # session (e.g. the local OpenClaw brain) or the engine is unreachable.
-            # greet() spoke the matching line instead of greeting; let it play out, then
+            # The session arbiter refused the call, or STT is unavailable — the engine's
+            # single slot is held by another session (e.g. the local OpenClaw brain) or
+            # the engine is unreachable. refuse() / greet() spoke the matching line
+            # instead of greeting; let it play out, then
             # hang the caller up and tear the pipeline down so the line drops cleanly.
             # wait_until_delivered returns once the line has been spoken (or after a
             # short timeout if the engine can't even synthesize it — hang up either way).
-            logger.info(f"STT unavailable for call {call_id} — playing the warning, "
-                        "then hanging up")
+            logger.info(f"{'busy' if busy else 'STT unavailable'} for call {call_id} — "
+                        "playing the warning, then hanging up")
             await session.followup_gate.wait_until_delivered()
             await transport.send_control({"type": "call.hangup"})
             await cancel_active_call("STT unavailable", call_id=call_id)
@@ -565,11 +581,9 @@ async def run(sock_path: str):
             # lock against the greeting's synth, the hazard MemoryReclaim documents. The
             # superseding call reclaims when IT ends, so nothing is lost.
             #
-            # gateway_server writes this same rule as `if not slot_active()`. That guard
-            # would be inert here: slot_active() reads a module global in agent_session
-            # that only acquire_slot sets, and the SIP path never calls acquire_slot —
-            # different process, different globals (see agent_session's SCOPE note), so
-            # it is always False in this process and would skip nothing. The condition is
+            # gateway_server writes this same rule as `if not ARBITER.held()`. That guard
+            # would be inert here: the arbiter lives in the Talk brain's process, and
+            # this process's copy never holds anything, so it would skip nothing. The condition is
             # therefore put where this process actually knows it: at the one call site
             # that has a replacement call in hand.
             await cancel_active_call("superseded by a new call", reclaim=False)
