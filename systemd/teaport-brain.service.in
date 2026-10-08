@@ -15,6 +15,9 @@ User=@USER@
 # front-end looks for it and connects whenever the gateway is up. A default box has no
 # gateway, and the front-end just waits. brain.env may override it (empty: SIP off).
 Environment=TEAPORT_SIP_SOCKET=@SIP_UDS@
+# The XVF3800's LED ring, the phone busy lamp (install.sh install_busy_lamp: the udev rule
+# and the group, which exists before this unit is rendered).
+SupplementaryGroups=teaport-hw
 EnvironmentFile=@ETC@/brain.env
 ExecStart=@PREFIX@/venv/bin/teaport-brain --port ${BRAIN_PORT}
 Restart=on-failure
