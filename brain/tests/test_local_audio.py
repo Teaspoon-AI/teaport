@@ -688,16 +688,16 @@ def test_talk_status_says_whether_the_slot_is_held(monkeypatch):
                                headers={"authorization": f"Bearer {bearer}"} if bearer else {})
     monkeypatch.delenv("GATEWAY_TOKEN", raising=False)
     monkeypatch.setattr(agent_session, "_active_session", None)
-    assert asyncio.run(gs.talk_status(req())) == {"active": False}
+    assert asyncio.run(gs.talk_status(req())) == {"active": False, "call": False}
     monkeypatch.setattr(agent_session, "_active_session", (object(), None, None))
-    assert asyncio.run(gs.talk_status(req())) == {"active": True}
+    assert asyncio.run(gs.talk_status(req())) == {"active": True, "call": False}
     monkeypatch.setenv("GATEWAY_TOKEN", "secret")
     for bad in (req(), req(token="nope"), req(bearer="nope")):
         with pytest.raises(HTTPException) as e:
             asyncio.run(gs.talk_status(bad))
         assert e.value.status_code == 401
-    assert asyncio.run(gs.talk_status(req(bearer="secret"))) == {"active": True}
-    assert asyncio.run(gs.talk_status(req(token="secret"))) == {"active": True}
+    assert asyncio.run(gs.talk_status(req(bearer="secret"))) == {"active": True, "call": False}
+    assert asyncio.run(gs.talk_status(req(token="secret"))) == {"active": True, "call": False}
 
 
 def test_uvicorn_request_lines_never_carry_the_token():
@@ -1044,6 +1044,328 @@ def test_card_present_from_real_device_strings(tmp_path, monkeypatch):
     assert la.card_present("hw:CARD=Array,DEV=0") is True
     assert la.card_present("hw:CARD=Gone,DEV=0") is False
     assert la.card_present("plughw:Array") is None
+
+
+# ------------------------------------------------------------------- wake words
+# The brain's half (the gate, the cut, the kept conversation, the call's yield) is
+# tests/test_wake_gate.py; these are the bridge's.
+
+def test_no_wake_words_is_the_bridge_as_before(monkeypatch):
+    monkeypatch.setattr(la, "WAKE_WORDS", "  ")
+    monkeypatch.setattr(la, "URL", "ws://h/talk")
+    monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
+    assert not la.wake_mode()
+    assert la._url() == "ws://h/talk?features=volume,restart,local"   # no sleep, no wake
+
+
+def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
+    monkeypatch.setattr(la, "WAKE_WORDS", "hey teaport, привет чайник")
+    monkeypatch.setattr(la, "URL", "ws://h/talk")
+    monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
+    import urllib.parse
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url()).query)
+    assert q["features"] == ["volume,restart,local,sleep"]
+    assert q["wake"] == ["hey teaport, привет чайник"] and "awake" not in q
+    q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url(awake=True)).query)
+    assert q["awake"] == ["1"]
+
+
+def test_the_face_sleeps_only_where_the_avatar_draws_it():
+    sent = []
+    face = la.FaceTap(send=sent.append, features=lambda: {"screen": 1, "sleep": 1})
+    face.sleep()
+    face.woke()
+    old = la.FaceTap(send=sent.append, features=lambda: {"screen": 1})
+    old.sleep()
+    assert [json.loads(d) for d in sent] == [
+        {"state": "sleeping"}, {"state": "listening"}, {"state": "idle"}]
+
+
+def test_keep_alive_ends_on_quiet_and_on_the_cap_since_the_last_wake_word():
+    clock = _Clock()
+    alive = la.KeepAlive(45, 300, clock=clock)
+    clock.t += 44
+    assert alive.over() is None
+    alive.activity()                            # a transcript, a caption, bot audio
+    clock.t += 44
+    assert alive.over() is None
+    clock.t += 1
+    assert alive.over() == "keepalive"
+    # A TV the bot keeps answering: always activity, but the cap ends it...
+    alive = la.KeepAlive(45, 300, clock=clock)
+    for _ in range(30):
+        clock.t += 10
+        alive.activity()
+    assert alive.over() == "awake-max"
+    assert alive.over(busy=True) is None        # ...though never mid-reply
+    alive.woke()                                # a wake word again: the cap restarts
+    assert alive.over() is None
+
+
+# What a brain that gates the room says first (gateway_server's hello).
+HELLO = json.dumps({"type": "hello", "features": {}, "wake": "asleep"})
+
+
+def _wake_card(monkeypatch, **status):
+    """A fake card in wake mode; /talk/status answers `status` (call: bool)."""
+    flag = tempfile.mktemp()
+    _fake_card(monkeypatch, ARECORD, flag)
+    monkeypatch.setattr(la, "WAKE_WORDS", "hey teaport")
+    monkeypatch.setattr(la, "KEEPALIVE_POLL_SECS", 0.05)
+    monkeypatch.setattr(la, "BACKOFF_POLL_SECS", 0.05)
+    monkeypatch.setattr(la, "SHORT_SESSION_SECS", 0.0)
+    state = {"call": False, **status}
+    monkeypatch.setattr(la, "_talk_status_sync", lambda: {"active": False, "call": state["call"]})
+    return flag, state
+
+
+async def _drain(ws, secs=None):
+    """Read (and drop) the mic audio until the bridge hangs up, or for `secs`: a server
+    that stops reading stalls the client's close behind its own send buffer."""
+    async def read():
+        try:
+            async for _ in ws:
+                pass
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        await asyncio.wait_for(read(), secs)
+    except asyncio.TimeoutError:
+        pass
+
+
+def _query(ws):
+    import urllib.parse
+    return urllib.parse.parse_qs(urllib.parse.urlsplit(ws.request.path).query)
+
+
+def test_wake_mode_holds_an_asleep_session_and_sleeps_again_after_the_keep_alive(monkeypatch):
+    """Dialled at start, ASLEEP (?wake=, no awake): the brain gates the room. A wake
+    message starts the keep-alive; quiet past it ENDS the session (the conversation is
+    the brain's to keep) and a new asleep one opens."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "KEEPALIVE_SECS", 0.4)
+    got = []
+
+    async def run():
+        async def on_connect(ws, n):
+            got.append(_query(ws))
+            await ws.send(HELLO)
+            if n == 1:
+                await _drain(ws, 0.6)                    # asleep: nothing ends it
+                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport",
+                                          "greeted": True, "resumed": False}))
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: count[0] == 2, 4)    # the keep-alive ended the first
+        t_second = asyncio.get_running_loop().time()
+        await asyncio.sleep(0.8)
+        assert count[0] == 2                             # asleep again: no timer ends it
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return t_second
+
+    asyncio.run(run())
+    assert all(q["wake"] == ["hey teaport"] and "awake" not in q for q in got), got
+    assert "sleep" in got[0]["features"][0]
+
+
+async def _until(cond, secs=2.0):
+    for _ in range(int(secs / 0.02)):
+        if cond():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+class _FakeCard:
+    """Enough of a Card for run_wake_sessions: waits return at once."""
+    def __init__(self):
+        self.face = la.FaceTap(send=lambda d: None, features=lambda: {})
+        self.idled = []
+
+    async def idle_for(self, secs):
+        self.idled.append(secs)
+
+    async def _until(self, aw):
+        await aw
+
+
+def _drive(monkeypatch, outcomes, status=None):
+    """run_wake_sessions over `outcomes` (a value to return or an exception to raise,
+    per dial); returns the `awake` flag of each dial."""
+    dials = []
+    outcomes = list(outcomes)
+
+    async def run_session(card, preroll, wake=False, awake=False):
+        dials.append(awake)
+        if not outcomes:
+            raise asyncio.CancelledError
+        o = outcomes.pop(0)
+        if isinstance(o, BaseException):
+            raise o
+        return o
+    monkeypatch.setattr(la, "run_session", run_session)
+    if status is not None:
+        monkeypatch.setattr(la, "_talk_status_sync", status)
+    monkeypatch.setattr(la, "BACKOFF_POLL_SECS", 0.01)
+    card = _FakeCard()
+
+    async def run():
+        try:
+            await la.run_wake_sessions(card, la.WakeState())
+        except (asyncio.CancelledError, la.CardError):
+            pass
+    asyncio.run(run())
+    return dials, card
+
+
+def test_restart_is_one_shot_whatever_its_dial_does(monkeypatch):
+    """restart_session's fresh conversation dials awake ONCE: a DialError or a dead card
+    on that dial must not leave a live dial pending -- the next one is asleep."""
+    dials, _ = _drive(monkeypatch, ["restart", la.DialError("refused"), None])
+    assert dials == [False, True, False, False]
+    dials, _ = _drive(monkeypatch, ["restart", la.CardError("unplugged")])
+    assert dials == [False, True]
+    st = la.WakeState()
+    assert st.restart is False
+
+
+def test_ending_by_keep_alive_cap_or_voice_reopens_asleep(monkeypatch):
+    monkeypatch.setattr(la, "SHORT_SESSION_SECS", 0.0)
+    dials, card = _drive(monkeypatch, ["keepalive", "awake-max", "sleep", None])
+    assert dials == [False] * 5 and card.idled == []
+
+
+def test_fail_closed_a_brain_or_stt_that_will_not_take_us_leaves_the_box_deaf(monkeypatch):
+    """Never a level wake, never a dial without the wake words: retry, backing off."""
+    monkeypatch.setattr(la, "SHORT_SESSION_SECS", 5.0)
+    dials, card = _drive(monkeypatch, [la.DialError("refused"), "stt:busy", "stt:unavailable",
+                                       la.DialError("refused")])
+    assert dials == [False] * 5
+    assert card.idled == [la.RETRY_SECS, 2 * la.RETRY_SECS, 4 * la.RETRY_SECS, 8 * la.RETRY_SECS]
+
+
+def test_a_phone_call_holds_the_room_off_until_it_ends(monkeypatch):
+    polls = []
+
+    def status():
+        polls.append(1)
+        return {"active": False, "call": len(polls) < 4}   # the call ends at the 4th poll
+    dials, _ = _drive(monkeypatch, ["yield", None], status=status)
+    assert dials == [False, False, False] and len(polls) >= 4
+
+
+def test_end_conversation_sleeps_after_the_goodbye(monkeypatch):
+    """The model calls end_conversation: the bridge answers, lets the goodbye play,
+    ends the session and opens an asleep one."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 0.3)
+    got = {}
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport"}))
+                await ws.send(json.dumps({"type": "client_tool", "call_id": "teaport-client-y",
+                                          "name": "end_conversation", "args": {}}))
+                while True:
+                    msg = await asyncio.wait_for(ws.recv(), 2)
+                    if isinstance(msg, str):
+                        got["result"] = json.loads(msg)["result"]
+                        break
+            else:
+                got["second"] = _query(ws)
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: count[0] == 2, 3)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+    assert got["result"]["ok"] is True
+    assert "awake" not in got["second"]                 # asleep: no wake word, no mic
+
+
+def test_a_brain_that_does_not_gate_is_never_sent_the_room(monkeypatch):
+    """A brain older than wake words ignores ?wake= and would hear everything: its hello
+    lacks "wake", and the bridge sends it no audio, leaves, and stays deaf."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "RETRY_SECS", 5.0)
+    got = {"audio": 0}
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(json.dumps({"type": "hello", "features": {}}))   # no "wake"
+            try:
+                async for msg in ws:
+                    if isinstance(msg, bytes):
+                        got["audio"] += 1
+            except Exception:  # noqa: BLE001
+                pass
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        open(flag, "w").close()                          # the room is talking
+        bridge = asyncio.create_task(la.run_bridge())
+        await asyncio.sleep(1.5)
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return count[0]
+
+    assert asyncio.run(run()) == 1                       # left, and backing off
+    assert got["audio"] == 0
+    dials, card = _drive(monkeypatch, ["ungated", None])
+    assert card.idled and card.idled[0] == la.RETRY_SECS
+
+
+def test_a_consult_still_on_its_way_keeps_the_conversation_awake(monkeypatch):
+    """The keep-alive must not put a conversation to sleep while the agent's answer is
+    still coming (ask_openclaw's async consult: the brain's "working")."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "KEEPALIVE_SECS", 0.3)
+    ends = []
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport"}))
+                await ws.send(json.dumps({"type": "working", "call_id": "c1", "secs": 30}))
+                await _drain(ws, 1.0)                   # 3x the keep-alive, answer pending
+                ends.append(("still up", asyncio.get_running_loop().time()))
+                await ws.send(json.dumps({"type": "working", "call_id": "c1", "done": True}))
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: ends, 3)
+        assert count[0] == 1                            # not slept while it was owed
+        assert await _until(lambda: count[0] == 2, 2)   # delivered: then it sleeps
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+
+
+def test_end_conversation_without_wake_words_is_refused():
+    class Card:
+        volume = None
+    restart = la.Restart(_Quiet(), _Quiet())
+    assert la.client_tool(Card, {"name": "end_conversation"}, restart)["ok"] is False
+    assert not restart.armed.is_set()
 
 
 if __name__ == "__main__":

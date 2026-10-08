@@ -47,7 +47,18 @@ downloads. You bring your own Jetson and your own LLM.
   channel live in `/etc/teaport/local-audio.env` (**docs/CONFIG.md → Local audio
   bridge**). It shares the Talk slot: it dials the assistant when it starts,
   and once a session ends (the assistant hung up, or its idle timeout) it waits
-  until someone speaks near the mic before dialling again. A browser or
+  until someone speaks near the mic before dialling again. To have it act only
+  on a wake word, set `LOCAL_AUDIO_WAKE_WORDS` (a comma-separated list in any
+  language, e.g. `hey teaport, tea port`) on the config page or in
+  `local-audio.env`: the box then drops everything said near it until one of
+  them is heard, answers what followed it, and goes back to sleep after
+  `LOCAL_AUDIO_KEEPALIVE_SECS` (45 s) of quiet or when told "goodnight" — a
+  wake within two hours continues the same conversation. No extra install step;
+  the speech engine stays busy listening while the box sleeps. The brain does the
+  gating: the bridge sends the room nothing until the brain says it gates it, so a
+  bridge on a brain older than wake words stays deaf; rolling the whole release
+  back (`./install.sh --rollback brain` to a release before wake words) returns
+  the bridge to the voice wake. A browser or
   dashboard Talk session takes the slot from it; the bridge then backs off and
   does not listen for a voice until no Talk session has been live for
   `LOCAL_AUDIO_BACKOFF_SECS` (60 s by default; a bridge that restarts while

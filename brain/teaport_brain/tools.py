@@ -241,6 +241,20 @@ RESTART_SESSION = FunctionSchema(
     required=[],
 )
 
+END_CONVERSATION = FunctionSchema(
+    name="end_conversation",
+    description=(
+        "End this conversation and go back to sleep (back to waiting for the wake word) "
+        "when the user is done with you: they say goodnight, that's all, thanks that's "
+        "it, go to sleep, stop listening, or the like, in any language. Not when they "
+        "merely mention sleep or ending something. Call it straight away, with no line "
+        "before it; when it returns, say one short goodbye — the box sleeps once that "
+        "has played. Woken again soon, you continue where you left off."
+    ),
+    properties={},
+    required=[],
+)
+
 WIFI_SETUP = FunctionSchema(
     name="wifi_setup",
     description=(
@@ -555,6 +569,22 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
     progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
                 if llm is not None else None)
 
+    async def working(done: bool) -> None:
+        # Tell the client an answer is still owed (and, at the end, that it no longer
+        # is): the local audio bridge must not put the conversation to sleep while one
+        # is on its way (local_audio.KeepAlive). `secs` bounds the wait. Best effort: a
+        # client that ignores it loses nothing, and a torn-down pipeline cannot take it.
+        if llm is None:
+            return
+        message = {"type": "working", "call_id": call_id}
+        message.update({"done": True} if done else {"secs": _ASYNC_CONSULT_TIMEOUT + 15})
+        try:
+            await llm.push_frame(OutputTransportMessageUrgentFrame(message=message))
+        except Exception:  # noqa: BLE001
+            pass
+
+    await working(False)
+
     async def deliver(outcome: oc.ConsultOutcome):
         """Hand the outcome to the injector, narrator first."""
         # Stop the narrator BEFORE the answer is spoken, not in the finally below. It
@@ -620,6 +650,7 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         if progress is not None:
             progress.cancel()
         consult_bridge.cancel(call_id)
+        await working(True)
 
 
 async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
@@ -933,6 +964,12 @@ TOOLS: tuple[Tool, ...] = (
          env_flag("TEAPORT_TOOL_RESTART_SESSION", False), frozenset({"client:restart"}),
          hint="restart_session (start a fresh conversation, only when the user explicitly "
               "asks to restart or start over; once it returns, say one short goodbye)"),
+    # client:sleep -- the local audio bridge announces it only with wake words set: with
+    # none there is no sleep to go back to.
+    Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),
+         env_flag("TEAPORT_TOOL_END_CONVERSATION", True), frozenset({"client:sleep"}),
+         hint="end_conversation (go back to sleep when the user says they are done, "
+              "goodnight or go to sleep; once it returns, say one short goodbye)"),
 )
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 # The same guard for the switch: agent-first with ask_openclaw switched off would route

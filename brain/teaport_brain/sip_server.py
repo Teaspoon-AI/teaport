@@ -200,6 +200,61 @@ _GATEWAY_WAIT_S = 30.0
 _GATEWAY_POLL_S = 0.5
 
 
+# One conversation at a time, and a phone call outranks the room (issue #58): the local
+# audio bridge's asleep wake session holds the engine's single STT slot, and would turn
+# every call away busy. So a call tells the Talk brain it is up before its own STT
+# connects -- the Talk brain closes that asleep session and frees the slot first
+# (gateway_server /talk/call) -- and keeps telling it, as a lease, until it is over. A
+# Talk brain that is down, or too old to know, costs nothing: the call goes on as before.
+CALL_REFRESH_SECS = 10.0
+_TALK_CALL_TIMEOUT_SECS = 6.0
+
+
+async def _tell_talk_brain(state: str) -> dict | None:
+    """POST {"state": state} to the Talk brain's /talk/call; its answer, or None."""
+    import httpx
+
+    token = os.getenv("GATEWAY_TOKEN", "")
+    url = f"http://127.0.0.1:{os.getenv('BRAIN_PORT', '7861')}/talk/call"
+    try:
+        async with httpx.AsyncClient(timeout=_TALK_CALL_TIMEOUT_SECS) as client:
+            r = await client.post(url, json={"state": state},
+                                  headers={"Authorization": f"Bearer {token}"} if token else {})
+        return r.json() if r.status_code == 200 else None
+    except Exception as e:  # noqa: BLE001 — no Talk brain, or one without /talk/call
+        logger.debug(f"could not tell the Talk brain the call is {state}: {e!r}")
+        return None
+
+
+class CallPresence:
+    """The call's lease on the Talk brain: start() before the call's STT connects (it
+    returns once the room's asleep session has let the engine go), refreshed while the
+    call lasts, end() when it is over. end() twice is harmless."""
+
+    def __init__(self, tell=None):
+        self._tell = tell or _tell_talk_brain
+        self._task = None
+
+    async def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._refresh())
+        answer = await self._tell("start")
+        if answer and answer.get("yielded"):
+            logger.info("the room's asleep mic session made way for the call")
+
+    async def _refresh(self) -> None:
+        while True:
+            await asyncio.sleep(CALL_REFRESH_SECS)
+            await self._tell("refresh")
+
+    async def end(self) -> None:
+        if self._task is None:
+            return
+        self._task.cancel()
+        self._task = None
+        await self._tell("end")
+
+
 async def _connect_when_listening(sock_path: str):
     """connect_seqpacket, retried until the gateway is listening or _GATEWAY_WAIT_S is up.
 
@@ -266,6 +321,7 @@ async def run(sock_path: str):
     # greeting is SLOW (model construction plus greet()'s STT poll), so it runs as a
     # task rather than inline in the receive loop — see on_call_state.
     setup = {"task": None, "call_id": None}
+    presence = CallPresence()
 
     async def cancel_active_call(reason: str, call_id: str | None = None,
                                  reclaim: bool = True):
@@ -308,6 +364,7 @@ async def run(sock_path: str):
         # Let the engine process the STT close and free the single slot before the
         # next call's STT connects (mirrors the OpenClaw path's acquire_slot settle).
         await asyncio.sleep(0.3)
+        await presence.end()
         if reclaim:
             # A CALL is a session, so this is the session end — the SIP twin of the
             # turn_reclaim in gateway_server's talk() finally, and the only place the
@@ -400,6 +457,8 @@ async def run(sock_path: str):
                 setup["call_id"] = None
 
     async def _bring_up(call_id, resumed: bool = False):
+        # Before anything takes the engine: the room's asleep mic session gives it up.
+        await presence.start()
         transport = SipGatewayTransport(connection, params)
         # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
@@ -521,6 +580,8 @@ async def run(sock_path: str):
             # has already been superseded, in which case it must touch nothing.
             await cancel_setup("call disconnected during bring-up", call_id=call_id)
             await cancel_active_call("call disconnected", call_id=call_id)
+            if active["call"] is None and setup["task"] is None:
+                await presence.end()  # a call that never got its pipeline
 
     @connection.event_handler("on_client_disconnected")
     async def on_disconnected(_connection):

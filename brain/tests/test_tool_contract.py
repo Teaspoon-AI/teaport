@@ -14,7 +14,7 @@ import pytest
 from teaport_brain import config_schema, consult_bridge, persona, tools
 from teaport_brain.agent_backend import HAS_AGENT
 
-ALL_FEATURES = frozenset({"volume", "restart", "local"})
+ALL_FEATURES = frozenset({"volume", "restart", "local", "sleep"})
 
 
 def _names(ts):
@@ -64,10 +64,11 @@ def test_defaults_keep_todays_tools_and_offer_client_tools_only_when_announced(m
     with_volume = _names(tools.active_tools(tools.ToolContext(
         has_tts=True, client_features=frozenset({"volume"}))))
     assert with_volume == base + ["set_volume"]
-    # restart_session is off by default even for a client that can do it.
+    # restart_session is off by default even for a client that can do it;
+    # end_conversation is on, for a client that can sleep (the bridge with wake words).
     everything = _names(tools.active_tools(tools.ToolContext(
         has_tts=True, client_features=ALL_FEATURES)))
-    assert everything == base + ["set_volume"]
+    assert everything == base + ["set_volume", "end_conversation"]
     gateway = {"web_search", "web_fetch", "search_memory", "remember", "ask_openclaw"}
     if HAS_AGENT:
         assert gateway <= set(base)
@@ -122,7 +123,7 @@ def test_a_composed_paragraph_keeps_the_rules_its_tools_need(monkeypatch):
 
 
 def test_client_features_are_parsed_strictly():
-    assert tools.parse_client_features("volume, RESTART,local,teleport") == ALL_FEATURES
+    assert tools.parse_client_features("volume, RESTART,local,sleep,teleport") == ALL_FEATURES
     assert tools.parse_client_features(None) == frozenset()
     assert tools.CLIENT_FEATURES == ALL_FEATURES
 
@@ -223,7 +224,7 @@ def test_the_bare_defaults_offer_exactly_what_they_register():
 def test_device_tools_alone_are_not_announced_as_no_tools(monkeypatch):
     _with(monkeypatch, **{t.name: False for t in tools.TOOLS if not t.client})
     only = tools.active_tools(tools.ToolContext(has_tts=True, client_features=ALL_FEATURES))
-    assert _names(only) == ["set_volume"]
+    assert _names(only) == ["set_volume", "end_conversation"]
     text = persona.tools_paragraph(only)
     assert "no tools" not in text and "you can use set_volume" in text
     assert persona._CANNOT_LOOK_UP in text
@@ -249,7 +250,7 @@ def test_the_agent_first_directive_names_the_sessions_direct_tools():
     with_device = tools.active_tools(tools.ToolContext(has_tts=True,
                                                        client_features=ALL_FEATURES))
     assert agent_first_directive(with_device).endswith(
-        " Only list_voices, switch_voice and set_volume may be called directly.")
+        " Only list_voices, switch_voice, set_volume and end_conversation may be called directly.")
     assert agent_first_directive([]) == AGENT_FIRST_DIRECTIVE
 
 
