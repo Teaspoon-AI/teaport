@@ -283,9 +283,6 @@ msgstr "Alguien me está llamando — {caller}. ¿Contesto un momento?"
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Alguien me está llamando. ¿Contesto un momento?"
 
-msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
-msgstr "Alguien me está llamando desde un número oculto. ¿Contesto un momento?"
-
 msgid "I'll take the call — back in a moment."
 msgstr "Voy a contestar — vuelvo enseguida."
 

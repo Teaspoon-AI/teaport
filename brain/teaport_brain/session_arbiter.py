@@ -122,7 +122,7 @@ class Claim:
         self._asleep = asleep
         self._gone = gone
         self.end = end
-        # A call's: who it is from, for the prompt (None: withheld or unknown), and set
+        # A call's: who it is from, for the prompt (None: no name or number), and set
         # once the caller is connected (the gateway answered it by itself, or it was up
         # before this brain started): such a call is not asked about, it is taken.
         self.caller = caller
@@ -585,21 +585,17 @@ def speakable_caller(caller: str | None) -> str | None:
     return kept if any(ch.isalnum() for ch in kept) else None
 
 
-def prompt_line(caller: str | None, espeak_language: str | None, *,
-                withheld: bool | None = None) -> str:
+def prompt_line(caller: str | None, espeak_language: str | None) -> str:
     """The question put to a live conversation when a call comes in. `caller`: who the
-    call is from (sip_server.caller_id), None when withheld or unknown. `withheld`
-    (default: no caller) picks the withheld-number wording when there is no caller to
-    name; a caller id with nothing speakable in it is just "someone"."""
+    call is from (sip_server.caller_id); None when there is no name or number to say, or
+    nothing speakable in it: then just "someone"."""
     t = i18n.for_espeak(espeak_language)
     said = speakable_caller(caller)
     if said:
         # Translators: {caller} is a name or a phone number, as the caller ID gives it.
         return t._("Someone's calling me — {caller}. Should I step away for a moment?").format(
             caller=said)
-    if withheld is False or (withheld is None and caller):
-        return t._("Someone's calling me. Should I step away for a moment?")
-    return t._("Someone's calling me from a withheld number. Should I step away for a moment?")
+    return t._("Someone's calling me. Should I step away for a moment?")
 
 
 def step_away_line(espeak_language: str | None) -> str:

@@ -283,9 +283,6 @@ msgstr "कोई मुझे कॉल कर रहा है — {caller}।
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "कोई मुझे कॉल कर रहा है। क्या मैं एक पल के लिए कॉल उठा लूँ?"
 
-msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
-msgstr "कोई मुझे छिपे हुए नंबर से कॉल कर रहा है। क्या मैं एक पल के लिए कॉल उठा लूँ?"
-
 msgid "I'll take the call — back in a moment."
 msgstr "ज़रा कॉल ले लूँ — बस एक पल में वापस।"
 

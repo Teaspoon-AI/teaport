@@ -268,9 +268,9 @@ def test_the_spoken_caller_is_capped_and_cleaned():
     assert weird and all(c.isalnum() or c in " '’-+(),&" for c in weird), weird
     assert "\n" not in weird and "!" not in weird and "?" not in weird
     assert arb.speakable_caller("!!! ...") is None and arb.speakable_caller(None) is None
-    # Nothing speakable in it: "someone", not "a withheld number".
+    # Nothing speakable in it, or no name or number at all: just "someone".
     assert arb.prompt_line("!!!", "en-us") == "Someone's calling me. Should I step away for a moment?"
-    assert "withheld" in arb.prompt_line(None, "en-us")
+    assert arb.prompt_line(None, "en-us") == "Someone's calling me. Should I step away for a moment?"
     assert "Bob" in arb.prompt_line("Bob", "en-us")
 
 

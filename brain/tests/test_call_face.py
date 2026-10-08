@@ -365,7 +365,7 @@ def test_caller_id_formatting():
             ('<tel:+1-346-234-8500>', SHOWN),
             ('<sip:+442071234567@x>', "+442071234567"),               # not NANP: as sent
             ('<sip:3462348500@x>', "3462348500"),                     # 10 digits: as sent
-            ('<sip:alice@example.com>', "alice"),
+            ('<sip:alice@example.com>', None),                         # no number to show
             ('"O\\"Brien" <sip:1@x>', 'O"Brien'),
             ('"  wireless   caller " <sip:13462348500@x>', SHOWN),
             ('"Unavailable" <sip:+13462348500@x>', SHOWN),           # no name: the number
@@ -373,18 +373,19 @@ def test_caller_id_formatting():
             ('"Unknown" <sip:unknown@x>', None),
             ('<sip:%2B13462348500@x>', SHOWN),
             ('<sip:+13462348500;user=phone@x>', SHOWN),
-            # Withheld: the handset alone, never the number the URI still carries.
-            ('"ANONYMOUS" <sip:+13462348500@x>', None),
-            ('"Restricted" <sip:13462348500@x>', None),
-            ('"private number" <sip:13462348500@x>', None),
-            ('"Withheld" <sip:13462348500@x>', None),
-            ('"Blocked" <sip:13462348500@x>', None),
-            ('"Caller ID blocked" <sip:13462348500@x>', None),
-            ('"No Caller ID" <sip:13462348500@x>', None),
+            # A withheld display name is a placeholder too: the number, when there is one
+            # (the box works for its owner); the handset alone only when there is none.
+            ('"ANONYMOUS" <sip:+13462348500@x>', SHOWN),
+            ('"Restricted" <sip:13462348500@x>', SHOWN),
+            ('"private number" <sip:13462348500@x>', SHOWN),
+            ('"Withheld" <sip:13462348500@x>', SHOWN),
+            ('"Blocked" <sip:13462348500@x>', SHOWN),
+            ('"Caller ID blocked" <sip:13462348500@x>', SHOWN),
+            ('"No Caller ID" <sip:13462348500@x>', SHOWN),
             ('<sip:Restricted@x>', None),
             ('"WIRELESS CALLER" <sip:anonymous@anonymous.invalid>', None),
-            ('"Alice" <sip:13462348500@anonymous.invalid>', None),
-            ('"Alice" <sip:anonymous@x>', None),
+            ('"Alice" <sip:13462348500@anonymous.invalid>', "Alice"),   # a name is a name
+            ('"Alice" <sip:anonymous@x>', "Alice"),
             ("", None), (None, None), (42, None)):
         got = sip_server.caller_id(frm)
         assert got == want, (frm, got, want)

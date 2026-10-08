@@ -288,9 +288,6 @@ msgstr "Quelqu'un m'appelle — {caller}. Je m'absente un instant pour répondre
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Quelqu'un m'appelle. Je m'absente un instant pour répondre ?"
 
-msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
-msgstr "Quelqu'un m'appelle d'un numéro masqué. Je m'absente un instant pour répondre ?"
-
 msgid "I'll take the call — back in a moment."
 msgstr "Je prends l'appel — je reviens tout de suite."
 

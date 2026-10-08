@@ -264,27 +264,23 @@ _GATEWAY_POLL_S = 0.5
 # (gateway_server._busy_lamp) breathes red from here while it rings.
 CALL_FACE = display.CallFace()
 
-# Display names that stand in for a name the carrier does not have: shown as the number
-# instead (or the handset alone, when there is none).
+# Display names that stand in for a name the carrier does not have, or that say the
+# caller withheld one: shown as the number instead, whenever the From URI carries one
+# (the box works for its owner), or the handset alone when there is none.
 _NO_NAME = frozenset({
     "", "WIRELESS CALLER", "UNKNOWN", "UNKNOWN CALLER", "UNKNOWN NAME", "UNAVAILABLE",
-    "OUT OF AREA",
-})
-# Display names (and SIP users) that say the caller WITHHELD their id: the handset alone,
-# never the number, even when the From URI still carries one.
-_WITHHELD = frozenset({
-    "ANONYMOUS", "PRIVATE", "PRIVATE CALLER", "PRIVATE NUMBER", "RESTRICTED", "WITHHELD",
-    "BLOCKED", "CALLER ID BLOCKED", "NO CALLER ID",
+    "OUT OF AREA", "ANONYMOUS", "PRIVATE", "PRIVATE CALLER", "PRIVATE NUMBER",
+    "RESTRICTED", "WITHHELD", "BLOCKED", "CALLER ID BLOCKED", "NO CALLER ID",
 })
 _NAME_ADDR = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|([^<]*?))\s*<([^>]*)>')
 
 
 def caller_id(from_header) -> str | None:
-    """Who a call says it is from, for the face: the display name in its SIP From
-    header unless that is a placeholder ("WIRELESS CALLER"), else the number, readable
-    (+1 346 234 8500 for an 11-digit NANP number, as sent otherwise), else the SIP user.
-    None when it says nothing, or that the caller withheld it (Anonymous, Restricted,
-    anonymous@anonymous.invalid, ...): then not even a number the URI still carries."""
+    """Who a call says it is from, for the face and the question: the display name in
+    its SIP From header unless that is a placeholder ("WIRELESS CALLER", "Anonymous",
+    "Restricted", ...), else the number in the URI, readable (+1 346 234 8500 for an
+    11-digit NANP number, as sent otherwise). None when there is no number to show
+    (anonymous@anonymous.invalid, a URI user with no digits)."""
     if not isinstance(from_header, str):
         return None
     m = _NAME_ADDR.match(from_header)
@@ -294,15 +290,11 @@ def caller_id(from_header) -> str | None:
     else:
         name, uri = "", from_header.split(";", 1)[0]
     name = " ".join(name.split())
-    if name.upper() in _WITHHELD:
-        return None
-    user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
-    user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
-    if user.upper() in _WITHHELD or host.split(";", 1)[0].lower().startswith("anonymous.invalid"):
-        return None
     if name.upper() not in _NO_NAME and not re.fullmatch(r"\+?[\d\s().-]+", name):
         return name
-    if user.upper() in _NO_NAME:
+    user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
+    user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
+    if host.split(";", 1)[0].lower().startswith("anonymous.invalid") or not re.search(r"\d", user):
         return None
     digits = re.sub(r"[\s().-]", "", user)
     if re.fullmatch(r"\+?1\d{10}", digits):

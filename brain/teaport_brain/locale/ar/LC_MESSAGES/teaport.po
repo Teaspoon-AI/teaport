@@ -294,9 +294,6 @@ msgstr "هناك من يتصل بي — {caller}. هل أبتعد لحظة لأ�
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "هناك من يتصل بي. هل أبتعد لحظة لأرد؟"
 
-msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
-msgstr "هناك من يتصل بي من رقم محجوب. هل أبتعد لحظة لأرد؟"
-
 msgid "I'll take the call — back in a moment."
 msgstr "سأرد على المكالمة — سأعود بعد لحظة."
 

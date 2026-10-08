@@ -283,9 +283,6 @@ msgstr "Jemand ruft mich an — {caller}. Soll ich kurz rangehen?"
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Jemand ruft mich an. Soll ich kurz rangehen?"
 
-msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
-msgstr "Jemand ruft mich mit unterdrückter Nummer an. Soll ich kurz rangehen?"
-
 msgid "I'll take the call — back in a moment."
 msgstr "Ich gehe kurz ran — bin gleich wieder da."
 

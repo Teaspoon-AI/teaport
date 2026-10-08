@@ -283,9 +283,6 @@ msgstr "Er belt iemand — {caller}. Zal ik even opnemen?"
 msgid "Someone's calling me. Should I step away for a moment?"
 msgstr "Er belt iemand. Zal ik even opnemen?"
 
-msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
-msgstr "Er belt iemand met een afgeschermd nummer. Zal ik even opnemen?"
-
 msgid "I'll take the call — back in a moment."
 msgstr "Ik neem het gesprek even aan — zo terug."
 

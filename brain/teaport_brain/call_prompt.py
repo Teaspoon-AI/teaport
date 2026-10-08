@@ -77,7 +77,7 @@ class CallPrompt:
         return getattr(getattr(self.session, "tts", None), "espeak_language", None)
 
     async def ask(self, caller: str | None) -> bool:
-        """Ask the user whether to take a call from `caller` (None: withheld or unknown);
+        """Ask the user whether to take a call from `caller` (None: no name or number);
         True to take it. Cancelled when the caller hangs up: the question is withdrawn."""
         session = self.session
         loop = asyncio.get_running_loop()
