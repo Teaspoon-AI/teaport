@@ -90,6 +90,13 @@ Every tool the voice model can call follows one contract
   it, setup password included. The avatar's built-in font is Latin only, so screens
   keep to ASCII: network names are folded into it, and a setup network name that
   folding would mangle shows as "(scan the code)" when the code is there.
+- **The phone on the face** is `display.CallFace`, driven by the SIP front-end
+  (`sip_server.CALL_FACE`): `ringing` with the caller id (the From header's display
+  name unless it is a carrier placeholder such as "WIRELESS CALLER", else the
+  number) from `call.incoming` until the session arbiter gives the call the engine,
+  `active` while the call is up, `none` at every end. Held states are re-sent with a
+  ttl, and nothing is sent to an avatar whose features file lacks `"call"`. The
+  caller id is never logged. The busy lamp breathes red while the face rings.
 
 TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
 consult paths.

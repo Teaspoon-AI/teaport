@@ -52,7 +52,7 @@ from pipecat.transports.websocket.fastapi import (
 )
 
 from teaport_brain.agent_session import build_agent_session
-from teaport_brain import agent_backend, audio_dump, config_ui, reply_hold, sdnotify, wake_gate, xvf_led
+from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
 from teaport_brain.gateway_serializer import (
@@ -119,26 +119,32 @@ def call_live() -> bool:
 
 
 async def _busy_lamp() -> None:
-    """The XVF3800's LED ring as the phone's busy lamp (xvf_led.py): red while a call
-    holds the engine (call_live, the session arbiter's call claim), the room's own effect
-    otherwise -- however the call ended: hung up, torn down with the SIP front-end, this
-    brain stopping (the finally, after the SIP teardown: _ReadyServer.shutdown) or dying
-    (the first pass of the next one restores the ring from xvf_led's marker). It follows
-    call_live() and nothing else, woken by the arbiter's holder changes, so this is the
-    one place the lamp is driven from. During a call it asks every pass, not only on a
-    change: busy() is idempotent, and a ring that re-enumerated mid-call (a replug, a
-    reset) comes back unlit."""
+    """The XVF3800's LED ring as the phone's busy lamp (xvf_led.py): solid red while a
+    call holds the engine (call_live, the session arbiter's call claim), breathing red
+    while one rings before that (the SIP front-end's face, sip_server.CALL_FACE), the
+    room's own effect otherwise -- however the call ended: hung up, torn down with the SIP
+    front-end, this brain stopping (the finally, after the SIP teardown:
+    _ReadyServer.shutdown) or dying (the first pass of the next one restores the ring from
+    xvf_led's marker). It follows those two and nothing else, woken by their changes, so
+    this is the one place the lamp is driven from. During a call it asks every pass, not
+    only on a change: busy() is idempotent, and a ring that re-enumerated mid-call (a
+    replug, a reset) comes back unlit."""
     global _lamp_wake
     _lamp_wake = wake = asyncio.Event()
+    face = sip_server.CALL_FACE
     arb.ARBITER.listeners.append(wake.set)  # sync, on this loop (SessionArbiter._set_holder)
-    shown, retry_at = None, 0.0
+    face.listeners.append(wake.set)         # likewise (sip_server's handlers, on this loop)
+    # "unknown": the first pass sets the ring whatever it is (a dead brain's red goes).
+    shown, retry_at = "unknown", 0.0
     try:
         while True:
-            live = call_live()
-            if (live or live is not shown) and time.monotonic() >= retry_at:
+            want = ("busy" if call_live() else
+                    "ringing" if face.state == display.RINGING else None)
+            if (want or want != shown) and time.monotonic() >= retry_at:
                 # Off the loop: a few ms of USB, up to xvf_led.TIMEOUT_MS on a wedged device.
-                if await asyncio.to_thread(xvf_led.busy, live):
-                    shown = live
+                if await asyncio.to_thread(xvf_led.busy, want is not None,
+                                           ringing=want == "ringing"):
+                    shown = want
                 else:
                     retry_at = time.monotonic() + LAMP_RETRY_SECS
             try:
@@ -148,6 +154,7 @@ async def _busy_lamp() -> None:
             wake.clear()
     finally:
         arb.ARBITER.listeners.remove(wake.set)
+        face.listeners.remove(wake.set)
         _lamp_wake = None
         await asyncio.to_thread(xvf_led.busy, False)  # a no-op unless it is lit
 

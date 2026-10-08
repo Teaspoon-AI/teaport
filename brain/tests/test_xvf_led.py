@@ -374,6 +374,43 @@ def test_the_call_claim_drives_the_lamp():
     asyncio.run(_call_start_and_end())
 
 
+async def _ringing_then_answered():
+    """A call rings (the SIP front-end's face says so) before the arbiter gives it the
+    engine: the ring breathes red, goes solid once the call has the engine, and is the
+    room's again at the end."""
+    from teaport_brain import display, sip_server
+    dev = FakeXvf()
+    gs, arb = _gateway(dev)
+    gs.LAMP_POLL_SECS = 5.0                    # so a change seen well inside it was nudged
+    saved, sip_server.CALL_FACE = sip_server.CALL_FACE, display.CallFace(
+        features=lambda path: {})              # no avatar: the lamp alone
+    face = sip_server.CALL_FACE
+    lamp = asyncio.create_task(gs._busy_lamp())
+    try:
+        await _until(lambda: gs._lamp_wake is not None)
+        face.ringing("A", "Alice")
+        await _until(lambda: dev.look() == (xvf_led.EFFECT_BREATH, RED), secs=1.0)
+        claim = await _call(arb)
+        face.active("A")
+        await _until(lambda: dev.look() == (xvf_led.EFFECT_SINGLE, RED), secs=1.0)
+        arb.ARBITER.release(claim)
+        face.end("A")
+        await _until(lambda: dev.look() == ROOM, secs=1.0)
+        face.ringing("B", None)                # rang, then hung up before it was answered
+        await _until(lambda: dev.look() == (xvf_led.EFFECT_BREATH, RED), secs=1.0)
+        face.end("B")
+        await _until(lambda: dev.look() == ROOM, secs=1.0)
+    finally:
+        lamp.cancel()
+        await asyncio.gather(lamp, return_exceptions=True)
+        sip_server.CALL_FACE = saved
+    assert not face.listeners                  # its listener went with it
+
+
+def test_ringing_breathes_until_the_call_has_the_engine():
+    asyncio.run(_ringing_then_answered())
+
+
 async def _stop_mid_call(release_first):
     dev = FakeXvf()
     gs, arb = _gateway(dev)

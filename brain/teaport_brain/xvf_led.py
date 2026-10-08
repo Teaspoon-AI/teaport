@@ -5,7 +5,7 @@
 # ringing=True, for a call not yet answered); busy(False) puts back what the ring showed
 # before, which is normally the firmware's own listening effect (DoA: the direction of
 # the voice it hears). gateway_server drives it from the session arbiter's call claim
-# (_busy_lamp).
+# and, for the ringing before that, the SIP front-end's face (_busy_lamp).
 #
 # The XVF3800 takes its settings as USB vendor control transfers on endpoint 0 (Seeed's
 # python_control/xvf_host.py, XMOS's host-control protocol): the resource id in wIndex,
