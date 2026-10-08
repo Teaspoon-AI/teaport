@@ -104,7 +104,7 @@ blurb = "TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; 
 [[groups]]
 id = "tools"
 title = "Tools"
-blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume, restart_session and end_conversation, a client that can do it itself (the local audio bridge announces them; end_conversation only with wake words set). A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions."
+blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume, restart_session and end_conversation, a client that can do it itself (the local audio bridge announces them; end_conversation only with wake words set); answer_phone_call is offered to Talk sessions and the room mic, never to a call. A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions."
 
 [[groups]]
 id = "wifi_setup"
@@ -124,7 +124,7 @@ blurb = "The ReSpeaker XVF3800's LED ring as a busy lamp (BLF) for phone calls (
 [[groups]]
 id = "sip_brain"
 title = "SIP front-end"
-blurb = "Read by teaport-brain's SIP front-end (phone calls); Talk sessions ignore them."
+blurb = "Read by teaport-brain's SIP front-end (phone calls): how a call is answered, and how it asks a live conversation (a Talk session, the room mic awake) to make way for it."
 
 [[groups]]
 id = "diag"
@@ -1121,7 +1121,7 @@ default = false
 read = "startup"
 tier = "setup"
 help = "Agent-first routing: install the strict router directive and drop the \"I'll work on that\" ack."
-source = "tools.py:72"
+source = "tools.py:73"
 
 [[settings]]
 name = "TEAPORT_RECALL_TIMEOUT"
@@ -1160,7 +1160,7 @@ default = 1.5
 read = "startup"
 tier = "tuning"
 help = "No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks."
-source = "tools.py:395"
+source = "tools.py:411"
 
 [[settings]]
 name = "TEAPORT_NATIVE_CONSULT_TIMEOUT"
@@ -1173,7 +1173,7 @@ default = 45
 read = "startup"
 tier = "tuning"
 help = "How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves."
-source = "tools.py:390"
+source = "tools.py:406"
 
 [[settings]]
 name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
@@ -1186,7 +1186,7 @@ default = 55
 read = "startup"
 tier = "tuning"
 help = "The function-call timeout for ask_openclaw. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
-source = "tools.py:400"
+source = "tools.py:416"
 
 [[settings]]
 name = "TEAPORT_ASYNC_CONSULT_TIMEOUT"
@@ -1199,7 +1199,7 @@ default = 130
 read = "startup"
 tier = "tuning"
 help = "Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a \"that took too long\" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive."
-source = "tools.py:413"
+source = "tools.py:429"
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_QUIET_S"
@@ -1238,7 +1238,7 @@ default = 0.3
 read = "startup"
 tier = "tuning"
 help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
-source = "agent_session.py:210"
+source = "agent_session.py:215"
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
@@ -1299,7 +1299,7 @@ default = "~/.config/teaport/persona.md"
 read = "startup"
 tier = "installer"
 help = "The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir."
-source = "persona.py:236"
+source = "persona.py:244"
 
 [[settings]]
 name = "OPENCLAW_WORKSPACE"
@@ -1310,7 +1310,7 @@ default = "~/.openclaw/workspace"
 read = "startup"
 tier = "installer"
 help = "The OpenClaw workspace whose persona files the voice brain shares."
-source = "persona.py:249"
+source = "persona.py:257"
 
 [[settings]]
 name = "TEAPORT_WORKSPACE_FILES"
@@ -1321,7 +1321,7 @@ default = "SOUL.md,IDENTITY.md,USER.md,MEMORY.md"
 read = "startup"
 tier = "tuning"
 help = "Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design."
-source = "persona.py:253"
+source = "persona.py:261"
 
 [[settings]]
 name = "OPENCLAW_MEMORY_DIR"
@@ -1356,7 +1356,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The machine's live free memory, CPU load and speech-engine decode speed."
-source = "tools.py:925"
+source = "tools.py:969"
 
 [[settings]]
 name = "TEAPORT_TOOL_GET_CURRENT_TIME"
@@ -1367,7 +1367,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "The local date and time."
-source = "tools.py:928"
+source = "tools.py:972"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_SEARCH"
@@ -1378,7 +1378,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Web search through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:931"
+source = "tools.py:975"
 
 [[settings]]
 name = "TEAPORT_TOOL_WEB_FETCH"
@@ -1389,7 +1389,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Read a web page through the OpenClaw gateway. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:934"
+source = "tools.py:978"
 
 [[settings]]
 name = "TEAPORT_TOOL_SEARCH_MEMORY"
@@ -1400,7 +1400,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:937"
+source = "tools.py:981"
 
 [[settings]]
 name = "TEAPORT_TOOL_REMEMBER"
@@ -1411,7 +1411,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
-source = "tools.py:940"
+source = "tools.py:984"
 
 [[settings]]
 name = "TEAPORT_TOOL_ASK_OPENCLAW"
@@ -1422,7 +1422,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
-source = "tools.py:947"
+source = "tools.py:991"
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"
@@ -1433,7 +1433,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "List the speaking voices."
-source = "tools.py:952"
+source = "tools.py:996"
 
 [[settings]]
 name = "TEAPORT_TOOL_SWITCH_VOICE"
@@ -1444,7 +1444,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Change the speaking voice (and with it the reply language)."
-source = "tools.py:955"
+source = "tools.py:999"
 
 [[settings]]
 name = "TEAPORT_TOOL_SET_VOLUME"
@@ -1455,7 +1455,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions."
-source = "tools.py:963"
+source = "tools.py:1007"
 
 [[settings]]
 name = "TEAPORT_TOOL_RESTART_SESSION"
@@ -1466,7 +1466,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge)."
-source = "tools.py:968"
+source = "tools.py:1012"
 
 
 [[settings]]
@@ -1478,7 +1478,18 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Go back to sleep when the user says they are done (\"that's all\", \"goodnight\", \"go to sleep\", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them)."
-source = "tools.py:974"
+source = "tools.py:1026"
+
+[[settings]]
+name = "TEAPORT_TOOL_ANSWER_PHONE_CALL"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "How the user answers \"should I step away?\" when a phone call comes in during a Talk session or a room conversation, in any language: the model reads the reply and calls it. Off, a conversation is not asked: a call ends a Talk session with a spoken line, and is refused (the caller hears busy) while the room mic is awake."
+source = "tools.py:1020"
 
 # ---- talk client context notes
 
@@ -1492,7 +1503,7 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Wi-Fi setup by voice: the spoken phrase (\"set up Wi-Fi\", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup."
-source = "tools.py:959"
+source = "tools.py:1003"
 [[settings]]
 name = "TEAPORT_CONTEXT_MAX_CHARS"
 store = "brain_env"
@@ -1573,7 +1584,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
-source = "sip_server.py:148"
+source = "sip_server.py:168"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -1587,7 +1598,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:149"
+source = "sip_server.py:169"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1602,7 +1613,48 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:159"
+source = "sip_server.py:179"
+
+[[settings]]
+name = "SIP_ANSWER_AFTER_SECS"
+store = "brain_env"
+group = "sip_brain"
+services = ["teaport-brain"]
+type = "float"
+unit = "s"
+min = 0
+default = 5
+read = "startup"
+tier = "tuning"
+help = "How long a call rings before the brain answers it: a couple of rings, time it builds the call's pipeline and has the greeting worded in, so the greeting plays as soon as the caller is connected. 0 answers as soon as the pipeline is up. Needs the gateway's auto_answer off (the brain answers)."
+source = "sip_server.py:185"
+
+[[settings]]
+name = "TEAPORT_CALL_PROMPT_SECS"
+store = "brain_env"
+group = "sip_brain"
+services = ["teaport-brain"]
+type = "float"
+unit = "s"
+min = 0
+default = 12
+read = "startup"
+tier = "tuning"
+help = "When a call comes in during a conversation (a Talk session, or the room mic awake), the agent asks the people in it first (\"Someone's calling me — … Should I step away for a moment?\"). This is how long they have to answer, from the end of the question; the caller hears it ring meanwhile."
+source = "call_prompt.py:40"
+
+[[settings]]
+name = "TEAPORT_CALL_PROMPT_DEFAULT"
+store = "brain_env"
+group = "sip_brain"
+services = ["teaport-brain"]
+type = "enum"
+values = ["take", "ring"]
+default = "take"
+read = "startup"
+tier = "tuning"
+help = "What happens when nobody answers that question in time: take (the conversation goes on hold and the call is answered) or ring (the call is never answered and rings until the caller gives up)."
+source = "call_prompt.py:42"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1614,7 +1666,7 @@ default = "/run/teaport/teaport-sip.sock"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off."
-source = "sip_server.py:207"
+source = "sip_server.py:238"
 
 # ---- diagnostics
 
@@ -1711,7 +1763,7 @@ default = "~/teaport-engine.log"
 read = "startup"
 tier = "installer"
 help = "The engine's serve log, where the tools read decode ms/step."
-source = "tools.py:81"
+source = "tools.py:82"
 
 # ---- installer-owned
 
@@ -1951,7 +2003,7 @@ group = "sip"
 type = "flag"
 default = true
 tier = "setup"
-help = "Answer inbound calls."
+help = "Whether the gateway answers inbound calls itself. `teaport sip configure` writes false: the brain answers, so the caller hears a couple of rings first (SIP_ANSWER_AFTER_SECS), and a call the people in a live conversation say not to pick up rings on. true (the gateway's own default, and older confs): answered at once, with neither."
 source = "cli/teaport:171"
 
 [[settings]]
@@ -2133,7 +2185,7 @@ default = "hw:CARD=Array,DEV=0"
 read = "startup"
 tier = "setup"
 help = "The ALSA device for both the mic and the speaker. It must do 16 kHz stereo S16_LE both ways. The default names a ReSpeaker XVF3800 by its card id; `arecord -l` lists the others."
-source = "local_audio.py:117"
+source = "local_audio.py:123"
 
 [[settings]]
 name = "LOCAL_AUDIO_CAPTURE_CHANNEL"
@@ -2146,7 +2198,7 @@ max = 1
 read = "startup"
 tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
-source = "local_audio.py:118"
+source = "local_audio.py:124"
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
@@ -2160,7 +2212,7 @@ unit = "dB"
 read = "startup"
 tier = "tuning"
 help = "Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not."
-source = "local_audio.py:139"
+source = "local_audio.py:145"
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_WORDS"
@@ -2171,7 +2223,7 @@ read = "startup"
 tier = "setup"
 help = "Wake words for the box's own mic, comma-separated, in any language the speech engine hears (e.g. `hey teaport, tea port, привет чайник`). Set, the box's speech recognition hears the room but every word is dropped, inside the brain's STT, before it can reach the model, the agent, a caption or a log — until a phrase from this list is said. Then what was said after it is the first turn (\"hey teaport, what's the weather\"), and the conversation needs no wake word until it sleeps again (LOCAL_AUDIO_KEEPALIVE_SECS, LOCAL_AUDIO_AWAKE_MAX_SECS, or \"go to sleep\"). Matching ignores case, punctuation and spacing but is otherwise exact: list the spellings you want (\"teaport, tea port\"); \"teapot\" wakes it only if listed. Empty: no wake words, the voice wake (LOCAL_AUDIO_WAKE_DB). SIP calls and dashboard/browser Talk sessions never need them."
 note = "Any value at all means wake mode, and it fails closed: if the brain or its speech recognition cannot be reached the bridge stays deaf and retries; it never falls back to listening without the wake words. While asleep the engine's speech recognition runs on the room (the GPU stays busy, one STT session held); a phone call takes it over (the bridge stays off until the call ends), but a call that lands DURING a conversation at the box still hears the busy line (until issue #58's take-the-call prompt)."
-source = "local_audio.py:146"
+source = "local_audio.py:152"
 
 [[settings]]
 name = "LOCAL_AUDIO_KEEPALIVE_SECS"
@@ -2185,7 +2237,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "With wake words: the conversation sleeps once nobody (you or the agent) has spoken for this long. Its session ends — the pipeline, the speech engine and the mic all go — and the box waits for a wake word again; the conversation itself is kept for LOCAL_AUDIO_CONVERSATION_SECS. Without wake words the session stays up, but after this long with nobody speaking (and until the first time someone does) it counts as a sleeping mic: a Talk client that connects takes the box from it quietly instead of being told the agent is busy."
-source = "local_audio.py:150"
+source = "local_audio.py:156"
 
 [[settings]]
 name = "LOCAL_AUDIO_AWAKE_MAX_SECS"
@@ -2199,7 +2251,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "With wake words: the conversation also sleeps this long after the last wake word, once the agent is not speaking — so a TV or a chat in the room that the agent keeps answering cannot hold it awake for good. Say the wake word again to keep going."
-source = "local_audio.py:151"
+source = "local_audio.py:157"
 
 [[settings]]
 name = "LOCAL_AUDIO_CONVERSATION_SECS"
@@ -2213,7 +2265,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "With wake words: one conversation at the box lasts until it has been asleep this long. A wake within it continues where it stopped (\"what about tomorrow?\" three minutes later still knows the question) and is not greeted; after it, a new conversation starts with a greeting. The brain keeps the last conversation's messages in memory (at most 40 messages / 24k characters), for the box's own mic only; a restart of teaport-brain forgets it."
-source = "local_audio.py:155"
+source = "local_audio.py:161"
 
 [[settings]]
 name = "LOCAL_AUDIO_BACKOFF_SECS"
@@ -2227,7 +2279,7 @@ unit = "s"
 read = "startup"
 tier = "tuning"
 help = "When another client (the dashboard, grokani, a browser) has the box -- it took the session from the sleeping bridge, or the brain refused the bridge because that client's conversation is live -- the box is theirs: the bridge stops listening for a voice until the brain has had no live session for this long, so the room (or the dashboard user's own voice) does not keep asking. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off (with wake words a refused bridge then retries on a doubling wait, never at once)."
-source = "local_audio.py:164"
+source = "local_audio.py:170"
 
 [[settings]]
 name = "LOCAL_AUDIO_URL"
@@ -2238,7 +2290,7 @@ default = "ws://127.0.0.1:$BRAIN_PORT/talk"
 read = "startup"
 tier = "tuning"
 help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."
-source = "local_audio.py:120"
+source = "local_audio.py:126"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_SOCK"
@@ -2249,7 +2301,7 @@ default = "/run/oled-avatar/face.sock"
 read = "startup"
 tier = "tuning"
 help = "The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes."
-source = "local_audio.py:198"
+source = "local_audio.py:206"
 
 [[settings]]
 name = "LOCAL_AUDIO_FACE_ADVANCE_MS"
@@ -2263,7 +2315,7 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
-source = "local_audio.py:233"
+source = "local_audio.py:241"
 
 # ================================================================ wifi-setup.env
 

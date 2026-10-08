@@ -52,7 +52,13 @@
 #     so this is bounded. A bridge that starts (a crash, a unit restart) while another
 #     client's session is live backs off the same way instead of dialling (taken_at_start).
 #     A dial refused for a phone call (YIELD_CLOSE_CODE), or a conversation a call ended
-#     (CALL_CLOSE_CODE), waits the call out instead.
+#     (CALL_CLOSE_CODE), waits the call out instead -- from the moment the call asks for
+#     the engine (the brain's /talk/status says "call" from then), so the bridge never
+#     dials back in between the room letting go and the call being granted.
+#   * A call during an awake conversation asks the room first (the brain's call_prompt.py)
+#     and, if it is to be taken, puts the conversation ON HOLD rather than ending it: the
+#     session stays connected, the brain says {"type": "hold", "on": true} and later
+#     false, and the keep-alive does not count the wait as a lull.
 #
 # Two hardware facts shape it:
 #   * The XVF3800 only streams capture while a playback stream is open on the same
@@ -178,8 +184,10 @@ TAKEN_CLOSE_CODE = 4001
 YIELD_CLOSE_CODE = 4002
 STT_CLOSE_CODE = 4003
 # ...a dial refused because another conversation is live (BUSY), and a conversation a
-# phone call ended (CALL; not sent to the room today -- a call is refused during an awake
-# room conversation -- but it means "wait the call out" if it ever is).
+# phone call ended (CALL; not sent to the room: a call during an awake room conversation
+# asks it and, on a yes, holds it rather than closing it -- see "hold" in run_session --
+# or, with the answer_phone_call tool off, is refused; but it means "wait the call out"
+# if it ever is).
 BUSY_CLOSE_CODE = 4004
 CALL_CLOSE_CODE = 4005
 # Who we are to the brain's session arbiter (?client=): one bridge per box, so a restarted
@@ -1270,6 +1278,9 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
     # Answers still owed (an async consult: the brain's "working"): call_id -> deadline.
     # The conversation does not sleep on one.
     owed: dict = {}
+    # On hold for a phone call (the brain's {"type": "hold"}): the conversation does not
+    # sleep while it waits the call out; the brain brings it back when the call is over.
+    hold = {"on": False}
     if wake and awake:
         face.woke()
 
@@ -1310,6 +1321,12 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 if m.get("wake") not in ("asleep", "awake"):
                     raise Ungated("the brain's hello does not say it gates the room")
                 gated.set()
+            elif kind == "hold":
+                hold["on"] = bool(m.get("on"))
+                logger.info("on hold: a phone call has the box — the conversation waits"
+                            if hold["on"] else "back from hold: the call is over")
+                if alive is not None:
+                    alive.activity()
             elif kind == "working":
                 if m.get("done"):
                     owed.pop(m.get("call_id"), None)
@@ -1371,7 +1388,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
             if alive is None:
                 continue
             waiting = any(deadline > now for deadline in owed.values())
-            why = alive.over(busy=play.speaking or face.voiced or waiting
+            why = alive.over(busy=play.speaking or face.voiced or waiting or hold["on"]
                              or not play.echo_free(now))
             if why:
                 logger.info(f"no speech for {KEEPALIVE_SECS:g} s — the conversation sleeps"

@@ -6,9 +6,11 @@
 #   Talk vs room awake      refused, told busy; the room conversation goes on
 #   Talk vs room asleep     the sleeping mic yields (4001), the Talk session runs
 #   call vs room asleep     the sleeping mic yields (4002), the call gets the engine
-#   call vs Talk            the Talk user is told, then ended (4005); the call gets it
+#   call vs Talk            asked (#111: test_call_prompt.py); one that cannot be asked
+#                           (answer_phone_call off) is told, then ended (4005)
 #   Talk during a call      refused, told the agent is on a call
-#   call vs room awake      refused for now (the caller hears busy); #58's prompt is next
+#   call vs room awake      asked (#111); one that cannot be asked keeps the box, and the
+#                           caller hears busy
 #   room vs a live session  refused: quietly while asleep, told when it asked to talk
 #
 # The Talk and room front-ends are driven through gateway_server.run_relay_bot with the
@@ -76,7 +78,7 @@ def test_the_policy_table():
     assert d("room asleep", "call") == arb.CALL_IN
     assert d("talk", "call") == arb.CALL_IN
     assert d("call", "talk") == arb.REFUSED
-    assert d("room awake", "call") == arb.REFUSED            # until #58's prompt
+    assert d("room awake", "call") == arb.REFUSED            # one that cannot be asked
     assert d("call", "room asleep") == arb.REFUSED
     assert d("talk", "room asleep") == arb.REFUSED
     assert d("room asleep", "room asleep", hc="local-audio", nc="local-audio") == arb.REPLACED
@@ -191,7 +193,8 @@ async def _call(call_id="c1"):
     returns (its CallClaim, the refusal's holder kind or None)."""
     from teaport_brain import sip_server
     claim = sip_server.CallClaim()
-    return claim, await claim.start(call_id)
+    refusal = await claim.start(call_id)
+    return claim, None if refusal is None else refusal.holder
 
 
 def _session(ws, gate=None, play_secs=0.05):
@@ -337,7 +340,7 @@ async def test_talk_during_a_call_is_told_the_agent_is_on_a_call():
     _fresh()
 
 
-async def test_call_vs_room_awake_is_refused_for_now():
+async def test_call_vs_room_awake_that_cannot_be_asked_is_refused():
     _fresh()
     room_ws, room, _ = await _holding("room awake", client="local-audio")
     assert (await _call())[1] == "room"

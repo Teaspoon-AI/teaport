@@ -159,6 +159,8 @@ class _FakeSession:
     greeted = []        # call ids that finished greeting
     by_id = {}          # call id -> the session built for it
     resumed = {}        # call id -> the `resumed` greet() was called with
+    prepared = {}       # call id -> the greeting greet() was handed ready-made, if any
+    PREPARED = "Hello there."
 
     def __init__(self, call_id):
         self.call_id = call_id
@@ -167,8 +169,13 @@ class _FakeSession:
         self.followup_gate = _FakeGate()
         self.should_end = False
 
-    async def greet(self, resumed=False):
+    async def prepare_greeting(self):
+        """The ring head start's out-of-band greeting (a call the brain answers)."""
+        return self.PREPARED
+
+    async def greet(self, resumed=False, prepared=None):
         _FakeSession.resumed[self.call_id] = resumed
+        _FakeSession.prepared[self.call_id] = prepared
         await asyncio.sleep(self.greet_delay)
         _FakeSession.greeted.append(self.call_id)
 
@@ -186,6 +193,7 @@ class _Harness:
         self.peer = None
         self.run_task = None
         self._pending = []
+        self._rang = set()   # calls that rang here (built at call.incoming)
         # (was_on_the_event_loop_thread,) per reclaim, newest last.
         self.reclaims = []
         # Control messages the brain sent the gateway, in order (call.hangup, ...).
@@ -196,6 +204,7 @@ class _Harness:
         _FakeSession.greeted = []
         _FakeSession.by_id = {}
         _FakeSession.resumed = {}
+        _FakeSession.prepared = {}
         self.reclaims = []
         self.controls = []
         self._patch()
@@ -255,14 +264,24 @@ class _Harness:
         sip_server.CALL_FACE = self._orig_face
 
     async def call_state(self, call_id, state, replay=False):
-        if state == "confirmed":   # the only state that builds a pipeline
+        # `confirmed` builds a pipeline for a call that did not ring here first (the
+        # gateway answered it, or replays one answered long ago).
+        if state == "confirmed" and call_id not in self._rang:
             self._pending.append(call_id)
         msg = {"type": "call.state", "call_id": call_id, "state": state}
         if replay:
             msg["replay"] = True
-        self.peer.send(encode_control(msg))
+        await self.send_raw(msg)
 
     async def send_raw(self, msg):
+        # A call that rings is built while it rings (the brain answers it): its id is
+        # queued for the build stub here, and its `confirmed` (call_state) adds none.
+        ringing = (msg.get("type") == "call.incoming" and msg.get("replay") is not True
+                   or msg.get("type") == "call.state" and msg.get("replay") is True
+                   and msg.get("state") in ("incoming", "early"))
+        if ringing and msg.get("call_id") not in self._rang:
+            self._rang.add(msg.get("call_id"))
+            self._pending.append(msg.get("call_id"))
         self.peer.send(encode_control(msg))
 
     async def stop(self):

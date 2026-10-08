@@ -40,6 +40,8 @@ EXCLUDED: dict[str, str] = {}
 TIMEOUTS: dict[str, int] = {
     # Four calls through the real SIP brain, at real time (~75 s on a desktop).
     "test_sip_fake_gateway.py": 300,
+    # Five calls and four Talk/room sessions through the real brain (~2.5 min).
+    "test_call_experience.py": 420,
 }
 
 # Scripts whose core assertions need real hardware/network (they call

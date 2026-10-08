@@ -253,6 +253,23 @@ class FollowupGate(FrameProcessor):
         # Async consult answers still on their way (tools._consult_and_followup).
         self.owed = 0
         self._was_busy = False
+        # Clear == the conversation is on hold for a phone call (AgentSession.hold): no
+        # window opens while it is, and a turn-free waiter (a consult answer, a client
+        # note's reaction) waits it out rather than speaking into a held conversation.
+        self._unheld = asyncio.Event()
+        self._unheld.set()
+
+    @property
+    def held(self) -> bool:
+        return not self._unheld.is_set()
+
+    def set_held(self, held: bool) -> None:
+        """On hold for a phone call, or back (AgentSession.hold / resume)."""
+        if held:
+            self._unheld.clear()
+        else:
+            self._unheld.set()
+        self._refresh()
 
     @property
     def quiet_secs(self) -> float:
@@ -327,7 +344,7 @@ class FollowupGate(FrameProcessor):
             self._deliveries.remove(d)
 
     def _refresh(self):
-        busy = self._user or self._bot or self._llm
+        busy = self._user or self._bot or self._llm or self.held
         if busy or self._was_busy:
             self.last_active = time.monotonic()
         self._was_busy = busy
@@ -475,6 +492,12 @@ class FollowupGate(FrameProcessor):
         ev = self._clear if turn_free else self._idle
         deadline = time.monotonic() + max_wait
         while True:
+            if turn_free and self.held:
+                # On hold for a phone call: the time it lasts is not the conversation's,
+                # and what is waiting goes in once it is back (set_held).
+                held_at = time.monotonic()
+                await self._unheld.wait()
+                deadline += time.monotonic() - held_at
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 logger.info("followup_gate: max wait reached with no quiet window")
@@ -482,6 +505,8 @@ class FollowupGate(FrameProcessor):
             try:
                 await asyncio.wait_for(ev.wait(), timeout=remaining)
             except asyncio.TimeoutError:
+                if turn_free and self.held:
+                    continue  # put on hold while it waited: wait the hold out
                 logger.info("followup_gate: max wait reached with no quiet window")
                 return False
             # Idle right now -- require it to STAY idle through the debounce so we

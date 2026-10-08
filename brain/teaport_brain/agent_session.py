@@ -27,12 +27,16 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
+    BotSpeakingFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
     InterruptionWorkerFrame,
+    OutputTransportMessageUrgentFrame,
+    SystemFrame,
     TranscriptionFrame,
     LLMRunFrame,
     TTSSpeakFrame,
+    UserSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask
@@ -67,6 +71,7 @@ from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard
 from teaport_brain import agent_backend
 from teaport_brain import barge_pause
+from teaport_brain import call_prompt
 from teaport_brain import raw_llm_capture
 from teaport_brain import reply_hold
 from teaport_brain import speculate
@@ -620,8 +625,15 @@ class AgentSession:
         self.should_end = False
         # Why it should end: "busy" (the engine's slot is held) or "unavailable".
         self.end_reason: str | None = None
+        # On hold for a phone call (hold / resume), and what keeps it alive meanwhile.
+        self.held = False
+        self._keeper = None
+        # Asks this conversation whether to take a phone call (call_prompt.CallPrompt);
+        # None where it cannot be asked (build_agent_session decides).
+        self.call_prompt = None
 
-    async def greet(self, resumed: bool = False, *, speak: bool = True, hello: bool = True):
+    async def greet(self, resumed: bool = False, *, speak: bool = True, hello: bool = True,
+                    prepared: str | None = None):
         """Greet the user with an LLM turn — but only through a working STT.
 
         `resumed` is for a session that picks up a call already in progress (the SIP
@@ -648,10 +660,7 @@ class AgentSession:
         front-end ends the session quietly (end_reason says why). hello=False: the STT
         check alone, no greeting (one asleep, or a conversation continued, is not
         greeted)."""
-        for _ in range(_STT_RESOLVE_POLLS):
-            if self.stt.stt_available is not None:
-                break
-            await asyncio.sleep(_STT_RESOLVE_INTERVAL_S)
+        await self._stt_resolved()
         if self.stt.stt_available is not True:
             # Say WHICH failure it was. slot_busy is True only when the engine actively
             # rejected us (503 — its one session is taken, after the connect retry gave
@@ -679,17 +688,55 @@ class AgentSession:
             return
         self.context.add_message(
             {"role": "user", "content": self._RESUME_GREETING if resumed else self._GREETING})
+        if prepared:
+            # Asked of the model already (prepare_greeting, a phone call's ring head
+            # start): spoken at once, as the agent's words -- the assistant aggregator
+            # puts it in the context after the cue, as if the completion had run now.
+            await self.task.queue_frames([TTSSpeakFrame(prepared)])
+            return
         await self.task.queue_frames([LLMRunFrame()])
+
+    async def _stt_resolved(self) -> None:
+        """Until the STT has connected or failed to (stt_available is not None), within
+        greet()'s resolution window."""
+        for _ in range(_STT_RESOLVE_POLLS):
+            if self.stt.stt_available is not None:
+                return
+            await asyncio.sleep(_STT_RESOLVE_INTERVAL_S)
+
+    async def prepare_greeting(self) -> str | None:
+        """The greeting's words, asked of the model before anyone can hear them: the
+        phone's ring head start (sip_server), so the answered caller hears it at once
+        instead of after a completion. Out of the pipeline -- llm.run_inference on a copy
+        of the context with the greeting cue, without tools -- so nothing is said or kept
+        until greet(prepared=...) speaks it. None when the STT cannot hear (greet() says
+        so instead), or the model gave no usable words (greet() asks it again, the usual
+        way)."""
+        await self._stt_resolved()
+        if self.stt.stt_available is not True:
+            return None
+        ctx = LLMContext(list(self.context.get_messages())
+                         + [{"role": "user", "content": self._GREETING}])
+        text = await self.llm.run_inference(ctx)
+        if not isinstance(text, str):
+            return None
+        text = strip_urls_for_speech(llm_text_guard.fold_degenerate_chars(text)).strip()
+        if not text or llm_text_guard.is_degenerate(text):
+            return None
+        return text
 
     # How long say_last_line lets the interruption clear the way before the line goes in.
     _LAST_LINE_SETTLE_S = 0.2
 
-    async def say_last_line(self, line: str, max_secs: float) -> bool:
+    async def say_last_line(self, line: str, max_secs: float, *,
+                            append_to_context: bool = False) -> bool:
         """Say `line` as this session's last words, heard in full: stop whatever is being
         said, stop listening (so the user talking over it cannot barge in and cut it), say
         the line, and wait -- up to max_secs -- until it has played. The pipeline
-        talking, not the model: never an assistant message. True when it played to the
-        end. The caller ends the session after (the session arbiter, for a phone call)."""
+        talking, not the model: never an assistant message, unless `append_to_context`
+        (a conversation going on hold: the model should know it said it). True when it
+        played to the end. The caller ends the session after (the session arbiter, for a
+        phone call), or puts it on hold (hold())."""
         if self.input_mute is not None:
             self.input_mute.muted = True
         await self.task.queue_frames([InterruptionWorkerFrame()])
@@ -697,7 +744,7 @@ class AgentSession:
         # Armed after the interruption has gone through (it settles every watched reply
         # as cut) and before the line is queued.
         delivery = self.followup_gate.watch_delivery()
-        await self.task.queue_frames([TTSSpeakFrame(line, append_to_context=False)])
+        await self.task.queue_frames([TTSSpeakFrame(line, append_to_context=append_to_context)])
         try:
             await asyncio.wait_for(delivery.done.wait(), max_secs)
         except asyncio.TimeoutError:
@@ -707,6 +754,72 @@ class AgentSession:
             return False
         return not delivery.interrupted
 
+    # --- On hold for a phone call (the session arbiter's PROMPT, issue #111) ------------
+    # While held, the pipeline runs on with nothing to do: the engine's STT session is
+    # closed (the call has it), the user's audio is dropped before it, nothing waiting
+    # to be said goes in (FollowupGate.set_held), and its client is told ({"type":
+    # "hold"}, which the local audio bridge reads so its own keep-alive does not end the
+    # room conversation). HoldKeepAliveFrame keeps pipecat's idle timeout from ending a
+    # session the user is only waiting in: a call can outlast it.
+    HOLD_KEEPALIVE_SECS = 60.0
+
+    async def hold(self, line: str | None, max_secs: float) -> None:
+        """Put this conversation on hold: say `line` (heard in full, and into the context:
+        the model knows it stepped away), stop listening, and let the engine's STT
+        session go. The pipeline, the client and the context stay; resume() brings it
+        back."""
+        if line:
+            await self.say_last_line(line, max_secs, append_to_context=True)
+        elif self.input_mute is not None:
+            self.input_mute.muted = True
+        self.followup_gate.set_held(True)
+        await self.stt.hold()
+        self.held = True
+        await self._tell_client({"type": "hold", "on": True})
+        if self._keeper is None or self._keeper.done():
+            self._keeper = asyncio.ensure_future(self._keep_alive_on_hold())
+
+    async def resume(self, line: str) -> bool:
+        """Back from hold: take an engine session again, listen again, and say `line`
+        (into the context). False when the STT cannot connect: the session says it cannot
+        hear and ends, as greet() would have it."""
+        if self._keeper is not None:
+            self._keeper.cancel()
+            self._keeper = None
+        await self.stt.resume()
+        await self._stt_resolved()
+        self.held = False
+        self.followup_gate.set_held(False)
+        await self._tell_client({"type": "hold", "on": False})
+        if self.stt.stt_available is not True:
+            logger.warning("back from hold, but the speech engine cannot hear -- saying so "
+                           "and ending this session")
+            self.should_end = True
+            self.end_reason = "busy" if self.stt.slot_busy is True else "unavailable"
+            await self.task.queue_frames([TTSSpeakFrame(
+                self._BUSY_MESSAGE if self.end_reason == "busy" else self._UNAVAILABLE_MESSAGE,
+                append_to_context=False)])
+            await self.followup_gate.wait_until_delivered()
+            await self.task.cancel()
+            return False
+        if self.input_mute is not None:
+            self.input_mute.muted = False
+        await self.task.queue_frames([TTSSpeakFrame(line)])
+        return True
+
+    async def _tell_client(self, message: dict) -> None:
+        try:
+            await self.task.queue_frames([OutputTransportMessageUrgentFrame(message=message)])
+        except Exception as e:  # noqa: BLE001 — a pipeline already ending
+            logger.debug(f"could not tell the client {message}: {e!r}")
+
+    async def _keep_alive_on_hold(self) -> None:
+        while True:
+            await asyncio.sleep(self.HOLD_KEEPALIVE_SECS)
+            if getattr(self.task, "has_finished", lambda: False)():
+                return
+            await self.task.queue_frames([HoldKeepAliveFrame()])
+
     # There is no reset_context() here any more. It existed for the pre-2612baf
     # persistent SIP pipeline, which reset the context between calls; the per-call
     # design builds a fresh pipeline (and a fresh context) each time, so nothing
@@ -714,6 +827,12 @@ class AgentSession:
     # that would have broken silently on a rename. If a persistent pipeline ever
     # comes back, give HeardContextCorrector a public reset() rather than restoring
     # this.
+
+
+class HoldKeepAliveFrame(SystemFrame):
+    """Sent through a pipeline on hold now and then (AgentSession.hold): one of the frames
+    its idle timeout counts as activity, so a conversation waiting out a long phone call
+    is not ended as idle. Every processor passes it on untouched."""
 
 
 class InputMute(FrameProcessor):
@@ -859,9 +978,16 @@ def build_agent_session(transport, *, voice: str | None = None,
     # source is unreachable, so the loop never hard-fails on a persona lookup.
     persona = load_persona()
     logger.info(f"Phase 1: loaded shared persona ({len(persona)} chars)")
+    # A Talk session or the room mic can be asked whether to take a phone call (the session
+    # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where
+    # that tool is on. A call itself is never asked.
+    prompt = call_prompt.CallPrompt() if front_end == "talk" else None
     # One tool set for the schema, the prompt and (below) the handlers: tools.active_tools.
-    tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features))
+    tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
+                           call_prompt=prompt)
     session_tools = active_tools(tool_ctx)
+    if prompt is not None and not any(t.name == "answer_phone_call" for t in session_tools):
+        prompt = None
     logger.info(f"tools: {', '.join(t.name for t in session_tools) or 'none'}")
     # Wi-Fi setup's voice half: only where its tool is active (switched on, a local
     # client, the unit installed). It also answers the spoken phrase with no LLM.
@@ -1109,7 +1235,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         context_aggregator.assistant(),
     ] if p is not None])
 
-    task_kwargs = {"observers": [ledger]}
+    # The idle timeout counts what pipecat counts, and a held conversation's keep-alive.
+    task_kwargs = {"observers": [ledger],
+                   "idle_timeout_frames": (BotSpeakingFrame, UserSpeakingFrame,
+                                           HoldKeepAliveFrame)}
     if endpoint_debug.ENABLED:
         # What the STT's trailing-silence hint leaves on the table, per VAD stop.
         task_kwargs["observers"].append(endpoint_debug.VadStopSkew(stt))
@@ -1184,7 +1313,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                    # rather than talking over the user (see _consult_progress).
                    gate=followup_gate,
                    client_features=tool_ctx.client_features,
-                   wifi_voice=wifi)
+                   wifi_voice=wifi,
+                   call_prompt=prompt)
 
     session = AgentSession(
         task=task,
@@ -1198,5 +1328,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         input_mute=input_mute,
     )
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
+    if prompt is not None:
+        prompt.session = session
+        session.call_prompt = prompt
     session.vad_analyzer = vad_analyzer
     return session

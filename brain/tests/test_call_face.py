@@ -3,8 +3,8 @@
 # #111 item 1) and the busy lamp's ringing.
 #
 # The SIP front-end owns the face's call state: ringing (with who is calling) from
-# call.incoming until the session arbiter gives the call the engine, active while it is
-# up (re-sent with a ttl), and none at EVERY end -- hung up, refused, hung up while
+# call.incoming until the call is answered (#111: the brain answers, after the session
+# arbiter's grant and a ring head start), active while it is up (re-sent with a ttl), and none at EVERY end -- hung up, refused, hung up while
 # ringing, a bring-up that failed, a pipeline that ended on its own, the gateway going
 # away, the brain stopping. Nothing at all goes to an avatar that does not say "call"
 # (an older one logs the whole datagram, caller id and all), and the caller id is never

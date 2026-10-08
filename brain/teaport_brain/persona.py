@@ -212,7 +212,11 @@ def tools_paragraph(tools) -> str:
     """The tools part of the overlay for a session's active tools (tools.active_tools).
 
     Standard tools: the tuned paragraph for that exact set, else a composed one. Client
-    tools (performed by the connected device) get their own sentence after it."""
+    tools (performed by the connected device) get their own sentence after it, and so does
+    answer_phone_call (only for a question the brain itself puts, so it leaves the tuned
+    paragraphs alone)."""
+    asides = [t for t in tools if "call_prompt" in t.needs]
+    tools = [t for t in tools if t not in asides]
     standard = [t for t in tools if not t.client]
     names = {t.name for t in standard}
     if names == _TUNED_WITH_AGENT:
@@ -227,6 +231,10 @@ def tools_paragraph(tools) -> str:
                  + ("also use " if standard else "use ")
                  + _join([t.hint or t.name for t in device])
                  + ": when they ask for one, call it directly, no preamble. ")
+    if asides:
+        text += ("When a phone call comes in, you may ask the user whether to step away "
+                 "for it; give their answer with " + _join([t.hint or t.name for t in asides])
+                 + ", straight away and with no line before it. ")
     return text
 
 

@@ -119,9 +119,10 @@ def call_live() -> bool:
 
 
 async def _busy_lamp() -> None:
-    """The XVF3800's LED ring as the phone's busy lamp (xvf_led.py): solid red while a
-    call holds the engine (call_live, the session arbiter's call claim), breathing red
-    while one rings before that (the SIP front-end's face, sip_server.CALL_FACE), the
+    """The XVF3800's LED ring as the phone's busy lamp (xvf_led.py): breathing red while
+    a call rings (the SIP front-end's face, sip_server.CALL_FACE: until it is answered),
+    solid red while a call holds the engine and is not ringing (call_live, the session
+    arbiter's call claim), the
     room's own effect otherwise -- however the call ended: hung up, torn down with the SIP
     front-end, this brain stopping (the finally, after the SIP teardown:
     _ReadyServer.shutdown) or dying (the first pass of the next one restores the ring from
@@ -138,8 +139,10 @@ async def _busy_lamp() -> None:
     shown, retry_at = "unknown", 0.0
     try:
         while True:
-            want = ("busy" if call_live() else
-                    "ringing" if face.state == display.RINGING else None)
+            # Ringing first: a call the brain answers rings for a couple of seconds
+            # after it has the engine (sip_server's ring head start).
+            want = ("ringing" if face.state == display.RINGING else
+                    "busy" if call_live() else None)
             if (want or want != shown) and time.monotonic() >= retry_at:
                 # Off the loop: a few ms of USB, up to xvf_led.TIMEOUT_MS on a wedged device.
                 if await asyncio.to_thread(xvf_led.busy, want is not None,
@@ -253,13 +256,29 @@ async def run_relay_bot(websocket: WebSocket):
         s = session_holder.get("s")
         return s is None or room_idle(s.followup_gate, keepalive)
 
+    # A call during this conversation asks it first (session_arbiter PROMPT, issue #111):
+    # the session's CallPrompt puts the question and, on a yes, the hold. A session
+    # without one (answer_phone_call switched off) cannot be asked.
+    def prompt():
+        return getattr(session_holder.get("s"), "call_prompt", None)
+
+    async def ask(call):
+        return await prompt().ask(call.caller)
+
+    async def hold():
+        await prompt().hold()
+
+    async def resume():
+        await prompt().resume()
+
     claim = arb.Claim(
         arb.ROOM if room else arb.TALK, client=client,
         label=("room mic" if room else "Talk session") + (f" ({client})" if client else ""),
         asleep=asleep,
         gone=lambda: _client_gone(websocket, serializer),
         end=lambda why: _end_for(websocket, session_holder.get("s"), why, room=room,
-                                 asleep=asleep()))
+                                 asleep=asleep()),
+        ask=ask, can_ask=lambda: prompt() is not None, hold=hold, resume=resume)
     # A sleeping wake-word room asked nothing; a dial without wake words is a voice in the
     # room, and is told.
     speak_refusal = not (gate is not None and gate.asleep)
@@ -464,8 +483,10 @@ async def health():
 async def talk_status(request: Request):
     """Who holds the speech engine now (session_arbiter.ARBITER.status): "active" while
     any session does, "call" while a phone call does, "live" while any conversation is
-    (anything but a sleeping room mic), "holder" its kind (talk, room or call) and
-    "asleep" for a sleeping room mic. The local audio bridge, refused or
+    (anything but a sleeping room mic), "holder" its kind (talk, room or call),
+    "asleep" for a sleeping room mic and "held" the kind of a conversation on hold for a
+    call (or null). "call" is true from the moment a call asks for the engine, not only
+    once it has it. The local audio bridge, refused or
     ended, polls it to stay off the box while that lasts. Same token as /talk (and the
     config page, whose check this is): who is talking is nobody else's business. The
     bridge sends it as a bearer header, out of the access log."""

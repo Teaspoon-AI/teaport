@@ -173,7 +173,7 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 
 ## Tools
 
-In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume, restart_session and end_conversation, a client that can do it itself (the local audio bridge announces them; end_conversation only with wake words set). A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions.
+In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume, restart_session and end_conversation, a client that can do it itself (the local audio bridge announces them; end_conversation only with wake words set); answer_phone_call is offered to Talk sessions and the room mic, never to a call. A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -189,6 +189,7 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_SET_VOLUME` | **on** | Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions. |
 | `TEAPORT_TOOL_RESTART_SESSION` | **off** | End the conversation and start a fresh one (empty context, a new greeting) when the user asks. A testing aid, off by default: on, a misheard request can wipe a conversation. Only offered to a client that can reconnect itself (the local audio bridge). |
 | `TEAPORT_TOOL_END_CONVERSATION` | **on** | Go back to sleep when the user says they are done ("that's all", "goodnight", "go to sleep", in any language): the agent says a short goodbye and the conversation sleeps at once instead of waiting out LOCAL_AUDIO_KEEPALIVE_SECS. Only offered to the local audio bridge, and only when it has wake words (there is nothing to go back to without them). |
+| `TEAPORT_TOOL_ANSWER_PHONE_CALL` | **on** | How the user answers "should I step away?" when a phone call comes in during a Talk session or a room conversation, in any language: the model reads the reply and calls it. Off, a conversation is not asked: a call ends a Talk session with a spoken line, and is refused (the caller hears busy) while the room mic is awake. |
 | `TEAPORT_TOOL_WIFI_SETUP` | **on** | Wi-Fi setup by voice: the spoken phrase ("set up Wi-Fi", no LLM needed; it starts setup only while the box has no internet) and the tool the model can hand over to. Only for a client at the box (the local audio bridge) and where install.sh laid down teaport-wifi-setup. See Wi-Fi setup. |
 
 ## Wi-Fi setup
@@ -221,13 +222,16 @@ In `/etc/teaport/brain.env`. The ReSpeaker XVF3800's LED ring as a busy lamp (BL
 
 ## SIP front-end
 
-In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls); Talk sessions ignore them.
+In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls): how a call is answered, and how it asks a live conversation (a Talk session, the room mic awake) to make way for it.
 
 | Setting | Default | Description |
 |---|---|---|
 | `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks. On means no barge-in. |
 | `SIP_HALF_DUPLEX_TAIL_S` | **0.8** s (≥ 0) | The tail after the bot stops, when half-duplex is on. |
 | `SIP_STT_MAKEUP_DB` | **0** dB (0–20) | Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in "stop"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected. |
+| `SIP_ANSWER_AFTER_SECS` | **5** s (≥ 0) | How long a call rings before the brain answers it: a couple of rings, time it builds the call's pipeline and has the greeting worded in, so the greeting plays as soon as the caller is connected. 0 answers as soon as the pipeline is up. Needs the gateway's auto_answer off (the brain answers). |
+| `TEAPORT_CALL_PROMPT_SECS` | **12** s (≥ 0) | When a call comes in during a conversation (a Talk session, or the room mic awake), the agent asks the people in it first ("Someone's calling me — … Should I step away for a moment?"). This is how long they have to answer, from the end of the question; the caller hears it ring meanwhile. |
+| `TEAPORT_CALL_PROMPT_DEFAULT` | `take` | What happens when nobody answers that question in time: take (the conversation goes on hold and the call is answered) or ring (the call is never answered and rings until the caller gives up). One of `take`, `ring`. |
 | `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |
 
 ## Diagnostics
@@ -285,7 +289,7 @@ In `~/.config/teaport/teaport-sip.conf`. Written by `teaport sip configure`; see
 | `bind_addr` | `0.0.0.0` | *Set by the installer.* |
 | `sip_port` | — | The wizard test-registers on a throwaway port, never :5060 while a gateway runs. *Set by the installer.* |
 | `uds_path` | — | Must match the brain's TEAPORT_SIP_SOCKET. *Set by the installer.* |
-| `auto_answer` | **on** | Answer inbound calls. |
+| `auto_answer` | **on** | Whether the gateway answers inbound calls itself. `teaport sip configure` writes false: the brain answers, so the caller hears a couple of rings first (SIP_ANSWER_AFTER_SECS), and a call the people in a live conversation say not to pick up rings on. true (the gateway's own default, and older confs): answered at once, with neither. |
 | `aec` | **on** | The gateway's echo canceller. Keep it on; the SIP front-end's makeup gain assumes it. |
 | `aec_tail_ms` | **256** ms (≥ 0) | Echo canceller tail. |
 | `log_level` | **3** (0–6) | pjsua log level. |
@@ -367,9 +371,10 @@ teaport sip configure --conf ~/my-trunk.conf
 ```
 
 It goes through the same test-register, then is installed as-is except for the
-three keys the units own (`sip_port` → 5060, `uds_path` → the socket the brain
+four keys the units own (`sip_port` → 5060, `uds_path` → the socket the brain
 looks for, `register` → true — the gateway's default and the sample's value
-are `false`). If a hand-launched gateway or SIP front-end is still running, the
+are `false` — and `auto_answer` → false: the brain answers, after a couple of
+rings; see *One engine, one conversation*). If a hand-launched gateway or SIP front-end is still running, the
 command refuses and tells you what to stop: the unit it is about to enable needs
 `:5060` and the socket.
 
@@ -524,9 +529,8 @@ calls. Nobody is ever cut off without a word:
 | the same client's session is live (a reconnect) | The new connection replaces it. A client is "the same" by the id it sends (`?client=`): the OpenClaw plugin sends one per paired device, the Discord bridge `discord`, the mic bridge `local-audio`. The OpenClaw Control UI served over plain HTTP has no device identity, so its reload counts as a new client: the old session is ended once its socket closes (a reload closes it) or goes silent. |
 | another Talk session, or a conversation at the box, is live | They are refused: the agent says *"Sorry, I'm in another conversation right now…"* and the connection closes (code 4004). The conversation in progress goes on. |
 | the box's mic is asleep (waiting for a wake word; without wake words, until someone in the room has spoken, and again after `LOCAL_AUDIO_KEEPALIVE_SECS` with nobody speaking) | A Talk session or a phone call takes the engine; the mic bridge stays off while they last. A sleeping mic is not a conversation. |
-| a phone call comes in during a remote Talk session | The Talk user hears *"Sorry, a phone call is coming in and I have to take it…"*, the session closes (4005), and the agent takes the call. |
+| a phone call comes in during a conversation (a remote Talk session, or the box's mic awake) | The caller hears it ring while the agent asks in that conversation, in its language: *"Someone's calling me — +1 346 234 8500. Should I step away for a moment?"* (*"…from a withheld number…"* without a caller ID). **Yes:** it says *"I'll take the call — back in a moment."*, the conversation goes on hold (its connection and what was said are kept; it hears nothing meanwhile), and the call is answered. When the call is over it comes back: *"Sorry about that — where were we?"*. **No:** the call is never answered; the caller hears it ring until they give up. **No answer** within `TEAPORT_CALL_PROMPT_SECS`: `TEAPORT_CALL_PROMPT_DEFAULT` (by default it takes the call). With `TEAPORT_TOOL_ANSWER_PHONE_CALL=0` nobody is asked: a Talk session hears *"Sorry, a phone call is coming in and I have to take it…"* and closes (4005), and a conversation at the box keeps it (the caller hears the busy line). |
 | a phone call is live | A Talk client is refused: *"Sorry, I'm on a phone call right now…"*. |
-| a phone call comes in during a conversation at the box | For now the caller hears the busy line and the call hangs up. (The take-the-call-or-not prompt, with the room conversation on hold, is issue #58's next step.) |
 
 Phone calls and Talk run in the same brain process, so the arbiter sees both;
 anything else that holds the engine (a standalone test rig, say) is met first come,
@@ -536,5 +540,17 @@ session right now — please try again in a moment."*
 For a box you want to dedicate to the phone, turn off the other front-ends rather
 than the brain (the brain is what answers calls): the box's microphone
 (`sudo systemctl disable --now teaport-local-audio`), the Discord bridge
-(`teaport-discord-bridge`), and Talk in OpenClaw. A call already outranks a remote
-Talk session; only a conversation at the box keeps it out.
+(`teaport-discord-bridge`), and Talk in OpenClaw. A call already asks a live
+conversation to make way (and takes the engine if nobody answers); only a "no"
+keeps it out.
+
+A call **rings before it is answered**: the brain, not the gateway, answers it
+(`auto_answer=false` in the gateway's conf, which `teaport sip configure` writes),
+`SIP_ANSWER_AFTER_SECS` after it came in (a couple of rings), with the call's pipeline
+already built and its greeting already worded, so the greeting plays as soon as the
+caller is connected. A gateway conf from before this (`auto_answer=true`) still
+works: calls are answered at once as before, and a call someone said not to pick up
+hears the busy line instead of ringing on (it is already answered); the brain logs
+a warning at the first such call. To switch an existing line over, set
+`auto_answer=false` in `~/.config/teaport/teaport-sip.conf` and `teaport sip restart`
+(it re-registers).

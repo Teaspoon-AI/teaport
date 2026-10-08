@@ -273,3 +273,18 @@ msgstr "Tut mir leid, ich bin gerade in einem anderen Gespräch. Bitte versuch e
 
 msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
 msgstr "Tut mir leid, gerade kommt ein Anruf rein, den ich annehmen muss. Wir können danach weiterreden."
+
+# A phone call during a conversation (session_arbiter.py, call_prompt.py): the agent asks,
+# steps away, and comes back.
+#. Translators: {caller} is a name or a phone number, as the caller ID gives it.
+msgid "Someone's calling me — {caller}. Should I step away for a moment?"
+msgstr "Jemand ruft mich an — {caller}. Soll ich kurz rangehen?"
+
+msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
+msgstr "Jemand ruft mich mit unterdrückter Nummer an. Soll ich kurz rangehen?"
+
+msgid "I'll take the call — back in a moment."
+msgstr "Ich gehe kurz ran — bin gleich wieder da."
+
+msgid "Sorry about that — where were we?"
+msgstr "Entschuldige die Unterbrechung — wo waren wir stehen geblieben?"

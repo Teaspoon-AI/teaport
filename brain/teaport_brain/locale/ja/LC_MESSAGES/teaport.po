@@ -273,3 +273,18 @@ msgstr "すみません、今は別の会話中です。少ししてからもう
 
 msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
 msgstr "すみません、電話がかかってきたので出なければなりません。通話が終わったらまたお話ししましょう。"
+
+# A phone call during a conversation (session_arbiter.py, call_prompt.py): the agent asks,
+# steps away, and comes back.
+#. Translators: {caller} is a name or a phone number, as the caller ID gives it.
+msgid "Someone's calling me — {caller}. Should I step away for a moment?"
+msgstr "電話がかかってきました — {caller}。少し席を外して出てもいいですか？"
+
+msgid "Someone's calling me from a withheld number. Should I step away for a moment?"
+msgstr "非通知の電話がかかってきました。少し席を外して出てもいいですか？"
+
+msgid "I'll take the call — back in a moment."
+msgstr "電話に出ますね — すぐ戻ります。"
+
+msgid "Sorry about that — where were we?"
+msgstr "お待たせしました — どこまで話しましたっけ？"
