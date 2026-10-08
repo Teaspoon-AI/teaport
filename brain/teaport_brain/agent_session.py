@@ -762,6 +762,8 @@ class AgentSession:
     # room conversation). HoldKeepAliveFrame keeps pipecat's idle timeout from ending a
     # session the user is only waiting in: a call can outlast it.
     HOLD_KEEPALIVE_SECS = 60.0
+    # How long resume() waits for its "where were we?" to play.
+    RESUME_LINE_MAX_SECS = 6.0
 
     async def hold(self, line: str | None, max_secs: float) -> None:
         """Put this conversation on hold: say `line` (heard in full, and into the context:
@@ -804,7 +806,15 @@ class AgentSession:
             return False
         if self.input_mute is not None:
             self.input_mute.muted = False
+        # Back once the line has been heard (or RESUME_LINE_MAX_SECS on): the session
+        # arbiter waits this resume out before anyone else's question goes in, and a
+        # question queued behind a line still playing would cut it off.
+        delivery = self.followup_gate.watch_delivery()
         await self.task.queue_frames([TTSSpeakFrame(line)])
+        try:
+            await asyncio.wait_for(delivery.done.wait(), self.RESUME_LINE_MAX_SECS)
+        except asyncio.TimeoutError:
+            self.followup_gate.drop_delivery(delivery)
         return True
 
     async def _tell_client(self, message: dict) -> None:

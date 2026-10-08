@@ -92,11 +92,13 @@ Every tool the voice model can call follows one contract
   folding would mangle shows as "(scan the code)" when the code is there.
 - **The phone on the face** is `display.CallFace`, driven by the SIP front-end
   (`sip_server.CALL_FACE`): `ringing` with the caller id (the From header's display
-  name unless it is a carrier placeholder such as "WIRELESS CALLER", else the
-  number) from `call.incoming` until the session arbiter gives the call the engine,
-  `active` while the call is up, `none` at every end. Held states are re-sent with a
-  ttl, and nothing is sent to an avatar whose features file lacks `"call"`. The
-  caller id is never logged. The busy lamp breathes red while the face rings.
+  name unless it is a placeholder such as "WIRELESS CALLER" or "Anonymous", else the
+  number or SIP user) from `call.incoming` until the call is answered (the brain
+  answers it, after the session arbiter's grant and a couple of rings), `active`
+  while the call is up, `none` at every end. Held states are re-sent with a ttl, and
+  nothing is sent to an avatar whose features file lacks `"call"`. The brain's
+  `call.incoming` journal line carries the From header (`from=`). The busy lamp
+  breathes red while the face rings.
 
 TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
 consult paths.

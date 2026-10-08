@@ -579,7 +579,10 @@ def speakable_caller(caller: str | None) -> str | None:
                    for ch in caller)
     kept = " ".join(kept.split())
     if len(kept) > CALLER_MAX_CHARS:
-        cut = kept[:CALLER_MAX_CHARS + 1].rsplit(" ", 1)[0]
+        # At the last space within the limit, unless that leaves too little (or there is
+        # none: one long word, a name in a script without spaces): then a hard cut.
+        head = kept[:CALLER_MAX_CHARS + 1]
+        cut = head.rsplit(" ", 1)[0] if " " in head else ""
         kept = cut if len(cut) >= CALLER_MAX_CHARS // 2 else kept[:CALLER_MAX_CHARS]
     kept = kept.strip(" ,'’-&(")
     return kept if any(ch.isalnum() for ch in kept) else None
