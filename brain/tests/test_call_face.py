@@ -242,6 +242,87 @@ async def test_the_brain_stopping_mid_call_ends_with_none():
         assert await r.ends_with_none(), r.face.got
 
 
+async def test_a_second_call_unanswered_leaves_the_first_on_the_face():
+    """A is up, B rings over it (the gateway's second INVITE) and is cancelled before it
+    is answered: the face goes back to A's handset, still re-sent, not to none -- A's
+    caller is still on the line. Routine once calls ring before they are answered."""
+    async with Rig() as r:
+        await r.incoming("A")
+        await r.h.call_state("A", "confirmed")
+        assert await lc.wait_until(lambda: r.face.states()[-1:] == ["active"])
+        await r.incoming("B")
+        assert await lc.wait_until(lambda: r.face.states()[-1:] == ["ringing"])
+        await r.h.send_raw({"type": "call.state", "call_id": "B", "state": "disconnected"})
+        assert await lc.wait_until(lambda: r.face.states()[-1:] == ["active"]), r.face.states()
+        assert r.face.states() == ["ringing", "active", "ringing", "active"], r.face.states()
+        assert sip_server.CALL_FACE.call_id == "A" and arb.ARBITER.call_live()
+        n = len(r.face.calls())
+        assert await lc.wait_until(lambda: len(r.face.calls()) >= n + 2), (
+            "A's handset is not re-sent after B went: it drops off after one ttl")
+        assert r.face.got[-1] == {"state": "active", "ttl": display.CALL_TTL_SECS}
+        await r.h.send_raw({"type": "call.state", "call_id": "A", "state": "disconnected"})
+        assert await r.ends_with_none(), r.face.got
+
+
+def test_a_ringing_call_that_ends_after_the_one_it_covers_takes_the_phone_down():
+    """The covered call hangs up first (nothing shows: B still rings), then B goes
+    unanswered: none, not a return to the call that is gone."""
+    sent = []
+    face = display.CallFace(features=lambda path: {"call": 1},
+                            send=lambda ev, path: sent.append(ev["call"]["state"]))
+    face.active("A")
+    face.ringing("B", "Bob")
+    face.end("A")
+    assert face.state == display.RINGING and face.call_id == "B"
+    face.end("B")
+    assert face.state is None and sent[-1] == "none", sent
+    face.active("A")                                 # and answered, B replaces A
+    face.ringing("B", "Bob")
+    face.active("B")
+    face.end("A")                                    # A's teardown, behind B's answer
+    assert face.state == display.ACTIVE and face.call_id == "B"
+    face.end("B")
+    assert face.state is None and sent[-1] == "none", sent
+
+
+async def test_a_long_caller_name_is_cut_to_what_the_avatar_draws():
+    """The avatar reads each datagram with recvfrom(4096): a far end's long name, \\u-
+    escaped, used to overflow it, and the whole ringing event was dropped."""
+    # Within the gateway's 2048-byte frame (sip_transport.MAX_FRAME_BYTES) as the test
+    # sends it (\\u-escaped); the gateway itself sends UTF-8, so ~680 CJK characters.
+    for name in ("中" * 300, "Z" * 1500, "\U0001F600" * 150):
+        async with Rig() as r:
+            await r.incoming("A", frm=f'"{name}" <sip:1@x>')
+            assert await lc.wait_until(lambda: r.face.calls()), "the ringing event was lost"
+            r.face.sock.setblocking(True)
+            assert r.face.got[0]["caller"] == name[:display.CALLER_MAX_CHARS]
+            raw = json.dumps({"call": r.face.got[0]}, ensure_ascii=False).encode()
+            assert len(raw) < display.DATAGRAM_MAX_BYTES, len(raw)
+            r.face.sock.setblocking(False)
+            await r.h.send_raw({"type": "call.state", "call_id": "A", "state": "disconnected"})
+            assert await r.ends_with_none()
+
+
+def test_a_datagram_fits_the_avatars_read_and_survives_a_lone_surrogate():
+    with tempfile.TemporaryDirectory() as d:
+        path = os.path.join(d, "face.sock")
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.bind(path)
+            assert display.send({"call": {"state": "ringing", "caller": "中" * 48}}, path)
+            data = s.recv(display.DATAGRAM_MAX_BYTES)
+            assert json.loads(data.decode())["call"]["caller"] == "中" * 48
+            assert len(data) < 200                    # UTF-8, not six-byte escapes
+            assert display.send({"call": {"state": "ringing", "caller": "a\ud800b"}}, path)
+            assert json.loads(s.recv(4096).decode())["call"]["caller"] == "a?b"
+            # The reviewer's case: a 700-character CJK name through CallFace itself.
+            face = display.CallFace(path=path, features=lambda p: {"call": 1, "unicode": 1})
+            face.ringing("A", "中" * 700)
+            face.end("A")
+            data = s.recv(display.DATAGRAM_MAX_BYTES)
+            assert json.loads(data.decode())["call"]["caller"] == "中" * display.CALLER_MAX_CHARS
+            assert json.loads(s.recv(4096).decode()) == {"call": {"state": "none"}}
+
+
 # --- the avatar's features ------------------------------------------------------------
 
 async def test_nothing_is_sent_to_an_avatar_without_calls():
@@ -289,6 +370,23 @@ def test_caller_id_formatting():
             ('<sip:alice@example.com>', "alice"),
             ('"O\\"Brien" <sip:1@x>', 'O"Brien'),
             ('"  wireless   caller " <sip:13462348500@x>', SHOWN),
+            ('"Unavailable" <sip:+13462348500@x>', SHOWN),           # no name: the number
+            ('"Out of area" <sip:13462348500@x>', SHOWN),
+            ('"Unknown" <sip:unknown@x>', None),
+            ('<sip:%2B13462348500@x>', SHOWN),
+            ('<sip:+13462348500;user=phone@x>', SHOWN),
+            # Withheld: the handset alone, never the number the URI still carries.
+            ('"ANONYMOUS" <sip:+13462348500@x>', None),
+            ('"Restricted" <sip:13462348500@x>', None),
+            ('"private number" <sip:13462348500@x>', None),
+            ('"Withheld" <sip:13462348500@x>', None),
+            ('"Blocked" <sip:13462348500@x>', None),
+            ('"Caller ID blocked" <sip:13462348500@x>', None),
+            ('"No Caller ID" <sip:13462348500@x>', None),
+            ('<sip:Restricted@x>', None),
+            ('"WIRELESS CALLER" <sip:anonymous@anonymous.invalid>', None),
+            ('"Alice" <sip:13462348500@anonymous.invalid>', None),
+            ('"Alice" <sip:anonymous@x>', None),
             ("", None), (None, None), (42, None)):
         got = sip_server.caller_id(frm)
         assert got == want, (frm, got, want)

@@ -49,6 +49,9 @@ HOLD_TTL_SECS = 15.0
 # The avatar's features file is its socket's path plus this.
 FEATURES_SUFFIX = ".features"
 FEATURES_MAX_BYTES = 4096
+# The avatar reads each event with recvfrom(4096): a longer datagram arrives cut short
+# and is dropped as bad JSON.
+DATAGRAM_MAX_BYTES = 4096
 
 
 def features(path: str = SOCK) -> dict:
@@ -82,7 +85,10 @@ def send(event: dict, path: str = SOCK) -> bool:
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
             s.setblocking(False)
-            s.sendto(json.dumps(event).encode(), path)
+            # UTF-8 as is, not \u-escaped: the avatar reads at most DATAGRAM_MAX_BYTES,
+            # and an escape is six bytes where UTF-8 takes three.
+            # A lone surrogate (JSON from the far end can carry one) is replaced, not raised.
+            s.sendto(json.dumps(event, ensure_ascii=False).encode("utf-8", "replace"), path)
         return True
     except OSError:
         return False
@@ -174,13 +180,20 @@ class Screen:
 # data: nothing here logs it.
 CALL_REFRESH_SECS = 4.0
 CALL_TTL_SECS = 10.0
+# The avatar cuts a caller id to this many characters (its CALLER_MAX_CHARS); cut here
+# first, so a far end's long display name can never push the datagram past
+# DATAGRAM_MAX_BYTES (48 characters are 192 bytes of UTF-8 at most).
+CALLER_MAX_CHARS = 48
 RINGING, ACTIVE = "ringing", "active"
 
 
 class CallFace:
     """The phone on the avatar's face, for one phone line: ringing(), active(), end().
     Each is for a call id, and end() for another call than the one shown (a stale
-    hangup for a call the gateway has already replaced) changes nothing. `state` is what
+    hangup for a call the gateway has already replaced) changes nothing. A call that
+    rings while another is active covers it: if the ringing one ends without being
+    answered, the face goes back to the active call underneath rather than to none;
+    answered, it replaces it. `state` is what
     is shown (RINGING, ACTIVE or None), whether or not an avatar draws it, and
     `listeners` are called (sync, no arguments, on the caller's thread) when it changes:
     the busy lamp follows the ringing from here."""
@@ -191,6 +204,7 @@ class CallFace:
         self.state: str | None = None
         self.call_id = None
         self._caller: str | None = None
+        self._under = None  # the active call a ringing one covers
         self.listeners: list = []
         self._lock = threading.Lock()
         self._kick = threading.Event()
@@ -209,16 +223,29 @@ class CallFace:
         """Call `call_id` is over (None: whatever call is shown, as when the line itself
         goes): the phone comes down."""
         with self._lock:
+            if call_id is not None and call_id == self._under:
+                self._under = None  # gone underneath the ringing call: nothing shows
+                return
             if self.state is None or (call_id is not None and call_id != self.call_id):
                 return
-            self.state, self.call_id, self._caller = None, None, None
-            self._put({"call": {"state": "none"}})
+            if call_id is not None and self._under is not None:
+                # The ringing call went unanswered: back to the call still up.
+                self.state, self.call_id, self._caller = ACTIVE, self._under, None
+                self._under = None
+                self._put(self._event())
+            else:
+                self.state, self.call_id, self._caller, self._under = None, None, None, None
+                self._put({"call": {"state": "none"}})
         self._kick.set()
         self._changed()
 
     def _show(self, call_id, state: str, caller: str | None) -> None:
         with self._lock:
             changed = state != self.state
+            if state == RINGING and self.state == ACTIVE and call_id != self.call_id:
+                self._under = self.call_id
+            elif state == ACTIVE:
+                self._under = None  # answered: it replaces whatever it covered
             self.state, self.call_id, self._caller = state, call_id, caller
             if self._thread is None:
                 self._thread = threading.Thread(target=self._keep_up, daemon=True,
@@ -237,7 +264,7 @@ class CallFace:
             caller = (self._caller if self._features(self._path).get("unicode")
                       else fold_ascii(self._caller, fallback=""))
             if caller:
-                call["caller"] = caller
+                call["caller"] = caller[:CALLER_MAX_CHARS]
         return {"call": call}
 
     # Under the lock, as Screen's: a refresh cannot land after the end that replaced it.

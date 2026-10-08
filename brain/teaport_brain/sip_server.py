@@ -64,6 +64,7 @@ import os
 import re
 import socket
 import time
+import urllib.parse
 
 from loguru import logger
 
@@ -231,12 +232,17 @@ _GATEWAY_POLL_S = 0.5
 # (gateway_server._busy_lamp) breathes red from here while it rings.
 CALL_FACE = display.CallFace()
 
-# Display names that say nothing about who is calling: the carrier's placeholders, shown
-# as the number instead (or the handset alone, when there is none).
-_PLACEHOLDER_NAMES = frozenset({
-    "", "WIRELESS CALLER", "UNKNOWN", "UNKNOWN CALLER", "UNKNOWN NAME", "ANONYMOUS",
-    "PRIVATE", "PRIVATE CALLER", "PRIVATE NUMBER", "RESTRICTED", "UNAVAILABLE",
-    "OUT OF AREA", "WITHHELD", "NO CALLER ID", "CALLER ID BLOCKED", "BLOCKED",
+# Display names that stand in for a name the carrier does not have: shown as the number
+# instead (or the handset alone, when there is none).
+_NO_NAME = frozenset({
+    "", "WIRELESS CALLER", "UNKNOWN", "UNKNOWN CALLER", "UNKNOWN NAME", "UNAVAILABLE",
+    "OUT OF AREA",
+})
+# Display names (and SIP users) that say the caller WITHHELD their id: the handset alone,
+# never the number, even when the From URI still carries one.
+_WITHHELD = frozenset({
+    "ANONYMOUS", "PRIVATE", "PRIVATE CALLER", "PRIVATE NUMBER", "RESTRICTED", "WITHHELD",
+    "BLOCKED", "CALLER ID BLOCKED", "NO CALLER ID",
 })
 _NAME_ADDR = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|([^<]*?))\s*<([^>]*)>')
 
@@ -245,7 +251,9 @@ def caller_id(from_header) -> str | None:
     """Who a call says it is from, for the face: the display name in its SIP From
     header unless that is a placeholder ("WIRELESS CALLER"), else the number, readable
     (+1 346 234 8500 for an 11-digit NANP number, as sent otherwise), else the SIP user.
-    None when it says nothing (anonymous, or no header). Personal data: never logged."""
+    None when it says nothing, or that the caller withheld it (Anonymous, Restricted,
+    anonymous@anonymous.invalid, ...): then not even a number the URI still carries.
+    Personal data: never logged."""
     if not isinstance(from_header, str):
         return None
     m = _NAME_ADDR.match(from_header)
@@ -255,11 +263,15 @@ def caller_id(from_header) -> str | None:
     else:
         name, uri = "", from_header.split(";", 1)[0]
     name = " ".join(name.split())
-    if name.upper() not in _PLACEHOLDER_NAMES and not re.fullmatch(r"\+?[\d\s().-]+", name):
+    if name.upper() in _WITHHELD:
+        return None
+    user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
+    user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
+    if user.upper() in _WITHHELD or host.split(";", 1)[0].lower().startswith("anonymous.invalid"):
+        return None
+    if name.upper() not in _NO_NAME and not re.fullmatch(r"\+?[\d\s().-]+", name):
         return name
-    user = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).split("@", 1)[0]
-    user = user.split(";", 1)[0].strip()
-    if user.upper() in _PLACEHOLDER_NAMES:
+    if user.upper() in _NO_NAME:
         return None
     digits = re.sub(r"[\s().-]", "", user)
     if re.fullmatch(r"\+?1\d{10}", digits):

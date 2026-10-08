@@ -1573,7 +1573,7 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
-source = "sip_server.py:147"
+source = "sip_server.py:148"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -1587,7 +1587,7 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:148"
+source = "sip_server.py:149"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
@@ -1602,7 +1602,7 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:158"
+source = "sip_server.py:159"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
@@ -1614,7 +1614,7 @@ default = "/run/teaport/teaport-sip.sock"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off."
-source = "sip_server.py:206"
+source = "sip_server.py:207"
 
 # ---- diagnostics
 
