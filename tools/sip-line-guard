@@ -1,0 +1,80 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+#
+# sip-line-guard — keep the SIP gateway from starting, and so from registering, while
+# the phone path is tested with brain/tests/fake_sip_gateway.py (docs/CONFIG.md,
+# "Testing the phone path without a line").
+#
+#   tools/sip-line-guard on       add the guard (runtime: gone at the next boot)
+#   tools/sip-line-guard status   prove it holds, without starting anything
+#   tools/sip-line-guard off      remove it
+#
+# Why not `systemctl mask --runtime`: the installer puts teaport-sip.service in
+# /etc/systemd/system, which outranks a mask in /run, so the masked unit still starts
+# (directly, by `teaport sip restart`, or pulled in by another unit). A persistent mask is
+# refused for the same reason: the /etc file is already there. Drop-ins, though, merge
+# from every directory, so a runtime drop-in with a condition that can never hold
+# stops every start of the unit -- direct, restart, or a Wants=/BindsTo= pull --
+# before its ExecStart runs.
+#
+# `status` evaluates the unit's conditions with `systemd-analyze condition --unit`,
+# which loads the unit and its drop-ins and reports, without activating anything.
+# The unit to guard is the second argument (default teaport-sip.service).
+set -u
+
+UNIT=${2:-teaport-sip.service}
+case $UNIT in *.service) ;; *) UNIT=$UNIT.service ;; esac
+DIR=/run/systemd/system/$UNIT.d
+CONF=$DIR/zz-fake-sip-guard.conf
+GUARD_PATH=/nonexistent/fake-sip-guard
+
+need_root() {
+  [ "$(id -u)" = 0 ] && return
+  exec sudo -- "$0" "$@"
+}
+
+status() {
+  ok=0
+  if systemctl show -p DropInPaths --value "$UNIT" | tr ' ' '\n' | grep -qx "$CONF"; then
+    echo "drop-in:    loaded ($CONF)"
+  else
+    echo "drop-in:    NOT loaded -- run: $0 on"; ok=1
+  fi
+  # It reports on stderr, next to any unrelated unit-file warnings.
+  out=$(systemd-analyze condition --unit="$UNIT" 2>&1)
+  rc=$?
+  if [ $rc -ne 0 ] && printf '%s\n' "$out" | grep -q "ConditionPathExists=$GUARD_PATH failed"; then
+    echo "conditions: fail on the guard -- a start of $UNIT is skipped"
+  else
+    echo "conditions: do NOT block a start of $UNIT"; ok=1
+  fi
+  state=$(systemctl show -p ActiveState --value "$UNIT")
+  if [ "$state" = inactive ] || [ "$state" = failed ]; then
+    echo "state:      $state"
+  else
+    echo "state:      $state -- the gateway is running; the guard only stops new starts"
+    echo "            (stop it with: sudo systemctl stop $UNIT)"; ok=1
+  fi
+  [ $ok = 0 ] && echo "GUARDED: $UNIT cannot start" || echo "NOT GUARDED"
+  return $ok
+}
+
+case ${1:-status} in
+  on)
+    need_root "$@"
+    mkdir -p "$DIR"
+    printf '# sip-line-guard: no SIP gateway while the fake gateway is in use\n[Unit]\nConditionPathExists=%s\n' \
+      "$GUARD_PATH" > "$CONF"
+    systemctl daemon-reload
+    status ;;
+  off)
+    need_root "$@"
+    rm -f "$CONF"
+    rmdir "$DIR" 2>/dev/null
+    systemctl daemon-reload
+    echo "guard removed from $UNIT" ;;
+  status)
+    status ;;
+  *)
+    echo "usage: $0 on|off|status [UNIT]" >&2; exit 2 ;;
+esac

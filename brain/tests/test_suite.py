@@ -37,7 +37,10 @@ DEFAULT_TIMEOUT_S = 120
 EXCLUDED: dict[str, str] = {}
 
 # Overrides for anything the default doesn't fit.
-TIMEOUTS: dict[str, int] = {}
+TIMEOUTS: dict[str, int] = {
+    # Four calls through the real SIP brain, at real time (~75 s on a desktop).
+    "test_sip_fake_gateway.py": 300,
+}
 
 # Scripts whose core assertions need real hardware/network (they call
 # appliance.require_env / appliance.require_reachable at their own top level, which
