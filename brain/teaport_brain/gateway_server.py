@@ -108,9 +108,6 @@ CALL_LEASE_SECS = 30.0
 ROOM_KEEPALIVE_SECS = 45.0
 # How long a Talk session a call ends may take to say so before it is closed anyway.
 CALL_LINE_MAX_SECS = 8.0
-# How long a refused client's busy line may take to synthesize; past it the client is
-# closed without one (the close reason still says busy).
-BUSY_SYNTH_SECS = 6.0
 
 
 def call_live() -> bool:
@@ -129,52 +126,23 @@ def _close_with(websocket, code: int, reason: str) -> None:
     websocket.close = close_coded
 
 
-def _tts_for(voice: str | None, language: str | None):
-    """The client's voice, outside any pipeline (a module function so tests stub it)."""
-    return make_tts(voice=voice, language=language)
-
-
-# The busy lines already synthesized, by (voice, language, line): there are a handful of
-# them, and a refused client should not wait on (or load the engine with) a fresh synth.
-_BUSY_PCM: dict = {}
-
-
-async def busy_line_audio(holder_kind: str, voice: str | None,
-                          language: str | None) -> tuple[str, bytes]:
-    """The busy line for a client refused because `holder_kind` has the box, in its
-    voice's language, and its PCM16 24 kHz audio (b"" when the engine cannot say it).
-    Cached in-process; a failed synth is not cached."""
-    tts = _tts_for(voice, language)
-    line = arb.busy_line(holder_kind, getattr(tts, "espeak_language", None))
-    key = (voice, language, line)
-    pcm = _BUSY_PCM.get(key)
-    if pcm is None:
-        try:
-            pcm = await asyncio.wait_for(tts.synthesize(line), BUSY_SYNTH_SECS)
-            _BUSY_PCM[key] = pcm
-        except Exception as e:  # noqa: BLE001 — no voice: the close reason still says it
-            logger.warning(f"busy line not synthesized ({e!r}) — closing without it")
-            pcm = b""
-    return line, pcm
-
-
 async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
                   voice: str | None = None, language: str | None = None) -> None:
     """End a /talk connection the arbiter refused. Nothing was built for it: no STT, no
     pipeline. A client that asked to talk sees the busy line's caption at once and hears
-    it (synthesized once per voice, busy_line_audio) before the close; a sleeping room
-    mic, which asked nothing, is closed at once. The code: YIELD for the room during a
-    call (the bridge waits the call out), BUSY otherwise (it backs off)."""
+    it (synthesized once per voice, session_arbiter.busy_line_audio) before the close; a
+    sleeping room mic, which asked nothing, is closed at once. The code: YIELD for the
+    room during a call (the bridge waits the call out), BUSY otherwise (it backs off)."""
     code = YIELD_CLOSE_CODE if room and refusal.holder == arb.CALL else BUSY_CLOSE_CODE
     reason = YIELD_CLOSE_REASON if code == YIELD_CLOSE_CODE else refusal.reason
     if speak:
         try:
-            line = arb.busy_line(refusal.holder, getattr(_tts_for(voice, language),
+            line = arb.busy_line(refusal.holder, getattr(arb.tts_for(voice, language),
                                                          "espeak_language", None))
             await websocket.send_text(json.dumps(
                 {"type": "transcript", "role": "assistant", "text": line, "final": True,
                  "utterance": "busy"}))
-            _line, pcm = await busy_line_audio(refusal.holder, voice, language)
+            _line, pcm = await arb.busy_line_audio(refusal.holder, voice, language)
             if pcm:
                 await websocket.send_bytes(pcm)
                 # Played out before the close: a client may drop what it has not played.
@@ -365,10 +333,11 @@ async def run_relay_bot(websocket: WebSocket):
 
 def room_idle(followup_gate, keepalive: float) -> bool:
     """A room session without wake words counts as asleep: nobody has taken a turn yet,
-    or nobody (user or bot) has spoken for `keepalive` seconds and nothing is under way."""
+    or nobody (user or bot) has spoken for `keepalive` seconds and nothing is under way
+    -- no turn, and no consult answer still owed (as the bridge's own keep-alive)."""
     if not getattr(followup_gate, "user_heard", False):
         return True
-    return (followup_gate.is_clear()
+    return (followup_gate.is_clear() and not getattr(followup_gate, "owed", 0)
             and time.monotonic() - followup_gate.last_active >= keepalive)
 
 

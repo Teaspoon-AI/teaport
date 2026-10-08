@@ -183,7 +183,7 @@ def _fresh():
     arb.ARBITER = arb.SessionArbiter()
     gs._lease = None
     gs._pending = None
-    gs._BUSY_PCM.clear()
+    arb._BUSY_PCM.clear()
 
 
 def _session(ws, gate=None, play_secs=0.05):
@@ -233,14 +233,14 @@ async def _dial(query):
                                      client_notes=SimpleNamespace(limits=lambda: {})))
         return built[-1]
 
-    saved = (gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, gs._tts_for)
+    saved = (gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, arb.tts_for)
     gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner = Transport, build, Runner
-    gs._tts_for = _TTS
+    arb.tts_for = _TTS
     ws = _WS(query)
     try:
         await gs.run_relay_bot(ws)
     finally:
-        gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, gs._tts_for = saved
+        gs.FastAPIWebsocketTransport, gs.build_agent_session, gs.PipelineRunner, arb.tts_for = saved
     return ws, bool(ran)
 
 
@@ -368,14 +368,14 @@ async def test_a_busy_line_the_engine_cannot_say_still_closes_busy():
     class Mute(_TTS):
         async def synthesize(self, text):
             raise OSError("engine down")
-    saved = gs._tts_for
-    gs._tts_for = Mute
+    saved = arb.tts_for
+    arb.tts_for = Mute
     try:
         ws = _WS({"client": "openclaw:b"})
         await gs._refuse(ws, arb.ARBITER.would_refuse(arb.Claim(arb.TALK, client="b")),
                          speak=True, room=False)
     finally:
-        gs._tts_for = saved
+        arb.tts_for = saved
     assert not any(isinstance(m, bytes) for m in ws.sent)
     assert ws.closed == [(gs.BUSY_CLOSE_CODE, "busy: another conversation")]
     _fresh()
@@ -589,8 +589,8 @@ async def test_the_busy_line_is_captioned_first_and_synthesized_once():
         async def synthesize(self, text):
             events.append("synth")
             return await super().synthesize(text)
-    saved = gs._tts_for
-    gs._tts_for = TTS
+    saved = arb.tts_for
+    arb.tts_for = TTS
     try:
         for _ in range(2):
             ws = _WS({"client": "openclaw:b"})
@@ -604,7 +604,7 @@ async def test_the_busy_line_is_captioned_first_and_synthesized_once():
                              speak=True, room=False)
             assert any(isinstance(m, bytes) for m in ws.sent)
     finally:
-        gs._tts_for = saved
+        arb.tts_for = saved
         _fresh()
     assert events == ["caption", "synth", "caption"]
 
@@ -623,6 +623,63 @@ async def test_the_arbiter_says_when_nothing_is_live_anywhere():
     assert not arb.ARBITER.anything_live()
     assert seen[:1] == [False] and True in seen and seen[-1] is False
     _fresh()
+
+
+async def test_a_holder_already_being_ended_is_ended_once_and_a_newcomer_waits_for_it():
+    """The first call gives up while the Talk user is being told; the end runs on
+    (shielded). A second call, or a Talk client, in that window waits for it -- one call
+    line, one close -- and is granted the slot it frees, not refused."""
+    for second in (arb.Claim(arb.CALL, client="sip", label="call2"),
+                   arb.Claim(arb.TALK, client="openclaw:b", label="talk b")):
+        _fresh()
+        talk_ws, talk, _ = await _holding("talk", client="openclaw:a", play_secs=0.6)
+        c1 = asyncio.create_task(arb.ARBITER.acquire(arb.Claim(arb.CALL, client="sip")))
+        await asyncio.sleep(0.3)
+        c1.cancel()
+        await asyncio.gather(c1, return_exceptions=True)
+        assert arb.ARBITER.would_refuse(second) is None             # going, not live
+        assert await arb.ARBITER.acquire(second) is None
+        lines = [f for f in talk.task.queued if isinstance(f, TTSSpeakFrame)]
+        assert len(lines) == 1 and talk_ws.closed == [(gs.CALL_CLOSE_CODE, gs.CALL_CLOSE_REASON)]
+        assert arb.ARBITER.holder is second
+    _fresh()
+
+
+async def test_the_busy_line_cache_is_keyed_on_the_voice_used_and_bounded():
+    _fresh()
+    synths = []
+
+    class TTS(_TTS):
+        def __init__(self, voice=None, language=None):
+            super().__init__(voice, language)
+            self._voice = "af_heart"                                # what the engine is asked for
+
+        async def synthesize(self, text):
+            synths.append(text)
+            return b"\0\0"
+    saved = arb.tts_for
+    arb.tts_for = TTS
+    try:
+        for junk in range(40):                                     # 40 client strings, one voice
+            await arb.busy_line_audio(arb.TALK, voice=f"nonsense-{junk}")
+        assert len(synths) == 1
+        arb.tts_for = lambda v, l: SimpleNamespace(_voice=v, espeak_language="en-us",
+                                                   synthesize=TTS().synthesize)
+        for v in range(40):                                        # 40 real voices: capped
+            await arb.busy_line_audio(arb.TALK, voice=f"v{v}")
+        assert len(arb._BUSY_PCM) <= arb._BUSY_PCM_MAX
+    finally:
+        arb.tts_for = saved
+        _fresh()
+
+
+def test_a_room_is_not_idle_while_a_consult_answer_is_owed():
+    gate = _gate()
+    gate.user_heard = True
+    gate.last_active -= 1000                                       # a long lull...
+    assert gs.room_idle(gate, 1.0)
+    gate.owed = 1                                                  # ...but an answer is coming
+    assert not gs.room_idle(gate, 1.0)
 
 
 def main():

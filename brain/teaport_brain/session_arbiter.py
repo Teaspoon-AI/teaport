@@ -156,7 +156,9 @@ class SessionArbiter:
     def __init__(self):
         self._holder: Claim | None = None
         self._lock = asyncio.Lock()
-        self._endings: set = set()  # ends in flight, held so a cancelled acquire cannot drop them
+        # Ends in flight, by the holder being ended: held so a cancelled acquire cannot
+        # drop one, and so a second newcomer waits on it rather than ending it again.
+        self._endings: dict = {}
         # Called (sync, no arguments) whenever the holder changes: who drives the face's
         # sleep/awake state reads anything_live() from here.
         self.listeners: list = []
@@ -192,6 +194,8 @@ class SessionArbiter:
         """decide() against the holder now, without taking anything: a front-end asks
         this before it builds a session it would only have to refuse."""
         holder = self._holder
+        if holder is not None and holder in self._endings:
+            return None  # going: the slot is about to be free; acquire() waits it out
         return Refusal(holder) if decide(holder, new) == REFUSED else None
 
     def status(self) -> dict:
@@ -208,6 +212,12 @@ class SessionArbiter:
         the engine free."""
         async with self._lock:
             holder = self._holder
+            while holder is not None and holder in self._endings:
+                # Being ended already (a newcomer before this one gave up mid-way, and the
+                # shielded end ran on): it is going, not a reason to refuse, and must not
+                # be ended twice. Wait it out and decide against whoever holds it then.
+                await asyncio.shield(self._endings[holder])
+                holder = self._holder
             why = decide(holder, new)
             if why == REFUSED:
                 logger.info(f"session arbiter: {new.label} refused — {holder.label} has the "
@@ -234,9 +244,11 @@ class SessionArbiter:
         # Shielded: a newcomer that gives up mid-way (a caller who hangs up while a Talk
         # user is being told about the call) must not leave the holder half-ended, told
         # but never closed. The end runs to completion either way.
-        ending = asyncio.ensure_future(self._ending(holder, why))
-        self._endings.add(ending)
-        ending.add_done_callback(self._endings.discard)
+        ending = self._endings.get(holder)
+        if ending is None:
+            ending = asyncio.ensure_future(self._ending(holder, why))
+            self._endings[holder] = ending
+            ending.add_done_callback(lambda _t, h=holder: self._endings.pop(h, None))
         await asyncio.shield(ending)
 
     async def _ending(self, holder: Claim, why: str) -> None:
@@ -286,9 +298,12 @@ def tts_for(voice: str | None, language: str | None):
     return make_tts(voice=voice, language=language)
 
 
-# The busy lines already synthesized, by (voice, language, line): there are a handful of
-# them, and a refused client should not wait on (or load the engine with) a fresh synth.
+# The busy lines already synthesized, by the voice the engine was actually asked for, its
+# language and the line: there are a handful of them, and a refused client should not
+# wait on (or load the engine with) a fresh synth. Capped, oldest out, since the voice a
+# client asks for is its own string.
 _BUSY_PCM: dict = {}
+_BUSY_PCM_MAX = 16
 # How long a busy line may take to synthesize; past it the client goes without it.
 BUSY_SYNTH_SECS = 6.0
 
@@ -301,11 +316,13 @@ async def busy_line_audio(holder_kind: str, voice: str | None = None,
     without building a session (a /talk client, a phone call)."""
     tts = tts_for(voice, language)
     line = busy_line(holder_kind, getattr(tts, "espeak_language", None))
-    key = (voice, language, line)
+    key = (getattr(tts, "_voice", voice), getattr(tts, "espeak_language", None), line)
     pcm = _BUSY_PCM.get(key)
     if pcm is None:
         try:
             pcm = await asyncio.wait_for(tts.synthesize(line), BUSY_SYNTH_SECS)
+            while len(_BUSY_PCM) >= _BUSY_PCM_MAX:
+                _BUSY_PCM.pop(next(iter(_BUSY_PCM)))
             _BUSY_PCM[key] = pcm
         except Exception as e:  # noqa: BLE001 — no voice: the refusal still happens
             logger.warning(f"busy line not synthesized ({e!r}) — refusing without it")

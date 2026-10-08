@@ -250,6 +250,8 @@ class FollowupGate(FrameProcessor):
         # model last answered (time.monotonic(); refreshed while that is still going on).
         self.user_heard = False
         self.last_active = time.monotonic()
+        # Async consult answers still on their way (tools._consult_and_followup).
+        self.owed = 0
         self._was_busy = False
 
     @property
