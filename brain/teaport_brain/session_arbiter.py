@@ -63,6 +63,7 @@
 # session whose client leaves meanwhile is simply forgotten.
 #
 import asyncio
+import unicodedata
 from typing import Awaitable, Callable
 
 from loguru import logger
@@ -216,8 +217,10 @@ class SessionArbiter:
         # call it was for may be gone by then, and the conversation back) rather than
         # deciding against -- and asking again -- a conversation saying goodbye.
         self._holdings: dict = {}
-        # Resumes in flight (held so the loop keeps a strong reference).
-        self._resumes: set = set()
+        # Resumes in flight, by the conversation coming back: a newcomer waits one out
+        # too, so a call's question never talks over "Sorry about that -- where were
+        # we?" (and a resume that ends the session is seen as the end it is).
+        self._resumes: dict = {}
         # Calls asking for the slot right now (in acquire): status() counts one as a call
         # already, so a room mic that yielded to it, polling, does not take the moment
         # between the room letting go and the call being granted for the call's end.
@@ -294,13 +297,16 @@ class SessionArbiter:
 
     async def _acquire(self, new: Claim) -> Refusal | None:
         holder = self._holder
-        while holder is not None and (holder in self._endings or holder in self._holdings):
+        while holder is not None and (holder in self._endings or holder in self._holdings
+                                      or holder in self._resumes):
             # Being ended already (a newcomer before this one gave up mid-way, and the
             # shielded end ran on): it is going, not a reason to refuse, and must not
             # be ended twice. Wait it out and decide against whoever holds it then.
-            # Likewise one going on hold for a call that gave up mid-way: by the end of
-            # it the conversation is held for nobody, and back.
-            await asyncio.shield(self._endings.get(holder) or self._holdings[holder])
+            # Likewise one going on hold for a call that gave up mid-way (by the end of
+            # it the conversation is held for nobody, and back), and one coming back
+            # from hold (its "where were we?" is not to be talked over by a question).
+            await asyncio.shield(self._endings.get(holder) or self._holdings.get(holder)
+                                 or self._resumes[holder])
             holder = self._holder
         why = decide(holder, new)
         if why == PROMPT:
@@ -459,8 +465,8 @@ class SessionArbiter:
         logger.info(f"session arbiter: {held.label} comes back from hold")
         self._set_holder(held)
         t = asyncio.ensure_future(self._resuming(held))
-        self._resumes.add(t)
-        t.add_done_callback(self._resumes.discard)
+        self._resumes[held] = t
+        t.add_done_callback(lambda _t, h=held: self._resumes.pop(h, None))
 
     async def _resuming(self, held: Claim) -> None:
         try:
@@ -564,7 +570,13 @@ def speakable_caller(caller: str | None) -> str | None:
     when it can be). None when nothing of it is left."""
     if not isinstance(caller, str):
         return None
-    kept = "".join(ch if (ch.isalnum() or ch in _CALLER_PUNCT) else " " for ch in caller)
+    # NFC first, and combining marks kept: Devanagari's vowel signs and viramas, Arabic's
+    # harakat, Thai's tone marks are marks, not letters ("राम शर्मा" must not become
+    # "र म शर म"), and a decomposed "José" composes.
+    caller = unicodedata.normalize("NFC", caller)
+    kept = "".join(ch if (ch.isalnum() or ch in _CALLER_PUNCT
+                          or unicodedata.category(ch).startswith("M")) else " "
+                   for ch in caller)
     kept = " ".join(kept.split())
     if len(kept) > CALLER_MAX_CHARS:
         cut = kept[:CALLER_MAX_CHARS + 1].rsplit(" ", 1)[0]

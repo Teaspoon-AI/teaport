@@ -193,6 +193,45 @@ async def test_a_conversation_the_hold_fails_for_is_ended_as_before():
     sa._fresh()
 
 
+async def test_the_next_call_waits_for_a_resume_before_it_asks():
+    """The review's repro: call A is taken and abandoned during the hold; the
+    conversation comes back. Call B must not put its question over "Sorry about that
+    -- where were we?": it waits the resume out, then asks."""
+    saved = arb.SETTLE_SECS
+    arb.SETTLE_SECS = 0.01
+    sa._fresh()
+    events, n = [], [0]
+    try:
+        async def ask(call):
+            n[0] += 1
+            events.append(f"ask {n[0]}")
+            if n[0] == 1:
+                return True
+            await asyncio.sleep(0.1)
+            return False
+
+        async def hold():
+            await asyncio.sleep(0.3)
+
+        async def resume():
+            events.append("resume starts")
+            await asyncio.sleep(0.4)
+            events.append("resume done")
+        talk = arb.Claim(arb.TALK, client="t", ask=ask, hold=hold, resume=resume)
+        assert await arb.ARBITER.acquire(talk) is None
+        p1, p2 = sip_server.CallClaim(), sip_server.CallClaim()
+        first = asyncio.ensure_future(p1.start("A", caller="x"))
+        await asyncio.sleep(0.1)
+        first.cancel()
+        await asyncio.gather(first, return_exceptions=True)
+        refusal = await p2.start("B", caller="y")
+        assert refusal is not None and refusal.declined
+        assert events == ["ask 1", "resume starts", "resume done", "ask 2"], events
+    finally:
+        arb.SETTLE_SECS = saved
+        sa._fresh()
+
+
 async def test_status_says_call_from_the_moment_a_call_asks_for_the_engine():
     """#111 item 4: the room mic's asleep session is closed for the call, its bridge asks
     /talk/status whether a call is up -- and between the room letting go and the call
@@ -235,17 +274,20 @@ def test_the_spoken_caller_is_capped_and_cleaned():
     assert "Bob" in arb.prompt_line("Bob", "en-us")
 
 
+def _registered(*froms):
+    from teaport_brain import privacy
+    privacy.clear()
+    return [sip_server.remember_caller(f"c{i}", f) for i, f in enumerate(froms)]
+
+
 def test_caller_ids_are_masked_in_every_log_line():
     from loguru import logger
     from teaport_brain import privacy
-    privacy.clear()
     privacy.install()
     lines = []
     sink = logger.add(lines.append, format="{message}", level="DEBUG")
     try:
-        name, user, _ = sip_server._from_parts('"José Núñez" <sip:+15551234567@x>')
-        privacy.remember("c1", sip_server.caller_id('"José Núñez" <sip:+15551234567@x>'),
-                         name, user)
+        _registered('"José Núñez" <sip:+15551234567@x>')
         logger.info("LEDGER +assistant: \"Someone's calling me — José Núñez.\"")
         logger.debug("context: " + json.dumps([{"content": "calling me — José Núñez"}]))
         logger.debug("raw +15551234567 / 15551234567 / 555 123 4567 / 5551234567")
@@ -257,6 +299,91 @@ def test_caller_ids_are_masked_in_every_log_line():
     for leak in ("José", "Jos\\u00e9", "Núñez", "5551234567", "555 123 4567"):
         assert leak not in text, (leak, text)
     assert text.count(privacy.MASK) >= 6 and "nothing to hide here" in text
+
+
+def test_the_question_as_said_is_masked_however_cleaning_changed_the_name():
+    """The review's finding 1: the question says speakable_caller(caller), which is not
+    the caller id whenever cleaning or the cut changed it."""
+    from teaport_brain import privacy
+    names = ['"J.R. Smith" <sip:+15551234567@x>',
+             '"Alexander Maximilian Montgomery-Smith III" <sip:+15559876543@x>',
+             '"Smith_John/Cell" <sip:+15559876500@x>']
+    callers = _registered(*names)
+    for caller in callers:
+        said = arb.prompt_line(caller, "en-us")
+        masked = privacy.mask(said)
+        assert masked == "Someone's calling me — <caller>. Should I step away for a moment?", (
+            caller, said, masked)
+    privacy.clear()
+
+
+def test_a_number_is_masked_however_it_is_written_and_nothing_else_is():
+    from teaport_brain import privacy
+    _registered('"J.R. Smith" <sip:+15551234567@x>', "<sip:+447700900123@x>",
+                '"Unknown" <sip:100@pbx>', "<sip:anonymous@anonymous.invalid>")
+    m = privacy.mask
+    for form in ("555-123-4567", "(555) 123-4567", "555.123.4567", "+1 (555) 123-4567",
+                 "1-555-123-4567", "+15551234567", "5551234567", "+44 7700 900123",
+                 "07700 900123", "07700900123", "j.r. smith", "J.R. SMITH"):
+        out = m(f"call from {form} now")
+        assert out == "call from <caller> now", (form, out)
+    assert m("It's J.R. Smith.") == "It's <caller>."
+    # Not inside other numbers, not ordinary words, not an extension or a placeholder.
+    for text in ("id 155512345678 and 25551234567", "HTTP 100 Continue; Unknown frame",
+                 "took 1001 ms; anonymous user", "Mr. Smithson called", "port 5551"):
+        assert m(text) == text, (text, m(text))
+    privacy.clear()
+
+
+def test_a_preview_cut_inside_a_number_does_not_leave_its_digits():
+    """The review's finding 2: a log preview cut mid-number ("…+1 555 123 45…") leaves
+    a run of the number's digits that is no longer the whole number."""
+    from teaport_brain import privacy
+    _registered("<sip:+15551234567@x>")
+    m = privacy.mask
+    assert "555 123 45" not in m("run_tts done [Someone's calling me — +1 555 123 45…]")
+    assert "123 4567" not in m("tail=…123 4567. Should I step away for a moment?")
+    assert m("took 9876… ms") == "took 9876… ms"                   # not its digits
+    # And the sites that cut previews mask first.
+    text = "Someone's calling me — +1 555 123 4567. Should I step away for a moment?"
+    assert m(text)[:36].count("5") == 0
+    privacy.clear()
+
+
+def test_a_traceback_never_prints_the_caller():
+    """The review's finding 3: loguru's default handler prints variable values into a
+    logged traceback (diagnose). install() replaces it with a masked one, diagnose off."""
+    import io
+    from loguru import logger
+    from teaport_brain import privacy
+    _registered('"J.R. Smith" <sip:+15551234567@x>')
+    saved = sys.stderr
+    sys.stderr = buf = io.StringIO()
+    try:
+        privacy.install()
+
+        def handler(frm):
+            who = sip_server.caller_id(frm)
+            return who.upper() + 1
+        try:
+            handler('"J.R. Smith" <sip:+15551234567@x>')
+        except TypeError:
+            logger.exception("handler failed")
+    finally:
+        sys.stderr = saved
+        privacy.install()                                  # back on the real stderr
+        privacy.clear()
+    out = buf.getvalue()
+    assert "handler failed" in out and "TypeError" in out, out
+    assert "Smith" not in out and "5551234567" not in out, out
+
+
+def test_the_spoken_caller_keeps_every_script():
+    """The review's finding 4: combining marks are part of a name."""
+    import unicodedata
+    for name in ("राम शर्मा", "محمد عَلي", "สมชาย ใจดี", "José"):
+        assert arb.speakable_caller(name) == unicodedata.normalize("NFC", name), name
+    assert arb.speakable_caller(unicodedata.normalize("NFD", "José")) == "José"
 
 
 # ---------------------------------------------------------------- CallPrompt

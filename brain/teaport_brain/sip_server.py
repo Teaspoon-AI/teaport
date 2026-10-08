@@ -318,6 +318,19 @@ def caller_id(from_header) -> str | None:
     return user or None
 
 
+def remember_caller(call_id, from_header) -> str | None:
+    """caller_id(from_header), registered with privacy.py first: from here on no log
+    line can carry it, though it will be said. Its forms: as shown, as said (session_
+    arbiter.speakable_caller: cleaned and cut), and the number behind a name. Not a
+    placeholder ("Unknown") or a withheld marker: those are no one's."""
+    caller = caller_id(from_header)
+    if caller:
+        _name, user, _host = _from_parts(from_header)
+        privacy.remember(str(call_id), caller, arb.speakable_caller(caller),
+                         user if len(re.sub(r"\D", "", user)) >= 7 else None)
+    return caller
+
+
 async def answer_busy(connection, holder_kind: str, call_id) -> None:
     """A call the session arbiter refused: the busy line (TTS only, the cached one
     session_arbiter.busy_line_audio shares with /talk), paced out to the gateway in its
@@ -624,11 +637,7 @@ async def run_connection(sock, on_ready=None):
     async def on_call_incoming(_connection, msg):
         # The caller id (the From header) is personal data: it goes to the face, never
         # to the journal; whether there was one is enough to read a call by.
-        caller = caller_id(msg.get("from"))
-        if isinstance(msg.get("from"), str):
-            # From here on no log line can carry it (privacy.py): it will be said.
-            name, user, _host = _from_parts(msg["from"])
-            privacy.remember(str(msg.get("call_id")), caller, name, user)
+        caller = remember_caller(msg.get("call_id"), msg.get("from"))
         logger.info(f"call.incoming id={msg.get('call_id')} to={msg.get('to')} caller id "
                     + ("given" if caller else "withheld")
                     + (" (replayed: the call was already up when this brain connected)"

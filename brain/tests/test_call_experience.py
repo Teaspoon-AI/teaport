@@ -29,6 +29,7 @@
 import asyncio
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -327,6 +328,13 @@ async def test_a_talk_user_who_says_yes_is_held_and_comes_back_after_the_call():
         assert "<caller>" in journal, "the question never reached the journal masked"
         leaks = [form for form in CALLER_FORMS if form in journal]
         assert not leaks, f"the caller id reached the journal: {leaks}"
+        # Nor a piece of it: a preview cut mid-number ("… +1 555 123 45…").
+        number = "15551234567"
+        for line in journal.splitlines():
+            digits = re.sub(r"\D", "", line.split(" - ", 1)[-1])
+            pieces = [number[k:k + 6] for k in range(len(number) - 5)
+                      if number[k:k + 6] in digits]
+            assert not pieces, f"part of the caller id reached the journal: {line}"
 
 
 async def test_a_call_the_gateway_answers_itself_is_taken_without_asking():

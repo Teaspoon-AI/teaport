@@ -15,6 +15,10 @@ User=@USER@
 # front-end looks for it and connects whenever the gateway is up. A default box has no
 # gateway, and the front-end just waits. brain.env may override it (empty: SIP off).
 Environment=TEAPORT_SIP_SOCKET=@SIP_UDS@
+# No variable values in a logged traceback (loguru's "diagnose"): a caller id held in
+# a local would be printed into the journal. The brain also sets it on its own handler
+# (privacy.py); this covers anything that logs before it is installed.
+Environment=LOGURU_DIAGNOSE=no
 # The XVF3800's LED ring, the phone busy lamp (install.sh install_busy_lamp: the udev rule
 # and the group, which exists before this unit is rendered).
 SupplementaryGroups=teaport-hw
