@@ -310,14 +310,16 @@ async def test_a_phone_call_closes_the_asleep_mic_session_and_holds_the_room_off
         _fresh_arbiter()
 
 
-async def test_an_awake_room_conversation_keeps_the_box_and_the_call_is_refused():
-    """For now: #58's take-the-call prompt replaces this refusal."""
+async def test_an_awake_room_conversation_that_cannot_be_asked_keeps_the_box():
+    """Without answer_phone_call (nothing to ask with) the call is refused, as before
+    #111; one that can be asked is asked (test_call_prompt.py, test_call_experience.py)."""
     from teaport_brain import sip_server
     gs, arb = _fresh_arbiter()
     awake_ws, awake = await _room_session(gs, arb, asleep=False)
     try:
         call = sip_server.CallClaim()
-        assert await call.start("c1") == "room"
+        refusal = await call.start("c1")
+        assert refusal is not None and refusal.holder == "room" and not refusal.declined
         assert not awake.task.cancelled and awake_ws.closed == []
         assert not gs.call_live()
         call.end()                                     # nothing held: harmless

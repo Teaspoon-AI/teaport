@@ -18,7 +18,8 @@
 #   - what it NEEDS to work: "agent" (the co-resident OpenClaw gateway,
 #     TEAPORT_AGENT=openclaw, see agent_backend.py), "tts" (the session's voice),
 #     "client:<feature>" (the connected client can do it, announced on /talk as
-#     ?features=...), or "host:<part>" (something installed on this box: HOST_CHECKS);
+#     ?features=...), "host:<part>" (something installed on this box: HOST_CHECKS), or
+#     "call_prompt" (a conversation a phone call can ask to make way: call_prompt.py);
 #   - its call timeout and the phrase the system prompt names it with.
 # active_tools() is the ONE place that decides which tools a session has: the schema
 # the model is offered, the handlers registered on the LLM and the tools the system
@@ -253,6 +254,21 @@ END_CONVERSATION = FunctionSchema(
     ),
     properties={},
     required=[],
+)
+
+ANSWER_PHONE_CALL = FunctionSchema(
+    name="answer_phone_call",
+    description=(
+        "The user's answer when you have just asked whether to step away for a phone "
+        "call that is coming in (\"Someone's calling me … Should I step away for a "
+        "moment?\"). take=true when they want you to take it (yes, sure, go ahead, take "
+        "it), take=false when they don't (no, let it ring, stay, not now), in any "
+        "language. Call it straight away, with no line before it. Only for that question: "
+        "if what they said does not answer it, reply as usual and don't call it."
+    ),
+    properties={"take": {"type": "boolean",
+                         "description": "true: take the call; false: let it ring"}},
+    required=["take"],
 )
 
 WIFI_SETUP = FunctionSchema(
@@ -862,6 +878,8 @@ class ToolContext:
     gate: object = None
     # The session's WifiSetupVoice (wifi_voice.py), which the wifi_setup tool hands to.
     wifi_voice: object = None
+    # The session's CallPrompt (call_prompt.py): it can be asked whether to take a call.
+    call_prompt: object = None
 
 
 @dataclass(frozen=True)
@@ -892,7 +910,7 @@ class Tool:
         """One of the session's own controls — its voice, or the device it speaks
         through — not a source of answers: agent-first mode lets the model call these
         itself rather than through ask_openclaw (agent_session.agent_first_directive)."""
-        return self.client or "tts" in self.needs
+        return self.client or "tts" in self.needs or "call_prompt" in self.needs
 
 
 def _plain(handler):
@@ -909,6 +927,45 @@ async def _wifi_setup(params: FunctionCallParams, voice=None):
         {"ok": True, "note": "Wi-Fi setup has taken over and is asking the user to confirm. "
                              "It tells the user itself how it goes; you get a notice when it ends."},
         properties=no_inference())
+
+
+async def _answer_phone_call(params: FunctionCallParams, prompt=None):
+    from teaport_brain import call_prompt as cp
+    take = (params.arguments or {}).get("take")
+    if not isinstance(take, bool):
+        take = str(take).strip().lower() in ("true", "1", "yes")
+    outcome = cp.NONE if prompt is None else prompt.answer(take)
+    logger.info(f"answer_phone_call(take={take}) -> {outcome}")
+    if outcome == cp.TAKEN:
+        # The brain says it is stepping away and puts the conversation on hold itself; a
+        # model turn now would talk over that line.
+        await params.result_callback(
+            {"ok": True, "note": "You are stepping away to take the call; say nothing now."},
+            properties=no_inference())
+    elif outcome == cp.DECLINED:
+        await params.result_callback(
+            {"ok": True, "note": "The call is left ringing and you stay in this "
+                                 "conversation. In a few words, say you'll let it ring, and "
+                                 "carry on where you were."})
+    elif outcome == cp.CLOSED_TAKEN:
+        await params.result_callback(
+            {"ok": False, "error": "too late: the question had already closed, and you are "
+                                   "taking the call (no answer came in time, or the caller "
+                                   "was already connected). Say nothing about letting it "
+                                   "ring."},
+            properties=no_inference())
+    elif outcome == cp.CLOSED_RINGING:
+        await params.result_callback(
+            {"ok": False, "error": "too late: the question had already closed, and the call "
+                                   "was left ringing; you are not taking it. If the user "
+                                   "wanted you to, say in a few words that it is too late "
+                                   "for this one."})
+    elif outcome == cp.GONE:
+        await params.result_callback(
+            {"ok": False, "error": "the caller hung up before you answered; nothing to do"})
+    else:
+        await params.result_callback(
+            {"ok": False, "error": "no phone call is waiting for an answer"})
 
 
 def _bind_ask_openclaw(ctx: ToolContext):
@@ -968,6 +1025,14 @@ TOOLS: tuple[Tool, ...] = (
          env_flag("TEAPORT_TOOL_RESTART_SESSION", False), frozenset({"client:restart"}),
          hint="restart_session (start a fresh conversation, only when the user explicitly "
               "asks to restart or start over; once it returns, say one short goodbye)"),
+    # call_prompt -- a conversation a phone call can ask (a Talk session, the room mic;
+    # never a call itself). Off, a call ends a Talk session with a spoken line and an
+    # awake room keeps the box (the caller hears busy), as before issue #111.
+    Tool(ANSWER_PHONE_CALL, lambda ctx: functools.partial(_answer_phone_call,
+                                                          prompt=ctx.call_prompt),
+         env_flag("TEAPORT_TOOL_ANSWER_PHONE_CALL", True), frozenset({"call_prompt"}),
+         hint="answer_phone_call (the user's yes or no when you have asked whether to step "
+              "away for an incoming phone call)"),
     # client:sleep -- the local audio bridge announces it only with wake words set: with
     # none there is no sleep to go back to.
     Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),
@@ -1013,6 +1078,8 @@ def _has(need: str, ctx: ToolContext) -> bool:
         return HAS_AGENT
     if need == "tts":
         return ctx.has_tts or ctx.tts is not None
+    if need == "call_prompt":
+        return ctx.call_prompt is not None
     if need.startswith("client:"):
         return need.split(":", 1)[1] in ctx.client_features
     raise ValueError(f"unknown tool need {need!r}")
@@ -1155,7 +1222,8 @@ def _wrap(name, handler, lang_fn):
 
 
 def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
-                   client_features: frozenset = frozenset(), wifi_voice=None) -> None:
+                   client_features: frozenset = frozenset(), wifi_voice=None,
+                   call_prompt=None) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `followup`, if
     given, is an async `(request, text|None) -> None` injector that speaks a background
@@ -1173,7 +1241,7 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
             return (lang or "en-us").split("-")[0]
     ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                       followup=followup if HAS_AGENT else None, gate=gate,
-                      wifi_voice=wifi_voice)
+                      wifi_voice=wifi_voice, call_prompt=call_prompt)
     for tool in active_tools(ctx):
         kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}
         llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn), **kw)

@@ -53,7 +53,7 @@ def test_every_tool_has_a_switch_row_and_a_hint():
             f"{flag}: schema default and code default disagree")
         assert t.hint.startswith(t.name), f"{t.name}: the prompt hint must name the tool"
         for need in t.needs:
-            assert need in ("agent", "tts") or re.fullmatch(r"client:[a-z]+", need) or (
+            assert need in ("agent", "tts", "call_prompt") or re.fullmatch(r"client:[a-z]+", need) or (
                 need.startswith("host:") and need[5:] in tools.HOST_CHECKS), need
 
 

@@ -587,6 +587,21 @@ class TeaportSTTService(WebsocketSTTService):
         await super().cancel(frame)
         await self._disconnect()
 
+    async def hold(self):
+        """Let the engine's one session go with the pipeline still running: a
+        conversation put on hold for a phone call (AgentSession.hold). Nothing reconnects
+        it (the disconnect flag stops the base class's reconnect) until resume()."""
+        logger.info(f"{self}: on hold — closing the engine session")
+        await self._disconnect()
+
+    async def resume(self):
+        """Take an engine session again after hold(). stt_available goes back to None
+        and resolves as at the start, so the session can say whether it hears again."""
+        self._stt_available = None
+        self._slot_busy = None
+        logger.info(f"{self}: back from hold — reconnecting to the engine")
+        await self._connect()
+
     # ---- audio in ----------------------------------------------------------
 
     def _apply_makeup(self, audio: bytes) -> bytes:

@@ -725,9 +725,10 @@ def test_talk_status_says_who_holds_the_engine(monkeypatch):
     a = arb.SessionArbiter()
     monkeypatch.setattr(arb, "ARBITER", a)
     assert asyncio.run(gs.talk_status(req())) == {"active": False, "call": False, "live": False,
-                                                  "holder": None, "asleep": False}
+                                                  "holder": None, "asleep": False, "held": None}
     a._holder = arb.Claim(arb.TALK)
-    live = {"active": True, "call": False, "live": True, "holder": "talk", "asleep": False}
+    live = {"active": True, "call": False, "live": True, "holder": "talk", "asleep": False,
+            "held": None}
     assert asyncio.run(gs.talk_status(req())) == live
     monkeypatch.setenv("GATEWAY_TOKEN", "secret")
     for bad in (req(), req(token="nope"), req(bearer="nope")):
@@ -1492,6 +1493,85 @@ def test_a_consult_still_on_its_way_keeps_the_conversation_awake(monkeypatch):
         server.close()
 
     asyncio.run(run())
+
+
+def test_a_conversation_on_hold_for_a_call_does_not_sleep(monkeypatch):
+    """A call the room said yes to holds its conversation (the brain's {"type": "hold"}):
+    the keep-alive must not end it while the call lasts -- the brain brings it back."""
+    flag, _ = _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "KEEPALIVE_SECS", 0.3)
+    ends = []
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport"}))
+                await ws.send(json.dumps({"type": "hold", "on": True}))
+                await _drain(ws, 1.0)                   # 3x the keep-alive, on hold
+                ends.append("still up")
+                await ws.send(json.dumps({"type": "hold", "on": False}))
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: ends, 3)
+        assert count[0] == 1                            # not slept while it was held
+        assert await _until(lambda: count[0] == 2, 2)   # back, then quiet: it sleeps
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+
+
+def test_a_call_that_takes_the_engine_is_waited_out_without_a_wasted_dial(monkeypatch):
+    """#111 item 4, seen live 2026-10-08 01:11:09: the brain closed the asleep room
+    session for a call (YIELD), the bridge asked /talk/status at once, heard "no call"
+    -- the arbiter was still between the room letting go and granting the call -- and
+    dialled straight back in, to be refused. Against the real arbiter: no dial between
+    the yield and the end of the call."""
+    from teaport_brain import session_arbiter as arb
+    arbiter = arb.SessionArbiter()
+    monkeypatch.setattr(la, "_talk_status_sync", arbiter.status)
+    monkeypatch.setattr(la, "BACKOFF_POLL_SECS", 0.01)
+    dials = []
+
+    async def run():
+        yielded = asyncio.Event()
+
+        async def end(_why):
+            yielded.set()
+            arbiter.release(room)
+        room = arb.Claim(arb.ROOM, client="local-audio", asleep=lambda: True, end=end)
+        assert await arbiter.acquire(room) is None
+        call = arb.Claim(arb.CALL, client="sip")
+        calling = asyncio.ensure_future(arbiter.acquire(call))
+
+        async def run_session(card, preroll, wake=False, awake=False):
+            dials.append({**arbiter.status(), "call_over": call.released.is_set()})
+            if len(dials) == 1:
+                await yielded.wait()
+                return "yield"                          # closed for the call
+            raise asyncio.CancelledError                # the dial after: what it saw is enough
+        monkeypatch.setattr(la, "run_session", run_session)
+
+        async def hang_up_later():
+            await calling
+            await asyncio.sleep(0.2)                    # the call goes on a while
+            arbiter.release(call)
+        ending = asyncio.ensure_future(hang_up_later())
+        try:
+            await la.run_wake_sessions(_FakeCard(), la.WakeState())
+        except asyncio.CancelledError:
+            pass
+        await ending
+
+    asyncio.run(run())
+    assert len(dials) == 2, dials
+    assert dials[1]["call_over"] and not dials[1]["call"], (
+        f"the bridge dialled back before the call was over: {dials[1]}")
 
 
 def test_end_conversation_without_wake_words_is_refused():

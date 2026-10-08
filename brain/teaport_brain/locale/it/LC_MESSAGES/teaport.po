@@ -281,3 +281,18 @@ msgstr "Scusa, sono già in un'altra conversazione. Riprova tra poco."
 
 msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
 msgstr "Scusa, sta arrivando una telefonata e devo rispondere. Possiamo riprendere a parlare quando ho finito."
+
+# A phone call during a conversation (session_arbiter.py, call_prompt.py): the agent asks,
+# steps away, and comes back.
+#. Translators: {caller} is a name or a phone number, as the caller ID gives it.
+msgid "Someone's calling me — {caller}. Should I step away for a moment?"
+msgstr "Qualcuno mi sta chiamando — {caller}. Rispondo un attimo?"
+
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "Qualcuno mi sta chiamando. Rispondo un attimo?"
+
+msgid "I'll take the call — back in a moment."
+msgstr "Rispondo alla chiamata — torno subito."
+
+msgid "Sorry about that — where were we?"
+msgstr "Scusa l'interruzione — dove eravamo rimasti?"

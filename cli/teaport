@@ -285,7 +285,8 @@ username=$u
 password=$p
 reg_timeout=300
 uds_path=$uds
-auto_answer=true
+# The brain answers, after a couple of rings (SIP_ANSWER_AFTER_SECS in brain.env).
+auto_answer=false
 aec=true
 aec_tail_ms=256
 log_level=3
@@ -618,12 +619,16 @@ sip_turn_on() {
 # The keys the units own, forced onto an adopted conf (and onto its probe copy, so what
 # is tested is what is installed): sip_port (5060 — the live port, not whatever the hand
 # launch used), uds_path (the socket the brain's unit names in TEAPORT_SIP_SOCKET; a mismatch
-# is a brain that connects to nothing) and register=true — the gateway's parser default
+# is a brain that connects to nothing), register=true — the gateway's parser default
 # is false (config.h doRegister) and the shipped sample says `register = false`, so a
-# conf derived from either silently never REGISTERs and the probe blamed the trunk.
+# conf derived from either silently never REGISTERs and the probe blamed the trunk — and
+# auto_answer=false: the brain answers the call, after a couple of rings, and lets one ring
+# on that a live conversation says not to pick up (issue #111). The gateway's default and
+# the sample's value are true, which answers every call at once.
 sip_adopt_conf_keys() {
   local f="$1" port="$2" uds="$3"
-  sip_conf_set "$f" sip_port "$port" && sip_conf_set "$f" uds_path "$uds" && sip_conf_set "$f" register true
+  sip_conf_set "$f" sip_port "$port" && sip_conf_set "$f" uds_path "$uds" && sip_conf_set "$f" register true \
+    && sip_conf_set "$f" auto_answer false
 }
 
 # sip_adopt_conf <file> — `configure --conf`. The file is the gateway's own key=value
@@ -715,6 +720,11 @@ sip_status() {
     local reg user; reg="$(confval "$SIP_CONF" registrar_uri)"; user="$(confval "$SIP_CONF" username)"
     printf '  %-28s %s\n' "registrar" "${reg:-?}  (user ${user:-?})"
     printf '  %-28s %s\n' "aec" "$(confval "$SIP_CONF" aec)  (tail $(confval "$SIP_CONF" aec_tail_ms) ms)"
+    local aa; aa="$(confval "$SIP_CONF" auto_answer)"
+    case "$(printf %s "${aa:-true}" | tr A-Z a-z)" in
+      false|no|off|0) printf '  %-28s %s\n' "auto_answer" "$aa  (the brain answers, after a couple of rings)" ;;
+      *) printf '  %-28s %s\n' "auto_answer" "$(c "$YEL" "${aa:-true}")  (answered at once: no rings first, and a call can't be left ringing — set auto_answer=false, then teaport sip restart)" ;;
+    esac
   else
     printf '  %-28s %s\n' "config" "$(c "$YEL" absent) — run: teaport sip configure"
   fi

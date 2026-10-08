@@ -337,21 +337,36 @@ async def test_the_fake_waits_for_call_answer_without_auto_answer():
             a = _Client(gw.path)
             assert await gw.wait_brain(2)
             placing = asyncio.ensure_future(gw.place_call(answer_timeout=5))
-            for _ in range(3):   # hello, call.incoming, incoming
-                m = await a.recv()
-            assert m["state"] == "incoming", m
+            got = [await a.recv() for _ in range(4)]   # hello, call.incoming, incoming, early
+            assert [m.get("state") for m in got[2:]] == ["incoming", "early"], got
             await asyncio.sleep(0.3)
             assert not placing.done(), "answered without a call.answer"
+            a.send({"type": "call.answer", "call_id": "another-call"})   # ignored
+            await asyncio.sleep(0.3)
+            assert not placing.done(), "answered by a call.answer for another call"
+            # A brain that connects now is replayed the ringing state: early.
+            a.close()
+            assert await wait_until(lambda: gw.brain_gone.is_set(), 2)
+            a = _Client(gw.path)
+            got = [await a.recv() for _ in range(3)]
+            assert [(m["type"], m.get("state"), m.get("replay")) for m in got] == [
+                ("hello", None, True), ("call.incoming", None, True),
+                ("call.state", "early", True)], got
             a.send({"type": "call.answer", "call_id": gw.call.call_id})
             call = await asyncio.wait_for(placing, 2)
             assert call.confirmed.is_set()
+            # One call at a time: a second one is turned away, and this one goes on.
+            second = await gw.place_call("+15550002222", answer_timeout=5)
+            assert second.busy and second.ended.is_set() and not second.confirmed.is_set()
+            assert call.active and not any(m.get("call_id") == second.call_id
+                                           for _, m in gw.sent)
             await call.hangup()
 
             # A brain that declines the ringing call: it ends there, unanswered, at
             # once -- not as a TimeoutError once the caller would have given up.
             placing = asyncio.ensure_future(gw.place_call(answer_timeout=5))
             assert await wait_until(
-                lambda: gw.call is not call and gw.call.state == "incoming", 2)
+                lambda: gw.call is not call and gw.call.state == "early", 2)
             a.send({"type": "call.hangup", "call_id": gw.call.call_id})
             declined = await asyncio.wait_for(placing, 2)
             assert declined.ended.is_set() and not declined.confirmed.is_set()

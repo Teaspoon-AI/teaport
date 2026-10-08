@@ -273,3 +273,18 @@ msgstr "抱歉，我现在正在进行另一段对话。请稍后再试。"
 
 msgid "Sorry, a phone call is coming in and I have to take it. We can talk again when it's over."
 msgstr "抱歉，有电话打进来，我得接一下。通话结束后我们再聊。"
+
+# A phone call during a conversation (session_arbiter.py, call_prompt.py): the agent asks,
+# steps away, and comes back.
+#. Translators: {caller} is a name or a phone number, as the caller ID gives it.
+msgid "Someone's calling me — {caller}. Should I step away for a moment?"
+msgstr "有人给我打电话——{caller}。我先去接一下可以吗？"
+
+msgid "Someone's calling me. Should I step away for a moment?"
+msgstr "有人给我打电话。我先去接一下可以吗？"
+
+msgid "I'll take the call — back in a moment."
+msgstr "我去接一下电话——马上回来。"
+
+msgid "Sorry about that — where were we?"
+msgstr "抱歉打断了——我们刚才说到哪儿了？"

@@ -18,7 +18,10 @@
 #                                   audio.done; then session.done.
 #   POST /v1/chat/completions       an OpenAI-compatible chat endpoint, streamed. It
 #                                   greets on the brain's greeting cue, apologises on
-#                                   the resume cue, and otherwise answers with `reply`.
+#                                   the resume cue, and otherwise answers with `reply`
+#                                   -- or with a tool call, when `tool_call` (a function
+#                                   of the messages and the offered tool names) says so;
+#                                   after a tool's result it says TOOL_REPLY.
 #
 # Everything it is asked is kept for assertions: stt_finals, tts_texts, llm_requests,
 # stt_sessions / stt_active.
@@ -46,6 +49,7 @@ DEFAULT_REPLY = ("Paris is the capital of France, and yes, it is a big city with
                  "more than two million people living in it.")
 GREETING_REPLY = "Hello, you have reached the test line. How can I help?"
 RESUME_REPLY = "Sorry, you lost me for a moment. Where were we?"
+TOOL_REPLY = "Okay."
 
 _STT_RATE = 16000
 _TTS_RATE = 24000
@@ -75,9 +79,12 @@ def _tone(seconds: float) -> bytes:
 
 class FakeEngine:
     def __init__(self, *, transcripts: list[str] | None = None, reply: str = DEFAULT_REPLY,
-                 host: str = "127.0.0.1", port: int = 0):
+                 tool_call=None, host: str = "127.0.0.1", port: int = 0):
         self.transcripts = list(transcripts or [DEFAULT_TRANSCRIPT])
         self.reply = reply
+        # (messages, tool names) -> (name, arguments) to call a tool, or None to answer.
+        self.tool_call = tool_call
+        self.tool_calls: list[tuple[str, dict]] = []
         self.host = host
         self.port = port
         self.stt_sessions = 0
@@ -219,6 +226,8 @@ class FakeEngine:
     # -- LLM -------------------------------------------------------------------------
 
     def _answer(self, messages: list[dict]) -> str:
+        if messages and messages[-1].get("role") == "tool":
+            return TOOL_REPLY
         last = next((m for m in reversed(messages) if m.get("role") == "user"), {})
         content = last.get("content") or ""
         if isinstance(content, list):  # content parts
@@ -240,6 +249,27 @@ class FakeEngine:
             return {"id": "chatcmpl-fake", "object": "chat.completion.chunk",
                     "created": created, "model": body.get("model", "fake"),
                     "choices": [{"index": 0, "delta": delta, "finish_reason": finish}]}
+
+        offered = [t.get("function", {}).get("name") for t in body.get("tools") or []]
+        call = (self.tool_call(messages, offered)
+                if self.tool_call is not None and body.get("stream")
+                and messages and messages[-1].get("role") == "user" else None)
+        if call is not None:
+            name, args = call
+            self.tool_calls.append((name, args))
+            resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
+            await resp.prepare(request)
+            for c in (chunk({"role": "assistant", "content": None, "tool_calls": [
+                            {"index": 0, "id": f"call_{len(self.tool_calls)}",
+                             "type": "function",
+                             "function": {"name": name, "arguments": ""}}]}),
+                      chunk({"tool_calls": [{"index": 0, "function": {
+                          "arguments": json.dumps(args)}}]}),
+                      chunk({}, "tool_calls")):
+                await resp.write(f"data: {json.dumps(c)}\n\n".encode())
+            await resp.write(b"data: [DONE]\n\n")
+            await resp.write_eof()
+            return resp
 
         if not body.get("stream"):
             return web.json_response({

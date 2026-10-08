@@ -28,10 +28,12 @@
   box's own microphone and a phone call all share one speech engine. A new
   session while another is live is told the agent is busy and closes; the
   conversation in progress goes on. Only the same client reconnecting replaces
-  its own session, and a phone call ends a remote Talk session after telling its
-  user why. See **docs/CONFIG.md → One engine, one conversation**. For a
+  its own session. A phone call is different: it rings, and the agent asks the
+  conversation in progress whether to step away for it. Yes puts that
+  conversation on hold until the call is over, and no lets the call ring.
+  See **docs/CONFIG.md → One engine, one conversation**. For a
   phone-dedicated box, turn off the box's microphone bridge
-  (`sudo systemctl disable --now teaport-local-audio`): a call already outranks
-  a remote Talk session.
+  (`sudo systemctl disable --now teaport-local-audio`), so nobody in the room is
+  asked.
 
 TODO: troubleshooting, updates, uninstall, multi-language notes.
