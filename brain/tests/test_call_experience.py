@@ -21,15 +21,14 @@
 #   6. A gateway that answers by itself (auto_answer=true): nobody is asked about a
 #      call already connected; it is taken, the conversation held and resumed.
 #   7. A brain that connects while a call rings (replayed `early`) answers it.
-#   And in 2: at DEBUG, the caller id never reaches the brain's journal; a second call
-#   during the call is turned away by the gateway (486) and the first goes on.
+#   And in 2: a second call during the call is turned away by the gateway (486) and the
+#   first goes on.
 #
 # Run: python test_call_experience.py
 #
 import asyncio
 import json
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -278,13 +277,8 @@ async def test_the_brain_lets_it_ring_then_answers_with_the_greeting_ready():
 
 # --- 2-4. a call during a Talk session ---------------------------------------------------
 
-CALLER_FORMS = ("15551234567", "5551234567", "555 123 4567")
-
-
 async def test_a_talk_user_who_says_yes_is_held_and_comes_back_after_the_call():
-    # At DEBUG, as the unit runs (nothing sets LOGURU_LEVEL): the caller is said, and
-    # must still never reach the journal.
-    async with Rig(transcripts=["Sure, take it."], LOGURU_LEVEL="DEBUG") as rig:
+    async with Rig(transcripts=["Sure, take it."]) as rig:
         talk = await _greeted_talk(rig, client="openclaw:a")
         placing = asyncio.ensure_future(rig.gw.place_call(CALLER, answer_timeout=60))
         assert await wait_until(lambda: asked(talk), 15), f"never asked: {talk.said()}"
@@ -322,19 +316,6 @@ async def test_a_talk_user_who_says_yes_is_held_and_comes_back_after_the_call():
         assert not talk.closed
         await talk.close()
         assert rig.gw.violations == [], rig.gw.violations
-        with open(rig.log, encoding="utf-8", errors="replace") as f:
-            journal = f.read()
-        assert "| DEBUG" in journal, "the brain did not log at DEBUG"
-        assert "<caller>" in journal, "the question never reached the journal masked"
-        leaks = [form for form in CALLER_FORMS if form in journal]
-        assert not leaks, f"the caller id reached the journal: {leaks}"
-        # Nor a piece of it: a preview cut mid-number ("… +1 555 123 45…").
-        number = "15551234567"
-        for line in journal.splitlines():
-            digits = re.sub(r"\D", "", line.split(" - ", 1)[-1])
-            pieces = [number[k:k + 6] for k in range(len(number) - 5)
-                      if number[k:k + 6] in digits]
-            assert not pieces, f"part of the caller id reached the journal: {line}"
 
 
 async def test_a_call_the_gateway_answers_itself_is_taken_without_asking():

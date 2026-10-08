@@ -35,7 +35,6 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
-from teaport_brain import privacy
 from teaport_brain.env import env_choice, env_flag, env_num
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.reply_hold import PlayoutHoldFrame
@@ -706,7 +705,7 @@ class EngineTTSService(TTSService):
             # reclaimed by the TTS_STOP_FRAME_TIMEOUT_S sweep: fifteen seconds of dead air
             # per occurrence, with the silent-turn watchdog firing in the middle of it and
             # nothing upstream told anything was wrong.
-            logger.warning(f"{self}: nothing synthesizable in {privacy.mask(text)[:60]!r} — no audio")
+            logger.warning(f"{self}: nothing synthesizable in {text[:60]!r} — no audio")
             yield ErrorFrame(error=f"tts: nothing synthesizable in {text[:60]!r}")
             return
         await self.start_tts_usage_metrics(text)
@@ -759,14 +758,14 @@ class EngineTTSService(TTSService):
                 # before #14, instead of being logged as the engine's.
                 cause = f" ({e.__cause__!r})" if e.__cause__ else ""
                 logger.error(f"engine synth error on clause (skipping): {e}{cause} "
-                             f"clause={privacy.mask(clause)[:60]!r}")
+                             f"clause={clause[:60]!r}")
                 failed_clauses += 1
                 continue
         # Playout forensics: which utterance emitted how much audio, into which
         # context, and when relative to barge-ins (the stale-speech bug class).
         logger.debug(f"{self}: run_tts done — {emitted_secs:.1f}s audio, "
                      f"{synth_secs:.2f}s synth, {paced_secs:.2f}s paced "
-                     f"ctx={str(context_id)[:8]} [{privacy.mask(text)[:36]}…]")
+                     f"ctx={str(context_id)[:8]} [{text[:36]}…]")
         if failed_clauses and not emitted_audio:
             # EVERY clause failed (CUDA OOM, unsupported language, corrupted engine):
             # dead air with no signal is the worst outcome — surface it so the

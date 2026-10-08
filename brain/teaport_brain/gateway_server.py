@@ -52,7 +52,7 @@ from pipecat.transports.websocket.fastapi import (
 )
 
 from teaport_brain.agent_session import build_agent_session
-from teaport_brain import agent_backend, audio_dump, config_ui, display, privacy, reply_hold, sdnotify, wake_gate, xvf_led
+from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
 from teaport_brain.gateway_serializer import (
@@ -588,8 +588,6 @@ def serve(host: str, port: int) -> None:
 
 
 def main():
-    # Before anything logs: no caller id reaches the journal (privacy.py).
-    privacy.install()
     parser = argparse.ArgumentParser(
         description="teaport OpenClaw gateway-relay voice server"
     )

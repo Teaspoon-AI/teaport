@@ -40,7 +40,6 @@
 import os
 
 from loguru import logger
-from teaport_brain import privacy
 from teaport_brain.env import env_flag
 
 import time
@@ -336,10 +335,10 @@ class CaptionTap(FrameProcessor):
             # committed the bubble showing exactly this text — a final now would
             # render as a duplicate bubble after their message and add nothing.
             if _TRACE:
-                logger.info(f"[CAP] FINAL skipped (client committed) tail={privacy.mask(text)[-40:]!r}")
+                logger.info(f"[CAP] FINAL skipped (client committed) tail={text[-40:]!r}")
             return
         if _TRACE:
-            logger.info(f"[CAP] FINAL ({reason}) tail={privacy.mask(text)[-40:]!r}")
+            logger.info(f"[CAP] FINAL ({reason}) tail={text[-40:]!r}")
         await self.push_frame(
             OutputTransportMessageUrgentFrame(message={
                 "type": "transcript", "role": "assistant",
@@ -382,7 +381,7 @@ class CaptionTap(FrameProcessor):
                     # a partial now would reopen a second one. Keep accumulating —
                     # if this utterance survives, the next emit carries it all.
                     if _TRACE:
-                        logger.info(f"[CAP] partial held (user talking) tail={privacy.mask(snapshot)[-30:]!r}")
+                        logger.info(f"[CAP] partial held (user talking) tail={snapshot[-30:]!r}")
                     return
                 self._last_sent = snapshot
                 await self.push_frame(

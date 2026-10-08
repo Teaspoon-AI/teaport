@@ -27,7 +27,6 @@ from loguru import logger
 from pipecat.frames.frames import Frame, LLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain import privacy
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 
 HEARD_MODE = os.getenv("HEARD_MODE", "truncate")  # truncate | note
@@ -163,7 +162,7 @@ class HeardContextCorrector(FrameProcessor):
                     msgs = self._context.get_messages()
                     self._context.set_messages(msgs[:idx] + notes + [prev])
                 logger.info(f"HeardCorrector[merge]: unanswered turn + its continuation "
-                            f"-> one user turn …{privacy.mask(_msg_text(prev))[-60:]!r}")
+                            f"-> one user turn …{_msg_text(prev)[-60:]!r}")
                 return
         logger.info("HeardCorrector[merge]: the unanswered turn is not the caller's message "
                     "before this one; left as two turns")
@@ -228,7 +227,7 @@ class HeardContextCorrector(FrameProcessor):
             # A spoken message was committed (possibly partial TTS text).
             if heard:
                 _set_msg_text(anchor, heard)  # in-place; dict ref is shared
-                logger.info(f"HeardCorrector[truncate]: spoken reply -> heard …{privacy.mask(heard)[-40:]!r}")
+                logger.info(f"HeardCorrector[truncate]: spoken reply -> heard …{heard[-40:]!r}")
             else:
                 self._context.set_messages([m for m in msgs if m is not anchor])
                 logger.info("HeardCorrector[truncate]: removed unheard reply")
@@ -238,7 +237,7 @@ class HeardContextCorrector(FrameProcessor):
             if heard:
                 self._context.set_messages(
                     msgs[:end] + [{"role": "assistant", "content": heard}] + msgs[end:])
-                logger.info(f"HeardCorrector[truncate]: inserted heard reply …{privacy.mask(heard)[-40:]!r}")
+                logger.info(f"HeardCorrector[truncate]: inserted heard reply …{heard[-40:]!r}")
         elif anchor is None:
             # Nothing was committed for the cut turn, so there is nothing to correct.
             # Not a warning: this is the ordinary shape of a reply barged over before

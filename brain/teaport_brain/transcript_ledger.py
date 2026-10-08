@@ -63,7 +63,6 @@ from typing import List, Optional
 
 from loguru import logger
 
-from teaport_brain import privacy
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech
 
@@ -910,7 +909,7 @@ class TranscriptLedger(BaseObserver):
             t_end = turn["last_end"] if turn["last_end"] is not None else t
         t_end = max(t_start, min(t, t_end))
         if never:
-            logger.warning(f"LEDGER assistant reply was never played: {privacy.mask(intended)[:60]!r}")
+            logger.warning(f"LEDGER assistant reply was never played: {intended[:60]!r}")
         self._add(Utterance("assistant", intended, t_start, t_end,
                             interrupted=interrupted, heard_fraction=frac,
                             heard_text=heard_text), turn_seq=turn["seq"])

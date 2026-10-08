@@ -4,11 +4,11 @@
 #
 # The SIP front-end owns the face's call state: ringing (with who is calling) from
 # call.incoming until the call is answered (#111: the brain answers, after the session
-# arbiter's grant and a ring head start), active while it is up (re-sent with a ttl), and none at EVERY end -- hung up, refused, hung up while
+# arbiter's grant and a ring head start), active while it is up (re-sent with a ttl),
+# and none at EVERY end -- hung up, refused, hung up while
 # ringing, a bring-up that failed, a pipeline that ended on its own, the gateway going
 # away, the brain stopping. Nothing at all goes to an avatar that does not say "call"
-# (an older one logs the whole datagram, caller id and all), and the caller id is never
-# written to the journal.
+# (an older one logs the whole datagram, caller id and all).
 #
 # The calls run through sip_server's real connection loop over a real SEQPACKET socket
 # (test_sip_call_lifecycle's fake gateway, the pipeline stubbed), and the face is a real
@@ -31,8 +31,6 @@ import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong p
 for k, v in (("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime"),
              ("LLM_BASE_URL", "http://127.0.0.1:9/v1"), ("LLM_API_KEY", "not-a-real-key")):
     os.environ.setdefault(k, v)
-
-from loguru import logger  # noqa: E402
 
 import test_sip_call_lifecycle as lc  # noqa: E402
 from teaport_brain import display, sip_server  # noqa: E402
@@ -390,28 +388,6 @@ def test_caller_id_formatting():
             ("", None), (None, None), (42, None)):
         got = sip_server.caller_id(frm)
         assert got == want, (frm, got, want)
-
-
-async def test_the_caller_id_is_never_logged():
-    lines = []
-    sink = logger.add(lambda m: lines.append(str(m)), level="TRACE")
-    try:
-        async with Rig() as r:
-            await r.incoming("A", frm='"Alice Smith" <sip:13462348500@teaspoonai>')
-            await r.h.call_state("A", "confirmed")
-            assert await lc.wait_until(lambda: r.face.states()[-1:] == ["active"])
-            await r.h.send_raw({"type": "call.state", "call_id": "A", "state": "disconnected"})
-            assert await r.ends_with_none()
-            await r.incoming("B")                   # a placeholder name: the number
-            assert await lc.wait_until(lambda: r.face.states()[-1:] == ["ringing"])
-            await r.h.send_raw({"type": "call.state", "call_id": "B", "state": "disconnected"})
-            assert await r.ends_with_none(), r.face.got
-    finally:
-        logger.remove(sink)
-    text = "".join(lines)
-    assert "call.incoming" in text, "nothing was logged at all: the check proves nothing"
-    for secret in ("Alice", "13462348500", "2348500", "234 8500", "WIRELESS"):
-        assert secret not in text, f"{secret!r} in the journal:\n{text}"
 
 
 def main():

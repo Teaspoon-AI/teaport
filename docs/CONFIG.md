@@ -248,7 +248,6 @@ In `/etc/teaport/brain.env`. All off by default; log-only.
 | `TEAPORT_AUDIO_DUMP_MAX_SECS` | **600** s (≥ 1) | Caps the recording. |
 | `TEAPORT_CAPTION_USER_HOLD_S` | **1.2** s (≥ 0) | Gap after the user's last interim before assistant partials may render again; prevents the doubled assistant bubble in the Talk UI. |
 | `ENGINE_LOG` | `~/teaport-engine.log` | The engine's serve log, where the tools read decode ms/step. *Set by the installer.* |
-| `LOGURU_LEVEL` | `DEBUG` | The lowest level the brain writes to its journal (loguru's own setting; the brain's masked stderr handler, privacy.py, keeps it). INFO quiets pipecat's per-frame debug lines. One of `TRACE`, `DEBUG`, `INFO`, `SUCCESS`, `WARNING`, `ERROR`, `CRITICAL`. |
 
 ## Installer-owned
 
@@ -545,13 +544,9 @@ than the brain (the brain is what answers calls): the box's microphone
 conversation to make way (and takes the engine if nobody answers); only a "no"
 keeps it out.
 
-Who is calling is said aloud in that question (at most 40 characters of the caller
-ID, letters, digits and a name's punctuation), and never written to the journal: the
-brain masks it in every log line, the ledger's and pipecat's debug lines and tracebacks
-included: the name as said and as shown, and the number however it is written. It
-keeps the last 32 callers in memory (never on disk) for that, since the question stays
-in the conversation's context after the call. The gateway's own pjsua call summary at
-log level 3 and up is teaport-sip#18.
+Who is calling is said aloud in that question, as at most 40 characters of the caller
+ID: letters (any script), digits and a name's punctuation. It is the far end's text,
+and it becomes the agent's own words.
 
 A call **rings before it is answered**: the brain, not the gateway, answers it
 (`auto_answer=false` in the gateway's conf, which `teaport sip configure` writes;

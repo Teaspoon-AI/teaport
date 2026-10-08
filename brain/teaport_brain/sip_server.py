@@ -100,7 +100,7 @@ from teaport_brain import reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
-from teaport_brain import agent_backend, audio_dump, display, privacy, sdnotify
+from teaport_brain import agent_backend, audio_dump, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.sip_serializer import (
@@ -279,8 +279,14 @@ _WITHHELD = frozenset({
 _NAME_ADDR = re.compile(r'\s*(?:"((?:[^"\\]|\\.)*)"|([^<]*?))\s*<([^>]*)>')
 
 
-def _from_parts(from_header: str) -> tuple[str, str, str]:
-    """A SIP From header's display name, URI user and host, unquoted."""
+def caller_id(from_header) -> str | None:
+    """Who a call says it is from, for the face: the display name in its SIP From
+    header unless that is a placeholder ("WIRELESS CALLER"), else the number, readable
+    (+1 346 234 8500 for an 11-digit NANP number, as sent otherwise), else the SIP user.
+    None when it says nothing, or that the caller withheld it (Anonymous, Restricted,
+    anonymous@anonymous.invalid, ...): then not even a number the URI still carries."""
+    if not isinstance(from_header, str):
+        return None
     m = _NAME_ADDR.match(from_header)
     if m:
         name = re.sub(r"\\(.)", r"\1", m.group(1)) if m.group(1) is not None else m.group(2)
@@ -288,23 +294,10 @@ def _from_parts(from_header: str) -> tuple[str, str, str]:
     else:
         name, uri = "", from_header.split(";", 1)[0]
     name = " ".join(name.split())
-    user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
-    user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
-    return name, user, host
-
-
-def caller_id(from_header) -> str | None:
-    """Who a call says it is from, for the face: the display name in its SIP From
-    header unless that is a placeholder ("WIRELESS CALLER"), else the number, readable
-    (+1 346 234 8500 for an 11-digit NANP number, as sent otherwise), else the SIP user.
-    None when it says nothing, or that the caller withheld it (Anonymous, Restricted,
-    anonymous@anonymous.invalid, ...): then not even a number the URI still carries.
-    Personal data: never logged."""
-    if not isinstance(from_header, str):
-        return None
-    name, user, host = _from_parts(from_header)
     if name.upper() in _WITHHELD:
         return None
+    user, _, host = re.sub(r"^\s*(?:sips?|tel):", "", uri, flags=re.I).partition("@")
+    user = urllib.parse.unquote(user.split(";", 1)[0]).strip()
     if user.upper() in _WITHHELD or host.split(";", 1)[0].lower().startswith("anonymous.invalid"):
         return None
     if name.upper() not in _NO_NAME and not re.fullmatch(r"\+?[\d\s().-]+", name):
@@ -316,19 +309,6 @@ def caller_id(from_header) -> str | None:
         d = digits.lstrip("+")
         return f"+1 {d[1:4]} {d[4:7]} {d[7:]}"
     return user or None
-
-
-def remember_caller(call_id, from_header) -> str | None:
-    """caller_id(from_header), registered with privacy.py first: from here on no log
-    line can carry it, though it will be said. Its forms: as shown, as said (session_
-    arbiter.speakable_caller: cleaned and cut), and the number behind a name. Not a
-    placeholder ("Unknown") or a withheld marker: those are no one's."""
-    caller = caller_id(from_header)
-    if caller:
-        _name, user, _host = _from_parts(from_header)
-        privacy.remember(str(call_id), caller, arb.speakable_caller(caller),
-                         user if len(re.sub(r"\D", "", user)) >= 7 else None)
-    return caller
 
 
 async def answer_busy(connection, holder_kind: str, call_id) -> None:
@@ -635,13 +615,11 @@ async def run_connection(sock, on_ready=None):
 
     @connection.event_handler("on_call_incoming")
     async def on_call_incoming(_connection, msg):
-        # The caller id (the From header) is personal data: it goes to the face, never
-        # to the journal; whether there was one is enough to read a call by.
-        caller = remember_caller(msg.get("call_id"), msg.get("from"))
-        logger.info(f"call.incoming id={msg.get('call_id')} to={msg.get('to')} caller id "
-                    + ("given" if caller else "withheld")
+        logger.info(f"call.incoming id={msg.get('call_id')} from={msg.get('from')} "
+                    f"to={msg.get('to')}"
                     + (" (replayed: the call was already up when this brain connected)"
                        if msg.get("replay") is True else ""))
+        caller = caller_id(msg.get("from"))
         call_id = msg.get("call_id")
         if msg.get("replay") is True:
             # What it is now comes with the replayed state (on_call_state): answered long
@@ -1006,7 +984,6 @@ async def run_connection(sock, on_ready=None):
 
 
 def main():
-    privacy.install()
     parser = argparse.ArgumentParser(
         description="teaport SIP front-end, standalone (test rigs; teaport-brain runs it itself)")
     parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),
