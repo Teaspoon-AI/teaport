@@ -216,7 +216,7 @@ In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls)
 
 | Setting | Default | Description |
 |---|---|---|
-| `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks. On means no barge-in. The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins. |
+| `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks. On means no barge-in. |
 | `SIP_HALF_DUPLEX_TAIL_S` | **0.8** s (≥ 0) | The tail after the bot stops, when half-duplex is on. |
 | `SIP_STT_MAKEUP_DB` | **0** dB (0–20) | Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in "stop"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected. |
 | `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |

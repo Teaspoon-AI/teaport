@@ -146,7 +146,12 @@ key moved is logged:
   that set nothing else is renamed `*.retired-<date>`, so it no longer reaches calls; the
   env file stays on disk, unused. A drop-in that does more stays, with a warning.
 
-A key `brain.env` already has is left alone. With `--only brain`, the old unit is only
+What moves is what was in effect, as systemd resolved it: the last value wins, an
+`EnvironmentFile=` beats an `Environment=`, and an `Environment=` value that `brain.env`
+itself overrode is not moved; nor is an empty one. A key `brain.env` already has is left
+alone. `brain.env` is rewritten in one step, with its mode and owner kept and a
+`brain.env.bak-<time>` copy left beside it; the log names keys and files, never values.
+If that step fails, the run stops before anything is swapped. With `--only brain`, the old unit is only
 stopped before the swap and removed once the new brain is verified. If the new brain
 fails and the installer rolls back, the old unit, its gateway ties and the Talk drop-ins
 are put back (and it says so). Rolling back past that release by hand with

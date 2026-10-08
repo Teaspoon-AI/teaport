@@ -1580,7 +1580,15 @@ sip_brain_detach() {
   [ -e "$SIP_BRAIN_UNIT" ] || return 0
   log "one brain process: detaching teaport-sip-brain (phone calls become teaport-brain's own)"
   warn "rolling the brain back past this release by hand (--rollback brain) leaves the phone line without a brain: the old release needs the old units, from that release's install.sh"
-  migrate_brain_dropins
+  # A run that died between detach and retire before this trap existed left its Talk
+  # drop-ins parked: put them back first, so they are judged again like any other.
+  local f
+  for f in /etc/systemd/system/teaport-brain.service.d/*.conf.retired-pending; do
+    [ -e "$f" ] || continue
+    log "  putting back $f, left parked by an earlier run that stopped half-way"
+    SUDO mv "$f" "${f%.retired-pending}"
+  done
+  migrate_brain_dropins || die "the drop-in tuning could not be carried into $ETC/brain.env — nothing was swapped, the old SIP brain is untouched"
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] drop Upholds=/PartOf=teaport-sip-brain from %s; stop %s (kept until the new brain is verified)\n' "$SIP_GW_UNIT" "$SIP_BRAIN_UNIT"
     SIP_BRAIN_DETACHED=1; return 0
@@ -1594,11 +1602,14 @@ sip_brain_detach() {
   SUDO systemctl daemon-reload
   SUDO systemctl stop teaport-sip-brain.service 2>/dev/null || true
   SIP_BRAIN_DETACHED=1
+  # Whatever ends this run before sip_brain_retire (a die, Ctrl-C, a failed swap's own
+  # rollback) puts the old pair back; retire clears it.
+  trap sip_brain_restore EXIT
 }
 
 sip_brain_restore() {
   [ "$SIP_BRAIN_DETACHED" = 1 ] || return 0
-  warn "ROLLBACK: putting the old SIP brain and the Talk drop-ins back (the rolled-back brain has no phone line of its own)"
+  warn "putting the old SIP brain and the Talk drop-ins back (this run did not finish moving to one brain process, and the brain before it has no phone line of its own)"
   if [ "$DRY_RUN" = 1 ]; then return 0; fi
   if [ -n "$SIP_GW_SAVED" ] && [ -f "$SIP_GW_SAVED" ]; then
     SUDO install -m 0644 "$SIP_GW_SAVED" "$SIP_GW_UNIT"; rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""
@@ -1628,6 +1639,7 @@ sip_brain_retire() {
   SUDO systemctl reset-failed teaport-sip-brain.service 2>/dev/null || true
   if [ -n "$SIP_GW_SAVED" ]; then rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""; fi
   SIP_BRAIN_DETACHED=0
+  trap - EXIT
 }
 
 # migrate_brain_dropins — the per-path tuning an appliance kept in systemd drop-ins, carried
@@ -1641,84 +1653,150 @@ sip_brain_retire() {
 #     nothing but such settings is parked (renamed *.retired-pending, then *.retired-<date>
 #     by sip_brain_retire) so it stops applying; the env file it loaded is left on disk,
 #     unused. One that holds anything else stays, with a warning naming it.
-# Environment= and EnvironmentFile= lines are both read. A key brain.env already has is
-# left as it is. Anything without a per-front-end form is listed, not moved. Every key
-# moved is logged.
+# What took effect is what moves, as systemd resolved it: across drop-ins and within one
+# the last value wins; an EnvironmentFile= value beats an Environment= one; and an
+# Environment= value whose key brain.env (the unit's EnvironmentFile) also sets was never
+# in effect, so it is not moved. A key brain.env already has is left as it is; an empty
+# value is not moved. Anything without a per-front-end form is named, not moved. The log
+# names keys and files only, never values (a drop-in can hold a secret).
+# The whole brain.env update is one privileged Python step: read, append the missing keys
+# (after a newline if the file lacks a final one), write a temp file beside it and
+# os.replace it in, with the mode and owner kept and a timestamped backup left. Any
+# failure there (a file that cannot be read, sudo refused) fails the step, and with it the
+# detach: --only brain then stops before the swap.
 migrate_brain_dropins() {
-  local plan
+  local plan sep=$'\x1f'
   plan="$(sudo_python - /etc/systemd/system/teaport-sip-brain.service.d \
-            /etc/systemd/system/teaport-brain.service.d "$ETC/brain.env" <<'PY' || true
-import glob, os, shlex, sys
+            /etc/systemd/system/teaport-brain.service.d "$ETC/brain.env" "$DRY_RUN" <<'PY'
+import glob, os, shlex, sys, time
 PER = {"ENDPOINT_STOP_SECS": "ENDPOINT_STOP_SECS", "SMARTTURN_STOP_SECS": "SMARTTURN_STOP_SECS",
        "SMARTTURN_COMPLETE_THRESHOLD": "SMARTTURN_COMPLETE_THRESHOLD",
        "TEAPORT_INTERRUPT_MIN_WORDS": "INTERRUPT_MIN_WORDS"}
-brain_env = os.path.realpath(sys.argv[3])
+SEP = "\x1f"
+sipd, talkd, env_path, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
+brain_env = os.path.realpath(env_path)
+
+def say(*fields):
+    print(SEP.join(fields))
+
+def env_file(path):
+    out = {}
+    for l in open(path, encoding="utf-8", errors="replace"):
+        l = l.strip()
+        if l and not l.startswith("#") and "=" in l:
+            k, v = l.split("=", 1)
+            out[k.strip()] = v.strip().strip("\"'")
+    return out
+
+existing_text = open(env_path, encoding="utf-8").read() if os.path.exists(env_path) else ""
+existing = env_file(env_path) if existing_text else {}
+
 def read(conf):
-    """(assignments, sources, only_env): only_env is False if the drop-in does more."""
-    out, only_env = [], True
-    for line in open(conf, encoding="utf-8", errors="replace"):
+    """(Environment= values, EnvironmentFile= values, only_env), last value winning."""
+    plain, files, only_env = {}, {}, True
+    for n, line in enumerate(open(conf, encoding="utf-8", errors="replace"), 1):
         line = line.strip()
         if not line or line.startswith(("#", ";")) or line == "[Service]":
             continue
         if line.startswith("Environment="):
-            for tok in shlex.split(line[len("Environment="):]):
+            try:
+                toks = shlex.split(line[len("Environment="):])
+            except ValueError:
+                say("BAD", f"{conf}:{n}")
+                only_env = False
+                continue
+            for tok in toks:
                 if "=" in tok:
-                    out.append(tok.split("=", 1) + [conf])
+                    k, v = tok.split("=", 1)
+                    plain[k] = (v, conf)
         elif line.startswith("EnvironmentFile="):
             path = line[len("EnvironmentFile="):].strip().lstrip("-")
             if os.path.realpath(path) == brain_env:
                 only_env = False
-                continue
-            if os.path.isfile(path):
-                for l in open(path, encoding="utf-8", errors="replace"):
-                    l = l.strip()
-                    if l and not l.startswith("#") and "=" in l:
-                        k, v = l.split("=", 1)
-                        out.append([k.strip(), v.strip().strip("\"'"), path])
+            elif os.path.isfile(path):
+                for k, v in env_file(path).items():
+                    files[k] = (v, path)
         else:
             only_env = False
-    return out, only_env
-for prefix, d in (("SIP", sys.argv[1]), ("TALK", sys.argv[2])):
+    return plain, files, only_env
+
+add = {}
+for prefix, d in (("SIP", sipd), ("TALK", talkd)):
+    merged = {}        # key -> (value, source, from_file), systemd's precedence
+    convs = []
     for conf in sorted(glob.glob(os.path.join(d, "*.conf"))):
-        found, only_env = read(conf)
-        moved = rest = 0
-        for k, v, src in found:
-            if prefix == "SIP" and k.startswith("SIP_"):
-                print(f"SET\t{k}\t{v}\t{src}"); moved += 1
-            elif k in PER:
-                print(f"SET\t{prefix}_{PER[k]}\t{v}\t{src} ({k})"); moved += 1
-            else:
-                print(f"SKIP\t{k}\t{v}\t{conf}"); rest += 1
-        if prefix == "TALK" and moved:
-            print(f"{'PARK' if only_env and not rest else 'KEEP'}\t-\t-\t{conf}")
+        plain, files, only_env = read(conf)
+        for k, (v, src) in plain.items():
+            if k not in merged or not merged[k][2]:
+                merged[k] = (v, src, False)
+        for k, (v, src) in files.items():
+            merged[k] = (v, src, True)
+        convs.append((conf, set(plain) | set(files), only_env))
+    moved, rest = set(), set()
+    for k, (v, src, from_file) in merged.items():
+        if prefix == "SIP" and k.startswith("SIP_"):
+            target = k
+        elif k in PER:
+            target = f"{prefix}_{PER[k]}"
+        else:
+            say("SKIP", k, src); rest.add(k); continue
+        if not from_file and k in existing:
+            say("SHADOWED", k, src); moved.add(k); continue    # brain.env won in systemd
+        if v == "":
+            say("EMPTY", k, src); moved.add(k); continue
+        if target in existing or target in add:
+            say("HAVE", target, src); moved.add(k); continue
+        add[target] = v
+        say("SET", target, f"{src} ({k})" if target != k else src)
+        moved.add(k)
+    if prefix == "TALK":
+        for conf, keys, only_env in convs:
+            if keys and keys <= moved and only_env:
+                say("PARK", conf)
+            elif keys & moved:
+                say("KEEP", conf)
+
+if add and not dry:
+    st = os.stat(env_path)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup = f"{env_path}.bak-{stamp}"
+    with open(backup, "w", encoding="utf-8") as f:
+        f.write(existing_text)
+    os.chmod(backup, st.st_mode & 0o777)
+    os.chown(backup, st.st_uid, st.st_gid)
+    text = existing_text
+    if text and not text.endswith("\n"):
+        text += "\n"
+    text += "".join(f"{k}={v}\n" for k, v in add.items())
+    tmp = f"{env_path}.tmp-{os.getpid()}"
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.chmod(tmp, st.st_mode & 0o777)
+    os.chown(tmp, st.st_uid, st.st_gid)
+    os.replace(tmp, env_path)
+    say("BACKUP", backup)
 PY
-)"
-  [ -n "$plan" ] || return 0
-  local existing kind key val src env="$ETC/brain.env"
-  existing="$(sudo_cat "$env")"
-  while IFS=$'\t' read -r kind key val src; do
+)" || { warn "migrating the drop-in tuning failed (above) — nothing was changed"; return 1; }
+  local kind key src
+  while IFS="$sep" read -r kind key src; do
     case "$kind" in
-      SET)
-        if printf '%s\n' "$existing" | grep -q "^${key}="; then
-          log "  drop-in tuning: $key already in $env — left as it is (not taking $val from $src)"
-        else
-          log "  drop-in tuning: $key=$val -> $env (from $src)"
-          if [ "$DRY_RUN" != 1 ]; then printf '%s=%s\n' "$key" "$val" | sudo_tee_a "$env"; fi
-          existing="$existing"$'\n'"$key=$val"
-        fi ;;
-      SKIP) warn "  drop-in setting $key=$val in $src has no per-front-end form — not moved" ;;
+      SET) log "  drop-in tuning: $key -> $ETC/brain.env (from $src)" ;;
+      HAVE) log "  drop-in tuning: $key already in $ETC/brain.env — left as it is (not taking the value in $src)" ;;
+      SHADOWED) log "  drop-in tuning: $key in $src was never in effect (brain.env sets it, and wins) — not moved" ;;
+      EMPTY) log "  drop-in tuning: $key in $src is empty — not moved" ;;
+      SKIP) warn "  drop-in setting $key in $src has no per-front-end form — not moved" ;;
+      BAD) warn "  unreadable Environment= line at $key — skipped; check it by hand" ;;
+      BACKUP) log "  $ETC/brain.env backed up to $key" ;;
       PARK)
-        log "  $src: all it set is in $env now — parked (it would reach phone calls too)"
-        SUDO mv "$src" "$src.retired-pending"
-        if [ "$DRY_RUN" != 1 ]; then DROPINS_PARKED+=("$src"); fi ;;
-      KEEP) warn "  $src stays: it does more than the per-front-end settings, and now for phone calls too" ;;
+        log "  $key: all it set is in $ETC/brain.env now — parked (it would reach phone calls too)"
+        SUDO mv "$key" "$key.retired-pending"
+        if [ "$DRY_RUN" != 1 ]; then DROPINS_PARKED+=("$key"); fi ;;
+      KEEP) warn "  $key stays: it does more than the per-front-end settings, and now for phone calls too" ;;
     esac
   done <<< "$plan"
   SUDO systemctl daemon-reload
 }
 sudo_python() { if [ "$(id -u)" = 0 ]; then python3 -I "$@"; else sudo python3 -I "$@"; fi; }
-sudo_cat() { if [ -r "$1" ]; then cat "$1"; else sudo cat "$1" 2>/dev/null || true; fi; }
-sudo_tee_a() { if [ "$(id -u)" = 0 ]; then tee -a "$1" >/dev/null; else sudo tee -a "$1" >/dev/null; fi; }
 
 # teaport-sip telephony (opt-in). The GPL C++ gateway (separate teaport-sip repo, NOT
 # built or installed here — the binary is expected at $HOME/teaport-sip/build/teaport-sip).
@@ -1981,6 +2059,11 @@ main_rollback_brain() {
   if systemctl is-enabled --quiet teaport-sip.service 2>/dev/null && [ -n "$sipmod" ] \
      && ! grep -q '^async def serve' "$sipmod"; then
     warn "$prev predates the SIP front-end in teaport-brain: after this rollback no brain answers phone calls until that release's units are back (run its install.sh)"
+  fi
+  local retired
+  retired="$(find /etc/systemd/system/teaport-brain.service.d -maxdepth 1 -name '*.conf.retired-*' -print 2>/dev/null || true)"
+  if [ -n "$sipmod" ] && ! grep -q '^async def serve' "$sipmod" && [ -n "$retired" ]; then
+    warn "Talk's turn-taking tuning was moved into TALK_* keys in $ETC/brain.env, and its drop-in retired ($(printf '%s ' $retired)): $prev ignores those keys, so Talk runs on the shared values until that drop-in is renamed back"
   fi
   # Not --auto-rollback: rolling back a rollback is what the next --rollback is for (the
   # venv being replaced becomes $BRAIN_PREV), and doing it unasked would hide the failure.

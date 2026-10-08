@@ -1541,7 +1541,6 @@ default = false
 read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
-note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
 source = "sip_server.py:146"
 
 [[settings]]
