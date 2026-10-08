@@ -3,7 +3,8 @@
 # teaport — a fake teaport-sip gateway: the phone path without a phone line.
 #
 # Stands in for the C++ gateway (Teaspoon-AI/teaport-sip) on its brain-facing side
-# only. It binds the AF_UNIX SOCK_SEQPACKET socket the SIP brain connects to and
+# only. It binds the AF_UNIX SOCK_SEQPACKET socket the brain's SIP front-end
+# connects to (TEAPORT_SIP_SOCKET) and
 # speaks protocol v0 as teaport-sip/docs/PROTOCOL.md and src/gateway.cpp define it;
 # it never touches SIP, RTP or a registrar, so a call can be placed at the brain
 # while the real line stays registered somewhere else.
@@ -45,8 +46,9 @@
 #   by hand (cwd brain/):
 #       python -m tests.fake_sip_gateway --socket ~/fake-sip/gw.sock \
 #           --from +15551234567 --wav test/question.wav --record /tmp/bot.wav
-#   then start the SIP brain with --socket pointing at the same path. See
-#   docs/CONFIG.md, "Testing the phone path without a line", for the box recipe.
+#   with a brain whose TEAPORT_SIP_SOCKET is the same path. On the box that is the
+#   default path, served with teaport-sip guarded: docs/CONFIG.md, "Testing the phone
+#   path without a line".
 #
 from __future__ import annotations
 
@@ -777,10 +779,10 @@ async def run_call(gw: FakeSipGateway, *, caller: str = DEFAULT_CALLER,
 def _parse(argv=None):
     p = argparse.ArgumentParser(
         prog="python -m tests.fake_sip_gateway",
-        description="Fake teaport-sip gateway: serve the SIP brain's socket and place "
+        description="Fake teaport-sip gateway: serve the brain's SIP socket and place "
                     "calls at it, with no SIP line or registration involved.")
     p.add_argument("--socket", required=True,
-                   help="socket path to bind; the SIP brain's --socket must match")
+                   help="socket path to bind; the brain's TEAPORT_SIP_SOCKET must match")
     p.add_argument("--allow-live-path", action="store_true",
                    help=f"permit binding {LIVE_SOCKET} (teaport-sip must be stopped)")
     p.add_argument("--from", dest="caller", default=DEFAULT_CALLER,
@@ -876,10 +878,25 @@ async def _main(args) -> int:
     return 1 if failed else 0
 
 
+async def _main_interruptible(args) -> int:
+    """_main, stopped cleanly by Ctrl-C or SIGTERM: the live call is hung up (the brain
+    hears disconnected) and the socket file removed, as the gateway does on shutdown."""
+    import signal
+    task = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGINT, signal.SIGTERM):
+        loop.add_signal_handler(sig, task.cancel)
+    try:
+        return await asyncio.ensure_future(_main(args))
+    except asyncio.CancelledError:
+        log.info("stopped")
+        return 130
+
+
 def main(argv=None):
     logging.basicConfig(level=logging.INFO, format="[fake-sip-gw] %(message)s",
                         stream=sys.stderr)
-    sys.exit(asyncio.run(_main(_parse(argv))))
+    sys.exit(asyncio.run(_main_interruptible(_parse(argv))))
 
 
 if __name__ == "__main__":

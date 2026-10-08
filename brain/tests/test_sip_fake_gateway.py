@@ -1,14 +1,15 @@
 #
-# The phone path end to end, with no phone line: the REAL SIP brain
-# (python -m teaport_brain.sip_server, as teaport-sip-brain runs it) against the fake
-# gateway (fake_sip_gateway.py) and a stand-in engine + LLM (fake_engine.py).
+# The phone path end to end, with no phone line: the REAL brain (teaport-brain, its
+# SIP front-end finding the gateway's socket through TEAPORT_SIP_SOCKET, as the unit
+# runs it) against the fake gateway (fake_sip_gateway.py) and a stand-in engine + LLM
+# (fake_engine.py).
 #
 # The brain's services are the real ones -- stt.py, engine_tts.py, the OpenAI LLM
-# service, VAD, Smart Turn -- talking their real wire protocols to fake_engine; only
-# what is at the far end of each socket is fake. So this covers what the unit tests
-# around it stub out: the serializer and transport on a real SEQPACKET socket, the
-# per-call bring-up and teardown, the greeting, a turn transcribed and answered, the
-# STT slot handed back at hangup, and a brain restarted under a live call.
+# service, VAD, Smart Turn, the session arbiter -- talking their real wire protocols to
+# fake_engine; only what is at the far end of each socket is fake. So this covers what
+# the unit tests around it stub out: the serializer and transport on a real SEQPACKET
+# socket, the per-call bring-up and teardown, the greeting, a turn transcribed and
+# answered, the STT slot handed back at hangup, and a brain restarted under a live call.
 #
 #   1. A call is answered and greeted, the caller's question is transcribed and
 #      answered, and hanging up frees the engine's single STT slot.
@@ -58,8 +59,9 @@ def _short_tmpdir() -> str:
 
 
 class Rig:
-    """Fake engine + fake gateway in this process, the SIP brain as a child process
-    (so a restart can be a real SIGKILL)."""
+    """Fake engine + fake gateway in this process, teaport-brain as a child process --
+    the unit's own entry point, whose SIP front-end finds the gateway's socket and asks
+    the session arbiter for the engine per call -- so a restart can be a real SIGKILL."""
 
     def __init__(self, **gw_kw):
         self.dir = _short_tmpdir()
@@ -75,8 +77,12 @@ class Rig:
         return self
 
     async def __aexit__(self, exc_type, *exc):
-        await self.gw.close()   # EOF: a live brain stops on its own
+        await self.gw.close()
         for p in self.brains:
+            # teaport-brain outlives a gateway (it looks for the socket again), so it is
+            # stopped as systemd stops it.
+            if p.poll() is None:
+                p.terminate()
             try:
                 p.wait(timeout=15)
             except subprocess.TimeoutExpired:
@@ -92,20 +98,22 @@ class Rig:
 
     def start_brain(self) -> subprocess.Popen:
         env = {k: v for k, v in os.environ.items()
-               if k not in ("GATEWAY_TOKEN", "TEAPORT_AUDIO_DUMP", "TEAPORT_SIP_SOCKET")}
+               if k not in ("GATEWAY_TOKEN", "TEAPORT_AUDIO_DUMP")}
         env.update(self.engine.env_for())
+        with socket.socket() as s:   # a free port for /talk, which nothing here uses
+            s.bind(("127.0.0.1", 0))
+            port = s.getsockname()[1]
         env.update({
             "PYTHONPATH": BRAIN,
-            # The call tells the Talk brain it is up (sip_server.CallPresence); nobody
-            # here answers /talk/call but the fake engine's 404.
-            "BRAIN_PORT": str(self.engine.port),
+            "TEAPORT_SIP_SOCKET": self.sock,
+            "BRAIN_PORT": str(port),
             "LOGURU_LEVEL": "INFO",
         })
         log = os.path.join(self.dir, f"brain-{len(self.brains) + 1}.log")
         self.logs.append(log)
         with open(log, "w") as out:
-            p = subprocess.Popen([sys.executable, "-u", "-m", "teaport_brain.sip_server",
-                                  "--socket", self.sock],
+            p = subprocess.Popen([sys.executable, "-u", "-m", "teaport_brain.gateway_server",
+                                  "--host", "127.0.0.1", "--port", str(port)],
                                  cwd=BRAIN, env=env, stdout=out, stderr=subprocess.STDOUT)
         self.brains.append(p)
         return p
@@ -132,7 +140,7 @@ def user_texts(engine):
 async def test_a_call_is_greeted_transcribed_and_answered():
     async with Rig() as rig:
         rig.start_brain()
-        assert await rig.gw.wait_brain(60), "the SIP brain never connected"
+        assert await rig.gw.wait_brain(60), "teaport-brain never connected to the gateway"
         rec = os.path.join(rig.dir, "bot.wav")
         s = await run_call(rig.gw, caller="+15551234567", wav=QUESTION_WAV,
                            hangup="done", hangup_after=60, record=rec)
@@ -159,7 +167,7 @@ async def test_a_call_is_greeted_transcribed_and_answered():
 async def test_a_hangup_mid_reply_stops_the_bot_and_the_next_call_starts_fresh():
     async with Rig() as rig:
         brain = rig.start_brain()
-        assert await rig.gw.wait_brain(60), "the SIP brain never connected"
+        assert await rig.gw.wait_brain(60), "teaport-brain never connected to the gateway"
         s = await run_call(rig.gw, wav=QUESTION_WAV, hangup="mid-reply", mid_reply_s=0.8,
                            hangup_after=60)
         assert s["reply_onset"] is not None, s
@@ -186,7 +194,7 @@ async def test_a_hangup_mid_reply_stops_the_bot_and_the_next_call_starts_fresh()
 async def test_a_brain_killed_mid_call_is_replayed_the_call_and_resumes_it():
     async with Rig() as rig:
         first = rig.start_brain()
-        assert await rig.gw.wait_brain(60), "the SIP brain never connected"
+        assert await rig.gw.wait_brain(60), "teaport-brain never connected to the gateway"
         call = await rig.gw.place_call("+15551234567")
         assert await call.wait_bot_speech(0, 20) is not None, "no greeting"
         assert await call.wait_bot_quiet(1.0, 20) is not None
@@ -198,7 +206,7 @@ async def test_a_brain_killed_mid_call_is_replayed_the_call_and_resumes_it():
         heard_before = len(call.bot_onsets)
 
         rig.start_brain()
-        assert await rig.gw.wait_brain(60), "the restarted brain never connected"
+        assert await rig.gw.wait_brain(60), "the restarted teaport-brain never reconnected"
         # The handshake, exactly: hello, then the call as it stands, all flagged.
         second = [m for n, m in rig.gw.sent if n == 2][:3]
         assert [m["type"] for m in second] == ["hello", "call.incoming", "call.state"], second

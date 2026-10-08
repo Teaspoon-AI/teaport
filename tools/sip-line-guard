@@ -11,10 +11,10 @@
 #
 # Why not `systemctl mask --runtime`: the installer puts teaport-sip.service in
 # /etc/systemd/system, which outranks a mask in /run, so the masked unit still starts
-# (directly, or pulled in by teaport-sip-brain's BindsTo=). A persistent mask is
+# (directly, by `teaport sip restart`, or pulled in by another unit). A persistent mask is
 # refused for the same reason: the /etc file is already there. Drop-ins, though, merge
 # from every directory, so a runtime drop-in with a condition that can never hold
-# stops every start of the unit -- direct, restart, or a BindsTo=/Upholds= pull --
+# stops every start of the unit -- direct, restart, or a Wants=/BindsTo= pull --
 # before its ExecStart runs.
 #
 # `status` evaluates the unit's conditions with `systemd-analyze condition --unit`,

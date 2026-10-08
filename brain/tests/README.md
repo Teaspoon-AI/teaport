@@ -74,7 +74,7 @@ HF_HUB_OFFLINE=1 HF_HOME=$(mktemp -d) unshare -rn \
 ```
 
 Loopback is up in that namespace because `test_sip_fake_gateway.py` needs it: it
-runs the real SIP brain against `fake_sip_gateway.py` (a stand-in for the
+runs the real teaport-brain against `fake_sip_gateway.py` (a stand-in for the
 teaport-sip gateway, also a CLI for the box — docs/CONFIG.md, *Testing the phone
 path without a line*) and `fake_engine.py` (the engine's STT/TTS and an
 OpenAI-compatible LLM on 127.0.0.1). Nothing leaves the machine.
