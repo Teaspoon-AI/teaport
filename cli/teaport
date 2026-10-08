@@ -173,6 +173,11 @@ cmd_doctor() {
     if [ "$st" = active ]; then ok "teaport-sip active"; else failc "teaport-sip is $st"; sipdown=1; fi
     if [ "$sipdown" = 0 ]; then
       st="$(brain_sip)"
+      # "waiting" right after a gateway (re)start is the brain's 2 s look for the socket,
+      # not a fault: give it a few seconds before calling it one (and before --fix
+      # restarts the brain over it).
+      local tries=0
+      while [ "$st" = waiting ] && [ "$tries" -lt 5 ]; do sleep 1; tries=$((tries + 1)); st="$(brain_sip)"; done
       if [ "$st" = connected ]; then ok "the brain's SIP front-end is connected"
       elif [ "$st" = off ]; then failc "the brain's SIP front-end is off (TEAPORT_SIP_SOCKET empty in $ETC/brain.env?) — no brain answers calls"
       else failc "the brain's SIP front-end is $st, not connected — calls go unanswered"; brainsip=1; fi

@@ -113,6 +113,14 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | `VAD_MIN_VOLUME` | **0.6** (0–1) | Silero's volume gate. |
 | `VAD_SAMPLE_RATE` | `16000` | 8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample. One of `16000`, `8000`. |
 | `TEAPORT_INTERRUPT_MIN_WORDS` | **2** (≥ 1) | Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. On SIP, while the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough. |
+| `SIP_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. |
+| `SIP_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. |
+| `SIP_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
+| `SIP_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for phone calls (the SIP front-end) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
+| `TALK_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
+| `TALK_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
+| `TALK_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
+| `TALK_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
 | `TEAPORT_REPLY_HOLD` | — | Retired, never shipped in a release: the reply hold is set per front-end by TEAPORT_REPLY_HOLD_SIP and TEAPORT_REPLY_HOLD_TALK. If it is still set, the brain ignores it and logs a warning saying so. |
 | `TEAPORT_REPLY_HOLD_SIP` | **on** | Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed. |
 | `TEAPORT_REPLY_HOLD_TALK` | **off** | The same reply hold for the OpenClaw Talk path. Off until a Talk session has been measured with it: the only measurement so far is a telephony call. |
@@ -378,6 +386,17 @@ The `.conf` is the gateway's own `key=value` format (`registrar_uri`, `id_uri`,
 is fine; `teaport sip restart` afterwards. Nothing about the line lives in
 `/tmp`: the conf is in `~/.config/teaport`, the socket in `/run/teaport` (created
 by the unit), the logs in journald.
+
+## Turn-taking per front-end
+
+Phone calls and Talk run in one brain process, but they were tuned apart (blind A/Bs:
+Talk stops at 0.2 s with a 0.6 s Smart Turn ceiling; the phone keeps 0.5 s / 1.0 s).
+So `ENDPOINT_STOP_SECS`, `SMARTTURN_STOP_SECS`, `SMARTTURN_COMPLETE_THRESHOLD` and
+`TEAPORT_INTERRUPT_MIN_WORDS` are the shared values, and each front-end can override
+them in `brain.env`: `SIP_ENDPOINT_STOP_SECS`, `TALK_ENDPOINT_STOP_SECS`, and so on
+(the interrupt count drops its `TEAPORT_` prefix: `SIP_INTERRUPT_MIN_WORDS`,
+`TALK_INTERRUPT_MIN_WORDS`). An unset or unreadable override falls back to the shared
+value. Each session logs the values it was built with (`turn-taking (sip): …`).
 
 ## One engine, one conversation
 

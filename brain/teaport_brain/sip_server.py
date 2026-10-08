@@ -81,7 +81,12 @@ from teaport_brain.env import env_flag, env_num
 from teaport_brain import agent_backend, audio_dump, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
-from teaport_brain.sip_serializer import SipProtocolSerializer
+from teaport_brain.sip_serializer import (
+    BYTES_PER_FRAME,
+    PIPELINE_SAMPLE_RATE,
+    SipProtocolSerializer,
+    encode_audio,
+)
 from teaport_brain.sip_transport import (
     DEFAULT_UDS_PATH,
     SipConnection,
@@ -214,6 +219,29 @@ def status() -> str:
 # appear. 30 s covers a cold gateway on a loaded box with room to spare.
 _GATEWAY_WAIT_S = 30.0
 _GATEWAY_POLL_S = 0.5
+
+
+async def answer_busy(connection, holder_kind: str, call_id) -> None:
+    """A call the session arbiter refused: the busy line (TTS only, the cached one
+    session_arbiter.busy_line_audio shares with /talk), paced out to the gateway in its
+    20 ms frames, then hang up. No pipeline, no STT. A hangup meanwhile cancels it."""
+    import numpy as np
+    import soxr
+
+    line, pcm = await arb.busy_line_audio(holder_kind)
+    logger.info(f"call {call_id} refused ({holder_kind} conversation has the box) — "
+                "saying it is busy, then hanging up")
+    if pcm:
+        wire = soxr.resample(np.frombuffer(pcm, dtype=np.int16), 24000, PIPELINE_SAMPLE_RATE)
+        data = wire.astype("<i2").tobytes()
+        loop = asyncio.get_running_loop()
+        start = loop.time()
+        for n, i in enumerate(range(0, len(data) - BYTES_PER_FRAME + 1, BYTES_PER_FRAME)):
+            await connection.send(encode_audio(data[i:i + BYTES_PER_FRAME]))
+            # Real time: the gateway's playout queue is about a second deep.
+            await asyncio.sleep(max(0.0, start + (n + 1) * 0.02 - loop.time()))
+        await asyncio.sleep(0.3)  # the gateway's own backlog plays out
+    await connection.send_control({"type": "call.hangup"})
 
 
 class CallClaim:
@@ -520,6 +548,12 @@ async def run_connection(sock, on_ready=None):
         # Before anything takes the engine: the session arbiter makes way for the call,
         # or refuses it (an awake room conversation has the box).
         busy = await presence.start(call_id)
+        if busy is not None:
+            # Refused: no session is built for it. Building one (models, the STT connect)
+            # on this event loop would stall the conversation that has the box, for a
+            # caller who is only to hear one line.
+            await answer_busy(connection, busy, call_id)
+            return
         transport = SipGatewayTransport(connection, params)
         # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
@@ -539,6 +573,8 @@ async def run_connection(sock, on_ready=None):
             input_processors=input_procs or None,
             stt_makeup_db=STT_MAKEUP_DB,
             reply_hold_enabled=reply_hold.SIP_ENABLED,
+            # The phone's own turn-taking (SIP_* over the shared knobs).
+            front_end="sip",
         )
 
         @session.task.event_handler("on_pipeline_finished")
@@ -586,20 +622,16 @@ async def run_connection(sock, on_ready=None):
         # Publish BEFORE greeting: from here a `disconnected` for this call can find
         # and tear down the pipeline even though the bring-up is still running.
         active["call"] = (call_id, session, runner_task, transport)
-        if busy is not None:
-            await session.refuse(busy)
-        else:
-            await session.greet(resumed=resumed)
+        await session.greet(resumed=resumed)
         if session.should_end:
-            # The session arbiter refused the call, or STT is unavailable — the engine's
-            # single slot is held by another process (a standalone rig) or
-            # the engine is unreachable. refuse() / greet() spoke the matching line
-            # instead of greeting; let it play out, then
+            # STT is unavailable — the engine's single slot is held by another process
+            # (a standalone rig) or the engine is unreachable. greet() spoke the
+            # matching line instead of greeting; let it play out, then
             # hang the caller up and tear the pipeline down so the line drops cleanly.
             # wait_until_delivered returns once the line has been spoken (or after a
             # short timeout if the engine can't even synthesize it — hang up either way).
-            logger.info(f"{'busy' if busy else 'STT unavailable'} for call {call_id} — "
-                        "playing the warning, then hanging up")
+            logger.info(f"STT unavailable for call {call_id} — playing the warning, "
+                        "then hanging up")
             await session.followup_gate.wait_until_delivered()
             await transport.send_control({"type": "call.hangup"})
             await cancel_active_call("STT unavailable", call_id=call_id)

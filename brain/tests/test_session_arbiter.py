@@ -403,18 +403,11 @@ async def test_a_holder_that_never_lets_go_does_not_wedge_the_arbiter():
 
 class _SipRig:
     """test_sip_call_lifecycle's fake gateway: the real sip_server connection loop over a
-    real SEQPACKET socket, the per-call pipeline stubbed. A refused call's stub session
-    records its busy line instead of greeting."""
+    real SEQPACKET socket, the per-call pipeline stubbed."""
 
     def __init__(self):
         import test_sip_call_lifecycle as lc
         self.lc = lc
-        self.refused = {}
-
-        async def refuse(session, holder_kind):
-            self.refused[session.call_id] = holder_kind
-            session.should_end = True
-        lc._FakeSession.refuse = refuse
         self.h = lc._Harness()
 
 
@@ -428,7 +421,7 @@ async def test_sip_end_to_end_a_call_during_talk_tells_the_talk_user_and_takes_t
         assert await rig.lc.wait_until(lambda: "A" in rig.lc._FakeSession.greeted, 5)
         assert talk_ws.closed == [(gs.CALL_CLOSE_CODE, gs.CALL_CLOSE_REASON)]
         assert talk.task.queued[1].text == arb.call_line("en-us")
-        assert arb.ARBITER.holder.kind == arb.CALL and not rig.refused
+        assert arb.ARBITER.holder.kind == arb.CALL
         await rig.h.call_state("A", "disconnected")
         assert await rig.lc.wait_until(lambda: not arb.ARBITER.held(), 5)
         ws, ran = await _dial({"client": "openclaw:a"})          # the box is free again
@@ -439,16 +432,37 @@ async def test_sip_end_to_end_a_call_during_talk_tells_the_talk_user_and_takes_t
 
 
 async def test_sip_end_to_end_a_call_during_an_awake_room_hears_busy_and_is_hung_up():
+    """Refused: no session is built (no models, no STT on the shared loop); the cached
+    busy line goes out to the gateway in 20 ms frames, then the hangup."""
+    from teaport_brain import sip_server
+    from teaport_brain.sip_serializer import BYTES_PER_FRAME, MSG_AUDIO_OUT
     _fresh()
     room_ws, room, _ = await _holding("room awake", client="local-audio")
     rig = _SipRig()
+    saved = (arb.tts_for, sip_server.SipConnection.send_control)
+    arb.tts_for = _TTS
+    sent = []
+
+    async def send_control(self, msg):
+        sent.append(msg)
+    sip_server.SipConnection.send_control = send_control
     try:
         await rig.h.start()
         await rig.h.call_state("A", "confirmed")
-        assert await rig.lc.wait_until(lambda: {"type": "call.hangup"} in rig.h.controls, 5)
-        assert rig.refused == {"A": arb.ROOM} and "A" not in rig.lc._FakeSession.greeted
+        assert await rig.lc.wait_until(lambda: {"type": "call.hangup"} in sent, 5)
+        assert rig.lc._FakeSession.built == []                    # nothing built for it
+        audio = []
+        rig.h.peer.setblocking(False)
+        try:
+            while True:
+                audio.append(rig.h.peer.recv(4096))
+        except BlockingIOError:
+            pass
+        frames = [d for d in audio if d[:1] == bytes([MSG_AUDIO_OUT])]
+        assert frames and all(len(d) == 1 + BYTES_PER_FRAME for d in frames)
         assert not room.task.cancelled and arb.ARBITER.holder.kind == arb.ROOM
     finally:
+        arb.tts_for, sip_server.SipConnection.send_control = saved
         await rig.h.stop()
         _fresh()
 
@@ -466,17 +480,6 @@ async def test_the_gateway_going_away_mid_call_gives_the_engine_back():
     finally:
         await rig.h.stop()
         _fresh()
-
-
-async def test_a_refused_session_says_busy_and_ends():
-    from pipecat.processors.aggregators.llm_context import LLMContext
-    from teaport_brain.agent_session import AgentSession
-    task = _Task(_WS({}))
-    s = AgentSession(task=task, context=LLMContext([]), stt=None, tts=_TTS(), llm=None,
-                     ledger=None, followup_gate=None)
-    await s.refuse("room")
-    assert s.should_end and s.end_reason == "busy"
-    assert [f.text for f in task.queued] == [arb.busy_line(arb.ROOM, "en-us")]
 
 
 # ---------------------------------------------------------------- review fixes (#106)

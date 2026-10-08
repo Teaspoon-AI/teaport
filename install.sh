@@ -19,8 +19,9 @@
 # brain unit (teaport-brain: Talk and the phone line's front-end both live in it) and
 # checks it comes back — rolling back on its own if it does not. No EULA, no system packages, no engine download, no credential prompts, no
 # unit or env rendering: engine, agent, front door, bridge and SIP are left as they are.
-# (One exception, once: a box that still has the retired teaport-sip-brain unit loses it
-# before the swap — retire_sip_brain — since the new brain serves the phone line itself.)
+# (One exception, once: a box that still has the retired teaport-sip-brain unit has it
+# stopped before the swap and removed after it — sip_brain_detach / sip_brain_retire —
+# since the new brain serves the phone line itself; its drop-in tuning moves to brain.env.)
 # A brain change that needs a new unit or env setting ships with a full install run
 # instead: that builds the release the same way, then — once every unit and env file is
 # written — points the link at it and restarts the engine and the brain in one step,
@@ -744,11 +745,12 @@ brain_swap() {
   [ -n "$prev" ] && [ -d "$prev" ] || die "the brain did not come back on $target, and there is no previous venv to roll back to — see: $journal"
   warn "the brain did not come back on the new venv — rolling back to $prev"
   brain_point_at "$prev"
+  sip_brain_restore
   # The failed venv is kept for inspection but is not a rollback target; brain_prune
   # bounds how many of those stay.
   rm -f "$BRAIN_PREV"
   if brain_restart "$SWAP_ALSO" "$@"; then
-    die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: $journal"
+    die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: $journal. The teaport CLI was not updated (it is installed only after a verified swap), so it still matches $prev"
   fi
   die "rolled back to $prev, but the brain is not healthy there either — see: $journal"
 }
@@ -1553,34 +1555,170 @@ phase_bridge() {
   fi
 }
 
-# retire_sip_brain — the one-time move from two brain processes to one (issue #58): the
-# SIP front-end now runs inside teaport-brain, so the separate teaport-sip-brain unit goes.
-# Both install paths call it: the full install (phase_sip, which then re-renders the
-# gateway unit) and --only brain (before its swap: the new brain connects to the gateway
-# itself, and two brains on one gateway socket must never both be up). Order matters:
-# the old gateway unit is PartOf= the SIP brain, so stopping that brain first would stop
-# the gateway too and drop a call. The gateway's ties to it come out first, then the old
-# unit is stopped, disabled and removed. A running gateway stays up throughout, and the
-# brain restart that follows connects to it (a call in progress is replayed to it,
-# teaport-sip#3). Nothing to do once the unit is gone.
-retire_sip_brain() {
-  local old=/etc/systemd/system/teaport-sip-brain.service gw=/etc/systemd/system/teaport-sip.service
-  [ -e "$old" ] || return 0
-  log "retiring teaport-sip-brain: phone calls are teaport-brain's own now (one brain process)"
-  warn "rolling the brain back past this release (--rollback brain) leaves the phone line without a brain: the old release needs the old units, from that release's install.sh"
+# --- one brain process (issue #58): retiring teaport-sip-brain -----------------------
+# The SIP front-end now runs inside teaport-brain, so the separate teaport-sip-brain unit
+# goes. In three steps, so a failed --only brain swap can put the old pair back:
+#   sip_brain_detach   before the swap: the per-path tuning the box kept in drop-ins is
+#                      carried into brain.env (migrate_brain_dropins: the new brain must
+#                      start with it, and must not start with the Talk-only drop-in, which
+#                      would now reach calls too); the gateway unit loses its Upholds=/
+#                      PartOf= on the old unit (first: PartOf= would otherwise stop the
+#                      gateway with it and drop a call); the old unit is stopped. Its file,
+#                      its drop-ins and the gateway's unit as it was are all kept.
+#   sip_brain_retire   once the new brain is verified: the old unit is disabled and
+#                      removed, and its drop-in dir renamed *.retired-<date>.
+#   sip_brain_restore  on an automatic rollback: the gateway unit and the Talk drop-ins as
+#                      they were, the old unit started again if it was running. Loudly.
+# A running gateway stays up throughout; the restarted brain connects to it (a call in
+# progress is replayed to it, teaport-sip#3). Nothing to do once the unit is gone. The full
+# install runs detach + retire in phase_sip (it has no automatic rollback).
+SIP_BRAIN_UNIT=/etc/systemd/system/teaport-sip-brain.service
+SIP_GW_UNIT=/etc/systemd/system/teaport-sip.service
+SIP_BRAIN_DETACHED=0 SIP_BRAIN_WAS_ACTIVE=0 SIP_GW_SAVED=""
+DROPINS_PARKED=()   # Talk drop-ins renamed by migrate_brain_dropins (sip_brain_restore undoes)
+sip_brain_detach() {
+  [ -e "$SIP_BRAIN_UNIT" ] || return 0
+  log "one brain process: detaching teaport-sip-brain (phone calls become teaport-brain's own)"
+  warn "rolling the brain back past this release by hand (--rollback brain) leaves the phone line without a brain: the old release needs the old units, from that release's install.sh"
+  migrate_brain_dropins
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] drop Upholds=/PartOf=teaport-sip-brain from %s; disable --now and remove %s\n' "$gw" "$old"
-    return 0
+    printf '  [dry-run] drop Upholds=/PartOf=teaport-sip-brain from %s; stop %s (kept until the new brain is verified)\n' "$SIP_GW_UNIT" "$SIP_BRAIN_UNIT"
+    SIP_BRAIN_DETACHED=1; return 0
   fi
-  if [ -f "$gw" ] && grep -Eq '^(Upholds|PartOf)=teaport-sip-brain\.service' "$gw"; then
-    SUDO sed -i -E '/^(Upholds|PartOf)=teaport-sip-brain\.service/d' "$gw"
+  if systemctl is-active --quiet teaport-sip-brain.service 2>/dev/null; then SIP_BRAIN_WAS_ACTIVE=1; fi
+  if [ -f "$SIP_GW_UNIT" ] && grep -Eq '^(Upholds|PartOf)=teaport-sip-brain\.service' "$SIP_GW_UNIT"; then
+    SIP_GW_SAVED="$(mktemp)"
+    cp "$SIP_GW_UNIT" "$SIP_GW_SAVED"
+    SUDO sed -i -E '/^(Upholds|PartOf)=teaport-sip-brain\.service/d' "$SIP_GW_UNIT"
   fi
   SUDO systemctl daemon-reload
+  SUDO systemctl stop teaport-sip-brain.service 2>/dev/null || true
+  SIP_BRAIN_DETACHED=1
+}
+
+sip_brain_restore() {
+  [ "$SIP_BRAIN_DETACHED" = 1 ] || return 0
+  warn "ROLLBACK: putting the old SIP brain and the Talk drop-ins back (the rolled-back brain has no phone line of its own)"
+  if [ "$DRY_RUN" = 1 ]; then return 0; fi
+  if [ -n "$SIP_GW_SAVED" ] && [ -f "$SIP_GW_SAVED" ]; then
+    SUDO install -m 0644 "$SIP_GW_SAVED" "$SIP_GW_UNIT"; rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""
+  fi
+  local f
+  for f in "${DROPINS_PARKED[@]}"; do SUDO mv "$f.retired-pending" "$f" || warn "could not put $f back"; done
+  DROPINS_PARKED=()
+  SUDO systemctl daemon-reload
+  if [ "$SIP_BRAIN_WAS_ACTIVE" = 1 ]; then
+    SUDO systemctl start teaport-sip-brain.service \
+      || warn "teaport-sip-brain did not start again — the phone line answers into silence: systemctl status teaport-sip-brain"
+  fi
+  SIP_BRAIN_DETACHED=0
+}
+
+sip_brain_retire() {
+  [ -e "$SIP_BRAIN_UNIT" ] || return 0
+  local stamp f d=/etc/systemd/system/teaport-sip-brain.service.d
+  stamp="$(date +%Y%m%d)"
+  log "retiring teaport-sip-brain: removing its unit"
   SUDO systemctl disable --now teaport-sip-brain.service 2>/dev/null || true
-  SUDO rm -f "$old"
+  SUDO rm -f "$SIP_BRAIN_UNIT"
+  if [ -d "$d" ]; then log "  $d -> $d.retired-$stamp"; SUDO mv "$d" "$d.retired-$stamp"; fi
+  for f in "${DROPINS_PARKED[@]}"; do SUDO mv "$f.retired-pending" "$f.retired-$stamp"; done
+  DROPINS_PARKED=()
   SUDO systemctl daemon-reload
   SUDO systemctl reset-failed teaport-sip-brain.service 2>/dev/null || true
+  if [ -n "$SIP_GW_SAVED" ]; then rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""; fi
+  SIP_BRAIN_DETACHED=0
 }
+
+# migrate_brain_dropins — the per-path tuning an appliance kept in systemd drop-ins, carried
+# into brain.env as per-front-end settings, once, when the two brain processes become one:
+#   teaport-sip-brain.service.d/*.conf  (the phone path): SIP_* keys as they are; the
+#     per-front-end turn-taking knobs (endpointing.turn_settings) as their SIP_ forms
+#     (ENDPOINT_STOP_SECS -> SIP_ENDPOINT_STOP_SECS, TEAPORT_INTERRUPT_MIN_WORDS ->
+#     SIP_INTERRUPT_MIN_WORDS, ...). sip_brain_retire renames the dir afterwards.
+#   teaport-brain.service.d/*.conf  (until now the Talk path only): the same knobs as their
+#     TALK_ forms, since the drop-in would now reach phone calls too. A drop-in that holds
+#     nothing but such settings is parked (renamed *.retired-pending, then *.retired-<date>
+#     by sip_brain_retire) so it stops applying; the env file it loaded is left on disk,
+#     unused. One that holds anything else stays, with a warning naming it.
+# Environment= and EnvironmentFile= lines are both read. A key brain.env already has is
+# left as it is. Anything without a per-front-end form is listed, not moved. Every key
+# moved is logged.
+migrate_brain_dropins() {
+  local plan
+  plan="$(sudo_python - /etc/systemd/system/teaport-sip-brain.service.d \
+            /etc/systemd/system/teaport-brain.service.d "$ETC/brain.env" <<'PY' || true
+import glob, os, shlex, sys
+PER = {"ENDPOINT_STOP_SECS": "ENDPOINT_STOP_SECS", "SMARTTURN_STOP_SECS": "SMARTTURN_STOP_SECS",
+       "SMARTTURN_COMPLETE_THRESHOLD": "SMARTTURN_COMPLETE_THRESHOLD",
+       "TEAPORT_INTERRUPT_MIN_WORDS": "INTERRUPT_MIN_WORDS"}
+brain_env = os.path.realpath(sys.argv[3])
+def read(conf):
+    """(assignments, sources, only_env): only_env is False if the drop-in does more."""
+    out, only_env = [], True
+    for line in open(conf, encoding="utf-8", errors="replace"):
+        line = line.strip()
+        if not line or line.startswith(("#", ";")) or line == "[Service]":
+            continue
+        if line.startswith("Environment="):
+            for tok in shlex.split(line[len("Environment="):]):
+                if "=" in tok:
+                    out.append(tok.split("=", 1) + [conf])
+        elif line.startswith("EnvironmentFile="):
+            path = line[len("EnvironmentFile="):].strip().lstrip("-")
+            if os.path.realpath(path) == brain_env:
+                only_env = False
+                continue
+            if os.path.isfile(path):
+                for l in open(path, encoding="utf-8", errors="replace"):
+                    l = l.strip()
+                    if l and not l.startswith("#") and "=" in l:
+                        k, v = l.split("=", 1)
+                        out.append([k.strip(), v.strip().strip("\"'"), path])
+        else:
+            only_env = False
+    return out, only_env
+for prefix, d in (("SIP", sys.argv[1]), ("TALK", sys.argv[2])):
+    for conf in sorted(glob.glob(os.path.join(d, "*.conf"))):
+        found, only_env = read(conf)
+        moved = rest = 0
+        for k, v, src in found:
+            if prefix == "SIP" and k.startswith("SIP_"):
+                print(f"SET\t{k}\t{v}\t{src}"); moved += 1
+            elif k in PER:
+                print(f"SET\t{prefix}_{PER[k]}\t{v}\t{src} ({k})"); moved += 1
+            else:
+                print(f"SKIP\t{k}\t{v}\t{conf}"); rest += 1
+        if prefix == "TALK" and moved:
+            print(f"{'PARK' if only_env and not rest else 'KEEP'}\t-\t-\t{conf}")
+PY
+)"
+  [ -n "$plan" ] || return 0
+  local existing kind key val src env="$ETC/brain.env"
+  existing="$(sudo_cat "$env")"
+  while IFS=$'\t' read -r kind key val src; do
+    case "$kind" in
+      SET)
+        if printf '%s\n' "$existing" | grep -q "^${key}="; then
+          log "  drop-in tuning: $key already in $env — left as it is (not taking $val from $src)"
+        else
+          log "  drop-in tuning: $key=$val -> $env (from $src)"
+          if [ "$DRY_RUN" != 1 ]; then printf '%s=%s\n' "$key" "$val" | sudo_tee_a "$env"; fi
+          existing="$existing"$'\n'"$key=$val"
+        fi ;;
+      SKIP) warn "  drop-in setting $key=$val in $src has no per-front-end form — not moved" ;;
+      PARK)
+        log "  $src: all it set is in $env now — parked (it would reach phone calls too)"
+        SUDO mv "$src" "$src.retired-pending"
+        if [ "$DRY_RUN" != 1 ]; then DROPINS_PARKED+=("$src"); fi ;;
+      KEEP) warn "  $src stays: it does more than the per-front-end settings, and now for phone calls too" ;;
+    esac
+  done <<< "$plan"
+  SUDO systemctl daemon-reload
+}
+sudo_python() { if [ "$(id -u)" = 0 ]; then python3 -I "$@"; else sudo python3 -I "$@"; fi; }
+sudo_cat() { if [ -r "$1" ]; then cat "$1"; else sudo cat "$1" 2>/dev/null || true; fi; }
+sudo_tee_a() { if [ "$(id -u)" = 0 ]; then tee -a "$1" >/dev/null; else sudo tee -a "$1" >/dev/null; fi; }
 
 # teaport-sip telephony (opt-in). The GPL C++ gateway (separate teaport-sip repo, NOT
 # built or installed here — the binary is expected at $HOME/teaport-sip/build/teaport-sip).
@@ -1592,7 +1730,8 @@ retire_sip_brain() {
 # Discord bridge's opt-in shape, minus the env/token wiring the CLI owns for SIP.
 phase_sip() {
   log "sip telephony: installing the gateway unit (opt-in — 'teaport sip configure' turns it on)"
-  retire_sip_brain
+  sip_brain_detach
+  sip_brain_retire
   render_unit teaport-sip.service.in teaport-sip.service
   SUDO systemctl daemon-reload
   # Deliberately NOT enabled/started here: the unit is gated on the SIP config, and
@@ -1820,9 +1959,11 @@ main_brain_only() {
   check_brain_source
   phase_brain
   # Before the swap, never after: the new brain is the phone line's front-end itself, and
-  # the old SIP brain must not be left beside it (see retire_sip_brain).
-  retire_sip_brain
+  # the old SIP brain must not be left running beside it. Its unit goes only once the swap
+  # is verified; a rollback puts it back (see sip_brain_detach).
+  sip_brain_detach
   brain_swap "$STAGED" --auto-rollback
+  sip_brain_retire
   brain_install_tools   # only now: the swap has been verified
   brain_prune
   log "done — brain updated from uv.lock$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"

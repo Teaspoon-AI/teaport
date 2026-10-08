@@ -52,18 +52,15 @@ from teaport_brain.captions import (
 )
 from teaport_brain.client_notes import SYSTEM_LINE as CONTEXT_NOTES_LINE, ClientNotes
 from teaport_brain.endpointing import (
-    ENDPOINT_STOP_SECS,
     EagerSmartTurnAnalyzer,
-    INTERRUPT_MIN_WORDS,
     LateStartTurnStopStrategy,
     NarrowbandSileroMixin,
-    SMARTTURN_COMPLETE_THRESHOLD,
-    SMARTTURN_STOP_SECS,
     SegmentDoneSink,
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
     VAD_SAMPLE_RATE,
     keep_barge_in_reachable,
+    turn_settings,
 )
 from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
@@ -73,7 +70,6 @@ from teaport_brain import barge_pause
 from teaport_brain import raw_llm_capture
 from teaport_brain import reply_hold
 from teaport_brain import speculate
-from teaport_brain.session_arbiter import busy_line
 from teaport_brain.speech_onset import SpeechOnsetMixin
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
@@ -711,18 +707,6 @@ class AgentSession:
             return False
         return not delivery.interrupted
 
-    async def refuse(self, holder_kind: str):
-        """The session arbiter refused this session (a phone call it could not take):
-        say the agent is busy with `holder_kind` instead of greeting, and flag the
-        session to end, as greet() does for a busy engine."""
-        logger.info(f"refused by the session arbiter ({holder_kind} has the box) — "
-                    "speaking the busy line and ending this session")
-        self.should_end = True
-        self.end_reason = "busy"
-        await self.task.queue_frames([TTSSpeakFrame(
-            busy_line(holder_kind, getattr(self.tts, "espeak_language", None)),
-            append_to_context=False)])
-
     # There is no reset_context() here any more. It existed for the pre-2612baf
     # persistent SIP pipeline, which reset the context between calls; the per-call
     # design builds a fresh pipeline (and a fresh context) each time, so nothing
@@ -810,7 +794,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         context_notes: bool = False,
                         reply_hold_enabled: bool = False,
                         client_features: frozenset = frozenset(),
-                        wake_gate=None) -> AgentSession:
+                        wake_gate=None,
+                        front_end: str | None = None) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -838,6 +823,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     - wake_gate: the mic path's wake words (wake_gate.WakeGate; /talk ?wake=, from the
       local audio bridge). The STT consults it before it pushes any transcript, and it
       gets this session's context, to continue the mic conversation in and greet into.
+    - front_end: "sip" or "talk" -- whose turn-taking knobs the session uses
+      (endpointing.turn_settings: SIP_*/TALK_* overrides of the shared values).
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -847,14 +834,21 @@ def build_agent_session(transport, *, voice: str | None = None,
     """
     # pipecat 1.0 moved VAD off the transport onto the user aggregator
     # (LLMUserAggregatorParams.vad_analyzer); it drives endpointing + barge-in.
+    turns = turn_settings(front_end)
+    if front_end is not None:
+        logger.info(f"turn-taking ({front_end}): stop {turns.endpoint_stop_secs}s, smart-turn "
+                    f"ceiling {turns.smartturn_stop_secs}s, threshold "
+                    f"{turns.smartturn_complete_threshold}, barge-in "
+                    f"{turns.interrupt_min_words} word(s)")
     vad_analyzer = _vad_cls()(
         params=VADParams(
             confidence=VAD_CONFIDENCE, min_volume=VAD_MIN_VOLUME,
-            stop_secs=ENDPOINT_STOP_SECS,
+            stop_secs=turns.endpoint_stop_secs,
         )
     )
 
     stt = make_stt(makeup_db=stt_makeup_db)
+    stt.smartturn_stop_secs = turns.smartturn_stop_secs
     if wake_gate is not None:
         stt.wake_gate = wake_gate
     llm = make_llm()
@@ -901,10 +895,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # speculative reply hooks onto it below.
     stop_strategy = LateStartTurnStopStrategy(
         turn_analyzer=EagerSmartTurnAnalyzer(
-            complete_threshold=SMARTTURN_COMPLETE_THRESHOLD,
+            complete_threshold=turns.smartturn_complete_threshold,
             # The CEILING on an INCOMPLETE verdict, not the VAD's floor -- see
             # endpointing.py.
-            params=SmartTurnParams(stop_secs=SMARTTURN_STOP_SECS),
+            params=SmartTurnParams(stop_secs=turns.smartturn_stop_secs),
         )
     )
 
@@ -936,7 +930,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # paused by the barge-in pauser below (barge_pause.py); without a
                 # pause it is MinWordsUserTurnStartStrategy exactly.
                 start=[barge_pause.PauseAwareMinWordsStrategy(
-                    min_words=INTERRUPT_MIN_WORDS,
+                    min_words=turns.interrupt_min_words,
                     on_final_without_turn=_final_without_turn)],
                 # The closer FIRST: it ends the turn before the brain's strategy could
                 # speculate on the turn's earlier words; that one still sees the frame.
@@ -1192,7 +1186,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                    client_features=tool_ctx.client_features,
                    wifi_voice=wifi)
 
-    return AgentSession(
+    session = AgentSession(
         task=task,
         context=context,
         stt=stt,
@@ -1203,3 +1197,6 @@ def build_agent_session(transport, *, voice: str | None = None,
         client_notes=client_notes,
         input_mute=input_mute,
     )
+    session.turns = turns  # the turn-taking knobs it was built with (per front-end)
+    session.vad_analyzer = vad_analyzer
+    return session

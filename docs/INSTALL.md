@@ -133,9 +133,25 @@ A full run builds the brain the same way and restarts everything on it, but does
 roll back on its own; `./install.sh --rollback brain` does that by hand.
 
 Updating a box from before one brain process (issue #58): either path retires the old
-`teaport-sip-brain` unit by itself (the SIP gateway keeps running and the new brain
-connects to it). Rolling back past that release with `--rollback brain` leaves the
-phone line without a brain until the old release's units are back.
+`teaport-sip-brain` unit by itself, and the SIP gateway keeps running while the new brain
+connects to it. Tuning kept in systemd drop-ins moves into `/etc/teaport/brain.env` as
+per-front-end settings (see **docs/CONFIG.md → Turn-taking per front-end**), and every
+key moved is logged:
+
+- `teaport-sip-brain.service.d/*.conf` (the phone path): `SIP_*` keys as they are, and the
+  turn-taking knobs as their `SIP_` forms (`TEAPORT_INTERRUPT_MIN_WORDS=2` becomes
+  `SIP_INTERRUPT_MIN_WORDS=2`). The directory is renamed `*.retired-<date>`.
+- `teaport-brain.service.d/*.conf` (until now the Talk path only), and the env files they
+  load, such as `brain-talk.env`: the turn-taking knobs as their `TALK_` forms. A drop-in
+  that set nothing else is renamed `*.retired-<date>`, so it no longer reaches calls; the
+  env file stays on disk, unused. A drop-in that does more stays, with a warning.
+
+A key `brain.env` already has is left alone. With `--only brain`, the old unit is only
+stopped before the swap and removed once the new brain is verified. If the new brain
+fails and the installer rolls back, the old unit, its gateway ties and the Talk drop-ins
+are put back (and it says so). Rolling back past that release by hand with
+`--rollback brain` leaves the phone line without a brain until the old release's units
+are back.
 To go back by hand:
 `./install.sh --rollback brain` (run it again to undo the rollback). Add `--dry-run`
 to either to see the plan first.
