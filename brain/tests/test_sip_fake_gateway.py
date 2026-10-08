@@ -19,7 +19,7 @@
 #      audio), which resumes it with the apology rather than a fresh hello, and goes on
 #      to answer the caller.
 #
-# Plus the fake gateway's own contract, with a bare socket for a brain (4-7): the
+# Plus the fake gateway's own contract, with a bare socket for a brain (4-8): the
 # brain-side tests above are only as good as the harness is faithful.
 #
 # Run: python test_sip_fake_gateway.py
@@ -42,6 +42,7 @@ sys.path.insert(0, HERE)
 import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong pipecat
 
 from fake_engine import DEFAULT_TRANSCRIPT, FakeEngine  # noqa: E402
+import fake_sip_gateway  # noqa: E402
 from fake_sip_gateway import (  # noqa: E402
     BYTES_PER_FRAME, MSG_AUDIO_IN, MSG_AUDIO_OUT, MSG_CONTROL, FakeSipGateway, run_call)
 
@@ -223,7 +224,7 @@ async def test_a_brain_killed_mid_call_is_replayed_the_call_and_resumes_it():
         assert rig.gw.violations == [], rig.gw.violations
 
 
-# --- 4-7. the fake gateway itself, against a bare socket --------------------------
+# --- 4-8. the fake gateway itself, against a bare socket --------------------------
 
 class _Client:
     def __init__(self, path):
@@ -336,6 +337,17 @@ async def test_the_fake_waits_for_call_answer_without_auto_answer():
             a.send({"type": "call.answer", "call_id": gw.call.call_id})
             call = await asyncio.wait_for(placing, 2)
             assert call.confirmed.is_set()
+            await call.hangup()
+
+            # A brain that declines the ringing call: it ends there, unanswered, at
+            # once -- not as a TimeoutError once the caller would have given up.
+            placing = asyncio.ensure_future(gw.place_call(answer_timeout=5))
+            assert await wait_until(
+                lambda: gw.call is not call and gw.call.state == "incoming", 2)
+            a.send({"type": "call.hangup", "call_id": gw.call.call_id})
+            declined = await asyncio.wait_for(placing, 2)
+            assert declined.ended.is_set() and not declined.confirmed.is_set()
+            assert declined.ended_by == "brain", declined.ended_by
             a.close()
     finally:
         shutil.rmtree(d, ignore_errors=True)
@@ -353,23 +365,55 @@ async def test_the_fake_flags_what_the_real_gateway_would_mangle():
             a.s.send(bytes([MSG_AUDIO_OUT]) + bytes(64000))
             a.s.send(bytes([0x7f]))
             a.s.send(bytes([MSG_CONTROL]) + b"{not json")
-            assert await wait_until(lambda: len(gw.violations) == 3, 2), gw.violations
+            big = {"type": "hello", "pad": "x" * 3000}
+            a.s.send(bytes([MSG_CONTROL]) + json.dumps(big).encode())
+            assert await wait_until(lambda: len(gw.violations) == 5, 2), gw.violations
+            v = gw.violations
+            assert sum("exceeds MAX_FRAME_BYTES" in x for x in v) == 2, v  # audio + control
+            assert sum("unknown tag 0x7f" in x for x in v) == 1, v
+            assert sum("unparseable control" in x for x in v) == 2, v  # bad + truncated
             assert gw.call.audio_out_frames == 2
             a.close()
-        # And it will not take over a socket somebody is listening on.
-        live = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-        path = os.path.join(d, "taken.sock")
-        live.bind(path)
-        live.listen(1)
-        try:
-            await FakeSipGateway(path).start()
-        except RuntimeError as e:
-            assert "already listening" in str(e)
-        else:
-            raise AssertionError("bound over a listening socket")
-        finally:
-            live.close()
     finally:
+        shutil.rmtree(d, ignore_errors=True)
+
+
+async def test_the_fake_will_not_take_over_a_socket_in_use():
+    """Not by its own path, and not through a symlink to it (/var/run is /run)."""
+    d = _short_tmpdir()
+    live = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    try:
+        real = os.path.join(d, "real")
+        os.mkdir(real)
+        os.symlink(real, os.path.join(d, "alias"))
+        live.bind(os.path.join(real, "gw.sock"))
+        live.listen(1)
+        for path in (os.path.join(real, "gw.sock"), os.path.join(d, "alias", "gw.sock")):
+            try:
+                await FakeSipGateway(path).start()
+            except RuntimeError as e:
+                assert "already listening" in str(e), e
+            else:
+                raise AssertionError(f"bound over a listening socket via {path}")
+        live.close()
+
+        # The live gateway's own path needs allow_live_path, whatever it is called.
+        saved = fake_sip_gateway.LIVE_SOCKET
+        fake_sip_gateway.LIVE_SOCKET = os.path.join(real, "live.sock")
+        try:
+            try:
+                await FakeSipGateway(os.path.join(d, "alias", "live.sock")).start()
+            except RuntimeError as e:
+                assert "live gateway's socket" in str(e), e
+            else:
+                raise AssertionError("bound the live path through a symlink")
+            gw = FakeSipGateway(os.path.join(d, "alias", "live.sock"), allow_live_path=True)
+            await gw.start()
+            await gw.close()
+        finally:
+            fake_sip_gateway.LIVE_SOCKET = saved
+    finally:
+        live.close()
         shutil.rmtree(d, ignore_errors=True)
 
 

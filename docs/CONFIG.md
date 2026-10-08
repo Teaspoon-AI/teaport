@@ -396,28 +396,36 @@ caller hears, and hangs up when the bot has answered, partway through the answer
 or after N seconds. A brain that drops mid-call is replayed the call when it
 reconnects, as the real gateway does. Nothing registers and no SIP port is bound,
 so you can test on a box whose trunk account is registered somewhere else. It only
-needs the system `python3`.
+needs the system `python3`. Run it from a checkout that contains it.
 
-**Never start `teaport-sip-brain` for this.** That unit `BindsTo=teaport-sip`, so
-starting it also starts the gateway, and the gateway registers. Mask the gateway
-for the session so nothing can start it by accident (`--runtime` lasts until the
-next boot):
+**Never start `teaport-sip` or `teaport-sip-brain` for this.** `teaport-sip-brain`
+has `BindsTo=teaport-sip`, so starting it also starts the gateway, and the gateway
+registers. Guard the gateway for the session first. `tools/sip-line-guard on` adds
+a runtime drop-in to `teaport-sip` whose condition can never hold, so every start
+of it is skipped: a direct start, a restart, or a pull through `BindsTo=`. The
+drop-in is gone at the next boot. `systemctl mask --runtime` does not work here:
+the unit file in `/etc/systemd/system` outranks a mask in `/run`.
+`tools/sip-line-guard status` proves the guard holds without starting anything. It
+checks that the drop-in is loaded, evaluates the unit's conditions with
+`systemd-analyze condition`, and checks that the gateway is not running. It exits 0
+only when all three hold.
 
 ```
-sudo systemctl mask --runtime teaport-sip
-systemctl is-active teaport-sip teaport-sip-brain      # both: inactive
+cd <checkout>                                   # one that contains brain/tests/fake_sip_gateway.py
+sudo tools/sip-line-guard on                    # ends with "GUARDED: teaport-sip.service cannot start"
+tools/sip-line-guard status                     # re-check any time; exit 0 = guarded
+systemctl is-active teaport-sip-brain           # inactive
 install -d -m 0700 ~/fake-sip
-cd ~/teaport-src/brain                                  # the checkout the box was deployed from
 
 # 1. The fake gateway. It waits up to 120 s for a brain to connect.
-python3 tests/fake_sip_gateway.py --socket ~/fake-sip/gw.sock --from +15551234567 \
-    --wav test/question.wav --record ~/fake-sip/bot.wav --record-stereo ~/fake-sip/both.wav \
-    --summary-json ~/fake-sip/summary.json
+python3 brain/tests/fake_sip_gateway.py --socket ~/fake-sip/gw.sock --from +15551234567 \
+    --wav brain/test/question.wav --record ~/fake-sip/bot.wav \
+    --record-stereo ~/fake-sip/both.wav --summary-json ~/fake-sip/summary.json
 
 # 2. In another shell: the SIP brain, run the way teaport-sip-brain runs it (same user,
 #    venv and env file) but as a transient unit on the fake's socket. Add -E for any
 #    Environment= line `systemctl cat teaport-sip-brain` shows in its drop-ins.
-sudo systemd-run --unit=teaport-fake-sip-brain --uid=teaspoon --gid=teaspoon \
+sudo systemd-run --collect --unit=teaport-fake-sip-brain --uid=teaspoon --gid=teaspoon \
     -p EnvironmentFile=/etc/teaport/brain.env -E SIP_HALF_DUPLEX=0 \
     /opt/teaport/venv/bin/python -u -m teaport_brain.sip_server \
     --socket /home/teaspoon/fake-sip/gw.sock
@@ -425,43 +433,55 @@ journalctl -u teaport-fake-sip-brain -f
 
 # 3. Done: the fake exits after the call, and the brain exits on the socket's EOF.
 sudo systemctl stop teaport-fake-sip-brain 2>/dev/null
-sudo systemctl unmask --runtime teaport-sip
+sudo systemctl reset-failed teaport-fake-sip-brain 2>/dev/null
+sudo tools/sip-line-guard off
 ```
 
 The fake prints a JSON summary per call: when the greeting and the answer started
 and ended (seconds from answer), the answer's latency from the end of the WAV, who
-hung up, and the control messages the brain sent. It exits 1 if there was no
-greeting, no answer to the WAV, or a protocol violation (an audio frame that is not
-exactly 640 bytes, unparseable control). `both.wav` has the caller on the left and
-the bot on the right. `test/question.wav` asks "What is the capital of France, and
-is it a large city?" and `test/question_host_status.wav` asks for the host status
-(a tool call). Any 16-bit WAV works: other rates and stereo are converted to the
-16 kHz mono the gateway sends.
+hung up, and the control messages the brain sent. It exits 1 in four cases:
+- the call was not answered
+- there was no greeting
+- there was no answer to the WAV
+- there was a protocol violation: an audio frame that is not exactly 640 bytes, a
+  datagram over the gateway's 2048-byte read, or unparseable control
+
+`both.wav` has the caller on the left and the bot on the right.
+`brain/test/question.wav` asks "What is the capital of France, and is it a large
+city?" and `brain/test/question_host_status.wav` asks for the host status (a tool
+call). Any 16-bit WAV works: other rates and stereo are converted to the 16 kHz mono
+the gateway sends.
 
 Other calls:
 
 ```
 --hangup-mid-reply 1.5             # hang up 1.5 s into the bot's answer
 --hangup-after 60                  # hang up 60 s after answer at the latest
---wait-brain-hangup --hangup-after 60   # leave hanging up to the brain
+--wait-brain-hangup --hangup-after 60   # leave hanging up to the brain (capped)
 --calls 3 --between 2              # three calls in a row on one connection
---no-auto-answer                   # wait for the brain's call.answer
+--no-auto-answer                   # ring until the brain sends call.answer
 ```
 
-A brain restart mid-call: start a call with `--hangup-after 60` (with or without
-a WAV), and while it runs `sudo systemctl kill -s KILL teaport-fake-sip-brain`,
-then run the `systemd-run` line again. The fake keeps the call up, replays it to the
-new brain (`brain 2 connected: hello + replay of call ...` in its log), and the
-journal shows the brain `RESUMING a call already in progress`. The summary then has
-`"brain_connects": 2`.
+To test a brain restart mid-call:
+1. Start a call that stays up on its own: `--wait-brain-hangup --hangup-after 60`. Without a WAV, the default hangs up as soon as the greeting is over.
+2. While it runs, `sudo systemctl kill -s KILL teaport-fake-sip-brain`, then run the `systemd-run` line again. `--collect` lets the unit name be reused.
+3. The fake keeps the call up and replays it to the new brain: its log shows `brain 2 connected: hello + replay of call ...`.
+4. The journal shows the brain `RESUMING a call already in progress`, and the summary has `"brain_connects": 2`.
 
 The fake only serves a socket path, so it does not care which process connects.
-For a brain whose socket path you cannot change, bind the default path with
-`teaport-sip` stopped: `sudo install -d -o teaspoon -g teaspoon -m 0750 /run/teaport`,
-then `--socket /run/teaport/teaport-sip.sock --allow-live-path`. The fake refuses
-to bind a path something is already listening on. A unit that owns
-`RuntimeDirectory=teaport` removes that directory, and the fake's socket with it,
-when it stops, so start the fake after any restart of that unit.
+For a brain whose socket path you would rather not change, bind the default path
+with `teaport-sip` guarded:
+
+```
+sudo install -d -o teaspoon -g teaspoon -m 0750 /run/teaport
+python3 brain/tests/fake_sip_gateway.py --socket /run/teaport/teaport-sip.sock --allow-live-path ...
+```
+
+The fake refuses to bind a path something is already listening on. It compares
+real paths, so a symlinked alias like `/var/run` does not get past that check. A
+unit that owns `RuntimeDirectory=teaport` removes that directory, and the fake's
+socket with it, whenever it stops or restarts. `teaport-sip` is such a unit, so
+start the fake after any restart of a unit like that.
 
 Off the box, `brain/tests/fake_engine.py` stands in for the engine and the LLM
 (`python tests/fake_engine.py` prints the env to point a brain at it), and

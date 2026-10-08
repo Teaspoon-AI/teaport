@@ -76,8 +76,9 @@ BYTES_PER_FRAME = 640  # 20 ms of S16LE mono at 16 kHz
 FRAME_S = PTIME_MS / 1000.0
 SILENCE = bytes(BYTES_PER_FRAME)
 
-# The gateway reads with a MAX_FRAME_BYTES (2048) buffer and silently truncates
-# anything longer; we read more so an oversize datagram is SEEN and reported.
+# The gateway reads with a MAX_FRAME_BYTES buffer and silently truncates anything
+# longer; we read more so an oversize datagram is SEEN and reported.
+MAX_FRAME_BYTES = 2048
 _RECV_BYTES = 65536
 # Bounded playout queue, oldest dropped (PROTOCOL.md: "bounded ~1 s queues").
 PLAYOUT_QUEUE_FRAMES = 50
@@ -172,14 +173,19 @@ def _sip_uri(who: str) -> str:
 def _listening_on(path: str) -> bool:
     """Is a LISTENING unix socket bound at `path`? Read from /proc/net/unix rather than
     probed with a connect: a connect to the real gateway would be served as a brain
-    (hello, replay) and logged there as a brain that came and went."""
+    (hello, replay) and logged there as a brain that came and went.
+
+    Compared as real paths on both sides: the table holds the path as it was bound,
+    and either that or `path` may go through a symlink (/var/run is /run)."""
+    path = os.path.realpath(path)
     try:
         with open("/proc/net/unix", encoding="utf-8", errors="replace") as f:
             next(f)
             for line in f:
                 parts = line.split()
                 # Num RefCount Protocol Flags Type St Inode [Path]; __SO_ACCEPTCON = 0x10000
-                if len(parts) >= 8 and parts[7] == path and int(parts[3], 16) & 0x10000:
+                if (len(parts) >= 8 and int(parts[3], 16) & 0x10000
+                        and parts[7].startswith("/") and os.path.realpath(parts[7]) == path):
                     return True
         return False
     except (OSError, StopIteration, ValueError):
@@ -384,6 +390,7 @@ class FakeSipGateway:
         self.audio_in_dropped = 0         # caller frames the socket would not take
         self._t0 = time.monotonic()
         self._listener: socket.socket | None = None
+        self._bound: str | None = None   # the real path we bound, unlinked at close
         self._conn: socket.socket | None = None   # set once the handshake is done
         self._serve_task: asyncio.Task | None = None
         # Held across the replay and every live state change, so a state change is
@@ -395,10 +402,12 @@ class FakeSipGateway:
     # -- lifecycle -------------------------------------------------------------------
 
     async def start(self):
-        path = os.path.abspath(self.path)
+        # Every check on the REAL path: through a symlink (/var/run is /run, or a
+        # linked directory) the live socket must still be recognised as itself.
+        path = os.path.realpath(self.path)
         if len(path.encode()) > 107:  # sun_path is 108 bytes with the NUL
             raise RuntimeError(f"socket path too long for AF_UNIX ({len(path)} > 107): {path}")
-        if path == LIVE_SOCKET and not self.allow_live_path:
+        if path == os.path.realpath(LIVE_SOCKET) and not self.allow_live_path:
             raise RuntimeError(
                 f"{LIVE_SOCKET} is the live gateway's socket; pass allow_live_path "
                 "(--allow-live-path) only with teaport-sip stopped")
@@ -413,6 +422,7 @@ class FakeSipGateway:
         s.listen(4)
         s.setblocking(False)
         self._listener = s
+        self._bound = path
         self._event(f"listening on {path} (auto_answer={self.auto_answer}, "
                     f"replay={self.replay})")
         self._serve_task = asyncio.ensure_future(self._serve())
@@ -435,10 +445,12 @@ class FakeSipGateway:
                 except OSError:
                     pass
         self._conn = self._listener = None
-        try:
-            os.unlink(self.path)
-        except OSError:
-            pass
+        if self._bound is not None:
+            try:
+                os.unlink(self._bound)
+            except OSError:
+                pass
+            self._bound = None
 
     async def __aenter__(self):
         await self.start()
@@ -462,8 +474,10 @@ class FakeSipGateway:
                          answer_timeout: float = 30.0) -> Call:
         """An inbound call: call.incoming, `incoming` (ringing), then on answer
         `connecting` and `confirmed`. Returns once confirmed and media is running.
-        With auto_answer off, a brain that never sends call.answer leaves the caller
-        to give up after `answer_timeout`: disconnected, and TimeoutError."""
+        With auto_answer off it rings until the brain sends call.answer. A brain that
+        declines it (call.hangup) or never answers (the caller gives up after
+        `answer_timeout`) ends it unanswered: the call comes back with `ended` set,
+        `confirmed` not, and `ended_by` saying who."""
         if self.call is not None and not self.call.ended.is_set():
             raise RuntimeError("protocol v0 carries one call at a time; hang up first")
         c = Call(self, call_id or f"{uuid.uuid4().hex[:16]}@{DEFAULT_HOST}",
@@ -478,11 +492,16 @@ class FakeSipGateway:
         if self.auto_answer:
             await asyncio.sleep(ring_s)
         else:
+            waits = [asyncio.ensure_future(e.wait()) for e in (c.answered, c.ended)]
             try:
-                await asyncio.wait_for(c.answered.wait(), answer_timeout)
-            except asyncio.TimeoutError:
+                await asyncio.wait(waits, timeout=answer_timeout,
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                for w in waits:
+                    w.cancel()
+            if not c.answered.is_set() and not c.ended.is_set():
+                self._event(f"no call.answer within {answer_timeout:g}s: the caller gives up")
                 await self._hangup(c, "caller")
-                raise TimeoutError(f"no call.answer within {answer_timeout:g}s")
         if c.ended.is_set():
             return c
         await self._set_state(c, "connecting")
@@ -584,19 +603,27 @@ class FakeSipGateway:
                 return
             if not data:
                 return
+            oversize = len(data) > MAX_FRAME_BYTES
+            if oversize:
+                # The gateway's recv buffer is MAX_FRAME_BYTES: it gets the head of this
+                # datagram and the rest is gone. Said once here, then handled as it would be.
+                self._violation(f"{len(data)} B datagram (tag 0x{data[0]:02x}) exceeds "
+                                f"MAX_FRAME_BYTES ({MAX_FRAME_BYTES}); the gateway truncates it")
+                data = data[:MAX_FRAME_BYTES]
             tag, payload = data[0], data[1:]
             if tag == MSG_AUDIO_OUT:
-                self._on_audio_out(payload)
+                self._on_audio_out(payload, flagged=oversize)
             elif tag == MSG_CONTROL:
                 await self._on_control(payload)
             else:
                 self._violation(f"datagram with unknown tag 0x{tag:02x} ({len(payload)} B)")
 
-    def _on_audio_out(self, pcm: bytes):
+    def _on_audio_out(self, pcm: bytes, flagged: bool = False):
         if len(pcm) != BYTES_PER_FRAME:
-            # The gateway plays each datagram as one 20 ms frame, and truncates past
-            # MAX_FRAME_BYTES: anything else is lost or mistimed on a real line.
-            self._violation(f"audio_out of {len(pcm)} B (want {BYTES_PER_FRAME})")
+            # The gateway plays each datagram as one 20 ms frame: anything else is lost
+            # or mistimed on a real line.
+            if not flagged:
+                self._violation(f"audio_out of {len(pcm)} B (want {BYTES_PER_FRAME})")
             pcm = pcm[:BYTES_PER_FRAME].ljust(BYTES_PER_FRAME, b"\0")
         c = self.call
         if c is None or not c.active:
@@ -728,6 +755,7 @@ async def run_call(gw: FakeSipGateway, *, caller: str = DEFAULT_CALLER,
         summary["reply_latency"] = round(summary["reply_onset"] - summary["wav_end"], 3)
     call.save(record, record_stereo)
     summary.update({
+        "answered": call.confirmed.is_set(),
         "ended_by": call.ended_by,
         "duration": round(call.t, 2),
         "bot_speech_s": round(call.bot_speech_s, 2),
@@ -826,6 +854,8 @@ async def _main(args) -> int:
                                record_stereo=st)
             summaries.append(s)
             print(json.dumps(s, indent=2, ensure_ascii=False), flush=True)
+            if not s["answered"]:
+                failed.append(f"call {i + 1}: not answered (ended by the {s['ended_by']})")
             greeted = (s.get("greeting_onset") is not None
                        or (args.wav and args.no_greeting_wait)
                        or (not args.wav and hangup == "brain"))
