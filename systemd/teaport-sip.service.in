@@ -15,20 +15,14 @@ After=network-online.target teaport-engine.service
 Wants=network-online.target
 # Opt-in gate: no config, no telephony. `teaport sip configure` writes it + enables us.
 ConditionPathExists=@SIP_CONF@
-# The gateway auto-answers, so a gateway without a brain answers calls into dead air.
-# Upholds= starts the brain whenever this unit is up and finds it inactive or failed —
-# the same tie the engine unit keeps on teaport-brain. The brain's own BindsTo= on this
-# unit closes the loop the other way (it stops with us), and a `systemctl restart`
-# here propagates to it. PartOf= closes the last gap: a brain that CRASHES is brought
-# back by its Restart= as a restart job, and PartOf= propagates that job to us, so the
-# pair restarts together on that path too (verified with user units: the gateway pid
-# changes on every brain crash with this line, and never without it). It matters
-# because the echo canceller references the brain's playout, and a brain relaunched
-# under a running gateway left the canceller eating the caller's speech (STT decoded
-# 0 chars, live 2026-09-03). Cost: a brain crash between calls re-registers the trunk
-# (~2 s); a brain crash mid-call already lost the call.
-Upholds=teaport-sip-brain.service
-PartOf=teaport-sip-brain.service
+# The brain that answers calls is teaport-brain itself (its SIP front-end connects to this
+# unit's socket whenever it is there), so starting the line starts it too. Nothing more:
+# the two restart independently. A brain that (re)connects is sent the call in progress
+# (teaport-sip#3), so a brain restart does not drop a call, and the brain reconnects to a
+# restarted gateway on its own. (They used to be one unit pair, tied with Upholds=/PartOf=:
+# a brain relaunched under a running gateway left the CALL STATE out of step -- no session
+# for the call in progress -- which #3 fixed; the echo canceller is per call.)
+Wants=teaport-brain.service
 
 [Service]
 Type=simple
@@ -37,7 +31,7 @@ User=@USER@
 # creates /run/teaport owned by @USER@ at mode 0750 before ExecStart, so no other local
 # user can pre-bind (squat) the socket to hijack a call. Removed when the unit stops
 # (default preserve=no), so each start gets a clean dir and the gateway binds fresh. The
-# brain unit connects to the same path — it runs as the same @USER@, so it traverses 0750.
+# brain connects to the same path — it runs as the same @USER@, so it traverses 0750.
 RuntimeDirectory=teaport
 RuntimeDirectoryMode=0750
 ExecStart=@SIP_GATEWAY@ @SIP_CONF@

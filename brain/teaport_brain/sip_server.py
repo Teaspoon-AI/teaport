@@ -1,9 +1,11 @@
 # SPDX-License-Identifier: MIT
 #
-# teaport — SIP brain client (M2): the real agent behind the teaport-sip gateway.
+# teaport — the SIP front-end: the real agent behind the teaport-sip gateway.
 #
-# The SIP-over-UNIX-socket sibling of gateway_server.py (the OpenClaw WebSocket
-# relay). Same brain — both front-ends now build it through the shared factory
+# Runs inside teaport-brain, in the same event loop as the /talk WebSocket
+# (gateway_server.py starts serve()), and asks the same session arbiter
+# (session_arbiter.py) for the engine before each call (issue #58: one brain process,
+# several front-ends). The SIP-over-UNIX-socket sibling of the /talk front-end. Same brain — both front-ends now build it through the shared factory
 # agent_session.build_agent_session(): persona + VAD + smart-turn endpointing +
 # heard-grounding ledger + memory recall/reclaim + captions + turn-timing taps +
 # the degenerate-text guards + tools. The only difference is the transport:
@@ -12,14 +14,15 @@
 # reaches Voxtral STT -> LLM -> Kokoro TTS instead of a stub echo.
 #
 # Lifecycle (M2, per-call): the UDS connection is PERSISTENT (a SipConnection owns
-# the socket + receive loop + call-control dispatch for the whole process), but each
+# the socket + receive loop + call-control dispatch for as long as the gateway is up;
+# serve() connects again when it comes back), but each
 # CALL gets a FRESH pipeline. On call.state=confirmed we build a new
 # SipGatewayTransport + AgentSession (fresh STT/LLM/TTS/context), run it as a
 # background task, and greet; on call.state=disconnected we cancel that task, tearing
 # the per-call transport down — which frees the engine's single STT slot and recycles
 # all per-call state (the next caller builds fresh, so no context reset is needed).
 # Single active call in protocol v0: a new confirmed cancels any running call first.
-# If the gateway socket closes (EOF), we cancel any running call and stop.
+# If the gateway socket closes (EOF), we cancel any running call and look for it again.
 #
 # Mid-call (re)connect: a gateway that resynchronizes on connect (teaport-sip's
 # reconnect replay) keeps the call up while this process is gone, and when the next
@@ -38,11 +41,12 @@
 # pipeline per WebSocket connection. The earlier one-persistent-pipeline design (reset
 # context between calls, cancel_on_idle_timeout=False to keep it alive) is gone.
 #
-# Usage:  python -m teaport_brain.sip_server [--socket /run/teaport/teaport-sip.sock]
+# Standalone, for the brain/test rigs only (its arbiter is its own, so it does not see
+# the box's Talk sessions):
+#   python -m teaport_brain.sip_server [--socket /run/teaport/teaport-sip.sock]
 #   Requires the engine at TEAPORT_URL (STT/TTS) and an LLM at LLM_BASE_URL.
 #
-# NOTE: parallel to gateway_server.py, not a replacement — the OpenClaw path is
-# untouched. The SIP path drives the SAME shared pipeline the OpenClaw path does
+# The SIP path drives the SAME shared pipeline the OpenClaw path does
 # (via agent_session), so it now gets memory recall/reclaim, captions/transcript
 # emitters, and the turn-timing taps it previously lacked (captions/transcript
 # frames are harmlessly dropped by the SIP serializer — no SIP control type carries
@@ -71,6 +75,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.pipeline.runner import PipelineRunner
 
 from teaport_brain import reply_hold
+from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain.env import env_flag, env_num
 from teaport_brain import agent_backend, audio_dump, sdnotify
@@ -130,7 +135,7 @@ from teaport_brain.sip_transport import (
 #
 #   A bare float() on the tail turns one operator typo (`SIP_HALF_DUPLEX_TAIL_S=`, or
 #   `=0,8` from a comma-decimal locale) into an import-time ValueError: sip_server never
-#   starts, and systemd/teaport-sip-brain.service.in's Restart=always + RestartSec=5
+#   starts, and the brain unit's Restart= (the old teaport-sip-brain unit's, back then)
 #   crash-loop it forever, with no way to clear it short of hand-editing the file —
 #   re-running the installer will not. env_num warns and falls back instead.
 HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", False)
@@ -140,7 +145,7 @@ _HD_TAIL_S = env_num("SIP_HALF_DUPLEX_TAIL_S", "0.8", float)
 # quiet speech a caller produces over the bot (~4 dB down within a call, and the segments
 # the engine drops are the quietest). The bridge's echo canceller is NOT the cause; the
 # rationale, the measurements and that correction live in one place, above _apply_makeup
-# in stt.py. SIP-only, and read HERE rather than in make_stt so the OpenClaw brain --
+# in stt.py. SIP-only, and read HERE rather than in make_stt so the Talk front-end --
 # which shares this brain.env but does its own client-side AEC -- never picks it up.
 # 0 = off. Measured 2026-09-11: +6 dB recovered the quiet barge-in "stop"s the engine was
 # dropping with no regressions on 205 clips. Default off pending a live call to confirm.
@@ -187,91 +192,69 @@ class HalfDuplexInputGate(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-# How long to wait for the gateway to bind its socket before giving up. Under systemd
-# the brain unit is After= the gateway unit, but the gateway is Type=simple: it counts
-# as started the moment it is forked, a second or more before PJSUA2 is up and the UDS
-# is listening. Connecting on that first tick raised FileNotFoundError, the unit
-# failed, and Restart= brought it back 5 s later — every boot and every `sip restart`
-# left a traceback in the journal for a socket that was about to appear. (The hand
-# launch script papered over the same gap with a fixed `sleep 6`.) 30 s covers a cold
-# gateway on a loaded box with room to spare; past it the gateway is genuinely absent,
-# and exiting lets the unit's Restart= keep trying at its own pace.
+# The gateway's socket. teaport-brain runs this front-end in its own event loop (serve,
+# started by gateway_server): it looks for the socket every _SERVE_POLL_S while there is
+# none -- telephony off, or the gateway (re)starting -- and reconnects whenever the gateway
+# goes away, which a gateway with teaport-sip#3's reconnect replay survives mid-call.
+# Empty: no SIP front-end at all.
+SIP_SOCKET = os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH)
+_SERVE_POLL_S = 2.0
+# What serve() is doing, for /health (and so `teaport sip status` / doctor): "off" (not
+# running, or TEAPORT_SIP_SOCKET empty), "waiting" (no gateway to talk to) or "connected".
+_state = "off"
+
+
+def status() -> str:
+    return _state
+
+# Standalone (`python -m teaport_brain.sip_server`, the brain/test rigs): how long to wait
+# for the gateway to bind its socket before giving up. The gateway is Type=simple: it
+# counts as started the moment it is forked, a second or more before PJSUA2 is up and the
+# UDS is listening, so a connect on the first tick would fail for a socket about to
+# appear. 30 s covers a cold gateway on a loaded box with room to spare.
 _GATEWAY_WAIT_S = 30.0
 _GATEWAY_POLL_S = 0.5
 
 
-# One conversation at a time (issue #58): the Talk brain's session arbiter
-# (session_arbiter.py) owns the engine's single STT slot, and a call asks it before its
-# own STT connects (gateway_server /talk/call). A sleeping room mic yields to the call and
-# a remote Talk session is told and ended, both before the answer comes back, so the
-# call's STT finds the engine free; an awake room conversation keeps the box, and the
-# call is answered busy. The call then keeps its claim as a lease, refreshed until it is
-# over. A Talk brain that is down, or too old to know, costs nothing: the call goes on as
-# before, contending for the engine on its own.
-CALL_REFRESH_SECS = 10.0
-# Long enough for the arbiter to let a Talk session say why it is ending (up to
-# gateway_server.CALL_LINE_MAX_SECS) and wait its teardown out.
-_TALK_CALL_TIMEOUT_SECS = 20.0
+class CallClaim:
+    """A call's claim on the session arbiter (session_arbiter.py), the same one every
+    front-end of this process goes through: start() before the call's STT connects, end()
+    when the call is over (twice is harmless). A sleeping room mic yields to the call and
+    a remote Talk session is told and ended before start() returns, so the call's STT
+    finds the engine free; an awake room conversation keeps the box, and start() says so.
+    One call at a time, so one claim at a time."""
 
+    def __init__(self):
+        self._claim = None
 
-async def _tell_talk_brain(state: str) -> dict | None:
-    """POST {"state": state} to the Talk brain's /talk/call; its answer, or None."""
-    import httpx
-
-    token = os.getenv("GATEWAY_TOKEN", "")
-    url = f"http://127.0.0.1:{os.getenv('BRAIN_PORT', '7861')}/talk/call"
-    try:
-        async with httpx.AsyncClient(timeout=_TALK_CALL_TIMEOUT_SECS) as client:
-            r = await client.post(url, json={"state": state},
-                                  headers={"Authorization": f"Bearer {token}"} if token else {})
-        return r.json() if r.status_code == 200 else None
-    except Exception as e:  # noqa: BLE001 — no Talk brain, or one without /talk/call
-        logger.debug(f"could not tell the Talk brain the call is {state}: {e!r}")
+    async def start(self, call_id) -> str | None:
+        """None: the call has the engine. Otherwise the kind of conversation that has the
+        box ("room"): the caller gets the busy line."""
+        claim = arb.Claim(arb.CALL, client="sip", label=f"phone call {call_id}",
+                          end=lambda _why: self._release(claim))
+        # Held from before the ask: an end() while it waits (a Talk user is being told
+        # about the call) releases it there, and the arbiter then installs nothing.
+        self._claim = claim
+        refusal = await arb.ARBITER.acquire(claim)
+        if refusal is not None:
+            if self._claim is claim:
+                self._claim = None
+            logger.info(f"the session arbiter refused call {call_id}: a {refusal.holder} "
+                        "conversation has the box")
+            return refusal.holder
         return None
 
+    async def _release(self, claim) -> None:
+        # The arbiter gives the engine to the same client's next call: the SIP front-end
+        # tears the old call down itself before it asks (on_call_state), so let go.
+        arb.ARBITER.release(claim)
+        if self._claim is claim:
+            self._claim = None
 
-class CallPresence:
-    """The call's lease on the Talk brain: start() before the call's STT connects (it
-    returns once whatever had the engine has let it go), refreshed while the call lasts,
-    end() when it is over. end() twice is harmless."""
-
-    def __init__(self, tell=None):
-        self._tell = tell or _tell_talk_brain
-        self._task = None
-        # "start" has been sent (it may still be waiting for its answer): end() owes the
-        # Talk brain an "end" from here, even if the start is cancelled (a caller who
-        # hangs up during the bring-up), or it would hold a lease for a call long gone.
-        self._started = False
-
-    async def start(self) -> str | None:
-        """None: the call may go on. Otherwise the arbiter refused it, and this names
-        the kind of conversation that has the box ("room"): the caller gets the busy line."""
-        self._started = True
-        answer = await self._tell("start")
-        if answer and answer.get("call") is False and answer.get("busy"):
-            self._started = False
-            logger.info(f"the Talk brain's session arbiter refused the call: a "
-                        f"{answer['busy']} conversation has the box")
-            return str(answer["busy"])
-        if self._task is None:
-            self._task = asyncio.create_task(self._refresh())
-        if answer and answer.get("yielded"):
-            logger.info("the session that had the speech engine made way for the call")
-        return None
-
-    async def _refresh(self) -> None:
-        while True:
-            await asyncio.sleep(CALL_REFRESH_SECS)
-            await self._tell("refresh")
-
-    async def end(self) -> None:
-        if not self._started:
-            return
-        self._started = False
-        if self._task is not None:
-            self._task.cancel()
-            self._task = None
-        await self._tell("end")
+    def end(self) -> None:
+        if self._claim is not None:
+            claim, self._claim = self._claim, None
+            arb.ARBITER.release(claim)
 
 
 async def _connect_when_listening(sock_path: str):
@@ -286,7 +269,7 @@ async def _connect_when_listening(sock_path: str):
     waited = False
     while True:
         try:
-            return connect_seqpacket(sock_path)
+            return await asyncio.to_thread(connect_seqpacket, sock_path)
         except (FileNotFoundError, ConnectionRefusedError, socket.timeout) as e:
             if time.monotonic() >= deadline:
                 logger.error(f"gateway not listening at {sock_path} after {_GATEWAY_WAIT_S:g}s ({e!r})")
@@ -298,10 +281,68 @@ async def _connect_when_listening(sock_path: str):
             await asyncio.sleep(_GATEWAY_POLL_S)
 
 
+async def serve(sock_path: str = SIP_SOCKET) -> None:
+    """The SIP front-end inside teaport-brain, for the life of the process: connect to the
+    gateway whenever its socket is there, run the connection until the gateway goes away,
+    and look again. Telephony off is a socket that never appears: one stat every
+    _SERVE_POLL_S. Never raises (but for cancellation): a SIP failure is logged and the
+    front-end starts over, so it cannot take the Talk front-end down with it."""
+    global _state
+    if not sock_path:
+        logger.info("SIP front-end off (TEAPORT_SIP_SOCKET is empty)")
+        return
+    said_absent = False
+    try:
+        await _serve(sock_path, said_absent)
+    finally:
+        _state = "off"
+
+
+async def _serve(sock_path: str, said_absent: bool) -> None:
+    global _state
+    while True:
+        _state = "waiting"
+        if not os.path.exists(sock_path):
+            if not said_absent:
+                logger.info(f"SIP front-end: no gateway socket at {sock_path} (telephony off, "
+                            f"or the gateway is starting) — looking every {_SERVE_POLL_S:g} s")
+                said_absent = True
+            await asyncio.sleep(_SERVE_POLL_S)
+            continue
+        try:
+            sock = await asyncio.to_thread(connect_seqpacket, sock_path)
+        except PermissionError as e:
+            logger.error(f"SIP front-end: {e} — not connecting to it")
+            await asyncio.sleep(60.0)
+            continue
+        except (FileNotFoundError, ConnectionRefusedError, socket.timeout, OSError) as e:
+            logger.debug(f"SIP front-end: gateway not accepting yet ({e!r})")
+            await asyncio.sleep(_SERVE_POLL_S)
+            continue
+        said_absent = False
+        _state = "connected"
+        logger.info(f"SIP front-end: connected to the gateway at {sock_path}")
+        try:
+            await run_connection(sock)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 — contained: Talk goes on, SIP starts over
+            logger.exception("SIP front-end failed — reconnecting; the Talk front-end is unaffected")
+        await asyncio.sleep(_SERVE_POLL_S)
+
+
 async def run(sock_path: str):
+    """Standalone: one connection, for the brain/test rigs (`python -m
+    teaport_brain.sip_server`). teaport-brain runs serve() instead."""
     logger.info(f"connecting to teaport-sip gateway at {sock_path}")
     sock = await _connect_when_listening(sock_path)
     logger.info("connected — the brain is the socket client (gateway is the server)")
+    await run_connection(sock, on_ready=sdnotify.ready)
+
+
+async def run_connection(sock, on_ready=None):
+    """Serve one gateway connection until the gateway goes away: control, audio, and a
+    fresh pipeline per call. Every call ends with it."""
 
     # The serializer is shared: the persistent connection uses it to DESERIALIZE
     # inbound datagrams; the per-call output transport uses it (via params) to
@@ -340,7 +381,7 @@ async def run(sock_path: str):
     # greeting is SLOW (model construction plus greet()'s STT poll), so it runs as a
     # task rather than inline in the receive loop — see on_call_state.
     setup = {"task": None, "call_id": None}
-    presence = CallPresence()
+    presence = CallClaim()
 
     async def cancel_active_call(reason: str, call_id: str | None = None,
                                  reclaim: bool = True):
@@ -383,8 +424,8 @@ async def run(sock_path: str):
         # Let the engine process the STT close and free the single slot before the
         # next call's STT connects (mirrors session_arbiter.SETTLE_SECS).
         await asyncio.sleep(0.3)
-        await presence.end()
-        if reclaim:
+        presence.end()
+        if reclaim and not arb.ARBITER.held():
             # A CALL is a session, so this is the session end — the SIP twin of the
             # turn_reclaim in gateway_server's talk() finally, and the only place the
             # per-call pipeline's memory ever comes back: MemoryReclaim deliberately
@@ -478,7 +519,7 @@ async def run(sock_path: str):
     async def _bring_up(call_id, resumed: bool = False):
         # Before anything takes the engine: the session arbiter makes way for the call,
         # or refuses it (an awake room conversation has the box).
-        busy = await presence.start()
+        busy = await presence.start(call_id)
         transport = SipGatewayTransport(connection, params)
         # Same shared brain as the OpenClaw path, minus barge-in when HALF_DUPLEX is on
         # (the input gate is the ONE SIP-specific processor). No cancel_on_idle_timeout
@@ -551,7 +592,7 @@ async def run(sock_path: str):
             await session.greet(resumed=resumed)
         if session.should_end:
             # The session arbiter refused the call, or STT is unavailable — the engine's
-            # single slot is held by another session (e.g. the local OpenClaw brain) or
+            # single slot is held by another process (a standalone rig) or
             # the engine is unreachable. refuse() / greet() spoke the matching line
             # instead of greeting; let it play out, then
             # hang the caller up and tear the pipeline down so the line drops cleanly.
@@ -590,8 +631,9 @@ async def run(sock_path: str):
             # superseding call reclaims when IT ends, so nothing is lost.
             #
             # gateway_server writes this same rule as `if not ARBITER.held()`. That guard
-            # would be inert here: the arbiter lives in the Talk brain's process, and
-            # this process's copy never holds anything, so it would skip nothing. The condition is
+            # alone would not do here: the old call has let the arbiter go and the new
+            # one has not taken it yet, so it reads False and would skip nothing. The
+            # condition is
             # therefore put where this process actually knows it: at the one call site
             # that has a replacement call in hand.
             await cancel_active_call("superseded by a new call", reclaim=False)
@@ -603,23 +645,22 @@ async def run(sock_path: str):
             await cancel_setup("call disconnected during bring-up", call_id=call_id)
             await cancel_active_call("call disconnected", call_id=call_id)
             if active["call"] is None and setup["task"] is None:
-                await presence.end()  # a call that never got its pipeline
+                presence.end()  # a call that never got its pipeline
 
     @connection.event_handler("on_client_disconnected")
     async def on_disconnected(_connection):
-        logger.info("SIP gateway hung up (socket EOF) — stopping")
+        logger.info("SIP gateway hung up (socket EOF)")
 
-    logger.info("SIP brain ready — persistent connection up; a fresh pipeline is "
+    logger.info("SIP front-end ready — persistent connection up; a fresh pipeline is "
                 "built per call (STT -> LLM -> TTS over teaport-sip)")
-    # Ready = connected AND able to take a call: the connection, its serializer and
-    # every handler exist, and the receive loop is the next thing to run (datagrams the
-    # gateway sends before it starts wait in the socket). Signalling at connect instead
-    # let a failure in that setup surface only after `systemctl restart` had already
-    # returned success. Under a Type=notify unit this is what ends the restart;
-    # elsewhere it is a no-op.
-    sdnotify.ready()
+    # Standalone, ready = connected AND able to take a call: the connection, its
+    # serializer and every handler exist, and the receive loop is the next thing to run
+    # (datagrams the gateway sends before it starts wait in the socket). Inside
+    # teaport-brain the brain's readiness is its HTTP port's, not this.
+    if on_ready is not None:
+        on_ready()
     try:
-        # Blocks for the whole process: dispatches control + routes audio. Per-call
+        # Blocks for the whole connection: dispatches control + routes audio. Per-call
         # pipelines run as background tasks launched from on_call_state above.
         await connection.run()
     finally:
@@ -628,12 +669,14 @@ async def run(sock_path: str):
         # publish a new active call after we tore the old one down.
         await cancel_setup("connection closed")
         await cancel_active_call("connection closed")
+        presence.end()
         connection.close()
-    logger.info("SIP brain stopped")
+    logger.info("SIP connection closed")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="teaport SIP brain client (M2)")
+    parser = argparse.ArgumentParser(
+        description="teaport SIP front-end, standalone (test rigs; teaport-brain runs it itself)")
     parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),
                         help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()

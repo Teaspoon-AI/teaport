@@ -36,13 +36,13 @@ schema_version = 1
 path = "/etc/teaport/engine.env"
 owner = "installer"
 services = ["teaport-engine"]
-apply = "systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; both brains lose their engine session."
+apply = "systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; the brain loses its engine session (Talk and a live call alike)."
 
 [stores.brain_env]
 path = "/etc/teaport/brain.env"
 owner = "installer+operator"
-services = ["teaport-brain", "teaport-sip-brain"]
-apply = "Talk brain: systemctl restart teaport-brain (drops the live Talk session). SIP brain: `teaport sip restart` — the gateway and the SIP brain together; a brain-only relaunch desyncs the gateway echo canceller."
+services = ["teaport-brain"]
+apply = "systemctl restart teaport-brain — drops the live Talk session; a live phone call stays up at the gateway and is picked up again by the restarted brain (it says sorry, it lost you for a moment)."
 
 [stores.sip_conf]
 path = "~/.config/teaport/teaport-sip.conf"
@@ -50,7 +50,7 @@ owner = "teaport sip configure"
 services = ["teaport-sip"]
 format = "keyvalue"
 mode = "600"
-apply = "Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on|off` flips the echo canceller and restarts the pair for you."
+apply = "Edit it and `teaport sip restart` (or re-run `teaport sip configure`, which test-registers before it writes). `teaport sip aec on|off` flips the echo canceller and restarts the gateway for you."
 
 [stores.bridge_env]
 path = "/etc/teaport/bridge.env"
@@ -118,8 +118,8 @@ blurb = "Limits on the notes a Talk client adds to the voice LLM's context throu
 
 [[groups]]
 id = "sip_brain"
-title = "SIP brain"
-blurb = "Read only by teaport-sip-brain; the Talk brain ignores them."
+title = "SIP front-end"
+blurb = "Read by teaport-brain's SIP front-end (phone calls); Talk sessions ignore them."
 
 [[groups]]
 id = "diag"
@@ -750,7 +750,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 help = "Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed."
 source = "reply_hold.py:127"
 
@@ -1441,20 +1441,20 @@ source = "client_notes.py:101"
 name = "SIP_HALF_DUPLEX"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
 help = "Drop the caller's mic while the bot speaks. On means no barge-in."
 note = "The unit also sets Environment=SIP_HALF_DUPLEX=0, but EnvironmentFile= overrides Environment= in systemd, so a value in brain.env wins."
-source = "sip_server.py:136"
+source = "sip_server.py:141"
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "float"
 unit = "s"
 min = 0
@@ -1462,13 +1462,13 @@ default = 0.8
 read = "startup"
 tier = "tuning"
 help = "The tail after the bot stops, when half-duplex is on."
-source = "sip_server.py:137"
+source = "sip_server.py:142"
 
 [[settings]]
 name = "SIP_STT_MAKEUP_DB"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "float"
 unit = "dB"
 min = 0
@@ -1477,18 +1477,19 @@ default = 0
 read = "startup"
 tier = "setup"
 help = "Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in \"stop\"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected."
-source = "sip_server.py:147"
+source = "sip_server.py:152"
 
 [[settings]]
 name = "TEAPORT_SIP_SOCKET"
 store = "brain_env"
 group = "sip_brain"
-services = ["teaport-sip-brain"]
+services = ["teaport-brain"]
 type = "path"
+default = "/run/teaport/teaport-sip.sock"
 read = "startup"
 tier = "installer"
-help = "Gateway-to-brain Unix socket. The unit passes --socket explicitly, so this is a fallback only."
-source = "sip_server.py:637"
+help = "Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off."
+source = "sip_server.py:200"
 
 # ---- diagnostics
 
@@ -1815,7 +1816,7 @@ store = "sip_conf"
 group = "sip"
 type = "path"
 tier = "installer"
-help = "Must match the sip-brain's --socket."
+help = "Must match the brain's TEAPORT_SIP_SOCKET."
 source = "cli/teaport:170"
 
 [[settings]]
@@ -1835,7 +1836,7 @@ group = "sip"
 type = "flag"
 default = true
 tier = "tuning"
-help = "The gateway's echo canceller. Keep it on; the sip-brain's makeup gain assumes it."
+help = "The gateway's echo canceller. Keep it on; the SIP front-end's makeup gain assumes it."
 source = "cli/teaport:172"
 
 [[settings]]

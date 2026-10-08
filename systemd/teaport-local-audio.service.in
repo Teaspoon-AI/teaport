@@ -19,7 +19,9 @@ User=@USER@
 SupplementaryGroups=audio
 EnvironmentFile=@ETC@/brain.env
 EnvironmentFile=@ETC@/local-audio.env
-# Venv resolved once, as in teaport-sip-brain.service ($$ = a literal $ to systemd).
+# Venv resolved once ($$ = a literal $ to systemd): @PREFIX@/venv is a symlink install.sh
+# repoints at a new venv before it restarts this unit, and a python started through the
+# link would load a lazy import from the NEW venv into this old process.
 SyslogIdentifier=teaport-local-audio
 ExecStart=/bin/sh -c 'exec "$$(readlink -f @PREFIX@/venv)/bin/python" -u -m teaport_brain.local_audio'
 Restart=always

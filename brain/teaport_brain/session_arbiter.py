@@ -11,7 +11,7 @@
 #                      ?features=local); ASLEEP while it waits for a wake word -- and,
 #                      without wake words, until someone in the room has spoken, and
 #                      again once nobody has for the bridge's keep-alive
-#                call  a phone call (for now the SIP brain's lease, POST /talk/call)
+#                call  a phone call (sip_server.py, the SIP front-end in the same process)
 #
 #   the policy, newcomer against the session holding the slot:
 #     * nobody holds it                    -> granted

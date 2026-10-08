@@ -570,7 +570,7 @@ class AgentSession:
     # "No user query found in messages". The parenthetical reads as a call-connected
     # cue, so the persona still generates the wording.
     _GREETING = "(The call/session just connected. Greet me warmly in one short sentence.)"
-    # The same cue for a session RESUMED mid-call: the SIP brain was restarted while a
+    # The same cue for a session RESUMED mid-call: the brain was restarted while a
     # caller stayed on the line, and the gateway replayed the call to the new process
     # (teaport-sip's reconnect replay, `"replay": true`). The caller has been sitting in
     # silence for a few seconds, and everything said before is gone with the old
@@ -582,9 +582,10 @@ class AgentSession:
         "conversation before that. In one short sentence, say sorry, you lost me for a "
         "moment, and ask where we were.)"
     )
-    # Spoken when the engine's single STT slot is already held by another session (the
-    # local OpenClaw brain and the SIP brain share ONE engine slot; whoever connects
-    # first holds it, the second hears this). Unified wording for both front-ends: the
+    # Spoken when the engine's single STT slot is already held by another process (the
+    # session arbiter keeps this brain's own front-ends from ever meeting there; this is
+    # for anything else on the engine, a standalone test rig say: whoever connects first
+    # holds it, the second hears this). Unified wording for both front-ends: the
     # SIP side hangs the caller up after it plays, the OpenClaw side lets its own client
     # disconnect — so a neutral "busy, try again" reads right on a phone and in the app.
     _BUSY_MESSAGE = (

@@ -12,7 +12,9 @@
 #   room vs a live session  refused: quietly while asleep, told when it asked to talk
 #
 # The Talk and room front-ends are driven through gateway_server.run_relay_bot with the
-# pipeline stubbed; calls through /talk/call, as the SIP brain makes them.
+# pipeline stubbed; calls through the SIP front-end's CallClaim, and end to end through
+# sip_server's connection loop over a real SEQPACKET socket (test_sip_call_lifecycle's
+# fake gateway).
 #
 # Run: python test_session_arbiter.py   (or via pytest test_suite.py)
 #
@@ -181,9 +183,15 @@ class _TTS:
 
 def _fresh():
     arb.ARBITER = arb.SessionArbiter()
-    gs._lease = None
-    gs._pending = None
     arb._BUSY_PCM.clear()
+
+
+async def _call(call_id="c1"):
+    """A call asking the arbiter, as the SIP front-end does before its STT connects:
+    returns (its CallClaim, the refusal's holder kind or None)."""
+    from teaport_brain import sip_server
+    claim = sip_server.CallClaim()
+    return claim, await claim.start(call_id)
 
 
 def _session(ws, gate=None, play_secs=0.05):
@@ -244,16 +252,6 @@ async def _dial(query):
     return ws, bool(ran)
 
 
-def _request(state):
-    class R:
-        query_params, headers = {}, {}
-        client = SimpleNamespace(host="127.0.0.1")
-
-        async def json(self):
-            return {"state": state}
-    return R()
-
-
 def _spoken(ws):
     return [m["text"] for m in ws.sent if isinstance(m, dict) and m.get("type") == "transcript"]
 
@@ -304,17 +302,19 @@ async def test_talk_vs_room_asleep_takes_the_engine():
 async def test_call_vs_room_asleep_takes_the_engine():
     _fresh()
     room_ws, room, _ = await _holding("room asleep", client="local-audio")
-    assert await gs.talk_call(_request("start")) == {"call": True, "yielded": 1}
+    call, busy = await _call()
+    assert busy is None
     assert room_ws.closed == [(gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)]
     assert gs.call_live()
-    await gs.talk_call(_request("end"))
+    call.end()
     assert not arb.ARBITER.held()
 
 
 async def test_call_vs_talk_the_talk_user_is_told_then_the_call_has_the_engine():
     _fresh()
     talk_ws, talk, _ = await _holding("talk", client="openclaw:a")
-    assert await gs.talk_call(_request("start")) == {"call": True, "yielded": 1}
+    _, busy = await _call()
+    assert busy is None
     # Whatever it was saying is cut, the line said, and only then the close.
     assert isinstance(talk.task.queued[0], InterruptionWorkerFrame)
     line = talk.task.queued[1]
@@ -327,7 +327,7 @@ async def test_call_vs_talk_the_talk_user_is_told_then_the_call_has_the_engine()
 
 async def test_talk_during_a_call_is_told_the_agent_is_on_a_call():
     _fresh()
-    assert await gs.talk_call(_request("start")) == {"call": True, "yielded": 0}
+    assert (await _call())[1] is None
     ws, ran = await _dial({"client": "openclaw:a", "voice": "ef_dora"})
     assert not ran
     assert _spoken(ws) == [arb.busy_line(arb.CALL, "es")]          # in the client's language
@@ -340,8 +340,8 @@ async def test_talk_during_a_call_is_told_the_agent_is_on_a_call():
 async def test_call_vs_room_awake_is_refused_for_now():
     _fresh()
     room_ws, room, _ = await _holding("room awake", client="local-audio")
-    assert await gs.talk_call(_request("start")) == {"call": False, "busy": "room"}
-    assert not room.task.cancelled and not gs.call_live() and gs._lease is None
+    assert (await _call())[1] == "room"
+    assert not room.task.cancelled and not gs.call_live()
     _fresh()
 
 
@@ -354,7 +354,7 @@ async def test_the_room_against_a_live_session_is_refused_quietly_only_while_asl
     assert not ran and _spoken(ws) == [arb.busy_line(arb.TALK, "en-us")]
     assert ws.closed[-1][0] == gs.BUSY_CLOSE_CODE
     _fresh()
-    await gs.talk_call(_request("start"))
+    await _call()
     ws, _ = await _dial(ROOM_AWAKE)                                # during a call: wait it out
     assert _spoken(ws) == [arb.busy_line(arb.CALL, "en-us")]
     assert ws.closed[-1] == (gs.YIELD_CLOSE_CODE, gs.YIELD_CLOSE_REASON)
@@ -401,17 +401,71 @@ async def test_a_holder_that_never_lets_go_does_not_wedge_the_arbiter():
 
 # ---------------------------------------------------------------- the SIP brain's side
 
-async def test_the_sip_brain_answers_a_refused_call_busy_and_holds_no_lease():
-    from teaport_brain import sip_server
-    told = []
+class _SipRig:
+    """test_sip_call_lifecycle's fake gateway: the real sip_server connection loop over a
+    real SEQPACKET socket, the per-call pipeline stubbed. A refused call's stub session
+    records its busy line instead of greeting."""
 
-    async def tell(state):
-        told.append(state)
-        return {"call": False, "busy": "room"}
-    p = sip_server.CallPresence(tell=tell)
-    assert await p.start() == "room"
-    await p.end()                                    # nothing to end: never told "end"
-    assert told == ["start"]
+    def __init__(self):
+        import test_sip_call_lifecycle as lc
+        self.lc = lc
+        self.refused = {}
+
+        async def refuse(session, holder_kind):
+            self.refused[session.call_id] = holder_kind
+            session.should_end = True
+        lc._FakeSession.refuse = refuse
+        self.h = lc._Harness()
+
+
+async def test_sip_end_to_end_a_call_during_talk_tells_the_talk_user_and_takes_the_engine():
+    _fresh()
+    talk_ws, talk, _ = await _holding("talk", client="openclaw:a")
+    rig = _SipRig()
+    try:
+        await rig.h.start()
+        await rig.h.call_state("A", "confirmed")
+        assert await rig.lc.wait_until(lambda: "A" in rig.lc._FakeSession.greeted, 5)
+        assert talk_ws.closed == [(gs.CALL_CLOSE_CODE, gs.CALL_CLOSE_REASON)]
+        assert talk.task.queued[1].text == arb.call_line("en-us")
+        assert arb.ARBITER.holder.kind == arb.CALL and not rig.refused
+        await rig.h.call_state("A", "disconnected")
+        assert await rig.lc.wait_until(lambda: not arb.ARBITER.held(), 5)
+        ws, ran = await _dial({"client": "openclaw:a"})          # the box is free again
+        assert ran
+    finally:
+        await rig.h.stop()
+        _fresh()
+
+
+async def test_sip_end_to_end_a_call_during_an_awake_room_hears_busy_and_is_hung_up():
+    _fresh()
+    room_ws, room, _ = await _holding("room awake", client="local-audio")
+    rig = _SipRig()
+    try:
+        await rig.h.start()
+        await rig.h.call_state("A", "confirmed")
+        assert await rig.lc.wait_until(lambda: {"type": "call.hangup"} in rig.h.controls, 5)
+        assert rig.refused == {"A": arb.ROOM} and "A" not in rig.lc._FakeSession.greeted
+        assert not room.task.cancelled and arb.ARBITER.holder.kind == arb.ROOM
+    finally:
+        await rig.h.stop()
+        _fresh()
+
+
+async def test_the_gateway_going_away_mid_call_gives_the_engine_back():
+    _fresh()
+    rig = _SipRig()
+    try:
+        await rig.h.start()
+        await rig.h.call_state("A", "confirmed")
+        assert await rig.lc.wait_until(lambda: arb.ARBITER.call_live(), 5)
+        rig.h.peer.close()                                       # the gateway restarts
+        rig.h.peer = None
+        assert await rig.lc.wait_until(lambda: not arb.ARBITER.held(), 5)
+    finally:
+        await rig.h.stop()
+        _fresh()
 
 
 async def test_a_refused_session_says_busy_and_ends():
@@ -435,10 +489,10 @@ async def test_the_call_line_is_heard_in_full_even_over_a_user_mid_sentence():
     talk_ws, talk, _ = await _holding("talk", client="openclaw:a", play_secs=0.4)
     await _feed(talk.followup_gate, UserStartedSpeakingFrame())   # mid-sentence
     started = asyncio.get_running_loop().time()
-    call = asyncio.create_task(gs.talk_call(_request("start")))
+    call = asyncio.create_task(_call())
     await asyncio.sleep(0.1)
     await _feed(talk.followup_gate, UserStoppedSpeakingFrame())   # they stop: not the line's end
-    assert await call == {"call": True, "yielded": 1}
+    assert (await call)[1] is None
     assert talk.task.played.is_set()                               # the line played out...
     assert asyncio.get_running_loop().time() - started >= 0.4 + 0.2   # ...to its end
     assert talk_ws.closed == [(gs.CALL_CLOSE_CODE, gs.CALL_CLOSE_REASON)]
@@ -456,38 +510,25 @@ async def test_the_call_line_is_heard_in_full_even_over_a_user_mid_sentence():
 
 
 async def test_a_call_that_ends_during_its_start_leaves_no_call_behind():
-    """Brain side: "end" while the "start" waits in the arbiter (the Talk user is being
-    told) ends the start there; nothing is left holding the box."""
-    _fresh()
-    await _holding("talk", client="openclaw:a", play_secs=0.5)
-    start = asyncio.create_task(gs.talk_call(_request("start")))
-    await asyncio.sleep(0.2)
-    assert await gs.talk_call(_request("end")) == {"call": False, "yielded": 0}
-    assert (await start)["call"] is False
-    assert not arb.ARBITER.held() and gs._lease is None and not gs.call_live()
-    _fresh()
-
-
-async def test_the_sip_brain_owes_an_end_once_it_has_sent_a_start():
-    """SIP side: a caller who hangs up while "start" is still out (the bring-up is
-    cancelled) still gets its "end" sent."""
+    """The call ends (its claim's end()) while its start waits in the arbiter (the Talk
+    user is being told): nothing is left holding the box. And a bring-up cancelled
+    mid-start (cancel_setup) leaves nothing either."""
     from teaport_brain import sip_server
-    told = []
-
-    async def tell(state):
-        told.append(state)
-        if state == "start":
-            await asyncio.sleep(1.0)
-            return {"call": True, "yielded": 1}
-        return {"call": False}
-    p = sip_server.CallPresence(tell=tell)
-    start = asyncio.create_task(p.start())
-    await asyncio.sleep(0.1)
-    start.cancel()
-    await asyncio.gather(start, return_exceptions=True)
-    await p.end()
-    await p.end()                                                  # once only
-    assert told == ["start", "end"]
+    for how in ("end", "cancel"):
+        _fresh()
+        await _holding("talk", client="openclaw:a", play_secs=0.5)
+        claim = sip_server.CallClaim()
+        start = asyncio.create_task(claim.start("c1"))
+        await asyncio.sleep(0.2)
+        if how == "end":
+            claim.end()
+        else:
+            start.cancel()
+        await asyncio.gather(start, return_exceptions=True)
+        await asyncio.sleep(0.6)                                   # the Talk end finishes
+        claim.end()                                                # disconnected: harmless
+        assert not arb.ARBITER.held() and not gs.call_live(), how
+    _fresh()
 
 
 async def test_a_newcomer_that_gives_up_still_finishes_ending_the_holder():

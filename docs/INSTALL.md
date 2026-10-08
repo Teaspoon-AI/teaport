@@ -25,7 +25,7 @@ downloads. You bring your own Jetson and your own LLM.
   the device, then start a Talk session. If something looks wrong, run
   `teaport status` or `teaport doctor`.
 - **Step 5 (optional) — Add a phone line.** SIP telephony is **opt-in**: the
-  installer places the SIP units but leaves them off. To answer real phone calls,
+  installer places the SIP gateway unit but leaves it off. To answer real phone calls,
   point the box at your SIP trunk / SBC:
 
   ```
@@ -37,8 +37,8 @@ downloads. You bring your own Jetson and your own LLM.
   adopts a gateway `.conf` you already have). From then on the line comes back on
   its own after a reboot or a crash. Manage it with `teaport sip status`,
   `teaport sip restart`, `teaport sip aec on|off` and `teaport sip disable`. The
-  local assistant and the phone line share one speech slot; see **docs/CONFIG.md
-  → SIP telephony** for how that works and how to dedicate a box to the phone.
+  calls are answered by the same brain as Talk, one conversation at a time; see
+  **docs/CONFIG.md → One engine, one conversation** for who gets the agent when.
 - **Step 6 (optional) — Talk to the box itself.** Plug a USB mic array into the
   Jetson (built for the ReSpeaker XVF3800; put the speaker on its 3.5 mm jack so
   its echo canceller hears what plays) and re-run the installer with
@@ -122,14 +122,20 @@ bash <(curl -fsSL https://get.teaspoon.tech/teaport) --only brain   # or the one
 ```
 
 It builds a new Python environment from `brain/uv.lock` next to the running one,
-self-checks it, then swaps it in and restarts the brain (and the phone line, if it
-is running — a call in progress is dropped). If the brain does not come back healthy
+self-checks it, then swaps it in and restarts the brain — one unit, `teaport-brain`,
+which serves Talk and the phone line alike. A Talk session in progress is dropped; a
+phone call stays up at the gateway, and the restarted brain picks it up again with a
+short "sorry, I lost you for a moment". If the brain does not come back healthy
 it puts the previous environment back by itself. The newest three environments are
 kept, plus the running one and the rollback target. `--only brain` leaves the systemd units and `/etc/teaport` alone, so a brain
 change that needs a new setting there goes in with a full `./install.sh` run instead.
-A full run builds the brain the same way and restarts everything on it — the phone
-line too, if it is on — but does not roll back on its own; `./install.sh --rollback
-brain` does that by hand.
+A full run builds the brain the same way and restarts everything on it, but does not
+roll back on its own; `./install.sh --rollback brain` does that by hand.
+
+Updating a box from before one brain process (issue #58): either path retires the old
+`teaport-sip-brain` unit by itself (the SIP gateway keeps running and the new brain
+connects to it). Rolling back past that release with `--rollback brain` leaves the
+phone line without a brain until the old release's units are back.
 To go back by hand:
 `./install.sh --rollback brain` (run it again to undo the rollback). Add `--dry-run`
 to either to see the plan first.

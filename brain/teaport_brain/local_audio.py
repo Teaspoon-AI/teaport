@@ -38,10 +38,11 @@
 #     a wake within LOCAL_AUDIO_CONVERSATION_SECS continues it, ungreeted (the brain
 #     keeps its messages). Nothing here falls back to listening without the wake words:
 #     a brain or STT that cannot be reached leaves the bridge deaf, retrying. A phone
-#     call takes the engine from an asleep session (/talk/call): the bridge stays off
-#     until the brain reports no call. The OLED face sleeps only while nothing is live
-#     anywhere (the brain's /talk/status "live"): while another session or a call has
-#     the box it stays awake, idle, and it sleeps once our asleep session is up again.
+#     call takes the engine from an asleep session (the brain's session arbiter): the
+#     bridge stays off until the brain reports no call. The OLED face sleeps only while
+#     nothing is live anywhere (the brain's /talk/status "live"): while another session
+#     or a call has the box it stays awake, idle, and it sleeps once our asleep session
+#     is up again.
 #   * Unless another client has the box: a Talk session took it from an asleep mic
 #     (TAKEN_CLOSE_CODE), or the brain refused our dial because another conversation is
 #     live (BUSY_CLOSE_CODE). Then the box is theirs. The bridge does not listen for a
@@ -1067,7 +1068,7 @@ async def rest_face(face: "FaceTap") -> None:
 
 
 async def call_live() -> bool:
-    """Is a phone call up (the SIP brain's lease on /talk/call)? A brain that cannot
+    """Is a phone call up (/talk/status "call")? A brain that cannot
     say: no -- an asleep session it then refuses says so with YIELD_CLOSE_CODE."""
     status = await asyncio.to_thread(_talk_status_sync)
     return bool(status and status.get("call"))
