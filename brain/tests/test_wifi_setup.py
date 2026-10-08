@@ -739,6 +739,9 @@ def test_the_voice_points_at_the_screen_only_when_it_got_there():
 @pytest.mark.parametrize("text,hit", [
     ("set up wifi", True), ("Can you set up the Wi-Fi?", True), ("connect to wi-fi please", True),
     ("switch to a different wifi", True), ("wifi setup", True), ("change my wifi", True),
+    ("let's try setting up wifi again", True), ("setting up the wifi", True),     # #96
+    ("connecting to wifi", True), ("switching the wifi to my hotspot", True),
+    ("connect me to wi-fi", True),
     ("I love my wifi", False), ("the wifi is slow here", False), ("what's the weather", False)])
 def test_the_phrase(text, hit):
     assert wv.heard("start", text, EN) is hit

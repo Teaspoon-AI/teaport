@@ -240,7 +240,7 @@ msgstr ", "
 
 # the user means: start
 msgctxt "pattern"
-msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
+msgid "\\b(?:set(?:s|ting)?[- ]?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\\b(?: (?:the|a|my|your|our|this|that|to|onto|new|another|different|other|home|guest|me|us|it|yourself|the box|back)){0,4} ?(?:(?:wi[-‐‑ ]?fi|wireless)(?: (?:network|connection))?|network|hotspot)s?(?= *(?:[.,!?;:…]|$)| on \\w| (?:and|so|but|because|since|then|now|please|again|for|to|at|in|with|from|here|there|too|first|today|tonight|called|named|instead|as|if|when|or|that|which|i|we|ok|okay|thanks|thank|right|quickly)\\b)|\\bwi[-‐‑ ]?fi (?:set[- ]?up|setup)\\b"
 msgstr "(?:wi[-‐ ]?fi|와이 ?파이|무선 ?랜|무선 ?lan).{0,10}?(?:설정|세팅|셋팅|셋업|연결|접속|바꾸|바꿔|바꿀|변경|잡아)"
 
 # the user means: yes

@@ -338,6 +338,48 @@ def test_requests_are_heard_and_questions_are_not(text, hit):
     assert wv.heard("start", text, EN) is hit
 
 
+# Offline the phrase is the only voice way into setup (#96): the ways people ask...
+ASKS = [
+    "let's try setting up wifi again", "setting up the wifi", "connecting to wifi",
+    "switching the wifi to my hotspot", "connect me to wi-fi", "Connect me to Wi-Fi.",
+    "can you connect to a new wifi", "change the wifi", "switch wifi", "Set up WiFi",
+    "set up the Wi Fi", "join the wifi", "joining a new network", "connect to my hotspot",
+    "switch networks", "changing the wifi network", "configure the wireless",
+    "reconnect to the wifi", "connect yourself to the wifi", "connect the box to the new wifi",
+    "switch back to my home wifi", "wi-fi setup", "set-up the wifi", "set up wi\u2011fi please",
+    "connect to Wi\u2010Fi", "set up wifi on the box", "set up the wifi network",
+    "switch to the guest network", "connect to the network called home",
+    "connect to the wifi so I can check the weather", "Set up WiFi."]
+# ...and talk about Wi-Fi, which isn't asking.
+TALK = [
+    "I love my wifi", "my wifi is slow", "the wifi is slow here", "the network is down",
+    "what wifi am I on?", "is the wifi working", "the wifi keeps dropping", "turn off the wifi",
+    "change the network password", "we have a new network at work",
+    "I connected to the wifi earlier", "are we connected to the network?", "network settings",
+    "tell me about wireless networks", "set up a timer", "switch off the lights",
+    "my phone is connecting fine", "what's the weather",
+    # the noun describing another noun
+    "set up a network printer", "connect to the network drive", "set up the network share",
+    "reconnect the network cable", "join the network marketing scheme",
+    "I'm joining the network team", "I want to change network carriers",
+    "set up my wireless headphones", "connect the wireless keyboard",
+    "connect to my wireless earbuds", "switch to wireless charging", "set up wifi calling",
+    "set up the wifi network printer",
+    # off, and questions about what happened
+    "switch the wifi off", "switch off the wifi", "did you connect to wifi?",
+    "does it connect to the wifi"]
+
+
+@pytest.mark.parametrize("text", ASKS)
+def test_the_ways_of_asking_are_heard(text):
+    assert wv.heard("start", text, EN)
+
+
+@pytest.mark.parametrize("text", TALK)
+def test_talk_about_wifi_is_not_asking(text):
+    assert not wv.heard("start", text, EN)
+
+
 def _final(text, stop_n=None):
     return FinalTranscriptionFrame(text, "u", "t", None, finalized=True, stop_n=stop_n)
 

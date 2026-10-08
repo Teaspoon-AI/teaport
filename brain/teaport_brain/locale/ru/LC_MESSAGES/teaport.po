@@ -245,8 +245,8 @@ msgstr ", "
 
 # the user means: start
 msgctxt "pattern"
-msgid "\\b(?:set ?up|setup|configure|connect to|join|change|switch)\\b(?: (?:the|a|my|your|to|new|another|different)){0,3} ?wi-?fi\\b|\\bwi-?fi (?:set ?up|setup)\\b"
-msgstr "\\b(?:настро(?:ить|й|йте|им|йка|йку|йки|йке)|подключи(?:ть|ться|сь|те|тесь|м|мся)?|переключи(?:ть|ться|сь|те|тесь|м)?|смени(?:ть|те|м)?|смена|смену|поменя(?:ть|й|йте|ем)|измени(?:ть|те)?)\\b(?:\\s+[\\w-]+){0,3}?\\s+(?:wi[- ]?fi|вай[- ]?фа\\w*)|(?:wi[- ]?fi|вай[- ]?фа\\w*)(?:\\s+\\w+)?\\s+(?:настро(?:ить|й|йте|им|йка|йку)|подключи(?:ть|ться|сь|те|тесь|м|мся)?)\\b"
+msgid "\\b(?:set(?:s|ting)?[- ]?up|(?:re)?configur(?:e|es|ing)|(?:re)?connect(?:s|ing)?|join(?:s|ing)?|chang(?:e|es|ing)|switch(?:es|ing)?)\\b(?: (?:the|a|my|your|our|this|that|to|onto|new|another|different|other|home|guest|me|us|it|yourself|the box|back)){0,4} ?(?:(?:wi[-‐‑ ]?fi|wireless)(?: (?:network|connection))?|network|hotspot)s?(?= *(?:[.,!?;:…]|$)| on \\w| (?:and|so|but|because|since|then|now|please|again|for|to|at|in|with|from|here|there|too|first|today|tonight|called|named|instead|as|if|when|or|that|which|i|we|ok|okay|thanks|thank|right|quickly)\\b)|\\bwi[-‐‑ ]?fi (?:set[- ]?up|setup)\\b"
+msgstr "(?<!не )(?<!не надо )(?<!не нужно )(?<!нельзя )(?<!не могу )(?<!зачем )\\b(?:настро(?:ить|й|йте|им|йка|йку|йки|йке)|настраива(?:ть|й|йте)|подключа(?:ть|ться|йся|йтесь)|переключа(?:ть|ться|йся|йтесь)|меня(?:ть|й|йте)|подключи(?:ть|ться|сь|те|тесь|м|мся)?|переключи(?:ть|ться|сь|те|тесь|м)?|смени(?:ть|те|м)?|смена|смену|поменя(?:ть|й|йте|ем)|измени(?:ть|те)?)\\b(?:\\s+[\\w-]+){0,3}?\\s+(?:wi[- ]?fi|вай[- ]?фа\\w*)|(?:wi[- ]?fi|вай[- ]?фа\\w*)(?:\\s+\\w+)?\\s+(?:настро(?:ить|й|йте|им|йка|йку)|подключи(?:ть|ться|сь|те|тесь|м|мся)?)\\b"
 
 # the user means: yes
 msgctxt "pattern"
