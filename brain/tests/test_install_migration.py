@@ -26,8 +26,14 @@ DRY_RUN=0
 log()  { printf 'LOG %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*"; }
 die()  { printf 'DIE %s\n' "$*"; exit 1; }
-run()  { "$@"; }
-SUDO() { case "$1" in systemctl) printf 'SYSTEMCTL %s\n' "${*:2}" ;; *) "$@" ;; esac; }
+run()  { if [ "$DRY_RUN" = 1 ]; then printf 'DRY %s\n' "$*"; else "$@"; fi; }
+# As install.sh's: through run, so a dry run changes nothing. systemctl is recorded, and
+# STOP_HOOK runs when the old unit is stopped (a test kills the run there).
+SUDO() { case "$1" in
+           systemctl) printf 'SYSTEMCTL %s\n' "${*:2}"
+                      if [ "${*:2}" = "stop teaport-sip-brain.service" ]; then eval "${STOP_HOOK:-:}"; fi ;;
+           *) run "$@" ;;
+         esac; }
 systemctl() { return 1; }
 '''
 
@@ -164,6 +170,70 @@ def test_a_drop_in_left_parked_by_an_older_aborted_run_is_judged_again():
     assert "putting back" in out
     assert list(talkd.glob("ab-stopsecs.conf.retired-2*"))
     assert _env(root)["TALK_ENDPOINT_STOP_SECS"] == "0.2"
+
+
+def _tree(root):
+    out = {}
+    for dp, _dn, fn in os.walk(root):
+        for f in fn:
+            p = os.path.join(dp, f)
+            out[os.path.relpath(p, root)] = (stat.S_IMODE(os.stat(p).st_mode),
+                                             pathlib.Path(p).read_bytes())
+    return out
+
+
+def test_a_write_that_fails_part_way_leaves_nothing_behind_and_says_so():
+    """A disk that fills mid-write (RLIMIT_FSIZE stands in): brain.env as it was, no
+    temp file or backup left over -- above all no readable copy of its secrets -- and the
+    run stops (die) instead of saying nothing changed."""
+    root = _fixture()
+    env = pathlib.Path(root, "etc/brain.env")
+    env.write_text("".join(f"KEY_{i}=secret-{i:04d}-{'x' * 40}\n" for i in range(40)))
+    os.chmod(env, 0o640)
+    before = env.read_bytes()
+    rc, out = _run(root, "umask 022; ulimit -f 2; sip_brain_detach; echo SWAPPED")
+    assert rc != 0 and "SWAPPED" not in out and "DIE" in out, out
+    assert env.read_bytes() == before
+    left = [p.name for p in env.parent.iterdir() if p.name.startswith("brain.env.")]
+    assert left == [], left                                        # no tmp-*, no bak-*
+    # And on a write that succeeds under sudo's umask, nothing it made is world-readable.
+    root = _fixture()
+    rc, out = _run(root, "umask 022; sip_brain_detach; sip_brain_retire")
+    assert rc == 0, out
+    for p in pathlib.Path(root, "etc").glob("brain.env*"):
+        assert not stat.S_IMODE(os.stat(p).st_mode) & 0o007, p
+
+
+def test_a_kill_while_the_old_unit_stops_puts_the_old_pair_back():
+    root = _fixture()
+    rc, out = _run(root, "sip_brain_detach; echo NOT-REACHED",
+                   extra='STOP_HOOK="kill -TERM $$"')
+    assert rc != 0 and "NOT-REACHED" not in out, out
+    sysd = pathlib.Path(root, "sys")
+    assert "Upholds" in (sysd / "teaport-sip.service").read_text()   # its ties are back
+    assert not (sysd / "teaport-sip.service.pre-detach").exists()
+    assert (sysd / "teaport-brain.service.d/ab-stopsecs.conf").exists()
+    # Had even the trap not run (SIGKILL), the next run finds the copy and starts from it.
+    root = _fixture()
+    rc, out = _run(root, "sip_brain_detach; trap - EXIT; exit 9")      # as if killed
+    sysd = pathlib.Path(root, "sys")
+    assert (sysd / "teaport-sip.service.pre-detach").exists()
+    rc, out = _run(root, "sip_brain_detach; sip_brain_restore")
+    assert rc == 0 and "putting back" in out, out
+    assert "Upholds" in (sysd / "teaport-sip.service").read_text()
+    assert not (sysd / "teaport-sip.service.pre-detach").exists()
+
+
+def test_a_dry_run_changes_nothing_and_reports_what_a_real_run_would_move():
+    root = _fixture()
+    talkd = pathlib.Path(root, "sys/teaport-brain.service.d")
+    (talkd / "ab-stopsecs.conf").rename(talkd / "ab-stopsecs.conf.retired-pending")
+    before = _tree(root)
+    rc, out = _run(root, "DRY_RUN=1; sip_brain_detach; sip_brain_retire")
+    assert rc == 0, out
+    assert _tree(root) == before
+    assert "TALK_ENDPOINT_STOP_SECS" in out and "TALK_SMARTTURN_STOP_SECS" in out, out
+    assert "SIP_STT_MAKEUP_DB" in out
 
 
 def main():

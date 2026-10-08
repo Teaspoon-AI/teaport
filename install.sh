@@ -1580,31 +1580,39 @@ sip_brain_detach() {
   [ -e "$SIP_BRAIN_UNIT" ] || return 0
   log "one brain process: detaching teaport-sip-brain (phone calls become teaport-brain's own)"
   warn "rolling the brain back past this release by hand (--rollback brain) leaves the phone line without a brain: the old release needs the old units, from that release's install.sh"
-  # A run that died between detach and retire before this trap existed left its Talk
-  # drop-ins parked: put them back first, so they are judged again like any other.
+  # An earlier run that stopped half-way (killed, or from before this trap) may have left
+  # Talk drop-ins parked and the gateway unit stripped: put both back first, so this run
+  # starts from the pair as it was. (A dry run cannot move them; the migration step is
+  # told to read the parked ones as if they were back.)
   local f
   for f in /etc/systemd/system/teaport-brain.service.d/*.conf.retired-pending; do
     [ -e "$f" ] || continue
     log "  putting back $f, left parked by an earlier run that stopped half-way"
     SUDO mv "$f" "${f%.retired-pending}"
   done
+  if [ -f "$SIP_GW_UNIT.pre-detach" ]; then
+    log "  putting back $SIP_GW_UNIT as an earlier run that stopped half-way had it"
+    SUDO mv "$SIP_GW_UNIT.pre-detach" "$SIP_GW_UNIT"
+  fi
+  if systemctl is-active --quiet teaport-sip-brain.service 2>/dev/null; then SIP_BRAIN_WAS_ACTIVE=1; fi
+  # From the first change on, whatever ends this run before sip_brain_retire (a die,
+  # Ctrl-C, a kill while the old unit stops, a failed swap's own rollback) puts the old
+  # pair back; retire clears it.
+  SIP_BRAIN_DETACHED=1
+  trap sip_brain_restore EXIT
   migrate_brain_dropins || die "the drop-in tuning could not be carried into $ETC/brain.env — nothing was swapped, the old SIP brain is untouched"
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] drop Upholds=/PartOf=teaport-sip-brain from %s; stop %s (kept until the new brain is verified)\n' "$SIP_GW_UNIT" "$SIP_BRAIN_UNIT"
-    SIP_BRAIN_DETACHED=1; return 0
+    return 0
   fi
-  if systemctl is-active --quiet teaport-sip-brain.service 2>/dev/null; then SIP_BRAIN_WAS_ACTIVE=1; fi
   if [ -f "$SIP_GW_UNIT" ] && grep -Eq '^(Upholds|PartOf)=teaport-sip-brain\.service' "$SIP_GW_UNIT"; then
-    SIP_GW_SAVED="$(mktemp)"
-    cp "$SIP_GW_UNIT" "$SIP_GW_SAVED"
+    # Kept beside the unit, not in /tmp: a run killed after this finds it (above).
+    SUDO cp -p "$SIP_GW_UNIT" "$SIP_GW_UNIT.pre-detach"
+    SIP_GW_SAVED="$SIP_GW_UNIT.pre-detach"
     SUDO sed -i -E '/^(Upholds|PartOf)=teaport-sip-brain\.service/d' "$SIP_GW_UNIT"
   fi
   SUDO systemctl daemon-reload
   SUDO systemctl stop teaport-sip-brain.service 2>/dev/null || true
-  SIP_BRAIN_DETACHED=1
-  # Whatever ends this run before sip_brain_retire (a die, Ctrl-C, a failed swap's own
-  # rollback) puts the old pair back; retire clears it.
-  trap sip_brain_restore EXIT
 }
 
 sip_brain_restore() {
@@ -1612,7 +1620,7 @@ sip_brain_restore() {
   warn "putting the old SIP brain and the Talk drop-ins back (this run did not finish moving to one brain process, and the brain before it has no phone line of its own)"
   if [ "$DRY_RUN" = 1 ]; then return 0; fi
   if [ -n "$SIP_GW_SAVED" ] && [ -f "$SIP_GW_SAVED" ]; then
-    SUDO install -m 0644 "$SIP_GW_SAVED" "$SIP_GW_UNIT"; rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""
+    SUDO mv "$SIP_GW_SAVED" "$SIP_GW_UNIT"; SIP_GW_SAVED=""
   fi
   local f
   for f in "${DROPINS_PARKED[@]}"; do SUDO mv "$f.retired-pending" "$f" || warn "could not put $f back"; done
@@ -1626,6 +1634,7 @@ sip_brain_restore() {
 }
 
 sip_brain_retire() {
+  trap - EXIT
   [ -e "$SIP_BRAIN_UNIT" ] || return 0
   local stamp f d=/etc/systemd/system/teaport-sip-brain.service.d
   stamp="$(date +%Y%m%d)"
@@ -1637,9 +1646,8 @@ sip_brain_retire() {
   DROPINS_PARKED=()
   SUDO systemctl daemon-reload
   SUDO systemctl reset-failed teaport-sip-brain.service 2>/dev/null || true
-  if [ -n "$SIP_GW_SAVED" ]; then rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""; fi
+  if [ -n "$SIP_GW_SAVED" ]; then SUDO rm -f "$SIP_GW_SAVED"; SIP_GW_SAVED=""; fi
   SIP_BRAIN_DETACHED=0
-  trap - EXIT
 }
 
 # migrate_brain_dropins — the per-path tuning an appliance kept in systemd drop-ins, carried
@@ -1669,6 +1677,7 @@ migrate_brain_dropins() {
   plan="$(sudo_python - /etc/systemd/system/teaport-sip-brain.service.d \
             /etc/systemd/system/teaport-brain.service.d "$ETC/brain.env" "$DRY_RUN" <<'PY'
 import glob, os, shlex, sys, time
+os.umask(0o077)  # nothing this step creates is readable by others, even half-written
 PER = {"ENDPOINT_STOP_SECS": "ENDPOINT_STOP_SECS", "SMARTTURN_STOP_SECS": "SMARTTURN_STOP_SECS",
        "SMARTTURN_COMPLETE_THRESHOLD": "SMARTTURN_COMPLETE_THRESHOLD",
        "TEAPORT_INTERRUPT_MIN_WORDS": "INTERRUPT_MIN_WORDS"}
@@ -1724,8 +1733,15 @@ add = {}
 for prefix, d in (("SIP", sipd), ("TALK", talkd)):
     merged = {}        # key -> (value, source, from_file), systemd's precedence
     convs = []
-    for conf in sorted(glob.glob(os.path.join(d, "*.conf"))):
-        plain, files, only_env = read(conf)
+    confs = glob.glob(os.path.join(d, "*.conf"))
+    if dry:
+        # A dry run cannot put back what an earlier run left parked (sip_brain_detach
+        # does that for real): read those as the drop-ins they are about to be again.
+        confs += [c[:-len(".retired-pending")]
+                  for c in glob.glob(os.path.join(d, "*.conf.retired-pending"))]
+    for conf in sorted(set(confs)):
+        plain, files, only_env = read(conf if os.path.exists(conf)
+                                      else conf + ".retired-pending")
         for k, (v, src) in plain.items():
             if k not in merged or not merged[k][2]:
                 merged[k] = (v, src, False)
@@ -1756,24 +1772,44 @@ for prefix, d in (("SIP", sipd), ("TALK", talkd)):
             elif keys & moved:
                 say("KEEP", conf)
 
+def write_new(path, text, mode, uid, gid):
+    """Create `path` (never an existing file) holding `text`, private while it is written,
+    synced, then given its final mode and owner. Gone again if anything fails."""
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chown(path, uid, gid)
+        os.chmod(path, mode)
+    except BaseException:
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
+
 if add and not dry:
     st = os.stat(env_path)
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    backup = f"{env_path}.bak-{stamp}"
-    with open(backup, "w", encoding="utf-8") as f:
-        f.write(existing_text)
-    os.chmod(backup, st.st_mode & 0o777)
-    os.chown(backup, st.st_uid, st.st_gid)
+    mode, uid, gid = st.st_mode & 0o777, st.st_uid, st.st_gid
+    backup = f"{env_path}.bak-{time.strftime('%Y%m%d-%H%M%S')}"
+    tmp = f"{env_path}.tmp-{os.getpid()}"
     text = existing_text
     if text and not text.endswith("\n"):
         text += "\n"
     text += "".join(f"{k}={v}\n" for k, v in add.items())
-    tmp = f"{env_path}.tmp-{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        f.write(text)
-    os.chmod(tmp, st.st_mode & 0o777)
-    os.chown(tmp, st.st_uid, st.st_gid)
-    os.replace(tmp, env_path)
+    write_new(backup, existing_text, mode, uid, gid)
+    try:
+        write_new(tmp, text, mode, uid, gid)
+        os.replace(tmp, env_path)
+    except BaseException:
+        # brain.env is as it was: no backup of a change that did not happen.
+        try:
+            os.unlink(backup)
+        except OSError:
+            pass
+        raise
     say("BACKUP", backup)
 PY
 )" || { warn "migrating the drop-in tuning failed (above) — nothing was changed"; return 1; }
