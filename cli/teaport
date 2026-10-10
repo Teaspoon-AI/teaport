@@ -312,21 +312,14 @@ EOF
 # A NEW conf is mktemp's: 0600 and the invoker's — unless the invoker is root (`sudo -E
 # teaport sip configure --conf` on a fresh box), whose conf the User= gateway could not
 # open: then it is given the unit's User= (and that user's group), and refused when the
-# unit names none this host knows (units not installed yet, say).
+# unit names none this host knows (units not installed yet, say) — sip_conf_new_owner.
 sip_conf_stage() {
-  local dest="$1" tmp owner want why
+  local dest="$1" tmp owner want
   tmp="$(mktemp "$dest.XXXXXX")" || return 1
   if [ ! -e "$dest" ]; then
-    if [ "$(id -u)" = 0 ]; then
-      owner="$(systemctl show -p User --value teaport-sip.service 2>/dev/null || true)"
-      if [ -z "$owner" ] || ! chown "$owner:" "$tmp" 2>/dev/null; then
-        rm -f "$tmp"
-        why="teaport-sip.service names no User= to give it to"
-        [ -z "$owner" ] || why="teaport-sip.service runs as $owner, who could not be given it"
-        printf 'note: no %s yet, and a new one written as root is one the gateway cannot open — %s; install the units (install.sh) or run this as the user they run as\n' \
-          "$dest" "$why" >&2
-        return 1
-      fi
+    owner="$(sip_conf_new_owner "$dest")" || { rm -f "$tmp"; return 1; }
+    if [ -n "$owner" ] && ! chown "$owner:" "$tmp" 2>/dev/null; then
+      rm -f "$tmp"; printf 'note: could not give a new %s to %s\n' "$dest" "$owner" >&2; return 1
     fi
     printf '%s' "$tmp"; return 0
   fi
@@ -340,6 +333,23 @@ sip_conf_stage() {
     return 1
   fi
   printf '%s' "$tmp"
+}
+
+# sip_conf_new_owner <dest> — who a NEW conf at <dest> is given to: nobody (prints
+# nothing) unless this runs as root, then teaport-sip.service's User=. As root with a unit
+# that names no user this host has, it says why and returns 1: a conf root writes is one
+# the User= gateway cannot open. sip_adopt_conf asks before its test registration as
+# well, so the refusal does not come after the ~8 s probe.
+sip_conf_new_owner() {
+  local owner why
+  [ "$(id -u)" = 0 ] || return 0
+  owner="$(systemctl show -p User --value teaport-sip.service 2>/dev/null || true)"
+  if [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1; then printf '%s' "$owner"; return 0; fi
+  why="teaport-sip.service names no User= to give it to"
+  [ -z "$owner" ] || why="teaport-sip.service runs as $owner, a user this host does not have"
+  printf 'note: no %s yet, and a new one written as root is one the gateway cannot open — %s; install the units (install.sh) or run this as the user they run as\n' \
+    "$1" "$why" >&2
+  return 1
 }
 
 # sip_conf_set <file> <key> <value> — set one key in a gateway .conf. The gateway's
@@ -601,7 +611,7 @@ sip_test_register() {
 }
 
 # The adopt path's probe: the SAME conf the operator handed us, with only the keys the
-# units own swapped (sip_adopt_conf's three) — so what is tested is what will be installed.
+# units own swapped (sip_adopt_conf_keys' four) — so what is tested is what will be installed.
 sip_test_register_conf() {
   local src="$1" testconf testuds
   sip_require_gateway
@@ -687,12 +697,16 @@ sip_adopt_conf_keys() { sip_conf_force "sip_port=$1" "uds_path=$2" register=true
 # or gone unreadable since the probe off to check the destination directory. Told apart
 # by which side of the pipe failed: a filter that could not write (or whose redirect
 # failed) exits non-zero, and a cat that could not read leaves the filter exiting 0.
+# Both statuses are read from PIPESTATUS, so the verdict does not depend on pipefail
+# (without it the pipeline's status is the filter's alone, and a failed read passed);
+# the `!` only keeps set -e off the pipeline, and leaves PIPESTATUS as it was.
 sip_adopt_copy() {
   local -a st
-  cat -- "$1" | sip_adopt_conf_keys "$3" "$4" > "$2" && return 0
+  # shellcheck disable=SC2251  # the ! is deliberate, see above
+  ! cat -- "$1" | sip_adopt_conf_keys "$3" "$4" > "$2"
   st=("${PIPESTATUS[@]}")
-  [ "${st[1]:-1}" = 0 ] && return 2
-  return 1
+  [ "${st[1]}" = 0 ] || return 1
+  [ "${st[0]}" = 0 ] || return 2
 }
 
 # sip_adopt_conf <file> — `configure --conf`. The file is the gateway's own key=value
@@ -706,6 +720,10 @@ sip_adopt_conf() {
     [ -n "$(confval "$src" "$k")" ] || missing="$missing $k"
   done
   [ -z "$missing" ] || die "$src is missing:$missing — a gateway .conf needs id_uri, registrar_uri, username, password"
+  # A new conf that sip_conf_stage would refuse (root, no unit User=) is refused HERE,
+  # not after the test registration.
+  local dest; dest="$(sip_conf_target "$SIP_CONF")"
+  [ -e "$dest" ] || sip_conf_new_owner "$dest" >/dev/null || die "nothing tested, nothing installed"
   sip_refuse_hand_launched
   local uds; uds="$(confval "$src" uds_path)"
   [ -n "$uds" ] && [ "$uds" != "$SIP_UDS" ] && printf 'note: uds_path %s -> %s (the socket the units use)\n' "$uds" "$SIP_UDS"
@@ -727,7 +745,7 @@ sip_adopt_conf() {
   # socket — under a gateway that a re-adopt (a password rotation) finds already enabled,
   # while the die said "nothing enabled". The target of a symlinked conf, and its owner
   # and mode kept, as sip_conf_set.
-  local dest staged; dest="$(sip_conf_target "$SIP_CONF")"
+  local staged
   staged="$(sip_conf_stage "$dest")" || die "cannot stage a new conf next to $dest — nothing installed"
   sip_trap_rm "$staged"      # it holds the password; a die below removes it through the trap
   sip_adopt_copy "$src" "$staged" 5060 "$SIP_UDS" || case $? in

@@ -154,12 +154,17 @@ def test_adopt_says_read_or_write_and_leaves_nothing_behind():
     rc, out = _run(d, f"sip_adopt_conf {src}", ADOPT_STUBS + "mv() { return 1; }")
     assert rc == 1 and f"could not write {installed}" in out and "could not read" not in out, out
     assert installed.read_text() == "password=old\n" and _temps(d) == []
-    # The copy itself: an unreadable source is 2, an unwritable destination 1.
-    rc, out = _run(d, f'''
-      sip_adopt_copy {d}/nope {d}/x 5060 /s || echo "rc=$?"
-      sip_adopt_copy {src} /dev/full 5060 /s || echo "rc=$?"
-      sip_adopt_copy {src} {d}/no/such/dir 5060 /s || echo "rc=$?"''')
-    assert out.count("rc=2") == 1 and out.count("rc=1") == 2, out
+    # The copy itself: an unreadable source is 2, an unwritable destination 1 — with
+    # pipefail and without (the verdict reads both statuses, not the pipeline's).
+    for pf in ("-o", "+o"):
+        rc, out = _run(d, f'''set {pf} pipefail
+          sip_adopt_copy {d}/nope {d}/x 5060 /s || echo "rc=$?"
+          sip_adopt_copy {src} /dev/full 5060 /s || echo "rc=$?"
+          sip_adopt_copy {src} {d}/no/such/dir 5060 /s || echo "rc=$?"
+          sip_adopt_copy {src} {d}/ok 5060 /s && echo "rc=0"
+          set -e; sip_adopt_copy {src} {d}/ok2 5060 /s; echo "rc=0 under set -e"''')
+        assert rc == 0, (pf, out)
+        assert (out.count("rc=2"), out.count("rc=1"), out.count("rc=0")) == (1, 2, 2), (pf, out)
     # And a clean adopt installs the forced keys, 0600, with no temp left.
     rc, out = _run(d, f"sip_adopt_conf {src}", ADOPT_STUBS)
     assert rc == 0 and "TURN_ON" in out, out
@@ -185,6 +190,19 @@ def test_a_new_conf_written_by_root_goes_to_the_units_user_or_is_refused():
         rc, out = _run(d, f'UNIT_USER="{user}"; sip_conf_stage {d}/teaport-sip.conf || echo REFUSED', ROOT_STUBS)
         assert "REFUSED" in out and "gateway cannot open" in out, out
         assert _temps(d) == [], _temps(d)
+
+
+def test_adopt_as_root_refuses_an_ownerless_new_conf_before_the_test_registration():
+    d = _secrets()
+    src = d / "src.conf"; src.write_text(CONF)
+    stubs = ADOPT_STUBS + ROOT_STUBS
+    rc, out = _run(d, f"UNIT_USER=''; PROBE_HOOK='echo PROBED'; sip_adopt_conf {src}", stubs)
+    assert rc == 1 and "gateway cannot open" in out and "nothing tested" in out, out
+    assert "PROBED" not in out and not (d / "teaport-sip.conf").exists() and _temps(d) == [], out
+    # An installed conf keeps its owner whoever runs this: nothing to ask the unit then.
+    (d / "teaport-sip.conf").write_text("password=old\n"); os.chmod(d / "teaport-sip.conf", 0o600)
+    rc, out = _run(d, f"UNIT_USER=''; PROBE_HOOK='echo PROBED'; sip_adopt_conf {src}", stubs)
+    assert rc == 0 and "PROBED" in out and "TURN_ON" in out, out
 
 
 AEC_STUBS = r'''
