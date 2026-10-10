@@ -513,9 +513,11 @@ CtxChange ==
 \* the same state minus the monitor. Either way the speculation is over.
 \*
 \* The adoption rule is written once so that every row checks the same thing: a
-\* reply is stale when it is ADOPTED against a moved context or moved words.
-\* byContext is not exempt by fiat -- if its equality test ever let either through,
-\* TLC would see it here.
+\* reply is stale when it is ADOPTED against a moved context or moved words. For
+\* byContext that is unreachable by construction -- Adopt requires exactly the two
+\* equalities Stale negates -- so its row checks the rule as written here, not the
+\* code's equality test (Speculator.take is the tests' to pin); what it does show is
+\* that dropping either conjunct makes the row fall, which byText and byHistory do.
 Adopt == spec /\ (SPEC \in {"byText", "byContext"} => specWords)
               /\ (SPEC \in {"byHistory", "byContext"} => specGen = gen)
 Stale == Adopt /\ (specGen /= gen \/ ~specWords)

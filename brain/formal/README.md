@@ -787,8 +787,11 @@ difference in the words).
 `byContext` closes both: `specGen = gen` and `specWords` together are the equality check on
 `context.messages`. The adoption rule is one definition (`Adopt`) shared by all three
 designs, and `staleReply` is raised whenever an adopted reply's generation is not the
-commit's or its words moved — so the byContext row is a real check of the equality rule,
-not exempt by fiat (drop either conjunct from `Adopt` and the row falls). The two barge-in
+commit's or its words moved. For `byContext` that is unreachable by construction —
+`Adopt` requires exactly the two equalities `Stale` negates — so the row checks the rule
+as written, not `Speculator.take`'s equality test (the tests pin that); what the model
+does show is that each conjunct is needed: drop one and the row falls, as `byText` and
+`byHistory` do. The two barge-in
 rows hold with it on because nothing in `SpecStart`/`CtxChange`/`Retext` touches
 `userTurn`, `userSpeaking` or `stopInFlight`. A resume (`VadStart`) and a new turn
 (`Interject`) both close the speculation. The commit is `Inference` or `ForceStop` — the
