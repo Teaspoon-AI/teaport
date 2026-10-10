@@ -48,30 +48,44 @@
 (*                          after its inference ran is re-applied at the    *)
 (*                          user's next quiet moment.                       *)
 (*                                                                          *)
-(* The speculative reply (speculate.py, TEAPORT_SPECULATIVE_REPLY). When a  *)
-(* final lands and the stop strategy does not conclude on it -- the verdict  *)
-(* was INCOMPLETE and the ceiling is running -- the LLM is asked NOW, out of *)
-(* band, against a snapshot of the context with that text as the user       *)
-(* message. At the commit the LLM service is offered that stream instead of *)
-(* opening its own. The controller's state is never touched: `SpecStart`    *)
-(* reads userTurn and writes nothing the guards read, which is why the two  *)
-(* barge-in properties are re-checked with it on rather than assumed.       *)
+(* The speculative reply (speculate.py, TEAPORT_SPECULATIVE_REPLY). When   *)
+(* the caller's words have settled on a turn the stop strategy has not      *)
+(* concluded on -- a VAD stop answered INCOMPLETE, the ceiling running, and  *)
+(* (since #43) the STT holding the segment open through it -- the LLM is    *)
+(* asked NOW, out of band, against a snapshot of the context with those     *)
+(* words as the user message: the settled INTERIM (or a final, where one     *)
+(* lands before the commit). At the commit the LLM service is offered that  *)
+(* stream instead of opening its own. The controller's state is never       *)
+(* touched: `SpecStart` reads userTurn and writes nothing the guards read,  *)
+(* which is why the two barge-in properties are re-checked with it on       *)
+(* rather than assumed.                                                     *)
 (*                                                                          *)
 (* What the speculation must not do is speak a reply generated against a    *)
-(* context the commit no longer has. Between the snapshot and the commit    *)
-(* the context can have other writers -- HeardContextCorrector's truncation *)
-(* of the cut reply on the LLMContextFrame itself was one, and the first    *)
-(* miss seen live, until speculate.py moved it ahead of the snapshot; the   *)
-(* consult follow-up's trigger and MemoryRecall's note are NOT ones (the    *)
-(* follow-up posts only with the turn free, the note is injected before the *)
-(* aggregator sees the final). `CtxChange` is any writer at all: what the   *)
-(* code prevents today is not what the machine prevents.                    *)
+(* context the commit no longer has. Two things can move under the         *)
+(* snapshot. The context before the user message: other writers --         *)
+(* HeardContextCorrector's truncation of the cut reply on the               *)
+(* LLMContextFrame itself was one, and the first miss seen live, until      *)
+(* speculate.py moved it ahead of the snapshot; MemoryRecall's note,        *)
+(* injected on the final, is one for a snapshot taken on the interim.       *)
+(* `CtxChange` is any writer at all: what the code prevents today is not    *)
+(* what the machine prevents. And the user message itself: the words the   *)
+(* commit carries are the FINAL's, which the snapshot did not have -- a     *)
+(* lagging delta past the settle window, or a final whose re-decode differs *)
+(* from the last interim by a comma or a capital, landing in the same step  *)
+(* that commits. `Retext` is that, and it leaves the speculation live: the  *)
+(* strategy cancelling on a changed interim it sees in time is a            *)
+(* refinement the properties do not rely on.                                *)
 (*                                                                          *)
 (* SPEC = "off"       -- no speculation; the four MODE rows are unchanged.  *)
 (* SPEC = "byText"    -- promote when the committed TEXT is what was asked. *)
-(*                       Rejected: NoStaleReply falls.                      *)
-(* SPEC = "byContext" -- promote only when the WHOLE context equals the     *)
-(*                       snapshot (what speculate.py does).                 *)
+(*                       Rejected: NoStaleReply falls to CtxChange.         *)
+(* SPEC = "byHistory" -- promote when the context BEFORE the user message   *)
+(*                       is what was asked. Rejected: NoStaleReply falls to *)
+(*                       Retext -- the hazard the interim snapshot adds.    *)
+(* SPEC = "byContext" -- promote only when the WHOLE context, user message  *)
+(*                       included, equals the snapshot (what speculate.py   *)
+(*                       does, forgiving only whitespace at the message's   *)
+(*                       ends, which is not a difference in its words).     *)
 (*                                                                          *)
 (* The reply hold (reply_hold.py, #85). A commit's reply plays ~0.2 s after *)
 (* the commit, and a caller who was only pausing resumes inside that gap:   *)
@@ -147,6 +161,8 @@ VARIABLES
     \* --- the speculative reply ---
     spec,            \* a speculation is live (opened, not yet adopted or closed)
     specGen,         \* the context generation it was asked against
+    specWords,       \* the words it was asked on are still the ones the commit
+                     \* will carry (FALSE once Retext has moved them)
     gen,             \* the context generation: bumped by every other writer
     \* --- monitors ---
     missedBargeIn,   \* the user spoke over the bot and got no interruption, at a
@@ -193,7 +209,7 @@ NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
 LateTail     == PAUSE \in {"shipped", "noStopWord", "keepOnInterrupt"}
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-          stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply,
+          stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply,
           holdVars, pauseVars>>
 
 Gated == HOLD /= "none"
@@ -209,6 +225,7 @@ Init ==
     /\ turns = 0
     /\ spec = FALSE
     /\ specGen = 0
+    /\ specWords = FALSE
     /\ gen = 0
     /\ missedBargeIn = FALSE
     /\ staleReply = FALSE
@@ -262,7 +279,7 @@ VadStart ==
     /\ HoldOnSpeech
     /\ PauseOnSpeech
     /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
-                   specGen, gen, missedBargeIn, staleReply>>
+                   specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
                    splitTurn>>
 
@@ -279,7 +296,7 @@ VadStop ==
               /\ owed' = FALSE
               /\ inference' = FALSE
          ELSE UNCHANGED <<userTurn, owed, inference>>
-    /\ UNCHANGED <<botSpeaking, stopInFlight, turns, spec, specGen, gen,
+    /\ UNCHANGED <<botSpeaking, stopInFlight, turns, spec, specGen, specWords, gen,
                    missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
@@ -336,7 +353,7 @@ Interject ==
          ELSE /\ StartTurn
               /\ UNCHANGED missedBargeIn
     /\ watchdog' = FALSE
-    /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, gen, staleReply>>
+    /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, specWords, gen, staleReply>>
 
 (***************************************************************************)
 (* The barge-in pause.                                                     *)
@@ -348,7 +365,7 @@ Progress ==
     /\ PAUSE /= "off" /\ botSpeaking /\ ~pausedP /\ left /= "short"
     /\ left' = IF left = "long" THEN "mid" ELSE "short"
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
-                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, synthDone, tailKnown, wouldEnd, stopHeard, answerLost>>
 
@@ -361,7 +378,7 @@ SynthDone ==
     /\ synthDone' = TRUE
     /\ tailKnown' = (tailKnown \/ (pausedP /\ LateTail))
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
-                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, left, wouldEnd, stopHeard, answerLost>>
 
@@ -373,7 +390,7 @@ TailElapsed ==
     /\ pausedP /\ synthDone /\ left /= "long" /\ ~wouldEnd
     /\ wouldEnd' = TRUE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
-                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, stopHeard, answerLost>>
 
@@ -386,7 +403,7 @@ ResumeP ==
     /\ pausedP' = FALSE /\ wouldEnd' = FALSE /\ tailKnown' = FALSE /\ stopHeard' = FALSE
     /\ missedBargeIn' = (missedBargeIn \/ stopHeard)
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
-                   owed, turns, spec, specGen, gen, staleReply>>
+                   owed, turns, spec, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<left, synthDone, answerLost>>
 
@@ -408,7 +425,7 @@ OneWord ==
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard>>
-    /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, gen, staleReply>>
+    /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
 
 \* A transcript made only of stop words ("Stop.") over the speaking bot. Under the
 \* 2-word guard; as shipped, a stop utterance to a PAUSED bot starts the turn. If it
@@ -425,25 +442,41 @@ StopWord ==
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
-    /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, gen, staleReply>>
+    /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
 
 (***************************************************************************)
 (* The speculative reply.                                                  *)
 (***************************************************************************)
 
-\* A final landed and the stop strategy did not conclude on it: the LLM is asked now,
-\* against the context as it is. Enabled exactly where the strategy hook fires --
+\* The interim settled under an INCOMPLETE verdict (or a final landed that the stop
+\* strategy did not conclude on): the LLM is asked now, against the context as it is
+\* and the words as they are. Enabled exactly where the strategy's trigger fires --
 \* an open turn, VAD quiet, no inference yet -- and touches nothing the controller's
-\* guards read. Single-flight: a second final supersedes, which is this same step
-\* from a state where `spec` was already TRUE (the old one is closed).
+\* guards read. Single-flight: a changed interim or a new final supersedes, which is
+\* this same step from a state where `spec` was already TRUE (the old one is closed).
 SpecStart ==
     /\ ~endQueued                             \* the session has not ended
     /\ SPEC /= "off"
     /\ userTurn /\ ~userSpeaking /\ ~inference /\ ~stopInFlight
     /\ spec' = TRUE
     /\ specGen' = gen
+    /\ specWords' = TRUE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+
+\* The words the commit will carry move after the snapshot, with the caller quiet:
+\* the decoder's lagging tail past the settle window, or the final's re-decode
+\* differing from the interim it follows. Free, and it leaves the speculation live
+\* (see the header). Bounded by itself: it fires once per speculation.
+Retext ==
+    /\ ~endQueued                             \* the session has not ended
+    /\ spec /\ specWords /\ ~inference
+    /\ specWords' = FALSE
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn,
+                   staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
 
@@ -456,7 +489,8 @@ CtxChange ==
     /\ spec /\ gen < MaxCtxWrites
     /\ gen' = gen + 1
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-                   stopInFlight, owed, turns, spec, specGen, missedBargeIn, staleReply>>
+                   stopInFlight, owed, turns, spec, specGen, specWords, missedBargeIn,
+                   staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
 
@@ -472,18 +506,19 @@ CtxChange ==
 \*
 \* With a speculation live this is also the commit that decides its fate: the LLM
 \* service is offered the stream (Speculator.take). byText adopts it whenever the
-\* text is what was asked -- which every live speculation's is, since a resume or a
-\* new turn already closed it -- so a context written in between is adopted with it.
-\* byContext adopts only when nothing else wrote the context (specGen = gen); the
-\* speculation is otherwise closed and the ordinary request made, the same state
-\* minus the monitor. Either way the speculation is over.
+\* words are what was asked (specWords), so a context written in between is adopted
+\* with it. byHistory adopts whenever nothing else wrote the context (specGen = gen),
+\* so words that moved after the snapshot are adopted with it. byContext adopts only
+\* when both hold; the speculation is otherwise closed and the ordinary request made,
+\* the same state minus the monitor. Either way the speculation is over.
 \*
-\* The adoption rule is written once so that both rows check the same thing: a
-\* reply is stale when it is ADOPTED against a moved context. byContext is not
-\* exempt by fiat -- if its equality test ever let a moved context through, TLC
-\* would see it here.
-Adopt == spec /\ (SPEC = "byText" \/ specGen = gen)
-Stale == Adopt /\ specGen /= gen
+\* The adoption rule is written once so that every row checks the same thing: a
+\* reply is stale when it is ADOPTED against a moved context or moved words.
+\* byContext is not exempt by fiat -- if its equality test ever let either through,
+\* TLC would see it here.
+Adopt == spec /\ (SPEC \in {"byText", "byContext"} => specWords)
+              /\ (SPEC \in {"byHistory", "byContext"} => specGen = gen)
+Stale == Adopt /\ (specGen /= gen \/ ~specWords)
 
 Inference ==
     /\ ~endQueued                             \* the session has not ended
@@ -500,7 +535,7 @@ Inference ==
     /\ unanswered' = IF mergePending THEN unanswered ELSE (IF unanswered < 2 THEN unanswered + 1 ELSE 2)
     /\ mergePending' = FALSE
     /\ splitTurn' = (splitTurn \/ (~mergePending /\ unanswered >= 1))
-    /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, gen,
+    /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
     /\ UNCHANGED pauseVars
@@ -515,7 +550,7 @@ Resume ==
     /\ watchdog' = FALSE
     /\ HoldOnSpeech
     /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
-                   spec, specGen, gen, missedBargeIn, staleReply>>
+                   spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
                    splitTurn>>
     /\ UNCHANGED pauseVars
@@ -533,7 +568,7 @@ Finalize ==
          ELSE /\ userTurn' = FALSE
               /\ inference' = FALSE
               /\ owed' = FALSE
-    /\ UNCHANGED <<userSpeaking, watchdog, botSpeaking, turns, spec, specGen, gen,
+    /\ UNCHANGED <<userSpeaking, watchdog, botSpeaking, turns, spec, specGen, specWords, gen,
                    missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
@@ -550,7 +585,7 @@ BotStart ==
     \* Its first audio goes through: the gate disarms, and the caller has a reply.
     /\ reply' = FALSE /\ armed' = FALSE /\ unanswered' = 0
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
-                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<held, paused, resumed, mergePending, endQueued, replyOverResume,
                    splitTurn>>
     \* A new reply: any length, synthesized or not yet. As shipped, a caller already
@@ -573,7 +608,7 @@ Wordless ==
     /\ resumed /\ ~userSpeaking /\ ~stopInFlight
     /\ resumed' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, held, paused, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
@@ -586,7 +621,7 @@ Release ==
     /\ held /\ ~userSpeaking /\ (~WORDS_IN_TIME \/ ~resumed)
     /\ held' = FALSE /\ paused' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
@@ -597,7 +632,7 @@ Cap ==
     /\ held /\ ~WORDS_IN_TIME                 \* the cap: the caller may still be talking
     /\ held' = FALSE /\ paused' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
@@ -614,7 +649,7 @@ Hangup ==
          THEN held' = FALSE /\ paused' = FALSE /\ reply' = FALSE
          ELSE UNCHANGED <<held, paused, reply>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
-                   stopInFlight, owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
 
@@ -623,7 +658,7 @@ BotStop ==
     /\ botSpeaking /\ ~pausedP                  \* a paused reply cannot finish
     /\ botSpeaking' = FALSE
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
-                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
 
@@ -638,7 +673,7 @@ Arm ==
     /\ ~watchdog /\ ~userSpeaking
     /\ watchdog' = TRUE
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, inference, stopInFlight,
-                   owed, turns, spec, specGen, gen, missedBargeIn, staleReply>>
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
 
@@ -654,7 +689,7 @@ ForceStop ==
     /\ watchdog' = FALSE
     /\ spec' = FALSE
     /\ staleReply' = (staleReply \/ Stale)
-    /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, gen,
+    /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
@@ -664,7 +699,7 @@ Next ==
     \/ Inference \/ Resume \/ Finalize
     \/ BotStart \/ BotStop
     \/ Arm \/ ForceStop
-    \/ SpecStart \/ CtxChange
+    \/ SpecStart \/ CtxChange \/ Retext
     \/ Wordless \/ Release \/ Cap \/ Hangup
     \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP \/ OneWord \/ StopWord
 
@@ -688,7 +723,9 @@ NoMissedBargeIn == ~missedBargeIn
 
 \* A speculated reply is only ever spoken for the context it was asked against. The
 \* text being right is not enough: a memory note or a truncated previous reply that
-\* landed after the snapshot is context the model never saw.
+\* landed after the snapshot is context the model never saw. Nor is the rest of the
+\* context being right: a final that differs from the interim the snapshot took is
+\* words the model never saw.
 NoStaleReply == ~staleReply /\ ~replyOverResume
 
 \* The reply hold's merge: a commit never leaves two user messages with no reply
@@ -723,8 +760,8 @@ TypeOK ==
     /\ owed \in BOOLEAN /\ missedBargeIn \in BOOLEAN
     /\ turns \in 0..MaxTurns
     /\ spec \in BOOLEAN /\ staleReply \in BOOLEAN
-    /\ specGen \in 0..MaxCtxWrites /\ gen \in 0..MaxCtxWrites
-    /\ SPEC \in {"off", "byText", "byContext"}
+    /\ specGen \in 0..MaxCtxWrites /\ gen \in 0..MaxCtxWrites /\ specWords \in BOOLEAN
+    /\ SPEC \in {"off", "byText", "byHistory", "byContext"}
     /\ (SPEC = "off" => ~spec)
     /\ HOLD \in {"none", "gate", "gateNoMerge", "gateNoResume", "gateEndWaits",
                  "gateNoEnding"}
