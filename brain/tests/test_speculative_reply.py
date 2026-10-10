@@ -82,6 +82,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     SMARTTURN_STOP_SECS,
     LateStartTurnStopStrategy,
     SegmentDoneFrame,
+    NoSpeechReportFrame,
     SegmentResetFrame,
     SpeechDecodedFrame,
     SttProgressFrame,
@@ -587,6 +588,7 @@ class RecordingSpeculator:
         self.finals = []
         self.settle_secs = SETTLE
         self.on_decode = True
+        self.triggers = []
 
     def candidate(self, interim=""):
         return " ".join(self.finals + ([interim.strip()] if interim.strip() else []))
@@ -595,11 +597,12 @@ class RecordingSpeculator:
     def text(self):
         return self.live
 
-    async def start(self, text, why=""):
+    async def start(self, text, why="", trigger=""):
         if text == self.live:
             return True
         await self.cancel("superseded")
         self.calls.append(("start", why, text))
+        self.triggers.append(trigger)
         self.live = text
         return True
 
@@ -969,7 +972,8 @@ class SttRig(Rig):
             async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
                 if isinstance(frame, (InterimTranscriptionFrame, TranscriptionFrame,
                                       SegmentDoneFrame, SegmentResetFrame,
-                                      SttProgressFrame, SpeechDecodedFrame)):
+                                      SttProgressFrame, SpeechDecodedFrame,
+                                      NoSpeechReportFrame)):
                     await controller.process_frame(frame)
 
             async def stop_processing_metrics(self):
@@ -1150,6 +1154,43 @@ async def test_with_the_report_the_interim_is_asked_on_when_its_speech_is_decode
         assert rig.speculator.calls == [("start", DECODED, UTTERANCE)]
         await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
         assert len(rig.speculator.calls) == 1, "the same report again asks nothing new"
+        # The [SPEC] start line says which trigger fired and how long after the stop
+        trigger = rig.speculator.triggers[0]
+        assert trigger.startswith("trigger=report +") and "after the VAD stop" in trigger
+        after = float(trigger.split("+")[1].split("s")[0])
+        assert SETTLE + 0.1 <= after < SETTLE + 1.0, trigger
+
+
+async def test_a_stop_with_no_report_to_come_falls_back_to_the_window():
+    """The STT could not place the stop's speech end (audio passed unsent), so no
+    report will speak for it (NoSpeechReportFrame): the window decides that stop --
+    whether the frame lands after the verdict or before it -- and the next stop is the
+    report's again."""
+    for before_words in (False, True):
+        rig = Rig(Incomplete)
+        async with running_controller(rig.controller):
+            c = rig.controller
+            await c.process_frame(SttProgressFrame(reported=True))
+            await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+            await rig.audio(400)
+            if before_words:
+                await rig.interim(" " + UTTERANCE)
+            await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+            await c.process_frame(NoSpeechReportFrame(stop_n=1))
+            if not before_words:
+                await rig.interim(" " + UTTERANCE)       # the deltas after the stop
+            await rig.wait(SETTLE + 0.1)
+            assert rig.speculator.calls == [("start", START, UTTERANCE)], before_words
+            assert rig.speculator.triggers[0].startswith("trigger=window +")
+            # the caller goes on; their next stop is the report's again
+            await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+            await rig.audio(200)
+            await rig.interim(" " + UTTERANCE + " please")
+            await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+            await rig.wait(SETTLE + 0.1)
+            assert rig.speculator.calls[-1] == ("cancel", "resumed")
+            await c.process_frame(SpeechDecodedFrame(stop_n=2))
+            assert rig.speculator.calls[-1] == ("start", DECODED, UTTERANCE + " please")
 
 
 async def test_no_start_while_the_deltas_are_still_catching_up():
@@ -1271,6 +1312,7 @@ async def test_with_the_real_stt_the_held_segment_speculates_when_the_engine_is_
     placed for the stop, with every word in."""
     rig = SttRig(Incomplete)
     stt = rig.stt
+    stt.transcription_progress = True        # as build_agent_session sets it
     async with running_controller(rig.controller):
         await stt._handle_message({"type": "session.created", "id": "s", "created": 1,
                                    "capabilities": ["transcription.progress"]})

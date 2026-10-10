@@ -77,6 +77,7 @@ from pipecat.utils.time import time_now_iso8601
 from teaport_brain.endpointing import (
     SMARTTURN_STOP_SECS,
     SegmentDoneFrame,
+    NoSpeechReportFrame,
     SegmentResetFrame,
     SpeechDecodedFrame,
     SttProgressFrame,
@@ -252,10 +253,21 @@ _HINT_MARGIN_MS = env_num("TEAPORT_STT_SILENCE_HINT_MARGIN_MS", "100", int)
 # the VAD stop the segment is waiting on, the strategy is told, once per stop.
 #
 # The speech end is Silero's, placed no earlier than it was (the hint's argument), and
-# counts as transcribed only once the engine is the hint's margin past it, for the
-# hint's reason: the decoder's speech end can trail Silero's by an unvoiced tail. No
-# speech end placed (audio left unsent, see process_audio_frame), no frame: the stop
-# goes unspeculated rather than asked on a speech end that may be early.
+# counts as transcribed only once the engine is _REPORT_MARGIN_MS past it, for the
+# hint's margin's reason: the decoder's speech end can trail Silero's by an unvoiced
+# tail. Its own setting, not the hint's: the two are the same physical gap, but tuning
+# the commit's claim must not move the speculation's trigger. Measured on jetson05
+# (2026-10-10, 32 replayed phone calls, 92 fallthrough turns with words): the report
+# passed the speech end a median 0.66 s after the VAD stop, +100 ms at 0.75 s -- 91
+# hits either way, 1 wasted request, against the 160 ms window's 92 hits for 242
+# requests. No speech end placed (audio left unsent, see process_audio_frame): no
+# report can speak for that stop, and the strategy is told so (NoSpeechReportFrame) and
+# decides it with the window.
+#
+# Asked for only when the session will use it: build_agent_session sets
+# transcription_progress when the speculative reply is on and set to wait for the
+# report, so with either off the handshake is what it was.
+_REPORT_MARGIN_MS = env_num("TEAPORT_STT_TRANSCRIBED_MARGIN_MS", "100", int)
 
 # The stranded-segment backstop. This service has exactly ONE path to a final: a commit
 # sent when VADUserStoppedSpeakingFrame arrives, or the verdict that answers it (see
@@ -552,6 +564,10 @@ class TeaportSTTService(WebsocketSTTService):
         self._decoded_through = None
         self._decoded_stop = 0
         self._stop_at = 0.0
+        # Whether to ask the engine for the report (SPEECH_DECODED; set by
+        # build_agent_session), and whether this engine session gives it.
+        self.transcription_progress = False
+        self._reports = False
         # Commits sent and not yet answered, oldest first. The engine answers every
         # final commit with exactly one done, in order (voxtral_websocket.c: one
         # worker, commits are a counter it drains in turn), so the done at the head of
@@ -740,8 +756,11 @@ class TeaportSTTService(WebsocketSTTService):
             else:
                 rate = self.sample_rate or 16000
                 self._speech_end = self._sent_samples - round(frame.stop_secs * rate)
-            # The engine may be past it already (SPEECH_DECODED).
+            # The engine may be past it already (SPEECH_DECODED) -- or, with no speech
+            # end to pass, no report can speak for this stop: the window decides it.
             self._stop_at = time.monotonic()
+            if self._reports and self._speech_end is None:
+                await self.push_frame(NoSpeechReportFrame(stop_n=self._vad_stops))
             await self._push_if_speech_decoded()
             # The VAD stop came, so the backstop's premise (that it never would) is
             # gone whichever path commits.
@@ -1041,12 +1060,14 @@ class TeaportSTTService(WebsocketSTTService):
                 or self._decoded_stop == self._vad_stops):
             return
         rate = self.sample_rate or 16000
-        past = self._decoded_through - self._speech_end - _HINT_MARGIN_MS * rate // 1000
+        past = self._decoded_through - self._speech_end - _REPORT_MARGIN_MS * rate // 1000
         if past < 0:
             return
         self._decoded_stop = self._vad_stops
-        logger.debug(f"{self}: speech of VAD stop {self._vad_stops} transcribed through "
-                     f"{time.monotonic() - self._stop_at:.2f}s after the stop")
+        # INFO: with the [SPEC] start line, the live measure of the report's timing.
+        logger.info(f"{self}: speech of VAD stop {self._vad_stops} transcribed through "
+                    f"(+{_REPORT_MARGIN_MS} ms) {time.monotonic() - self._stop_at:.2f}s "
+                    "after the stop")
         await self.push_frame(SpeechDecodedFrame(stop_n=self._vad_stops))
 
     def _silence_hint_ms(self) -> Optional[int]:
@@ -1197,7 +1218,7 @@ class TeaportSTTService(WebsocketSTTService):
                 # and an engine with the report starts sending it (one without ignores
                 # the field). Not to the streaming backend: vLLM validates its session.
                 update = {"type": "session.update", "model": self._model}
-                if not self._streaming:
+                if self.transcription_progress and not self._streaming:
                     update["transcription_progress"] = True
                 await self._websocket.send(json.dumps(update))
                 self._stt_available = True
@@ -1499,11 +1520,13 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._push_if_speech_decoded()
 
         elif mtype == "session.created":
-            # Whether this engine session reports its transcription's progress: the
-            # stop strategy then asks the speculation on the report rather than on a
-            # timer. Said at every session's start, so a reconnect to an engine
-            # without it puts the strategy back on the timer.
-            reported = "transcription.progress" in (msg.get("capabilities") or [])
+            # Whether this engine session reports its transcription's progress (it
+            # offers it and we asked): the stop strategy then asks the speculation on
+            # the report rather than on a timer. Said at every session's start, so a
+            # reconnect to an engine without it puts the strategy back on the timer.
+            reported = (self.transcription_progress and not self._streaming
+                        and "transcription.progress" in (msg.get("capabilities") or []))
+            self._reports = reported
             logger.debug(f"{self}: session created {msg.get('id')}"
                          f"{' (transcription.progress)' if reported else ''}")
             await self.push_frame(SttProgressFrame(reported=reported))

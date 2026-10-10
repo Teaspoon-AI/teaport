@@ -343,9 +343,21 @@ class SpeechDecodedFrame(DataFrame, UninterruptibleFrame):
     stop_n: int
 
 
+@dataclass
+class NoSpeechReportFrame(DataFrame, UninterruptibleFrame):
+    """No SpeechDecodedFrame will come for VAD stop `stop_n`, though the engine
+    session gives its report: the STT could not place that stop's speech end on the
+    engine's clock (audio passed it unsent -- a reconnect's buffer, a dropped send).
+    The stop strategy decides that stop with the settle window instead. Pushed
+    DOWNSTREAM by the STT at the stop; data, uninterruptible and dropped by
+    SegmentDoneSink like the frames above."""
+
+    stop_n: int
+
+
 class SegmentDoneSink(FrameProcessor):
     """Drops the STT's frames for the stop strategy -- SegmentDoneFrame,
-    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame. Sits right after the user
+    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame, NoSpeechReportFrame. Sits right after the user
     aggregator, whose stock process_frame forwards every data frame it does not itself
     consume: the frames are for the stop strategy (which the aggregator hands them to)
     and would otherwise ride the queue of every processor down to the transport, one
@@ -354,7 +366,7 @@ class SegmentDoneSink(FrameProcessor):
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
         if isinstance(frame, (SegmentDoneFrame, SegmentResetFrame, SttProgressFrame,
-                              SpeechDecodedFrame)):
+                              SpeechDecodedFrame, NoSpeechReportFrame)):
             return
         await self.push_frame(frame, direction)
 
@@ -413,7 +425,8 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     the engine is past it: every word of that speech is in the interim by then. So with
     the report the speculation is asked on that frame, for the stop the INCOMPLETE
     verdict answered, and the window is not armed; without it (an engine without the
-    report, TEAPORT_SPECULATE_ON_DECODE off), the window as above. Words that still
+    report, TEAPORT_SPECULATE_ON_DECODE off, or a stop whose speech end the STT could
+    not place: NoSpeechReportFrame), the window as above. Words that still
     arrive after the frame -- the speech end is Silero's, and noise after it can decode
     to a word -- are none the report vouched for: they supersede what was asked, and the
     window decides them.
@@ -530,6 +543,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._decode_reported = False
         self._decoded_n = None
         self._incomplete_n = None
+        # A stop no report will come for (NoSpeechReportFrame): the window decides it.
+        self._unreported_n = None
+        # When the latest VAD stop reached this strategy, for the [SPEC] start line.
+        self._stop_at = 0.0
 
     async def trigger_user_turn_inference_triggered(self):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
@@ -552,6 +569,9 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         elif isinstance(frame, SpeechDecodedFrame):
             self._decoded_n = frame.stop_n
             await self._speculate_when_decoded()
+        elif isinstance(frame, NoSpeechReportFrame):
+            self._unreported_n = frame.stop_n
+            await self._arm_settle_for_unreported()
         try:
             result = await super().process_frame(frame)
             if isinstance(frame, InterimTranscriptionFrame):
@@ -652,8 +672,26 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
 
     def _on_decode(self) -> bool:
         """Whether the speculation waits for the engine's report rather than the settle
-        window: the engine session gives it, and the speculator is set to use it."""
-        return self._decode_reported and self.speculator.on_decode
+        window: the engine session gives it, the speculator is set to use it, and the
+        STT has not said the latest stop will get none."""
+        return (self._decode_reported and self.speculator.on_decode
+                and self._unreported_n != self._stops)
+
+    def _trigger(self, kind: str) -> str:
+        """What opened a speculation, and how long after the VAD stop: the [SPEC] start
+        line's evidence for comparing the report against the window live."""
+        return f"trigger={kind} +{time.monotonic() - self._stop_at:.2f}s after the VAD stop"
+
+    async def _arm_settle_for_unreported(self):
+        """The STT says no report will come for the latest stop: if the model has
+        already called it INCOMPLETE with the caller quiet, its window starts now,
+        counted from the interim's arrival (as the stop itself would have armed it)."""
+        if (self.speculator is None or not self._interim
+                or not (self._unreported_n == self._stops == self._incomplete_n)
+                or not self._incomplete_and_quiet()):
+            return
+        settled = time.monotonic() - self._interim_at
+        await self._arm_settle(max(0.0, self.speculator.settle_secs - settled))
 
     async def _speculate_when_decoded(self):
         """Ask on the interim if the engine has transcribed past the end of the speech
@@ -672,7 +710,8 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                          "speaking -- leaving the speculation to the barge-in's final")
             return
         await self.speculator.start(self.speculator.candidate(self._interim),
-                                    "interim transcribed through, verdict INCOMPLETE")
+                                    "interim transcribed through, verdict INCOMPLETE",
+                                    trigger=self._trigger("report"))
 
     async def _handle_segment_reset(self):
         """The STT's open segment is gone without a close (SegmentResetFrame): its
@@ -715,7 +754,8 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                          "leaving the speculation to the barge-in's final")
             return
         await self.speculator.start(self.speculator.candidate(self._interim),
-                                    "interim settled, verdict INCOMPLETE")
+                                    "interim settled, verdict INCOMPLETE",
+                                    trigger=self._trigger("window"))
 
     async def _handle_transcription(self, frame):
         if frame.finalized:
@@ -740,6 +780,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # stop cannot have come before it (the STT counts the same frame first).
         self._stops += 1
         self._owed = self._stops
+        self._stop_at = time.monotonic()
         before = self._inferences
         await super()._handle_vad_user_stopped_speaking(frame)
         # The model has answered (super() awaits the inference): tell the STT first,

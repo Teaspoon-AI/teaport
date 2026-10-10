@@ -1117,6 +1117,8 @@ def build_agent_session(transport, *, voice: str | None = None,
             pending=memory_recall.pending_messages if memory_recall is not None else None)
         stop_strategy.speculator = speculator
         llm.speculator = speculator
+        # The engine's transcription report is asked for only when it will be used.
+        stt.transcription_progress = speculator.on_decode
         settle = f"{speculator.settle_secs * 1000:.0f} ms"
         logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
                     "once the words of a turn Smart Turn has not concluded on are complete "

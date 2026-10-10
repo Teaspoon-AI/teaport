@@ -5,18 +5,21 @@
 #
 # What these pin, in order:
 #
-#   * the handshake opts in (session.update "transcription_progress": true) -- to our
-#     engine, not to the streaming backend, which validates its session -- and every
-#     session.created tells the strategy whether this engine session gives the report
-#     (its "capabilities"), so an engine without it leaves the strategy on its timer;
+#   * the handshake opts in (session.update "transcription_progress": true) only when the
+#     session will use the report (build_agent_session sets transcription_progress with
+#     the speculative reply and TEAPORT_SPECULATE_ON_DECODE on) -- to our engine, not to
+#     the streaming backend, which validates its session -- and every session.created
+#     tells the strategy whether this engine session gives the report (offered in its
+#     "capabilities" and asked for), so without it the strategy stays on its timer;
 #   * the report goes onto the hint's clock: samples this service has sent, counted
 #     from the session's start, so a reconnect -- whose engine counts from zero again
 #     -- is placed where it began, and a report from the old session is forgotten;
 #   * SpeechDecodedFrame goes out once the report passes the speech end placed at the
 #     VAD stop plus the hint's margin -- not before, once per stop, and also at the stop
 #     itself when the engine was already past it;
-#   * a stop with no speech end (audio passed unsent; a commit already sent for it) gets
-#     no frame, and neither does a session without the report.
+#   * a stop with no speech end (audio passed unsent) gets NoSpeechReportFrame instead,
+#     so the strategy decides it with the window; a commit already sent for the stop,
+#     or a session without the report, gets neither.
 #
 # Run: python test_stt_transcription_progress.py   (or via pytest test_suite.py)
 #
@@ -40,6 +43,7 @@ from stt_harness import WireRecorder  # noqa: E402
 
 import teaport_brain.stt as stt_mod  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
+    NoSpeechReportFrame,
     SpeechDecodedFrame,
     SttProgressFrame,
     TurnVerdictFrame,
@@ -49,7 +53,7 @@ from teaport_brain.stt import TeaportSTTService  # noqa: E402
 SAMPLE_RATE = 16000
 CHUNK_MS = 20
 CHUNK = b"\x00\x02" * int(SAMPLE_RATE * CHUNK_MS / 1000)
-MARGIN = 100          # the hint's margin, which the report is held to too (see main)
+MARGIN = 100          # how far past the speech end the report must be (see main)
 
 DOWN = FrameDirection.DOWNSTREAM
 UP = FrameDirection.UPSTREAM
@@ -58,10 +62,11 @@ UP = FrameDirection.UPSTREAM
 class Recorder(TeaportSTTService):
     """The real service, its wire recorded and its pushed frames kept."""
 
-    def __init__(self, **kwargs):
+    def __init__(self, progress=True, **kwargs):
         super().__init__(url="ws://127.0.0.1:1/none", **kwargs)
         self._websocket = WireRecorder()
         self.pushed = []
+        self.transcription_progress = progress   # as build_agent_session sets it
 
     async def push_frame(self, frame, direction=DOWN):
         self.pushed.append(frame)
@@ -83,6 +88,9 @@ class Recorder(TeaportSTTService):
 
     def reported(self):
         return [f.reported for f in self.pushed if isinstance(f, SttProgressFrame)]
+
+    def unreported(self):
+        return [f.stop_n for f in self.pushed if isinstance(f, NoSpeechReportFrame)]
 
 
 async def audio(s, ms):
@@ -139,6 +147,24 @@ async def test_the_streaming_backend_is_not_asked():
     s = Recorder(streaming_backend=True)
     await connected(s)
     assert s._websocket.sent[0] == {"type": "session.update", "model": s._model}
+
+
+async def test_with_the_speculation_off_or_on_its_window_nothing_is_asked():
+    """transcription_progress unset (the speculative reply off, or set to the window):
+    the handshake is the one before the report existed, and an engine that offers it
+    is not taken up on it -- the strategy stays on the window."""
+    s = Recorder(progress=False)
+    await connected(s)
+    assert s._websocket.sent[0] == {"type": "session.update", "model": s._model}
+    await created(s)
+    assert s.reported() == [False]
+    await vad_start(s)
+    await audio(s, 1000)
+    ws, s._websocket = s._websocket, None
+    await audio(s, 100)                        # unsent: the stop cannot be placed
+    s._websocket = ws
+    await vad_stop(s, stop_secs=0.5)
+    assert s.decoded() == [] and s.unreported() == []
 
 
 # ---- the clock and the frame ----------------------------------------------------------
@@ -206,6 +232,7 @@ async def test_no_frame_without_a_speech_end_or_without_the_report():
     await vad_stop(s, stop_secs=0.5)
     await progress(s, 5000)
     assert s.decoded() == [], "no speech end placed, nothing to pass"
+    assert s.unreported() == [1], "the strategy is told to decide the stop by the window"
     # a COMPLETE verdict commits at once: the stop is answered, nothing to tell
     s = Recorder()
     await created(s)
@@ -214,7 +241,7 @@ async def test_no_frame_without_a_speech_end_or_without_the_report():
     await vad_stop(s, stop_secs=0.5)
     await s.process_frame(TurnVerdictFrame(complete=True, source="verdict"), UP)
     await progress(s, 5000)
-    assert s.decoded() == []
+    assert s.decoded() == [] and s.unreported() == []
     # an engine session without the report: the field is never there to read
     s = Recorder()
     await created(s, capabilities=None)
@@ -225,7 +252,8 @@ async def test_no_frame_without_a_speech_end_or_without_the_report():
 
 
 def main():
-    stt_mod._HINT_MARGIN_MS = MARGIN
+    stt_mod._REPORT_MARGIN_MS = MARGIN
+    stt_mod._HINT_MARGIN_MS = 0       # the hint's margin is not the report's
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
     async def run():

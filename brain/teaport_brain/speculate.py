@@ -311,7 +311,7 @@ class Speculator:
         """The user message the live speculation asked, or None."""
         return self._current.text if self._current is not None else None
 
-    async def start(self, text: str, why: str = "") -> bool:
+    async def start(self, text: str, why: str = "", trigger: str = "") -> bool:
         if not self._controller._user_turn:
             return False
         text = (text or "").strip()
@@ -338,7 +338,8 @@ class Speculator:
         spec = _Speculation(snapshot, ctx.tools, text)
         spec.task = self._spawn(spec.run(self._llm, request))
         self._current = spec
-        logger.info(f"[SPEC] start {text[:60]!r}{f' ({why})' if why else ''}")
+        logger.info(f"[SPEC] start {text[:60]!r}{f' ({why})' if why else ''}"
+                    f"{f' {trigger}' if trigger else ''}")
         return True
 
     async def cancel(self, reason: str):
