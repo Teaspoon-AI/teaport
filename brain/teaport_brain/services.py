@@ -501,7 +501,8 @@ def make_llm():
     base_url = setting("LLM_BASE_URL")
     if not base_url:
         raise RuntimeError(
-            "LLM_BASE_URL is not set — point it at your OpenAI-compatible endpoint "
+            "LLM_BASE_URL is not set, or is not an http(s):// URL (see the warning above) — "
+            "point it at your OpenAI-compatible endpoint "
             "(e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:8182/v1 for a "
             "local server); see docs/CONFIG.md"
         )

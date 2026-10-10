@@ -7,7 +7,9 @@
 # see, document or validate — exactly the state docs/CONFIG.md was in when the
 # table was first drafted (25 knobs read by the code and documented nowhere).
 # The read-site regex mirrors settings.setting and the bare os.getenv / os.environ
-# forms; a new reader needs adding here too.
+# forms, either quote (a read inside an f-string is single-quoted); a new reader needs
+# adding here too. Comments are not reads: a name mentioned in one must not stand in
+# for a read that has gone.
 #
 # A row the brain reads needs no pointer to where: `setting("NAME")` is the read, and
 # a search for the name finds it. Rows it does not read (the installer's, the units',
@@ -18,9 +20,11 @@
 # Run: python test_config_schema.py   (or via pytest)
 #
 import collections
+import io
 import pathlib
 import re
 import sys
+import tokenize
 import tomllib
 
 PKG = pathlib.Path(__file__).resolve().parent.parent / "teaport_brain"
@@ -28,7 +32,7 @@ SCHEMA = PKG / "config_schema.toml"
 REPO = PKG.parent.parent
 
 READ_RE = re.compile(
-    r'(?:getenv|\bsetting|environ\.get|environ\[)\(?\s*"([A-Z][A-Z0-9_]+)"'
+    r'(?:getenv|\bsetting|environ\.get|environ\[)\(?\s*(["\'])([A-Z][A-Z0-9_]+)\1'
 )
 TYPES = {"string", "url", "ws_url", "path", "dir", "int", "float", "flag", "enum",
          "json", "secret", "snowflake"}
@@ -41,10 +45,23 @@ READS = {"startup", "session", "unit"}
 NOT_SETTINGS = {"SUDO_GID", "SUDO_UID", "SUDO_USER", "NOTIFY_SOCKET"}
 
 
+def without_comments(source: str) -> str:
+    lines = source.splitlines(keepends=True)
+    for tok in tokenize.generate_tokens(io.StringIO(source).readline):
+        if tok.type == tokenize.COMMENT:
+            (row, col), (_, end) = tok.start, tok.end
+            lines[row - 1] = lines[row - 1][:col] + " " * (end - col) + lines[row - 1][end:]
+    return "".join(lines)
+
+
+def reads_in(source: str) -> set[str]:
+    return {m.group(2) for m in READ_RE.finditer(without_comments(source))}
+
+
 def env_reads_in_code() -> set[str]:
     found: set[str] = set()
     for p in PKG.glob("*.py"):
-        found |= set(READ_RE.findall(p.read_text()))
+        found |= reads_in(p.read_text())
     return found - NOT_SETTINGS
 
 

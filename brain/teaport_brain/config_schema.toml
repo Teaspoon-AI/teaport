@@ -1613,7 +1613,7 @@ accepts = ["1"]
 read = "startup"
 tier = "diag"
 help = "Trace every frame the transcript ledger sees."
-note = "Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1."
+note = "Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1, or 0 for off."
 
 [[settings]]
 name = "TEAPORT_TRACE"
@@ -1681,8 +1681,7 @@ max = 65535
 default = 7861
 read = "unit"
 tier = "installer"
-help = "Passed as --port by the unit. Changing it means re-rendering the plugin config, bridge.env and Caddy."
-source = "systemd/teaport-brain.service.in"
+help = "Passed as --port by the unit, and read by the local audio bridge to find /talk. Changing it means re-rendering the plugin config, bridge.env and Caddy."
 
 [[settings]]
 name = "GATEWAY_PORT"
@@ -2179,7 +2178,7 @@ name = "LOCAL_AUDIO_URL"
 store = "local_audio_env"
 group = "local_audio"
 type = "ws_url"
-default = "ws://127.0.0.1:$BRAIN_PORT/talk"
+default = "ws://127.0.0.1:<BRAIN_PORT>/talk"
 read = "startup"
 tier = "tuning"
 help = "The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set."

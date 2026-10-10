@@ -67,6 +67,19 @@ def test_every_schema_default_is_a_value_or_a_description():
         default_of(row)  # raises on a default that is not a value
 
 
+def test_a_described_default_is_never_returned_as_a_value():
+    # These parse as their types (a path, a URL), so only the description rule stops a
+    # read that forgot default= from dialing "ws://127.0.0.1:<BRAIN_PORT>/talk".
+    for name in ("TEAPORT_THINKING_WAV", "LOCAL_AUDIO_URL", "ENGINE_TTS_STREAM_URL"):
+        try:
+            setting(name, env={})
+        except ValueError as e:
+            assert "must pass default=" in str(e), e
+        else:
+            raise AssertionError(f"{name}: its described default was returned as a value")
+        assert setting(name, default="x", env={}) == "x"
+
+
 def test_flags_read_exactly_as_pipecat_reads_them():
     # One truth table for the whole brain.env: setting() and pipecat's env_truthy (its
     # PIPECAT_* flags live in the same file) must agree on every word either one knows.
@@ -83,6 +96,26 @@ def test_flags_read_exactly_as_pipecat_reads_them():
             assert parse(row, raw.strip())[0] is want, raw
     finally:
         os.environ.pop(key, None)
+
+
+def test_an_accepts_flag_reads_an_off_word_as_off_without_a_warning():
+    # LEDGER_TRACE: only 1 turns it on, but 0 is the natural way to write off, so it is
+    # not "unreadable". true/yes/on still warn: those are the ones a reader expects on.
+    row = {"type": "flag", "accepts": ["1"]}
+    assert parse(row, "0") == (False, None)
+    assert parse(row, "off") == (False, None)
+    assert parse(row, "true")[1] is not None
+
+
+def test_a_bad_json_value_is_not_echoed_to_the_journal():
+    seen = []
+    sink = settings.logger.add(seen.append, level="WARNING")
+    try:
+        assert setting("LLM_EXTRA_BODY", env={"LLM_EXTRA_BODY": '{"api_key": "sk-SECRET",'}) is None
+    finally:
+        settings.logger.remove(sink)
+    assert seen and all("sk-SECRET" not in str(m) for m in seen), seen
+    assert "not valid JSON" in str(seen[0])
 
 
 def test_parse_judges_text_by_type():

@@ -77,7 +77,9 @@ def _flag(text: str, row: dict):
     if "accepts" in row:  # a flag read as these words alone (LEDGER_TRACE)
         if word in row["accepts"]:
             return True, None
-        return None, f"must be one of {', '.join(sorted(row['accepts']))}"
+        if word in FLAG_FALSE:  # off is off; only the other "on" words are suspect
+            return False, None
+        return None, f"must be one of {', '.join(sorted(row['accepts']))} (or an off word)"
     if word in FLAG_TRUE or word in FLAG_FALSE:
         return word in FLAG_TRUE, None
     return None, f"must be one of {', '.join(sorted(FLAG_TRUE | FLAG_FALSE))}"
@@ -154,12 +156,17 @@ def default_of(row: dict):
     """The row's default as setting() returns it (None when the row has none).
     TOML writes a float row's whole-number default as an int; parsing its text gives
     the type every other read of the setting has. A default the schema DESCRIBES
-    ("<ENGINE_TTS_URL base>/...") is computed in code, so its read passes default=."""
+    ("<ENGINE_TTS_URL base>/...") is computed in code, so its read passes default=;
+    one that parses anyway (a path, a URL) is refused all the same, or a read that
+    forgot default= would get the description as its value."""
     if "default" not in row:
         return None
     d = row["default"]
     if isinstance(d, bool):
         return d
+    if "<" in str(d) or "$" in str(d):
+        raise ValueError(f"{row['name']}: schema default {d!r} describes a value the code "
+                         f"computes; its read must pass default=")
     value, problem = parse(row, str(d))
     if problem is not None:
         raise ValueError(f"{row['name']}: schema default {d!r} is not a value ({problem}); "
@@ -188,9 +195,12 @@ def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
     raw = given if row["type"] == "secret" else given.strip()
     value, problem = parse(row, raw)
     if problem is not None:
-        hint = (" If it came from a wrapper that `source`d the env file, the quotes were "
-                "stripped: parse the file literally instead." if row["type"] == "json" else "")
-        logger.warning(f"{name}={raw!r} {problem}; using default {fallback!r}.{hint}")
+        if row["type"] == "json":  # not echoed: an extra_body can carry a credential
+            logger.warning(f"{name} ({len(raw)} chars) {problem}; using default "
+                           f"{fallback!r}. If it came from a wrapper that `source`d the env "
+                           f"file, the quotes were stripped: parse the file literally instead.")
+            return fallback
+        logger.warning(f"{name}={raw!r} {problem}; using default {fallback!r}.")
         return fallback
     if row["type"] == "flag" and not value:
         logger.info(f"{name}={raw.lower()} — disabled")  # never silently off
