@@ -435,10 +435,15 @@ BRAIN_LEGACY="$PREFIX/venv.pre-uv"
 # read-only callers like this one).
 SRC_DIR=""
 # What --only brain installs from a checkout, and so all its freshness check looks at:
-# the brain (brain_stage), the CLI (brain_install_tools) and the busy lamp's udev rule
-# (install_busy_lamp). Not install.sh itself: an older installer still installs the
-# brain the checkout holds, and reverts nothing on the box. Keep in step with those.
-BRAIN_ONLY_PATHS=(brain cli packaging/xvf3800)
+# the brain (brain_stage), the CLI (brain_install_tools), the busy lamp's udev rule
+# (install_busy_lamp) — and install.sh itself. The installer is not just the runner: how
+# the brain is built lives in it (uv's flags and pin: a checkout one commit behind the
+# --reinstall-package fix installed the PREVIOUS build's code under the new revision),
+# and so does some of what --only brain writes (the busy lamp's group and tmpfiles line,
+# sip_brain_detach's and migrate_brain_dropins' unit edits). The price: a commit that
+# touches install.sh for the engine or SIP alone also asks for a git pull first.
+# Keep in step with those functions (test_install_brain_only.py checks the paths).
+BRAIN_ONLY_PATHS=(brain cli packaging/xvf3800 install.sh)
 # brain_src_fetch — fetch the checkout's upstream without ever stopping at a prompt:
 # GIT_TERMINAL_PROMPT for https, ssh BatchMode for ssh, and a timeout for anything else.
 # BatchMode only when neither the environment nor the repo names its own ssh command —
@@ -483,9 +488,13 @@ check_brain_source() {
     elif [ "$DRY_RUN" = 1 ]; then warn "$msg (a real run stops here)"
     else die "$msg, or set TEAPORT_ALLOW_STALE_SOURCE=1 to install it anyway"; fi
   fi
-  if [ -n "$(git -C "$HERE" --no-optional-locks status --porcelain -- brain 2>/dev/null)" ]; then
-    warn "uncommitted changes under $HERE/brain are installed too (the venv's revision is marked -dirty)"
-  fi
+  local p dirty="" mark=""
+  for p in "${BRAIN_ONLY_PATHS[@]}"; do
+    if [ -n "$(git -C "$HERE" --no-optional-locks status --porcelain -- "$p" 2>/dev/null)" ]; then dirty="$dirty $p"; fi
+  done
+  # Only brain/ goes into the release's revision label (brain_release_id).
+  if contains " brain " "$dirty "; then mark=" (the venv's revision is marked -dirty)"; fi
+  if [ -n "$dirty" ]; then warn "uncommitted changes in $HERE are used too:$dirty$mark"; fi
 }
 
 # resolve_brain_src — SRC_DIR as check_brain_source chose it, else a clone of the

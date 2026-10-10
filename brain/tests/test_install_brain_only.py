@@ -11,13 +11,35 @@
 #
 # Run: python test_install_brain_only.py   (or via pytest test_suite.py)
 #
+import atexit
 import os
 import pathlib
+import re
+import shutil
 import subprocess
 import tempfile
 
 INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
 AS_ROOT = os.geteuid() == 0   # root reads anything: the unreadable-file cases need a user
+_TMPS: list[str] = []
+
+
+def _tmp(prefix):
+    d = tempfile.mkdtemp(prefix=prefix)
+    _TMPS.append(d)
+    return d
+
+
+@atexit.register
+def _cleanup():
+    # The mode-000 env files first, so nothing in the tree is left unreadable to rmtree.
+    for d in _TMPS:
+        for root, _dirs, files in os.walk(d):
+            for f in files:
+                p = os.path.join(root, f)
+                if not os.path.islink(p):
+                    os.chmod(p, 0o600)
+        shutil.rmtree(d, ignore_errors=True)
 
 STUBS = r'''
 set -euo pipefail
@@ -76,7 +98,7 @@ def _env_file(tmp, text, readable=True):
 # --- read_env_file and its three callers ---------------------------------------------
 
 def test_a_readable_env_file_is_read_without_sudo():
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     path = _env_file(tmp, "GATEWAY_TOKEN=tok\nBRAIN_PORT=9001\n")
     rc, out = _run(tmp, f'read_env_file "{path}"; read_env_file "{path}" --lenient', ["read_env_file"])
     assert rc == 0 and out.count("GATEWAY_TOKEN=tok") == 2, out
@@ -86,7 +108,7 @@ def test_a_readable_env_file_is_read_without_sudo():
 def test_an_unreadable_env_file_is_read_with_sudo_and_a_refusal_is_the_callers_call():
     if AS_ROOT:
         return
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     path = _env_file(tmp, "GATEWAY_TOKEN=tok\n", readable=False)
     rc, out = _run(tmp, f'read_env_file "{path}"', ["read_env_file"])
     assert rc == 0 and "GATEWAY_TOKEN=tok" in out and _sudo_calls(tmp) == [f"cat {path}"], out
@@ -101,7 +123,7 @@ def test_an_unreadable_env_file_is_read_with_sudo_and_a_refusal_is_the_callers_c
 def test_the_gateway_token_is_reused_from_a_root_only_brain_env():
     if AS_ROOT:
         return
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     _env_file(tmp, "BRAIN_PORT=1\nGATEWAY_TOKEN=keepme\n", readable=False)
     script = f'ETC="{tmp}"; resolve_gateway_token; echo "TOKEN $GATEWAY_TOKEN"'
     rc, out = _run(tmp, script, ["read_env_file", "resolve_gateway_token"])
@@ -112,7 +134,7 @@ def test_the_gateway_token_is_reused_from_a_root_only_brain_env():
 
 
 def test_no_brain_env_mints_a_token_without_asking_sudo():
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     rc, out = _run(tmp, f'ETC="{tmp}"; resolve_gateway_token; echo "TOKEN $GATEWAY_TOKEN"',
                    ["read_env_file", "resolve_gateway_token"])
     tok = out.split("TOKEN ", 1)[1].strip()
@@ -123,7 +145,7 @@ def test_no_brain_env_mints_a_token_without_asking_sudo():
 def test_write_env_keeps_operator_settings_from_a_root_only_file():
     if AS_ROOT:
         return
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     path = _env_file(tmp, "GATEWAY_TOKEN=old\nOPERATOR_KNOB=7\n", readable=False)
     rc, out = _run(tmp, f'write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"])
     assert rc == 0, out
@@ -134,7 +156,7 @@ def test_write_env_keeps_operator_settings_from_a_root_only_file():
 def test_write_env_refuses_to_overwrite_a_file_it_cannot_read():
     if AS_ROOT:
         return
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     path = _env_file(tmp, "OPERATOR_KNOB=7\n", readable=False)
     rc, out = _run(tmp, f'write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"],
                    {"SUDO_REFUSED": "1"})
@@ -145,7 +167,7 @@ def test_write_env_refuses_to_overwrite_a_file_it_cannot_read():
 def test_write_env_dry_run_does_not_sudo_and_says_what_a_real_run_reads():
     if AS_ROOT:
         return
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     path = _env_file(tmp, "OPERATOR_KNOB=7\n", readable=False)
     rc, out = _run(tmp, f'DRY_RUN=1; write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"])
     assert rc == 0 and "a real run reads it with sudo" in out, out
@@ -153,7 +175,7 @@ def test_write_env_dry_run_does_not_sudo_and_says_what_a_real_run_reads():
 
 
 def test_write_env_on_a_first_install_reads_nothing():
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     path = pathlib.Path(tmp, "engine.env")
     rc, out = _run(tmp, f'write_env "{path}" A=1 "?B=2"', ["read_env_file", "write_env"])
     assert rc == 0 and pathlib.Path(f"{path}.written").read_text() == "A=1\nB=2\n", out
@@ -170,7 +192,7 @@ systemctl() { case "$1" in is-active) return 0 ;; show) echo inv-1 ;; esac; }
 def test_brain_verify_polls_the_port_from_a_root_only_brain_env():
     if AS_ROOT:
         return
-    tmp = tempfile.mkdtemp(prefix="teaport-env-")
+    tmp = _tmp("teaport-env-")
     _env_file(tmp, 'BRAIN_PORT="9123"\n', readable=False)
     script = f'{BRAIN_VERIFY_STUBS}ETC="{tmp}"; brain_verify teaport-brain.service; echo VERIFIED'
     rc, out = _run(tmp, script, ["read_env_file", "brain_verify"])
@@ -206,19 +228,19 @@ def _brain_only(tmp, venv=None, dry_run=False):
 
 
 def test_only_brain_refuses_a_box_with_no_brain_venv():
-    rc, out = _brain_only(tempfile.mkdtemp(prefix="teaport-only-"))
+    rc, out = _brain_only(_tmp("teaport-only-"))
     assert rc != 0 and "DIE no brain venv at" in out and "without --only" in out, out
     assert "STEP" not in out, out   # refused before anything was built or swapped
 
 
 def test_only_brain_dry_run_warns_and_shows_the_plan():
-    rc, out = _brain_only(tempfile.mkdtemp(prefix="teaport-only-"), dry_run=True)
+    rc, out = _brain_only(_tmp("teaport-only-"), dry_run=True)
     assert rc == 0 and "WARN no brain venv at" in out and "STEP brain_swap" in out, out
 
 
 def test_only_brain_updates_a_live_venv_a_pre_uv_one_and_a_dangling_link():
     for venv in ("link", "dir", "dangling"):
-        rc, out = _brain_only(tempfile.mkdtemp(prefix="teaport-only-"), venv=venv)
+        rc, out = _brain_only(_tmp("teaport-only-"), venv=venv)
         assert rc == 0 and "no brain venv" not in out and "STEP brain_swap" in out, (venv, out)
 
 
@@ -234,7 +256,7 @@ def _git(cwd, *args):
 
 def _behind(touching):
     """A checkout one upstream commit behind, that commit touching <touching>."""
-    tmp = tempfile.mkdtemp(prefix="teaport-fresh-")
+    tmp = _tmp("teaport-fresh-")
     up, here, other = (os.path.join(tmp, d) for d in ("up.git", "here", "other"))
     _git(tmp, "init", "--bare", up)
     _git(tmp, "clone", up, other)
@@ -262,7 +284,7 @@ def _check(tmp, here, only):
 
 
 def test_only_brain_is_not_refused_for_upstream_commits_it_does_not_install():
-    for touching in ("docs/x.md", "plugin/x.ts", "packaging/wifi-setup/x", "install.sh"):
+    for touching in ("docs/x.md", "plugin/x.ts", "packaging/wifi-setup/x"):
         tmp, here = _behind(touching)
         rc, out = _check(tmp, here, "brain")
         assert rc == 0 and "CHECKED" in out and "behind" not in out, (touching, out)
@@ -272,12 +294,48 @@ def test_only_brain_is_not_refused_for_upstream_commits_it_does_not_install():
 
 
 def test_only_brain_is_refused_for_upstream_commits_to_what_it_installs():
-    for touching in ("brain/uv.lock", "cli/teaport", "packaging/xvf3800/60-teaport-xvf3800.rules"):
+    # install.sh too: how the brain is built, and some of what --only brain writes, is in it.
+    for touching in ("brain/uv.lock", "cli/teaport", "packaging/xvf3800/60-teaport-xvf3800.rules",
+                     "install.sh"):
         tmp, here = _behind(touching)
         rc, out = _check(tmp, here, "brain")
         assert rc != 0, (touching, out)
         assert ("1 commit(s) behind origin/main in what --only brain installs "
-                "(brain cli packaging/xvf3800)") in out, (touching, out)
+                "(brain cli packaging/xvf3800 install.sh)") in out, (touching, out)
+
+
+def test_uncommitted_changes_in_any_installed_path_are_named():
+    tmp, here = _behind("docs/x.md")   # behind only in what --only brain does not install
+    pathlib.Path(here, "cli/teaport").write_text("local\n")
+    rc, out = _check(tmp, here, "brain")
+    assert rc == 0 and f"uncommitted changes in {here} are used too: cli\n" in out, out
+    pathlib.Path(here, "brain/uv.lock").write_text("local\n")
+    rc, out = _check(tmp, here, "brain")
+    assert rc == 0 and ": brain cli (the venv's revision is marked -dirty)" in out, out
+
+
+# The checkout paths --only brain's functions read, as they spell them. SRC_DIR (and
+# brain_stage's $src) is the checkout's brain/ (check_brain_source).
+_READS = {
+    r'\$\(dirname "\$SRC_DIR"\)/([\w./-]+)': "",
+    r'\$SRC_DIR/([\w./-]+)': "brain/",
+    r'\$src/([\w./-]+)': "brain/",
+    r'\$HERE/([\w./-]+)': "",
+}
+
+
+def test_every_checkout_path_only_brain_reads_is_in_its_freshness_check():
+    paths = re.findall(r"\((.*)\)", _line("BRAIN_ONLY_PATHS="))[0].split()
+    read = set()
+    for fn in ("brain_stage", "brain_install_tools", "install_busy_lamp"):
+        body = _fn(fn)
+        for pattern, base in _READS.items():
+            read.update(base + m for m in re.findall(pattern, body))
+    # Found at all: a respelled reference must not make this pass by matching nothing.
+    assert {"cli/teaport", "brain/uv.lock", "packaging/xvf3800/60-teaport-xvf3800.rules"} <= read, read
+    uncovered = sorted(r for r in read if not any(r == p or r.startswith(p + "/") for p in paths))
+    assert not uncovered, f"read by --only brain but not in BRAIN_ONLY_PATHS: {uncovered}"
+    assert "install.sh" in paths
 
 
 def main():
