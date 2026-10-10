@@ -329,6 +329,22 @@ async def test_a_resume_puts_the_backstop_back_on_a_held_segments_words():
     assert s._stranded_task is None
 
 
+def test_the_retired_setting_is_ignored_and_says_so():
+    """TEAPORT_STT_COMMIT_ON=vad-stop was an operator setting until 2026-10-09. A box
+    that still has it in brain.env gets the verdict commit regardless, and one warning
+    naming that -- not a silent change of behaviour."""
+    import subprocess
+    env = {**os.environ, "TEAPORT_STT_COMMIT_ON": "vad-stop"}
+    out = subprocess.run(
+        [sys.executable, "-c",
+         "import teaport_brain.stt as m; s = m.TeaportSTTService(url='ws://127.0.0.1:1/x');"
+         " print('MODE', s.commit_on)"],
+        env=env, capture_output=True, text=True, timeout=60)
+    assert "MODE verdict" in out.stdout, out
+    assert "TEAPORT_STT_COMMIT_ON is no longer read and is ignored" in out.stderr, out.stderr
+    assert "always commits on Smart Turn's verdict" in out.stderr, out.stderr
+
+
 async def test_a_disconnect_clears_the_hold():
     s = Recorder()
     await delta(s, "hello")

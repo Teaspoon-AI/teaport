@@ -153,6 +153,10 @@ _EMPTY_FINAL_RUN = 5
 # silence to decode under the reply. Such a stop commits at once instead (`tail`),
 # and a done that arrives unasked while a segment is held releases the hold.
 _COMMIT_MODES = ("verdict", "vad-stop")   # what _commit_on takes; see above
+if os.getenv("TEAPORT_STT_COMMIT_ON") is not None:
+    logger.warning("TEAPORT_STT_COMMIT_ON is no longer read and is ignored: the STT always "
+                   "commits on Smart Turn's verdict (a VAD stop over the bot still commits "
+                   "at once)")
 
 # The commit reasons that followed a VAD stop -- the raw stop, or one of the verdicts
 # that answer it -- as opposed to the backstops. _log_segment's wordless warning is
