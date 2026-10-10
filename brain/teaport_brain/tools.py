@@ -63,6 +63,7 @@ from teaport_brain import openclaw_client as oc
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.env import env_flag
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
+from teaport_brain.settings import setting
 
 # Agent-first mode. Defined HERE and imported by gateway_server, not parsed separately in
 # both: two copies of `os.getenv(...) in ("1","true")` could disagree if either was edited
@@ -403,17 +404,17 @@ async def _search_memory(params: FunctionCallParams):
 # consults return in ~15-30s; past ~45s the voice wait degrades faster than the
 # answer improves (and the slow tail is usually an impossible query making the
 # agent churn), so we cut it with an honest "taking too long" rather than dead air.
-_NATIVE_CONSULT_TIMEOUT = float(os.getenv("TEAPORT_NATIVE_CONSULT_TIMEOUT", "45"))
+_NATIVE_CONSULT_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_TIMEOUT")
 # 1.5s, not 5: a live relay acks a native consult within moments, while the
 # Discord bridge (a plain /talk client) never acks at all — so on that path the
 # old 5s was pure dead time added to EVERY delegated action before the CLI
 # fallback even started.
-_NATIVE_CONSULT_ACK_TIMEOUT = float(os.getenv("TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT", "1.5"))
+_NATIVE_CONSULT_ACK_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT")
 # The pipecat function-call timeout for ask_openclaw MUST exceed the handler's own
 # worst case (ACK 5s + native 45s = 50s) or pipecat abandons the call and drops the
 # late-arriving answer. Kept as one knob so the two can't drift. (Only bounds the
 # SYNC path; the ASYNC path returns in <1s — its wait is off the turn.)
-_ASK_OPENCLAW_TIMEOUT = float(os.getenv("TEAPORT_ASK_OPENCLAW_TIMEOUT", "55"))
+_ASK_OPENCLAW_TIMEOUT = setting("TEAPORT_ASK_OPENCLAW_TIMEOUT")
 # ASYNC path: the consult runs off the turn as a background task, so it can wait far
 # longer than a voice turn ever could — the answer is spoken as an unprompted
 # follow-up whenever it lands (or an honest "couldn't get it" past this ceiling).
@@ -426,7 +427,7 @@ _ASK_OPENCLAW_TIMEOUT = float(os.getenv("TEAPORT_ASK_OPENCLAW_TIMEOUT", "55"))
 # budget now goes to the gateway/CLI lane (SIP, or a relay that never acks), which used
 # to get CONSULT_TIMEOUT's 45 s: 11 of 13 SIP consults on 2026-09-30..10-02 died there,
 # on the same kinds of request (local search, news) that took 45-100 s on Talk (#80).
-_ASYNC_CONSULT_TIMEOUT = float(os.getenv("TEAPORT_ASYNC_CONSULT_TIMEOUT", "130"))
+_ASYNC_CONSULT_TIMEOUT = setting("TEAPORT_ASYNC_CONSULT_TIMEOUT")
 
 
 # What the model is told while a consult is still running. The placeholder stays in

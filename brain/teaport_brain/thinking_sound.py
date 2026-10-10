@@ -40,14 +40,15 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.env import env_flag
+from teaport_brain.settings import setting
 
 ENABLED = env_flag("TEAPORT_THINKING_SOUND", True)
 
 _SR = 24000                 # engine TTS rate; the relay is 24 kHz both ways
 _CHUNK_MS = 40
-_GRACE_S = float(os.getenv("TEAPORT_THINKING_GRACE_S", "1.5"))   # silence before the bed starts
-_GAIN = float(os.getenv("TEAPORT_THINKING_GAIN", "0.8"))         # 1.0 = the synthesized peak
-_MAX_S = float(os.getenv("TEAPORT_THINKING_MAX_S", "60"))        # hard cap (> ask_openclaw timeout)
+_GRACE_S = setting("TEAPORT_THINKING_GRACE_S")   # silence before the bed starts
+_GAIN = setting("TEAPORT_THINKING_GAIN")         # 1.0 = the synthesized peak
+_MAX_S = setting("TEAPORT_THINKING_MAX_S")        # hard cap (> ask_openclaw timeout)
 _WAV = os.getenv(
     "TEAPORT_THINKING_WAV",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "typing.wav"),

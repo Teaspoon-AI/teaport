@@ -30,6 +30,7 @@ import uuid
 from dataclasses import dataclass
 
 from loguru import logger
+from teaport_brain.settings import setting
 
 GATEWAY_URL = os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789").rstrip("/")
 TOKEN_FILE = os.path.expanduser("~/.config/teaport/openclaw_token")
@@ -47,7 +48,7 @@ TOKEN_FILE = os.path.expanduser("~/.config/teaport/openclaw_token")
 # the common state since the engine keeps RAM tight) ~1.14 s. 1.5 s clears cold with margin; since
 # MemoryRecall never awaits in the frame path and cancels any straggler at the final transcript,
 # a generous budget adds ZERO turn latency. Tune via TEAPORT_RECALL_TIMEOUT.
-RECALL_TIMEOUT = float(os.getenv("TEAPORT_RECALL_TIMEOUT", "1.5"))
+RECALL_TIMEOUT = setting("TEAPORT_RECALL_TIMEOUT")
 
 # Agent-consult: the rich, SLOW *delegation* primitive for hard questions (a future
 # `ask_openclaw` tool). Runs one full OpenClaw agent turn via the gateway — full
@@ -82,7 +83,7 @@ OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT_ID", "main")
 # separately (TEAPORT_ASK_OPENCLAW_TIMEOUT must stay above ack+consult). This is the
 # SYNC path's budget only: the async path (SIP, or a relay that never acks) passes its
 # own, TEAPORT_ASYNC_CONSULT_TIMEOUT, since its wait is off the turn (#80).
-CONSULT_TIMEOUT = float(os.getenv("TEAPORT_CONSULT_TIMEOUT", "45"))
+CONSULT_TIMEOUT = setting("TEAPORT_CONSULT_TIMEOUT")
 
 # Memory WRITE goes the sidecar/direct route (NOT the consult — that proved heavy,
 # non-deterministic, and Cerebras-throttle-prone, see docs/UNIFIED_AGENT_PLAN.md §5.2):

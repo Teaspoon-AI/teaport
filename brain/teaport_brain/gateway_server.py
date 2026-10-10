@@ -64,8 +64,9 @@ from teaport_brain.captions import sends_every_final
 from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
+from teaport_brain.settings import setting
 
-LISTEN_PORT = int(os.getenv("GATEWAY_PORT", "7861"))
+LISTEN_PORT = setting("GATEWAY_PORT")
 # Shared secret for /talk. When set, a client must present it as ?token=<value> on
 # the WebSocket URL (the teaport-realtime plugin sends its TEAPORT_GATEWAY_TOKEN
 # env / provider-config token); a missing or wrong token is rejected BEFORE the

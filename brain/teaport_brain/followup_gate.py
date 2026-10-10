@@ -18,7 +18,6 @@
 # signals are visible at that one spot.
 #
 import asyncio
-import os
 import time
 
 from loguru import logger
@@ -39,11 +38,13 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.settings import setting
+
 # How long the conversation must stay quiet before a window counts (rejects
 # mid-thought pauses and between-turn gaps).
-_QUIET_SECS = float(os.getenv("TEAPORT_FOLLOWUP_QUIET_S", "0.7"))
+_QUIET_SECS = setting("TEAPORT_FOLLOWUP_QUIET_S")
 # Ceiling on how long to hold an answer waiting for a gap; past this, speak anyway.
-_MAX_WAIT = float(os.getenv("TEAPORT_FOLLOWUP_MAX_WAIT_S", "60"))
+_MAX_WAIT = setting("TEAPORT_FOLLOWUP_MAX_WAIT_S")
 # How long a turn-free window stays claimed by the waiter it was given to, at most. The
 # claim ends when the claimant's completion starts (LLMFullResponseStartFrame, which
 # follows its queued LLMRunFrame within milliseconds), at an interruption, or when the

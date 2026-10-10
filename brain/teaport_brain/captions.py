@@ -37,10 +37,10 @@
 # spoken utterance is charted in exactly one bubble, and bubbles appear in the
 # order the words were heard.
 #
-import os
 
 from loguru import logger
 from teaport_brain.env import env_flag
+from teaport_brain.settings import setting
 
 import time
 
@@ -67,7 +67,7 @@ _TRACE = env_flag("TEAPORT_TRACE", False)
 # renders into that stray bubble). A gap longer than this since the last user
 # interim counts as quiet again — inter-interim gaps run ~0.3-0.7s, and a fresh
 # reply's first audio lands well past this after the user's final.
-_USER_HOLD_S = float(os.getenv("TEAPORT_CAPTION_USER_HOLD_S", "1.2"))
+_USER_HOLD_S = setting("TEAPORT_CAPTION_USER_HOLD_S")
 
 # Caption text rides pipecat 1.5.0's AggregatedTextProgressFrame, NOT the bare
 # TTSTextFrame word tokens: the sequencer emits one progress frame per word with

@@ -3,8 +3,9 @@
 #
 
 import difflib
-import os
 import re
+
+from teaport_brain.settings import setting
 
 
 def _wordbreak_max(piece: str, max_chars: int) -> list:
@@ -320,4 +321,4 @@ def split_clauses_ramp(text: str, first_max: int = 32, growth: float = 1.5,
 # Caption UX lead, shared by engine_tts.py (schedules each word's caption pts EARLY
 # by this much) and transcript_ledger.py (backs the same lead OUT of heard-word
 # accounting on a barge-in). One constant so the two can't drift.
-CAPTION_LEAD_SECS = float(os.getenv("TTS_CAPTION_LEAD_SECS", "0.2"))
+CAPTION_LEAD_SECS = setting("TTS_CAPTION_LEAD_SECS")
