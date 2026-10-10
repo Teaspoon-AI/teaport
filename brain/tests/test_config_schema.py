@@ -16,6 +16,10 @@
 # the CLI's, the Discord bridge's, a library's) name the file that does in `source` --
 # a file, not a line, because line numbers went stale under every edit above them
 # (17 of 113 when they were first checked, and ~60 per refactor after that).
+# The file must also name the setting, as a whole word (a plain search: the sources are
+# shell, JS, a systemd template and Python), so a rename or removal there fails here
+# instead of leaving the row pointing at a file that no longer reads it. A library's
+# row (`consumer`) names our file that sets it, which names it too.
 #
 # Run: python test_config_schema.py   (or via pytest)
 #
@@ -63,6 +67,16 @@ def env_reads_in_code() -> set[str]:
     for p in PKG.glob("*.py"):
         found |= reads_in(p.read_text())
     return found - NOT_SETTINGS
+
+
+def source_problem(name: str, src: str) -> str | None:
+    """Why `src` cannot be the source of the row `name`, or None when it can."""
+    path = REPO / src
+    if re.search(r":\d+$", src) or not path.is_file():
+        return f"source {src!r} must be an existing file, repo-relative, no line"
+    if not re.search(rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])", path.read_text()):
+        return f"source {src!r} never names it"
+    return None
 
 
 def main() -> int:
@@ -125,8 +139,16 @@ def main() -> int:
             problems.append(f"{n}: the brain reads it, so no source (searching the name finds it)")
         elif n not in code and src is None:
             problems.append(f"{n}: not read by the brain, so source must name the file that reads it")
-        elif src is not None and (re.search(r":\d+$", src) or not (REPO / src).exists()):
-            problems.append(f"{n}: source {src!r} must be an existing file, repo-relative, no line")
+        elif src is not None and (why := source_problem(n, src)):
+            problems.append(f"{n}: {why}")
+
+    # The source check must be able to fail: a real file that reads other settings, a
+    # name that is only a prefix of one the file reads (TTS_CTX), and a line suffix.
+    for n, src in (("ENGINE_PORT", "bridge/discord/index.js"),
+                   ("TTS_CT", "systemd/teaport-engine.service.in"),
+                   ("ENGINE_PORT", "systemd/teaport-engine.service.in:1")):
+        if source_problem(n, src) is None:
+            problems.append(f"self-test: source {src!r} accepted for {n}")
 
     for p in problems:
         print("FAIL", p)
