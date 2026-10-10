@@ -6,8 +6,8 @@
 # generator read, so an os.getenv() added without a row is a setting nobody can
 # see, document or validate — exactly the state docs/CONFIG.md was in when the
 # table was first drafted (25 knobs read by the code and documented nowhere).
-# The read-site regex mirrors the helper shapes in teaport_brain/env.py plus the
-# bare os.getenv / os.environ forms; a new helper needs adding here too.
+# The read-site regex mirrors settings.setting, the helper shapes in teaport_brain/env.py
+# and the bare os.getenv / os.environ forms; a new helper needs adding here too.
 #
 # Every row's `source` ("file.py:N") is checked too: the named line must be the read
 # site (the setting's name, quoted). Lines move under every edit above them and the
@@ -27,7 +27,7 @@ PKG = pathlib.Path(__file__).resolve().parent.parent / "teaport_brain"
 SCHEMA = PKG / "config_schema.toml"
 
 READ_RE = re.compile(
-    r'(?:getenv|env_flag|env_num|env_json|env_choice|environ\.get|environ\[)\(?\s*"([A-Z][A-Z0-9_]+)"'
+    r'(?:getenv|env_flag|env_num|env_json|env_choice|\bsetting|environ\.get|environ\[)\(?\s*"([A-Z][A-Z0-9_]+)"'
 )
 TYPES = {"string", "url", "ws_url", "path", "dir", "int", "float", "flag", "enum",
          "json", "secret", "snowflake"}

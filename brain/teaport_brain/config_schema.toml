@@ -11,7 +11,8 @@
 #   store     which file it lives in (see [stores])
 #   group     section of the UI / docs (see [groups])
 #   type      string | url | ws_url | path | dir | int | float | flag | enum | json | secret | snowflake
-#   default   as the CODE parses it; absent = required or "unset means off"
+#   default   what settings.setting() returns when unset; absent = required or "unset
+#             means off"; "<...>" describes one the code computes (its read passes default=)
 #   required  true only for the handful the box cannot start without
 #   read      "startup" = module-level constant fixed at ExecStart
 #             "session" = read inside a per-session factory — the hot-reload candidates
