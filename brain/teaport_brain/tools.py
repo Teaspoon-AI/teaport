@@ -61,7 +61,6 @@ from pipecat.services.llm_service import FunctionCallParams
 from teaport_brain import consult_bridge
 from teaport_brain import openclaw_client as oc
 from teaport_brain.agent_backend import HAS_AGENT
-from teaport_brain.env import env_flag
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
 from teaport_brain.settings import setting
 
@@ -70,8 +69,8 @@ from teaport_brain.settings import setting
 # alone, leaving the mode half-enabled — the strict router directive installed while this
 # module still spoke the "I'll work on that" ack the directive exists to suppress. It also
 # only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while docs/CONFIG.md
-# promised otherwise; env_flag is the documented table.
-AGENT_FIRST = env_flag("TEAPORT_AGENT_FIRST", False)
+# promised otherwise; setting() reads it by the documented table.
+AGENT_FIRST = setting("TEAPORT_AGENT_FIRST")
 # Agent-first routes EVERY turn through ask_openclaw; without a gateway that tool is not
 # registered, so the directive would send every turn to a tool that does not exist.
 if AGENT_FIRST and not HAS_AGENT:
@@ -888,7 +887,7 @@ class Tool:
     schema: FunctionSchema
     # ctx -> the async handler(params) for this session.
     bind: Callable
-    # The TEAPORT_TOOL_<NAME> switch, read at import (a literal env_flag per tool, so
+    # The TEAPORT_TOOL_<NAME> switch, read at import (a literal setting() per tool, so
     # the config-schema drift test sees every one).
     enabled: bool
     needs: frozenset = frozenset()
@@ -980,50 +979,50 @@ def _bind_ask_openclaw(ctx: ToolContext):
 # In the order the model is offered them.
 TOOLS: tuple[Tool, ...] = (
     Tool(HOST_STATUS, _plain(_get_host_status),
-         env_flag("TEAPORT_TOOL_GET_HOST_STATUS", True),
+         setting("TEAPORT_TOOL_GET_HOST_STATUS"),
          hint="get_host_status (this machine's live free memory, CPU load, decode speed)"),
     Tool(CURRENT_TIME, _plain(_get_current_time),
-         env_flag("TEAPORT_TOOL_GET_CURRENT_TIME", True),
+         setting("TEAPORT_TOOL_GET_CURRENT_TIME"),
          hint="get_current_time"),
     Tool(WEB_SEARCH, _plain(_web_search),
-         env_flag("TEAPORT_TOOL_WEB_SEARCH", True), frozenset({"agent"}),
+         setting("TEAPORT_TOOL_WEB_SEARCH"), frozenset({"agent"}),
          hint="web_search (search the web for anything current, factual, or that you don't know)"),
     Tool(WEB_FETCH, _plain(_web_fetch),
-         env_flag("TEAPORT_TOOL_WEB_FETCH", True), frozenset({"agent"}),
+         setting("TEAPORT_TOOL_WEB_FETCH"), frozenset({"agent"}),
          hint="web_fetch (read a specific web page)"),
     Tool(SEARCH_MEMORY, _plain(_search_memory),
-         env_flag("TEAPORT_TOOL_SEARCH_MEMORY", True), frozenset({"agent"}),
+         setting("TEAPORT_TOOL_SEARCH_MEMORY"), frozenset({"agent"}),
          hint="search_memory (recall what the user told you before, by voice or text)"),
     Tool(REMEMBER, _plain(_remember),
-         env_flag("TEAPORT_TOOL_REMEMBER", True), frozenset({"agent"}),
+         setting("TEAPORT_TOOL_REMEMBER"), frozenset({"agent"}),
          hint="remember (save a fact the user asks you to remember)"),
     # ask_openclaw runs a full agent turn (~15-35s); pipecat's default 10s
     # function-call timeout abandons it mid-flight and discards the answer that
     # arrives later (the "weather never came back" bug). Its ceiling sits above the
     # handler's own consult caps; the fast tools keep pipecat's 10s.
     Tool(ASK_OPENCLAW, _bind_ask_openclaw,
-         env_flag("TEAPORT_TOOL_ASK_OPENCLAW", True), frozenset({"agent"}),
+         setting("TEAPORT_TOOL_ASK_OPENCLAW"), frozenset({"agent"}),
          timeout_secs=_ASK_OPENCLAW_TIMEOUT,
          hint="ask_openclaw (your full desktop agent — every tool, deeper thinking; for "
               "multi-step or open-ended requests your quick tools can't handle)"),
     Tool(LIST_VOICES, lambda ctx: functools.partial(_list_voices, tts=ctx.tts),
-         env_flag("TEAPORT_TOOL_LIST_VOICES", True), frozenset({"tts"}),
+         setting("TEAPORT_TOOL_LIST_VOICES"), frozenset({"tts"}),
          hint="list_voices (your speaking voices)"),
     Tool(SWITCH_VOICE, lambda ctx: functools.partial(_switch_voice, tts=ctx.tts),
-         env_flag("TEAPORT_TOOL_SWITCH_VOICE", True), frozenset({"tts"}),
+         setting("TEAPORT_TOOL_SWITCH_VOICE"), frozenset({"tts"}),
          hint="switch_voice (change your speaking voice; if the user starts speaking a "
               "different language, switch to a voice for that language and reply in it)"),
     Tool(WIFI_SETUP, lambda ctx: functools.partial(_wifi_setup, voice=ctx.wifi_voice),
-         env_flag("TEAPORT_TOOL_WIFI_SETUP", True),
+         setting("TEAPORT_TOOL_WIFI_SETUP"),
          frozenset({"client:local", "host:wifi_setup"}),
          hint="wifi_setup (connect this box to a different Wi-Fi network when the user asks)"),
     Tool(SET_VOLUME, _plain(_client_tool("set_volume")),
-         env_flag("TEAPORT_TOOL_SET_VOLUME", True), frozenset({"client:volume"}),
+         setting("TEAPORT_TOOL_SET_VOLUME"), frozenset({"client:volume"}),
          hint="set_volume (make your speaker louder or quieter when the user asks)"),
     # Off by default: a testing aid. On, the model can wipe a conversation on a request
     # it misheard.
     Tool(RESTART_SESSION, _plain(_client_tool("restart_session")),
-         env_flag("TEAPORT_TOOL_RESTART_SESSION", False), frozenset({"client:restart"}),
+         setting("TEAPORT_TOOL_RESTART_SESSION"), frozenset({"client:restart"}),
          hint="restart_session (start a fresh conversation, only when the user explicitly "
               "asks to restart or start over; once it returns, say one short goodbye)"),
     # call_prompt -- a conversation a phone call can ask (a Talk session, the room mic;
@@ -1031,13 +1030,13 @@ TOOLS: tuple[Tool, ...] = (
     # awake room keeps the box (the caller hears busy), as before issue #111.
     Tool(ANSWER_PHONE_CALL, lambda ctx: functools.partial(_answer_phone_call,
                                                           prompt=ctx.call_prompt),
-         env_flag("TEAPORT_TOOL_ANSWER_PHONE_CALL", True), frozenset({"call_prompt"}),
+         setting("TEAPORT_TOOL_ANSWER_PHONE_CALL"), frozenset({"call_prompt"}),
          hint="answer_phone_call (the user's yes or no when you have asked whether to step "
               "away for an incoming phone call)"),
     # client:sleep -- the local audio bridge announces it only with wake words set: with
     # none there is no sleep to go back to.
     Tool(END_CONVERSATION, _plain(_client_tool("end_conversation")),
-         env_flag("TEAPORT_TOOL_END_CONVERSATION", True), frozenset({"client:sleep"}),
+         setting("TEAPORT_TOOL_END_CONVERSATION"), frozenset({"client:sleep"}),
          hint="end_conversation (go back to sleep when the user says they are done, "
               "goodnight or go to sleep; once it returns, say one short goodbye)"),
 )

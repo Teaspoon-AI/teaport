@@ -117,19 +117,19 @@ from pipecat.turns.types import ProcessFrameResult
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 
 from teaport_brain.endpointing import SegmentDoneFrame
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.settings import setting
 
 # On for a transport that can pause (SIP); there is none to pause on Talk.
-ENABLED = env_flag("TEAPORT_BARGE_PAUSE", True)
+ENABLED = setting("TEAPORT_BARGE_PAUSE")
 # The LONGEST a pause with no words waits after the caller's speech (both the VAD and
 # the onset test) before it resumes; it resumes sooner once the STT's close of that
 # speech is back with no turn in it. The caller's words come with the VAD stop's commit
 # at the latest (the STT commits at once while the bot is speaking), ~0.1-0.5 s after it.
-RESUME_SECS = min(8.0, max(0.0, env_num("TEAPORT_BARGE_PAUSE_RESUME_S", "0.8", float)))
+RESUME_SECS = min(8.0, max(0.0, setting("TEAPORT_BARGE_PAUSE_RESUME_S")))
 # The longest a pause lasts, from its start. Kept well under pipecat's
 # audio_out_write_timeout_secs (10 s), past which a stalled write writes the transport
 # off for the rest of the call; the transport resumes on its own at 8 s regardless.
-MAX_SECS = env_num("TEAPORT_BARGE_PAUSE_MAX_S", "6.0", float)
+MAX_SECS = setting("TEAPORT_BARGE_PAUSE_MAX_S")
 # What ends a paused reply on its own, whatever TEAPORT_INTERRUPT_MIN_WORDS says: with
 # the bot silent there is no echo to garble into one, and a lone "Stop." is the most
 # natural thing to say. An utterance counts only if EVERY word of it is one of these

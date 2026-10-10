@@ -3,11 +3,30 @@
 #
 # The schema declares every knob once: its type, its default, its bounds. A read with
 # its own literal default — `float(os.getenv("TEAPORT_FOLLOWUP_QUIET_S", "0.7"))` —
-# declared it a second time, kept in step with the row by nothing but care, and a
-# bare cast like that one crash-loops the service on a single typo (see env.py).
+# declared it a second time, kept in step with the row by nothing but care.
 # setting("TEAPORT_FOLLOWUP_QUIET_S") takes the type and the default from the row, so
-# there is one declaration, and the fall-back-don't-raise contract holds by
-# construction rather than by each call site remembering it.
+# there is one declaration.
+#
+# These values live in /etc/teaport/brain.env (and its siblings), which installer
+# repairs preserve verbatim. Three rules follow, and setting() keeps them for every
+# read rather than each call site remembering them:
+#
+#   An unreadable value warns and falls back to the default; it never raises. A bare
+#   int()/float() at import turned one operator typo ("", "off", "2.5") into an
+#   import-time ValueError that crash-loops the whole service, and re-running the
+#   installer cannot clear it. A bad JSON value is worse, not better: LLM_EXTRA_BODY is
+#   read inside build_agent_session(), so the process stays up and healthy-looking
+#   while EVERY session dies at construction (observed 2026-08-28, from a wrapper that
+#   `source`d brain.env and stripped the quotes).
+#
+#   An EMPTY value means "not set". `TEAPORT_LLM_TEXT_GUARD=` is a plausible hand-edit,
+#   and it must not switch a safety guard off.
+#
+#   A flag has ONE truth table — pipecat's env_truthy, which this process already uses
+#   for its PIPECAT_* flags — and a flag that is off says so in the journal. Three
+#   modules had once grown three different tables: the same empty value disabled the
+#   degeneracy guard and enabled the thinking sound, and "no" disabled one but not the
+#   other.
 #
 # parse() is the ONE answer to "is this text a value of this row's type", pure data
 # in and out. The config UI validates with it and setting() reads with it, so a value
@@ -28,9 +47,9 @@ from teaport_brain import config_schema
 
 ROWS: dict[str, dict] = {r["name"]: r for r in config_schema.load()["settings"]}
 
-# pipecat's env_truthy table, which env_flag delegates to (tests/test_settings.py pins
-# the two together, so a flag reads the same through either). Empty is not in it here:
-# an empty value means "not set" everywhere in teaport.
+# pipecat's env_truthy table (tests/test_settings.py pins the two together, so a
+# TEAPORT_* flag and a PIPECAT_* flag read alike). Empty is not in it here: an empty
+# value means "not set" everywhere in teaport.
 FLAG_TRUE = frozenset({"1", "true", "yes", "y", "on"})
 FLAG_FALSE = frozenset({"0", "false", "no", "n", "off"})
 
@@ -53,7 +72,7 @@ def _float(text: str, row: dict):
 
 def _flag(text: str, row: dict):
     word = text.lower()
-    if "accepts" in row:  # a flag whose reader is not env_flag (LEDGER_TRACE)
+    if "accepts" in row:  # a flag read as these words alone (LEDGER_TRACE)
         if word in row["accepts"]:
             return True, None
         return None, f"must be one of {', '.join(sorted(row['accepts']))}"
@@ -63,7 +82,7 @@ def _flag(text: str, row: dict):
 
 
 def _enum(text: str, row: dict):
-    # Case-insensitive, as env_choice reads it; the value is the schema's spelling.
+    # Case-insensitive; the value is the schema's spelling.
     by_word = {v.lower(): v for v in row["values"]}
     if text.lower() in by_word:
         return by_word[text.lower()], None
@@ -157,8 +176,10 @@ def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
         return fallback
     value, problem = parse(row, raw)
     if problem is not None:
-        logger.warning(f"{name}={raw!r} {problem}; using default {fallback!r}")
+        hint = (" If it came from a wrapper that `source`d the env file, the quotes were "
+                "stripped: parse the file literally instead." if row["type"] == "json" else "")
+        logger.warning(f"{name}={raw!r} {problem}; using default {fallback!r}.{hint}")
         return fallback
     if row["type"] == "flag" and not value:
-        logger.info(f"{name}={raw.lower()} — disabled")  # as env_flag: never silently off
+        logger.info(f"{name}={raw.lower()} — disabled")  # never silently off
     return value

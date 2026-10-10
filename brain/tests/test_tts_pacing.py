@@ -40,7 +40,7 @@ from pipecat.pipeline.task import PipelineTask  # noqa: E402
 
 from teaport_brain import engine_tts  # noqa: E402
 from teaport_brain.engine_tts import _SAMPLE_RATE as SR, EngineTTSService  # noqa: E402
-from teaport_brain.env import env_choice  # noqa: E402
+from teaport_brain.settings import setting  # noqa: E402
 
 from test_tts_stop_frame import Probe, StubOutput  # noqa: E402
 
@@ -206,15 +206,11 @@ def test_eager_policy():
     print("  PASS eager: always / never / first clause / low lead; off with streaming off")
 
 
-def test_env_choice(monkeypatch=None):
-    os.environ["TEAPORT_TEST_CHOICE"] = " LEAD "
-    assert env_choice("TEAPORT_TEST_CHOICE", "greedy", ("lead", "greedy")) == "lead"
-    os.environ["TEAPORT_TEST_CHOICE"] = "fast"
-    assert env_choice("TEAPORT_TEST_CHOICE", "greedy", ("lead", "greedy")) == "greedy"
-    os.environ["TEAPORT_TEST_CHOICE"] = ""
-    assert env_choice("TEAPORT_TEST_CHOICE", "greedy", ("lead", "greedy")) == "greedy"
-    del os.environ["TEAPORT_TEST_CHOICE"]
-    print("  PASS env_choice: case-insensitive, bad or empty value -> default")
+def test_choice_setting(monkeypatch=None):
+    assert setting("TTS_PACING", env={"TTS_PACING": " LEAD "}) == "lead"
+    assert setting("TTS_PACING", env={"TTS_PACING": "fast"}) == "greedy"
+    assert setting("TTS_PACING", env={"TTS_PACING": ""}) == "greedy"
+    print("  PASS choice setting: case-insensitive, bad or empty value -> default")
 
 
 # ---- real pipeline: the reply survives a pacing wait longer than the watchdog
@@ -283,7 +279,7 @@ def test_tts_pacing():
     test_auto_lead_target_follows_the_learned_synth_time()
     test_lead_s_parsing()
     test_eager_policy()
-    test_env_choice()
+    test_choice_setting()
 
     async def main():
         await test_greedy_never_waits()

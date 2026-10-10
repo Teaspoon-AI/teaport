@@ -39,7 +39,6 @@
 #
 
 from loguru import logger
-from teaport_brain.env import env_flag
 from teaport_brain.settings import setting
 
 import time
@@ -58,7 +57,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # TEAPORT_TRACE=1 keeps the [CAP] caption-pipeline traces around (they've caught
 # every bubble-rendering regression so far) without spamming normal logs.
-_TRACE = env_flag("TEAPORT_TRACE", False)
+_TRACE = setting("TEAPORT_TRACE")
 
 # While the user's interims are flowing, assistant partials are HELD (see
 # CaptionTap): the Talk UI commits the active assistant bubble the moment the

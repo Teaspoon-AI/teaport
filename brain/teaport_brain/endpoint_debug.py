@@ -54,16 +54,16 @@ from pipecat.metrics.metrics import TurnMetricsData
 from pipecat.observers.base_observer import BaseObserver, FrameProcessed, FramePushed
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.settings import setting
 
-ENABLED = env_flag("TEAPORT_ENDPOINT_DEBUG", False)
+ENABLED = setting("TEAPORT_ENDPOINT_DEBUG")
 
 # Per-frame confidence census (see _dbg_sample). 20 buckets = 0.05 resolution, which is
 # finer than any threshold anyone would actually set. Silero frames are 512 samples at
 # 16 kHz = 32 ms, so 500 frames is ~16 s of audio — frequent enough to get several dumps
 # from a short call, rare enough that the census costs one log line per sixteen seconds.
 _DIST_BUCKETS = 20
-_DIST_EVERY = env_num("TEAPORT_ENDPOINT_DIST_EVERY", "500", int)
+_DIST_EVERY = setting("TEAPORT_ENDPOINT_DIST_EVERY")
 
 
 class InstrumentedSileroVAD(SileroVADAnalyzer):

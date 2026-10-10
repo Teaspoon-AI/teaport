@@ -111,7 +111,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.env import env_flag
+from teaport_brain.settings import setting
 from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.tts_text import (
     MIN_DOT_RUN,
@@ -120,7 +120,7 @@ from teaport_brain.tts_text import (
     is_sentence_repeat,
 )
 
-ENABLED = env_flag("TEAPORT_LLM_TEXT_GUARD", True)
+ENABLED = setting("TEAPORT_LLM_TEXT_GUARD")
 
 # Guard-specific: a run of ellipses (optionally spaced) collapses to one. The
 # no-break/zero-width table is tts_text's — see fold_unspeakable.
@@ -259,7 +259,7 @@ def unglue_sentences(text: str, before: str = "") -> str:
 # `or`, not getenv's default: TEAPORT_LLM_GUARD_RECOVERY= (key present, value empty) is a
 # plausible hand-edit for an operator who wants the guard quiet, and it used to push an
 # EMPTY LLMTextFrame — which both restored the total silence this line exists to prevent
-# and opened a phantom word-timestamp slot. env.py already treats an empty value as "not
+# and opened a phantom word-timestamp slot. settings.setting() already treats an empty value as "not
 # set" everywhere else; this was the one read in the module that did not.
 RECOVERY_TEXT = (
     os.getenv("TEAPORT_LLM_GUARD_RECOVERY", "").strip()

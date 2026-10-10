@@ -58,7 +58,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.env import env_num
+from teaport_brain.settings import setting
 
 # A directory, or empty for off. Deliberately not a bool: a capture needs somewhere to
 # go, and naming the destination is the same act as asking for one.
@@ -68,7 +68,7 @@ ENABLED = bool(DUMP_DIR)
 # Ceiling per call, in seconds of audio. A debug tap must not be the reason a box runs
 # out of disk during a long call: 16 kHz mono s16 is 32 kB/s, so 600 s is ~19 MB and the
 # tap simply stops writing past it (the wav stays valid and the marks keep accruing).
-MAX_SECS = env_num("TEAPORT_AUDIO_DUMP_MAX_SECS", "600", float)
+MAX_SECS = setting("TEAPORT_AUDIO_DUMP_MAX_SECS")
 
 
 def _free_stem(stem: str) -> str:

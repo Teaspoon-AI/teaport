@@ -90,15 +90,15 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain import endpoint_debug
-from teaport_brain.env import env_num
+from teaport_brain.settings import setting
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 from teaport_brain.heard_context import drop_from_context
 
-# env_num, not bare casts: brain.env is hand-edited and installer repairs preserve it
+# setting(), not bare casts: brain.env is hand-edited and installer repairs preserve it
 # verbatim, so a bad value must warn and fall back rather than crash-loop the brain.
-MAX_CHARS = env_num("TEAPORT_CONTEXT_MAX_CHARS", "1000", int)
-MAX_NOTES = env_num("TEAPORT_CONTEXT_MAX_NOTES", "20", int)
-RESPOND_INTERVAL_S = env_num("TEAPORT_CONTEXT_RESPOND_INTERVAL_S", "15", float)
+MAX_CHARS = setting("TEAPORT_CONTEXT_MAX_CHARS")
+MAX_NOTES = setting("TEAPORT_CONTEXT_MAX_NOTES")
+RESPOND_INTERVAL_S = setting("TEAPORT_CONTEXT_RESPOND_INTERVAL_S")
 # How long a queued reaction may wait for a quiet moment, from the note's arrival. Past
 # it the note stays as context only: a reaction to a tap half a minute ago reads as a
 # non sequitur.

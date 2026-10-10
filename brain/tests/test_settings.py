@@ -1,7 +1,7 @@
 #
 # settings.setting() reads a knob through its config_schema.toml row: the row's type
 # parses it, the row's default stands in when it is unset or unreadable, and nothing
-# a hand-edited brain.env holds can raise out of an import (env.py's contract).
+# a hand-edited brain.env holds can raise out of an import.
 # settings.parse() is also what the config UI validates with, so the page and the
 # brain agree on what a value is.
 #
@@ -68,8 +68,8 @@ def test_every_schema_default_is_a_value_or_a_description():
 
 
 def test_flags_read_exactly_as_pipecat_reads_them():
-    # One truth table for the whole brain.env: setting() and env_flag (which delegates
-    # to pipecat's env_truthy) must agree on every word either one knows.
+    # One truth table for the whole brain.env: setting() and pipecat's env_truthy (its
+    # PIPECAT_* flags live in the same file) must agree on every word either one knows.
     key = "TEAPORT_SETTINGS_TEST_FLAG"
     row = {"name": key, "type": "flag"}
     words = settings.FLAG_TRUE | settings.FLAG_FALSE | {"maybe", "2", "enabled"}

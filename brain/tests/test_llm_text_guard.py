@@ -41,7 +41,7 @@ from pipecat.frames.frames import (  # noqa: E402
 )
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
-from teaport_brain.env import env_flag  # noqa: E402
+from teaport_brain.settings import setting  # noqa: E402
 from teaport_brain.llm_text_guard import (  # noqa: E402
     RECOVERY_TEXT,
     DegeneracyCounter,
@@ -332,28 +332,20 @@ def test_guard_output_survives_the_tts_normalizer():
 
 # ---------------------------------------------------------------- env flags
 
-def test_env_flag_truth_table():
-    key = "TEAPORT_TEST_FLAG"
-    try:
-        for raw, want in [("0", False), ("false", False), ("no", False),
-                          ("off", False), ("1", True), ("true", True),
-                          ("yes", True), ("ON", True)]:
-            os.environ[key] = raw
-            assert env_flag(key, True) is want, raw
-        # An empty value is "not set", NOT "disabled". A bare `TEAPORT_LLM_TEXT_GUARD=`
-        # line in brain.env used to silently remove the containment.
-        os.environ[key] = ""
-        assert env_flag(key, True) is True
-        os.environ[key] = "  "
-        assert env_flag(key, True) is True
-        # Unrecognized falls back to the default rather than guessing.
-        os.environ[key] = "maybe"
-        assert env_flag(key, True) is True
-        del os.environ[key]
-        assert env_flag(key, True) is True
-        assert env_flag(key, False) is False
-    finally:
-        os.environ.pop(key, None)
+def test_flag_truth_table():
+    key = "TEAPORT_LLM_TEXT_GUARD"     # schema default: on
+    for raw, want in [("0", False), ("false", False), ("no", False),
+                      ("off", False), ("1", True), ("true", True),
+                      ("yes", True), ("ON", True)]:
+        assert setting(key, env={key: raw}) is want, raw
+    # An empty value is "not set", NOT "disabled". A bare `TEAPORT_LLM_TEXT_GUARD=`
+    # line in brain.env used to silently remove the containment.
+    assert setting(key, env={key: ""}) is True
+    assert setting(key, env={key: "  "}) is True
+    # Unrecognized falls back to the default rather than guessing.
+    assert setting(key, env={key: "maybe"}) is True
+    assert setting(key, env={}) is True
+    assert setting("TEAPORT_SPECULATIVE_REPLY", env={}) is False   # schema default: off
 
 
 def test_max_tokens_follows_reasoning_effort():

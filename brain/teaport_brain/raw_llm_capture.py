@@ -42,7 +42,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.env import env_flag
+from teaport_brain.settings import setting
 from teaport_brain.tts_text import (
     DOT_RUN,
     MIN_DOT_RUN,
@@ -51,7 +51,7 @@ from teaport_brain.tts_text import (
     is_sentence_repeat,
 )
 
-ENABLED = env_flag("TEAPORT_RAW_LLM_CAPTURE", True)
+ENABLED = setting("TEAPORT_RAW_LLM_CAPTURE")
 
 # What counts as degenerate. All three were present in the observed failures and none
 # belongs in speech output: a run of 3+ dots, two ellipsis characters near each other,

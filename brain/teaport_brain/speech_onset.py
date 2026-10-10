@@ -30,12 +30,12 @@ import math
 
 from loguru import logger
 
-from teaport_brain.env import env_num
+from teaport_brain.settings import setting
 
 # A chunk counts as speech at this Silero confidence or above (the VAD's is 0.7).
-ONSET_CONFIDENCE = env_num("TEAPORT_ONSET_CONFIDENCE", "0.6", float)
+ONSET_CONFIDENCE = setting("TEAPORT_ONSET_CONFIDENCE")
 # This much consecutive speech is an onset. 128 ms = 4 of Silero's 32 ms chunks.
-ONSET_MIN_MS = env_num("TEAPORT_ONSET_MIN_MS", "128", float)
+ONSET_MIN_MS = setting("TEAPORT_ONSET_MIN_MS")
 
 
 class SpeechOnsetMixin:

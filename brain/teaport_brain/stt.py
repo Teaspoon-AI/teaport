@@ -83,7 +83,7 @@ from teaport_brain.endpointing import (
     SttProgressFrame,
     TurnVerdictFrame,
 )
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.settings import setting
 
 # P99 latency from speech end to final transcript (broadcast to downstream turn
 # strategies). The engine's realtime STT targets <500 ms delta delay; ~0.8 s end-to-end p99
@@ -235,8 +235,8 @@ _HOLD_SLACK_SECS = 1.0
 #
 # Off (0/false): the commit carries no field and the engine credits its own count, as
 # before -- the A/B switch, not a fallback the service takes on its own.
-STT_SILENCE_HINT = env_flag("TEAPORT_STT_SILENCE_HINT", True)
-_HINT_MARGIN_MS = env_num("TEAPORT_STT_SILENCE_HINT_MARGIN_MS", "100", int)
+STT_SILENCE_HINT = setting("TEAPORT_STT_SILENCE_HINT")
+_HINT_MARGIN_MS = setting("TEAPORT_STT_SILENCE_HINT_MARGIN_MS")
 
 # SPEECH_DECODED: the engine's transcription report (teagram-engine's
 # transcription.progress), turned into SpeechDecodedFrame for the stop strategy.
@@ -267,7 +267,7 @@ _HINT_MARGIN_MS = env_num("TEAPORT_STT_SILENCE_HINT_MARGIN_MS", "100", int)
 # Asked for only when the session will use it: build_agent_session sets
 # transcription_progress when the speculative reply is on and set to wait for the
 # report, so with either off the handshake is what it was.
-_REPORT_MARGIN_MS = env_num("TEAPORT_STT_TRANSCRIBED_MARGIN_MS", "100", int)
+_REPORT_MARGIN_MS = setting("TEAPORT_STT_TRANSCRIBED_MARGIN_MS")
 
 # The stranded-segment backstop. This service has exactly ONE path to a final: a commit
 # sent when VADUserStoppedSpeakingFrame arrives, or the verdict that answers it (see
@@ -295,10 +295,10 @@ _REPORT_MARGIN_MS = env_num("TEAPORT_STT_TRANSCRIBED_MARGIN_MS", "100", int)
 # costs nothing when VAD is healthy; and far enough inside the 5 s turn timeout that the
 # forced final still lands in time to be answered. The failure it converts is "no answer,
 # no explanation" into "an answer about a second late".
-# env_num, not a bare float(): this is read at import out of /etc/teaport/brain.env, which
+# setting(), not a bare float(): this is read at import out of /etc/teaport/brain.env, which
 # installer repairs preserve verbatim, so one operator typo would otherwise be an
 # import-time ValueError and a Restart=always crash-loop nothing but a hand-edit clears.
-_STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
+_STRANDED_INTERIM_SECS = setting("TEAPORT_STRANDED_INTERIM_SECS")
 
 # STREAMING BACKEND ONLY: how long to wait after the VAD stop before drawing the segment
 # boundary, so the model's trailing deltas are in.
@@ -311,7 +311,7 @@ _STRANDED_INTERIM_SECS = env_num("TEAPORT_STRANDED_INTERIM_SECS", "1.5", float)
 # added to barge-in, which triggers on interims and those arrive in ~0.03 s. 0.7 is the
 # 480 ms delay with slack for generation; too low resurrects the split, too high just
 # makes replies later.
-_STREAM_TAIL_SECS = env_num("TEAPORT_STREAM_TAIL_SECS", "0.7", float)
+_STREAM_TAIL_SECS = setting("TEAPORT_STREAM_TAIL_SECS")
 
 # Caller-path makeup gain, in dB, applied to the audio sent to the TRANSCRIBER only
 # (not to VAD or endpointing, which read the frame upstream of this and are unaffected).

@@ -34,7 +34,7 @@ def _read() -> str:
         return OPENCLAW
     if raw in MODES:
         return raw
-    # Read at import time from a hand-edited file: fall back, never raise (see env.py).
+    # Read at import time from a hand-edited file: fall back, never raise (see settings.py).
     logger.warning(f"TEAPORT_AGENT={raw!r} is not one of {'|'.join(MODES)}; "
                    f"using {OPENCLAW}")
     return OPENCLAW

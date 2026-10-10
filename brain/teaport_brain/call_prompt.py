@@ -34,12 +34,12 @@ from loguru import logger
 from pipecat.frames.frames import InterruptionWorkerFrame, TTSSpeakFrame
 
 from teaport_brain import session_arbiter as arb
-from teaport_brain.env import env_choice, env_num
+from teaport_brain.settings import setting
 
 # How long the user has to answer, from the end of the question.
-PROMPT_SECS = env_num("TEAPORT_CALL_PROMPT_SECS", "12", float)
+PROMPT_SECS = setting("TEAPORT_CALL_PROMPT_SECS")
 # What happens when nobody answers: "take" (pick up) or "ring" (let it ring).
-PROMPT_DEFAULT = env_choice("TEAPORT_CALL_PROMPT_DEFAULT", "take", ("take", "ring"))
+PROMPT_DEFAULT = setting("TEAPORT_CALL_PROMPT_DEFAULT")
 # A turn in flight at the deadline gets this much longer to become the answer.
 ANSWER_GRACE_SECS = 5.0
 # How long the question itself may take to be said before its answer time starts anyway.

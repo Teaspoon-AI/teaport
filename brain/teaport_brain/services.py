@@ -24,7 +24,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pipecat.frames.frames import FunctionCallFromLLM, SystemFrame
 from pipecat.services.openai.llm import OpenAILLMService
 
-from teaport_brain.env import env_json, env_num
+from teaport_brain.settings import setting
 from teaport_brain.stt import TeaportSTTService
 
 TEAPORT_URL = os.getenv("TEAPORT_URL", "ws://127.0.0.1:8000/v1/realtime")
@@ -48,11 +48,11 @@ def _llm_extra() -> dict:
     effort = _reasoning_effort()
     if effort:
         extra["reasoning_effort"] = effort
-    # env_json, not a bare json.loads: this runs inside build_agent_session(), so a
+    # setting(), not a bare json.loads: this runs inside build_agent_session(), so a
     # malformed hand-edit (or a wrapper that `source`d brain.env and stripped the
     # quotes) took down EVERY session with a raw JSONDecodeError while the service
-    # itself looked healthy. See env.py.
-    body = env_json("LLM_EXTRA_BODY")
+    # itself looked healthy. See settings.py.
+    body = setting("LLM_EXTRA_BODY")
     if body is not None:
         extra["extra_body"] = body
     return extra
@@ -122,7 +122,7 @@ def _default_max_tokens() -> int:
 
 # Parsed defensively: this value lives in brain.env, which installer repairs preserve
 # verbatim, so a bare int() would turn one operator typo into an import-time crash-loop
-# that re-running the installer cannot clear (see env.env_num, which this shares).
+# that re-running the installer cannot clear (setting() is that defensive parse).
 def _max_tokens() -> int | None:
     """Completion cap, or None for no cap at all.
 
@@ -132,7 +132,7 @@ def _max_tokens() -> int | None:
     gateway, and 0 is the value that most obviously reads as "no cap", so it must not
     quietly mean 1024."""
     default = _default_max_tokens()
-    value = env_num("LLM_MAX_TOKENS", str(default), int)
+    value = setting("LLM_MAX_TOKENS", default=default)
     if value == 0:
         logger.info("LLM_MAX_TOKENS=0 — completion cap disabled (no max_tokens sent)")
         return None
@@ -176,7 +176,7 @@ def _max_tokens() -> int | None:
 # BoundedOpenAILLMService for why an AsyncOpenAI-level timeout is dropped on the floor.
 # This value feeds both.
 def _llm_timeout_secs() -> float:
-    secs = env_num("LLM_TIMEOUT_SECS", "20", float)
+    secs = setting("LLM_TIMEOUT_SECS")
     if secs <= 0:
         logger.warning(f"LLM_TIMEOUT_SECS={secs} is not positive; using 20")
         return 20.0
