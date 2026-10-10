@@ -230,6 +230,10 @@ def _build(pacing):
     return tts._pacing, [w for w in warnings if "TTS_PACING" in w], calls
 
 
+async def _async_refresh(self, context_id):
+    pass
+
+
 def test_missing_pipecat_hooks_fall_back_to_greedy():
     """Issue #87: lead pacing calls private pipecat internals; a pipecat without them
     must drop the session to greedy at build, not raise mid-reply."""
@@ -242,6 +246,8 @@ def test_missing_pipecat_hooks_fall_back_to_greedy():
         ("gone", lambda: delattr(TTSService, "_refresh_audio_context")),
         ("without context_id", lambda: setattr(TTSService, "_refresh_audio_context",
                                                lambda self: None)),
+        ("async", lambda: setattr(TTSService, "_refresh_audio_context",
+                                  _async_refresh)),
     ]:
         patch()
         try:
@@ -250,6 +256,28 @@ def test_missing_pipecat_hooks_fall_back_to_greedy():
             TTSService._refresh_audio_context = real_refresh
         assert pacing == "greedy" and len(warned) == 1 \
             and "_refresh_audio_context" in warned[0], f"refresh {how}: {pacing}, {warned}"
+
+    # The watchdog must still read the timeout and skip the keepalive; source we
+    # can't read skips that part rather than dropping pacing.
+    import inspect
+    real_getsource = inspect.getsource
+    for marker in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE"):
+        inspect.getsource = lambda obj, m=marker: real_getsource(obj).replace(m, "_gone")
+        try:
+            pacing, warned, _ = _build("lead")
+        finally:
+            inspect.getsource = real_getsource
+        assert pacing == "greedy" and len(warned) == 1 and marker in warned[0], \
+            f"watchdog without {marker}: {pacing}, {warned}"
+
+    def no_source(obj):
+        raise OSError("no source")
+    inspect.getsource = no_source
+    try:
+        pacing, warned, _ = _build("lead")
+    finally:
+        inspect.getsource = real_getsource
+    assert pacing == "lead" and not warned, f"no source: {pacing}, {warned}"
 
     def init_without_timeout(self, *a, **kw):
         real_init(self, *a, **kw)

@@ -393,10 +393,22 @@ def _missing_pacing_hooks(tts) -> list[str]:
     import inspect
     missing = []
     hook = getattr(TTSService, "_refresh_audio_context", None)
-    if hook is None or "context_id" not in inspect.signature(hook).parameters:
+    # _pace calls it without await: an async one would queue no keepalive at all.
+    if (hook is None or inspect.iscoroutinefunction(hook)
+            or "context_id" not in inspect.signature(hook).parameters):
         missing.append("_refresh_audio_context(context_id)")
     if not isinstance(getattr(tts, "_stop_frame_timeout_s", None), (int, float)):
         missing.append("_stop_frame_timeout_s")
+    # Present is not enough: the watchdog must still time out on that value and still
+    # skip the keepalive. Without .py sources, skip this part, as
+    # _require_context_end_hook does.
+    try:
+        source = inspect.getsource(TTSService._handle_audio_context)
+    except (OSError, TypeError):
+        return missing
+    missing += [f"_handle_audio_context using {name}"
+                for name in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE")
+                if name not in source]
     return missing
 
 
