@@ -29,7 +29,7 @@
 #   - A final (transcription.done) is gated on an explicit commit. We send the
 #     commit on Smart Turn's VERDICT: a COMPLETE answer to the VAD stop commits at
 #     once, an INCOMPLETE one holds the segment open until the turn is judged
-#     complete. See _COMMIT_MODES and process_frame.
+#     complete. See the commit note above _VAD_STOP_COMMITS, and process_frame.
 #     The engine resets its text after each done, so done.text is per-utterance
 #     and we reset our buffer on it.
 #   - streaming_backend=True (services.make_stt, TEAPORT_STT_BACKEND=streaming) speaks
@@ -155,9 +155,12 @@ _EMPTY_FINAL_RUN = 5
 # commonly lands BEFORE the VAD stop: what is open at the stop is the tail after the
 # engine's cut, and a hold over it keeps nothing whole (the engine has split there
 # already) while the commit that eventually closes it hands the engine a second of
-# silence to decode under the reply. Such a stop commits at once instead (`tail`),
-# and a done that arrives unasked while a segment is held releases the hold.
-_COMMIT_MODES = ("verdict", "vad-stop")   # what _commit_on takes; see above
+# silence to decode under the reply. Such a stop commits at once instead (`tail`).
+# (A done that arrives unasked while a segment is held does NOT release the hold: it
+# may be the previous utterance's -- see _handle_message.)
+#
+# _commit_on holds which rule is in force -- "verdict", or "vad-stop" while the
+# fallback is -- and the retired setting is only warned about:
 if os.getenv("TEAPORT_STT_COMMIT_ON") is not None:
     logger.warning("TEAPORT_STT_COMMIT_ON is no longer read and is ignored: the STT always "
                    "commits on Smart Turn's verdict (a VAD stop over the bot still commits "
@@ -442,8 +445,8 @@ class TeaportSTTService(WebsocketSTTService):
         # Only the linear scale is kept, precomputed once; 0 dB -> 1.0 -> the fast no-op
         # path in _apply_makeup.
         self._makeup_scale = float(10.0 ** (makeup_db / 20.0)) if makeup_db else 1.0
-        # What forces the final (_COMMIT_MODES): the verdict, until the session-wide
-        # fallback finds nothing answering the VAD stops.
+        # What forces the final (the commit note above _VAD_STOP_COMMITS): the verdict,
+        # until the session-wide fallback finds nothing answering the VAD stops.
         self._commit_on = "verdict"
         # verdict mode: a VAD stop has been seen for the open segment and the commit that
         # answers it is deferred to the verdict. Cleared by the commit, whichever path
@@ -455,9 +458,9 @@ class TeaportSTTService(WebsocketSTTService):
         self._hold_task = None
         self._verdict_seen = False
         self._verdicts = 0
-        # The session-wide fallback (_COMMIT_MODES): set when an expiry with no verdict
-        # ever seen switched commit_on to vad-stop, so the first verdict to arrive can
-        # switch it back.
+        # The session-wide fallback (the commit note above _VAD_STOP_COMMITS): set when
+        # an expiry with no verdict ever seen switched commit_on to vad-stop, so the
+        # first verdict to arrive can switch it back.
         self._commit_on_downgraded = False
         # When the last expiry committed, until a verdict arrives for that stop: the
         # verdict was late rather than lost, and the journal should say which.
@@ -467,7 +470,7 @@ class TeaportSTTService(WebsocketSTTService):
         # tail rather than hold it. Cleared at the VAD start.
         self._closed_unasked = False
         # Tracked from the transport output's broadcast; a VAD stop over the bot's own
-        # voice does not wait for a verdict (see _COMMIT_MODES).
+        # voice does not wait for a verdict (the commit note above _VAD_STOP_COMMITS).
         self._bot_speaking = False
         # The mic path's wake words (wake_gate.WakeGate), set by build_agent_session for
         # a session that opens asleep: asked before any transcript is pushed or logged,
@@ -557,7 +560,7 @@ class TeaportSTTService(WebsocketSTTService):
     @property
     def commit_on(self) -> str:
         """What forces the final: "verdict", or "vad-stop" while the session-wide
-        no-verdict fallback is in force (see _COMMIT_MODES)."""
+        no-verdict fallback is in force (the commit note above _VAD_STOP_COMMITS)."""
         return self._commit_on
 
     @property
@@ -706,10 +709,10 @@ class TeaportSTTService(WebsocketSTTService):
             # A verdict arriving from here on answers this stop, not the last expiry.
             self._expired_at = None
             if self._commit_on == "vad-stop":
-                # The no-verdict fallback (_COMMIT_MODES).
+                # The no-verdict fallback (the commit note above _VAD_STOP_COMMITS).
                 await self._send_commit(final=True, why="vad-stop")
             elif self._bot_speaking:
-                # The flush is the barge-in; see _COMMIT_MODES.
+                # The flush is the barge-in; see the commit note above _VAD_STOP_COMMITS.
                 await self._send_commit(final=True, why="bot-speaking")
             elif self._closed_unasked and not self._seg_interims:
                 # The engine closed this utterance's segment on its own before the VAD
@@ -793,11 +796,12 @@ class TeaportSTTService(WebsocketSTTService):
                          f"the ceiling ({self.smartturn_stop_secs}s) or the caller")
 
     # ---- the hold's expiry ---------------------------------------------------
-    # See _COMMIT_MODES: a segment held on an INCOMPLETE verdict must still close if
-    # the ceiling's verdict never reaches us. Armed at the VAD stop (not at the
-    # verdict, so a model verdict that never arrives is covered too), cancelled by the
-    # commit, by a VAD start, and by a done the engine sends on its own (the segment
-    # it held is gone). Same timer discipline as the backstop below.
+    # See the commit note above _VAD_STOP_COMMITS: a segment held on an INCOMPLETE
+    # verdict must still close if the ceiling's verdict never reaches us. Armed at the
+    # VAD stop (not at the verdict, so a model verdict that never arrives is covered
+    # too), cancelled by the commit, by a VAD start and by a disconnect -- not by a
+    # done the engine sends on its own, which may be the previous utterance's (see
+    # _handle_message). Same timer discipline as the backstop below.
 
     async def _arm_hold_expiry(self):
         err = await self._restart_timer("_hold_task", self._commit_when_hold_expires())

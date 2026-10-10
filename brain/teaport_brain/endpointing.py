@@ -568,9 +568,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # clears the flag on one): the candidate is the aggregation alone.
         await self.speculator.start(self.speculator.candidate(self._interim), why)
 
-    def _ceiling_running(self) -> bool:
-        """A VAD stop answered INCOMPLETE, the caller quiet since: the analyzer's
-        silence ceiling is counting and the STT holds the segment for it."""
+    def _incomplete_and_quiet(self) -> bool:
+        """A VAD stop answered INCOMPLETE and the caller quiet since -- the state in
+        which the analyzer's silence ceiling counts and the STT holds the segment. It
+        says nothing of the turn: the Speculator checks that one is open."""
         return self._vad_stopped and not self._vad_user_speaking and not self._turn_complete
 
     async def _handle_interim(self, frame):
@@ -586,7 +587,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         live = self.speculator.text
         if live is not None and live != self.speculator.candidate(text):
             await self.speculator.cancel("superseded")
-        if self._ceiling_running():
+        if self._incomplete_and_quiet():
             await self._arm_settle(self.speculator.settle_secs)
 
     async def _handle_segment_reset(self):
@@ -620,7 +621,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         except asyncio.CancelledError:
             return
         self._settle_task = None
-        if not self._interim or not self._ceiling_running():
+        if not self._interim or not self._incomplete_and_quiet():
             return
         if self._bot_speaking:
             # The over-the-bot shape (see the class note): the interruption has not
@@ -679,7 +680,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # ceiling's commit). Its window counts from its own arrival: words that stopped
         # changing before the stop are settled already.
         if (self.speculator is not None and self._interim and self._inferences == before
-                and self._ceiling_running()):
+                and self._incomplete_and_quiet()):
             settled = time.monotonic() - self._interim_at
             await self._arm_settle(max(0.0, self.speculator.settle_secs - settled))
 

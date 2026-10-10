@@ -105,7 +105,7 @@ ENABLED = env_flag("TEAPORT_SPECULATIVE_REPLY", False)
 # absorbs; the tightest one (0.17 s) gains next to nothing at any window. Too short shows
 # in the journal as "[SPEC] miss reason=superseded" lines, each a request opened on words
 # that then grew; that count is the number to size this from.
-SETTLE_SECS = env_num("TEAPORT_SPECULATE_SETTLE_MS", "160", int) / 1000.0
+SETTLE_SECS = max(0, env_num("TEAPORT_SPECULATE_SETTLE_MS", "160", int)) / 1000.0
 
 
 class _Speculation:

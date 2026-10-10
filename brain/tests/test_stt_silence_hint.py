@@ -178,7 +178,8 @@ async def test_every_commit_that_answers_a_stop_carries_it():
     await vad_start(s)
     await audio(s, 400)
     await vad_stop(s, stop_secs=0.2)
-    assert hints(s)[-1] == 200 - MARGIN
+    assert hints(s) == [500 - MARGIN, 200 - MARGIN], \
+        "the expiry claims its stop's window, then the raw stop its own"
 
     # The hold's expiry: nothing answered the stop, the silence is still silence.
     s = Recorder()
