@@ -732,8 +732,12 @@ verdict commit (#43, `SttCommit.tla` below) the segment is held open through the
 no final lands before the commit, and the speculation was inert. The engine's interim now
 equals its final (48 of 48 phone turns measured that day), so the strategy asks on the
 interim once it has stopped changing for `TEAPORT_SPECULATE_SETTLE_MS`, and the vad-stop
-setting is gone. `SpecStart` is a free action either way — it fires wherever the strategy
-could — so the model checks a superset of both triggers.
+setting is gone. Since 2026-10-10 an engine that reports how far it has transcribed
+(`transcription.progress`) decides "stopped changing" instead of the window: the strategy
+asks once the report passes the caller's speech end for the INCOMPLETE stop
+(`SpeechDecodedFrame`). `SpecStart` is a free action whatever the trigger — it fires
+wherever the strategy could — so the model checks a superset of all three, and a word
+the report missed is `Retext`.
 
 The property it adds is `NoStaleReply`: a speculated reply is spoken only for the context it
 was asked against. Two things can move between the snapshot and the commit, and the model
