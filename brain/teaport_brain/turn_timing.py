@@ -22,17 +22,17 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.env import env_num
+from teaport_brain.settings import setting
 
 # How long a committed turn may stay silent before it is reported. Short enough that the
 # line lands while the session is still live.
 #
-# env_num, not a bare float(): this value lives in /etc/teaport/brain.env, which installer
+# setting(), not a bare float(): this value lives in /etc/teaport/brain.env, which installer
 # repairs preserve verbatim, so `TEAPORT_SILENT_TURN_SECS=` or `=off` from a bare cast
 # would raise at IMPORT time — and gateway_server imports this module at module scope, so
 # the brain would crash-loop with no way to clear it short of hand-editing the file. See
-# env.py, which exists for exactly this.
-_SILENT_TURN_SECS = env_num("TEAPORT_SILENT_TURN_SECS", "12", float)
+# settings.py, which exists for exactly this.
+_SILENT_TURN_SECS = setting("TEAPORT_SILENT_TURN_SECS")
 
 # A tool call legitimately owns the turn for far longer than the watchdog window:
 # _ASK_OPENCLAW_TIMEOUT is 55s and _NATIVE_CONSULT_TIMEOUT 45s (tools.py), and in

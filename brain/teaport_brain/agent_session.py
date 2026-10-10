@@ -78,7 +78,7 @@ from teaport_brain import speculate
 from teaport_brain.speech_onset import SpeechOnsetMixin
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
-from teaport_brain.env import env_num
+from teaport_brain.settings import setting
 from teaport_brain.followup_gate import (
     SYSTEM_NOTICE_TAG, FollowupGate, FollowupTrigger, TurnCommitMark,
 )
@@ -209,10 +209,10 @@ _DELIVERY_CHART_TIMEOUT = 5.0
 # 2026-09-10 17:13 (heard~0%, retired as delivered, asked for three more times). A third
 # is the line: below it the caller has a fragment, not an answer.
 #
-# env_num, not a bare float(): this lives in /etc/teaport/brain.env, which installer
+# setting(), not a bare float(): this lives in /etc/teaport/brain.env, which installer
 # repairs preserve verbatim, so `TEAPORT_FOLLOWUP_MIN_HEARD=` from a bare cast would
-# raise at IMPORT time and crash-loop the brain. See env.py.
-_MIN_HEARD = env_num("TEAPORT_FOLLOWUP_MIN_HEARD", "0.3", float)
+# raise at IMPORT time and crash-loop the brain. See settings.py.
+_MIN_HEARD = setting("TEAPORT_FOLLOWUP_MIN_HEARD")
 
 
 class _FailureOutcome(NamedTuple):

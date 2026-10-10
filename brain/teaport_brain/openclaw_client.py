@@ -30,8 +30,9 @@ import uuid
 from dataclasses import dataclass
 
 from loguru import logger
+from teaport_brain.settings import setting
 
-GATEWAY_URL = os.getenv("OPENCLAW_GATEWAY_URL", "http://127.0.0.1:18789").rstrip("/")
+GATEWAY_URL = setting("OPENCLAW_GATEWAY_URL").rstrip("/")
 TOKEN_FILE = os.path.expanduser("~/.config/teaport/openclaw_token")
 
 # Per-search recall budget. This is NOT the turn's wall-clock budget: MemoryRecall fires
@@ -47,7 +48,7 @@ TOKEN_FILE = os.path.expanduser("~/.config/teaport/openclaw_token")
 # the common state since the engine keeps RAM tight) ~1.14 s. 1.5 s clears cold with margin; since
 # MemoryRecall never awaits in the frame path and cancels any straggler at the final transcript,
 # a generous budget adds ZERO turn latency. Tune via TEAPORT_RECALL_TIMEOUT.
-RECALL_TIMEOUT = float(os.getenv("TEAPORT_RECALL_TIMEOUT", "1.5"))
+RECALL_TIMEOUT = setting("TEAPORT_RECALL_TIMEOUT")
 
 # Agent-consult: the rich, SLOW *delegation* primitive for hard questions (a future
 # `ask_openclaw` tool). Runs one full OpenClaw agent turn via the gateway — full
@@ -62,7 +63,7 @@ def _find_openclaw_bin() -> str:
     inside the sandbox). Probe: explicit env -> a CLI on PATH -> the deployment
     shim (~/.config/teaport/openclaw-cli, e.g. a nemoclaw-exec wrapper that runs
     the CLI inside the sandbox) -> the legacy ~/node22 path."""
-    env = os.getenv("OPENCLAW_BIN")
+    env = setting("OPENCLAW_BIN")
     if env:
         return env
     found = shutil.which("openclaw")
@@ -75,27 +76,26 @@ def _find_openclaw_bin() -> str:
 
 
 OPENCLAW_BIN = _find_openclaw_bin()
-OPENCLAW_AGENT = os.getenv("OPENCLAW_AGENT_ID", "main")
+OPENCLAW_AGENT = setting("OPENCLAW_AGENT_ID")
 # 45 s, not 30: the sandbox-exec shim adds ~14 s of spawn tax (nemoclaw + docker
 # exec + CLI node startup, measured) before the agent turn even starts, and a
 # Discord-action turn needs real time after that. Callers cap the voice wait
 # separately (TEAPORT_ASK_OPENCLAW_TIMEOUT must stay above ack+consult). This is the
 # SYNC path's budget only: the async path (SIP, or a relay that never acks) passes its
 # own, TEAPORT_ASYNC_CONSULT_TIMEOUT, since its wait is off the turn (#80).
-CONSULT_TIMEOUT = float(os.getenv("TEAPORT_CONSULT_TIMEOUT", "45"))
+CONSULT_TIMEOUT = setting("TEAPORT_CONSULT_TIMEOUT")
 
 # Memory WRITE goes the sidecar/direct route (NOT the consult — that proved heavy,
 # non-deterministic, and Cerebras-throttle-prone, see docs/UNIFIED_AGENT_PLAN.md §5.2):
 # append the fact to the SAME daily note the OpenClaw text agent writes, then reindex.
 # Shared store → a voice-saved memory is recalled by both voice and text. Deterministic,
 # ~instant write + ~7 s background reindex, zero-egress (no LLM call to save a fact).
-MEMORY_DIR = os.getenv("OPENCLAW_MEMORY_DIR",
-                       os.path.expanduser("~/.openclaw/workspace/memory"))
+MEMORY_DIR = setting("OPENCLAW_MEMORY_DIR")
 
 
 def _token() -> str | None:
     """Gateway bearer token: OPENCLAW_GATEWAY_TOKEN, else ~/.config/teaport/openclaw_token."""
-    tok = os.getenv("OPENCLAW_GATEWAY_TOKEN")
+    tok = setting("OPENCLAW_GATEWAY_TOKEN")
     if tok:
         return tok.strip()
     try:

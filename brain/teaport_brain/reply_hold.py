@@ -118,14 +118,14 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.settings import setting
 
 # Per front-end. On for SIP, where the failure was measured (a 2026-10-05 test call);
 # off for Talk until a Talk session has been measured with it -- the only data so far is
 # telephony, and Talk's wideband audio and client-side echo cancelling are different.
 # agent_session takes the front-end's value from its caller (sip_server / gateway_server).
-SIP_ENABLED = env_flag("TEAPORT_REPLY_HOLD_SIP", True)
-TALK_ENABLED = env_flag("TEAPORT_REPLY_HOLD_TALK", False)
+SIP_ENABLED = setting("TEAPORT_REPLY_HOLD_SIP")
+TALK_ENABLED = setting("TEAPORT_REPLY_HOLD_TALK")
 if os.getenv("TEAPORT_REPLY_HOLD") is not None:
     logger.warning("TEAPORT_REPLY_HOLD is no longer read: the reply hold is set per front-end "
                    "by TEAPORT_REPLY_HOLD_SIP (default on) and TEAPORT_REPLY_HOLD_TALK "
@@ -136,12 +136,12 @@ if os.getenv("TEAPORT_REPLY_HOLD") is not None:
 # first delta on a fresh segment trails by ~0.6 s -- and their final lands after the
 # verdict and the engine's finish, ~0.5-0.7 s after the stop. 1.0 s covers that; with
 # ENDPOINT_STOP_SECS=0.2 it is ~1.2 s after the speech ends.
-RELEASE_SECS = env_num("TEAPORT_REPLY_HOLD_RELEASE_S", "1.0", float)
+RELEASE_SECS = setting("TEAPORT_REPLY_HOLD_RELEASE_S")
 # The longest a reply is ever held, from the start of the hold, whatever the VAD says.
 # Never less than RELEASE_SECS (the gate raises it to that).
-MAX_SECS = env_num("TEAPORT_REPLY_HOLD_MAX_S", "6.0", float)
+MAX_SECS = setting("TEAPORT_REPLY_HOLD_MAX_S")
 # The cap for a hold only the onset test asked for: no VAD start during it.
-ONSET_MAX_SECS = env_num("TEAPORT_REPLY_HOLD_ONSET_MAX_S", "2.5", float)
+ONSET_MAX_SECS = setting("TEAPORT_REPLY_HOLD_ONSET_MAX_S")
 
 # A frame that waited in the queue at least this long was held; less is scheduling.
 _HELD_NS = 20_000_000

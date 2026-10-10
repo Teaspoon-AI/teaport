@@ -245,7 +245,7 @@ In `/etc/teaport/brain.env`. All off by default; log-only.
 |---|---|---|
 | `TEAPORT_ENDPOINT_DEBUG` | **off** | VAD state transitions, Smart Turn verdicts and the turn-commit / first-audio timing bubbles in the journal. |
 | `TEAPORT_ENDPOINT_DIST_EVERY` | **500** frames (≥ 1) | The per-frame confidence census interval (500 frames ≈ 16 s). |
-| `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Parsed as == "1", not through env_flag: true/yes/on are silently off. Write 1. |
+| `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1, or 0 for off. |
 | `TEAPORT_TRACE` | **off** | Keep the [CAP] caption-pipeline and [WTS] word-timestamp traces in the journal. |
 | `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. |
 | `TEAPORT_AUDIO_DUMP_MAX_SECS` | **600** s (≥ 1) | Caps the recording. |
@@ -258,7 +258,7 @@ In `/etc/teaport/brain.env`. Written by install.sh. Shown read-only.
 
 | Setting | Default | Description |
 |---|---|---|
-| `BRAIN_PORT` | **7861** port (1–65535) | Passed as --port by the unit. Changing it means re-rendering the plugin config, bridge.env and Caddy. *Set by the installer.* |
+| `BRAIN_PORT` | **7861** port (1–65535) | Passed as --port by the unit, and read by the local audio bridge to find /talk. Changing it means re-rendering the plugin config, bridge.env and Caddy. *Set by the installer.* |
 | `GATEWAY_PORT` | **7861** port (1–65535) | Code fallback for the listen port when --port is not given. On an installed box BRAIN_PORT is the effective knob. *Set by the installer.* |
 | `GATEWAY_TOKEN` | — | Shared secret for /talk. Empty means anyone who can reach the port gets a full agent session and can replace a client's session by claiming its id; the brain warns loudly at startup. Mirrored into the plugin config by install.sh. Never change one side alone. *Set by the installer.* |
 | `MALLOC_ARENA_MAX` | **2** (≥ 1) | glibc arena cap; part of the memory budget. *Set by the installer.* |
@@ -327,7 +327,7 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 | `LOCAL_AUDIO_AWAKE_MAX_SECS` | **300.0** s (30.0–86400.0) | With wake words: the conversation also sleeps this long after the last wake word, once the agent is not speaking — so a TV or a chat in the room that the agent keeps answering cannot hold it awake for good. Say the wake word again to keep going. |
 | `LOCAL_AUDIO_CONVERSATION_SECS` | **7200.0** s (0.0–604800.0) | With wake words: one conversation at the box lasts until it has been asleep this long. A wake within it continues where it stopped ("what about tomorrow?" three minutes later still knows the question) and is not greeted; after it, a new conversation starts with a greeting. The brain keeps the last conversation's messages in memory (at most 40 messages / 24k characters), for the box's own mic only; a restart of teaport-brain forgets it. |
 | `LOCAL_AUDIO_BACKOFF_SECS` | **60.0** s (0.0–3600.0) | When another client (the dashboard, grokani, a browser) has the box -- it took the session from the sleeping bridge, or the brain refused the bridge because that client's conversation is live -- the box is theirs: the bridge stops listening for a voice until the brain has had no live session for this long, so the room (or the dashboard user's own voice) does not keep asking. A bridge that starts (or restarts) while such a session is live does the same instead of dialling. An unused Talk session ends on the brain's ~5 min idle timeout, which bounds the wait. After it, the bridge waits for a voice as after any session; 0 turns the back-off off (with wake words a refused bridge then retries on a doubling wait, never at once). |
-| `LOCAL_AUDIO_URL` | `ws://127.0.0.1:$BRAIN_PORT/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
+| `LOCAL_AUDIO_URL` | `ws://127.0.0.1:<BRAIN_PORT>/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
 | `LOCAL_AUDIO_FACE_SOCK` | `/run/oled-avatar/face.sock` | The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes. |
 | `LOCAL_AUDIO_FACE_ADVANCE_MS` | **50** ms (0–300) | How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads. |
 

@@ -9,7 +9,6 @@
 # swallowing every barge-in there is.
 #
 import asyncio
-import os
 import time
 from dataclasses import dataclass
 
@@ -28,6 +27,8 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
+
+from teaport_brain.settings import setting
 
 # Endpointing silence, the VAD's: how long the user must pause before Silero VAD
 # reports them stopped -- which is what asks Smart Turn for its verdict. This floor IS
@@ -64,7 +65,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 # audio: the Talk client, where a 350 ms mid-phrase pause drew INCOMPLETE at
 # p=0.04-0.17 on 4 of 4 runs), 0.2 is safe now; on telephony it is not, for the reason
 # above. Tune via ENDPOINT_STOP_SECS.
-ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
+ENDPOINT_STOP_SECS = setting("ENDPOINT_STOP_SECS")
 
 # Smart Turn's OWN silence limit -- pipecat's SmartTurnParams.stop_secs -- is not a
 # floor but a CEILING: BaseSmartTurn.append_audio force-completes the turn once this
@@ -92,7 +93,7 @@ ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 # under this wait -- it had settled a median ~0.6 s before the commit on those turns --
 # so a fallthrough no longer pays the round trip after it, and that is what makes
 # raising this affordable. Tune via SMARTTURN_STOP_SECS.
-SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
+SMARTTURN_STOP_SECS = setting("SMARTTURN_STOP_SECS")
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
 # threshold; below it the utterance is "incomplete" and we wait out the silence
@@ -111,7 +112,7 @@ SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 # disabling it and paying a flat second for it. The knob only bites where the model is
 # uncertain, and here it is confidently wrong instead. ENDPOINT_STOP_SECS is the lever
 # that works; see its note. Tune via SMARTTURN_COMPLETE_THRESHOLD.
-SMARTTURN_COMPLETE_THRESHOLD = float(os.getenv("SMARTTURN_COMPLETE_THRESHOLD", "0.5"))
+SMARTTURN_COMPLETE_THRESHOLD = setting("SMARTTURN_COMPLETE_THRESHOLD")
 
 # Silero VAD gates. These were tightened to 0.8 / 0.75 to reject ambient noise,
 # but that put the min_volume gate right in the middle of real speech loudness —
@@ -145,8 +146,8 @@ SMARTTURN_COMPLETE_THRESHOLD = float(os.getenv("SMARTTURN_COMPLETE_THRESHOLD", "
 # back in the middle of real speech loudness, which is the flicker this paragraph
 # opens with. Revisit here first if turns start committing late.
 # Tune via VAD_CONFIDENCE / VAD_MIN_VOLUME.
-VAD_CONFIDENCE = float(os.getenv("VAD_CONFIDENCE", "0.7"))
-VAD_MIN_VOLUME = float(os.getenv("VAD_MIN_VOLUME", "0.6"))
+VAD_CONFIDENCE = setting("VAD_CONFIDENCE")
+VAD_MIN_VOLUME = setting("VAD_MIN_VOLUME")
 
 # Barge-in guard. WHILE THE BOT IS SPEAKING, require the user's interrupting speech
 # to reach this many transcribed words before it counts as a real turn and cuts the
@@ -160,7 +161,7 @@ VAD_MIN_VOLUME = float(os.getenv("VAD_MIN_VOLUME", "0.6"))
 # until the user repeated themselves (observed live 2026-07-21, 4.1s to cut). The
 # cost is that a two-word garble can now barge; accepted for a responsive stop.
 # Tune via TEAPORT_INTERRUPT_MIN_WORDS.
-INTERRUPT_MIN_WORDS = int(os.getenv("TEAPORT_INTERRUPT_MIN_WORDS", "2"))
+INTERRUPT_MIN_WORDS = setting("TEAPORT_INTERRUPT_MIN_WORDS")
 
 
 # --- Per front-end -----------------------------------------------------------------
@@ -181,44 +182,25 @@ class TurnSettings:
     interrupt_min_words: int = INTERRUPT_MIN_WORDS
 
 
-def _override(raw: str | None, name: str, shared, cast):
-    raw = (raw or "").strip()
-    if not raw:
-        return shared
-    try:
-        return cast(raw)
-    except ValueError:
-        logger.warning(f"{name}={raw!r} is not a number; using the shared value {shared}")
-        return shared
-
-
 def turn_settings(front_end: str | None) -> TurnSettings:
     """The turn-taking knobs for a session of `front_end` ("sip" or "talk"): its own
     SIP_/TALK_ override where set, else the shared value."""
+    shared = TurnSettings()
     if front_end == "sip":
-        raw = {"ENDPOINT_STOP_SECS": os.getenv("SIP_ENDPOINT_STOP_SECS"),
-               "SMARTTURN_STOP_SECS": os.getenv("SIP_SMARTTURN_STOP_SECS"),
-               "SMARTTURN_COMPLETE_THRESHOLD": os.getenv("SIP_SMARTTURN_COMPLETE_THRESHOLD"),
-               "INTERRUPT_MIN_WORDS": os.getenv("SIP_INTERRUPT_MIN_WORDS")}
-    elif front_end == "talk":
-        raw = {"ENDPOINT_STOP_SECS": os.getenv("TALK_ENDPOINT_STOP_SECS"),
-               "SMARTTURN_STOP_SECS": os.getenv("TALK_SMARTTURN_STOP_SECS"),
-               "SMARTTURN_COMPLETE_THRESHOLD": os.getenv("TALK_SMARTTURN_COMPLETE_THRESHOLD"),
-               "INTERRUPT_MIN_WORDS": os.getenv("TALK_INTERRUPT_MIN_WORDS")}
-    else:
-        return TurnSettings()
-    p = front_end.upper() + "_"
-    return TurnSettings(
-        endpoint_stop_secs=_override(raw["ENDPOINT_STOP_SECS"], p + "ENDPOINT_STOP_SECS",
-                                     ENDPOINT_STOP_SECS, float),
-        smartturn_stop_secs=_override(raw["SMARTTURN_STOP_SECS"], p + "SMARTTURN_STOP_SECS",
-                                      SMARTTURN_STOP_SECS, float),
-        smartturn_complete_threshold=_override(
-            raw["SMARTTURN_COMPLETE_THRESHOLD"], p + "SMARTTURN_COMPLETE_THRESHOLD",
-            SMARTTURN_COMPLETE_THRESHOLD, float),
-        interrupt_min_words=_override(raw["INTERRUPT_MIN_WORDS"], p + "INTERRUPT_MIN_WORDS",
-                                      INTERRUPT_MIN_WORDS, int),
-    )
+        return TurnSettings(
+            endpoint_stop_secs=setting("SIP_ENDPOINT_STOP_SECS", default=shared.endpoint_stop_secs),
+            smartturn_stop_secs=setting("SIP_SMARTTURN_STOP_SECS", default=shared.smartturn_stop_secs),
+            smartturn_complete_threshold=setting("SIP_SMARTTURN_COMPLETE_THRESHOLD",
+                                                 default=shared.smartturn_complete_threshold),
+            interrupt_min_words=setting("SIP_INTERRUPT_MIN_WORDS", default=shared.interrupt_min_words))
+    if front_end == "talk":
+        return TurnSettings(
+            endpoint_stop_secs=setting("TALK_ENDPOINT_STOP_SECS", default=shared.endpoint_stop_secs),
+            smartturn_stop_secs=setting("TALK_SMARTTURN_STOP_SECS", default=shared.smartturn_stop_secs),
+            smartturn_complete_threshold=setting("TALK_SMARTTURN_COMPLETE_THRESHOLD",
+                                                 default=shared.smartturn_complete_threshold),
+            interrupt_min_words=setting("TALK_INTERRUPT_MIN_WORDS", default=shared.interrupt_min_words))
+    return shared
 
 
 class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
@@ -1059,7 +1041,7 @@ def keep_barge_in_reachable(controller) -> None:
 # half of the band, and the pair-averaging below (a crude half-band filter, kept cheap
 # because it runs per frame in the VAD executor) would not fully prevent aliasing.
 # Revisit this together with the SDP offer if a wideband carrier ever lands.
-VAD_SAMPLE_RATE = int(os.getenv("VAD_SAMPLE_RATE", "16000"))
+VAD_SAMPLE_RATE = int(setting("VAD_SAMPLE_RATE"))
 
 
 class NarrowbandSileroMixin:

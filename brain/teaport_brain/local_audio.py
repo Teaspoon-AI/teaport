@@ -109,6 +109,7 @@ from loguru import logger
 
 from teaport_brain import display
 from teaport_brain.wake_words import parse_phrases as wake_phrases
+from teaport_brain.settings import setting
 
 DEVICE_RATE = 16000
 DEVICE_CHANNELS = 2
@@ -120,10 +121,10 @@ CHUNK_BYTES = CHUNK_FRAMES * DEVICE_CHANNELS * 2
 # is still buffered, and so still audible, after a barge-in "clear".
 LEAD_SECS = 0.12
 
-DEVICE = os.getenv("LOCAL_AUDIO_DEVICE", "hw:CARD=Array,DEV=0")
-CAPTURE_CHANNEL = int(os.getenv("LOCAL_AUDIO_CAPTURE_CHANNEL", "0"))
-GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
-URL = os.getenv("LOCAL_AUDIO_URL") or f"ws://127.0.0.1:{os.getenv('BRAIN_PORT', '7861')}/talk"
+DEVICE = setting("LOCAL_AUDIO_DEVICE")
+CAPTURE_CHANNEL = setting("LOCAL_AUDIO_CAPTURE_CHANNEL")
+GATEWAY_TOKEN = setting("GATEWAY_TOKEN")
+URL = setting("LOCAL_AUDIO_URL", default=f"ws://127.0.0.1:{setting('BRAIN_PORT')}/talk")
 # A card that will not open, or a first dial the brain refuses, is retried this long
 # after, doubling per consecutive failure up to the max; a good session resets it.
 RETRY_SECS = 3.0
@@ -142,23 +143,23 @@ CAPTURE_START_SECS = 5.0
 # A voice in the room, between sessions: chunks louder than WAKE_DB (dBFS RMS on the
 # capture channel) for WAKE_SECS out of the last WAKE_WINDOW_SECS. The room measured
 # ~-50 dBFS (rms 90-100) idle; speech at a few metres is well above -40.
-WAKE_DB = float(os.getenv("LOCAL_AUDIO_WAKE_DB", "-40"))
+WAKE_DB = setting("LOCAL_AUDIO_WAKE_DB")
 WAKE_SECS = 0.26
 WAKE_WINDOW_SECS = 0.4
 # Mic audio kept while waiting, sent first on the connection the voice opens.
 PREROLL_SECS = 1.0
 # Wake words: a comma-separated list of phrases, any language ("hey teaport, tea port").
 # Any value at all means wake mode; the brain matches them (wake_words.py).
-WAKE_WORDS = os.getenv("LOCAL_AUDIO_WAKE_WORDS", "")
+WAKE_WORDS = setting("LOCAL_AUDIO_WAKE_WORDS", default="")
 # Awake, the session ends once nobody (user or bot) has spoken for KEEPALIVE_SECS, or
 # AWAKE_MAX_SECS after the last wake word with the bot quiet: a TV the bot keeps
 # answering must not hold the room open for good. Saying a wake word again restarts it.
-KEEPALIVE_SECS = float(os.getenv("LOCAL_AUDIO_KEEPALIVE_SECS", "45"))
-AWAKE_MAX_SECS = float(os.getenv("LOCAL_AUDIO_AWAKE_MAX_SECS", "300"))
+KEEPALIVE_SECS = setting("LOCAL_AUDIO_KEEPALIVE_SECS")
+AWAKE_MAX_SECS = setting("LOCAL_AUDIO_AWAKE_MAX_SECS")
 KEEPALIVE_POLL_SECS = 0.25
 # A wake this soon after the last mic conversation ended continues it (the brain keeps
 # its messages) and is not greeted; later, a new conversation and a greeting.
-CONVERSATION_SECS = float(os.getenv("LOCAL_AUDIO_CONVERSATION_SECS", "7200"))
+CONVERSATION_SECS = setting("LOCAL_AUDIO_CONVERSATION_SECS")
 # A wake session that ends this soon after it opened (the brain refused it, or went
 # away) is retried after a backoff, not at once.
 SHORT_SESSION_SECS = 5.0
@@ -167,7 +168,7 @@ SHORT_SESSION_SECS = 5.0
 HELLO_SECS = 15.0
 # Taken by another Talk client: no voice wake until the brain has had no live /talk
 # session for this long (Backoff), asked every BACKOFF_POLL_SECS. 0 or less: no back-off.
-BACKOFF_SECS = float(os.getenv("LOCAL_AUDIO_BACKOFF_SECS", "60"))
+BACKOFF_SECS = setting("LOCAL_AUDIO_BACKOFF_SECS")
 BACKOFF_POLL_SECS = 5.0
 # At process start a Talk session may still be our own previous process's (a crash, a
 # unit restart): the brain lets it go within a second of its socket closing (the kernel
@@ -203,7 +204,7 @@ STATUS_EVERY_SECS = 0.3
 # Lines of aplay/arecord stderr kept for the error message when one of them dies.
 STDERR_TAIL_LINES = 20
 # The avatar's socket; its path lives in display.py (the screens use it too).
-FACE_SOCK = os.getenv("LOCAL_AUDIO_FACE_SOCK", display.SOCK)
+FACE_SOCK = setting("LOCAL_AUDIO_FACE_SOCK", default=display.SOCK)
 # Assistant finals that are not speech, told apart from reply text only by these
 # prefixes: TEAPORT_ENDPOINT_DEBUG's timing chips (endpoint_debug.py) and the tool-call
 # bubbles (tools._wrap). Kept here rather than imported: importing either pulls Pipecat
@@ -238,7 +239,7 @@ VOICED_TAIL_SECS = 0.6
 FACE_STALE_SECS = 12.0
 # Send each mouth level this much before its audio is heard, to cover the avatar's own
 # delay (a 30 fps frame plus the I2C write of the panel).
-FACE_ADVANCE_SECS = int(os.getenv("LOCAL_AUDIO_FACE_ADVANCE_MS", "50")) / 1000
+FACE_ADVANCE_SECS = setting("LOCAL_AUDIO_FACE_ADVANCE_MS") / 1000
 # Chunk loudness -> mouth opening: closed at or below the floor, fully open SPAN dB above.
 MOUTH_FLOOR_DB = -45.0
 MOUTH_SPAN_DB = 25.0

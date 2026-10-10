@@ -16,7 +16,6 @@
 
 import asyncio
 import math
-import os
 import time
 from contextlib import aclosing
 from typing import AsyncGenerator
@@ -35,30 +34,23 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
-from teaport_brain.env import env_choice, env_flag, env_num
+from teaport_brain.settings import setting
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.reply_hold import PlayoutHoldFrame
 from teaport_brain.tts_text import split_clauses_ramp
 
 # TEAPORT_TRACE=1 keeps the [WTS] word-timestamp traces (debug aid for the
 # caption/heard-ledger pipeline) without spamming normal logs.
-_TRACE = env_flag("TEAPORT_TRACE", False)
+_TRACE = setting("TEAPORT_TRACE")
 
 _SAMPLE_RATE = 24000  # the engine outputs 24 kHz
 
 # Engine text-in stream endpoint + per-request recv timeout. The engine synthesizes a clause
 # in ~0.2-0.5s (RTF ~0.23); 20s covers a stuck engine without hanging a reply. The stream URL
 # derives from the engine ws base (ENGINE_TTS_URL, box-configured) unless set explicitly.
-_ENGINE_WS = os.getenv("ENGINE_TTS_URL", "ws://127.0.0.1:8000/v1/tts").rsplit("/v1/", 1)[0]
-_STREAM_URL = os.getenv("ENGINE_TTS_STREAM_URL", _ENGINE_WS + "/v1/audio/speech/stream")
-_STREAM_TIMEOUT = env_num("TTS_REMOTE_TIMEOUT", "20", float)
-# These two knobs live in brain.env, which installer repairs preserve verbatim — a bare
-# int()/float() here turns one typo ("", "off", "2.5") into an import-time ValueError that
-# crash-loops the whole brain service, and re-running the installer cannot clear it.
-# env.env_num IS that defensive cast, shared with services.py's LLM_MAX_TOKENS so the
-# warn-and-fall-back behaviour is defined once.
-_env_num = env_num
-
+_ENGINE_WS = setting("ENGINE_TTS_URL").rsplit("/v1/", 1)[0]
+_STREAM_URL = setting("ENGINE_TTS_STREAM_URL", default=_ENGINE_WS + "/v1/audio/speech/stream")
+_STREAM_TIMEOUT = setting("TTS_REMOTE_TIMEOUT")
 
 # The engine caps this endpoint at OMNI_MAX_SESSIONS (2) and holds a slot until it finishes
 # synthesizing — including work a barge-in abandoned, measured at ~1.5s on an Orin Nano. Two
@@ -67,8 +59,8 @@ _env_num = env_num
 # >= 1: the retry count is also the ATTEMPT count, so 0 would skip the connect entirely
 # and hand the caller a None websocket (AttributeError on .send) instead of a clean failure.
 # Setting it to 0/1 is how an operator disables the retry, and both must still connect once.
-_STREAM_CONNECT_RETRIES = max(1, _env_num("TTS_CONNECT_RETRIES", "3", int))
-_STREAM_CONNECT_BACKOFF = _env_num("TTS_CONNECT_BACKOFF", "0.6", float)
+_STREAM_CONNECT_RETRIES = max(1, setting("TTS_CONNECT_RETRIES"))
+_STREAM_CONNECT_BACKOFF = setting("TTS_CONNECT_BACKOFF")
 
 # Caption lead: the transport releases each word's caption frame at its presentation
 # timestamp (== when it SENDS that word's audio), but the client buffers and plays audio
@@ -93,7 +85,7 @@ _CAPTION_LEAD_SECS = tts_text_lead.CAPTION_LEAD_SECS
 # ~1/3 of its synthesis, but the rest of the sentence still arrives only at its end, so the
 # gap is ~2/3 of it -- and with streaming off it is all of it. 15s covers the worst
 # cap/hard_max-sized chunk at CPU RTF ~0.6 with margin.
-_STOP_FRAME_TIMEOUT_S = env_num("TTS_STOP_FRAME_TIMEOUT_S", "15", float)
+_STOP_FRAME_TIMEOUT_S = setting("TTS_STOP_FRAME_TIMEOUT_S")
 
 # Clause-chunking. The engine streams a sentence's PCM as it synthesizes it, but only for
 # the FIRST sentence of a stream session (voxtral_websocket.c omni_worker, eager-prefix
@@ -114,17 +106,17 @@ _STOP_FRAME_TIMEOUT_S = env_num("TTS_STOP_FRAME_TIMEOUT_S", "15", float)
 # natural ~320 ms comma pause; trimming to ~lead+trail lands it near the natural pause, and
 # the terminal pitch + register are already continuous across the seam (measured). Per-word
 # timestamps are shifted for the leading trim, so the heard-ledger stays exact.
-_FIRST_CLAUSE_MAX_CHARS = env_num("TTS_FIRST_CLAUSE_CHARS", "32", int)
+_FIRST_CLAUSE_MAX_CHARS = setting("TTS_FIRST_CLAUSE_CHARS")
 # Ramp-up chunking: each chunk may grow up to GROWTH x the previous. GROWTH must stay below
 # 1/RTF (~1.67 at the measured CPU RTF 0.6) so a chunk's synth never outruns the previous
 # chunk's playout — otherwise playback stalls at the seam even when RTF is healthy. 1.5 leaves
 # margin for light load; CAP bounds the largest chunk.
-_CLAUSE_GROWTH = env_num("TTS_CLAUSE_GROWTH", "1.5", float)
-_CLAUSE_CAP = env_num("TTS_CLAUSE_CAP", "200", int)
+_CLAUSE_GROWTH = setting("TTS_CLAUSE_GROWTH")
+_CLAUSE_CAP = setting("TTS_CLAUSE_CAP")
 # Last-resort word-break: any chunk longer than this (chars) is split mid-sentence so a
 # long run-on (e.g. the Tale of Two Cities opening) can't overflow the engine's ~512-token
 # utterance limit and crash the synth. Kept well under that limit with margin.
-_CLAUSE_HARD_MAX = env_num("TTS_CLAUSE_HARD_MAX", "350", int)
+_CLAUSE_HARD_MAX = setting("TTS_CLAUSE_HARD_MAX")
 # A sentence longer than this is split at its clause boundaries before synthesis
 # (see split_clauses_ramp): first audio scales with the chunk's length, so one long
 # sentence is the whole first-audio wait. Live 2026-09-04 (pre-#14 brain, which
@@ -132,9 +124,9 @@ _CLAUSE_HARD_MAX = env_num("TTS_CLAUSE_HARD_MAX", "350", int)
 # sentence began 4.6 s after the model finished it, a ~30 s one 6.6 s, and at a 120
 # cap a 112-char one still waited 1.7 s. Sentences up to this length keep their
 # prosody untouched. 0 disables the split.
-_SENTENCE_SOFT_MAX = env_num("TTS_SENTENCE_SOFT_MAX", "80", int)
-_SEAM_KEEP_LEAD = env_num("TTS_SEAM_KEEP_LEAD", "0.05", float)   # s kept before first sound
-_SEAM_KEEP_TRAIL = env_num("TTS_SEAM_KEEP_TRAIL", "0.25", float)  # s kept after last sound
+_SENTENCE_SOFT_MAX = setting("TTS_SENTENCE_SOFT_MAX")
+_SEAM_KEEP_LEAD = setting("TTS_SEAM_KEEP_LEAD")   # s kept before first sound
+_SEAM_KEEP_TRAIL = setting("TTS_SEAM_KEEP_TRAIL")  # s kept after last sound
 # Play each engine audio.chunk as it arrives (issue #14). Off = buffer each sentence to its
 # audio.done and play it whole, as before #14, and ask the engine to skip its eager prefix
 # (session.config "eager": false, ~10% less synthesis per clause, measured on the box; it
@@ -144,7 +136,7 @@ _SEAM_KEEP_TRAIL = env_num("TTS_SEAM_KEEP_TRAIL", "0.25", float)  # s kept after
 # mid-sentence (PR #81 review; word times follow such a hole, see _note_playout, but the
 # listener still hears it). A "TTS stream underrun" line in the journal is that hole. The
 # brain cannot see the engine's backend, so the default follows the GPU appliance.
-_STREAM_AUDIO = env_flag("TTS_STREAM_AUDIO", True)
+_STREAM_AUDIO = setting("TTS_STREAM_AUDIO")
 # A playout gap shorter than this is timing noise: _note_playout neither shifts word
 # times by it nor reports it.
 _PLAYOUT_GAP_MS = 20.0
@@ -160,8 +152,8 @@ _MAX_CTX_TALLIES = 8
 # cancels this task) or VAD-stop resumes synthesis. The cap bounds the hold so
 # sustained non-barge speech/noise can't stall the reply; the clause-ramp's
 # synthesized lead over playout absorbs a capped hold without an audible gap.
-_USER_SPEECH_HOLD_MAX_S = env_num("TTS_USER_SPEECH_HOLD_MAX_S", "3.0", float)
-_HOLD_ON_USER_SPEECH = env_flag("TTS_HOLD_ON_USER_SPEECH", True)
+_USER_SPEECH_HOLD_MAX_S = setting("TTS_USER_SPEECH_HOLD_MAX_S")
+_HOLD_ON_USER_SPEECH = setting("TTS_HOLD_ON_USER_SPEECH")
 
 
 def _parse_lead_s(raw: str):
@@ -195,8 +187,8 @@ def _parse_lead_s(raw: str):
 # every arm), because synthesis now runs ~30x real time and greedy's burst barely
 # overlaps STT; an interrupted reply discarded ~3-5 s of synthesis instead of
 # ~15-45 s. Hence off by default: it saves GPU work, not latency, on this hardware.
-_PACING = env_choice("TTS_PACING", "greedy", ("lead", "greedy"))
-_LEAD_S = _parse_lead_s(os.getenv("TTS_LEAD_S"))
+_PACING = setting("TTS_PACING")
+_LEAD_S = _parse_lead_s(setting("TTS_LEAD_S"))
 _LEAD_AUTO_FLOOR_S = 1.5
 _LEAD_AUTO_SYNTH_MULT = 2.0
 _PACE_MAX_WAIT_S = 30.0
@@ -210,7 +202,7 @@ _PACE_MAX_WAIT_S = 30.0
 #            estimated synth time: a reply's opening after silence, or after an
 #            underrun; not one queued behind audio still playing
 #   never    no clause
-_EAGER = env_choice("TTS_EAGER", "always", ("always", "first", "low_lead", "never"))
+_EAGER = setting("TTS_EAGER")
 
 # Starting estimates for the per-session EWMAs behind "auto" lead and "low_lead"
 # eager: speech runs ~15 chars/s, and the engine synthesizes at RTF ~0.03-0.04

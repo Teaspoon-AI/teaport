@@ -99,9 +99,9 @@ from loguru import logger
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.utils.string import TextPartForConcatenation, concatenate_aggregated_text
 
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.settings import setting
 
-ENABLED = env_flag("TEAPORT_SPECULATIVE_REPLY", False)
+ENABLED = setting("TEAPORT_SPECULATIVE_REPLY")
 
 # How long the interim must stop changing, under an INCOMPLETE verdict with the caller
 # quiet, before a speculation is opened on it. The engine emits deltas per 80 ms decoder
@@ -115,14 +115,14 @@ ENABLED = env_flag("TEAPORT_SPECULATIVE_REPLY", False)
 # absorbs; the tightest one (0.17 s) gains next to nothing at any window. Too short shows
 # in the journal as "[SPEC] miss reason=superseded" lines, each a request opened on words
 # that then grew; that count is the number to size this from.
-SETTLE_SECS = max(0, env_num("TEAPORT_SPECULATE_SETTLE_MS", "160", int)) / 1000.0
+SETTLE_SECS = max(0, setting("TEAPORT_SPECULATE_SETTLE_MS")) / 1000.0
 
 # Ask once the engine reports it has transcribed past the caller's end of speech
 # (teagram-engine's transcription.progress; stt.py places the speech end and pushes
 # endpointing.SpeechDecodedFrame), rather than once the interim has been unchanged for
 # SETTLE_SECS. An engine that does not offer the report gets the window either way; off,
 # every engine does -- the A/B switch, as TEAPORT_STT_SILENCE_HINT is for the hint.
-ON_DECODE = env_flag("TEAPORT_SPECULATE_ON_DECODE", True)
+ON_DECODE = setting("TEAPORT_SPECULATE_ON_DECODE")
 
 
 class _Speculation:

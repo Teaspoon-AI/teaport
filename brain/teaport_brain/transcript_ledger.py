@@ -55,7 +55,6 @@
 #
 
 import asyncio
-import os
 import re
 from collections import OrderedDict, deque
 from dataclasses import dataclass
@@ -64,6 +63,7 @@ from typing import List, Optional
 from loguru import logger
 
 from teaport_brain.barge_pause import PlayoutPauseFrame
+from teaport_brain.settings import setting
 from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech
 
 from pipecat.frames.frames import (
@@ -85,7 +85,7 @@ from pipecat.frames.frames import (
 from pipecat.observers.base_observer import BaseObserver, FrameProcessed
 
 # LEDGER_TRACE=1 logs the real per-frame sequence (deduped) for diagnosis.
-_TRACE = os.getenv("LEDGER_TRACE") == "1"
+_TRACE = setting("LEDGER_TRACE")
 _TRACE_TYPES = (
     TTSStartedFrame, TTSStoppedFrame, TTSTextFrame, TTSSpeakFrame, BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame, InterruptionFrame, LLMFullResponseStartFrame,

@@ -45,16 +45,16 @@ from pipecat.frames.frames import ErrorFrame, Frame, TTSSpeakFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.services.llm_service import LLMService
 
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.settings import setting
 
-ENABLED = env_flag("TEAPORT_LLM_ERROR_SPEECH", True)
+ENABLED = setting("TEAPORT_LLM_ERROR_SPEECH")
 
 # Deliberately vague about the cause: the caller cannot act on "402" or "read timeout",
 # and guessing wrong is worse than saying nothing specific. The journal has the detail.
 ERROR_TEXT = "Sorry, I couldn't reach my language model just then. Could you try again?"
 
 # One spoken notice per window, however many frames arrive.
-_DEBOUNCE_SECS = env_num("TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE", "30", float)
+_DEBOUNCE_SECS = setting("TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE")
 
 
 class LLMErrorSpeaker(FrameProcessor):

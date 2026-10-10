@@ -47,7 +47,7 @@ import time
 
 from loguru import logger
 
-from teaport_brain.env import env_choice
+from teaport_brain.settings import setting
 
 VID, PID = 0x2886, 0x001A
 LED_RESID = 20
@@ -61,7 +61,7 @@ STATUS_OK, STATUS_RETRY = 0, 64
 TIMEOUT_MS = 500
 READ_ATTEMPTS = 20
 
-ENABLED = env_choice("TEAPORT_BUSY_LAMP", "auto", ("auto", "off")) == "auto"
+ENABLED = setting("TEAPORT_BUSY_LAMP") == "auto"
 
 
 def _color(raw: str, default: int = 0xFF0000) -> int:
@@ -75,7 +75,7 @@ def _color(raw: str, default: int = 0xFF0000) -> int:
     return value
 
 
-COLOR = _color(os.getenv("TEAPORT_BUSY_LAMP_COLOR") or "ff0000")
+COLOR = _color(setting("TEAPORT_BUSY_LAMP_COLOR"))
 
 
 # --- the transport: one vendor control transfer on the device's usbfs node ---

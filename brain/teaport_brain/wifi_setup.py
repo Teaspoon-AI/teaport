@@ -60,6 +60,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 from teaport_brain import display, i18n
 from teaport_brain.i18n import N_
+from teaport_brain.settings import setting
 from teaport_brain.wifi import AP_ADDRESS, CONNECT_WAIT_SECS, NM, PAGE_CSS, logo_html
 
 # Where the page listens. teaport-wifi-setup.service sends AP_ADDRESS:80 here with an
@@ -85,8 +86,8 @@ SCREEN_TITLE = "Wi-Fi setup"
 CONNECTED_SCREEN_SECS = 10
 # Read by the unit (EnvironmentFile=-/etc/teaport/wifi-setup.env), which the flasher
 # writes so the paper insert can carry the password. Unset: fresh digits per setup.
-PASSWORD = os.getenv("WIFI_SETUP_PASSWORD", "")
-SSID = os.getenv("WIFI_SETUP_SSID", "")
+PASSWORD = setting("WIFI_SETUP_PASSWORD", default="")
+SSID = setting("WIFI_SETUP_SSID", default="")
 
 
 def log(msg: str) -> None:

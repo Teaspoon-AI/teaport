@@ -37,10 +37,9 @@
 # spoken utterance is charted in exactly one bubble, and bubbles appear in the
 # order the words were heard.
 #
-import os
 
 from loguru import logger
-from teaport_brain.env import env_flag
+from teaport_brain.settings import setting
 
 import time
 
@@ -58,7 +57,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 # TEAPORT_TRACE=1 keeps the [CAP] caption-pipeline traces around (they've caught
 # every bubble-rendering regression so far) without spamming normal logs.
-_TRACE = env_flag("TEAPORT_TRACE", False)
+_TRACE = setting("TEAPORT_TRACE")
 
 # While the user's interims are flowing, assistant partials are HELD (see
 # CaptionTap): the Talk UI commits the active assistant bubble the moment the
@@ -67,7 +66,7 @@ _TRACE = env_flag("TEAPORT_TRACE", False)
 # renders into that stray bubble). A gap longer than this since the last user
 # interim counts as quiet again — inter-interim gaps run ~0.3-0.7s, and a fresh
 # reply's first audio lands well past this after the user's final.
-_USER_HOLD_S = float(os.getenv("TEAPORT_CAPTION_USER_HOLD_S", "1.2"))
+_USER_HOLD_S = setting("TEAPORT_CAPTION_USER_HOLD_S")
 
 # Caption text rides pipecat 1.5.0's AggregatedTextProgressFrame, NOT the bare
 # TTSTextFrame word tokens: the sequencer emits one progress frame per word with

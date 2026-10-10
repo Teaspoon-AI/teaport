@@ -99,7 +99,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from teaport_brain import reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
-from teaport_brain.env import env_flag, env_num
+from teaport_brain.settings import setting
 from teaport_brain import agent_backend, audio_dump, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
@@ -148,7 +148,7 @@ from teaport_brain.sip_transport import (
 # stays a manual knob. If AEC is merely weak rather than absent, reach for a longer
 # aec_tail_ms in teaport-sip.conf before reaching for this.
 #
-# Both knobs go through env.py rather than a hand-rolled parse and a bare cast, because
+# Both knobs go through setting() rather than a hand-rolled parse and a bare cast, because
 # both are read at IMPORT time out of /etc/teaport/brain.env, which installer repairs
 # preserve verbatim:
 #
@@ -157,16 +157,16 @@ from teaport_brain.sip_transport import (
 #   documents, and one brain.env can decide, since an EnvironmentFile overrides the
 #   unit's own `Environment=SIP_HALF_DUPLEX=0` (systemd.exec) — left the gate ON:
 #   barge-in silently dead on the phone line, with not one journal line about it,
-#   since a private table also skips env_flag's "disabled" log. tools.py records the
+#   since a private table also skips setting()'s "disabled" log. tools.py records the
 #   identical bug for `TEAPORT_AGENT_FIRST=on`.
 #
 #   A bare float() on the tail turns one operator typo (`SIP_HALF_DUPLEX_TAIL_S=`, or
 #   `=0,8` from a comma-decimal locale) into an import-time ValueError: sip_server never
 #   starts, and the brain unit's Restart= (the old teaport-sip-brain unit's, back then)
 #   crash-loop it forever, with no way to clear it short of hand-editing the file —
-#   re-running the installer will not. env_num warns and falls back instead.
-HALF_DUPLEX = env_flag("SIP_HALF_DUPLEX", False)
-_HD_TAIL_S = env_num("SIP_HALF_DUPLEX_TAIL_S", "0.8", float)
+#   re-running the installer will not. setting() warns and falls back instead.
+HALF_DUPLEX = setting("SIP_HALF_DUPLEX")
+_HD_TAIL_S = setting("SIP_HALF_DUPLEX_TAIL_S")
 
 # Caller-path makeup gain (dB) applied to the audio the transcriber sees, to recover the
 # quiet speech a caller produces over the bot (~4 dB down within a call, and the segments
@@ -176,13 +176,13 @@ _HD_TAIL_S = env_num("SIP_HALF_DUPLEX_TAIL_S", "0.8", float)
 # which shares this brain.env but does its own client-side AEC -- never picks it up.
 # 0 = off. Measured 2026-09-11: +6 dB recovered the quiet barge-in "stop"s the engine was
 # dropping with no regressions on 205 clips. Default off pending a live call to confirm.
-STT_MAKEUP_DB = env_num("SIP_STT_MAKEUP_DB", "0", float)
+STT_MAKEUP_DB = setting("SIP_STT_MAKEUP_DB")
 
 # Ringing with a head start (see the header): how long after the call comes in the brain
 # answers it, at the earliest -- a couple of rings, time the pipeline is built in and the
 # greeting worded. 0: as soon as the pipeline is up. Only with the gateway's auto_answer
 # off: a gateway that answers by itself has answered already.
-ANSWER_AFTER_SECS = env_num("SIP_ANSWER_AFTER_SECS", "5", float)
+ANSWER_AFTER_SECS = setting("SIP_ANSWER_AFTER_SECS")
 # Past ANSWER_AFTER_SECS, how much longer the call may ring for the greeting to be ready;
 # then it is answered anyway and the greeting asked for the usual way.
 _ANSWER_GRACE_SECS = 3.0
@@ -234,7 +234,8 @@ class HalfDuplexInputGate(FrameProcessor):
 # started by gateway_server): it looks for the socket every _SERVE_POLL_S while there is
 # none -- telephony off, or the gateway (re)starting -- and reconnects whenever the gateway
 # goes away, which a gateway with teaport-sip#3's reconnect replay survives mid-call.
-# Empty: no SIP front-end at all.
+# Empty: no SIP front-end at all -- a value, so os.getenv and not setting(), which reads
+# an empty value as unset (the default socket).
 SIP_SOCKET = os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH)
 _SERVE_POLL_S = 2.0
 # What serve() is doing, for /health (and so `teaport sip status` / doctor): "off" (not
@@ -980,7 +981,7 @@ async def run_connection(sock, on_ready=None):
 def main():
     parser = argparse.ArgumentParser(
         description="teaport SIP front-end, standalone (test rigs; teaport-brain runs it itself)")
-    parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),
+    parser.add_argument("--socket", default=SIP_SOCKET,
                         help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()
     logger.info(agent_backend.startup_line())
