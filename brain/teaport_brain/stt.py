@@ -69,7 +69,12 @@ from pipecat.services.stt_service import WebsocketSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
-from teaport_brain.endpointing import SMARTTURN_STOP_SECS, SegmentDoneFrame, TurnVerdictFrame
+from teaport_brain.endpointing import (
+    SMARTTURN_STOP_SECS,
+    SegmentDoneFrame,
+    SegmentResetFrame,
+    TurnVerdictFrame,
+)
 from teaport_brain.env import env_flag, env_num
 
 # P99 latency from speech end to final transcript (broadcast to downstream turn
@@ -532,6 +537,9 @@ class TeaportSTTService(WebsocketSTTService):
         self._vad_stops = 0
         # Latches the one debug line if the backstop cannot arm at all (no TaskManager).
         self._stranded_unavailable = False
+        # The session is ending (stop/cancel): a disconnect then tells nothing downstream
+        # that a segment was dropped -- there is no next turn to mislead.
+        self._ending = False
         # _receive_task is created only on a SUCCESSFUL connect; initialize it here
         # so a failed/503 connect doesn't AttributeError during _disconnect teardown.
         self._receive_task = None
@@ -578,10 +586,12 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def stop(self, frame: EndFrame):
         await super().stop(frame)
+        self._ending = True
         await self._disconnect()
 
     async def cancel(self, frame: CancelFrame):
         await super().cancel(frame)
+        self._ending = True
         await self._disconnect()
 
     async def hold(self):
@@ -1184,6 +1194,15 @@ class TeaportSTTService(WebsocketSTTService):
                 await self._websocket.close()
         finally:
             self._websocket = None
+            # The open segment's words go with the session, and no final or wordless
+            # close will ever come for them: say so, or the stop strategy keeps the last
+            # interim as words that settled long ago (SegmentResetFrame). Not at the
+            # session's end, and never at the cost of the teardown below.
+            if not self._ending:
+                try:
+                    await self.push_frame(SegmentResetFrame())
+                except Exception as e:  # noqa: BLE001
+                    logger.debug(f"{self}: could not push the segment reset ({e})")
             self._interim_buffer = ""
             # Per-session, like the buffer beside it: a run of 4 empty finals before a
             # reconnect plus 1 after is not 5 finals of the same microphone.

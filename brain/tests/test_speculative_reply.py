@@ -76,6 +76,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     SMARTTURN_STOP_SECS,
     LateStartTurnStopStrategy,
     SegmentDoneFrame,
+    SegmentResetFrame,
     TurnVerdictFrame,
 )
 from teaport_brain.services import BoundedOpenAILLMService  # noqa: E402
@@ -958,7 +959,7 @@ class SttRig(Rig):
 
             async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
                 if isinstance(frame, (InterimTranscriptionFrame, TranscriptionFrame,
-                                      SegmentDoneFrame)):
+                                      SegmentDoneFrame, SegmentResetFrame)):
                     await controller.process_frame(frame)
 
             async def stop_processing_metrics(self):
@@ -1051,6 +1052,70 @@ async def test_with_the_real_stt_the_held_segment_speculates_on_its_settled_inte
         await rig.wait(SETTLE + 0.1)
         assert rig.speculator.calls == [("start", START, UTTERANCE)]
         assert rig.stt.whys == [], "asked while the segment is still held"
+
+
+async def test_a_reconnect_voids_the_interim_it_dropped():
+    """The engine session goes (a reconnect, a hold) with a segment open: its words go
+    with it, and no final or wordless close will come. The STT says so with a
+    SegmentResetFrame; without it the strategy kept the dead interim, and the next
+    INCOMPLETE stop found it "settled" long ago and asked at once on words the turn
+    will never carry."""
+    rig = SttRig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.both(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(400)
+        await rig.delta(" tell me a")
+        await asyncio.sleep(SETTLE + 0.02)                # "settled" well before the stop
+        rig.stt._websocket = None          # the recorder has no close handshake to run
+        await rig.stt._disconnect_websocket()             # the reconnect's first half
+        assert rig.strategy._interim == ""
+        await rig.both(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+        await rig.wait(SETTLE + 0.1)
+        assert rig.speculator.calls == [], "nothing to ask: the words are gone"
+        # The new session's words arm it as usual.
+        await rig.delta(" story")
+        await rig.wait(SETTLE + 0.1)
+        assert rig.speculator.calls == [("start", START, "story")]
+
+
+async def test_a_reset_cancels_a_speculation_asked_on_the_dropped_words():
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.speech()
+        await rig.wait(SETTLE + 0.1)
+        assert rig.speculator.live == UTTERANCE
+        await rig.controller.process_frame(SegmentResetFrame())
+        assert rig.speculator.calls[-1] == ("cancel", "segment-reset")
+
+
+async def test_the_session_end_pushes_no_reset():
+    rig = SttRig(Incomplete)
+    pushed = []
+    original = rig.stt.push_frame
+
+    async def record(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+        await original(frame, direction)
+
+    rig.stt.push_frame = record
+    rig.stt._ending = True                 # stop()/cancel() set it before disconnecting
+    rig.stt._websocket = None
+    await rig.stt._disconnect_websocket()
+    assert not any(isinstance(f, SegmentResetFrame) for f in pushed)
+
+
+async def test_a_turn_stop_forgets_the_interim():
+    """A final the follow-mute dropped (the session's last line) never clears the
+    interim; the turn's close does, so no later stop finds it settled."""
+    from pipecat.turns.user_stop import UserTurnStoppedParams
+
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.speech()
+        assert rig.strategy._interim == UTTERANCE
+        await rig.controller._trigger_user_turn_stop(
+            None, UserTurnStoppedParams(enable_user_speaking_frames=True))
+        assert not rig.controller._user_turn and rig.strategy._interim == ""
 
 
 # ---------------------------------------------------------------- the whole path

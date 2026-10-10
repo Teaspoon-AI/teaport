@@ -305,15 +305,28 @@ class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
     stop_n: int
 
 
+@dataclass
+class SegmentResetFrame(DataFrame, UninterruptibleFrame):
+    """The STT dropped its open segment without closing it -- the engine session went
+    (a reconnect, a hold) and the words streamed so far with it: no final and no
+    SegmentDoneFrame will ever come for them. Pushed DOWNSTREAM by the STT service for
+    the stop strategy, whose settled-interim trigger would otherwise keep the dead
+    segment's interim and, at the next INCOMPLETE stop, find it "settled" long ago and
+    speculate on words the turn will never carry. Data and uninterruptible for the
+    reasons SegmentDoneFrame is: it must arrive after the interims it voids, and a turn
+    start must not flush it. Dropped by SegmentDoneSink."""
+
+
 class SegmentDoneSink(FrameProcessor):
-    """Drops SegmentDoneFrames. Sits right after the user aggregator, whose stock
-    process_frame forwards every data frame it does not itself consume: the frame is
-    for the stop strategy (which the aggregator hands it to) and would otherwise ride
-    the queue of every processor down to the transport, one per wordless close."""
+    """Drops SegmentDoneFrames and SegmentResetFrames. Sits right after the user
+    aggregator, whose stock process_frame forwards every data frame it does not itself
+    consume: the frames are for the stop strategy (which the aggregator hands them to)
+    and would otherwise ride the queue of every processor down to the transport, one
+    per wordless close."""
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
-        if isinstance(frame, SegmentDoneFrame):
+        if isinstance(frame, (SegmentDoneFrame, SegmentResetFrame)):
             return
         await self.push_frame(frame, direction)
 
@@ -480,6 +493,8 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         elif isinstance(frame, SegmentDoneFrame):
             self._interim = ""
             await self._handle_segment_done(frame)
+        elif isinstance(frame, SegmentResetFrame):
+            await self._handle_segment_reset()
         try:
             result = await super().process_frame(frame)
             if isinstance(frame, InterimTranscriptionFrame):
@@ -573,6 +588,19 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             await self.speculator.cancel("superseded")
         if self._ceiling_running():
             await self._arm_settle(self.speculator.settle_secs)
+
+    async def _handle_segment_reset(self):
+        """The STT's open segment is gone without a close (SegmentResetFrame): its
+        interim is no one's words now. Forget it, stop its window, and drop a
+        speculation asked on it."""
+        if not self._interim:
+            return
+        self._interim = ""
+        await self._cancel_settle()
+        if self.speculator is not None:
+            live = self.speculator.text
+            if live is not None and live != self.speculator.candidate(""):
+                await self.speculator.cancel("segment-reset")
 
     async def _arm_settle(self, delay: float):
         await self._cancel_settle()
@@ -728,6 +756,11 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             logger.debug(f"{self}: turn closed under an INCOMPLETE verdict -- the ceiling "
                          "will not fire; closing the STT's held segment with the turn")
             await self._push_verdict(True, "turn-stopped")
+        # The turn's words are committed; an interim still held belongs to a segment the
+        # turn's close has closed (its final clears it in the ordinary order) or to one
+        # whose close never reached here -- a final the follow-mute dropped, say. The
+        # next segment's first interim brings its own words either way.
+        self._interim = ""
         await self._cancel_settle()
         await super().handle_user_turn_stopped()
 
