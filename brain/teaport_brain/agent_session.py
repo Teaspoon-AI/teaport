@@ -1117,9 +1117,14 @@ def build_agent_session(transport, *, voice: str | None = None,
             pending=memory_recall.pending_messages if memory_recall is not None else None)
         stop_strategy.speculator = speculator
         llm.speculator = speculator
+        # The engine's transcription report is asked for only when it will be used.
+        stt.transcription_progress = speculator.on_decode
+        settle = f"{speculator.settle_secs * 1000:.0f} ms"
         logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
-                    "once the words of a turn Smart Turn has not concluded on stop changing "
-                    f"for {speculator.settle_secs * 1000:.0f} ms")
+                    "once the words of a turn Smart Turn has not concluded on are complete "
+                    + ("-- by the engine's report where it gives one, else after they stop "
+                       f"changing for {settle}" if speculator.on_decode
+                       else f"-- after they stop changing for {settle}"))
     # Pauses playout the moment the caller starts talking over the bot, and resumes it
     # if no words follow (barge_pause.py). Only where the transport can pause without
     # losing audio: SIP. The Talk relay's client buffers what we send and can only

@@ -31,7 +31,17 @@
 # token takes 0.55-0.94 s, so a request opened on the settled interim takes ~0.5 s off
 # each of those turns. It also makes a longer SMARTTURN_STOP_SECS -- fewer callers cut
 # off mid-sentence -- cost nothing on the turns that fall through it. The stop strategy
-# owns the trigger (endpointing.LateStartTurnStopStrategy); SETTLE_SECS is the window.
+# owns the trigger (endpointing.LateStartTurnStopStrategy).
+#
+# When is the interim "settled"? First a timer said so (SETTLE_SECS): live 2026-10-10 it
+# took 0.58 s off the turns that waited out the ceiling (first audio 1.27 s after the VAD
+# stop against 1.85 s), but missed 29 times for 10 hits, 17 of the misses "superseded" --
+# the engine is still catching up on its delay window after the stop, its deltas pausing
+# 0.23-0.56 s between words, and no window both outlasts those pauses and keeps the head
+# start. Now the engine says so (ON_DECODE): with transcription.progress it reports how
+# far it has transcribed on the audio clock, the STT knows where on that clock the
+# caller's speech ended, and once the engine is past it the interim is the speech's whole
+# text. The timer stays for an engine without the report.
 #
 # The candidate user message is built here (candidate()) the way the user aggregator
 # will build it at the commit: its pending finals, plus the interim as the final that
@@ -106,6 +116,13 @@ ENABLED = env_flag("TEAPORT_SPECULATIVE_REPLY", False)
 # in the journal as "[SPEC] miss reason=superseded" lines, each a request opened on words
 # that then grew; that count is the number to size this from.
 SETTLE_SECS = max(0, env_num("TEAPORT_SPECULATE_SETTLE_MS", "160", int)) / 1000.0
+
+# Ask once the engine reports it has transcribed past the caller's end of speech
+# (teagram-engine's transcription.progress; stt.py places the speech end and pushes
+# endpointing.SpeechDecodedFrame), rather than once the interim has been unchanged for
+# SETTLE_SECS. An engine that does not offer the report gets the window either way; off,
+# every engine does -- the A/B switch, as TEAPORT_STT_SILENCE_HINT is for the hint.
+ON_DECODE = env_flag("TEAPORT_SPECULATE_ON_DECODE", True)
 
 
 class _Speculation:
@@ -234,8 +251,10 @@ class Speculator:
         self._llm = llm
         self._agg = aggregator
         self._controller = aggregator._user_turn_controller
-        # Read by the stop strategy, which owns the timer (SETTLE_SECS).
+        # Read by the stop strategy, which owns the trigger: the engine's report
+        # (ON_DECODE) where it is given, else the window (SETTLE_SECS).
         self.settle_secs = SETTLE_SECS
+        self.on_decode = ON_DECODE
         # HeardContextCorrector._reconcile, when wired: it rewrites the previous reply to
         # what was heard on the LLMContextFrame -- i.e. at the commit, AFTER a snapshot
         # taken under the ceiling. Live 2026-09-16, first call with the feature on: the one
@@ -292,7 +311,7 @@ class Speculator:
         """The user message the live speculation asked, or None."""
         return self._current.text if self._current is not None else None
 
-    async def start(self, text: str, why: str = "") -> bool:
+    async def start(self, text: str, why: str = "", trigger: str = "") -> bool:
         if not self._controller._user_turn:
             return False
         text = (text or "").strip()
@@ -319,7 +338,8 @@ class Speculator:
         spec = _Speculation(snapshot, ctx.tools, text)
         spec.task = self._spawn(spec.run(self._llm, request))
         self._current = spec
-        logger.info(f"[SPEC] start {text[:60]!r}{f' ({why})' if why else ''}")
+        logger.info(f"[SPEC] start {text[:60]!r}{f' ({why})' if why else ''}"
+                    f"{f' {trigger}' if trigger else ''}")
         return True
 
     async def cancel(self, reason: str):
