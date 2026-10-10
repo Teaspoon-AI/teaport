@@ -1469,7 +1469,14 @@ class TeaportSTTService(WebsocketSTTService):
             #
             # One line per run, not per final: an isolated empty final is ordinary (the VAD
             # fires on a cough or a door), and warning on each would bury the real case.
-            if not engine_text:
+            #
+            # Not while a wake gate is asleep (#116): the room mic's session is open on a
+            # quiet room, waiting for a wake word, and wordless finals are all it should
+            # hear. The run counts from the wake, so a muted mic in a conversation still
+            # says so.
+            if self.wake_gate is not None and self.wake_gate.asleep:
+                self._empty_finals = 0
+            elif not engine_text:
                 self._empty_finals += 1
                 if self._empty_finals == _EMPTY_FINAL_RUN:
                     logger.warning(
