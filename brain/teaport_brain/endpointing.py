@@ -8,7 +8,9 @@
 # keep_barge_in_reachable at the bottom, which is what stops an open user turn from
 # swallowing every barge-in there is.
 #
+import asyncio
 import os
+import time
 from dataclasses import dataclass
 
 from loguru import logger
@@ -18,6 +20,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     DataFrame,
+    InterimTranscriptionFrame,
     SystemFrame,
     UninterruptibleFrame,
 )
@@ -53,7 +56,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 # every turn -- so revisit this together with the analyzer, not alone.
 #
 # Half of what the floor was guarding is gone since #43, though: the STT's commit now
-# follows the VERDICT (TEAPORT_STT_COMMIT_ON, stt.py), so an INCOMPLETE answer at a
+# follows the VERDICT (stt.py's process_frame), so an INCOMPLETE answer at a
 # breath keeps the engine's segment open along with the pipecat turn, and the caller's
 # next words join the same decode instead of starting a context-free one. What the floor
 # still guards is the other half: a COMPLETE answer to an unfinished phrase, which
@@ -81,13 +84,14 @@ ENDPOINT_STOP_SECS = float(os.getenv("ENDPOINT_STOP_SECS", "0.5"))
 # this ceiling with the same text they had at the verdict -- the full second bought
 # nothing on those. Lowering it trades the two longest resumptions (0.82 and 0.92 s:
 # mid-sentence pauses of ~1.2 s, both genuine) against 0.3-0.5 s on each fallthrough;
-# that trade has not been made. With TEAPORT_SPECULATIVE_REPLY on (speculate.py) and
-# TEAPORT_STT_COMMIT_ON=vad-stop the LLM is asked on the final, under this wait, so a
-# fallthrough no longer pays the round trip after it -- that is what makes raising this
-# affordable. Under the default TEAPORT_STT_COMMIT_ON=verdict the STT holds its segment
-# open for this same wait (the resumed words then join it), so a fallthrough pays the
-# engine's commit AFTER it and there is no final to speculate on; see stt.py.
-# Tune via SMARTTURN_STOP_SECS.
+# that trade has not been made. Since #43 the STT holds its segment open for this same
+# wait (the resumed words then join it), so a fallthrough also pays the engine's commit
+# after it -- 0.1-0.2 s with the silence hint (stt.py): measured 2026-10-09, those turns
+# commit +1.08 s after the VAD stop against +0.41 s for a COMPLETE verdict. With
+# TEAPORT_SPECULATIVE_REPLY on (speculate.py) the LLM is asked on the settled interim
+# under this wait -- it had settled a median ~0.6 s before the commit on those turns --
+# so a fallthrough no longer pays the round trip after it, and that is what makes
+# raising this affordable. Tune via SMARTTURN_STOP_SECS.
 SMARTTURN_STOP_SECS = float(os.getenv("SMARTTURN_STOP_SECS", "1.0"))
 
 # Smart Turn v3 decides "user is done" when its end-of-turn probability clears this
@@ -258,7 +262,7 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
 class TurnVerdictFrame(SystemFrame):
     """Smart Turn's answer to a VAD stop, pushed UPSTREAM by the stop strategy so the
     STT service can close the engine-side segment on the VERDICT rather than on the
-    raw VAD stop (stt.py, TEAPORT_STT_COMMIT_ON).
+    raw VAD stop (stt.py's process_frame).
 
     One frame per verdict: at the VAD stop with the model's answer (`source`
     "verdict"); again when an INCOMPLETE answer falls through to the analyzer's
@@ -267,8 +271,9 @@ class TurnVerdictFrame(SystemFrame):
     keep_barge_in_reachable re-applying a refused stop, the aggregator's stop
     watchdog -- because the ceiling stops counting at the turn's end and its verdict
     would otherwise never come (`source` "turn-stopped", always complete). The STT
-    records `source` as the commit's reason on its segment line. The strategy pushes
-    these in either commit mode; in "vad-stop" mode the STT ignores them.
+    records `source` as the commit's reason on its segment line; one that answers no
+    held segment (the bot was speaking, the caller resumed first, the STT's no-verdict
+    fallback is committing at the stop) it ignores.
 
     A SystemFrame like the VAD frames it answers: it rides the input task ahead of the
     queued audio, so the commit it triggers is not held behind a burst of frames.
@@ -342,25 +347,41 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     silence ceiling (SMARTTURN_STOP_SECS) ends the turn as it always did.
 
     It is also where the speculative reply is triggered (speculate.py, off unless
-    TEAPORT_SPECULATIVE_REPLY is set): this strategy is the one place that sees a final
-    land AND knows whether the turn concluded on it. A final the stop did not fire on
-    while the caller is quiet -- the verdict was INCOMPLETE and the ceiling is running,
-    or no VAD stop has come and the fallback timer is waiting -- is text the LLM could
-    already be working on. A final the stop DID fire on is followed by the real request
-    within the same call, so nothing is speculated. The question is asked at two
-    moments, because the final and the VAD stop come in either order: at the final, when
-    the VAD stop preceded it; and at the VAD stop, when the engine's segmenter closed
-    the final first (it finalizes on shorter silences than the 0.5 s VAD floor, so this
-    is the common order on the appliance) -- the verdict is only known now, and an
-    INCOMPLETE one with a finalized transcript in hand is exactly the wait the
-    speculation exists for.
+    TEAPORT_SPECULATIVE_REPLY is set): this strategy is the one place that sees the
+    caller's words AND knows whether the turn concluded on them. The main trigger is the
+    SETTLED INTERIM: a VAD stop answered INCOMPLETE, the caller quiet, the ceiling
+    running -- and since #43 the STT holding its segment open through that wait, so no
+    final comes before the ceiling's commit. The engine's interim now equals the final it
+    is followed by (48 of 48 phone turns, 2026-10-09), so once it has stopped changing
+    for the speculator's settle window, it is text the LLM could already be working on:
+    a speculation is opened on the turn's pending finals plus that interim, built as the
+    aggregator will build the commit (Speculator.candidate). A changed interim cancels it
+    and re-arms the window; a VAD start cancels it; a COMPLETE verdict never arms it (the
+    commit is immediate and the final trails the last interim by ~0.01 s). The window is
+    armed at an interim that lands under the wait, and at the INCOMPLETE stop itself for
+    an interim already in hand, counted from that interim's arrival.
+
+    Finals still speculate where they land on a turn the stop did not fire on with the
+    caller quiet, because under the verdict hold three shapes still deliver one before
+    the commit: a VAD stop over the bot commits at once (the flush is the barge-in, so
+    its final lands under an INCOMPLETE verdict); the engine's segmenter closes a segment
+    on its own (it finalizes on shorter silences than the 0.5 s VAD floor, so its final
+    can land before the stop -- then the question is asked at the stop, the verdict only
+    being known there -- or under the hold after it); and a final with no VAD stop in
+    sight (pipecat's fallback timer). Each is the candidate with no interim in it, and a
+    final that confirms the interim a live speculation was asked on keeps that stream
+    (Speculator.start). A final the stop DID fire on is followed by the real request
+    within the same call, so nothing is speculated.
 
     One final is left alone: the one that OPENS the turn over the bot (the "Okay, stop."
     barge-in under the 2-word guard). The interruption it caused was broadcast in this
     same controller call and has not reached the pipeline, so neither the ledger's cut
     nor the assistant aggregator's commit of the cut reply is in the context yet; a
     snapshot taken now is the context minus the truncation the corrector will make at
-    the commit, i.e. a guaranteed ctx-changed miss and a billed request for nothing.
+    the commit, i.e. a guaranteed ctx-changed miss and a billed request for nothing. The
+    settled-interim trigger keeps the same rule as a timer can: it does not fire while
+    the bot is still speaking (the interruption has not reached the transport), and the
+    barge-in's own final, which the over-the-bot commit always brings, asks instead.
 
     It also reports every end-of-turn verdict UPSTREAM as a TurnVerdictFrame, for the
     STT service: this is the only object that sees the model's answer at the VAD stop
@@ -437,6 +458,13 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._stops = 0
         self._owed = None
         self._stamped = False
+        # The settled-interim trigger (see the class note): the latest interim's words
+        # since the STT last closed a segment -- its buffer resets at every close, final
+        # or wordless, so this does too -- when they last changed, and the settle
+        # window's timer.
+        self._interim = ""
+        self._interim_at = 0.0
+        self._settle_task = None
 
     async def trigger_user_turn_inference_triggered(self):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
@@ -450,9 +478,13 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot_speaking = False
         elif isinstance(frame, SegmentDoneFrame):
+            self._interim = ""
             await self._handle_segment_done(frame)
         try:
-            return await super().process_frame(frame)
+            result = await super().process_frame(frame)
+            if isinstance(frame, InterimTranscriptionFrame):
+                await self._handle_interim(frame)
+            return result
         finally:
             self._turn_opened_by_frame = False
 
@@ -517,13 +549,70 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             logger.debug(f"{self}: no speculation on the final that opened the turn over "
                          "the bot -- its interruption has not reached the context yet")
             return
-        await self.speculator.start(why)
+        # A finalized transcript in hand means no interim since (the stock strategy
+        # clears the flag on one): the candidate is the aggregation alone.
+        await self.speculator.start(self.speculator.candidate(self._interim), why)
+
+    def _ceiling_running(self) -> bool:
+        """A VAD stop answered INCOMPLETE, the caller quiet since: the analyzer's
+        silence ceiling is counting and the STT holds the segment for it."""
+        return self._vad_stopped and not self._vad_user_speaking and not self._turn_complete
+
+    async def _handle_interim(self, frame):
+        """The open segment's words, as the STT has them so far. A change cancels a
+        speculation asked on other words and, under the ceiling, re-arms the window."""
+        text = (frame.text or "").strip()
+        if text == self._interim:
+            return
+        self._interim = text
+        self._interim_at = time.monotonic()
+        if self.speculator is None:
+            return
+        live = self.speculator.text
+        if live is not None and live != self.speculator.candidate(text):
+            await self.speculator.cancel("superseded")
+        if self._ceiling_running():
+            await self._arm_settle(self.speculator.settle_secs)
+
+    async def _arm_settle(self, delay: float):
+        await self._cancel_settle()
+        self._settle_task = self.task_manager.create_task(
+            self._speculate_when_settled(delay), f"{self}::_speculate_when_settled")
+
+    async def _cancel_settle(self):
+        # Awaited: cancel_task waits for the task to finish, so a timer whose sleep has
+        # already ended cannot run its start() after the state it read has moved on.
+        task, self._settle_task = self._settle_task, None
+        if task is not None:
+            await self.task_manager.cancel_task(task)
+
+    async def _speculate_when_settled(self, delay: float):
+        try:
+            await asyncio.sleep(delay)
+        except asyncio.CancelledError:
+            return
+        self._settle_task = None
+        if not self._interim or not self._ceiling_running():
+            return
+        if self._bot_speaking:
+            # The over-the-bot shape (see the class note): the interruption has not
+            # reached the transport, so the cut reply is not in the context yet. The
+            # STT committed at that stop; its final is on the way and asks then.
+            logger.debug(f"{self}: interim settled with the bot still speaking -- "
+                         "leaving the speculation to the barge-in's final")
+            return
+        await self.speculator.start(self.speculator.candidate(self._interim),
+                                    "interim settled, verdict INCOMPLETE")
 
     async def _handle_transcription(self, frame):
         if frame.finalized:
             stop_n = getattr(frame, "stop_n", None)
             if stop_n is not None:
                 self._note_close(stop_n)
+            # The segment closed (the STT's buffer resets with it): the final carries
+            # its words now, and asks at once below if it is to ask at all.
+            self._interim = ""
+            await self._cancel_settle()
         before = self._inferences
         await super()._handle_transcription(frame)
         if frame.finalized:
@@ -558,6 +647,13 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # The final came first and the verdict has just been reached; if it was
         # INCOMPLETE the ceiling is now running on text the stop did not fire on.
         await self._maybe_speculate(before, "final before the VAD stop, verdict INCOMPLETE")
+        # Or the interim is what is in hand (the verdict hold: the final waits for the
+        # ceiling's commit). Its window counts from its own arrival: words that stopped
+        # changing before the stop are settled already.
+        if (self.speculator is not None and self._interim and self._inferences == before
+                and self._ceiling_running()):
+            settled = time.monotonic() - self._interim_at
+            await self._arm_settle(max(0.0, self.speculator.settle_secs - settled))
 
     async def _handle_input_audio(self, frame):
         before = self._inferences
@@ -578,6 +674,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
 
     async def _handle_vad_user_started_speaking(self, frame):
         await super()._handle_vad_user_started_speaking(frame)
+        await self._cancel_settle()
         if self.speculator is not None:
             # The caller resumed: whatever they add, the committed text will not be
             # what was asked. Stop the stream now rather than at the mismatch.
@@ -587,12 +684,14 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # The session is over: a speculation still streaming would keep reading (and
         # billing) a completion nothing can adopt. This is the only teardown that
         # awaits the HTTP close, since the loop goes with the session.
+        await self._cancel_settle()
         if self.speculator is not None:
             await self.speculator.close()
         await super().cleanup()
 
     async def handle_user_turn_started(self):
         self._turn_opened_by_frame = True
+        await self._cancel_settle()
         if self.speculator is not None:
             await self.speculator.cancel("new-turn")
         if self._vad_stopped and not self._vad_user_speaking:
@@ -629,6 +728,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             logger.debug(f"{self}: turn closed under an INCOMPLETE verdict -- the ceiling "
                          "will not fire; closing the STT's held segment with the turn")
             await self._push_verdict(True, "turn-stopped")
+        await self._cancel_settle()
         await super().handle_user_turn_stopped()
 
 
