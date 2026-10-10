@@ -30,7 +30,6 @@
 #   * the stranded backstop stands down while a segment is held, and stands back up
 #     when the caller resumes;
 #   * the commit's cancel of a live hold is awaited, and comes before the bookkeeping;
-#   * vad-stop mode is the old behaviour, verdict frames and all;
 #   * and, over the REAL controller and the REAL LateStartTurnStopStrategy, the frames
 #     the STT relies on are actually produced: the model's at the VAD stop, the
 #     ceiling's when an INCOMPLETE one times out, and nothing on a COMPLETE one --
@@ -112,10 +111,6 @@ class Recorder(TeaportSTTService):
     """The real service with the wire recorded instead of sent; frames captured."""
 
     def __init__(self, **kwargs):
-        # Explicit, not the module default: that is read from TEAPORT_STT_COMMIT_ON at
-        # import, and a box set to vad-stop is one of the places this suite runs.
-        # test_vad_stop_mode_is_the_old_behaviour passes its own.
-        kwargs.setdefault("commit_on", "verdict")
         super().__init__(url="ws://127.0.0.1:1/none", **kwargs)
         self._websocket = WireRecorder()
         self.pushed = []
@@ -334,17 +329,6 @@ async def test_a_resume_puts_the_backstop_back_on_a_held_segments_words():
     assert s._stranded_task is None
 
 
-async def test_vad_stop_mode_is_the_old_behaviour():
-    s = Recorder(commit_on="vad-stop")
-    await delta(s, "hello")
-    await vad_stop(s)
-    assert s.commit_whys() == ["vad-stop"]
-    assert s._commit_pending is False and s._hold_task is None
-    await verdict(s, True)
-    await verdict(s, False)
-    assert s.commit_whys() == ["vad-stop"], "verdict frames must be inert in vad-stop mode"
-
-
 async def test_a_disconnect_clears_the_hold():
     s = Recorder()
     await delta(s, "hello")
@@ -353,14 +337,6 @@ async def test_a_disconnect_clears_the_hold():
     s._websocket = None                   # the recorder has no close handshake to run
     await s._disconnect_websocket()
     assert s._commit_pending is False and s._hold_task is None
-
-
-def test_an_unknown_mode_is_refused():
-    try:
-        Recorder(commit_on="sometimes")
-    except ValueError:
-        return
-    raise AssertionError("an unknown commit_on must not construct a service that never commits")
 
 
 async def test_a_verdict_that_arrives_after_the_expiry_is_late_not_lost():
@@ -705,7 +681,7 @@ class WiredSTT(TeaportSTTService):
     reasons noted."""
 
     def __init__(self):
-        super().__init__(url="ws://127.0.0.1:1/none", commit_on="verdict")
+        super().__init__(url="ws://127.0.0.1:1/none")
         self.whys = []
 
     async def _send_commit(self, final=True, why="other"):
