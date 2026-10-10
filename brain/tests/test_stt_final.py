@@ -192,6 +192,35 @@ async def test_a_run_of_wordless_finals_is_reported_once():
         logger.remove(sink)
 
 
+async def test_an_asleep_room_does_not_report_its_quiet():
+    """#116: a room mic waiting for a wake word hears a quiet room, so wordless finals
+    are all it should get, and the box's journal filled with the warning above. Asleep,
+    the run is not counted; awake, a muted mic in a conversation still says so -- and
+    the empty finals heard asleep do not count toward it."""
+    from loguru import logger
+
+    class Gate:
+        asleep = True
+
+    stt = Recorder()
+    stt.wake_gate = Gate()
+    warnings = []
+    sink = logger.add(lambda m: warnings.append(m), level="WARNING")
+    try:
+        for _ in range(_EMPTY_FINAL_RUN * 3):
+            await stt._handle_message({"type": "transcription.done", "text": ""})
+        assert warnings == [], [str(w) for w in warnings]
+
+        stt.wake_gate.asleep = False
+        for _ in range(_EMPTY_FINAL_RUN - 1):
+            await stt._handle_message({"type": "transcription.done", "text": ""})
+        assert warnings == [], "the asleep finals must not count toward the run"
+        await stt._handle_message({"type": "transcription.done", "text": ""})
+        assert len(warnings) == 1 and "no speech" in warnings[0]
+    finally:
+        logger.remove(sink)
+
+
 def main():
     aio = [v for k, v in sorted(globals().items())
            if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
