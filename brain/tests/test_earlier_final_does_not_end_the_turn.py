@@ -454,7 +454,7 @@ class Recorder(TeaportSTTService):
     """The real service with the wire recorded instead of sent; frames captured."""
 
     def __init__(self):
-        super().__init__(url="ws://127.0.0.1:1/none", commit_on="verdict")
+        super().__init__(url="ws://127.0.0.1:1/none")
         self._websocket = WireRecorder()
         self.pushed = []
 

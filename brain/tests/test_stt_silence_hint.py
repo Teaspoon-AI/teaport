@@ -16,8 +16,8 @@
 #     silence window plus what went out after it -- never a wall-clock difference,
 #     and the margin comes off it;
 #   * every commit that answers a VAD stop carries it: the verdict's, the ceiling's,
-#     the flush over the bot's voice, the raw stop in vad-stop mode, the hold's
-#     expiry, the tail after the engine's own close;
+#     the flush over the bot's voice, the raw stop under the no-verdict fallback, the
+#     hold's expiry, the tail after the engine's own close;
 #   * a stop whose count cannot be trusted carries nothing: the caller resumed (the
 #     next stop places its own), or audio passed the service UNSENT since the caller
 #     last started speaking (the one way the speech end could be placed earlier than
@@ -74,7 +74,6 @@ class Recorder(TeaportSTTService):
     process_audio_frame (the gap watch) is exercised, not bypassed."""
 
     def __init__(self, **kwargs):
-        kwargs.setdefault("commit_on", "verdict")
         super().__init__(url="ws://127.0.0.1:1/none", **kwargs)
         self._websocket = WireRecorder()
         self.pushed = []
@@ -168,12 +167,19 @@ async def test_every_commit_that_answers_a_stop_carries_it():
     assert hints(s) == [500 - MARGIN], "the barge-in flush must claim the stop's window"
     await s.process_frame(BotStoppedSpeakingFrame(), UP)
 
-    # The raw stop, in vad-stop mode.
-    s = Recorder(commit_on="vad-stop")
+    # The raw stop, under the session-wide fallback: nothing answered the first hold,
+    # so the next stop commits at once.
+    s = Recorder()
+    await vad_start(s)
+    await audio(s, 400)
+    await vad_stop(s, stop_secs=0.5)
+    await asyncio.sleep(CEILING + stt_mod._HOLD_SLACK_SECS + 0.05)
+    assert s.commit_on == "vad-stop", "no verdict all session: the fallback is in force"
     await vad_start(s)
     await audio(s, 400)
     await vad_stop(s, stop_secs=0.2)
-    assert hints(s) == [200 - MARGIN]
+    assert hints(s) == [500 - MARGIN, 200 - MARGIN], \
+        "the expiry claims its stop's window, then the raw stop its own"
 
     # The hold's expiry: nothing answered the stop, the silence is still silence.
     s = Recorder()

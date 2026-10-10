@@ -92,11 +92,12 @@ run UserTurn.tla ut_asWritten_nomissedbargein         "(expected: FAILS NoMissed
 run UserTurn.tla ut_retryOnQuiet_nostrandedturn "(expected: holds)"
 run UserTurn.tla ut_retryOnQuiet_nomissedbargein      "(expected: holds)"
 echo
-echo "UserTurn.tla — the speculative reply (SPEC): asked under the ceiling, adopted at the commit"
+echo "UserTurn.tla — the speculative reply (SPEC): asked on the settled interim under the ceiling, adopted at the commit"
 run UserTurn.tla ut_spec_byContext_nostrandedturn  "(expected: holds)"
 run UserTurn.tla ut_spec_byContext_nomissedbargein "(expected: holds)"
 run UserTurn.tla ut_spec_byContext_nostalereply    "(expected: holds)"
-run UserTurn.tla ut_spec_byText_nostalereply       "(expected: FAILS NoStaleReply)"
+run UserTurn.tla ut_spec_byText_nostalereply       "(expected: FAILS NoStaleReply — a context written after the snapshot)"
+run UserTurn.tla ut_spec_byHistory_nostalereply    "(expected: FAILS NoStaleReply — a final that differs from the interim)"
 echo
 echo "UserTurn.tla — the reply hold (HOLD, #85): a reply started over a caller who resumed"
 run UserTurn.tla ut_hold_none_nostalereply           "(expected: FAILS NoStaleReply — before #85: the reply plays over the resumed caller)"
@@ -133,10 +134,10 @@ run PlayoutPause.tla pp_single_anchor "(expected: FAILS AnchorMovesByStop — on
 run PlayoutPause.tla pp_set_anchor    "(expected: holds — one freeze per source: frozen while stopped, the anchor moved by exactly the stop)"
 echo
 echo "SttCommit.tla — when the STT closes the engine's transcript segment (#43)"
-run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the commit at the raw VAD stop)"
-run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did right)"
+run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the commit at the raw VAD stop: before #43, and the no-verdict fallback's cost)"
+run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did right, and what the fallback keeps)"
 run SttCommit.tla sc_verdict_silentStop "(expected: FAILS NoOrphanedHold — the first cut: nothing reported when the turn is closed under the ceiling)"
-run SttCommit.tla sc_verdict       "(expected: holds — TEAPORT_STT_COMMIT_ON=verdict, a lost verdict, a missed stop and a turn closed under the ceiling)"
+run SttCommit.tla sc_verdict       "(expected: holds — as shipped: a lost verdict, a missed stop and a turn closed under the ceiling)"
 echo
 echo "SttCommit.tla — the final (PR #49): whose utterance a late final is, and when the turn may end on it"
 run SttCommit.tla sc_final_clock         "(expected: FAILS NoStaleTurnEnd — the first cut: finals placed by clock)"

@@ -717,39 +717,49 @@ and 1.8.1's rolling volume window holds `speaking` ~0.35 s longer past the end o
 
 ### The speculative reply (`SPEC`)
 
-`speculate.py` (`TEAPORT_SPECULATIVE_REPLY`, off by default) asks the LLM the moment a
-final transcript lands on a turn the stop strategy has *not* concluded on — Smart Turn said
+`speculate.py` (`TEAPORT_SPECULATIVE_REPLY`, off by default) asks the LLM once the caller's
+words have settled on a turn the stop strategy has *not* concluded on — Smart Turn said
 INCOMPLETE and `SMARTTURN_STOP_SECS` is running — against a snapshot of the context with
-that text as the user message. At the commit the LLM service is offered that stream instead
-of opening its own. It is a second machine riding on this one, so it is modelled here rather
-than on its own: `SpecStart` reads `userTurn` and writes nothing the controller's guards
-read, and whether that leaves barge-in intact is a question for TLC, not a promise.
+those words as the user message. At the commit the LLM service is offered that stream
+instead of opening its own. It is a second machine riding on this one, so it is modelled
+here rather than on its own: `SpecStart` reads `userTurn` and writes nothing the
+controller's guards read, and whether that leaves barge-in intact is a question for TLC,
+not a promise.
 
-The premise — a final in hand while the ceiling runs — is only true with
-`TEAPORT_STT_COMMIT_ON=vad-stop`, the STT committing at the VAD stop before the verdict
-exists. Under the default `verdict` (#43, `SttCommit.tla` below) the STT holds its segment
-open through that same wait, no final lands before the commit, and `SpecStart` is
-unreachable in the code. The rows below are unaffected: `SpecStart` is a free action, so
-the model checks a superset of what either configuration can do, and the properties are
-safety properties. They describe `vad-stop`; under `verdict` the speculation is inert and
-`agent_session` says so at startup.
+The words are the settled **interim**. The trigger was a final until 2026-10-09, which only
+worked with the STT committing at the VAD stop before the verdict existed: under the
+verdict commit (#43, `SttCommit.tla` below) the segment is held open through the ceiling,
+no final lands before the commit, and the speculation was inert. The engine's interim now
+equals its final (48 of 48 phone turns measured that day), so the strategy asks on the
+interim once it has stopped changing for `TEAPORT_SPECULATE_SETTLE_MS`, and the vad-stop
+setting is gone. `SpecStart` is a free action either way — it fires wherever the strategy
+could — so the model checks a superset of both triggers.
 
 The property it adds is `NoStaleReply`: a speculated reply is spoken only for the context it
-was asked against. The text being right is not enough. Between the snapshot and the commit
-the context can have other writers, and `CtxChange` is any of them. In the code as it
-stands there is no known one: `HeardContextCorrector._reconcile` on the very
-`LLMContextFrame` that carries the commit was the first miss seen live, so `speculate.py`
-now runs it *before* the snapshot; `MemoryRecall`'s note is injected before the aggregator
-sees the final, so it is always inside the snapshot; the consult follow-up posts only with
-the turn free, and a speculation only exists inside an open turn. The model keeps
-`CtxChange` as a free action because nothing in the machine prevents the next writer, and
-the whole-context check is what turns one into a miss instead of a wrong reply.
+was asked against. Two things can move between the snapshot and the commit, and the model
+has an action for each:
+
+- **The context before the user message** (`CtxChange`, any writer at all).
+  `HeardContextCorrector._reconcile` on the very `LLMContextFrame` that carries the commit
+  was the first miss seen live, so `speculate.py` now runs it *before* the snapshot.
+  `MemoryRecall`'s note is injected on the final, before the aggregator sees it — inside a
+  snapshot taken on a final, but *after* one taken on the interim: with the interim
+  trigger it is a real writer in the window, and a turn with a memory hit is a miss. The
+  consult follow-up posts only with the turn free, and a speculation only exists inside an
+  open turn. `CtxChange` stays free because nothing in the machine prevents the next writer.
+- **The user message itself** (`Retext`). The commit carries the *final's* words, which the
+  snapshot did not have: the decoder's lagging tail arriving after the settle window, or a
+  final whose re-decode differs from the last interim by a comma or a capital — landing in
+  the same step that commits, before the strategy could cancel on it. `Retext` leaves the
+  speculation live; the strategy cancelling on a changed interim it does see in time is a
+  refinement the rows do not rely on.
 
 | SPEC | promotes when | `NoStrandedTurn` | `NoMissedBargeIn` | `NoStaleReply` |
 |---|---|---|---|---|
 | `off` | — (the four MODE rows above; 436 states since the reply hold added its variables, 47 before) | | | |
-| `byText` | the committed text is what was asked | ✓ | ✓ | ✗ |
-| `byContext` | the whole context equals the snapshot — `Speculator.take` | ✓ | ✓ | ✓ |
+| `byText` | the committed words are what was asked | ✓ | ✓ | ✗ (`CtxChange`) |
+| `byHistory` | the context before the user message is what was asked | | | ✗ (`Retext`) |
+| `byContext` | the whole context, user message included, equals the snapshot — `Speculator.take` | ✓ | ✓ | ✓ |
 
 The `byText` counterexample is seven states and needs no barge-in at all:
 
@@ -757,25 +767,36 @@ The `byText` counterexample is seven states and needs no barge-in at all:
 VadStart     the user speaks
 Interject    the turn opens
 VadStop      they pause; Smart Turn says INCOMPLETE, the ceiling starts
-SpecStart    the final lands, the stop does not fire: the LLM is asked now
-CtxChange    something writes the context (the corrector's truncation of the cut
-             reply, before it was moved ahead of the snapshot)
-Inference    the ceiling ends the turn; the text is what was asked, so byText
+SpecStart    the interim settles, the stop does not fire: the LLM is asked now
+CtxChange    something writes the context (MemoryRecall's note on the final; the
+             corrector's truncation of the cut reply, before it was moved ahead of the
+             snapshot)
+Inference    the ceiling ends the turn; the words are what was asked, so byText
              adopts the stream -- a reply the model produced against a context
              the commit no longer has
 ```
 
-`byContext` closes it: `specGen = gen` is the equality check on `context.messages`.
-The adoption rule is one definition (`Adopt`) shared by both designs, and `staleReply`
-is raised whenever an adopted reply's generation is not the commit's — so the byContext
-row is a real check of the equality rule, not exempt by fiat (drop the `specGen = gen`
-conjunct from `Adopt` and the row falls). The two barge-in rows hold with it on because nothing in
-`SpecStart`/`CtxChange` touches `userTurn`, `userSpeaking` or `stopInFlight`. A resume
-(`VadStart`) and a new turn (`Interject`) both close the speculation, which is why `byText`
-never fails on the *text*: every live speculation's text is the committed one, and the
-whole difference between the two designs is what else the context holds. The commit is
-`Inference` or `ForceStop` — the watchdog's stop pushes the aggregation too, so it reaches
-`Speculator.take` and decides the speculation the same way.
+The `byHistory` counterexample is the same seven with `Retext` for `CtxChange`: the final
+the ceiling's commit brings is "Tell me a story." where the interim was "tell me a story",
+nothing else wrote the context, and the reply to the interim's words is adopted for the
+final's. It is the hazard the interim snapshot adds over the final one, and the reason
+`Speculator.take` compares the user message too, forgiving nothing but whitespace at its
+ends (the interim carries the engine's leading space; a difference there is not a
+difference in the words).
+
+`byContext` closes both: `specGen = gen` and `specWords` together are the equality check on
+`context.messages`. The adoption rule is one definition (`Adopt`) shared by all three
+designs, and `staleReply` is raised whenever an adopted reply's generation is not the
+commit's or its words moved. For `byContext` that is unreachable by construction —
+`Adopt` requires exactly the two equalities `Stale` negates — so the row checks the rule
+as written, not `Speculator.take`'s equality test (the tests pin that); what the model
+does show is that each conjunct is needed: drop one and the row falls, as `byText` and
+`byHistory` do. The two barge-in
+rows hold with it on because nothing in `SpecStart`/`CtxChange`/`Retext` touches
+`userTurn`, `userSpeaking` or `stopInFlight`. A resume (`VadStart`) and a new turn
+(`Interject`) both close the speculation. The commit is `Inference` or `ForceStop` — the
+watchdog's stop pushes the aggregation too, so it reaches `Speculator.take` and decides the
+speculation the same way.
 
 ### The reply hold (`HOLD`, #85)
 
@@ -978,15 +999,16 @@ modelling it.
 - **Durations are out of scope**, as everywhere here. That the watchdog is 5 s and the
   retry fires within `ENDPOINT_STOP_SECS` is the reason one is unreachable and the other
   is not; the model only distinguishes reachable from absorbing. The same goes for the
-  speculation: whether it is worth anything is the ceiling against the final's latency
-  and the LLM's (measured in `speculate.py`), and the model says nothing about that —
+  speculation: whether it is worth anything is the ceiling against when the interim
+  settles and the LLM's latency (measured in `speculate.py`), and the model says nothing
+  about that —
   only that a stale reply is never spoken and barge-in is as it was.
-- **`CtxChange` is a free action** bounded by `MaxCtxWrites`, not a list of writers.
-  The model does not say which component a miss will come from — `[SPEC] miss
-  reason=ctx-changed` in the journal does — and it does not know that the code's known
-  writers all land outside the window today (see above); it checks the design that
-  stays right when one does not.
-- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 1314 with it on, 212 for `HOLD = "gate"` with words in time and 450 with the timers as they are, 994 and 2.7k for the shipped pause with each; a few seconds at most.
+- **`CtxChange` is a free action** bounded by `MaxCtxWrites`, not a list of writers, and
+  `Retext` fires at most once per speculation. The model does not say which component a
+  miss will come from — `[SPEC] miss reason=ctx-changed` or `reason=text-differs` in the
+  journal does — nor how often the interim and the final disagree; it checks the design
+  that stays right whenever they do.
+- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 2622 with it on (1314 before `Retext`), 212 for `HOLD = "gate"` with words in time and 450 with the timers as they are, 994 and 2.7k for the shipped pause with each; a few seconds at most.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 
@@ -1093,9 +1115,9 @@ watchdog); what the strategy does then is `TURNSTOP`.
 
 | MODE | | `NoSplitOnIncomplete` | `NoStrandedSegment` | `NoDoubleAnswer` | `NoStaleClose` | `NoOrphanedHold` |
 |---|---|---|---|---|---|---|
-| `vadStop` | commit at the raw VAD stop (until #43) | ✗ | ✓ | ✓ | ✓ | — |
+| `vadStop` | commit at the raw VAD stop (until #43; since, only the no-verdict fallback) | ✗ | ✓ | ✓ | ✓ | — |
 | `verdict`, `TURNSTOP = "silent"` | the first cut: nothing reported when the turn is closed under the ceiling | ✓ | ✓ | ✓ | ✓ | ✗ |
-| `verdict`, `TURNSTOP = "verdict"` | `TEAPORT_STT_COMMIT_ON=verdict`, as shipped | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `verdict`, `TURNSTOP = "verdict"` | the verdict commit, as shipped | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 `NoSplitOnIncomplete` is the bug, and `vadStop` fails it in five steps with nothing exotic:
 
@@ -1265,10 +1287,13 @@ the shape the fix is for, at a small fraction of its old rate.
 - **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
   once (the flush is the barge-in, teagram-engine#7); it is the `vadStop` design applied to
   one stop, and the verdict that follows is ignored exactly as a stale one is.
-- **The session-wide fallback is not modelled.** A session in which no verdict ever reaches
-  the STT falls back to `vad-stop` at its first expiry, and back onto the verdict at the
-  first verdict that arrives; that is a policy on repeated faults, and `MaxLost = 1` never
-  reaches it.
+- **The session-wide fallback is not modelled as a switch.** A session in which no verdict
+  ever reaches the STT falls back to committing at the raw VAD stop at its first expiry,
+  and back onto the verdict at the first verdict that arrives; that is a policy on
+  repeated faults, and `MaxLost = 1` never reaches it. What it runs while in force is the
+  `vadStop` design, whose two rows stay for that reason now that it is no longer an
+  operator setting (`TEAPORT_STT_COMMIT_ON`, retired 2026-10-09): `sc_vadStop_sound` is
+  what the fallback keeps, `sc_vadStop_split` what it costs.
 - **The engine's own close is an environment action with no timing.** It can fire whenever
   the segment holds speech — the breath inside a sentence, the trailing silence the VAD
   has not confirmed yet — and its done lands whenever. That is a superset of the engine
