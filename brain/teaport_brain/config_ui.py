@@ -38,7 +38,6 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
-import math
 import os
 import re
 from datetime import datetime, timezone
@@ -48,7 +47,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from loguru import logger
 
-from teaport_brain import config_schema
+from teaport_brain import config_schema, settings
 
 ETC_DIR = "/etc/teaport"
 # The root-owned copy of config_apply.py the sudoers line trusts (install.sh
@@ -68,8 +67,6 @@ STORE_FILES = {"engine_env": "engine.env", "brain_env": "brain.env", "bridge_env
 # has made them, and never creates one — saving a row would quietly opt the box in.
 OPT_IN_STORES = ("local_audio_env",)
 SIP_CONF = "~/.config/teaport/teaport-sip.conf"
-# What env_flag accepts (pipecat's env_truthy table), for validating flag rows.
-FLAG_WORDS = {"0", "1", "true", "false", "yes", "no", "on", "off", "y", "n"}
 
 # Units that run only when asked and exit by themselves: not "services" the page shows
 # as up or down (an idle one is inactive by design, not broken).
@@ -222,55 +219,23 @@ def _is_hidden(name: str, rows: dict[str, dict]) -> bool:
 def _validate(row: dict, value: str) -> str | None:
     """None when `value` is an acceptable text for this row; else the reason.
     Check with the normalized text (see _normalize) — a json row is compacted
-    to one line first, everything else must already be one."""
+    to one line first, everything else must already be one. What a value IS comes
+    from settings.parse, the same judgement the brain reads it with."""
     t = row["type"]
     if value == "":
         # An explicit empty is only meaningful where the code distinguishes it.
         if t == "enum" and "" in row.get("values", []):
             return None
         return "empty — clear the field to unset it instead"
-    if t == "json":
-        try:
-            if not isinstance(json.loads(value), dict):
-                return "must be a JSON object"
-        except ValueError as e:
-            return f"not valid JSON: {e}"
-        return None
     # An env-file value is one line. quote() does not escape newlines, and a
     # value that spans lines would be refused by config_apply after validation
     # had already passed — a 500 with no field named instead of this 400.
-    if "\n" in value or "\r" in value:
+    if t != "json" and ("\n" in value or "\r" in value):
         return "must be a single line"
-    if t == "int":
-        if not re.fullmatch(r"[+-]?\d+", value):
-            return "must be a whole number"
-        n = int(value)
-    elif t == "float":
-        try:
-            n = float(value)
-        except ValueError:
-            return "must be a number"
-        if not math.isfinite(n):
-            return "must be a finite number"
-    elif t == "enum":
-        return None if value in row["values"] else f"must be one of {', '.join(repr(v) for v in row['values'])}"
-    elif t == "flag":
-        ok = row.get("accepts") or FLAG_WORDS
-        return None if value.lower() in ok else f"must be one of {', '.join(sorted(ok))}"
-    elif t == "url":
-        return None if re.fullmatch(r"https?://\S+", value) else "must start with http:// or https://"
-    elif t == "ws_url":
-        return None if re.fullmatch(r"wss?://\S+", value) else "must start with ws:// or wss://"
-    elif t == "snowflake":
-        return None if value.isdigit() else "must be a Discord id (digits only)"
-    else:
-        return None
-    lo, hi = row.get("min"), row.get("max")
-    if lo is not None and n < lo:
-        return f"must be at least {lo}"
-    if hi is not None and n > hi:
-        return f"must be at most {hi}"
-    return None
+    parsed, problem = settings.parse(row, value)
+    if problem is None and t in ("int", "float"):
+        problem = settings.out_of_bounds(row, parsed)
+    return problem
 
 
 def _normalize(row: dict, value: str) -> str:
