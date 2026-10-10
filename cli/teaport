@@ -90,15 +90,16 @@ cmd_status() {
 # install.sh builds every venv with `uv sync --locked` and records what it held
 # (teaport-build.json); this diffs the venv against that record. Drift is a hand
 # `pip install` into the venv, and it is the failure that used to accumulate unseen for
-# weeks: CI tests the lock, the box runs something else. A venv with no record predates
-# the uv installer (pip-built) and has never had the lock applied at all.
+# weeks: CI tests the lock, the box runs something else. A venv with no record cannot be
+# checked: a pip venv from before the uv installer, a uv one built before the records
+# existed, or a hand build. Which, the venv cannot say, so the warning does not guess.
 # Uses doctor's ok/warnc (dynamically scoped from cmd_doctor).
 brain_lock_check() {
   local venv="$PREFIX/venv" rec out
   rec="$venv/teaport-build.json"
   [ -x "$venv/bin/python" ] || return 0
   if [ ! -f "$rec" ]; then
-    warnc "brain venv has no build record, so brain/uv.lock was never applied to it (a pre-uv pip venv, or a hand build) — rebuild it: install.sh --only brain"
+    warnc "brain venv has no build record, so it cannot be checked against brain/uv.lock (built before build records existed, or by hand) — rebuild it to get one: install.sh --only brain"
     return 0
   fi
   # -I (isolated) so the venv's python imports its own teaport_brain — not one from a
