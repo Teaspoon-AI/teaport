@@ -1740,7 +1740,7 @@ accepts = ["1"]
 read = "startup"
 tier = "diag"
 help = "Trace every frame the transcript ledger sees."
-note = "Parsed as == \"1\", not as a flag word: true/yes/on are silently off. Write 1."
+note = "Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1."
 source = "transcript_ledger.py:88"
 
 [[settings]]

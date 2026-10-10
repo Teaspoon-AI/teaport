@@ -19,28 +19,13 @@
 # gate and injector) which stays wired and never fires because no tool triggers it,
 # and the OpenClaw plugin, which simply has nothing to connect to. One code path.
 #
-import os
-
-from loguru import logger
+from teaport_brain.settings import setting
 
 OPENCLAW = "openclaw"
 NONE = "none"
-MODES = (OPENCLAW, NONE)
 
 
-def _read() -> str:
-    raw = (os.getenv("TEAPORT_AGENT") or "").strip().lower()
-    if not raw:
-        return OPENCLAW
-    if raw in MODES:
-        return raw
-    # Read at import time from a hand-edited file: fall back, never raise (see settings.py).
-    logger.warning(f"TEAPORT_AGENT={raw!r} is not one of {'|'.join(MODES)}; "
-                   f"using {OPENCLAW}")
-    return OPENCLAW
-
-
-AGENT = _read()
+AGENT = setting("TEAPORT_AGENT")
 # True when the gateway tools, memory recall and the workspace persona are available.
 HAS_AGENT = AGENT == OPENCLAW
 

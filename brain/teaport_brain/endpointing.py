@@ -9,7 +9,6 @@
 # swallowing every barge-in there is.
 #
 import asyncio
-import os
 import time
 from dataclasses import dataclass
 
@@ -183,44 +182,25 @@ class TurnSettings:
     interrupt_min_words: int = INTERRUPT_MIN_WORDS
 
 
-def _override(raw: str | None, name: str, shared, cast):
-    raw = (raw or "").strip()
-    if not raw:
-        return shared
-    try:
-        return cast(raw)
-    except ValueError:
-        logger.warning(f"{name}={raw!r} is not a number; using the shared value {shared}")
-        return shared
-
-
 def turn_settings(front_end: str | None) -> TurnSettings:
     """The turn-taking knobs for a session of `front_end` ("sip" or "talk"): its own
     SIP_/TALK_ override where set, else the shared value."""
+    shared = TurnSettings()
     if front_end == "sip":
-        raw = {"ENDPOINT_STOP_SECS": os.getenv("SIP_ENDPOINT_STOP_SECS"),
-               "SMARTTURN_STOP_SECS": os.getenv("SIP_SMARTTURN_STOP_SECS"),
-               "SMARTTURN_COMPLETE_THRESHOLD": os.getenv("SIP_SMARTTURN_COMPLETE_THRESHOLD"),
-               "INTERRUPT_MIN_WORDS": os.getenv("SIP_INTERRUPT_MIN_WORDS")}
-    elif front_end == "talk":
-        raw = {"ENDPOINT_STOP_SECS": os.getenv("TALK_ENDPOINT_STOP_SECS"),
-               "SMARTTURN_STOP_SECS": os.getenv("TALK_SMARTTURN_STOP_SECS"),
-               "SMARTTURN_COMPLETE_THRESHOLD": os.getenv("TALK_SMARTTURN_COMPLETE_THRESHOLD"),
-               "INTERRUPT_MIN_WORDS": os.getenv("TALK_INTERRUPT_MIN_WORDS")}
-    else:
-        return TurnSettings()
-    p = front_end.upper() + "_"
-    return TurnSettings(
-        endpoint_stop_secs=_override(raw["ENDPOINT_STOP_SECS"], p + "ENDPOINT_STOP_SECS",
-                                     ENDPOINT_STOP_SECS, float),
-        smartturn_stop_secs=_override(raw["SMARTTURN_STOP_SECS"], p + "SMARTTURN_STOP_SECS",
-                                      SMARTTURN_STOP_SECS, float),
-        smartturn_complete_threshold=_override(
-            raw["SMARTTURN_COMPLETE_THRESHOLD"], p + "SMARTTURN_COMPLETE_THRESHOLD",
-            SMARTTURN_COMPLETE_THRESHOLD, float),
-        interrupt_min_words=_override(raw["INTERRUPT_MIN_WORDS"], p + "INTERRUPT_MIN_WORDS",
-                                      INTERRUPT_MIN_WORDS, int),
-    )
+        return TurnSettings(
+            endpoint_stop_secs=setting("SIP_ENDPOINT_STOP_SECS", default=shared.endpoint_stop_secs),
+            smartturn_stop_secs=setting("SIP_SMARTTURN_STOP_SECS", default=shared.smartturn_stop_secs),
+            smartturn_complete_threshold=setting("SIP_SMARTTURN_COMPLETE_THRESHOLD",
+                                                 default=shared.smartturn_complete_threshold),
+            interrupt_min_words=setting("SIP_INTERRUPT_MIN_WORDS", default=shared.interrupt_min_words))
+    if front_end == "talk":
+        return TurnSettings(
+            endpoint_stop_secs=setting("TALK_ENDPOINT_STOP_SECS", default=shared.endpoint_stop_secs),
+            smartturn_stop_secs=setting("TALK_SMARTTURN_STOP_SECS", default=shared.smartturn_stop_secs),
+            smartturn_complete_threshold=setting("TALK_SMARTTURN_COMPLETE_THRESHOLD",
+                                                 default=shared.smartturn_complete_threshold),
+            interrupt_min_words=setting("TALK_INTERRUPT_MIN_WORDS", default=shared.interrupt_min_words))
+    return shared
 
 
 class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):

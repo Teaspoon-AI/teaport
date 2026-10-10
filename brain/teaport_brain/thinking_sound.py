@@ -48,10 +48,8 @@ _CHUNK_MS = 40
 _GRACE_S = setting("TEAPORT_THINKING_GRACE_S")   # silence before the bed starts
 _GAIN = setting("TEAPORT_THINKING_GAIN")         # 1.0 = the synthesized peak
 _MAX_S = setting("TEAPORT_THINKING_MAX_S")        # hard cap (> ask_openclaw timeout)
-_WAV = os.getenv(
-    "TEAPORT_THINKING_WAV",
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "typing.wav"),
-)
+_WAV = setting("TEAPORT_THINKING_WAV",
+               default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "typing.wav"))
 # Only genuinely-long tool calls get a thinking bed; the fast tools resolve before
 # the grace period even elapses, so a bed there would just be a blip.
 _TRIGGER = {"ask_openclaw"}

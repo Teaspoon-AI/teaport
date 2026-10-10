@@ -20,7 +20,9 @@
 #   `source`d brain.env and stripped the quotes).
 #
 #   An EMPTY value means "not set". `TEAPORT_LLM_TEXT_GUARD=` is a plausible hand-edit,
-#   and it must not switch a safety guard off.
+#   and it must not switch a safety guard off. The one exception is an enum that lists
+#   "" among its values (`LLM_REASONING_EFFORT=""` sends no effort at all): there the
+#   schema says empty is a value, and the config UI writes it as one.
 #
 #   A flag has ONE truth table — pipecat's env_truthy, which this process already uses
 #   for its PIPECAT_* flags — and a flag that is off says so in the journal. Three
@@ -109,6 +111,11 @@ def _text(text: str, row: dict):
     return text, None
 
 
+def _path(text: str, row: dict):
+    # systemd's EnvironmentFile does not expand "~", and neither does a file read.
+    return os.path.expanduser(text), None
+
+
 PARSERS = {
     "int": _int,
     "float": _float,
@@ -119,8 +126,8 @@ PARSERS = {
     "ws_url": _matching(r"wss?://\S+", "must start with ws:// or wss://"),
     "snowflake": _matching(r"\d+", "must be a Discord id (digits only)"),
     "string": _text,
-    "path": _text,
-    "dir": _text,
+    "path": _path,
+    "dir": _path,
     "secret": _text,
 }
 
@@ -168,12 +175,17 @@ def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
 
     Unset or empty -> the row's default, or `default` for the few rows whose default
     is computed in code. A value that does not parse warns and falls back the same
-    way: these are read at import, and an exception would crash-loop the service."""
+    way: these are read at import, and an exception would crash-loop the service.
+    Values are stripped, except a secret's: it is compared byte for byte elsewhere,
+    and a passphrase may end in a space."""
     row = ROWS[name]
     fallback = default_of(row) if default is _SCHEMA_DEFAULT else default
-    raw = (env.get(name) or "").strip()
-    if not raw:
+    given = env.get(name)
+    if not (given or "").strip():
+        if given is not None and "" in row.get("values", ()):
+            return ""  # set, and empty is one of the enum's values
         return fallback
+    raw = given if row["type"] == "secret" else given.strip()
     value, problem = parse(row, raw)
     if problem is not None:
         hint = (" If it came from a wrapper that `source`d the env file, the quotes were "

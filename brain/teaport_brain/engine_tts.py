@@ -16,7 +16,6 @@
 
 import asyncio
 import math
-import os
 import time
 from contextlib import aclosing
 from typing import AsyncGenerator
@@ -49,8 +48,8 @@ _SAMPLE_RATE = 24000  # the engine outputs 24 kHz
 # Engine text-in stream endpoint + per-request recv timeout. The engine synthesizes a clause
 # in ~0.2-0.5s (RTF ~0.23); 20s covers a stuck engine without hanging a reply. The stream URL
 # derives from the engine ws base (ENGINE_TTS_URL, box-configured) unless set explicitly.
-_ENGINE_WS = os.getenv("ENGINE_TTS_URL", "ws://127.0.0.1:8000/v1/tts").rsplit("/v1/", 1)[0]
-_STREAM_URL = os.getenv("ENGINE_TTS_STREAM_URL", _ENGINE_WS + "/v1/audio/speech/stream")
+_ENGINE_WS = setting("ENGINE_TTS_URL").rsplit("/v1/", 1)[0]
+_STREAM_URL = setting("ENGINE_TTS_STREAM_URL", default=_ENGINE_WS + "/v1/audio/speech/stream")
 _STREAM_TIMEOUT = setting("TTS_REMOTE_TIMEOUT")
 
 # The engine caps this endpoint at OMNI_MAX_SESSIONS (2) and holds a slot until it finishes
@@ -189,7 +188,7 @@ def _parse_lead_s(raw: str):
 # overlaps STT; an interrupted reply discarded ~3-5 s of synthesis instead of
 # ~15-45 s. Hence off by default: it saves GPU work, not latency, on this hardware.
 _PACING = setting("TTS_PACING")
-_LEAD_S = _parse_lead_s(os.getenv("TTS_LEAD_S"))
+_LEAD_S = _parse_lead_s(setting("TTS_LEAD_S"))
 _LEAD_AUTO_FLOOR_S = 1.5
 _LEAD_AUTO_SYNTH_MULT = 2.0
 _PACE_MAX_WAIT_S = 30.0

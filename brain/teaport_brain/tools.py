@@ -79,7 +79,7 @@ if AGENT_FIRST and not HAS_AGENT:
     AGENT_FIRST = False
 
 # The engine's serve log (decode ms/step lives here). Override per host.
-ENGINE_LOG = os.getenv("ENGINE_LOG", os.path.expanduser("~/teaport-engine.log"))
+ENGINE_LOG = setting("ENGINE_LOG")
 
 HOST_STATUS = FunctionSchema(
     name="get_host_status",

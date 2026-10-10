@@ -20,7 +20,6 @@
 # recover the undelivered content from authoritative data rather than memory.
 #
 
-import os
 
 from loguru import logger
 
@@ -28,8 +27,9 @@ from pipecat.frames.frames import Frame, LLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
+from teaport_brain.settings import setting
 
-HEARD_MODE = os.getenv("HEARD_MODE", "truncate")  # truncate | note
+HEARD_MODE = setting("HEARD_MODE")  # truncate | note
 
 
 def _msg_text(m) -> str:

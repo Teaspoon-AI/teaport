@@ -245,7 +245,7 @@ In `/etc/teaport/brain.env`. All off by default; log-only.
 |---|---|---|
 | `TEAPORT_ENDPOINT_DEBUG` | **off** | VAD state transitions, Smart Turn verdicts and the turn-commit / first-audio timing bubbles in the journal. |
 | `TEAPORT_ENDPOINT_DIST_EVERY` | **500** frames (≥ 1) | The per-frame confidence census interval (500 frames ≈ 16 s). |
-| `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Parsed as == "1", not as a flag word: true/yes/on are silently off. Write 1. |
+| `LEDGER_TRACE` | **off** | Trace every frame the transcript ledger sees. Only 1 turns it on: true/yes/on are not flag words here, and read as off (with a warning). Write 1. |
 | `TEAPORT_TRACE` | **off** | Keep the [CAP] caption-pipeline and [WTS] word-timestamp traces in the journal. |
 | `TEAPORT_AUDIO_DUMP` | — | A directory; every phone call and Talk session writes the caller PCM the brain received plus a sidecar of bot-playout offsets (Talk sessions as caller-talk-<UTC time>). Empty = off. |
 | `TEAPORT_AUDIO_DUMP_MAX_SECS` | **600** s (≥ 1) | Caps the recording. |

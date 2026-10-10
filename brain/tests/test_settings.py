@@ -113,6 +113,26 @@ def test_bounds_are_a_separate_question():
     assert setting("VAD_CONFIDENCE", env={"VAD_CONFIDENCE": "1.5"}) == 1.5
 
 
+def test_an_enum_whose_values_include_empty_reads_a_set_empty_value_as_itself():
+    # LLM_REASONING_EFFORT="" means "send no effort", and the config UI writes it.
+    assert setting("LLM_REASONING_EFFORT", env={"LLM_REASONING_EFFORT": ""}) == ""
+    assert setting("LLM_REASONING_EFFORT", env={}) == "low"
+    # Empty is still "not set" for an enum without "" among its values.
+    assert setting("HEARD_MODE", env={"HEARD_MODE": ""}) == "truncate"
+
+
+def test_paths_expand_the_home_directory():
+    home = os.path.expanduser("~")
+    assert setting("TEAPORT_PERSONA_FILE", env={}) == os.path.join(home, ".config/teaport/persona.md")
+    assert setting("ENGINE_LOG", env={"ENGINE_LOG": "~/x.log"}) == os.path.join(home, "x.log")
+
+
+def test_a_secret_is_taken_verbatim_but_blank_is_unset():
+    assert setting("WIFI_SETUP_PASSWORD", env={"WIFI_SETUP_PASSWORD": " two words "}) == " two words "
+    assert setting("GATEWAY_TOKEN", env={"GATEWAY_TOKEN": "   "}) == ""
+    assert setting("LLM_API_KEY", env={}) is None
+
+
 def main():
     fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:

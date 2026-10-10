@@ -31,6 +31,7 @@
 import os
 
 from teaport_brain.agent_backend import HAS_AGENT
+from teaport_brain.settings import setting
 
 # --- identity (OpenClaw owns this at runtime; this is only the offline fallback).
 FALLBACK_PERSONA = (
@@ -240,9 +241,7 @@ def tools_paragraph(tools) -> str:
 
 # Shared source of truth for identity. The OpenClaw text agent should read the same
 # file (e.g. symlinked from its workspace AGENTS.md) so both surfaces are one agent.
-PERSONA_FILE = os.getenv(
-    "TEAPORT_PERSONA_FILE", os.path.expanduser("~/.config/teaport/persona.md")
-)
+PERSONA_FILE = setting("TEAPORT_PERSONA_FILE")
 
 
 # --- OpenClaw workspace context. Read the same files the OpenClaw text agent gets
@@ -253,14 +252,8 @@ PERSONA_FILE = os.getenv(
 # surface and the two would fight. (Note: IDENTITY.md is agent-writable by design —
 # the agent updates its own identity in conversation — so whatever lands there is
 # injected here too; that's the intended shared-identity behavior per the user.)
-WORKSPACE_DIR = os.getenv(
-    "OPENCLAW_WORKSPACE", os.path.expanduser("~/.openclaw/workspace")
-)
-WORKSPACE_FILES = [
-    f.strip() for f in os.getenv(
-        "TEAPORT_WORKSPACE_FILES", "SOUL.md,IDENTITY.md,USER.md,MEMORY.md").split(",")
-    if f.strip()
-]
+WORKSPACE_DIR = setting("OPENCLAW_WORKSPACE")
+WORKSPACE_FILES = [f.strip() for f in setting("TEAPORT_WORKSPACE_FILES").split(",") if f.strip()]
 # One runaway file (e.g. a fast-growing MEMORY.md) must not eat the prompt budget —
 # prompt tokens are prefill latency on every turn.
 _WORKSPACE_FILE_CAP = 16 * 1024

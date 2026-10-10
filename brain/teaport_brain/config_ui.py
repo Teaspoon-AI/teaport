@@ -78,7 +78,7 @@ router = APIRouter()
 # ------------------------------------------------------------------ auth
 
 def _token() -> str:
-    return os.getenv("GATEWAY_TOKEN", "")
+    return settings.setting("GATEWAY_TOKEN")
 
 
 def token_matches(got: str | None, want: str | None) -> bool:

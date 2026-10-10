@@ -31,7 +31,6 @@ import argparse
 import asyncio
 import json
 import logging
-import os
 import re
 import sys
 import time
@@ -74,7 +73,7 @@ LISTEN_PORT = setting("GATEWAY_PORT")
 # this port gets a full agent session (memory read/write tools included) and can
 # replace a client's session by claiming its ?client= id, so we log a loud warning at
 # startup.
-GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
+GATEWAY_TOKEN = setting("GATEWAY_TOKEN")
 # The close codes a /talk session ends with when the session arbiter (session_arbiter.py)
 # decides; 4000-4999 is the private range. Every other end — the session's own end, the
 # idle timeout, a brain shutdown — closes with 1000 or drops the socket. Clients that

@@ -27,7 +27,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 from teaport_brain.settings import setting
 from teaport_brain.stt import TeaportSTTService
 
-TEAPORT_URL = os.getenv("TEAPORT_URL", "ws://127.0.0.1:8000/v1/realtime")
+TEAPORT_URL = setting("TEAPORT_URL")
 
 
 # gpt-oss reasoning effort. gpt-oss emits hundreds of hidden chain-of-thought
@@ -36,11 +36,8 @@ TEAPORT_URL = os.getenv("TEAPORT_URL", "ws://127.0.0.1:8000/v1/realtime")
 # `extra` kwarg; set LLM_REASONING_EFFORT="" for models that don't support it.
 # LLM_EXTRA_BODY (JSON) rides `extra_body` for provider-specific routing — e.g.
 # OpenRouter's {"provider": {"order": ["Groq"], "allow_fallbacks": true}}.
-_DEFAULT_EFFORT = "low"  # shared with _default_max_tokens — the two must not drift
-
-
 def _reasoning_effort() -> str:
-    return (os.getenv("LLM_REASONING_EFFORT", _DEFAULT_EFFORT) or "").strip().lower()
+    return setting("LLM_REASONING_EFFORT")
 
 
 def _llm_extra() -> dict:
@@ -62,7 +59,7 @@ def get_llm_api_key() -> str:
     # LLM_API_KEY wins; else the installer-written key file. A local
     # OpenAI-compatible server that ignores auth still needs a placeholder —
     # set LLM_API_KEY=sk-local (or write it to the file).
-    key = os.getenv("LLM_API_KEY")
+    key = setting("LLM_API_KEY")
     if key:
         return key
     path = os.path.expanduser("~/.config/teaport/llm_key")
@@ -501,7 +498,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
 # tool calls, no self-narration; llama-3.3-70b leaks "<function=...>" text —
 # avoid). Provider-specific routing rides LLM_EXTRA_BODY (see _llm_extra).
 def make_llm():
-    base_url = os.getenv("LLM_BASE_URL")
+    base_url = setting("LLM_BASE_URL")
     if not base_url:
         raise RuntimeError(
             "LLM_BASE_URL is not set — point it at your OpenAI-compatible endpoint "
@@ -512,7 +509,7 @@ def make_llm():
     # field then keeps its NOT_GIVEN default, the OpenAI SDK sentinel that drops it from
     # the request body entirely. Passing None would serialize an explicit null.
     _intercept_stdlib_logging()
-    settings = dict(model=os.getenv("LLM_MODEL", "gpt-oss-120b"), extra=_llm_extra())
+    settings = dict(model=setting("LLM_MODEL"), extra=_llm_extra())
     cap = _max_tokens()
     if cap is not None:
         # BOTH fields. pipecat sends max_tokens and max_completion_tokens side by side and
@@ -544,8 +541,8 @@ def make_tts(voice: str | None = None, language: str | None = None):
     from teaport_brain.engine_tts import EngineTTSService
 
     return EngineTTSService(
-        voice=voice or os.getenv("TTS_VOICE", "af_heart"),
-        language=language or os.getenv("TTS_LANGUAGE") or None,
+        voice=voice or setting("TTS_VOICE"),
+        language=language or setting("TTS_LANGUAGE"),
     )
 
 
@@ -561,10 +558,10 @@ def make_stt(makeup_db: float = 0.0) -> TeaportSTTService:
     front-end rather than read from env here, because both brains share brain.env and
     only the SIP one should apply it.
     """
-    streaming = os.getenv("TEAPORT_STT_BACKEND", "").strip().lower() == "streaming"
+    streaming = setting("TEAPORT_STT_BACKEND") == "streaming"
     if not streaming:
         return TeaportSTTService(url=TEAPORT_URL, makeup_db=makeup_db)
-    url = os.getenv("TEAPORT_STT_URL", "ws://127.0.0.1:8100/v1/realtime")
-    model = os.getenv("TEAPORT_STT_MODEL", "voxtral-realtime")
+    url = setting("TEAPORT_STT_URL")
+    model = setting("TEAPORT_STT_MODEL")
     logger.info(f"STT backend: streaming (vLLM) at {url}, model {model}")
     return TeaportSTTService(url=url, model=model, streaming_backend=True, makeup_db=makeup_db)

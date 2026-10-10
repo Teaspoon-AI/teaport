@@ -62,7 +62,7 @@ from teaport_brain.settings import setting
 
 # A directory, or empty for off. Deliberately not a bool: a capture needs somewhere to
 # go, and naming the destination is the same act as asking for one.
-DUMP_DIR = (os.getenv("TEAPORT_AUDIO_DUMP") or "").strip()
+DUMP_DIR = setting("TEAPORT_AUDIO_DUMP") or ""
 ENABLED = bool(DUMP_DIR)
 
 # Ceiling per call, in seconds of audio. A debug tap must not be the reason a box runs

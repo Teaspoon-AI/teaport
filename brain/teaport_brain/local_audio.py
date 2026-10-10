@@ -121,10 +121,10 @@ CHUNK_BYTES = CHUNK_FRAMES * DEVICE_CHANNELS * 2
 # is still buffered, and so still audible, after a barge-in "clear".
 LEAD_SECS = 0.12
 
-DEVICE = os.getenv("LOCAL_AUDIO_DEVICE", "hw:CARD=Array,DEV=0")
+DEVICE = setting("LOCAL_AUDIO_DEVICE")
 CAPTURE_CHANNEL = setting("LOCAL_AUDIO_CAPTURE_CHANNEL")
-GATEWAY_TOKEN = os.getenv("GATEWAY_TOKEN", "")
-URL = os.getenv("LOCAL_AUDIO_URL") or f"ws://127.0.0.1:{os.getenv('BRAIN_PORT', '7861')}/talk"
+GATEWAY_TOKEN = setting("GATEWAY_TOKEN")
+URL = setting("LOCAL_AUDIO_URL", default=f"ws://127.0.0.1:{setting('BRAIN_PORT')}/talk")
 # A card that will not open, or a first dial the brain refuses, is retried this long
 # after, doubling per consecutive failure up to the max; a good session resets it.
 RETRY_SECS = 3.0
@@ -150,7 +150,7 @@ WAKE_WINDOW_SECS = 0.4
 PREROLL_SECS = 1.0
 # Wake words: a comma-separated list of phrases, any language ("hey teaport, tea port").
 # Any value at all means wake mode; the brain matches them (wake_words.py).
-WAKE_WORDS = os.getenv("LOCAL_AUDIO_WAKE_WORDS", "")
+WAKE_WORDS = setting("LOCAL_AUDIO_WAKE_WORDS", default="")
 # Awake, the session ends once nobody (user or bot) has spoken for KEEPALIVE_SECS, or
 # AWAKE_MAX_SECS after the last wake word with the bot quiet: a TV the bot keeps
 # answering must not hold the room open for good. Saying a wake word again restarts it.
@@ -204,7 +204,7 @@ STATUS_EVERY_SECS = 0.3
 # Lines of aplay/arecord stderr kept for the error message when one of them dies.
 STDERR_TAIL_LINES = 20
 # The avatar's socket; its path lives in display.py (the screens use it too).
-FACE_SOCK = os.getenv("LOCAL_AUDIO_FACE_SOCK", display.SOCK)
+FACE_SOCK = setting("LOCAL_AUDIO_FACE_SOCK", default=display.SOCK)
 # Assistant finals that are not speech, told apart from reply text only by these
 # prefixes: TEAPORT_ENDPOINT_DEBUG's timing chips (endpoint_debug.py) and the tool-call
 # bubbles (tools._wrap). Kept here rather than imported: importing either pulls Pipecat

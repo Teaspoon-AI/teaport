@@ -96,7 +96,6 @@
 #
 # Disable with TEAPORT_LLM_TEXT_GUARD=0.
 #
-import os
 import re
 
 from loguru import logger
@@ -256,13 +255,13 @@ def unglue_sentences(text: str, before: str = "") -> str:
 # Mandarin and Hindi too, and a hardcoded English apology is wrong in those rooms.
 # The leading space is deliberate: this is appended to whatever healthy prefix was
 # already forwarded, and reads as its own sentence either way.
-# `or`, not getenv's default: TEAPORT_LLM_GUARD_RECOVERY= (key present, value empty) is a
+# `or`, not a schema default: TEAPORT_LLM_GUARD_RECOVERY= (key present, value empty) is a
 # plausible hand-edit for an operator who wants the guard quiet, and it used to push an
 # EMPTY LLMTextFrame — which both restored the total silence this line exists to prevent
-# and opened a phantom word-timestamp slot. settings.setting() already treats an empty value as "not
-# set" everywhere else; this was the one read in the module that did not.
+# and opened a phantom word-timestamp slot. setting() reads an empty value as "not set",
+# and the line itself lives here, next to the reasons for its wording.
 RECOVERY_TEXT = (
-    os.getenv("TEAPORT_LLM_GUARD_RECOVERY", "").strip()
+    setting("TEAPORT_LLM_GUARD_RECOVERY")
     or " Sorry, I lost my train of thought there. Could you say that again?"
 )
 

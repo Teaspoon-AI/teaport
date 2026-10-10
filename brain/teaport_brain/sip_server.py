@@ -234,7 +234,8 @@ class HalfDuplexInputGate(FrameProcessor):
 # started by gateway_server): it looks for the socket every _SERVE_POLL_S while there is
 # none -- telephony off, or the gateway (re)starting -- and reconnects whenever the gateway
 # goes away, which a gateway with teaport-sip#3's reconnect replay survives mid-call.
-# Empty: no SIP front-end at all.
+# Empty: no SIP front-end at all -- a value, so os.getenv and not setting(), which reads
+# an empty value as unset (the default socket).
 SIP_SOCKET = os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH)
 _SERVE_POLL_S = 2.0
 # What serve() is doing, for /health (and so `teaport sip status` / doctor): "off" (not
@@ -980,7 +981,7 @@ async def run_connection(sock, on_ready=None):
 def main():
     parser = argparse.ArgumentParser(
         description="teaport SIP front-end, standalone (test rigs; teaport-brain runs it itself)")
-    parser.add_argument("--socket", default=os.getenv("TEAPORT_SIP_SOCKET", DEFAULT_UDS_PATH),
+    parser.add_argument("--socket", default=SIP_SOCKET,
                         help="gateway UDS path (default: the live /run/teaport/teaport-sip.sock)")
     args = parser.parse_args()
     logger.info(agent_backend.startup_line())

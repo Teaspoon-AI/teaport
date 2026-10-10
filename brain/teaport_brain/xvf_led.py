@@ -75,7 +75,7 @@ def _color(raw: str, default: int = 0xFF0000) -> int:
     return value
 
 
-COLOR = _color(os.getenv("TEAPORT_BUSY_LAMP_COLOR") or "ff0000")
+COLOR = _color(setting("TEAPORT_BUSY_LAMP_COLOR"))
 
 
 # --- the transport: one vendor control transfer on the device's usbfs node ---

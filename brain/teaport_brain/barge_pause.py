@@ -91,7 +91,6 @@
 #     over them until their words arrive.
 #
 import asyncio
-import os
 import re
 import time
 from dataclasses import dataclass
@@ -137,9 +136,7 @@ MAX_SECS = setting("TEAPORT_BARGE_PAUSE_MAX_S")
 # ("shhh", "sshh") is "shh". "No" is deliberately not one: over the bot it is as often
 # an answer to what is being said as an objection to it.
 STOP_WORDS = tuple(
-    w.strip().lower() for w in os.getenv(
-        "TEAPORT_STOP_WORDS",
-        "stop,wait,hold on,hold,pause,enough,quiet,shh,shush").split(",")
+    w.strip().lower() for w in setting("TEAPORT_STOP_WORDS").split(",")
     if w.strip())
 
 # No pause when the reply is fully synthesized and at most this much of it is left.
