@@ -11,11 +11,16 @@
 #
 # Protocol (verified against the engine websocket implementation):
 #   endpoint:  ws://<host>:<port>/v1/realtime   (no auth)
-#   we send:   {"type":"session.update","model":"..."}                      (handshake; ack-only)
+#   we send:   {"type":"session.update","model":"...",
+#               "transcription_progress":true}   (handshake; the field opts in to the
+#                                                  progress report -- see SPEECH_DECODED)
 #              {"type":"input_audio_buffer.append","audio":"<base64 PCM16>"} (mono, 16 kHz)
 #              {"type":"input_audio_buffer.commit","final":true,
 #               "trailing_silence_ms":N}   (forces a final; N optional -- see STT_SILENCE_HINT)
-#   we recv:   {"type":"session.created","id":"sess_...","created":N}
+#   we recv:   {"type":"session.created","id":"sess_...","created":N,
+#               "capabilities":["transcription.progress"]}   (capabilities: engines with
+#                                                              the report)
+#              {"type":"transcription.progress","decoded_through_ms":N}   (opted in)
 #              {"type":"transcription.delta","delta":"<piece>","timestamp":1.2}  (append-only)
 #              {"type":"transcription.done","text":"<full utterance>","usage":{...},
 #               "reason":"commit"|"vad","credited_ms":N}
@@ -73,6 +78,8 @@ from teaport_brain.endpointing import (
     SMARTTURN_STOP_SECS,
     SegmentDoneFrame,
     SegmentResetFrame,
+    SpeechDecodedFrame,
+    SttProgressFrame,
     TurnVerdictFrame,
 )
 from teaport_brain.env import env_flag, env_num
@@ -229,6 +236,26 @@ _HOLD_SLACK_SECS = 1.0
 # before -- the A/B switch, not a fallback the service takes on its own.
 STT_SILENCE_HINT = env_flag("TEAPORT_STT_SILENCE_HINT", True)
 _HINT_MARGIN_MS = env_num("TEAPORT_STT_SILENCE_HINT_MARGIN_MS", "100", int)
+
+# SPEECH_DECODED: the engine's transcription report (teagram-engine's
+# transcription.progress), turned into SpeechDecodedFrame for the stop strategy.
+#
+# The speculative reply asks the LLM on the interim once it is the speech's whole text
+# (speculate.py). A timer cannot know that: after the VAD stop the engine is still
+# working through its 480 ms delay window, and its deltas pause 0.23-0.56 s between
+# words while it does (live 2026-10-10: 17 of 29 misses "superseded" with a 160 ms
+# window). An engine that offers the report (session.created's "capabilities") sends,
+# once opted in, how far its transcription has got -- decoded_through_ms, on the clock
+# of the audio this session has appended, the hint's clock: nothing more will come for
+# any sample before it. So the position goes onto the same clock as the speech end above
+# (_sent_samples at the connect, plus the report), and once it passes the speech end of
+# the VAD stop the segment is waiting on, the strategy is told, once per stop.
+#
+# The speech end is Silero's, placed no earlier than it was (the hint's argument), and
+# counts as transcribed only once the engine is the hint's margin past it, for the
+# hint's reason: the decoder's speech end can trail Silero's by an unvoiced tail. No
+# speech end placed (audio left unsent, see process_audio_frame), no frame: the stop
+# goes unspeculated rather than asked on a speech end that may be early.
 
 # The stranded-segment backstop. This service has exactly ONE path to a final: a commit
 # sent when VADUserStoppedSpeakingFrame arrives, or the verdict that answers it (see
@@ -517,6 +544,14 @@ class TeaportSTTService(WebsocketSTTService):
         self._sent_samples = 0
         self._speech_end = None
         self._hint_gap = False
+        # The engine's transcription report (SPEECH_DECODED): _sent_samples when the
+        # engine session opened (the report counts from there), how far it has
+        # transcribed on our clock (None: no report yet, or none offered), and the VAD
+        # stop the strategy was last told about, with when that stop came (for the line).
+        self._session_origin = 0
+        self._decoded_through = None
+        self._decoded_stop = 0
+        self._stop_at = 0.0
         # Commits sent and not yet answered, oldest first. The engine answers every
         # final commit with exactly one done, in order (voxtral_websocket.c: one
         # worker, commits are a counter it drains in turn), so the done at the head of
@@ -705,6 +740,9 @@ class TeaportSTTService(WebsocketSTTService):
             else:
                 rate = self.sample_rate or 16000
                 self._speech_end = self._sent_samples - round(frame.stop_secs * rate)
+            # The engine may be past it already (SPEECH_DECODED).
+            self._stop_at = time.monotonic()
+            await self._push_if_speech_decoded()
             # The VAD stop came, so the backstop's premise (that it never would) is
             # gone whichever path commits.
             await self._cancel_stranded_commit()
@@ -996,6 +1034,21 @@ class TeaportSTTService(WebsocketSTTService):
         self._seg_bytes = 0
         self._seg_interims = 0
 
+    async def _push_if_speech_decoded(self):
+        """Tell the stop strategy, once per VAD stop, that the engine has transcribed
+        past the speech end placed for it (SPEECH_DECODED)."""
+        if (self._decoded_through is None or self._speech_end is None
+                or self._decoded_stop == self._vad_stops):
+            return
+        rate = self.sample_rate or 16000
+        past = self._decoded_through - self._speech_end - _HINT_MARGIN_MS * rate // 1000
+        if past < 0:
+            return
+        self._decoded_stop = self._vad_stops
+        logger.debug(f"{self}: speech of VAD stop {self._vad_stops} transcribed through "
+                     f"{time.monotonic() - self._stop_at:.2f}s after the stop")
+        await self.push_frame(SpeechDecodedFrame(stop_n=self._vad_stops))
+
     def _silence_hint_ms(self) -> Optional[int]:
         """What the commit going out now may claim as trailing silence, in ms: the
         audio sent since Silero's speech end, less the margin -- or None when there is
@@ -1135,10 +1188,18 @@ class TeaportSTTService(WebsocketSTTService):
         for attempt in range(_CONNECT_ATTEMPTS):
             try:
                 self._websocket = await websockets.connect(self._url)
-                # Handshake: the engine is single-model and just acknowledges this.
-                await self._websocket.send(
-                    json.dumps({"type": "session.update", "model": self._model})
-                )
+                # The engine counts the audio of this session from here; so does its
+                # transcription report (SPEECH_DECODED). No await in between: run_stt
+                # sends nothing on the new socket before this is taken.
+                self._session_origin = self._sent_samples
+                self._decoded_through = None
+                # Handshake: the engine is single-model and just acknowledges this --
+                # and an engine with the report starts sending it (one without ignores
+                # the field). Not to the streaming backend: vLLM validates its session.
+                update = {"type": "session.update", "model": self._model}
+                if not self._streaming:
+                    update["transcription_progress"] = True
+                await self._websocket.send(json.dumps(update))
                 self._stt_available = True
                 if attempt:
                     logger.info(f"{self}: STT slot acquired on attempt {attempt + 1} "
@@ -1219,8 +1280,10 @@ class TeaportSTTService(WebsocketSTTService):
             self._commits.clear()
             self._commit_pending = False
             self._closed_unasked = False
-            # The stop this placed was on audio the new session will never hold.
+            # The stop this placed was on audio the new session will never hold, and the
+            # report was on the old session's clock.
             self._speech_end = None
+            self._decoded_through = None
             await self._cancel_hold_expiry()
 
     # ---- transcripts out ---------------------------------------------------
@@ -1426,8 +1489,24 @@ class TeaportSTTService(WebsocketSTTService):
                 await self.push_frame(SegmentDoneFrame(stop_n=stop_n))
             await self.stop_processing_metrics()
 
+        elif mtype == "transcription.progress":
+            # How far the engine has transcribed, on this session's audio clock
+            # (SPEECH_DECODED); whole ms, so the sample it names is never past it.
+            ms = msg.get("decoded_through_ms")
+            if isinstance(ms, (int, float)):
+                rate = self.sample_rate or 16000
+                self._decoded_through = self._session_origin + int(ms) * rate // 1000
+                await self._push_if_speech_decoded()
+
         elif mtype == "session.created":
-            logger.debug(f"{self}: session created {msg.get('id')}")
+            # Whether this engine session reports its transcription's progress: the
+            # stop strategy then asks the speculation on the report rather than on a
+            # timer. Said at every session's start, so a reconnect to an engine
+            # without it puts the strategy back on the timer.
+            reported = "transcription.progress" in (msg.get("capabilities") or [])
+            logger.debug(f"{self}: session created {msg.get('id')}"
+                         f"{' (transcription.progress)' if reported else ''}")
+            await self.push_frame(SttProgressFrame(reported=reported))
 
         elif mtype == "error":
             logger.error(

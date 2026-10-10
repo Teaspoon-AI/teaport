@@ -14,7 +14,11 @@
 # speculation on the SETTLED INTERIM of a turn under an INCOMPLETE verdict -- not before
 # the settle window, not on a COMPLETE verdict, not with the bot still speaking -- cancels
 # and re-arms when the interim changes, cancels when the caller resumes or a new turn
-# opens, and closes at the session's end. The final-triggered paths that the verdict
+# opens, and closes at the session's end. With the engine's transcription report
+# (SttProgressFrame) "settled" is the report's to say: asked on SpeechDecodedFrame for
+# the stop the INCOMPLETE verdict answered, never on the window while the deltas are
+# still catching up, whichever of the report and the verdict comes second; words after
+# the report fall back to the window, as does an engine without it. The final-triggered paths that the verdict
 # hold still produces (the over-the-bot flush, the engine's own close before the stop,
 # a final under the wait) keep asking, a final that confirms the interim keeps its
 # stream, and the final that opens the turn over the bot does not ask.
@@ -79,6 +83,8 @@ from teaport_brain.endpointing import (  # noqa: E402
     LateStartTurnStopStrategy,
     SegmentDoneFrame,
     SegmentResetFrame,
+    SpeechDecodedFrame,
+    SttProgressFrame,
     TurnVerdictFrame,
 )
 from teaport_brain.services import BoundedOpenAILLMService  # noqa: E402
@@ -580,6 +586,7 @@ class RecordingSpeculator:
         self.live = None
         self.finals = []
         self.settle_secs = SETTLE
+        self.on_decode = True
 
     def candidate(self, interim=""):
         return " ".join(self.finals + ([interim.strip()] if interim.strip() else []))
@@ -961,7 +968,8 @@ class SttRig(Rig):
 
             async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
                 if isinstance(frame, (InterimTranscriptionFrame, TranscriptionFrame,
-                                      SegmentDoneFrame, SegmentResetFrame)):
+                                      SegmentDoneFrame, SegmentResetFrame,
+                                      SttProgressFrame, SpeechDecodedFrame)):
                     await controller.process_frame(frame)
 
             async def stop_processing_metrics(self):
@@ -1124,6 +1132,169 @@ async def test_a_turn_stop_forgets_the_interim():
         await rig.controller._trigger_user_turn_stop(
             None, UserTurnStoppedParams(enable_user_speaking_frames=True))
         assert not rig.controller._user_turn and rig.strategy._interim == ""
+
+
+# -- with the engine's transcription report: asked when the speech is transcribed through
+
+DECODED = "interim transcribed through, verdict INCOMPLETE"
+
+
+async def test_with_the_report_the_interim_is_asked_on_when_its_speech_is_decoded():
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.controller.process_frame(SttProgressFrame(reported=True))
+        await rig.speech()
+        await rig.wait(SETTLE + 0.1)
+        assert rig.speculator.calls == [], "no window: the report says when"
+        await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
+        assert rig.speculator.calls == [("start", DECODED, UTTERANCE)]
+        await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
+        assert len(rig.speculator.calls) == 1, "the same report again asks nothing new"
+
+
+async def test_no_start_while_the_deltas_are_still_catching_up():
+    """After the VAD stop the engine is still working through its delay window, and its
+    deltas pause longer than any window between words: live 2026-10-10, 0.23-0.56 s.
+    Under the report nothing is asked in those pauses, and the speculation asked at the
+    report has every word."""
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.controller.process_frame(SttProgressFrame(reported=True))
+        await rig.speech(" what time")
+        for words in (" what time is", " what time is it", " what time is it in Paris"):
+            await rig.wait(SETTLE * 3)                  # well past the window
+            assert rig.speculator.calls == [], words
+            await rig.interim(words)
+        await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
+        assert rig.speculator.calls == [("start", DECODED, "what time is it in Paris")]
+
+
+async def test_a_report_for_another_stop_asks_nothing():
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.controller.process_frame(SttProgressFrame(reported=True))
+        await rig.speech()                                   # VAD stop 1
+        await rig.controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(200)
+        await rig.interim(" " + UTTERANCE + " please")
+        await rig.controller.process_frame(VADUserStoppedSpeakingFrame(
+            stop_secs=ENDPOINT_STOP_SECS))                   # VAD stop 2
+        await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
+        assert rig.speculator.calls == [], "stop 1's speech is not stop 2's"
+        await rig.controller.process_frame(SpeechDecodedFrame(stop_n=2))
+        assert rig.speculator.calls == [("start", DECODED, UTTERANCE + " please")]
+
+
+async def test_words_after_the_report_supersede_and_fall_back_to_the_window():
+    """The speech end is Silero's: noise after it can still decode to a word. Those are
+    words the report did not vouch for -- the speculation asked on the report is
+    superseded, and the window decides the new words."""
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.controller.process_frame(SttProgressFrame(reported=True))
+        await rig.speech()
+        await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
+        await rig.interim(" " + UTTERANCE + " uh")
+        assert rig.speculator.calls[-1] == ("cancel", "superseded")
+        await rig.wait(SETTLE + 0.1)
+        assert rig.speculator.calls[-1] == ("start", START, UTTERANCE + " uh")
+
+
+async def test_the_report_waits_for_the_verdict_and_asks_when_it_lands():
+    """The report and the verdict race: the model runs in an executor, and a data frame
+    is handled meanwhile. A report before the verdict is kept, and asked on only once
+    the verdict is known to be INCOMPLETE -- never on a COMPLETE one."""
+    import threading
+
+    gate = threading.Event()
+
+    class SlowIncomplete(BaseSmartTurn):
+        def _predict_endpoint(self, audio_array):
+            gate.wait(5)
+            return {"prediction": 0, "probability": 0.02}
+
+    class SlowComplete(BaseSmartTurn):
+        def _predict_endpoint(self, audio_array):
+            gate.wait(5)
+            return {"prediction": 1, "probability": 0.98}
+
+    for analyzer, asked in ((SlowIncomplete, [("start", DECODED, UTTERANCE)]),
+                            (SlowComplete, [])):
+        gate.clear()
+        rig = Rig(analyzer)
+        async with running_controller(rig.controller):
+            c = rig.controller
+            await c.process_frame(SttProgressFrame(reported=True))
+            await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+            await rig.audio(400)
+            await rig.interim(" " + UTTERANCE)
+            stop = asyncio.create_task(c.process_frame(
+                VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS)))
+            await asyncio.sleep(0.05)                       # the model is running
+            await c.process_frame(SpeechDecodedFrame(stop_n=1))
+            assert rig.speculator.calls == [], "the verdict is not known yet"
+            gate.set()
+            await stop
+            assert rig.speculator.calls == asked, analyzer.__name__
+
+
+async def test_without_the_report_the_window_decides():
+    """An engine session without the report, or the speculator set not to use it
+    (TEAPORT_SPECULATE_ON_DECODE off): the settle window, and a stray report is
+    ignored."""
+    for reported, on_decode in ((False, True), (True, False)):
+        rig = Rig(Incomplete)
+        rig.speculator.on_decode = on_decode
+        async with running_controller(rig.controller):
+            await rig.controller.process_frame(SttProgressFrame(reported=reported))
+            await rig.speech()
+            await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
+            assert rig.speculator.calls == [], (reported, on_decode)
+            await rig.wait(SETTLE + 0.1)
+            assert rig.speculator.calls == [("start", START, UTTERANCE)], (reported, on_decode)
+
+
+async def test_the_report_with_the_bot_speaking_leaves_it_to_the_barge_ins_final():
+    rig = Rig(Incomplete)
+    async with running_controller(rig.controller):
+        await rig.controller.process_frame(SttProgressFrame(reported=True))
+        await rig.controller.process_frame(BotStartedSpeakingFrame())
+        await rig.speech()
+        await rig.controller.process_frame(SpeechDecodedFrame(stop_n=1))
+        assert rig.speculator.calls == []
+
+
+async def test_with_the_real_stt_the_held_segment_speculates_when_the_engine_is_through():
+    """The whole chain on the STT's clock: the session offers the report, the caller's
+    last words decode after the VAD stop with pauses longer than any window, and the
+    speculation is asked once -- when the engine's report passes the speech end the STT
+    placed for the stop, with every word in."""
+    rig = SttRig(Incomplete)
+    stt = rig.stt
+    async with running_controller(rig.controller):
+        await stt._handle_message({"type": "session.created", "id": "s", "created": 1,
+                                   "capabilities": ["transcription.progress"]})
+        await rig.both(VADUserStartedSpeakingFrame(start_secs=0.2))
+        stt._sent_samples += 16000 * 2                       # 2 s of audio on the wire
+        await rig.audio(400)
+        await rig.delta(" tell me")
+        await rig.both(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+        assert stt._commit_pending, "held for the ceiling"
+        end_ms = 2000 - int(ENDPOINT_STOP_SECS * 1000)       # where the speech ended
+        await stt._handle_message({"type": "transcription.progress",
+                                   "decoded_through_ms": end_ms - 400})
+        await rig.wait(SETTLE * 3)
+        await rig.delta(" a")
+        await rig.wait(SETTLE * 3)
+        await rig.delta(" story")
+        await stt._handle_message({"type": "transcription.progress",
+                                   "decoded_through_ms": end_ms})
+        await rig.wait(SETTLE * 2)
+        assert rig.speculator.calls == [], "within the margin of the speech end: not yet"
+        await stt._handle_message({"type": "transcription.progress",
+                                   "decoded_through_ms": end_ms + 200})
+        assert rig.speculator.calls == [("start", DECODED, UTTERANCE)]
+        assert stt.whys == [], "asked while the segment is still held"
 
 
 # ---------------------------------------------------------------- the whole path
