@@ -44,6 +44,8 @@ from loguru import logger  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    CancelFrame,
+    EndFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
     LLMContextFrame,
@@ -1089,19 +1091,25 @@ async def test_a_reset_cancels_a_speculation_asked_on_the_dropped_words():
 
 
 async def test_the_session_end_pushes_no_reset():
-    rig = SttRig(Incomplete)
-    pushed = []
-    original = rig.stt.push_frame
+    """The session's end drops the open segment too, but there is no next turn to
+    mislead: neither the real stop(EndFrame) nor cancel(CancelFrame) pushes a reset.
+    (pipecat's own stop()/cancel() disconnect, so the flag must be up before them.)"""
+    for end in (EndFrame(), CancelFrame()):
+        rig = SttRig(Incomplete)
+        pushed = []
 
-    async def record(frame, direction=FrameDirection.DOWNSTREAM):
-        pushed.append(frame)
-        await original(frame, direction)
+        async def record(frame, direction=FrameDirection.DOWNSTREAM):
+            pushed.append(frame)
 
-    rig.stt.push_frame = record
-    rig.stt._ending = True                 # stop()/cancel() set it before disconnecting
-    rig.stt._websocket = None
-    await rig.stt._disconnect_websocket()
-    assert not any(isinstance(f, SegmentResetFrame) for f in pushed)
+        rig.stt.push_frame = record
+        rig.stt._websocket = None          # the recorder has no close handshake to run
+        await rig.delta(" tell me a")
+        if isinstance(end, EndFrame):
+            await rig.stt.stop(end)
+        else:
+            await rig.stt.cancel(end)
+        assert not any(isinstance(f, SegmentResetFrame) for f in pushed), \
+            (type(end).__name__, pushed)
 
 
 async def test_a_turn_stop_forgets_the_interim():

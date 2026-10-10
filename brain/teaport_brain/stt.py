@@ -588,13 +588,15 @@ class TeaportSTTService(WebsocketSTTService):
         await self._connect()
 
     async def stop(self, frame: EndFrame):
-        await super().stop(frame)
+        # Before super(): pipecat's WebsocketSTTService.stop() disconnects on its own,
+        # and that disconnect must already know the session is ending (_ending).
         self._ending = True
+        await super().stop(frame)
         await self._disconnect()
 
     async def cancel(self, frame: CancelFrame):
+        self._ending = True   # before super(), for the same reason as stop()
         await super().cancel(frame)
-        self._ending = True
         await self._disconnect()
 
     async def hold(self):
