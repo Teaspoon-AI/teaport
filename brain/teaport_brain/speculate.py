@@ -50,17 +50,18 @@
 #     carries the engine's leading space, the final is stripped); a word, a comma or a
 #     capital that differs is a miss, never an adoption -- the model answered other
 #     words. Which writers can land in the window: MemoryRecall injects its note on the
-#     FINAL, before the aggregator sees it -- after a snapshot taken on the interim, so
-#     a turn with a memory hit is a ctx-changed miss (the cost of the earlier trigger;
-#     the note is in the snapshot of a speculation started on a final). The consult
-#     follow-up and ClientNotes (a Talk client's context notes) post only with the turn
-#     free, and a speculation only exists inside an open turn. ClientNotes also folds
-#     pending notes into the context at the commit, after the snapshot: that turn is a
-#     miss, never a stale reply. The one writer that is OURS and ran at the commit, the
-#     heard-context corrector, is run before the snapshot instead so its rewrite is
-#     inside it (see Speculator). The equality check stays whole-context regardless,
-#     because nothing in the machine prevents a new writer, and the check is what makes
-#     a new one a miss rather than a wrong reply.
+#     FINAL, before the aggregator sees it. That put it inside a snapshot taken on the
+#     final, and puts it AFTER one taken on the interim -- so the snapshot includes the
+#     note MemoryRecall would inject now (Speculator's `pending`), and a fresher hit
+#     that replaces it before the final is a ctx-changed miss, never a stale reply. The
+#     consult follow-up and ClientNotes (a Talk client's context notes) post only with
+#     the turn free, and a speculation only exists inside an open turn. ClientNotes
+#     also folds pending notes into the context at the commit, after the snapshot: that
+#     turn is a miss, never a stale reply. The one writer that is OURS and ran at the
+#     commit, the heard-context corrector, is run before the snapshot instead so its
+#     rewrite is inside it (see Speculator). The equality check stays whole-context
+#     regardless, because nothing in the machine prevents a new writer, and the check
+#     is what makes a new one a miss rather than a wrong reply.
 #   * Replay is at the CHUNK level, below base_llm's parser. A speculated tool call is
 #     buffered as deltas and parsed and dispatched by _process_context only once the real
 #     turn adopts the stream; nothing executes early.
@@ -229,7 +230,7 @@ class Speculator:
     reaches for the aggregator's `_aggregation` the same way, for the same reason.
     """
 
-    def __init__(self, *, llm, aggregator, before_snapshot=None):
+    def __init__(self, *, llm, aggregator, before_snapshot=None, pending=None):
         self._llm = llm
         self._agg = aggregator
         self._controller = aggregator._user_turn_controller
@@ -243,6 +244,13 @@ class Speculator:
         # barge-in, before the final, so applying it here is applying it earlier, not
         # differently; it is idempotent (it tracks the ledger events it has consumed).
         self._before_snapshot = before_snapshot
+        # MemoryRecall.pending_messages, when wired: the note the final will inject
+        # between the snapshot (taken on the interim) and the commit. Live 2026-10-09,
+        # 5 injections in ~57 phone turns -- each one a certain ctx-changed miss with the
+        # note left out. Placed in the snapshot where the injection will put it (after
+        # the context, before the user message); if a fresher hit replaces it before the
+        # final, the context the commit has is not the snapshot and take() misses.
+        self._pending = pending
         self._current: _Speculation | None = None
         # Strong refs, for the readers and the detached closes: the loop holds tasks
         # weakly, and a reader whose speculation nothing else references any more would
@@ -293,18 +301,20 @@ class Speculator:
         if self._before_snapshot is not None:
             self._before_snapshot()
         ctx = self._agg.context
+        # Deep, not shallow: the follow-up injector retires its trigger by rewriting a
+        # message IN PLACE, which a shallow copy would share and equality would miss.
+        asked = copy.deepcopy(ctx.messages) + copy.deepcopy(
+            self._pending() if self._pending is not None else [])
         live = self._current
         if (live is not None and live.text == text and ctx.tools is live.tools
-                and ctx.messages == live.messages[:-1] and live.error is None
+                and asked == live.messages[:-1] and live.error is None
                 and not (live.done and not live.chunks)):
             # Already asked: the final confirming the interim it was started on, with
             # nothing written since. Restarting would throw the head start away -- unless
             # the stream it has failed or came back empty, which take() would only miss.
             return True
         await self.cancel("superseded")
-        # Deep, not shallow: the follow-up injector retires its trigger by rewriting a
-        # message IN PLACE, which a shallow copy would share and equality would miss.
-        snapshot = copy.deepcopy(ctx.messages) + [{"role": "user", "content": text}]
+        snapshot = asked + [{"role": "user", "content": text}]
         request = LLMContext(list(snapshot), tools=ctx.tools, tool_choice=ctx.tool_choice)
         spec = _Speculation(snapshot, ctx.tools, text)
         spec.task = self._spawn(spec.run(self._llm, request))

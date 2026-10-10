@@ -5,7 +5,9 @@
 #   1. single-flight: a fresher interim cancels the in-flight (shorter-query) search;
 #   2. cancel-at-final: a search still running at the final transcript is cancelled;
 #   3. freshness-rank (§4A.1): a stale short-prefix result completing LATE must not
-#      clobber a fresher long-prefix result that already landed.
+#      clobber a fresher long-prefix result that already landed;
+#   4. pending_messages() before the final is exactly what the final injects (the
+#      speculative reply's snapshot relies on it), and nothing once it has.
 #
 import asyncio
 import os
@@ -81,7 +83,10 @@ def _make_source(steps, started):
         async def _go(self):
             for delay, f in steps:
                 await asyncio.sleep(delay)
-                await self.push_frame(f)
+                if callable(f):      # a probe, run between frames
+                    f()
+                else:
+                    await self.push_frame(f)
     return _Src()
 
 
@@ -164,12 +169,34 @@ async def scenario_freshness_guard():
     print("OK freshness-rank: late stale (len-13) did not clobber fresh (len-40)")
 
 
+async def scenario_pending_is_what_the_final_injects():
+    ctx = StubContext()
+    record = {}
+    recall_mod.memory_search = make_fake({}, record)  # fast
+    mr = MemoryRecall(ctx)
+    q = "remind me what I like to drink"
+    seen = {}
+    await _drive(mr, [
+        (0.0, lambda: seen.__setitem__("before", mr.pending_messages())),
+        (0.05, _interim(q)),
+        (0.1, lambda: seen.__setitem__("pending", mr.pending_messages())),
+        (0.0, _final(q)),
+        (0.05, lambda: seen.__setitem__("after", mr.pending_messages())),
+    ])
+    assert seen["before"] == [], seen
+    injected = [m for m in ctx.messages if "hit-len" in m.get("content", "")]
+    assert len(injected) == 1 and seen["pending"] == injected, (seen, ctx.messages)
+    assert seen["after"] == [], "the final spent it: nothing pending for the next turn"
+    print("OK pending: pending_messages() before the final == what the final injected")
+
+
 async def main():
     orig = recall_mod.memory_search
     try:
         await scenario_single_flight()
         await scenario_cancel_at_final()
         await scenario_freshness_guard()
+        await scenario_pending_is_what_the_final_injects()
     finally:
         recall_mod.memory_search = orig
     print("\nALL OK")

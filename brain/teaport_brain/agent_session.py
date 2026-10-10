@@ -1099,14 +1099,22 @@ def build_agent_session(transport, *, voice: str | None = None,
     turn_merge = reply_hold.TurnMerge() if reply_hold_enabled else None
     reply_gate = reply_hold.ReplyHoldGate(merge=turn_merge) if reply_hold_enabled else None
     heard_corrector = HeardContextCorrector(ledger, context, merge=turn_merge)
+    # Fires memory_search on the interim and injects the hit before the LLM (placed in
+    # the pipeline below). Only with a gateway: without one every search returns None
+    # after its full timeout, for nothing.
+    memory_recall = MemoryRecall(context) if agent_backend.HAS_AGENT else None
     if speculate.ENABLED:
         # Ask the LLM on the settled interim (or a final) of a turn the stop strategy
         # has not concluded on; the service adopts the stream at the commit if the
         # context is still what was asked. The corrector's rewrite of a cut reply is
         # applied before the snapshot so it cannot be what changed in between. See
         # speculate.py.
-        speculator = speculate.Speculator(llm=llm, aggregator=context_aggregator.user(),
-                                          before_snapshot=heard_corrector.reconcile_for_snapshot)
+        # MemoryRecall's note, injected on the final, is put in the snapshot taken on the
+        # interim before it.
+        speculator = speculate.Speculator(
+            llm=llm, aggregator=context_aggregator.user(),
+            before_snapshot=heard_corrector.reconcile_for_snapshot,
+            pending=memory_recall.pending_messages if memory_recall is not None else None)
         stop_strategy.speculator = speculator
         llm.speculator = speculator
         logger.info("speculative reply ON (TEAPORT_SPECULATIVE_REPLY): the LLM is asked "
@@ -1176,9 +1184,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # that feeds the LLM: while Wi-Fi setup runs, the user's words are its, not the
         # model's (wifi_voice.py).
         wifi,
-        # fire memory_search on interim, inject before the LLM. Only with a gateway:
-        # without one every search returns None after its full timeout, for nothing.
-        MemoryRecall(context) if agent_backend.HAS_AGENT else None,
+        # fire memory_search on interim, inject before the LLM (built above, for the
+        # speculator; None without a gateway).
+        memory_recall,
         context_aggregator.user(),
         # The STT's wordless segment closes are for the stop strategy, which the
         # aggregator has just handed them to; the stock aggregator forwards every

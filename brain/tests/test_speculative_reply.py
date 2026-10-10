@@ -483,6 +483,56 @@ async def test_a_start_for_what_is_already_asked_keeps_the_stream():
     await spec.close()
 
 
+_NOTE = {"role": "system", "content": "You remember these things about the user: tea"}
+_FRESHER = {"role": "system", "content": "You remember these things about the user: coffee"}
+
+
+async def test_memory_recalls_pending_note_is_in_the_snapshot_and_the_commit_hits():
+    """MemoryRecall injects its note on the FINAL -- after a snapshot taken on the
+    interim. Its pending note goes into the snapshot where the final will put it, so the
+    commit that carries it is the context that was asked: a hit."""
+    pending = [_NOTE]
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    spec._pending = lambda: list(pending)
+    await spec.start("what do I like")
+    await _settle()
+    assert opened[0].messages == [{"role": "system", "content": "be brief"}, _NOTE,
+                                  {"role": "user", "content": "what do I like"}]
+    assert ctx.messages == [{"role": "system", "content": "be brief"}], \
+        "the note is the final's to inject, not the snapshot's"
+    ctx.add_message(dict(_NOTE))                     # the final's injection
+    pending.clear()                                  # ... which spends it
+    assert await spec.start("what do I like"), "the final confirms: the stream is kept"
+    assert len(opened) == 1
+    ctx.add_message({"role": "user", "content": "what do I like"})
+    out = await llm.get_chat_completions(ctx)
+    assert spec.hits == 1 and spec.misses == 0 and len(opened) == 1
+    await out.close()
+
+
+async def test_a_note_that_changes_after_the_snapshot_is_a_miss():
+    """A fresher search lands between the snapshot and the final: the final injects a
+    note the speculation was not asked with. Whole-context equality makes that a miss."""
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    spec._pending = lambda: [_NOTE]
+    await spec.start("what do I like")
+    await _settle()
+    ctx.add_message(dict(_FRESHER))
+    ctx.add_message({"role": "user", "content": "what do I like"})
+    with _SpecLines() as journal:
+        await llm.get_chat_completions(ctx)
+    assert len(opened) == 2 and spec.misses == 1 and spec.hits == 0
+    assert any("reason=ctx-changed" in line for line in journal.lines), journal.lines
+    # And a note that never came (the search was cancelled at the final) is a miss too.
+    ctx, agg, llm, spec, opened = _rig(parts=())
+    spec._pending = lambda: [_NOTE]
+    await spec.start("what do I like")
+    await _settle()
+    ctx.add_message({"role": "user", "content": "what do I like"})
+    await llm.get_chat_completions(ctx)
+    assert len(opened) == 2 and spec.misses == 1 and spec.hits == 0
+
+
 async def test_the_candidate_is_what_the_real_aggregator_writes():
     """The candidate is built as push_aggregation builds the user message: the pending
     finals, then the interim as the segment's final -- joined by pipecat's own

@@ -81,6 +81,29 @@ class MemoryRecall(FrameProcessor):
 
         task.add_done_callback(_done)
 
+    def _note(self) -> dict | None:
+        """The system note the final will inject, for the freshest hit so far."""
+        if not self._latest:
+            return None
+        joined = "\n".join(f"- {s}" for s in self._latest)
+        return {
+            "role": "system",
+            "content": (
+                "You remember these things about the user from earlier chats "
+                "(by text or by voice). Use them if relevant; don't mention "
+                f"that you looked them up:\n{joined}"
+            ),
+        }
+
+    def pending_messages(self) -> list[dict]:
+        """What the next final would add to the context if it landed now: the note for
+        this turn's freshest hit, or nothing. For the speculative reply (speculate.py),
+        whose snapshot is taken on the interim, BEFORE the final injects it -- so the
+        snapshot is the context the commit will have. A fresher hit landing after the
+        snapshot changes what the final injects, and the speculation misses on it."""
+        note = self._note()
+        return [note] if note is not None else []
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
@@ -101,16 +124,9 @@ class MemoryRecall(FrameProcessor):
         if isinstance(frame, TranscriptionFrame):
             # Inject whatever search has already completed for this turn, synchronously,
             # before forwarding the final transcript (which triggers the LLM downstream).
-            if self._latest:
-                joined = "\n".join(f"- {s}" for s in self._latest)
-                self._context.add_message({
-                    "role": "system",
-                    "content": (
-                        "You remember these things about the user from earlier chats "
-                        "(by text or by voice). Use them if relevant; don't mention "
-                        f"that you looked them up:\n{joined}"
-                    ),
-                })
+            note = self._note()
+            if note is not None:
+                self._context.add_message(note)
                 logger.info(f"MemoryRecall injected {len(self._latest)} snippet(s)")
             # The injection point has passed: a search still running can no longer be
             # injected and would only steal STT bandwidth from the next turn — cancel it.
