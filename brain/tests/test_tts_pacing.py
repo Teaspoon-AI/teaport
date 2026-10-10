@@ -213,6 +213,61 @@ def test_choice_setting(monkeypatch=None):
     print("  PASS choice setting: case-insensitive, bad or empty value -> default")
 
 
+def _build(pacing):
+    """A service built with TTS_PACING=`pacing`: its pacing and the WARNINGs logged."""
+    from loguru import logger
+    warnings = []
+    sink = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
+    saved, engine_tts._PACING = engine_tts._PACING, pacing
+    calls = []
+    real_check = engine_tts._missing_pacing_hooks
+    engine_tts._missing_pacing_hooks = lambda tts: calls.append(1) or real_check(tts)
+    try:
+        tts = EngineTTSService(voice="af_heart")
+    finally:
+        engine_tts._PACING, engine_tts._missing_pacing_hooks = saved, real_check
+        logger.remove(sink)
+    return tts._pacing, [w for w in warnings if "TTS_PACING" in w], calls
+
+
+def test_missing_pipecat_hooks_fall_back_to_greedy():
+    """Issue #87: lead pacing calls private pipecat internals; a pipecat without them
+    must drop the session to greedy at build, not raise mid-reply."""
+    from pipecat.services.tts_service import TTSService
+    pacing, warned, _ = _build("lead")
+    assert pacing == "lead" and not warned, f"hooks present: {pacing}, {warned}"
+
+    real_refresh, real_init = TTSService._refresh_audio_context, TTSService.__init__
+    for how, patch in [
+        ("gone", lambda: delattr(TTSService, "_refresh_audio_context")),
+        ("without context_id", lambda: setattr(TTSService, "_refresh_audio_context",
+                                               lambda self: None)),
+    ]:
+        patch()
+        try:
+            pacing, warned, _ = _build("lead")
+        finally:
+            TTSService._refresh_audio_context = real_refresh
+        assert pacing == "greedy" and len(warned) == 1 \
+            and "_refresh_audio_context" in warned[0], f"refresh {how}: {pacing}, {warned}"
+
+    def init_without_timeout(self, *a, **kw):
+        real_init(self, *a, **kw)
+        del self._stop_frame_timeout_s
+    TTSService.__init__ = init_without_timeout
+    try:
+        pacing, warned, _ = _build("lead")
+        assert pacing == "greedy" and len(warned) == 1 \
+            and "_stop_frame_timeout_s" in warned[0], f"timeout gone: {pacing}, {warned}"
+        # Pacing off never looks, so a pipecat bump can't touch a box that doesn't pace.
+        pacing, warned, calls = _build("greedy")
+        assert pacing == "greedy" and not warned and not calls, \
+            f"greedy checked the hooks: {warned}, {calls}"
+    finally:
+        TTSService.__init__ = real_init
+    print("  PASS missing pipecat pacing hook -> warning + greedy; present or greedy -> silent")
+
+
 # ---- real pipeline: the reply survives a pacing wait longer than the watchdog
 
 REPLY = ("This is the first clause of the reply, and here is a much longer second "
@@ -280,6 +335,7 @@ def test_tts_pacing():
     test_lead_s_parsing()
     test_eager_policy()
     test_choice_setting()
+    test_missing_pipecat_hooks_fall_back_to_greedy()
 
     async def main():
         await test_greedy_never_waits()
