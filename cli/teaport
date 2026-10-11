@@ -36,10 +36,12 @@ SUDO() { if [ "$(id -u)" = 0 ]; then "$@"; else sudo "$@"; fi; }
 
 active()    { local s; s="$(systemctl is-active "$1.service" 2>/dev/null || true)"; printf '%s' "${s:-unknown}"; }
 sip_enabled() { systemctl is-enabled --quiet teaport-sip.service 2>/dev/null; }   # telephony turned on
+# The brain's /health JSON; nothing (and nonzero) when the brain does not answer.
+brain_health() { curl -fsS --max-time 2 "http://127.0.0.1:$BRAIN_PORT/health" 2>/dev/null; }
 # The brain's SIP front-end (it runs inside teaport-brain): off | waiting | connected, from
 # /health; "unknown" when the brain does not answer or predates it.
 brain_sip() {
-  curl -fsS --max-time 2 "http://127.0.0.1:$BRAIN_PORT/health" 2>/dev/null \
+  brain_health \
     | python3 -c 'import json,sys; print(json.load(sys.stdin).get("sip") or "unknown")' 2>/dev/null \
     || echo unknown
 }
@@ -120,6 +122,31 @@ brain_lock_check() {
   else warnc "brain venv has drifted from its uv.lock build ($what) — $n change(s): $detail — rebuild: install.sh --only brain"; fi
 }
 
+# brain_pacing_check — TTS_PACING as configured vs as the running brain paces (/health's
+# tts_pacing, issue #138). "lead" falls back to greedy when the installed pipecat lacks
+# the private hooks it needs, and the brain's WARNING about it scrolls out of the journal.
+# Says nothing when the brain does not answer (doctor fails its port already) or predates
+# the field. Uses doctor's ok/warnc.
+brain_pacing_check() {
+  local line
+  line="$(brain_health | python3 -c 'import json, sys
+p = json.load(sys.stdin).get("tts_pacing") or {}
+c, e = p.get("configured"), p.get("effective")
+if not c:
+    sys.exit()
+if c == e:
+    print("ok\tTTS pacing: %s" % e)
+else:
+    print("warn\tTTS_PACING=%s, but the brain paces %s: it does not fit pipecat %s (%s)"
+          " — replies still play, a barge-in throws away more synthesis; if the brain venv"
+          " drifted from uv.lock: install.sh --only brain; if not, engine_tts.py needs new hooks"
+          % (c, e, p.get("pipecat") or "?", "; ".join(p.get("missing") or ["?"])))' 2>/dev/null)" || return 0
+  case "$line" in
+    ok$'\t'*)   ok "${line#*$'\t'}" ;;
+    warn$'\t'*) warnc "${line#*$'\t'}" ;;
+  esac
+}
+
 cmd_doctor() {
   local fix=0; [ "${1:-}" = --fix ] && fix=1
   local RC=0
@@ -153,6 +180,7 @@ cmd_doctor() {
   done
   listening "$ENGINE_PORT" && ok "engine :$ENGINE_PORT listening" || failc "engine :$ENGINE_PORT not listening (allow ~1min after start)"
   listening "$BRAIN_PORT"  && ok "brain :$BRAIN_PORT listening"  || failc "brain :$BRAIN_PORT not listening"
+  brain_pacing_check
   # SIP: only once it is turned ON (the unit is enabled) — an unconfigured box has no
   # line to check, and `sip disable` without --purge keeps the conf while the operator
   # means the line to be off, so "conf present" alone must NOT make --fix bring it back.
