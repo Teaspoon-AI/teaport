@@ -487,9 +487,6 @@ class Volume:
     def __init__(self, path: str | None = None):
         self._path = path or VOLUME_FILE
         self.percent = 100
-        # Called with the new percent after every set_volume (run_bridge: the mic's echo
-        # suppression follows the volume, xvf_echo.py). Must not block.
-        self.on_change = None
         try:
             with open(self._path) as f:
                 saved = json.load(f)
@@ -504,6 +501,12 @@ class Volume:
         if self.percent <= 0:
             return 0.0
         return 10 ** (-VOLUME_RANGE_DB * (1 - self.percent / 100) / 20)
+
+    @property
+    def gain_db(self) -> float:
+        if self.percent <= 0:
+            return -math.inf
+        return -VOLUME_RANGE_DB * (1 - self.percent / 100)
 
     def apply(self, args) -> dict:
         """The set_volume tool: {"direction": "louder"|"quieter"} or {"level": 0..100}.
@@ -531,8 +534,6 @@ class Volume:
         self.percent = target
         self._save()
         logger.info(f"volume -> {target}%")
-        if self.on_change is not None:
-            self.on_change(target)
         return result
 
     def _save(self) -> None:
@@ -720,6 +721,9 @@ class Playback:
         # of the chunks the last mouth_due delivered.
         self._phones: deque[tuple[int, str]] = deque()
         self.hiss = 0.0
+        # (frame position, level dBFS as synthesized) of every chunk not yet heard: what
+        # the speaker plays at each moment, for the echo meter (xvf_echo.EchoMeter).
+        self._heard: deque[tuple] = deque()
         self.synced = False
 
     def push(self, relay_audio: bytes, voiced: bool = False) -> None:
@@ -830,6 +834,7 @@ class Playback:
             # The mouth follows the voice as synthesized, not the volume knob.
             # hiss too, voiced or not: a caption can vouch for it after it was pumped
             self._levels.append([self._written, mouth_level(chunk), voiced, hiss_level(chunk)])
+            self._heard.append((self._written, level_db(np.frombuffer(chunk, dtype="<i2"))))
             gain = self._gain()
             if gain != 1.0 and chunk.strip(b"\0"):
                 pcm = np.frombuffer(chunk, dtype="<i2").astype(np.float32) * gain
@@ -848,6 +853,16 @@ class Playback:
         now = self._clock() if now is None else now
         self._start = now - played / DEVICE_RATE
         self.synced = True
+
+    def heard_due(self, now: float) -> float | None:
+        """The level (dBFS, as synthesized) of the playback heard by `now` since the last
+        call, None if no chunk came due."""
+        dbs = []
+        while self._heard and self._start + self._heard[0][0] / DEVICE_RATE <= now:
+            dbs.append(self._heard.popleft()[1])
+        if not dbs:
+            return None
+        return float(10 * np.log10(np.mean(10 ** (np.array(dbs) / 10)) + 1e-18))
 
     def mouth_due(self, now: float) -> float | None:
         """The loudest speech chunk heard by `now` since the last call (0 for a chunk
@@ -899,10 +914,13 @@ class Card:
     FMT = ["-f", "S16_LE", "-r", str(DEVICE_RATE), "-c", str(DEVICE_CHANNELS), "-q", "-t", "raw"]
 
     def __init__(self, face: FaceTap, device: str | None = None, volume: Volume | None = None,
-                 echo: "xvf_echo.EchoSuppression | None" = None):
+                 echo: "xvf_echo.EchoSuppression | None" = None,
+                 meter: "xvf_echo.EchoMeter | None" = None):
         self.face = face
         self.volume = volume or Volume()
+        # The mic's echo suppression and the meter that decides it (xvf_echo.py).
         self.echo = echo
+        self.meter = meter
         self.device = device = device or DEVICE
         self.play: Playback | None = None
         self.failed: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -983,9 +1001,10 @@ class Card:
             logger.info(f"playback timeline: wall clock ({self.device} is not a hw: device)")
         arecord, first = await self._open_capture()
         self._run(self._capture(arecord, first))
-        if self.echo is not None:
+        if self.echo is not None and self.meter is not None:
             # A card (re)opened may be a chip replugged or reset to its own settings.
-            await asyncio.to_thread(self.echo.apply, lambda: self.volume.percent)
+            meter = self.meter
+            await asyncio.to_thread(self.echo.apply, lambda: meter.duplex)
 
     async def _open_capture(self) -> tuple[asyncio.subprocess.Process, bytes]:
         # Playback is running by now; give it a moment, and retry a capture that
@@ -1095,6 +1114,8 @@ class Card:
             mono = capture_channel(buf, CAPTURE_CHANNEL)
             relay = resampler.resample_chunk(mono).astype("<i2").tobytes()
             buf = b""
+            if self.meter is not None:
+                self._meter(mono)
             if self.sink is not None:
                 if relay:
                     if self.sink.full():
@@ -1107,6 +1128,21 @@ class Card:
                 self.gate.reset()
             elif self.gate.feed(level_db(mono)):
                 self.voice.set()
+
+    def _meter(self, mono: np.ndarray) -> None:
+        now = time.monotonic()
+        meter = self.meter
+        if not meter.feed(level_db(mono), self.play.heard_due(now), self.play.echo_free(now)):
+            return
+        if meter.recheck:
+            logger.info("mic echo: suppressor off for a while to measure the echo again")
+        else:
+            logger.info(f"mic echo: the voice is {meter.gap:.1f} dB above the bot's echo "
+                        f"(margin {meter.margin:g} dB) -- suppressor "
+                        + ("off: the user is heard over the bot" if meter.duplex
+                           else "on: the echo is too close to the voice"))
+        if self.echo is not None:
+            asyncio.get_running_loop().run_in_executor(None, self.echo.apply, lambda: meter.duplex)
 
     # -- waiting
     async def _until(self, aw) -> None:
@@ -1669,10 +1705,10 @@ async def run_bridge() -> None:
     face.state("idle")
     volume = Volume()
     logger.info(f"volume: {volume.percent}%")
+    # The mic's echo suppression, off unless the bot's echo comes too close to the
+    # user's voice (xvf_echo.py). Both outlive a card reopen.
     echo = xvf_echo.EchoSuppression()
-    loop = asyncio.get_running_loop()
-    # The level as it is when the write runs, not as it was queued (xvf_echo.py).
-    volume.on_change = lambda _: loop.run_in_executor(None, echo.apply, lambda: volume.percent)
+    meter = xvf_echo.EchoMeter(gain_db=lambda: volume.gain_db)
     connect_now = True  # the first session dials at once (and is greeted)
     backoff = None  # another client took the box: a Backoff to wait out (kept across card reopens)
     card_wait = dial_wait = RETRY_SECS
@@ -1693,7 +1729,7 @@ async def run_bridge() -> None:
         await rest_face(face)
     try:
         while True:
-            card = Card(face, volume=volume, echo=echo)
+            card = Card(face, volume=volume, echo=echo, meter=meter)
             try:
                 await card.open()
                 logger.info(f"card ready: {card.device}")

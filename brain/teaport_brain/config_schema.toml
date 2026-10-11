@@ -2126,16 +2126,40 @@ tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
 
 [[settings]]
-name = "LOCAL_AUDIO_DUPLEX_MAX_VOLUME"
+name = "LOCAL_AUDIO_ECHO_CONTROL"
 store = "local_audio_env"
 group = "local_audio"
-type = "int"
-default = 50
-min = 0
-max = 100
+type = "flag"
+default = true
 read = "startup"
 tier = "tuning"
-help = "Up to this speaker volume (percent) the XVF3800's echo suppressor is off, so the mic hears you while the bot is talking. Above it the chip's own echo suppression (its settings as the bridge first read them) comes back, because the bot's voice would leak into what you say. 0 leaves the chip alone."
+help = "Let the bridge tune the XVF3800 so it hears you while the bot is talking: the chip's automatic gain is replaced by a fixed gain, and its echo suppressor stays off unless the bot's echo comes too close to your voice. Off: the chip keeps its own settings."
+
+[[settings]]
+name = "LOCAL_AUDIO_MIC_GAIN_DB"
+store = "local_audio_env"
+group = "local_audio"
+type = "float"
+default = 16.0
+min = 0.0
+max = 36.0
+unit = "dB"
+read = "startup"
+tier = "tuning"
+help = "The fixed gain the XVF3800 applies to the mic in place of its automatic gain (which also boosted the bot's echo). Raise it if the speech engine misses quiet speech, lower it if loud speech clips."
+
+[[settings]]
+name = "LOCAL_AUDIO_ECHO_MARGIN_DB"
+store = "local_audio_env"
+group = "local_audio"
+type = "float"
+default = 15.0
+min = 0.0
+max = 40.0
+unit = "dB"
+read = "startup"
+tier = "tuning"
+help = "How far your voice must stay above the bot's echo, as the bridge measures them at the mic, for the chip's echo suppressor to stay off. Closer than that, the bot's words start leaking in as yours and the suppressor comes on (it also muffles you while the bot talks)."
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
