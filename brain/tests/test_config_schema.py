@@ -16,6 +16,13 @@
 # the CLI's, the Discord bridge's, a library's) name the file that does in `source` --
 # a file, not a line, because line numbers went stale under every edit above them
 # (17 of 113 when they were first checked, and ~60 per refactor after that).
+# The file must also name the setting, as a whole word outside a comment line (the
+# sources are shell, JS, a systemd template and Python: `#` and `//` cover them), so a
+# rename or removal there fails here instead of leaving the row pointing at a file
+# that no longer reads it. A sip_conf key must start a `key=` line, as the conf
+# template in cli/teaport writes it: the bare words (`aec`, `register`, `password`)
+# are also subcommands, flags and prompts there. A library's row (`consumer`) names
+# our file that sets it, which names it too.
 #
 # Run: python test_config_schema.py   (or via pytest)
 #
@@ -63,6 +70,22 @@ def env_reads_in_code() -> set[str]:
     for p in PKG.glob("*.py"):
         found |= reads_in(p.read_text())
     return found - NOT_SETTINGS
+
+
+def source_problem(name: str, src: str, store: str) -> str | None:
+    """Why `src` cannot be the source of the row `name` in `store`, or None when it can."""
+    path = REPO / src
+    if re.search(r":\d+$", src) or not path.is_file():
+        return f"source {src!r} must be an existing file, repo-relative, no line"
+    text = "\n".join(line for line in path.read_text(encoding="utf-8").splitlines()
+                     if not line.lstrip().startswith(("#", "//")))
+    if store == "sip_conf":
+        pattern = rf"^{re.escape(name)}="
+    else:
+        pattern = rf"(?<![A-Za-z0-9_]){re.escape(name)}(?![A-Za-z0-9_])"
+    if not re.search(pattern, text, re.M):
+        return f"source {src!r} never names it"
+    return None
 
 
 def main() -> int:
@@ -125,8 +148,24 @@ def main() -> int:
             problems.append(f"{n}: the brain reads it, so no source (searching the name finds it)")
         elif n not in code and src is None:
             problems.append(f"{n}: not read by the brain, so source must name the file that reads it")
-        elif src is not None and (re.search(r":\d+$", src) or not (REPO / src).exists()):
-            problems.append(f"{n}: source {src!r} must be an existing file, repo-relative, no line")
+        elif src is not None and (why := source_problem(n, src, r["store"])):
+            problems.append(f"{n}: {why}")
+
+    # The source check must be able to fail: a real file that reads other settings, a
+    # name that is only a prefix or a suffix of one the file reads, a name only a
+    # comment mentions, a sip key that is a bare word but no `key=` line, a missing
+    # file and a line suffix. They lean on what those files hold today (TTS_CTX in the
+    # engine unit, MALLOC_ARENA_MAX in install.sh, SIP_ANSWER_AFTER_SECS in a comment
+    # of cli/teaport): if one starts failing after an edit there, pick a new example.
+    for n, src, store in (("ENGINE_PORT", "bridge/discord/index.js", "engine_env"),
+                          ("TTS_CT", "systemd/teaport-engine.service.in", "engine_env"),
+                          ("ARENA_MAX", "install.sh", "brain_env"),
+                          ("SIP_ANSWER_AFTER_SECS", "cli/teaport", "brain_env"),
+                          ("status", "cli/teaport", "sip_conf"),
+                          ("ENGINE_PORT", "install.sh.missing", "engine_env"),
+                          ("ENGINE_PORT", "systemd/teaport-engine.service.in:1", "engine_env")):
+        if source_problem(n, src, store) is None:
+            problems.append(f"self-test: source {src!r} accepted for {n}")
 
     for p in problems:
         print("FAIL", p)
