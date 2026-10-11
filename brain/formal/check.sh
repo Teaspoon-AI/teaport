@@ -143,7 +143,10 @@ echo "SttCommit.tla — the caller's voice (#140): no commit drawn over words th
 run SttCommit.tla sc_voice_blind "(expected: FAILS NoCutVoice — before #140: the verdict commits over the resumed voice)"
 run SttCommit.tla sc_voice       "(expected: holds — as shipped: held for the pause, a VAD start or the bound)"
 run SttCommit.tla sc_voice_reach "(expected: FAILS HeldOnlyForVerdict — witness: the wait is reached, a hold no verdict ends)"
+run SttCommit.tla sc_voice_reach_pause  "(expected: FAILS NoPauseExit — witness: a wait ends on the caller's pause)"
+run SttCommit.tla sc_voice_reach_resume "(expected: FAILS NoResumeExit — witness: a wait ends on a VAD start)"
 run SttCommit.tla sc_voice_cap   "(expected: FAILS NoCapCut — the ACCEPTED RESIDUAL: the bound commits over voice that never paused)"
+run SttCommit.tla sc_voice_catchup "(expected: FAILS NoCatchupCut — the ACCEPTED RESIDUAL: the catch-up bound commits over voice not yet heard)"
 run SttCommit.tla sc_voice_final "(expected: holds — the final's protocol under the wait, on the marked engine)"
 echo
 echo "SttCommit.tla — the final (PR #49): whose utterance a late final is, and when the turn may end on it"

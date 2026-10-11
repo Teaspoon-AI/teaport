@@ -1293,11 +1293,16 @@ stop's own window afterwards, or `none`. `VOICE` selects the STT's answer:
 
 The wait is a hold that no verdict will end, so `NoOrphanedHold` takes it as an escape.
 `sc_voice_reach` keeps the property as it read before, `HeldOnlyForVerdict`, as the
-witness that the wait is reached at all. The cap can fire at any point of the wait, over
-voice that is still on. That is the bound's accepted cost (`capCut`, recorded apart as
-the hold's expiry is), and `sc_voice_cap` keeps it visible. `sc_voice_final` runs the
-final's protocol under the wait on the marked engine: no stale turn end, no stranded
-turn. Every existing row runs with `MaxVoice = 0`, where nothing changes.
+witness that the wait is reached at all, and `sc_voice_reach_pause` and
+`sc_voice_reach_resume` fall on the first trace in which the pause, or a VAD start,
+ends one: both exits are reached, not only declared. The two bounds commit over voice
+by design, and each has its own row to keep that visible rather than a property that
+holds by construction. The cap (`PauseCap`, `capCut`, `sc_voice_cap`) can fire at any
+point of the wait. The catch-up bound (`catchupCut`, `sc_voice_catchup`) is a verdict
+that commits on what the analyzer has heard because it has not heard the rest in time.
+`sc_voice_final` runs the final's protocol under the wait on the marked engine: no stale
+turn end, no stranded turn. Every existing row runs with `MaxVoice = 0`, where nothing
+changes.
 
 ### Known limits of this model
 
@@ -1315,6 +1320,13 @@ turn. Every existing row runs with `MaxVoice = 0`, where nothing changes.
   `voice` at the verdict as if that wait were instant. Voice in the last unscored chunk
   before a commit is below what either can see. The hold's expiry and the backstop are
   not charged with a cut over the voice: they are bounds with their own documented edges.
+  Two session-wide policies are not modelled as switches, for the reason the no-verdict
+  fallback is not: the wait stands down after three turns running that hit the cap with
+  no VAD start, and the marks go off after three catch-ups running that miss their
+  bound. Each is a policy on repeated faults; what runs while either is in force is the
+  `blind` design, and `sc_voice_blind` is its cost. A disconnect during the wait is not
+  modelled either: it drops the segment with the session, as it does a hold, and this
+  model has no disconnect.
 - **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
   once (the flush is the barge-in, teagram-engine#7); it is the `vadStop` design applied to
   one stop, and the verdict that follows is ignored exactly as a stale one is.
