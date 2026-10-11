@@ -28,6 +28,7 @@ from loguru import logger
 from pipecat.frames.frames import (
     ErrorFrame,
     Frame,
+    OutputTransportMessageFrame,
     TTSAudioRawFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -501,10 +502,16 @@ class EngineTTSService(TTSService):
     """Pipecat TTS service for the engine TTS (text-in) with per-word timestamps."""
 
     def __init__(self, *, voice: str = "af_heart", language: str = None,
-                 lang_code: str = None, speed: float = 1.0, **kwargs):
+                 lang_code: str = None, speed: float = 1.0, phonemes: bool = False,
+                 **kwargs):
         _require_context_end_hook()
         self._voice = voice
         self._speed = speed
+        # The client draws a mouth from what is said (?features=phonemes, the OLED face
+        # through local_audio.py): ask the engine for each word's timed phonemes
+        # (teagram-engine "phoneme_timestamps") and send them along with the audio as
+        # {"type": "phonemes"} messages (_speak_clause).
+        self._phonemes = phonemes
         # Cross-run_tts word-time base, PER CONTEXT. pipecat calls run_tts once PER
         # SENTENCE but keeps ONE word-timestamp baseline for the whole reply, so a
         # per-call offset that restarts at 0 makes every sentence's words collide on the
@@ -855,8 +862,9 @@ class EngineTTSService(TTSService):
                 async with aclosing(self._speak_clause(clause, context_id, eager)) as frames:
                     async for frame in frames:
                         yield frame
-                        emitted_audio = True
-                        clause_secs += frame.num_frames / self.sample_rate
+                        if isinstance(frame, TTSAudioRawFrame):   # not a phonemes message
+                            emitted_audio = True
+                            clause_secs += frame.num_frames / self.sample_rate
                 emitted_secs += clause_secs
                 wall = time.monotonic() - t0
                 synth_secs += wall
@@ -911,6 +919,7 @@ class EngineTTSService(TTSService):
             return self._ctx_audio_secs.get(context_id, 0.0)
 
         trim, sent, words, chunked = _SeamTrim(self.sample_rate), 0.0, [], False
+        phones = []
         async with aclosing(self._synth_text(clause, eager=eager)) as stream:
             async for event in stream:
                 if event[0] == "audio":
@@ -918,6 +927,8 @@ class EngineTTSService(TTSService):
                     if chunk_words is not None:
                         chunked = True
                         words += chunk_words
+                    if self._phonemes and len(event) > 3:
+                        phones += event[3] or []
                 else:  # "end": the sentence is complete
                     audio = trim.finish()
                     if not chunked:
@@ -930,6 +941,16 @@ class EngineTTSService(TTSService):
                     await self._place_words(words, max(0.0, emitted() - sent),
                                             trim.lead_cut, context_id)
                     words = []
+                # The phonemes that start in this audio, just ahead of it: the message and
+                # the audio reach the client in this order (the output transport queues
+                # both on its audio queue), so the client pins them to where this audio
+                # lands in its playback. at_ms is this audio's first sample in the engine's
+                # sentence time (the trim only ever cuts the sentence's lead).
+                if phones and (trim.started or event[0] == "end"):
+                    yield OutputTransportMessageFrame(message={
+                        "type": "phonemes", "at_ms": round((trim.lead_cut + sent) * 1000),
+                        "phonemes": phones})
+                    phones = []
                 if audio.shape[0]:
                     pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
                     yield TTSAudioRawFrame(pcm, self.sample_rate, 1, context_id=context_id)
@@ -946,6 +967,7 @@ class EngineTTSService(TTSService):
                         self._ctx_audio_secs.pop(next(iter(self._ctx_audio_secs)))
                 if event[0] == "end":
                     trim, sent, words, chunked = _SeamTrim(self.sample_rate), 0.0, [], False
+                    phones = []
 
     async def _place_words(self, words, base, lead_cut, context_id):
         """Hand `words` (sentence-relative [(word, start_sec)]) to the base at
@@ -1083,8 +1105,11 @@ class EngineTTSService(TTSService):
         config -> input.text -> input.done -> results -> close).
 
         Yields, per engine sentence (the engine splits input.text on . ! ? and newline):
-        ("audio", float32 [-1,1], words) for each audio.chunk AS IT ARRIVES, then
-        ("end", words) at its audio.done. Words are [(word, start_sec)], sentence-relative.
+        ("audio", float32 [-1,1], words, phones) for each audio.chunk AS IT ARRIVES, then
+        ("end", words) at its audio.done. Words are [(word, start_sec)], sentence-relative;
+        phones are the chunk's words' phonemes, [[symbol, start_ms, end_ms]] in the same
+        sentence time (asked for only with phonemes=True; [] otherwise, or from an engine
+        without "phoneme_timestamps").
         We ask for "chunk_timestamps" (teagram-engine#77), so each audio chunk carries the
         words that START in it ([] when none does); the "end" list is the engine's
         trailing full list. An engine without #77, or a sentence the engine could not
@@ -1108,14 +1133,17 @@ class EngineTTSService(TTSService):
             # refused / timed out (TimeoutError is an OSError) / handshake failed
             raise _EngineError("connect failed") from e
         pending, chunk_words, carry, heard, trailing = [], None, b"", False, []
+        chunk_phones = []
 
         def close_sentence():
             # What ends a sentence: its buffered audio (streaming off), then its words.
-            nonlocal pending, chunk_words, carry, heard, trailing
-            events = [("audio", np.concatenate(pending), chunk_words)] if pending else []
+            nonlocal pending, chunk_words, carry, heard, trailing, chunk_phones
+            events = ([("audio", np.concatenate(pending), chunk_words, chunk_phones)]
+                      if pending else [])
             if heard:  # a sentence that produced no audio has no words to place
                 events.append(("end", trailing))
             pending, chunk_words, carry, heard, trailing = [], None, b"", False, []
+            chunk_phones = []
             return events
 
         # Only the stream's own I/O and the engine's bytes become _EngineError; the rest of
@@ -1160,11 +1188,27 @@ class EngineTTSService(TTSService):
                            f"{str(ts)[:80]!r}")
             return None
 
+        def parse_phones(ts):
+            # The words' "phonemes" ([[symbol, start_ms, end_ms]]) in one flat list; a
+            # malformed entry is skipped (it only costs the face a mouth shape).
+            out = []
+            for w in ts if isinstance(ts, list) else ():
+                for p in (w.get("phonemes") or ()) if isinstance(w, dict) else ():
+                    try:
+                        sym, a, b = p
+                        out.append([str(sym), int(a), int(b)])
+                    except (TypeError, ValueError):
+                        continue
+            return out
+
         try:
-            await send({"type": "session.config", "voice": self._voice,
-                        "response_format": "pcm", "stream_audio": True,
-                        "word_timestamps": True, "chunk_timestamps": True,
-                        "eager": _STREAM_AUDIO if eager is None else eager})
+            config = {"type": "session.config", "voice": self._voice,
+                      "response_format": "pcm", "stream_audio": True,
+                      "word_timestamps": True, "chunk_timestamps": True,
+                      "eager": _STREAM_AUDIO if eager is None else eager}
+            if self._phonemes:   # an engine without it ignores the key
+                config["phoneme_timestamps"] = True
+            await send(config)
             await send({"type": "input.text", "text": text})
             await send({"type": "input.done"})
             while True:
@@ -1180,6 +1224,7 @@ class EngineTTSService(TTSService):
                     if not isinstance(b64, str):
                         raise _EngineError(f"malformed audio: {type(b64).__name__}")
                     words = parse_words(data.get("timestamps"))
+                    phones = parse_phones(data.get("timestamps")) if self._phonemes else []
                     if not b64:
                         # The trailing empty chunk: the sentence's full word list.
                         trailing = words or []
@@ -1198,9 +1243,10 @@ class EngineTTSService(TTSService):
                     heard = True
                     block = pcm.astype(np.float32) / 32768.0
                     if _STREAM_AUDIO:
-                        yield "audio", block, words
+                        yield "audio", block, words, phones
                     else:
                         pending.append(block)
+                        chunk_phones += phones
                         if words is not None:
                             chunk_words = (chunk_words or []) + words
                 elif mtype == "audio.done":

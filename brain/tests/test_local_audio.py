@@ -1581,6 +1581,88 @@ def test_end_conversation_without_wake_words_is_refused():
     assert not restart.armed.is_set()
 
 
+def _device(mono):
+    """Mono int16 -> one chunk of device PCM (stereo, the channel duplicated)."""
+    return np.repeat(mono[:, None], la.DEVICE_CHANNELS, axis=1).tobytes()
+
+
+def test_hiss_level_tells_a_hiss_from_a_vowel():
+    n = la.CHUNK_FRAMES
+    assert la.hiss_level(_device(np.zeros(n, "<i2"))) == 0.0                     # silence
+    assert la.hiss_level(_device(_tone(16000, 0.02, 300)[:n])) == 0.0            # a voiced hum
+    assert la.hiss_level(_device(_tone(16000, 0.02, 900)[:n])) < 0.1             # a vowel's formant
+    s = la.hiss_level(_device(_tone(16000, 0.02, 6000)[:n]))                     # an "s"
+    rng = np.random.default_rng(1)
+    noise = la.hiss_level(_device((rng.standard_normal(n) * 3000).astype("<i2")))  # "sh"/"f"
+    assert s == 1.0 and noise > 0.8
+    assert la.hiss_level(_device(_tone(16000, 0.02, 6000, amp=50)[:n])) == 0.0   # too quiet
+
+
+def test_hiss_rides_the_level_of_the_chunk_it_was_heard_in():
+    play, clock, sunk = _playback()
+    rng = np.random.default_rng(2)
+    hiss = (rng.standard_normal(4800) * 6000).astype("<i2")      # 0.2 s at 24 kHz
+    play.push(hiss.tobytes(), voiced=True)
+    play.pump()
+    assert play.mouth_due(clock.t) is not None and play.hiss > 0.8
+    play, clock, sunk = _playback()
+    play.push(_tone(24000, 0.2, 200).tobytes(), voiced=True)   # a hum: no hiss
+    play.pump()
+    assert play.mouth_due(clock.t) is not None and play.hiss == 0.0
+
+
+def test_phonemes_come_due_where_their_audio_lands():
+    """The message says where the audio after it starts (at_ms, in the engine's
+    sentence time): a phoneme at sentence time t is heard (t - at_ms) after that
+    audio's first frame, wherever the queue has put it."""
+    play, clock, sunk = _playback()
+    play.push(_tone(24000, 0.3).tobytes(), voiced=True)     # 300 ms already queued
+    play.phonemes(1000, [["h", 1000, 1060], ["a", 1060, 1200], ["ɪ", 1200, 1300],
+                         ["x", 900, 950]])                   # one from before: dropped
+    play.push(_tone(24000, 0.5).tobytes(), voiced=True)     # the audio they belong to
+    play.pump()
+    t0 = clock.t                                             # the first frame is heard now
+    assert play.phonemes_due(t0 + 0.299) == []
+    assert play.phonemes_due(t0 + 0.301) == ["h"]            # 300 ms in: the second push
+    assert play.phonemes_due(t0 + 0.4) == ["a"]              # 360 ms in
+    assert play.phonemes_due(t0 + 0.499) == []
+    assert play.phonemes_due(t0 + 0.501) == ["ɪ"]            # 500 ms in
+    assert play.phonemes_due(t0 + 1.0) == []
+
+
+def test_a_barge_in_drops_the_phonemes_of_the_audio_it_drops():
+    play, clock, sunk = _playback()
+    play.phonemes(0, [["h", 0, 50], ["a", 2000, 2100]])      # at 0 ms and at 2 s
+    play.push(_tone(24000, 3.0).tobytes(), voiced=True)
+    play.pump()                                              # the card has LEAD_SECS of it
+    play.clear()
+    assert play.phonemes_due(clock.t + 5) == ["h"]           # handed to the card: still heard
+
+
+def test_face_sends_phonemes_and_hiss_only_to_an_avatar_that_draws_them():
+    clock = _Clock()
+    feats = {}
+    sent = []
+    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
+                      features=lambda: feats)
+    face.state("speaking")
+    sent.clear()
+    face.mouth(0.5, 0.9)
+    face.phoneme("s")
+    assert sent == [{"mouth": 0.5}]                          # an older avatar: as before
+    feats["phonemes"] = 1
+    clock.t += la.PHONES_RECHECK_SECS                         # the avatar was updated
+    sent.clear()
+    face.mouth(0.9, 0.9)
+    face.phoneme("s")
+    face.mouth(0.9, 0.0)                                     # same level, hiss gone: sent
+    assert sent == [{"mouth": 0.9, "hiss": 0.9}, {"phoneme": "s"}, {"mouth": 0.9, "hiss": 0.0}]
+    face.state("idle")
+    sent.clear()
+    face.phoneme("a")                                        # not speaking: no shapes
+    assert sent == []
+
+
 if __name__ == "__main__":
     # test_suite.py runs this file as a script: without this it would pass having run nothing.
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

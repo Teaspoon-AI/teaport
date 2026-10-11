@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
 import teaport_brain  # noqa: E402, F401
 
-from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame  # noqa: E402
+from pipecat.frames.frames import ErrorFrame, OutputTransportMessageFrame, TTSAudioRawFrame  # noqa: E402
 
 from teaport_brain import engine_tts  # noqa: E402
 from teaport_brain.engine_tts import (  # noqa: E402
@@ -515,6 +515,56 @@ async def test_synth_text_protocol_edges():
           "engine errors, malformed timestamps keep the audio, TTS_STREAM_AUDIO=0")
 
 
+async def test_phonemes_ride_just_ahead_of_their_audio():
+    """?features=phonemes: the engine is asked for its timed phonemes, and each chunk's go
+    out as a {"type": "phonemes"} message just before that chunk's audio, anchored at the
+    sentence time of the audio's first sample (at_ms: the lead trim plus what this
+    sentence has already played). Without the feature nothing of it is asked or sent."""
+    pcm = (np.arange(-500, 500, dtype=np.int16) * 30).tobytes()
+    ts = [{"word": "Hi", "start_ms": 100, "end_ms": 300,
+           "phonemes": [["h", 100, 160], ["a", 160, 250], "bad", ["ɪ", 250, 300]]}]
+    svc = EngineTTSService(voice="af_heart", phonemes=True)
+    ws = _FakeWS([{"type": "audio.start"}, _chunk(pcm, ts=ts), _chunk(ts=ts),
+                  {"type": "audio.done"}, {"type": "session.done"}])
+
+    async def connect():
+        return ws
+    svc._connect_stream = connect
+    events = [ev async for ev in svc._synth_text("x")]
+    assert ws.sent[0]["phoneme_timestamps"] is True
+    assert events[0][3] == [["h", 100, 160], ["a", 160, 250], ["ɪ", 250, 300]], \
+        "a malformed phoneme is skipped, the rest kept"
+    events, ws = await _events([{"type": "audio.start"}, _chunk(pcm, ts=ts),
+                                {"type": "audio.done"}, {"type": "session.done"}])
+    assert "phoneme_timestamps" not in ws.sent[0] and events[0][3] == []
+
+    a, b = SENTENCE[:int(0.98 * SR)], SENTENCE[int(0.98 * SR):]
+    clause = "Hello there."
+    first, second = [["h", 300, 360], ["ɛ", 360, 450]], [["ð", 1000, 1080]]
+    svc = _Recorder({clause: [("audio", a, [("Hello", 0.3)], first),
+                              ("audio", b, [("there.", 1.0)], second),
+                              ("end", [("Hello", 0.3), ("there.", 1.0)])]})
+    svc._phonemes = True
+    frames = await svc.speak(clause)
+    _, lead_cut = _whole_trim(SENTENCE)
+    msgs = [(i, f.message) for i, f in enumerate(frames) if isinstance(f, OutputTransportMessageFrame)]
+    audio_at = [i for i, f in enumerate(frames) if isinstance(f, TTSAudioRawFrame)]
+    assert [m["phonemes"] for _, m in msgs] == [first, second], msgs
+    assert all(m["type"] == "phonemes" for _, m in msgs)
+    played = 0
+    for i, m in msgs:
+        nxt = min(j for j in audio_at if j > i)          # the audio it rides ahead of
+        played = sum(frames[j].num_frames for j in audio_at if j < i)
+        assert m["at_ms"] == round((lead_cut + played / SR) * 1000), (m, lead_cut, played)
+        assert nxt == i + 1, "the message goes out right before its audio"
+    assert sum(frames[j].num_frames for j in audio_at) > played > 0
+    svc = _Recorder({clause: [("audio", a, [("Hello", 0.3)], first), ("end", [("Hello", 0.3)])]})
+    assert not any(isinstance(f, OutputTransportMessageFrame) for f in await svc.speak(clause)), \
+        "no feature, no phonemes messages"
+    print(f"  PASS phonemes: asked for only with the feature, each chunk's sent just ahead "
+          f"of its audio at its sentence time (lead cut {lead_cut:.2f}s)")
+
+
 def test_tts_streaming():
     test_seam_trim_matches_whole_buffer_trim()
     test_seam_trim_ignores_a_quiet_first_block()
@@ -532,6 +582,7 @@ def test_tts_streaming():
         await test_tallies_are_bounded()
         await test_words_go_out_ahead_of_their_own_chunk()
         await test_a_playout_gap_moves_later_words_and_is_logged()
+        await test_phonemes_ride_just_ahead_of_their_audio()
     asyncio.run(main())
 
 

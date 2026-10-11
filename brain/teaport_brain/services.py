@@ -531,14 +531,16 @@ def make_llm():
 # playout-paced captions — the product's signature). Supertonic (no timestamps)
 # and the brain-local torch/onnx backends were retired 2026-07; the engine's
 # embedded TTS is the single voice path, mirroring STT.
-def make_tts(voice: str | None = None, language: str | None = None):
+def make_tts(voice: str | None = None, language: str | None = None, phonemes: bool = False):
     # voice/language are per-session (OpenClaw-selectable); they fall back
-    # to the TTS_VOICE/TTS_LANGUAGE env, then the defaults.
+    # to the TTS_VOICE/TTS_LANGUAGE env, then the defaults. phonemes: the client
+    # announced ?features=phonemes (engine_tts sends the words' timed phonemes).
     from teaport_brain.engine_tts import EngineTTSService
 
     return EngineTTSService(
         voice=voice or setting("TTS_VOICE"),
         language=language or setting("TTS_LANGUAGE"),
+        phonemes=phonemes,
     )
 
 

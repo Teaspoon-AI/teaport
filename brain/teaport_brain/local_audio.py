@@ -79,7 +79,12 @@
 # thinking), the bot's captions (speaking, the reply text for its sentiment mood) and the
 # speaker going quiet (idle). The mouth follows the AUDIO, not the words: each 20 ms
 # chunk handed to the card carries its loudness, sent as {"mouth": 0..1} at the moment
-# that chunk becomes audible, so the jaw moves on syllables. Only audio a caption has
+# that chunk becomes audible, so the jaw moves on syllables. An avatar that says it draws
+# phonemes (its features file: "phonemes": 1) also gets what is said: we announce
+# ?features=phonemes, the brain sends each word's phonemes as the engine timed them, just
+# ahead of their audio ({"type": "phonemes"}, engine_tts.py), and each is sent as
+# {"phoneme": "a"} when it becomes audible, beside the level's "hiss" (how much of the
+# chunk is s, sh, f: hiss_level) for a mouth that shows its teeth on them. Only audio a caption has
 # vouched for counts as speech: the brain's thinking sound (a typing loop during a long
 # consult) is audio too, and it shows as "thinking", jaw shut. Datagrams are
 # fire-and-forget: no daemon, no face, nothing else changes.
@@ -240,6 +245,8 @@ FACE_STALE_SECS = 12.0
 # Send each mouth level this much before its audio is heard, to cover the avatar's own
 # delay (a 30 fps frame plus the I2C write of the panel).
 FACE_ADVANCE_SECS = setting("LOCAL_AUDIO_FACE_ADVANCE_MS") / 1000
+# How often the avatar's features file is re-read for "phonemes" (FaceTap.draws_phonemes).
+PHONES_RECHECK_SECS = 5.0
 # Chunk loudness -> mouth opening: closed at or below the floor, fully open SPAN dB above.
 MOUTH_FLOOR_DB = -45.0
 MOUTH_SPAN_DB = 25.0
@@ -247,6 +254,13 @@ MOUTH_STEP = 0.05  # smaller changes are not worth a datagram...
 # ...but an open mouth is re-sent this often, so the avatar's 0.5 s "levels have
 # stopped" timeout never lapses on a steady (or clamped-at-1.0) vowel.
 MOUTH_KEEPALIVE_SECS = 0.2
+# hiss_level: the difference/signal energy ratio counts as no hiss up to HISS_FROM (voiced
+# sound, up to ~1.5 kHz) and as all hiss HISS_SPAN above it (~4.5 kHz); chunks under
+# HISS_FLOOR_RMS (int16 units, ~-50 dBFS) are not judged.
+HISS_FROM = 0.08
+HISS_SPAN = 0.4
+HISS_FLOOR_RMS = 100.0
+HISS_STEP = 0.1   # smaller hiss changes ride the next level datagram instead
 
 
 def level_db(pcm: np.ndarray) -> float:
@@ -261,6 +275,25 @@ def mouth_level(chunk: bytes) -> float:
     """Loudness of one chunk of device PCM as a mouth opening, 0 (closed) to 1."""
     db = level_db(np.frombuffer(chunk, dtype="<i2"))
     return float(min(1.0, max(0.0, (db - MOUTH_FLOOR_DB) / MOUTH_SPAN_DB)))
+
+
+def hiss_level(chunk: bytes) -> float:
+    """How much of one chunk of device PCM is hiss (s, sh, f, t), 0 to 1.
+
+    The energy of its first difference against the energy of the chunk: a difference is
+    a high-pass rising 6 dB an octave, so the ratio is sin^2(pi f / rate) for a tone of
+    f Hz -- 0.03 at 900 Hz, where a vowel's energy is, 0.5 at 4 kHz and 0.85 at 6 kHz,
+    where a fricative's is. Two dot products over the chunk, no FFT: numpy runs them on
+    the Orin's NEON units. One channel (the playback is the mono voice, duplicated)."""
+    x = np.frombuffer(chunk, dtype="<i2")[::DEVICE_CHANNELS].astype(np.float32)
+    if x.size < 2:
+        return 0.0
+    energy = float(np.dot(x, x))
+    if energy < x.size * HISS_FLOOR_RMS ** 2:      # silence, or too quiet to tell
+        return 0.0
+    d = np.diff(x)
+    ratio = float(np.dot(d, d)) / (4.0 * energy)   # 0 (DC) .. 1 (Nyquist)
+    return float(min(1.0, max(0.0, (ratio - HISS_FROM) / HISS_SPAN)))
 
 
 class FaceTap:
@@ -283,6 +316,9 @@ class FaceTap:
         self._caption = ""
         self._mouth = 0.0
         self._mouth_t = 0.0
+        self._hiss = 0.0
+        self._phones_at = None   # when the avatar's features were last read, for phonemes
+        self._phones = False
         self._active_t = clock()
         self._bed_since = None
         self._audio_t = None
@@ -361,16 +397,37 @@ class FaceTap:
             self._bed_since = now
         self._audio_t = now
 
-    def mouth(self, level: float) -> None:
+    @property
+    def draws_phonemes(self) -> bool:
+        """The avatar says it draws phonemes ("phonemes" in its features file), read at
+        most every PHONES_RECHECK_SECS: it may start, stop or be updated meanwhile."""
+        now = self._clock()
+        if self._phones_at is None or now - self._phones_at >= PHONES_RECHECK_SECS:
+            self._phones_at = now
+            self._phones = bool(self._features().get("phonemes"))
+        return self._phones
+
+    def mouth(self, level: float, hiss: float | None = None) -> None:
         if self._state != "speaking":
             return self._shut()
         level = round(level, 2)
         now = self._clock()
+        hiss = round(hiss, 1) if hiss is not None and self.draws_phonemes else None
         if (abs(level - self._mouth) >= MOUTH_STEP or (level == 0 and self._mouth)
-                or (level and self._mouth and now - self._mouth_t >= MOUTH_KEEPALIVE_SECS)):
+                or (level and self._mouth and now - self._mouth_t >= MOUTH_KEEPALIVE_SECS)
+                or (hiss is not None and level and abs(hiss - self._hiss) >= HISS_STEP)):
             self._mouth = level
             self._mouth_t = now
-            self._emit({"mouth": level})
+            ev = {"mouth": level}
+            if hiss is not None:
+                self._hiss = hiss
+                ev["hiss"] = hiss
+            self._emit(ev)
+
+    def phoneme(self, symbol: str) -> None:
+        """A phoneme of the reply becomes audible: the avatar shapes the mouth for it."""
+        if self._state == "speaking" and self.draws_phonemes:
+            self._emit({"phoneme": symbol})
 
     def interrupted(self) -> None:
         self._activity()
@@ -642,15 +699,24 @@ class Playback:
         self._pending: deque[list] = deque()
         self._pending_bytes = 0
         self._resampler = soxr.ResampleStream(RELAY_RATE, DEVICE_RATE, 1, dtype="int16")
+        # relay samples into the resampler and device frames out of it: what it still
+        # holds, for where pushed audio will land (phonemes)
+        self._rs_in = self._rs_out = 0
         self._start: float | None = None
         self._written = 0      # frames handed to the card
         self._sound_end = 0    # frame position just past the last non-silent chunk
-        # [frame position, mouth level, voiced] for every chunk not yet heard.
+        # [frame position, mouth level, voiced, hiss] for every chunk not yet heard.
         self._levels: deque[list] = deque()
+        # (frame position, symbol) of every phoneme not yet heard, in order; and the hiss
+        # of the chunks the last mouth_due delivered.
+        self._phones: deque[tuple[int, str]] = deque()
+        self.hiss = 0.0
         self.synced = False
 
     def push(self, relay_audio: bytes, voiced: bool = False) -> None:
         data = relay_to_device(relay_audio, self._resampler)
+        self._rs_in += len(relay_audio) // 2
+        self._rs_out += len(data) // (DEVICE_CHANNELS * 2)
         if not data:
             return
         if self._pending and self._pending[-1][1] == voiced:
@@ -667,12 +733,52 @@ class Playback:
         for lv in self._levels:
             lv[2] = True
 
+    def phonemes(self, at_ms, phones) -> None:
+        """A {"type": "phonemes"} message: the phonemes of the audio that comes next.
+
+        at_ms is the sentence time (the engine's) of the next audio's first sample, and
+        each phoneme [symbol, start_ms, end_ms] is in that time too: it is heard where the
+        next audio lands in our timeline, plus its offset. One already behind that point
+        (its audio came before the message) is dropped. The next audio lands after what
+        is written, what is queued, and what the resampler still holds of earlier pushes."""
+        if not isinstance(phones, list):
+            return
+        try:
+            at = float(at_ms)
+        except (TypeError, ValueError):
+            return
+        held = max(0, round(self._rs_in * DEVICE_RATE / RELAY_RATE) - self._rs_out)
+        anchor = self._written + self._pending_bytes // (DEVICE_CHANNELS * 2) + held
+        last = self._phones[-1][0] if self._phones else 0
+        for p in phones:
+            try:
+                sym, start = str(p[0]), float(p[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if not sym or start < at:
+                continue
+            pos = max(last, anchor + round((start - at) * DEVICE_RATE / 1000))
+            self._phones.append((pos, sym))
+            last = pos
+
+    def phonemes_due(self, now: float) -> list[str]:
+        """The phonemes heard by `now` since the last call, in order."""
+        out = []
+        while self._phones and self._start is not None and \
+                self._start + self._phones[0][0] / DEVICE_RATE <= now:
+            out.append(self._phones.popleft()[1])
+        return out
+
     def clear(self) -> None:
         """Barge-in: drop what has not been handed to the card yet."""
         self._pending.clear()
         self._pending_bytes = 0
+        # ...and the phonemes of that audio (what the card already has still plays)
+        while self._phones and self._phones[-1][0] >= self._written:
+            self._phones.pop()
         # A fresh resampler: the old one holds the tail of the interrupted speech.
         self._resampler = soxr.ResampleStream(RELAY_RATE, DEVICE_RATE, 1, dtype="int16")
+        self._rs_in = self._rs_out = 0
 
     @property
     def speaking(self) -> bool:
@@ -708,7 +814,8 @@ class Playback:
         while self._written / DEVICE_RATE - (now - self._start) < LEAD_SECS:
             chunk, voiced = self._take()
             # The mouth follows the voice as synthesized, not the volume knob.
-            self._levels.append([self._written, mouth_level(chunk), voiced])
+            self._levels.append([self._written, mouth_level(chunk), voiced,
+                                 hiss_level(chunk) if voiced else 0.0])
             gain = self._gain()
             if gain != 1.0 and chunk.strip(b"\0"):
                 pcm = np.frombuffer(chunk, dtype="<i2").astype(np.float32) * gain
@@ -733,8 +840,10 @@ class Playback:
         that is not speech), None if no chunk came due."""
         level = None
         while self._levels and self._start + self._levels[0][0] / DEVICE_RATE <= now:
-            _, lv, voiced = self._levels.popleft()
+            _, lv, voiced, hiss = self._levels.popleft()
             lv = lv if voiced else 0.0
+            if level is None or lv >= level:
+                self.hiss = hiss   # the hiss of the chunk whose level is sent
             level = lv if level is None else max(level, lv)
         return level
 
@@ -940,9 +1049,13 @@ class Card:
             except ConnectionError:
                 await asyncio.sleep(1)  # aplay is gone; _watch says why
                 raise CardError("playback pipe closed") from None
-            level = play.mouth_due(time.monotonic() + FACE_ADVANCE_SECS)
+            heard = time.monotonic() + FACE_ADVANCE_SECS
+            level = play.mouth_due(heard)
             if level is not None:
-                face.mouth(level)
+                face.mouth(level, play.hiss)
+            phones = play.phonemes_due(heard)
+            if phones:
+                face.phoneme(phones[-1])   # several at once (a stall): the latest shape
             if play.speaking:
                 quiet_since = None
             else:
@@ -1002,7 +1115,9 @@ def wake_mode() -> bool:
 
 
 def _url(awake: bool = False) -> str:
-    query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ())),
+    # phonemes only for an avatar that draws them (its features file, read now)
+    phones = ("phonemes",) if display.features(FACE_SOCK).get("phonemes") else ()
+    query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ()) + phones),
              "client": CLIENT_ID}
     if not wake_mode():
         # Without wake words the brain counts our session as asleep (a Talk client may take
@@ -1312,6 +1427,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
             if kind == "clear":
                 play.clear()
                 face.interrupted()
+            elif kind == "phonemes":
+                play.phonemes(m.get("at_ms"), m.get("phonemes"))
             elif kind == "ready":
                 logger.info("session ready")
                 if wake and alive is None:

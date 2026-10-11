@@ -1047,9 +1047,11 @@ if AGENT_FIRST and not TOOLS_BY_NAME["ask_openclaw"].enabled:
     logger.warning("TEAPORT_AGENT_FIRST is on but TEAPORT_TOOL_ASK_OPENCLAW is off — "
                    "ignoring it (agent-first routes every turn through ask_openclaw)")
     AGENT_FIRST = False
-# The client features a /talk client may announce (?features=): one per client tool.
+# The client features a /talk client may announce (?features=): one per client tool,
+# and "phonemes": the client draws a mouth from what is said (local_audio.py, for the
+# OLED face), so the session's TTS sends each word's timed phonemes with the audio.
 CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
-                            if n.startswith("client:"))
+                            if n.startswith("client:")) | {"phonemes"}
 
 
 def parse_client_features(raw: str | None) -> frozenset:
