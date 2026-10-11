@@ -15,6 +15,7 @@
 # host/port (the stream path is derived), or ENGINE_TTS_STREAM_URL sets the stream URL directly.
 
 import asyncio
+import functools
 import math
 import time
 from contextlib import aclosing
@@ -383,33 +384,75 @@ def _require_context_end_hook():
                              "needs a new hook")
 
 
-def _missing_pacing_hooks(tts) -> list[str]:
+def _missing_pacing_hooks(cls=TTSService) -> tuple[str, ...]:
     """"lead" pacing (_pace) leans on two PRIVATE pipecat 1.8.1 TTSService internals:
     _refresh_audio_context(context_id), the keepalive that stops the audio-context
     watchdog closing a reply mid-wait, and _stop_frame_timeout_s, that watchdog's
     timeout. A pipecat bump that drops either would raise mid-reply on a live call
-    (issue #87), so check at session build. Unlike _require_context_end_hook this
-    only warns: pacing saves GPU work, and greedy is safe without either."""
+    (issue #87). Unlike _require_context_end_hook this only reports: pacing saves GPU
+    work, and greedy is safe without either. Everything here reads the class (`cls`,
+    TTSService but for tests), not a session's instance: it is a property of the
+    installed pipecat, which pacing_status asks about once. Each entry says what
+    does not fit, for the WARNING and `teaport doctor`."""
     import inspect
     missing = []
-    hook = getattr(TTSService, "_refresh_audio_context", None)
+    hook = getattr(cls, "_refresh_audio_context", None)
     # _pace calls it without await: an async one would queue no keepalive at all.
     if (hook is None or inspect.iscoroutinefunction(hook)
             or "context_id" not in inspect.signature(hook).parameters):
-        missing.append("_refresh_audio_context(context_id)")
-    if not isinstance(getattr(tts, "_stop_frame_timeout_s", None), (int, float)):
-        missing.append("_stop_frame_timeout_s")
+        missing.append("no sync _refresh_audio_context(context_id)")
+    # The constructor sets it on every instance from its stop_frame_timeout_s argument.
+    # Some __init__ up the MRO (pipecat may move it into a base) must still assign it:
+    # bytecode names each attribute a function assigns, and is there even without .py
+    # sources. And that argument must default to a positive number: _pace divides it.
+    inits = [inspect.unwrap(c.__dict__["__init__"]) for c in cls.__mro__
+             if "__init__" in c.__dict__]
+    if not any("_stop_frame_timeout_s" in getattr(getattr(f, "__code__", None),
+                                                  "co_names", ()) for f in inits):
+        missing.append("no __init__ that sets _stop_frame_timeout_s")
+    params = [p for f in inits for p in _signature_params(f)
+              if p.name == "stop_frame_timeout_s"]   # the most derived one first
+    default = params[0].default if params else None
+    if not (isinstance(default, (int, float)) and not isinstance(default, bool)
+            and default > 0):
+        missing.append("no positive stop_frame_timeout_s default")
     # Present is not enough: the watchdog must still time out on that value and still
     # skip the keepalive. Without .py sources, skip this part, as
     # _require_context_end_hook does.
     try:
-        source = inspect.getsource(TTSService._handle_audio_context)
+        source = inspect.getsource(cls._handle_audio_context)
     except (OSError, TypeError):
-        return missing
-    missing += [f"_handle_audio_context using {name}"
+        return tuple(missing)
+    missing += [f"its watchdog (_handle_audio_context) no longer uses {name}"
                 for name in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE")
                 if name not in source]
-    return missing
+    return tuple(missing)
+
+
+def _signature_params(f):
+    import inspect
+    try:
+        return inspect.signature(f).parameters.values()
+    except (TypeError, ValueError):  # a C slot such as object.__init__
+        return ()
+
+
+@functools.cache
+def pacing_status() -> dict:
+    """TTS_PACING as configured, the pacing sessions actually run, and what "lead"
+    found missing from pipecat when it fell back to "greedy" (issue #138), with the
+    pipecat version that was checked. Worked out once per process (the startup TTS
+    warm-up asks first): every session's pacing, its WARNING, /health and, through
+    /health, `teaport doctor` all read this one answer. Shared, so "missing" is a
+    tuple."""
+    from importlib.metadata import PackageNotFoundError, version
+    missing = _missing_pacing_hooks() if _PACING == "lead" else ()
+    try:
+        pipecat = version("pipecat-ai")
+    except PackageNotFoundError:
+        pipecat = "unknown"
+    return {"configured": _PACING, "effective": "greedy" if missing else _PACING,
+            "missing": missing, "pipecat": pipecat}
 
 
 class EngineTTSService(TTSService):
@@ -464,7 +507,7 @@ class EngineTTSService(TTSService):
         self._user_quiet.set()
         self._speech_hold_max_s = _USER_SPEECH_HOLD_MAX_S
         self._hold_on_user_speech = _HOLD_ON_USER_SPEECH
-        self._pacing, self._lead_s, self._eager = _PACING, _LEAD_S, _EAGER
+        self._lead_s, self._eager = _LEAD_S, _EAGER
         # Per-session estimates of a clause's audio length and synth time (see
         # _est_synth_secs), learned from every clause this session synthesizes.
         self._secs_per_char = _SECS_PER_CHAR_SEED
@@ -532,10 +575,12 @@ class EngineTTSService(TTSService):
         )
         if self._speed != 1.0:
             logger.warning(f"engine TTS ignores speed={self._speed} (engine synthesizes at 1.0)")
-        if self._pacing == "lead" and (missing := _missing_pacing_hooks(self)):
-            logger.warning(f"TTS_PACING=lead needs pipecat TTSService {', '.join(missing)}, "
-                           "which this pipecat lacks: pacing greedy for this session")
-            self._pacing = "greedy"
+        pacing = pacing_status()
+        if pacing["missing"]:
+            logger.warning(f"TTS_PACING=lead does not fit pipecat {pacing['pipecat']}'s "
+                           f"TTSService ({'; '.join(pacing['missing'])}): pacing greedy "
+                           "for this session")
+        self._pacing = pacing["effective"]
         logger.info(f"EngineTTSService ready (engine text-in, voice={self._voice}, "
                     f"lang={self._espeak_lang}, 24kHz)")
 
@@ -653,7 +698,11 @@ class EngineTTSService(TTSService):
         if self._pacing != "lead":
             return 0.0
         target = self._lead_target(clause)
-        step = min(1.0, self._stop_frame_timeout_s / 2)
+        # pacing_status vouches for the class default; an instance built with a bad
+        # value still must not raise mid-reply (issue #87): refresh every 0.5 s then.
+        timeout = getattr(self, "_stop_frame_timeout_s", None)
+        step = (min(1.0, timeout / 2) if isinstance(timeout, (int, float))
+                and not isinstance(timeout, bool) and timeout > 0 else 0.5)
         t0 = time.monotonic()
         while True:
             lead = self._lead_secs()
