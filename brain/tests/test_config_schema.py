@@ -119,6 +119,10 @@ def main() -> int:
                 problems.append(f"{n}: enum without values")
             elif "default" in r and str(r["default"]) not in vals:
                 problems.append(f"{n}: default {r['default']!r} not in values")
+        # setting() returns "" for it: only a text row may (an enum lists "" in values).
+        if "empty" in r and (r["type"] not in ("string", "path", "dir", "url", "ws_url")
+                             or not isinstance(r["empty"], str) or not r["empty"]):
+            problems.append(f"{n}: empty is the words for what \"\" means, on a text row")
         if r["type"] == "secret" and r["store"] != "sip_conf" and "file" not in r \
                 and r["tier"] != "installer":
             problems.append(f"{n}: operator secret must name the file the UI writes")

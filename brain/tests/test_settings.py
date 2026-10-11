@@ -154,6 +154,18 @@ def test_an_enum_whose_values_include_empty_reads_a_set_empty_value_as_itself():
     assert setting("HEARD_MODE", env={"HEARD_MODE": ""}) == "truncate"
 
 
+def test_a_row_with_an_empty_field_reads_a_set_empty_value_as_itself():
+    # TEAPORT_SIP_SOCKET="" turns the SIP front-end off (#127); unset is the default socket.
+    from teaport_brain.sip_transport import DEFAULT_UDS_PATH
+    assert setting("TEAPORT_SIP_SOCKET", env={}) == DEFAULT_UDS_PATH
+    assert setting("TEAPORT_SIP_SOCKET", env={"TEAPORT_SIP_SOCKET": ""}) == ""
+    assert setting("TEAPORT_SIP_SOCKET", env={"TEAPORT_SIP_SOCKET": "  "}) == ""
+    assert setting("TEAPORT_SIP_SOCKET", env={"TEAPORT_SIP_SOCKET": "/tmp/x.sock"}) == "/tmp/x.sock"
+    assert settings.empty_is_value(settings.ROWS["TEAPORT_SIP_SOCKET"])
+    assert settings.empty_is_value(settings.ROWS["LLM_REASONING_EFFORT"])
+    assert not settings.empty_is_value(settings.ROWS["TTS_VOICE"])
+
+
 def test_paths_expand_the_home_directory():
     home = os.path.expanduser("~")
     assert setting("TEAPORT_PERSONA_FILE", env={}) == os.path.join(home, ".config/teaport/persona.md")

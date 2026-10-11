@@ -20,9 +20,11 @@
 #   `source`d brain.env and stripped the quotes).
 #
 #   An EMPTY value means "not set". `TEAPORT_LLM_TEXT_GUARD=` is a plausible hand-edit,
-#   and it must not switch a safety guard off. The one exception is an enum that lists
-#   "" among its values (`LLM_REASONING_EFFORT=""` sends no effort at all): there the
-#   schema says empty is a value, and the config UI writes it as one.
+#   and it must not switch a safety guard off. The exception is a row whose schema says
+#   empty is a value (empty_is_value): an enum that lists "" among its values
+#   (`LLM_REASONING_EFFORT=""` sends no effort at all), or any other row with an `empty`
+#   field naming what it means (`TEAPORT_SIP_SOCKET=""` is "off"). There a set-but-empty
+#   value reads as "", unset is still the default, and the config UI writes "" as a value.
 #
 #   A flag has ONE truth table — pipecat's env_truthy, which this process already uses
 #   for its PIPECAT_* flags — and a flag that is off says so in the journal. Three
@@ -134,6 +136,13 @@ PARSERS = {
 }
 
 
+def empty_is_value(row: dict) -> bool:
+    """Whether a set-but-empty value is the value "" rather than "not set". An enum says
+    so by listing "" (the page offers it with the others); any other row by its `empty`
+    field, the words for what "" means there."""
+    return "empty" in row or "" in row.get("values", ())
+
+
 def parse(row: dict, text: str):
     """(value, None) when `text` is a value of `row`'s type, else (None, the reason).
 
@@ -181,16 +190,17 @@ def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
     """The value of setting `name`: its environment text, parsed by its schema row.
 
     Unset or empty -> the row's default, or `default` for the few rows whose default
-    is computed in code. A value that does not parse warns and falls back the same
-    way: these are read at import, and an exception would crash-loop the service.
+    is computed in code; set-but-empty is "" instead where empty_is_value(row). A value
+    that does not parse warns and falls back the same way: these are read at import,
+    and an exception would crash-loop the service.
     Values are stripped, except a secret's: it is compared byte for byte elsewhere,
     and a passphrase may end in a space."""
     row = ROWS[name]
     fallback = default_of(row) if default is _SCHEMA_DEFAULT else default
     given = env.get(name)
     if not (given or "").strip():
-        if given is not None and "" in row.get("values", ()):
-            return ""  # set, and empty is one of the enum's values
+        if given is not None and empty_is_value(row):
+            return ""  # set, and the schema says empty is a value
         return fallback
     raw = given if row["type"] == "secret" else given.strip()
     value, problem = parse(row, raw)

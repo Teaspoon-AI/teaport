@@ -235,7 +235,7 @@ In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls)
 | `SIP_ANSWER_AFTER_SECS` | **5** s (≥ 0) | How long a call rings before the brain answers it: a couple of rings, time it builds the call's pipeline and has the greeting worded in, so the greeting plays as soon as the caller is connected. 0 answers as soon as the pipeline is up. Needs the gateway's auto_answer off (the brain answers). |
 | `TEAPORT_CALL_PROMPT_SECS` | **12** s (≥ 0) | When a call comes in during a conversation (a Talk session, or the room mic awake), the agent asks the people in it first ("Someone's calling me — … Should I step away for a moment?"). This is how long they have to answer, from the end of the question; the caller hears it ring meanwhile. |
 | `TEAPORT_CALL_PROMPT_DEFAULT` | `take` | What happens when nobody answers that question in time: take (the conversation goes on hold and the call is answered) or ring (the call is never answered and rings until the caller gives up). One of `take`, `ring`. |
-| `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |
+| `TEAPORT_SIP_SOCKET` | `/run/teaport/teaport-sip.sock` (`""` = off) | Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off. *Set by the installer.* |
 
 ## Diagnostics
 

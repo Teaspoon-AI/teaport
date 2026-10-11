@@ -21,7 +21,9 @@
 #   services  override of the store's services when only one reads it
 #   unit      s | ms | dB | chars | frames | port | tokens
 #   min/max   numeric bounds the UI enforces (code may or may not clamp)
-#   values    enum values ("" allowed)
+#   values    enum values ("" allowed: a set-but-empty value then reads as "", not unset)
+#   empty     for a non-enum row whose set-but-empty value is a value, not unset: what ""
+#             means there, a word or two the UI and docs show ("off" for TEAPORT_SIP_SOCKET)
 #   file      for secrets: the file the UI writes instead of the env var
 #   accepts   for flags whose reader tests for these words alone, not the flag table (LEDGER_TRACE)
 #   help      one or two sentences; the docs generator copies it verbatim
@@ -1575,6 +1577,7 @@ group = "sip_brain"
 services = ["teaport-brain"]
 type = "path"
 default = "/run/teaport/teaport-sip.sock"
+empty = "off"
 read = "startup"
 tier = "installer"
 help = "Gateway-to-brain Unix socket. teaport-brain looks for it every 2 s and connects whenever the gateway is up; while there is none (telephony off) the SIP front-end does nothing. Empty turns the SIP front-end off."
