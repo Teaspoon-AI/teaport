@@ -2116,6 +2116,18 @@ tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
 
 [[settings]]
+name = "LOCAL_AUDIO_DUPLEX_MAX_VOLUME"
+store = "local_audio_env"
+group = "local_audio"
+type = "int"
+default = 50
+min = 0
+max = 100
+read = "startup"
+tier = "tuning"
+help = "Up to this speaker volume (percent) the XVF3800's echo suppressor is off, so the mic hears you while the bot is talking. Above it the chip's own echo suppression comes back, because the bot's voice would leak into what you say. 0 keeps the chip's own settings at every volume."
+
+[[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
 store = "local_audio_env"
 group = "local_audio"

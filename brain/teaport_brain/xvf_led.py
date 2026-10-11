@@ -146,10 +146,10 @@ def write_u8(dev, cmd: int, value: int) -> None:
     dev.control(VENDOR_OUT, cmd, LED_RESID, bytes([value]))
 
 
-def read(dev, cmd: int, size: int) -> bytes:
+def read(dev, cmd: int, size: int, resid: int = LED_RESID) -> bytes:
     """The value of a read command (`size` bytes, the status byte stripped)."""
     for _ in range(READ_ATTEMPTS):
-        got = dev.control(VENDOR_IN, 0x80 | cmd, LED_RESID, size + 1)
+        got = dev.control(VENDOR_IN, 0x80 | cmd, resid, size + 1)
         if got and got[0] == STATUS_OK and len(got) == size + 1:
             return got[1:]
         if not got or got[0] != STATUS_RETRY:

@@ -114,7 +114,7 @@ import numpy as np
 import soxr
 from loguru import logger
 
-from teaport_brain import display
+from teaport_brain import display, xvf_echo
 from teaport_brain.wake_words import parse_phrases as wake_phrases
 from teaport_brain.settings import setting
 
@@ -487,6 +487,9 @@ class Volume:
     def __init__(self, path: str | None = None):
         self._path = path or VOLUME_FILE
         self.percent = 100
+        # Called with the new percent after every set_volume (run_bridge: the mic's echo
+        # suppression follows the volume, xvf_echo.py). Must not block.
+        self.on_change = None
         try:
             with open(self._path) as f:
                 saved = json.load(f)
@@ -528,6 +531,8 @@ class Volume:
         self.percent = target
         self._save()
         logger.info(f"volume -> {target}%")
+        if self.on_change is not None:
+            self.on_change(target)
         return result
 
     def _save(self) -> None:
@@ -893,9 +898,11 @@ class Card:
 
     FMT = ["-f", "S16_LE", "-r", str(DEVICE_RATE), "-c", str(DEVICE_CHANNELS), "-q", "-t", "raw"]
 
-    def __init__(self, face: FaceTap, device: str | None = None, volume: Volume | None = None):
+    def __init__(self, face: FaceTap, device: str | None = None, volume: Volume | None = None,
+                 echo: "xvf_echo.EchoSuppression | None" = None):
         self.face = face
         self.volume = volume or Volume()
+        self.echo = echo
         self.device = device = device or DEVICE
         self.play: Playback | None = None
         self.failed: asyncio.Future = asyncio.get_running_loop().create_future()
@@ -976,6 +983,9 @@ class Card:
             logger.info(f"playback timeline: wall clock ({self.device} is not a hw: device)")
         arecord, first = await self._open_capture()
         self._run(self._capture(arecord, first))
+        if self.echo is not None:
+            # A card (re)opened may be a chip replugged or reset to its own settings.
+            await asyncio.to_thread(self.echo.apply, self.volume.percent)
 
     async def _open_capture(self) -> tuple[asyncio.subprocess.Process, bytes]:
         # Playback is running by now; give it a moment, and retry a capture that
@@ -1659,6 +1669,9 @@ async def run_bridge() -> None:
     face.state("idle")
     volume = Volume()
     logger.info(f"volume: {volume.percent}%")
+    echo = xvf_echo.EchoSuppression()
+    loop = asyncio.get_running_loop()
+    volume.on_change = lambda percent: loop.run_in_executor(None, echo.apply, percent)
     connect_now = True  # the first session dials at once (and is greeted)
     backoff = None  # another client took the box: a Backoff to wait out (kept across card reopens)
     card_wait = dial_wait = RETRY_SECS
@@ -1679,7 +1692,7 @@ async def run_bridge() -> None:
         await rest_face(face)
     try:
         while True:
-            card = Card(face, volume=volume)
+            card = Card(face, volume=volume, echo=echo)
             try:
                 await card.open()
                 logger.info(f"card ready: {card.device}")
