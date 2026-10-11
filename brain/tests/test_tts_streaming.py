@@ -28,7 +28,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 # sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
 import teaport_brain  # noqa: E402, F401
 
-from pipecat.frames.frames import ErrorFrame, TTSAudioRawFrame  # noqa: E402
+from pipecat.frames.frames import ErrorFrame, OutputTransportMessageFrame, TTSAudioRawFrame  # noqa: E402
 
 from teaport_brain import engine_tts  # noqa: E402
 from teaport_brain.engine_tts import (  # noqa: E402
@@ -515,6 +515,88 @@ async def test_synth_text_protocol_edges():
           "engine errors, malformed timestamps keep the audio, TTS_STREAM_AUDIO=0")
 
 
+async def test_phonemes_ride_just_ahead_of_their_audio():
+    """?features=phonemes: the engine is asked for its timed phonemes, and each chunk's go
+    out as a {"type": "phonemes"} message just before that chunk's audio, anchored at the
+    sentence time of the audio's first sample (at_ms: the lead trim plus what this
+    sentence has already played). Without the feature nothing of it is asked or sent."""
+    pcm = (np.arange(-500, 500, dtype=np.int16) * 30).tobytes()
+    ts = [{"word": "Hi", "start_ms": 100, "end_ms": 300,
+           "phonemes": [["h", 100, 160], ["a", 160, 250], "bad", ["x", float("inf"), 1],
+                        ["ɪ", 250, 300]]},
+          {"word": "x", "start_ms": 300, "end_ms": 320, "phonemes": 5},
+          {"word": "y", "start_ms": 320, "end_ms": 340, "phonemes": True},
+          {"word": "z", "start_ms": 340, "end_ms": 360, "phonemes": 1.5}, "notaword"]
+    svc = EngineTTSService(voice="af_heart", phonemes=True)
+    ws = _FakeWS([{"type": "audio.start"}, _chunk(pcm, ts=ts), _chunk(ts=ts),
+                  {"type": "audio.done"}, {"type": "session.done"}])
+
+    async def connect():
+        return ws
+    svc._connect_stream = connect
+    events = [ev async for ev in svc._synth_text("x")]
+    assert ws.sent[0]["phoneme_timestamps"] is True
+    assert events[0][3] == [["h", 100, 160], ["a", 160, 250], ["ɪ", 250, 300]], \
+        "malformed phonemes, lists and words are skipped, the rest kept, the reply goes on"
+    saved, engine_tts._STREAM_AUDIO = engine_tts._STREAM_AUDIO, False   # one block a sentence
+    try:
+        ws = _FakeWS([{"type": "audio.start"}, _chunk(pcm[:1000], ts=ts[:1]), _chunk(pcm[1000:], ts=[]),
+                      _chunk(ts=ts[:1]), {"type": "audio.done"}, {"type": "session.done"}])
+        svc._connect_stream = connect
+        events = [ev async for ev in svc._synth_text("x")]
+    finally:
+        engine_tts._STREAM_AUDIO = saved
+    assert [e[0] for e in events] == ["audio", "end"] and len(events[0][3]) == 3, \
+        "a buffered sentence keeps its chunks' phonemes, not the trailing list's twice"
+    events, ws = await _events([{"type": "audio.start"}, _chunk(pcm, ts=ts),
+                                {"type": "audio.done"}, {"type": "session.done"}])
+    assert "phoneme_timestamps" not in ws.sent[0] and events[0][3] == []
+
+    a, b = SENTENCE[:int(0.98 * SR)], SENTENCE[int(0.98 * SR):]
+    clause = "Hello there."
+    first, second = [["h", 300, 360], ["ɛ", 360, 450]], [["ð", 1000, 1080]]
+    svc = _Recorder({clause: [("audio", a, [("Hello", 0.3)], first),
+                              ("audio", b, [("there.", 1.0)], second),
+                              ("end", [("Hello", 0.3), ("there.", 1.0)])]})
+    svc._phonemes = True
+    frames = await svc.speak(clause)
+    _, lead_cut = _whole_trim(SENTENCE)
+    msgs = [(i, f.message) for i, f in enumerate(frames) if isinstance(f, OutputTransportMessageFrame)]
+    audio_at = [i for i, f in enumerate(frames) if isinstance(f, TTSAudioRawFrame)]
+    assert [m["phonemes"] for _, m in msgs] == [first, second], msgs
+    assert all(m["type"] == "phonemes" for _, m in msgs)
+    played = 0
+    block = engine_tts._TRANSPORT_BLOCK_MS * SR // 1000      # samples in one transport block
+    for i, m in msgs:
+        nxt = min(j for j in audio_at if j > i)          # the audio it rides ahead of
+        played = sum(frames[j].num_frames for j in audio_at if j < i)
+        held = played % block                            # what the transport holds back
+        assert m["at_ms"] == round((lead_cut + played / SR) * 1000 - held / SR * 1000), \
+            (m, lead_cut, played, held)
+        assert nxt == i + 1, "the message goes out right before its audio"
+    assert sum(frames[j].num_frames for j in audio_at) > played > 0
+    assert played % block, "the case must leave a partial block held, or it tests nothing"
+    # A second engine sentence in the same clause anchors in its own sentence time.
+    two = "One. Two."
+    svc = _Recorder({two: [("audio", SENTENCE, [("One.", 0.3)], [["w", 300, 400]]),
+                           ("end", [("One.", 0.3)]),
+                           ("audio", SENTENCE, [("Two.", 0.3)], [["t", 300, 380]]),
+                           ("end", [("Two.", 0.3)])]})
+    svc._phonemes = True
+    frames = await svc.speak(two)
+    msgs = [f.message for f in frames if isinstance(f, OutputTransportMessageFrame)]
+    first_len = sum(f.num_frames for f in frames[:[i for i, f in enumerate(frames)
+                    if isinstance(f, OutputTransportMessageFrame)][1]] if isinstance(f, TTSAudioRawFrame))
+    assert [m["phonemes"] for m in msgs] == [[["w", 300, 400]], [["t", 300, 380]]]
+    assert msgs[1]["at_ms"] == round((lead_cut - (first_len % block) / SR) * 1000), \
+        "the second sentence starts at its own lead, less what the first left held"
+    svc = _Recorder({clause: [("audio", a, [("Hello", 0.3)], first), ("end", [("Hello", 0.3)])]})
+    assert not any(isinstance(f, OutputTransportMessageFrame) for f in await svc.speak(clause)), \
+        "no feature, no phonemes messages"
+    print(f"  PASS phonemes: asked for only with the feature, each chunk's sent just ahead "
+          f"of its audio at its sentence time (lead cut {lead_cut:.2f}s)")
+
+
 def test_tts_streaming():
     test_seam_trim_matches_whole_buffer_trim()
     test_seam_trim_ignores_a_quiet_first_block()
@@ -532,6 +614,7 @@ def test_tts_streaming():
         await test_tallies_are_bounded()
         await test_words_go_out_ahead_of_their_own_chunk()
         await test_a_playout_gap_moves_later_words_and_is_logged()
+        await test_phonemes_ride_just_ahead_of_their_audio()
     asyncio.run(main())
 
 

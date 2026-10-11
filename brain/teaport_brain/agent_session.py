@@ -945,7 +945,8 @@ def build_agent_session(transport, *, voice: str | None = None,
       prompt gets its one line (client_notes.py). SIP leaves it off.
     - client_features: what the connected client can do itself (a /talk client's
       ?features=, tools.parse_client_features): offers the client tools that need
-      them (set_volume, restart_session). SIP passes none.
+      them (set_volume, restart_session), and "phonemes" makes the TTS send each word's
+      timed phonemes with the audio (the OLED face's mouth). SIP passes none.
     - reply_hold_enabled: hold a reply's first audio while the caller is talking
       (reply_hold.py). Per front-end: sip_server passes reply_hold.SIP_ENABLED (on by
       default), gateway_server reply_hold.TALK_ENABLED (off by default).
@@ -981,7 +982,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     if wake_gate is not None:
         stt.wake_gate = wake_gate
     llm = make_llm()
-    tts = make_tts(voice=voice, language=language)
+    tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
 
     # Phase 1: identity comes from the shared persona so voice and text feel like one
     # agent; build_system_prompt falls back to the baked-in persona if the shared
