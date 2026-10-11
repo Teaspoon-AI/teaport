@@ -105,6 +105,18 @@ have() { command -v "$1" >/dev/null 2>&1; }
 # takes SIGPIPE (141), and pipefail reports the pipeline as failed *because* it matched.
 # Capture the output first, then test it — no pipe, no race.
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+# read_env_file <path> [--lenient] — print an env file, read privileged when the plain read
+# fails. Ours are usually group-readable by RUN_USER (write_env's chgrp/chmod 640), but a
+# first install under plain sudo leaves them root:root, and TEAPORT_USER may differ from
+# whoever runs the repair. Plain `sudo`, not SUDO: a read, so --dry-run does it too.
+# Fails when the read does; --lenient prints nothing instead, for a caller that can carry
+# on without the file. The one copy: resolve_gateway_token, write_env and brain_verify
+# each had their own, and a fix to one would have missed the others (#59).
+read_env_file() {
+  if [ -r "$1" ]; then cat "$1"
+  elif [ "${2:-}" = --lenient ]; then sudo cat "$1" 2>/dev/null || true
+  else sudo cat "$1"; fi
+}
 
 # --- manifest ----------------------------------------------------------------
 MF=""  # local path to the fetched manifest
@@ -422,6 +434,16 @@ BRAIN_LEGACY="$PREFIX/venv.pre-uv"
 # so. --no-optional-locks keeps `status` from rewriting .git/index (git's own flag for
 # read-only callers like this one).
 SRC_DIR=""
+# What --only brain installs from a checkout, and so all its freshness check looks at:
+# the brain (brain_stage), the CLI (brain_install_tools), the busy lamp's udev rule
+# (install_busy_lamp) — and install.sh itself. The installer is not just the runner: how
+# the brain is built lives in it (uv's flags and pin: a checkout one commit behind the
+# --reinstall-package fix installed the PREVIOUS build's code under the new revision),
+# and so does some of what --only brain writes (the busy lamp's group and tmpfiles line,
+# sip_brain_detach's and migrate_brain_dropins' unit edits). The price: a commit that
+# touches install.sh for the engine or SIP alone also asks for a git pull first.
+# Keep in step with those functions (test_install_brain_only.py checks the paths).
+BRAIN_ONLY_PATHS=(brain cli packaging/xvf3800 install.sh)
 # brain_src_fetch — fetch the checkout's upstream without ever stopping at a prompt:
 # GIT_TERMINAL_PROMPT for https, ssh BatchMode for ssh, and a timeout for anything else.
 # BatchMode only when neither the environment nor the repo names its own ssh command —
@@ -454,16 +476,25 @@ check_brain_source() {
   elif ! brain_src_fetch; then
     warn "cannot fetch $up — checking this checkout against the last fetch instead"
   fi
-  behind="$(git -C "$HERE" rev-list --count "HEAD..$up" 2>/dev/null)" || behind=0
+  # A full install consumes the whole checkout, so any upstream commit counts. --only brain
+  # consumes only BRAIN_ONLY_PATHS, so upstream commits that touch none of them (the
+  # engine's, the plugin's, docs) do not make it stale and are not refused.
+  local scope=() what=""
+  if [ "$ONLY" = brain ]; then scope=(-- "${BRAIN_ONLY_PATHS[@]}"); what=" in what --only brain installs (${BRAIN_ONLY_PATHS[*]})"; fi
+  behind="$(git -C "$HERE" rev-list --count "HEAD..$up" "${scope[@]}" 2>/dev/null)" || behind=0
   if [ "$behind" -gt 0 ]; then
-    local msg="this checkout ($HERE) is $behind commit(s) behind $up — it would install an older brain than $up holds. git pull first"
+    local msg="this checkout ($HERE) is $behind commit(s) behind $up$what — it would install older code than $up holds. git pull first"
     if [ "$ALLOW_STALE_SOURCE" = 1 ]; then warn "$msg (installing anyway: TEAPORT_ALLOW_STALE_SOURCE=1)"
     elif [ "$DRY_RUN" = 1 ]; then warn "$msg (a real run stops here)"
     else die "$msg, or set TEAPORT_ALLOW_STALE_SOURCE=1 to install it anyway"; fi
   fi
-  if [ -n "$(git -C "$HERE" --no-optional-locks status --porcelain -- brain 2>/dev/null)" ]; then
-    warn "uncommitted changes under $HERE/brain are installed too (the venv's revision is marked -dirty)"
-  fi
+  local p dirty="" mark=""
+  for p in "${BRAIN_ONLY_PATHS[@]}"; do
+    if [ -n "$(git -C "$HERE" --no-optional-locks status --porcelain -- "$p" 2>/dev/null)" ]; then dirty="$dirty $p"; fi
+  done
+  # Only brain/ goes into the release's revision label (brain_release_id).
+  if contains " brain " "$dirty "; then mark=" (the venv's revision is marked -dirty)"; fi
+  if [ -n "$dirty" ]; then warn "uncommitted changes in $HERE are used too:$dirty$mark"; fi
 }
 
 # resolve_brain_src — SRC_DIR as check_brain_source chose it, else a clone of the
@@ -663,11 +694,11 @@ FAILED_UNIT=""
 brain_verify() {
   local u i n port now up=0 ids=()
   FAILED_UNIT=teaport-brain.service
-  # brain.env can be root-only (a first install under plain sudo — see write_env). A port
-  # read that fell back to the default would poll the wrong port and roll back a healthy
-  # brain, so read it privileged when the plain read fails, as resolve_gateway_token does.
+  # brain.env can be root-only (a first install under plain sudo — see read_env_file). A
+  # port read that fell back to the default would poll the wrong port and roll back a
+  # healthy brain, so it is read privileged when the plain read fails.
   local envtxt=""
-  if [ -r "$ETC/brain.env" ]; then envtxt="$(cat "$ETC/brain.env")"; else envtxt="$(sudo cat "$ETC/brain.env" 2>/dev/null || true)"; fi
+  envtxt="$(read_env_file "$ETC/brain.env" --lenient)"
   port="$(sed -n 's/^BRAIN_PORT=//p' <<<"$envtxt" | tail -1)"; port="${port//[\"\']/}"; port="${port:-$BRAIN_PORT}"
   if contains teaport-brain.service "$*"; then
     local deadline=$((SECONDS + 90))
@@ -909,12 +940,12 @@ resolve_gateway_token() {
   # file it cannot open, `set -o pipefail` promotes that to the pipeline, and the installer
   # died right here — exit 2, no message, before any phase that could have explained it, and
   # before write_env's privileged read ever ran (measured with a root:root brain.env,
-  # 2026-08-12). Read privileged when the plain read fails, and parse in-shell: `sed | head`
-  # also risks SIGPIPE killing sed under pipefail, which is the same class of bug.
+  # 2026-08-12). Read privileged when the plain read fails (read_env_file), and parse
+  # in-shell: `sed | head` also risks SIGPIPE killing sed under pipefail, which is the same
+  # class of bug.
   if [ -f "$ETC/brain.env" ]; then
     local envtxt="" line
-    if [ -r "$ETC/brain.env" ]; then envtxt="$(cat "$ETC/brain.env")"
-    else envtxt="$(sudo cat "$ETC/brain.env" 2>/dev/null || true)"; fi
+    envtxt="$(read_env_file "$ETC/brain.env" --lenient)"
     while IFS= read -r line || [ -n "$line" ]; do
       case "$line" in GATEWAY_TOKEN=*) GATEWAY_TOKEN="${line#GATEWAY_TOKEN=}"; break ;; esac
     done <<<"$envtxt"
@@ -1214,19 +1245,14 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
   # with nothing in the page saying why. An explicit answer is passed plain, and wins.
   local path="$1"; shift
   local keep=() ours=() overwritten=() managed=" " existing_keys=" " line
-  # The read must not silently degrade to a clobber. Usually the file is group-readable by
-  # RUN_USER (write_env's own chgrp/chmod 640) — but a first install under plain sudo leaves
-  # it root:root, and TEAPORT_USER may differ from whoever runs the repair. The rewrite
-  # below is privileged (SUDO tee), so when plain read fails, read privileged too.
+  # The read must not silently degrade to a clobber. The rewrite below is privileged (SUDO
+  # tee), so when the plain read fails, read privileged too (read_env_file) — and stop if
+  # even that fails. A dry run does not sudo: it says what a real run would read.
   local existing=""
-  if [ -r "$path" ]; then
-    existing="$(cat "$path")"
+  if [ -e "$path" ] && [ ! -r "$path" ] && [ "$DRY_RUN" = 1 ]; then
+    warn "$path is not readable by $(id -un) — a real run reads it with sudo to preserve operator settings"
   elif [ -e "$path" ]; then
-    if [ "$DRY_RUN" = 1 ]; then
-      warn "$path is not readable by $(id -un) — a real run reads it with sudo to preserve operator settings"
-    else
-      existing="$(sudo cat "$path")" || die "cannot read $path — refusing to overwrite it blind and lose operator settings"
-    fi
+    existing="$(read_env_file "$path")" || die "cannot read $path — refusing to overwrite it blind and lose operator settings"
   fi
   # `|| [ -n "$line" ]`: without it, read's non-zero at EOF drops a final line that lacks a
   # trailing newline — silently deleting that operator setting.
@@ -2113,6 +2139,14 @@ main_brain_only() {
   log "teaport installer — brain only  (prefix=$PREFIX$([ "$DRY_RUN" = 1 ] && echo ', DRY-RUN'))"
   if [ ! -d "$PREFIX" ] || ! systemctl cat teaport-brain.service >/dev/null 2>&1; then
     local msg="no installed appliance here ($PREFIX, teaport-brain.service) — --only brain updates one; run install.sh without it first"
+    if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
+  # No live venv: not a brain to update but one never installed, or removed. Carrying on
+  # would be a first install by another name — the link created, a restart and a health
+  # check only if the unit happens to be enabled or running, and nothing to roll back to.
+  # The full install builds the first one and starts it. -L too: a link whose target is
+  # gone is a brain to swap (and verify) like any other.
+  elif [ ! -e "$BRAIN_LINK" ] && [ ! -L "$BRAIN_LINK" ]; then
+    local msg="no brain venv at $BRAIN_LINK — --only brain updates an installed brain; run install.sh without --only to install one"
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
   fi
   check_brain_source
