@@ -262,12 +262,26 @@ def test_without_a_guard_every_word_goes():
     asyncio.run(_no_guard())
 
 
+async def _sessions():
+    from pipecat.pipeline.pipeline import Pipeline
+    from teaport_brain.agent_session import build_agent_session
+    from test_service_unusable import _Transport
+
+    def taps(session):
+        inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
+        return [p for p in inner.processors if isinstance(p, echo_guard.PlayedWordsTap)]
+
+    room = build_agent_session(_Transport(), client_features=frozenset({"local"}))
+    other = build_agent_session(_Transport())
+    return room, taps(room), other, taps(other)
+
+
 def test_only_the_room_mic_gets_it():
-    import inspect
-    from teaport_brain import agent_session
-    src = inspect.getsource(agent_session.build_agent_session)
-    assert 'echo_guard.ENABLED and "local" in client_features' in src
-    assert "guard.tap() if guard is not None" in src
+    room, room_taps, other, other_taps = asyncio.run(_sessions())
+    assert isinstance(room.stt.echo_guard, echo_guard.EchoGuard)
+    # One tap, telling that guard what played.
+    assert len(room_taps) == 1 and room_taps[0]._bot is room.stt.echo_guard.bot
+    assert other.stt.echo_guard is None and other_taps == []
 
 
 def main():

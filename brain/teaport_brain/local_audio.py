@@ -237,6 +237,9 @@ VOLUME_RANGE_DB = 40.0
 RESTART_SPEECH_WAIT_SECS = 5.0
 # Playback levels kept for the echo meter to look up by when they were heard.
 HEARD_KEEP_SECS = 2.0
+# Captured audio is placed by the least delayed of its arrivals over this long
+# (CaptureClock): frames lost to an overrun misplace it for at most this long.
+CAPTURE_CLOCK_SECS = 3.0
 # A chip write the meter needs that did not take (or a chip found late) is tried again
 # this often.
 ECHO_RETRY_SECS = 15.0
@@ -287,7 +290,11 @@ def level_db(pcm: np.ndarray) -> float:
 
 def mouth_level(chunk: bytes) -> float:
     """Loudness of one chunk of device PCM as a mouth opening, 0 (closed) to 1."""
-    db = level_db(np.frombuffer(chunk, dtype="<i2"))
+    return mouth_opening(level_db(np.frombuffer(chunk, dtype="<i2")))
+
+
+def mouth_opening(db: float) -> float:
+    """A chunk's level (dBFS) as a mouth opening, 0 (closed) to 1."""
     return float(min(1.0, max(0.0, (db - MOUTH_FLOOR_DB) / MOUTH_SPAN_DB)))
 
 
@@ -508,9 +515,7 @@ class Volume:
 
     @property
     def gain(self) -> float:
-        if self.percent <= 0:
-            return 0.0
-        return 10 ** (-VOLUME_RANGE_DB * (1 - self.percent / 100) / 20)
+        return 10 ** (self.gain_db / 20)  # 0 at -inf: silent
 
     @property
     def gain_db(self) -> float:
@@ -844,10 +849,12 @@ class Playback:
             self._start = now
         while self._written / DEVICE_RATE - (now - self._start) < LEAD_SECS:
             chunk, voiced = self._take()
-            # The mouth follows the voice as synthesized, not the volume knob.
+            # The mouth follows the voice as synthesized, not the volume knob, and so does
+            # the echo meter's playback level (the volume is applied when it is used).
             # hiss too, voiced or not: a caption can vouch for it after it was pumped
-            self._levels.append([self._written, mouth_level(chunk), voiced, hiss_level(chunk)])
-            self._heard.append([self._written, level_db(np.frombuffer(chunk, dtype="<i2")), voiced])
+            db = level_db(np.frombuffer(chunk, dtype="<i2"))
+            self._levels.append([self._written, mouth_opening(db), voiced, hiss_level(chunk)])
+            self._heard.append([self._written, db, voiced])
             while self._written - self._heard[0][0] > HEARD_KEEP_SECS * DEVICE_RATE:
                 self._heard.popleft()
             gain = self._gain()
@@ -887,7 +894,7 @@ class Playback:
             voiced = voiced or v
         if not dbs or max(dbs) <= -180:
             return None, False
-        return float(10 * np.log10(np.mean(10 ** (np.array(dbs) / 10)) + 1e-18)), voiced
+        return xvf_echo.power_mean_db(dbs), voiced
 
     def mouth_due(self, now: float) -> float | None:
         """The loudest speech chunk heard by `now` since the last call (0 for a chunk
@@ -900,6 +907,43 @@ class Playback:
                 self.hiss = hiss   # the hiss of the chunk whose level is sent
             level = lv if level is None else max(level, lv)
         return level
+
+
+class CaptureClock:
+    """When the frames read from the capture were captured (time.monotonic()), for the
+    echo meter to look up what the speaker played then.
+
+    Not when they reached us: arecord hands over a period at a time (~125 ms, a burst of
+    chunks read in the same instant), and a busy loop reads late. A frame was captured
+    no later than it arrived, less the frames read after it; so of the arrivals over the
+    last CAPTURE_CLOCK_SECS, the one that implies the earliest start of the stream (the
+    least delayed) places them all. Over a window, not a lifetime: frames lost to an
+    overrun (a stalled loop, a USB hiccup) shift every later frame's place, and the
+    window lets go of the old one within its length; a card clock that drifts against
+    ours is followed the same way.
+
+    Not the card's own position, as the playback timeline has it (hw_ptr in /proc):
+    between the card's capture pointer and the frame in our hands lie arecord's pipe and
+    the stream reader's buffer, up to a period of audio that /proc does not count, so a
+    frame placed from hw_ptr would still need this minimum to take that out."""
+
+    def __init__(self, window: float = CAPTURE_CLOCK_SECS):
+        self.window = window
+        self.frames = 0  # read so far
+        # (arrival, the stream start it implies) of the arrivals in the window that can
+        # still be the earliest: each start below every one after it.
+        self._starts: deque[tuple[float, float]] = deque()
+
+    def read(self, frames: int, now: float) -> float:
+        """`frames` more were read at `now`: when the last of them was captured."""
+        self.frames += frames
+        start = now - self.frames / DEVICE_RATE
+        while self._starts and self._starts[-1][1] >= start:
+            self._starts.pop()
+        self._starts.append((now, start))
+        while self._starts[0][0] < now - self.window:
+            self._starts.popleft()
+        return self._starts[0][1] + self.frames / DEVICE_RATE
 
 
 class VoiceGate:
@@ -949,9 +993,8 @@ class Card:
         self._echo_check = 0.0
         self._gap_logged: float | None = None
         self._gap_log_at = 0.0
-        # The capture clock: when the frames read so far were captured (see _meter).
-        self._cap_frames = 0
-        self._cap_t0: float | None = None
+        # When the captured frames were captured, for the meter.
+        self._cap_clock = CaptureClock()
         # A conversation is on (a session without wake words, or one awake): the voice
         # the meter hears is the user's, not the room's TV between conversations.
         self.conversing = False
@@ -1036,9 +1079,10 @@ class Card:
         arecord, first = await self._open_capture()
         self._run(self._capture(arecord, first))
         if self.echo is not None and self.meter is not None:
-            # A card (re)opened may be a chip replugged or reset to its own settings.
+            # A card (re)opened may be a chip replugged or reset to its own settings,
+            # under the same node or a new one: read it back, write what differs.
             meter = self.meter
-            await asyncio.to_thread(self.echo.apply, lambda: meter.duplex)
+            await asyncio.to_thread(self.echo.apply, lambda: meter.duplex, True)
 
     async def _open_capture(self) -> tuple[asyncio.subprocess.Process, bytes]:
         # Playback is running by now; give it a moment, and retry a capture that
@@ -1164,48 +1208,51 @@ class Card:
                 self.voice.set()
 
     def _meter(self, mono: np.ndarray) -> None:
-        # When this chunk was captured, not when it reached us: arecord hands over a
-        # period at a time, a burst of chunks read in the same instant. The frames read
-        # so far, from the earliest any of them could have been captured -- the least
-        # delayed arrival -- and let rise by 100 ppm so a card clock that runs slow is
-        # followed too.
         now = time.monotonic()
-        self._cap_frames += len(mono)
-        span = self._cap_frames / DEVICE_RATE
-        t0 = now - span
-        self._cap_t0 = t0 if self._cap_t0 is None else min(self._cap_t0 + 1e-4 * len(mono) / DEVICE_RATE, t0)
-        end = self._cap_t0 + span
+        end = self._cap_clock.read(len(mono), now)
         ref, voiced = self.play.heard_between(end - len(mono) / DEVICE_RATE, end)
-        meter = self.meter
+        meter, echo = self.meter, self.echo
         # Not the bot talking: silence, or the thinking sound (it neither counts as the
         # bot's speech nor leaves the room quiet).
         quiet = ref is None and self.play.echo_free(now)
-        changed = meter.feed(level_db(mono), ref if voiced else None, quiet, self.conversing)
-        if self.echo is not None and not changed and now >= self._echo_check:
+        # The echo is measured only while the chip holds its suppressor off, which is
+        # not the verdict until the write has landed (and never, with no chip).
+        bare = echo is not None and echo.holds(True)
+        changed = meter.feed(level_db(mono), ref if voiced else None, quiet, self.conversing,
+                             suppressor_off=bare)
+        if echo is not None and not changed and now >= self._echo_check:
             # A write that did not take (a USB error, a chip plugged in late) is tried
             # again: the meter's verdict means nothing on a chip that does not hold it.
             self._echo_check = now + ECHO_RETRY_SECS
-            if not self.echo.holds(meter.duplex):
-                asyncio.get_running_loop().run_in_executor(None, self.echo.apply, lambda: meter.duplex)
+            if not echo.holds(meter.duplex):
+                asyncio.get_running_loop().run_in_executor(None, echo.apply, lambda: meter.duplex)
         if not changed:
             gap = meter.gap
             if gap is not None and (self._gap_logged is None or (
                     abs(gap - self._gap_logged) >= GAP_LOG_DB and now >= self._gap_log_at)):
                 self._log_gap(now)
                 logger.info(f"mic echo: the voice is {gap:.1f} dB above the bot's echo "
-                            f"(margin {meter.margin:g} dB) -- suppressor still "
-                            + ("off" if meter.duplex else "on"))
+                            f"(margin {meter.margin:g} dB) -- {self._held()}")
             return
         self._log_gap(now)
         if meter.recheck:
-            logger.info("mic echo: suppressor off for a while to measure the echo again")
+            logger.info("mic echo: turning the suppressor off for a while to measure the "
+                        "echo again")
         else:
             logger.info(f"mic echo: the voice is {meter.gap:.1f} dB above the bot's echo "
-                        f"(margin {meter.margin:g} dB) -- suppressor "
+                        f"(margin {meter.margin:g} dB) -- turning the suppressor "
                         + ("off: the user is heard over the bot" if meter.duplex
                            else "on: the echo is too close to the voice"))
-        if self.echo is not None:
-            asyncio.get_running_loop().run_in_executor(None, self.echo.apply, lambda: meter.duplex)
+        if echo is not None:
+            asyncio.get_running_loop().run_in_executor(None, echo.apply, lambda: meter.duplex)
+
+    def _held(self) -> str:
+        """The suppressor as the chip holds it, for a log line (the verdict alone is
+        what the meter would have, not what the mic gets)."""
+        want = "off" if self.meter.duplex else "on"
+        if self.echo is not None and self.echo.holds(self.meter.duplex):
+            return f"suppressor still {want}"
+        return f"suppressor to be {want}, which the chip does not hold yet"
 
     def _log_gap(self, now: float) -> None:
         self._gap_logged, self._gap_log_at = self.meter.gap, now + GAP_LOG_SECS
@@ -1767,6 +1814,24 @@ async def run_wake_sessions(card: Card, st: WakeState) -> None:
             st.wait = RETRY_SECS
 
 
+def echo_control(volume: Volume):
+    """The mic's echo suppression, off unless the bot's echo comes too close to the
+    user's voice, and the meter that decides it (xvf_echo.py); or (None, None) with
+    LOCAL_AUDIO_ECHO_CONTROL off, or when the bridge captures a channel other than 0.
+    The chip's AGC and suppressor act on channel 0, its post-processed conversation mix,
+    and the meter must hear what they act on: channel 1's audio would steer channel 0's
+    suppressor by an echo it never touches."""
+    echo = xvf_echo.EchoSuppression()
+    if not echo.enabled:
+        return None, None
+    if CAPTURE_CHANNEL != 0:
+        logger.info(f"mic echo: the chip's echo suppression is left as it is: the bridge "
+                    f"captures channel {CAPTURE_CHANNEL} (LOCAL_AUDIO_CAPTURE_CHANNEL), and the "
+                    "suppressor and AGC act on channel 0")
+        return None, None
+    return echo, xvf_echo.EchoMeter(gain_db=lambda: volume.gain_db)
+
+
 async def run_bridge() -> None:
     """Open the card, dial, and after every session wait for a voice (or, with wake
     words, hold an asleep session: run_wake_sessions); forever."""
@@ -1774,10 +1839,8 @@ async def run_bridge() -> None:
     face.state("idle")
     volume = Volume()
     logger.info(f"volume: {volume.percent}%")
-    # The mic's echo suppression, off unless the bot's echo comes too close to the
-    # user's voice (xvf_echo.py). Both outlive a card reopen.
-    echo = xvf_echo.EchoSuppression()
-    meter = xvf_echo.EchoMeter(gain_db=lambda: volume.gain_db) if echo.enabled else None
+    # Both outlive a card reopen.
+    echo, meter = echo_control(volume)
     connect_now = True  # the first session dials at once (and is greeted)
     backoff = None  # another client took the box: a Backoff to wait out (kept across card reopens)
     card_wait = dial_wait = RETRY_SECS
@@ -1798,7 +1861,7 @@ async def run_bridge() -> None:
         await rest_face(face)
     try:
         while True:
-            card = Card(face, volume=volume, echo=echo if meter else None, meter=meter)
+            card = Card(face, volume=volume, echo=echo, meter=meter)
             try:
                 await card.open()
                 logger.info(f"card ready: {card.device}")

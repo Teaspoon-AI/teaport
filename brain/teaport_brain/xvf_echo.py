@@ -31,15 +31,16 @@
 #     HYSTERESIS_DB. The brain's echo guard (echo_guard.py) takes what leaks either way.
 #
 # Written at run time only (never SAVE_CONFIGURATION): a replug or a chip reset brings
-# its saved values back, and the bridge writes again when it opens the card. Each set is
-# written whole and read back. The transport is xvf_led's (USB vendor control transfers
-# on endpoint 0, the PP resource 17); no device, no Linux, nothing done; never raises; a
-# failure is logged once until it works again. ECHO_CONTROL off: the chip is not touched.
+# its saved values back. So when the bridge opens the card it reads the chip's AGC and
+# suppressor back and writes again whatever differs, a new node or not. Each set is
+# written whole and read back. The transport and its upkeep are xvf_led's (USB vendor
+# control transfers on endpoint 0, the PP resource 17; xvf_led.ChipSetting): no device,
+# no Linux, nothing done; never raises; a failure is logged once until it works again.
+# ECHO_CONTROL off: the chip is not touched.
 #
 import collections
 import math
 import struct
-import threading
 import time
 
 from loguru import logger
@@ -61,95 +62,99 @@ MARGIN_DB = setting("LOCAL_AUDIO_ECHO_MARGIN_DB")
 HYSTERESIS_DB = 3.0
 
 
-def write_i32(dev, cmd: int, value: int) -> None:
-    dev.control(xvf_led.VENDOR_OUT, cmd, PP_RESID, struct.pack("<i", value))
-
-
-def read_i32(dev, cmd: int) -> int:
-    (value,) = struct.unpack("<i", xvf_led.read(dev, cmd, 4, resid=PP_RESID))
+def _get(dev, cmd: int, fmt: str = "<i"):
+    (value,) = struct.unpack(fmt, xvf_led.read(dev, cmd, 4, resid=PP_RESID))
     return value
 
 
-def write_f32(dev, cmd: int, value: float) -> None:
-    dev.control(xvf_led.VENDOR_OUT, cmd, PP_RESID, struct.pack("<f", value))
+def _set(dev, cmd: int, value, fmt: str = "<i") -> None:
+    xvf_led.write(dev, cmd, struct.pack(fmt, value), resid=PP_RESID)
 
 
-def read_f32(dev, cmd: int) -> float:
-    (value,) = struct.unpack("<f", xvf_led.read(dev, cmd, 4, resid=PP_RESID))
-    return value
-
-
-class EchoSuppression:
+class EchoSuppression(xvf_led.ChipSetting):
     """The chip's post-processing: its AGC fixed, its suppressor off or on (apply)."""
+
+    LOG = "mic echo suppression"
 
     def __init__(self, find=xvf_led.find_node, opener=xvf_led.UsbfsDevice,
                  enabled: bool = ECHO_CONTROL, gain_db: float = MIC_GAIN_DB):
-        self._find, self._opener = find, opener
+        super().__init__(find, opener)
         self.enabled = enabled
         self.gain = 10 ** (gain_db / 20)
-        self.node = None       # the device's usbfs node when last written
         self.own = None        # that chip's own suppressor values, read when first seen
         self.shown = None      # the suppressor set it holds as last written or read
-        self._failing = False
-        # apply() runs on worker threads: two must not interleave their writes.
-        self._lock = threading.Lock()
 
-    def apply(self, duplex) -> bool:
+    def apply(self, duplex, verify: bool = False) -> bool:
         """The suppressor off (`duplex`, or a function returning it, read once the lock
         is held: the meter's verdict as it is when the write runs, not as it was queued)
-        or the chip's own. True once the chip holds it (or there is no chip, or the
+        or the chip's own. `verify`: read the chip back first instead of trusting what
+        was last written (a card opening: the chip may have reset to its saved values
+        without re-enumerating). True once the chip holds it (or there is no chip, or the
         bridge is to leave it alone); False on an error (logged once). Blocking: a few
         ms of USB."""
         if not self.enabled:
             return True
-        with self._lock:
-            return self._apply(duplex() if callable(duplex) else duplex)
+        asked = None
+
+        def change(node) -> bool:
+            nonlocal asked
+            asked = duplex() if callable(duplex) else duplex
+            if node is None:
+                return False
+            with self._opener(node) as dev:
+                self._change(dev, asked, verify)
+            return True
+
+        def doing() -> str:
+            return "set the suppressor" + {True: " off", False: " to the chip's own"}.get(asked, "")
+        return self._run(doing, change)
 
     def holds(self, duplex: bool) -> bool:
-        """The chip holds what `duplex` asks, as last written (a chip that was never
-        reached, or failed, does not)."""
+        """The chip holds what `duplex` asks, as last written or read (a chip that was
+        never reached, or failed, does not)."""
         if self.own is None:
             return False
         return self.shown == (DUPLEX if duplex else self.own)
 
-    def _apply(self, duplex: bool) -> bool:
-        name = "off (the user is heard over the bot)" if duplex else "the chip's own"
-        try:
-            node = self._find()
-            if node != self.node:  # plugged in, out, or reset: its own values, read anew
-                self.node, self.own, self.shown, self._failing = node, None, None, False
-            if node is None:
-                return True
-            with self._opener(node) as dev:
-                if self.own is None:
-                    found = tuple((cmd, read_i32(dev, cmd)) for cmd, _ in FACTORY)
-                    # The AGC off at a fixed gain, once per chip (see the module).
-                    write_i32(dev, PP_AGCONOFF, 0)
-                    write_f32(dev, PP_AGCGAIN, self.gain)
-                    agc, gain = read_i32(dev, PP_AGCONOFF), read_f32(dev, PP_AGCGAIN)
-                    if agc != 0 or abs(gain - self.gain) > 1e-3 * self.gain:
-                        raise OSError(f"AGC read back on={agc} gain={gain:g}, "
-                                      f"wrote off at {self.gain:g}")
-                    self.own = FACTORY if found == DUPLEX else found
-                    self.shown = found
-                want = DUPLEX if duplex else self.own
-                if want != self.shown:
-                    for cmd, value in want:
-                        write_i32(dev, cmd, value)
-                    got = tuple((cmd, read_i32(dev, cmd)) for cmd, _ in want)
-                    if got != want:
-                        raise OSError(f"read back {got}, wrote {want}")
-        except Exception as e:  # noqa: BLE001 — the mic must keep working regardless
-            self.shown = None
-            if not self._failing:
-                logger.warning(f"mic echo suppression: could not set it {name}: {e!r}"
-                               + (" (needs the installer's udev rule and the teaport-hw group)"
-                                  if isinstance(e, PermissionError) else ""))
-                self._failing = True
-            return False
-        self._failing = False
-        self.shown = want
-        return True
+    def _forget(self) -> None:
+        self.own = self.shown = None  # plugged in, out, or reset: its own values, read anew
+
+    def _failed(self) -> None:
+        self.shown = None
+
+    def _change(self, dev, duplex: bool, verify: bool) -> None:
+        # What the chip holds is read back when it is not known (a chip first seen, a
+        # change that failed part-way) or when asked to check it.
+        if self.shown is None or verify:
+            found = tuple((cmd, _get(dev, cmd)) for cmd, _ in FACTORY)
+            if self.own is None:
+                self.own = FACTORY if found == DUPLEX else found
+            self.shown = found
+            # The AGC off at a fixed gain (see the module), unless it already is.
+            if not self._agc_fixed(self._agc(dev)):
+                _set(dev, PP_AGCONOFF, 0)
+                _set(dev, PP_AGCGAIN, self.gain, "<f")
+                on, gain = self._agc(dev)
+                if not self._agc_fixed((on, gain)):
+                    raise OSError(f"AGC read back on={on} gain={gain:g}, "
+                                  f"wrote off at {self.gain:g}")
+        want = DUPLEX if duplex else self.own
+        if want != self.shown:
+            self.shown = None  # part-written until it reads back whole
+            for cmd, value in want:
+                _set(dev, cmd, value)
+            got = tuple((cmd, _get(dev, cmd)) for cmd, _ in want)
+            if got != want:
+                raise OSError(f"read back {got}, wrote {want}")
+            self.shown = want
+
+    @staticmethod
+    def _agc(dev) -> tuple[int, float]:
+        return _get(dev, PP_AGCONOFF), _get(dev, PP_AGCGAIN, "<f")
+
+    def _agc_fixed(self, agc: tuple[int, float]) -> bool:
+        on, gain = agc
+        return on == 0 and abs(gain - self.gain) <= 1e-3 * self.gain
 
 
 # --- the meter ---
@@ -173,7 +178,8 @@ DWELL_SECS = 10.0
 RECHECK_SECS = 300.0
 
 
-def _power_mean_db(dbs: list[float]) -> float:
+def power_mean_db(dbs) -> float:
+    """The level of a run of levels (dB), averaged as power."""
     return 10 * math.log10(sum(10 ** (d / 10) for d in dbs) / len(dbs) + 1e-18)
 
 
@@ -190,15 +196,18 @@ class EchoMeter:
 
     Fed every capture chunk with the mic's level, the level of the bot's speech the
     speaker played while it was captured (as synthesized, before the volume; None when
-    there was none), whether the speaker was quiet, and whether a conversation is on;
-    `gain_db` is the volume's gain now. In 100 ms blocks:
+    there was none), whether the speaker was quiet, whether a conversation is on, and
+    whether the chip holds its suppressor off (not the verdict: a write that has not
+    landed, or failed, leaves the chip as it was); `gain_db` is the volume's gain now.
+    In 100 ms blocks:
 
       * the bot talking: the echo's COUPLING, mic minus playback. Its 30th percentile:
         the user talking over the bot raises some blocks and not the low ones -- over a
         whole take, the user's lines included, it ranked the takes as their leaks did,
         and in simulation it holds while the user talks over less than about half of
-        the bot. Only while the suppressor is off: on, it would measure the suppressor
-        (so after RECHECK_SECS on, it is turned off to measure again).
+        the bot. Only while the chip holds the suppressor off: on, it would measure the
+        suppressor (so after RECHECK_SECS on, it is turned off to measure again), and
+        with no chip that holds it there is nothing to decide.
       * the bot talking: the playback's loud level (90th percentile); the echo's loud
         level is that plus the coupling.
       * the bot quiet: the room's floor (20th percentile), and, in a conversation, the
@@ -216,7 +225,7 @@ class EchoMeter:
         self._clock = clock
         self.duplex = True
         self._since = None
-        self._mic, self._ref, self._quiet, self._talk = [], [], True, True
+        self._mic, self._ref, self._quiet, self._talk, self._bare = [], [], True, True, True
         self.coupling = collections.deque(maxlen=COUPLING_KEEP)
         self.ref = collections.deque(maxlen=REF_KEEP)
         self.voice = collections.deque(maxlen=VOICE_KEEP)
@@ -225,28 +234,30 @@ class EchoMeter:
         self.recheck = False   # the last change was a recheck, not a measured verdict
 
     def feed(self, mic_db: float, ref_db: float | None, bot_quiet: bool,
-             conversing: bool = True) -> bool:
+             conversing: bool = True, *, suppressor_off: bool) -> bool:
         """One capture chunk. True when the verdict (duplex) changed with it."""
         self._mic.append(mic_db)
         if ref_db is not None:
             self._ref.append(ref_db)
         self._quiet = self._quiet and bot_quiet
         self._talk = self._talk and conversing
+        self._bare = self._bare and suppressor_off
         if len(self._mic) < BLOCK_CHUNKS:
             return False
-        mic = _power_mean_db(self._mic)
-        ref = _power_mean_db(self._ref) if len(self._ref) == BLOCK_CHUNKS else None
-        quiet, talk = self._quiet, self._talk
-        self._mic, self._ref, self._quiet, self._talk = [], [], True, True
+        mic = power_mean_db(self._mic)
+        ref = power_mean_db(self._ref) if len(self._ref) == BLOCK_CHUNKS else None
+        quiet, talk, bare = self._quiet, self._talk, self._bare
+        self._mic, self._ref, self._quiet, self._talk, self._bare = [], [], True, True, True
         if mic < MUTED_DB:
             return False
-        return self._block(mic, ref, quiet, talk)
+        return self._block(mic, ref, quiet, talk, bare)
 
-    def _block(self, mic: float, ref: float | None, quiet: bool, talk: bool = True) -> bool:
+    def _block(self, mic: float, ref: float | None, quiet: bool, talk: bool,
+               bare: bool) -> bool:
         gain = self._gain_db()
         if ref is not None and ref + gain > REF_VOICED_DB:
             self.ref.append(ref)
-            if self.duplex:
+            if bare:
                 self.coupling.append(mic - (ref + gain))
         elif quiet:
             self.floor.append(mic)
