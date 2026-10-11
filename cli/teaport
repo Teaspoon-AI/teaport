@@ -50,8 +50,13 @@ sip_line() {  # the SIP front-end, as a status line
   printf '  %-28s %s\n' "SIP front-end (brain)" "$(c "$col" "$st")"
 }
 installed() { systemctl cat "$1.service" >/dev/null 2>&1; }
-listening() { ss -ltn 2>/dev/null | grep -q ":$1 "; }
-envval()    { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -1; }   # envval <file> <KEY>
+# Not `grep -q`: under pipefail, grep leaving at its first match can SIGPIPE ss and
+# fail the pipeline for a port that IS listening (install.sh's contains() says more).
+listening() { ss -ltn 2>/dev/null | grep -F ":$1 " >/dev/null; }
+# envval <file> <KEY> — the first KEY= value; "" when unset or the file is unreadable.
+# One sed, no pipe: `sed | head` failed under pipefail on a missing file, and doctor's
+# `fpt="$(envval …)"` then ended doctor (set -e) on a box without engine.env.
+envval()    { sed -n "/^$2=/{s///p;q;}" "$1" 2>/dev/null || true; }
 # confval <file> <key> — the gateway .conf. Its parser takes `key=value` AND `key = value`
 # (a hand-written conf uses the spaced form), so read it the same way, or `sip status`
 # shows `?` for a registrar that is plainly there. LAST match, like the parser (config.h
@@ -125,8 +130,9 @@ brain_lock_check() {
 # brain_pacing_check — TTS_PACING as configured vs as the running brain paces (/health's
 # tts_pacing, issue #138). "lead" falls back to greedy when the installed pipecat lacks
 # the private hooks it needs, and the brain's WARNING about it scrolls out of the journal.
-# Says nothing when the brain does not answer (doctor fails its port already) or predates
-# the field. Uses doctor's ok/warnc.
+# A value that is not a pacing ("fast") is flagged too: the brain reads it as the default,
+# and the WARNING saying so scrolls away the same. Says nothing when the brain does not
+# answer (doctor fails its port already) or predates the field. Uses doctor's ok/warnc.
 brain_pacing_check() {
   local line
   line="$(brain_health | python3 -c 'import json, sys
@@ -136,15 +142,31 @@ if not c:
     sys.exit()
 if c == e:
     print("ok\tTTS pacing: %s" % e)
+elif p.get("invalid"):
+    print("warn\tTTS_PACING=%s %s, so the brain paces %s — set it on the config page or"
+          " in %s/brain.env" % (c, p["invalid"], e, sys.argv[1]))
 else:
     print("warn\tTTS_PACING=%s, but the brain paces %s: it does not fit pipecat %s (%s)"
           " — replies still play, a barge-in throws away more synthesis; if the brain venv"
           " drifted from uv.lock: install.sh --only brain; if not, engine_tts.py needs new hooks"
-          % (c, e, p.get("pipecat") or "?", "; ".join(p.get("missing") or ["?"])))' 2>/dev/null)" || return 0
+          % (c, e, p.get("pipecat") or "?", "; ".join(p.get("missing") or ["?"])))' "$ETC" 2>/dev/null)" || return 0
   case "$line" in
     ok$'\t'*)   ok "${line#*$'\t'}" ;;
     warn$'\t'*) warnc "${line#*$'\t'}" ;;
   esac
+}
+
+# env_file_check <file> — whether doctor can judge an env file's settings, saying why not:
+# missing is an install that never ran (or never finished); unreadable is a first install
+# under plain sudo, which leaves the file root's (install.sh read_env_file). Either way
+# "unset" would be the wrong diagnosis for its keys. Uses doctor's warnc/failc.
+env_file_check() {
+  if [ -r "$1" ]; then return 0
+  # The repair, not `sudo teaport doctor`: under plain sudo HOME is /root, which moves
+  # the secrets and SIP lookups and turns them into false failures.
+  elif [ -e "$1" ]; then warnc "$1 is not readable by $(id -un), so its settings are not checked — re-run install.sh, or: sudo chgrp $(id -gn) $1 && sudo chmod 640 $1"
+  else failc "$1 missing (run install.sh)"; fi
+  return 1
 }
 
 cmd_doctor() {
@@ -162,12 +184,17 @@ cmd_doctor() {
   [ -x "$PREFIX/venv/bin/teaport-brain" ] && ok "brain (teaport-brain)" || failc "brain not installed in $PREFIX/venv"
   brain_lock_check
   have espeak-ng && ok "espeak-ng (engine G2P dep)" || failc "espeak-ng missing — apt install espeak-ng"
-  local fpt; fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"
-  if [ -z "$fpt" ]; then failc "KOKORO_RESERVE_FPT unset in $ETC/engine.env — the code default (50) OOMs an 8GB box"
-  elif [[ "$fpt" =~ ^[0-9]+$ ]] && [ "$fpt" -ge 40 ]; then warnc "KOKORO_RESERVE_FPT=$fpt is high (OOM risk on 8GB; expect 6 or 12)"
-  else ok "KOKORO_RESERVE_FPT=$fpt"; fi
-  [ -n "$(envval "$ETC/brain.env" LLM_BASE_URL)" ] && ok "LLM_BASE_URL set" || failc "LLM_BASE_URL unset in $ETC/brain.env"
-  [ -n "$(envval "$ETC/brain.env" GATEWAY_TOKEN | tr -d "\"' \t")" ] && ok "GATEWAY_TOKEN set" || warnc "GATEWAY_TOKEN unset — /talk is unauthenticated"
+  local fpt
+  if env_file_check "$ETC/engine.env"; then
+    fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"
+    if [ -z "$fpt" ]; then failc "KOKORO_RESERVE_FPT unset in $ETC/engine.env — the code default (50) OOMs an 8GB box"
+    elif [[ "$fpt" =~ ^[0-9]+$ ]] && [ "$fpt" -ge 40 ]; then warnc "KOKORO_RESERVE_FPT=$fpt is high (OOM risk on 8GB; expect 6 or 12)"
+    else ok "KOKORO_RESERVE_FPT=$fpt"; fi
+  fi
+  if env_file_check "$ETC/brain.env"; then
+    [ -n "$(envval "$ETC/brain.env" LLM_BASE_URL)" ] && ok "LLM_BASE_URL set" || failc "LLM_BASE_URL unset in $ETC/brain.env"
+    [ -n "$(envval "$ETC/brain.env" GATEWAY_TOKEN | tr -d "\"' \t")" ] && ok "GATEWAY_TOKEN set" || warnc "GATEWAY_TOKEN unset — /talk is unauthenticated"
+  fi
   if grep -qs '[^[:space:]]' "$SECRETS/llm_key" || [[ "${LLM_API_KEY:-}" == *[![:space:]]* ]]; then ok "LLM API key present"; else warnc "no LLM key — set LLM_API_KEY or write $SECRETS/llm_key"; fi
   local u st
   for u in teaport-engine teaport-brain; do

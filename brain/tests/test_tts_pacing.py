@@ -7,10 +7,11 @@
 # "auto" sizes that target from the clause's learned synth time.
 # The eager prefix costs ~10% more synthesis per clause and only pays when playout is
 # about to run dry, so "first"/"low_lead" ask for it only then. "lead" falls back to greedy
-# on a pipecat without the hooks it needs, and /health and `teaport doctor` say so
-# (issues #87, #138). The last test runs a real
-# pipeline: a long pacing wait must keep the reply's audio context alive, or the
-# context watchdog ends the reply between clauses.
+# on a pipecat without the hooks it needs (however pipecat writes them), and /health
+# and `teaport doctor` say so, as they do for a value that is not a pacing (issues #87,
+# #138). The last test runs a real pipeline: a long pacing wait must keep the reply's
+# audio context alive, or the context watchdog ends the reply between clauses; with
+# the keepalive a no-op, it does.
 #
 # Run: python test_tts_pacing.py   (or via the suite)
 #
@@ -224,15 +225,18 @@ def test_choice_setting(monkeypatch=None):
 
 
 def _build(pacing):
-    """A session built with TTS_PACING=`pacing` in what is, to pacing_status, a fresh
-    process: its pacing, the WARNINGs logged, how many times the pipecat hooks were
-    checked, and /health's "tts_pacing" (issue #138), which must agree with it."""
+    """A session built with TTS_PACING=`pacing` (None: unset) in what is, to
+    pacing_status, a fresh process: its pacing, the WARNINGs logged, how many times the
+    pipecat hooks were checked, and /health's "tts_pacing" (issue #138), which must
+    agree with it."""
     from fastapi.testclient import TestClient
     from loguru import logger
     from teaport_brain import gateway_server
     warnings = []
     sink = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
-    saved, engine_tts._PACING = engine_tts._PACING, pacing
+    saved = os.environ.pop("TTS_PACING", None)
+    if pacing is not None:
+        os.environ["TTS_PACING"] = pacing
     calls = []
     real_check = engine_tts._missing_pacing_hooks
     engine_tts._missing_pacing_hooks = lambda: calls.append(1) or real_check()
@@ -241,34 +245,62 @@ def _build(pacing):
         tts = EngineTTSService(voice="af_heart")
         health = TestClient(gateway_server.app).get("/health").json()["tts_pacing"]
     finally:
-        engine_tts._PACING, engine_tts._missing_pacing_hooks = saved, real_check
+        os.environ.pop("TTS_PACING", None)
+        if saved is not None:
+            os.environ["TTS_PACING"] = saved
+        engine_tts._missing_pacing_hooks = real_check
         engine_tts.pacing_status.cache_clear()
         logger.remove(sink)
-    # One answer: the session and /health read the same check, made once.
-    assert health["configured"] == pacing and health["effective"] == tts._pacing \
-        and bool(health["missing"]) == (tts._pacing != pacing) \
-        and health["pipecat"] not in ("", "unknown"), f"health {health} vs {tts._pacing}"
+    # One answer: the session and /health read the same check, made once, and the
+    # two differ from what was set exactly when /health says why.
+    assert health["effective"] == tts._pacing and health["pipecat"] not in ("", "unknown") \
+        and (health["configured"] != tts._pacing) == bool(health["missing"]
+                                                          or health["invalid"]), \
+        f"health {health} vs {tts._pacing}"
     assert len(calls) <= 1, f"the hooks were checked {len(calls)} times, not once"
     return tts._pacing, [w for w in warnings if "TTS_PACING" in w], calls, health
 
 
-def _doctor(health_json, answers=True):
-    """What `teaport doctor` says about pacing (cli/teaport brain_pacing_check) when the
-    brain's /health is `health_json`: the CLI's functions as they are (everything above
-    its dispatch, as test_cli_sip_conf.py takes them), brain_health stubbed."""
+_MARK = {"✓": "OK", "!": "WARN", "✗": "FAIL"}
+
+
+def _doctor_run(health_json, answers=True, etc=None):
+    """`teaport doctor` (cli/teaport cmd_doctor, its functions as they are: everything
+    above its dispatch, as test_cli_sip_conf.py takes them) on a box with nothing
+    installed (the prefix, secrets and, unless `etc` is given, /etc/teaport are empty
+    temp dirs) whose brain's /health is `health_json`: its exit code and its checks as
+    "OK|WARN|FAIL text". Only brain_health and the probes of units and ports are
+    stubbed, so no real service is asked."""
     import json
     import pathlib
+    import re
     import shlex
     import subprocess
+    from tempdirs import tempdir
     text = (pathlib.Path(__file__).resolve().parents[2] / "cli" / "teaport").read_text()
     stub = (f"brain_health() {{ printf '%s' {shlex.quote(json.dumps(health_json))}; }}"
             if answers else "brain_health() { return 7; }")
     script = (text[:text.index('cmd="${1:-}"; shift || true')] + stub + "\n"
-              "ok() { echo \"OK $*\"; }; warnc() { echo \"WARN $*\"; }\n"
-              "brain_pacing_check\n")
-    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
-    assert p.returncode == 0, p.stdout + p.stderr
-    return p.stdout.strip()
+              "active() { echo inactive; }; installed() { return 1; }\n"
+              "sip_enabled() { return 1; }; listening() { return 1; }\n"
+              "cmd_doctor\n")
+    home = tempdir("teaport-doctor-")
+    env = dict(os.environ, HOME=home, TEAPORT_SECRETS_DIR=home,
+               TEAPORT_PREFIX=os.path.join(home, "opt"),
+               TEAPORT_ETC=etc or os.path.join(home, "etc"))
+    env.pop("LLM_API_KEY", None)
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+    checks = [f"{_MARK[m[1]]} {m[2]}" for m in
+              re.finditer(r"^  \x1b\[[\d;]+m(.)\x1b\[0m (.*)$", p.stdout, re.M)]
+    assert "doctor: " in p.stdout and not p.stderr, p.stdout + p.stderr
+    return p.returncode, checks
+
+
+def _doctor(health_json, answers=True):
+    """What `teaport doctor` says about pacing (brain_pacing_check), "" for nothing."""
+    said = [c for c in _doctor_run(health_json, answers)[1] if "pacing" in c.lower()]
+    assert len(said) <= 1, said
+    return said[0] if said else ""
 
 
 async def _async_refresh(self, context_id):
@@ -283,13 +315,14 @@ def test_missing_pipecat_hooks_fall_back_to_greedy():
     pacing, warned, calls, health = _build("lead")
     assert pacing == "lead" and not warned and len(calls) == 1, \
         f"hooks present: {pacing}, {warned}, {calls}"
-    assert {k: health[k] for k in ("configured", "effective", "missing")} == \
-        {"configured": "lead", "effective": "lead", "missing": []}, health
+    assert {k: health[k] for k in ("configured", "effective", "invalid", "missing")} == \
+        {"configured": "lead", "effective": "lead", "invalid": None, "missing": []}, health
     assert _doctor({"ok": True, "tts_pacing": health}) == "OK TTS pacing: lead"
     # A brain that does not answer, or predates the field: doctor says nothing here.
     assert _doctor(None, answers=False) == "" and _doctor({"ok": True}) == ""
 
     real_refresh, real_init = TTSService._refresh_audio_context, TTSService.__init__
+    real_watchdog = TTSService._handle_audio_context
     for how, patch in [
         ("gone", lambda: delattr(TTSService, "_refresh_audio_context")),
         ("without context_id", lambda: setattr(TTSService, "_refresh_audio_context",
@@ -310,68 +343,209 @@ def test_missing_pipecat_hooks_fall_back_to_greedy():
             f"WARN TTS_PACING=lead, but the brain paces greedy: it does not fit pipecat "
             f"{health['pipecat']} (no sync _refresh_audio_context(context_id)) — "), said
 
-    # The watchdog must still read the timeout and skip the keepalive; source we
-    # can't read skips that part rather than dropping pacing.
-    import inspect
-    real_getsource = inspect.getsource
-    for marker in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE"):
-        inspect.getsource = lambda obj, m=marker: real_getsource(obj).replace(m, "_gone")
+    # The watchdog must still time out on the timeout and skip the keepalive. (Both
+    # still end a context the way _require_context_end_hook asks.)
+    async def watchdog_without_keepalive(self, context_id):
+        await asyncio.wait_for(asyncio.sleep(1), timeout=self._stop_frame_timeout_s)
+        await self._maybe_reset_word_timestamps(context_id)
+
+    async def watchdog_without_timeout(self, context_id):
+        await self._maybe_reset_word_timestamps(context_id)
+        return TTSService._CONTEXT_KEEPALIVE
+
+    for marker, watchdog in [("_CONTEXT_KEEPALIVE", watchdog_without_keepalive),
+                             ("_stop_frame_timeout_s", watchdog_without_timeout)]:
+        TTSService._handle_audio_context = watchdog
         try:
             pacing, warned, _, health = _build("lead")
         finally:
-            inspect.getsource = real_getsource
+            TTSService._handle_audio_context = real_watchdog
         assert pacing == "greedy" and len(warned) == 1 and marker in warned[0], \
             f"watchdog without {marker}: {pacing}, {warned}"
         assert health["missing"] == \
             [f"its watchdog (_handle_audio_context) no longer uses {marker}"], health
 
-    def no_source(obj):
+    # A constructor that does not keep the timeout it is given: it ignores it, or
+    # stores something _pace cannot divide. Or one that no longer takes it at all.
+    def init_ignores_it(self, *a, stop_frame_timeout_s=3.0, **kw):
+        real_init(self, *a, **kw)
+
+    def init_stores_none(self, *a, stop_frame_timeout_s=3.0, **kw):
+        real_init(self, *a, **kw)
+        self._stop_frame_timeout_s = None
+
+    def init_without_it(self, *a, **kw):
+        if "stop_frame_timeout_s" in kw:
+            raise TypeError("unexpected keyword argument 'stop_frame_timeout_s'")
+        real_init(self, *a, **kw)
+
+    for init, want in [
+        (init_ignores_it, "its constructor does not keep stop_frame_timeout_s in "
+                          "_stop_frame_timeout_s"),
+        (init_stores_none, "its constructor does not keep stop_frame_timeout_s in "
+                           "_stop_frame_timeout_s"),
+        (init_without_it, "TTSService(stop_frame_timeout_s=...) raises TypeError("
+                          "\"unexpected keyword argument 'stop_frame_timeout_s'\")"),
+    ]:
+        TTSService.__init__ = init
+        try:
+            assert engine_tts._missing_pacing_hooks() == (want,), init.__name__
+            if init is init_ignores_it:
+                pacing, warned, _, health = _build("lead")
+                assert pacing == "greedy" and len(warned) == 1 \
+                    and "_stop_frame_timeout_s" in warned[0], f"{pacing}, {warned}"
+                assert health["missing"] == [want], health
+                # Pacing off never looks, so a pipecat bump can't touch a box that
+                # doesn't pace, and /health reports it plainly.
+                pacing, warned, calls, health = _build("greedy")
+                assert pacing == "greedy" and not warned and not calls, \
+                    f"greedy checked the hooks: {warned}, {calls}"
+                assert (health["configured"], health["effective"], health["missing"]) == \
+                    ("greedy", "greedy", []), health
+                assert _doctor({"ok": True, "tts_pacing": health}) == "OK TTS pacing: greedy"
+        finally:
+            TTSService.__init__ = real_init
+    print("  PASS missing pipecat pacing hook -> warning + greedy, /health names it, "
+          "doctor warns; greedy -> never looks")
+
+
+def test_hook_check_sees_how_pipecat_writes_them():
+    """A pipecat that still has every hook, written another way, fits: the timeout set
+    through a setattr loop, a closure, an __init__ decorated without functools.wraps,
+    a helper method or a base class; the watchdog's names in a closure or behind
+    functools.wraps; the keepalive wrapped or its argument renamed; another method made
+    abstract. Read from __init__'s bytecode, each of the first four read as "missing"
+    (a false alarm in doctor). The watchdog is read from its own code alone, so one
+    that stopped skipping the keepalive is caught even when it calls the method that
+    queues it (PR #147 review), at the price of a false "missing" for one whose names
+    moved into a helper: that only costs pacing's savings."""
+    import functools
+    import inspect
+    from abc import abstractmethod
+    from pipecat.services.tts_service import TTSService
+    real_init, real_watchdog = TTSService.__init__, TTSService._handle_audio_context
+    real_refresh = TTSService._refresh_audio_context
+
+    def no_wraps(f):
+        def wrapper(*a, **kw):
+            return f(*a, **kw)
+        return wrapper
+
+    def init_setattr_loop(self, *a, stop_frame_timeout_s=3.0, **kw):
+        real_init(self, *a, **kw)
+        for name, value in [("_stop_frame_timeout_s", stop_frame_timeout_s)]:
+            setattr(self, name, value)
+
+    def init_closure(self, *a, stop_frame_timeout_s=3.0, **kw):
+        real_init(self, *a, **kw)
+
+        def keep():
+            self._stop_frame_timeout_s = stop_frame_timeout_s
+        keep()
+
+    @no_wraps
+    def init_decorated(self, *a, stop_frame_timeout_s=None, **kw):
+        real_init(self, *a, **kw)
+        self._stop_frame_timeout_s = stop_frame_timeout_s
+
+    def init_helper(self, *a, stop_frame_timeout_s=3.0, **kw):
+        real_init(self, *a, **kw)
+        self._keep_timeout(stop_frame_timeout_s)
+
+    async def watchdog_closure(self, context_id):
+        def is_keepalive(frame):
+            return frame is TTSService._CONTEXT_KEEPALIVE
+        return is_keepalive(await asyncio.wait_for(asyncio.sleep(0),
+                                                   timeout=self._stop_frame_timeout_s))
+
+    def refresh_renamed(self, ctx):
+        pass
+
+    @functools.wraps(real_watchdog)
+    async def watchdog_wrapped(self, context_id):
+        return await real_watchdog(self, context_id)
+
+    cases = [("__init__", init_setattr_loop), ("__init__", init_closure),
+             ("__init__", init_decorated), ("__init__", init_helper),
+             ("_handle_audio_context", watchdog_closure),
+             ("_handle_audio_context", watchdog_wrapped),
+             ("_refresh_audio_context", no_wraps(real_refresh)),
+             ("_refresh_audio_context", refresh_renamed)]
+    TTSService._keep_timeout = lambda self, t: setattr(self, "_stop_frame_timeout_s", t)
+    real_getsource = inspect.getsource
+
+    def no_source(obj):  # a stripped install: bytecode only
         raise OSError("no source")
     inspect.getsource = no_source
     try:
-        pacing, warned, *_ = _build("lead")
+        for name, f in cases:
+            setattr(TTSService, name, f)
+            try:
+                got = engine_tts._missing_pacing_hooks()
+            finally:
+                TTSService.__init__, TTSService._handle_audio_context = real_init, real_watchdog
+                TTSService._refresh_audio_context = real_refresh
+            assert got == (), f"{name} as {f.__qualname__}: {got}"
+        # ...and without .py sources the check still sees a watchdog that no longer
+        # skips the keepalive: one that never names it, one that hands it downstream
+        # and then queues another itself (through self, or through another object),
+        # and one whose names moved into a helper (read as missing: errs to greedy).
+        async def watchdog_without_keepalive(self, context_id):
+            await asyncio.wait_for(asyncio.sleep(0), timeout=self._stop_frame_timeout_s)
+
+        async def watchdog_refreshes(self, context_id):
+            frame = await asyncio.wait_for(self._audio_contexts[context_id].get(),
+                                           timeout=self._stop_frame_timeout_s)
+            await self.push_frame(frame)   # the keepalive too: not skipped
+            self._refresh_audio_context(context_id)
+
+        async def watchdog_refreshes_elsewhere(self, context_id):
+            frame = await asyncio.wait_for(self._audio_contexts[context_id].get(),
+                                           timeout=self._stop_frame_timeout_s)
+            await self.push_frame(frame)
+            self._helper_obj._refresh_audio_context(context_id)
+
+        async def watchdog_helper(self, context_id):
+            return await self._next_frame(context_id)
+
+        async def next_frame(self, context_id):
+            frame = await asyncio.wait_for(asyncio.sleep(0),
+                                           timeout=self._stop_frame_timeout_s)
+            return frame is TTSService._CONTEXT_KEEPALIVE
+        TTSService._next_frame = next_frame
+        for watchdog in (watchdog_without_keepalive, watchdog_refreshes,
+                         watchdog_refreshes_elsewhere, watchdog_helper):
+            TTSService._handle_audio_context = watchdog
+            try:
+                got = engine_tts._missing_pacing_hooks()
+            finally:
+                TTSService._handle_audio_context = real_watchdog
+            assert "its watchdog (_handle_audio_context) no longer uses " \
+                   "_CONTEXT_KEEPALIVE" in got, f"{watchdog.__name__}: {got}"
     finally:
         inspect.getsource = real_getsource
-    assert pacing == "lead" and not warned, f"no source: {pacing}, {warned}"
+        del TTSService._keep_timeout
+        if hasattr(TTSService, "_next_frame"):
+            del TTSService._next_frame
 
-    # A pipecat whose constructor still takes the timeout but sets it to something
-    # _pace cannot divide (None), or a non-positive default: the class says so.
-    for bad in (None, 0, -1.0, True):
-        def init_bad_default(self, *a, stop_frame_timeout_s=bad, **kw):
-            real_init(self, *a, **kw)
-            self._stop_frame_timeout_s = stop_frame_timeout_s
-        TTSService.__init__ = init_bad_default
-        try:
-            pacing, warned, _, health = _build("lead")
-        finally:
-            TTSService.__init__ = real_init
-        assert pacing == "greedy" and len(warned) == 1 and \
-            health["missing"] == ["no positive stop_frame_timeout_s default"], \
-            f"default {bad!r}: {pacing}, {health}"
+    # A pipecat that makes another method abstract: the probe stubs every one, so
+    # that is not "TTSService(...) raises".
+    class _MoreAbstract(TTSService):
+        @abstractmethod
+        async def flush_audio(self):
+            ...
+    assert engine_tts._missing_pacing_hooks(_MoreAbstract) == (), \
+        engine_tts._missing_pacing_hooks(_MoreAbstract)
 
-    # A pipecat whose __init__ no longer sets _stop_frame_timeout_s. Read from the
-    # class's bytecode, not an instance, so this stands in for one: it never names it.
-    def init_without_timeout(self, *a, stop_frame_timeout_s=3.0, **kw):
-        real_init(self, *a, **kw)
-    TTSService.__init__ = init_without_timeout
+    # A keepalive only callable by keyword: _pace passes the context id positionally.
+    TTSService._refresh_audio_context = lambda self, *, context_id: None
     try:
-        pacing, warned, _, health = _build("lead")
-        assert pacing == "greedy" and len(warned) == 1 \
-            and "_stop_frame_timeout_s" in warned[0], f"timeout gone: {pacing}, {warned}"
-        assert health["missing"] == ["no __init__ that sets _stop_frame_timeout_s"], health
-        # Pacing off never looks, so a pipecat bump can't touch a box that doesn't
-        # pace, and /health reports it plainly.
-        pacing, warned, calls, health = _build("greedy")
-        assert pacing == "greedy" and not warned and not calls, \
-            f"greedy checked the hooks: {warned}, {calls}"
-        assert (health["configured"], health["effective"], health["missing"]) == \
-            ("greedy", "greedy", []), health
-        assert _doctor({"ok": True, "tts_pacing": health}) == "OK TTS pacing: greedy"
+        assert engine_tts._missing_pacing_hooks() == (
+            "no sync _refresh_audio_context(context_id)",)
     finally:
-        TTSService.__init__ = real_init
+        TTSService._refresh_audio_context = real_refresh
 
-    # pipecat moving the timeout into a base class's __init__ (a mixin) still fits:
-    # the check walks the MRO for both the assignment and the argument's default.
+    # pipecat moving the timeout into a base class's __init__ (a mixin) still fits.
     class _TimeoutBase:
         def __init__(self, *, stop_frame_timeout_s: float = 2.0, **kw):
             self._stop_frame_timeout_s = stop_frame_timeout_s
@@ -394,11 +568,75 @@ def test_missing_pipecat_hooks_fall_back_to_greedy():
     assert engine_tts._missing_pacing_hooks(_Split) == (), \
         engine_tts._missing_pacing_hooks(_Split)
     assert engine_tts._missing_pacing_hooks(_SplitWithout) == (
-        "no __init__ that sets _stop_frame_timeout_s",
-        "no positive stop_frame_timeout_s default"), \
+        "its constructor does not keep stop_frame_timeout_s in _stop_frame_timeout_s",), \
         engine_tts._missing_pacing_hooks(_SplitWithout)
-    print("  PASS missing pipecat pacing hook -> warning + greedy, /health names it, "
-          "doctor warns; present (also from a base class) or greedy -> silent")
+    print(f"  PASS {len(cases) + 2} ways of writing the same hooks fit, with or without "
+          "sources; a keyword-only keepalive, or a watchdog that refreshes instead of "
+          "skipping it, does not")
+
+
+def test_a_value_that_is_not_a_pacing_is_reported():
+    """TTS_PACING=fast reads as the default (greedy) with one WARNING at startup, which
+    scrolls away. /health's "configured" is what the operator set, so it differs from
+    "effective" and says why, and doctor flags it instead of "OK TTS pacing: greedy".
+    A value that reads ("LEAD") is the schema's spelling."""
+    pacing, warned, calls, health = _build("fast")
+    assert pacing == "greedy" and not calls, f"{pacing}, {calls}"
+    assert len(warned) == 1 and "TTS_PACING='fast'" in warned[0], warned
+    assert {k: health[k] for k in ("configured", "effective", "invalid", "missing")} == \
+        {"configured": "fast", "effective": "greedy",
+         "invalid": "must be one of 'greedy', 'lead'", "missing": []}, health
+    from tempdirs import tempdir
+    etc = tempdir("teaport-etc-")
+    rc, checks = _doctor_run({"ok": True, "tts_pacing": health}, etc=etc)
+    said = [c for c in checks if "pacing" in c.lower()]
+    assert said == [f"WARN TTS_PACING=fast must be one of 'greedy', 'lead', so the brain "
+                    f"paces greedy — set it on the config page or in {etc}/brain.env"], said
+    pacing, warned, _, health = _build(" LEAD ")
+    assert (pacing, health["configured"], health["invalid"], warned) == \
+        ("lead", "lead", None, []), health
+    pacing, _, _, health = _build(None)
+    assert (pacing, health["configured"], health["invalid"]) == ("greedy", "greedy", None)
+    print("  PASS TTS_PACING=fast: /health configured 'fast', effective greedy, why; "
+          "doctor warns")
+
+
+def test_doctor_runs_every_check_on_any_box():
+    """Doctor's pacing line comes after its env-file checks. Those used to end doctor on
+    a box without /etc/teaport/engine.env: envval's `sed | head` failed under pipefail,
+    and `fpt="$(envval ...)"` under set -e exited. Now every check runs, and an env
+    file's keys are judged only when doctor can read the file."""
+    from tempdirs import tempdir
+    health = {"ok": True, "tts_pacing": {"configured": "greedy", "effective": "greedy"}}
+    etc = tempdir("teaport-etc-")
+    rc, checks = _doctor_run(health, etc=etc)
+    assert rc == 1 and "OK TTS pacing: greedy" in checks, checks
+    assert f"FAIL {etc}/engine.env missing (run install.sh)" in checks \
+        and f"FAIL {etc}/brain.env missing (run install.sh)" in checks, checks
+    assert not [c for c in checks if "KOKORO_RESERVE_FPT" in c or "LLM_BASE_URL" in c
+                or "GATEWAY_TOKEN" in c], "keys judged in a file that is not there"
+    with open(os.path.join(etc, "engine.env"), "w") as f:
+        f.write("KOKORO_RESERVE_FPT=6\nKOKORO_RESERVE_FPT=50\n")   # the first one counts
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write("LLM_BASE_URL=http://llm:8080/v1\nGATEWAY_TOKEN=\n")
+    rc, checks = _doctor_run(health, etc=etc)
+    assert {"OK KOKORO_RESERVE_FPT=6", "OK LLM_BASE_URL set",
+            "WARN GATEWAY_TOKEN unset — /talk is unauthenticated",
+            "OK TTS pacing: greedy"} <= set(checks), checks
+    if os.geteuid() != 0:  # root reads a mode-000 file
+        import grp
+        import pwd
+        f = os.path.join(etc, "brain.env")
+        os.chmod(f, 0)
+        rc, checks = _doctor_run(health, etc=etc)
+        user = pwd.getpwuid(os.getuid()).pw_name
+        group = grp.getgrgid(os.getgid()).gr_name
+        # The repair, not "sudo teaport doctor" (HOME=/root moves its other lookups).
+        assert [c for c in checks if "brain.env" in c or "LLM_BASE_URL" in c] == [
+            f"WARN {f} is not readable by {user}, so its settings are not checked — "
+            f"re-run install.sh, or: sudo chgrp {group} {f} && sudo chmod 640 {f}"], checks
+        assert "OK KOKORO_RESERVE_FPT=6" in checks and "OK TTS pacing: greedy" in checks
+    print("  PASS doctor runs every check with no install, judges only readable env files")
 
 
 # ---- real pipeline: the reply survives a pacing wait longer than the watchdog
@@ -416,7 +654,11 @@ async def _tone_segments(text, eager=True):
     yield "end", [(w, i * CLAUSE_SECS / len(words)) for i, w in enumerate(words)]
 
 
-async def test_pacing_wait_keeps_the_reply_context_alive():
+async def _paced_reply(keepalive=True):
+    """REPLY through a real pipeline, paced "lead" behind a watchdog (0.4 s) shorter
+    than the ~1 s pacing wait before its second clause, with pipecat's keepalive or
+    with it a no-op: the clauses' eager flags and what reached the output, (time,
+    frame)."""
     tts = EngineTTSService(voice="af_heart")
     eagers = []
 
@@ -426,16 +668,16 @@ async def test_pacing_wait_keeps_the_reply_context_alive():
             yield ev
     tts._synth_text = synth
     tts._pacing, tts._lead_s, tts._eager = "lead", 0.2, "first"
-    # Watchdog shorter than the ~1 s pacing wait: without the keepalive the context
-    # closes between the clauses and the second clause lands after its stop frame.
     tts._stop_frame_timeout_s = 0.4
+    if not keepalive:
+        tts._refresh_audio_context = lambda context_id: None
     probe, out = Probe(), StubOutput()
     task = PipelineTask(Pipeline([tts, probe, out]), observers=[])
     running = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
     await asyncio.sleep(0.5)
-    t0 = time.monotonic()
     await task.queue_frames([LLMFullResponseStartFrame(), LLMTextFrame(REPLY),
                              LLMFullResponseEndFrame()])
+
     def done():  # both clauses synthesized and a stop frame behind the last audio
         kinds = [type(f) for _, f in probe.seen]
         return (len(eagers) >= 2 and TTSAudioRawFrame in kinds
@@ -445,21 +687,42 @@ async def test_pacing_wait_keeps_the_reply_context_alive():
         await asyncio.sleep(0.05)
     await task.cancel()
     await running
+    return eagers, probe.seen
 
-    audio = [(ts, f) for ts, f in probe.seen if isinstance(f, TTSAudioRawFrame)]
-    stops = [i for i, (_, f) in enumerate(probe.seen) if isinstance(f, TTSStoppedFrame)]
+
+def _one_reply(seen):
+    """Whether `seen` is one whole reply: its audio in one context, one stop frame,
+    after the last audio."""
+    stops = [i for i, (_, f) in enumerate(seen) if isinstance(f, TTSStoppedFrame)]
+    audio = [i for i, (_, f) in enumerate(seen) if isinstance(f, TTSAudioRawFrame)]
+    return (len(stops) == 1 and bool(audio) and stops[0] > audio[-1]
+            and len({seen[i][1].context_id for i in audio}) == 1)
+
+
+async def test_pacing_wait_keeps_the_reply_context_alive():
+    """What the hook check (pacing_status) cannot show: that a paced wait really keeps
+    the reply alive. CI runs this against the pipecat in uv.lock, the only pipecat a
+    box installs (install.sh --only brain, the .deb). The check must agree with it,
+    and the keepalive must be what does it: with it a no-op, the same wait ends the
+    reply early."""
+    assert engine_tts._missing_pacing_hooks() == (), engine_tts._missing_pacing_hooks()
+    t0 = time.monotonic()
+    eagers, seen = await _paced_reply()
+    audio = [(ts, f) for ts, f in seen if isinstance(f, TTSAudioRawFrame)]
     assert len(eagers) >= 2, f"want a multi-clause reply, got {len(eagers)} clause(s)"
-    assert len(stops) == 1, f"{len(stops)} stop frames: the context closed mid-reply"
+    assert _one_reply(seen), \
+        f"the context closed mid-reply: {[type(f).__name__ for _, f in seen]}"
     assert eagers[0] is True and not any(eagers[1:]), f"eager=first sent {eagers}"
-    last_audio = max(i for i, (_, f) in enumerate(probe.seen) if isinstance(f, TTSAudioRawFrame))
-    assert stops[0] > last_audio, "the stop frame came before the reply's last audio"
-    contexts = {f.context_id for _, f in audio}
-    assert len(contexts) == 1, f"the reply's audio split across contexts {contexts}"
     # The second clause waited for playout instead of following the first at once.
     gap = audio[-1][0] - audio[0][0]
     assert gap >= CLAUSE_SECS - 0.2 - 0.3, f"clause 2 followed {gap:.2f}s after clause 1"
+    took = time.monotonic() - t0
+    cut_eagers, cut = await _paced_reply(keepalive=False)
+    assert len(cut_eagers) >= 2 and not _one_reply(cut), \
+        f"no keepalive, yet one whole reply: {[type(f).__name__ for _, f in cut]}"
     print(f"  PASS {len(eagers)} clauses, one context, one stop frame; clause 2 paced "
-          f"{gap:.2f}s behind clause 1 (eager {eagers}), {time.monotonic() - t0:.1f}s total")
+          f"{gap:.2f}s behind clause 1 (eager {eagers}), {took:.1f}s total; without the "
+          f"keepalive the reply is cut")
 
 
 def test_tts_pacing():
@@ -469,6 +732,9 @@ def test_tts_pacing():
     test_eager_policy()
     test_choice_setting()
     test_missing_pipecat_hooks_fall_back_to_greedy()
+    test_hook_check_sees_how_pipecat_writes_them()
+    test_a_value_that_is_not_a_pacing_is_reported()
+    test_doctor_runs_every_check_on_any_box()
 
     async def main():
         await test_greedy_never_waits()

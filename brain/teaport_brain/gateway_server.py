@@ -477,8 +477,10 @@ app.include_router(config_ui.router)
 async def health():
     # "sip": the SIP front-end's state (sip_server.status): off, waiting for a gateway,
     # or connected to one. `teaport sip status` and `teaport doctor` read it.
-    # "tts_pacing": TTS_PACING as configured and as run, which differ when this pipecat
-    # lacks what "lead" needs ("missing"; issue #138). `teaport doctor` warns on that.
+    # "tts_pacing": TTS_PACING as set and as run, which differ when the value is not a
+    # pacing ("invalid") or this pipecat lacks what "lead" needs ("missing"; issue
+    # #138); engine_tts.pacing_status has the fields. `teaport doctor` warns on that,
+    # and the config page shows it beside the setting.
     return {"ok": True, "tts": "engine", "sip": sip_server.status(),
             "tts_pacing": pacing_status()}
 

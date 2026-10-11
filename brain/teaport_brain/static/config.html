@@ -287,6 +287,7 @@
 
   // ---- state
   let data = null;               // last GET /api/config
+  let health = null;             // last GET /health, null while the brain does not answer
   let rowsByName = {};
   let edits = {};                // name -> text | null (null = unset)
   const UNIT_LABEL = { 'teaport-engine': 'engine', 'teaport-brain': 'brain', 'teaport-sip': 'sip', 'teaport-discord-bridge': 'bridge' };
@@ -371,6 +372,19 @@
       oninput: (e) => setEdit(name, e.target.value.trim() === '' ? null : e.target.value) })];
   };
 
+  // How the running brain paces (/health's tts_pacing), which is not always the value
+  // above: "lead" falls back to greedy on a pipecat without its hooks (#138), a value
+  // that is not a pacing reads as the default, and an edit waits for a restart. Only
+  // the fallback is explained here; the row's own "not used" message covers a value
+  // that is not a pacing, and one red message per cause is enough.
+  const pacingNote = () => {
+    const p = health && health.tts_pacing;
+    if (!p) return null;
+    const why = (p.missing || []).length ? `lead does not fit pipecat ${p.pipecat} (${p.missing.join('; ')})` : '';
+    // Not .field-err: an edit clears that, and this is not about the edit.
+    return h('p', { class: 'note', style: why ? 'color:var(--err-ink)' : null }, `The brain paces ${p.effective} now` + (why ? ': ' + why + '.' : '.'));
+  };
+
   const renderRow = (row, writable) => {
     const badges = [h('span', { class: 'badge' }, defaultText(row))];
     if (row.tier === 'tuning') badges.push(h('span', { class: 'badge tier-tuning' }, 'tuning'));
@@ -383,6 +397,7 @@
         h('div', { class: 'row-head' }, h('label', { for: id }, row.name), ...badges),
         row.help ? h('p', { class: 'help' }, row.help) : null,
         row.note ? h('p', { class: 'note' }, row.note) : null,
+        row.name === 'TTS_PACING' ? pacingNote() : null,
         row.source ? h('div', { class: 'source' }, row.source.join(', ')) : null),
       h('div', { class: 'control' }, ...control(row, writable),
         isIgnored(row.name) ? h('p', { class: 'field-err' }, data.ignored[row.name] + ' ',
@@ -619,20 +634,23 @@
     const deadline = Date.now() + 90000;
     await new Promise((r) => setTimeout(r, 4000));
     while (Date.now() < deadline) {
-      try {
-        const res = await fetch('/health', { cache: 'no-store' });
-        if (res.ok) { await load(h('div', { class: 'banner ok' }, h('p', {}, `${UNIT_LABEL[unit] || unit} restarted.`))); return; }
-      } catch (e) { /* brain down; keep polling */ }
+      if (await fetchHealth()) { await load(h('div', { class: 'banner ok' }, h('p', {}, `${UNIT_LABEL[unit] || unit} restarted.`))); return; }
       await new Promise((r) => setTimeout(r, 1500));
     }
     renderBanners(h('div', { class: 'banner err' }, h('p', {}, 'Still no answer from the brain after 90 s — check ', h('code', {}, 'journalctl -u ' + unit), ' on the box.')));
   };
 
   // ---- load
+  const fetchHealth = async () => {  // the brain's /health (no token), or null: it is down
+    try {
+      const res = await fetch('/health', { cache: 'no-store' });
+      return res.ok ? await res.json() : null;
+    } catch (e) { return null; }
+  };
   const load = async (banner) => {
     try {
-      const res = await api('/api/config');
-      data = res.body;
+      const [res, hl] = await Promise.all([api('/api/config'), fetchHealth()]);
+      data = res.body; health = hl;
       $('#gate').hidden = true; $('#page').hidden = false;
       render();
       renderWifi();
