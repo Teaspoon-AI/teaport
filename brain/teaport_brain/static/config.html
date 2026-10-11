@@ -373,13 +373,14 @@
   };
 
   // How the running brain paces (/health's tts_pacing), which is not always the value
-  // above: "lead" falls back to greedy on a pipecat without its hooks, a value that is
-  // not a pacing reads as the default (#138), and an edit waits for a restart.
+  // above: "lead" falls back to greedy on a pipecat without its hooks (#138), a value
+  // that is not a pacing reads as the default, and an edit waits for a restart. Only
+  // the fallback is explained here; the row's own "not used" message covers a value
+  // that is not a pacing, and one red message per cause is enough.
   const pacingNote = () => {
     const p = health && health.tts_pacing;
     if (!p) return null;
-    const why = p.invalid ? `"${p.configured}" ${p.invalid}`
-      : (p.missing || []).length ? `lead does not fit pipecat ${p.pipecat} (${p.missing.join('; ')})` : '';
+    const why = (p.missing || []).length ? `lead does not fit pipecat ${p.pipecat} (${p.missing.join('; ')})` : '';
     // Not .field-err: an edit clears that, and this is not about the edit.
     return h('p', { class: 'note', style: why ? 'color:var(--err-ink)' : null }, `The brain paces ${p.effective} now` + (why ? ': ' + why + '.' : '.'));
   };

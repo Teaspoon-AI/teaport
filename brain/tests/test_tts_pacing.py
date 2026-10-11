@@ -412,10 +412,16 @@ def test_missing_pipecat_hooks_fall_back_to_greedy():
 def test_hook_check_sees_how_pipecat_writes_them():
     """A pipecat that still has every hook, written another way, fits: the timeout set
     through a setattr loop, a closure, an __init__ decorated without functools.wraps,
-    a helper method or a base class; the watchdog's names in a helper, a closure or a
-    decorated method; the keepalive wrapped or its argument renamed. Read from __init__'s
-    bytecode, each of the first four read as "missing" (a false alarm in doctor)."""
+    a helper method or a base class; the watchdog's names in a closure or behind
+    functools.wraps; the keepalive wrapped or its argument renamed; another method made
+    abstract. Read from __init__'s bytecode, each of the first four read as "missing"
+    (a false alarm in doctor). The watchdog is read from its own code alone, so one
+    that stopped skipping the keepalive is caught even when it calls the method that
+    queues it (PR #147 review), at the price of a false "missing" for one whose names
+    moved into a helper: that only costs pacing's savings."""
+    import functools
     import inspect
+    from abc import abstractmethod
     from pipecat.services.tts_service import TTSService
     real_init, real_watchdog = TTSService.__init__, TTSService._handle_audio_context
     real_refresh = TTSService._refresh_audio_context
@@ -446,13 +452,6 @@ def test_hook_check_sees_how_pipecat_writes_them():
         real_init(self, *a, **kw)
         self._keep_timeout(stop_frame_timeout_s)
 
-    async def watchdog_helper(self, context_id):
-        return await self._next_frame(context_id)
-
-    async def next_frame(self, context_id):
-        frame = await asyncio.wait_for(asyncio.sleep(0), timeout=self._stop_frame_timeout_s)
-        return frame is TTSService._CONTEXT_KEEPALIVE
-
     async def watchdog_closure(self, context_id):
         def is_keepalive(frame):
             return frame is TTSService._CONTEXT_KEEPALIVE
@@ -462,15 +461,17 @@ def test_hook_check_sees_how_pipecat_writes_them():
     def refresh_renamed(self, ctx):
         pass
 
+    @functools.wraps(real_watchdog)
+    async def watchdog_wrapped(self, context_id):
+        return await real_watchdog(self, context_id)
+
     cases = [("__init__", init_setattr_loop), ("__init__", init_closure),
              ("__init__", init_decorated), ("__init__", init_helper),
-             ("_handle_audio_context", watchdog_helper),
              ("_handle_audio_context", watchdog_closure),
-             ("_handle_audio_context", no_wraps(real_watchdog)),
+             ("_handle_audio_context", watchdog_wrapped),
              ("_refresh_audio_context", no_wraps(real_refresh)),
              ("_refresh_audio_context", refresh_renamed)]
     TTSService._keep_timeout = lambda self, t: setattr(self, "_stop_frame_timeout_s", t)
-    TTSService._next_frame = next_frame
     real_getsource = inspect.getsource
 
     def no_source(obj):  # a stripped install: bytecode only
@@ -485,19 +486,56 @@ def test_hook_check_sees_how_pipecat_writes_them():
                 TTSService.__init__, TTSService._handle_audio_context = real_init, real_watchdog
                 TTSService._refresh_audio_context = real_refresh
             assert got == (), f"{name} as {f.__qualname__}: {got}"
-        # ...and without .py sources the check still sees a hook that is gone.
+        # ...and without .py sources the check still sees a watchdog that no longer
+        # skips the keepalive: one that never names it, one that hands it downstream
+        # and then queues another itself (through self, or through another object),
+        # and one whose names moved into a helper (read as missing: errs to greedy).
         async def watchdog_without_keepalive(self, context_id):
             await asyncio.wait_for(asyncio.sleep(0), timeout=self._stop_frame_timeout_s)
-        TTSService._handle_audio_context = watchdog_without_keepalive
-        try:
-            got = engine_tts._missing_pacing_hooks()
-        finally:
-            TTSService._handle_audio_context = real_watchdog
-        assert got == ("its watchdog (_handle_audio_context) no longer uses "
-                       "_CONTEXT_KEEPALIVE",), got
+
+        async def watchdog_refreshes(self, context_id):
+            frame = await asyncio.wait_for(self._audio_contexts[context_id].get(),
+                                           timeout=self._stop_frame_timeout_s)
+            await self.push_frame(frame)   # the keepalive too: not skipped
+            self._refresh_audio_context(context_id)
+
+        async def watchdog_refreshes_elsewhere(self, context_id):
+            frame = await asyncio.wait_for(self._audio_contexts[context_id].get(),
+                                           timeout=self._stop_frame_timeout_s)
+            await self.push_frame(frame)
+            self._helper_obj._refresh_audio_context(context_id)
+
+        async def watchdog_helper(self, context_id):
+            return await self._next_frame(context_id)
+
+        async def next_frame(self, context_id):
+            frame = await asyncio.wait_for(asyncio.sleep(0),
+                                           timeout=self._stop_frame_timeout_s)
+            return frame is TTSService._CONTEXT_KEEPALIVE
+        TTSService._next_frame = next_frame
+        for watchdog in (watchdog_without_keepalive, watchdog_refreshes,
+                         watchdog_refreshes_elsewhere, watchdog_helper):
+            TTSService._handle_audio_context = watchdog
+            try:
+                got = engine_tts._missing_pacing_hooks()
+            finally:
+                TTSService._handle_audio_context = real_watchdog
+            assert "its watchdog (_handle_audio_context) no longer uses " \
+                   "_CONTEXT_KEEPALIVE" in got, f"{watchdog.__name__}: {got}"
     finally:
         inspect.getsource = real_getsource
-        del TTSService._keep_timeout, TTSService._next_frame
+        del TTSService._keep_timeout
+        if hasattr(TTSService, "_next_frame"):
+            del TTSService._next_frame
+
+    # A pipecat that makes another method abstract: the probe stubs every one, so
+    # that is not "TTSService(...) raises".
+    class _MoreAbstract(TTSService):
+        @abstractmethod
+        async def flush_audio(self):
+            ...
+    assert engine_tts._missing_pacing_hooks(_MoreAbstract) == (), \
+        engine_tts._missing_pacing_hooks(_MoreAbstract)
 
     # A keepalive only callable by keyword: _pace passes the context id positionally.
     TTSService._refresh_audio_context = lambda self, *, context_id: None
@@ -532,8 +570,9 @@ def test_hook_check_sees_how_pipecat_writes_them():
     assert engine_tts._missing_pacing_hooks(_SplitWithout) == (
         "its constructor does not keep stop_frame_timeout_s in _stop_frame_timeout_s",), \
         engine_tts._missing_pacing_hooks(_SplitWithout)
-    print(f"  PASS {len(cases) + 1} ways of writing the same hooks fit, with or without "
-          "sources; a keyword-only keepalive does not")
+    print(f"  PASS {len(cases) + 2} ways of writing the same hooks fit, with or without "
+          "sources; a keyword-only keepalive, or a watchdog that refreshes instead of "
+          "skipping it, does not")
 
 
 def test_a_value_that_is_not_a_pacing_is_reported():
@@ -585,13 +624,17 @@ def test_doctor_runs_every_check_on_any_box():
             "WARN GATEWAY_TOKEN unset — /talk is unauthenticated",
             "OK TTS pacing: greedy"} <= set(checks), checks
     if os.geteuid() != 0:  # root reads a mode-000 file
+        import grp
         import pwd
-        os.chmod(os.path.join(etc, "brain.env"), 0)
+        f = os.path.join(etc, "brain.env")
+        os.chmod(f, 0)
         rc, checks = _doctor_run(health, etc=etc)
         user = pwd.getpwuid(os.getuid()).pw_name
+        group = grp.getgrgid(os.getgid()).gr_name
+        # The repair, not "sudo teaport doctor" (HOME=/root moves its other lookups).
         assert [c for c in checks if "brain.env" in c or "LLM_BASE_URL" in c] == [
-            f"WARN {etc}/brain.env is not readable by {user}, so its settings are not "
-            f"checked — sudo teaport doctor"], checks
+            f"WARN {f} is not readable by {user}, so its settings are not checked — "
+            f"re-run install.sh, or: sudo chgrp {group} {f} && sudo chmod 640 {f}"], checks
         assert "OK KOKORO_RESERVE_FPT=6" in checks and "OK TTS pacing: greedy" in checks
     print("  PASS doctor runs every check with no install, judges only readable env files")
 

@@ -162,7 +162,9 @@ else:
 # "unset" would be the wrong diagnosis for its keys. Uses doctor's warnc/failc.
 env_file_check() {
   if [ -r "$1" ]; then return 0
-  elif [ -e "$1" ]; then warnc "$1 is not readable by $(id -un), so its settings are not checked — sudo teaport doctor"
+  # The repair, not `sudo teaport doctor`: under plain sudo HOME is /root, which moves
+  # the secrets and SIP lookups and turns them into false failures.
+  elif [ -e "$1" ]; then warnc "$1 is not readable by $(id -un), so its settings are not checked — re-run install.sh, or: sudo chgrp $(id -gn) $1 && sudo chmod 640 $1"
   else failc "$1 missing (run install.sh)"; fi
   return 1
 }

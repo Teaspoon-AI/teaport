@@ -409,8 +409,10 @@ def _missing_pacing_hooks(cls=TTSService) -> tuple[str, ...]:
     uv.lock, the only one a box installs."""
     import inspect
     try:
-        probe = type("_PacingProbe", (cls,), {"run_tts": None})(
-            stop_frame_timeout_s=_PROBE_TIMEOUT_S)
+        # Every abstract method stubbed (run_tts in 1.8.1): a pipecat that makes
+        # another one abstract must not read as one lead cannot use.
+        stubs = dict.fromkeys(getattr(cls, "__abstractmethods__", ()))
+        probe = type("_PacingProbe", (cls,), stubs)(stop_frame_timeout_s=_PROBE_TIMEOUT_S)
     except Exception as e:  # noqa: BLE001 - whatever it is, lead cannot build on it
         return (f"TTSService(stop_frame_timeout_s=...) raises {e!r}",)
     missing = []
@@ -423,7 +425,7 @@ def _missing_pacing_hooks(cls=TTSService) -> tuple[str, ...]:
                        "_stop_frame_timeout_s")
     # Present is not enough: the watchdog must still time out on that value and skip
     # the keepalive.
-    used = _names_used(cls, getattr(cls, "_handle_audio_context", None))
+    used = _names_used(getattr(cls, "_handle_audio_context", None))
     missing += [f"its watchdog (_handle_audio_context) no longer uses {name}"
                 for name in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE")
                 if name not in used]
@@ -440,35 +442,25 @@ def _binds(f, *args) -> bool:
     return True
 
 
-def _names_used(cls, func) -> set[str]:
-    """Every attribute and global name `func`'s bytecode reads (bytecode is there
-    without .py sources), with the functions it reaches: those nested in it (closures,
-    comprehensions), the one a decorator wraps (with functools.wraps or without: a
-    closure cell) and, transitively, the methods of `cls` it names, such as a helper
-    it calls on self. Not the source text of `func` alone, which called a name moved
-    into any of those missing."""
-    import inspect
+def _names_used(func) -> set[str]:
+    """Every attribute and global name `func`'s own bytecode reads (bytecode is there
+    without .py sources): its body, the functions nested in it (closures,
+    comprehensions), and each function down its functools.wraps chain. Nothing it
+    merely calls: following the methods a watchdog names let one that no longer skips
+    the keepalive pass because it calls _refresh_audio_context, which names
+    _CONTEXT_KEEPALIVE (PR #147 review). A false "missing" costs pacing's savings; a
+    false pass is #87's mid-reply failure."""
     import types
-    names, seen, todo = set(), set(), [func]
-    while todo:
-        f = todo.pop()
-        f = getattr(f, "__func__", f)  # a bound, static or class method
-        code = getattr(f, "__code__", None)
-        if not isinstance(code, types.CodeType) or code in seen:
-            continue
-        seen.add(code)
-        todo.append(getattr(f, "__wrapped__", None))
-        for cell in getattr(f, "__closure__", None) or ():
-            try:
-                todo.append(cell.cell_contents)
-            except ValueError:  # a cell not filled yet
-                pass
-        codes = [code]
+    names, seen = set(), set()
+    while func is not None and id(func) not in seen:
+        seen.add(id(func))
+        code = getattr(func, "__code__", None)
+        codes = [code] if isinstance(code, types.CodeType) else []
         while codes:
             c = codes.pop()
             names.update(c.co_names)
             codes += [k for k in c.co_consts if isinstance(k, types.CodeType)]
-            todo += [inspect.getattr_static(cls, n, None) for n in c.co_names]
+        func = getattr(func, "__wrapped__", None)
     return names
 
 
