@@ -228,7 +228,9 @@ class ChipSetting:
                 reached = change(node)
             except Exception as e:  # noqa: BLE001 — a setting must never fail a call or the mic
                 self._failed()
-                if not self._failing:
+                if self._failing:
+                    self._unlogged += 1  # the outage already said: counted for the next line
+                else:
                     now = self._clock()
                     if now - self._logged_at < LOG_QUIET_SECS:
                         self._unlogged += 1  # a flaky chip: said a moment ago

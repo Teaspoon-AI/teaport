@@ -148,24 +148,30 @@ class EchoSuppression(xvf_led.ChipSetting):
             believed = self.shown
             found = tuple((cmd, _get(dev, cmd)) for cmd, _ in FACTORY)
             agc = self._agc(dev)
-            if believed is not None and (found != believed or not self._agc_fixed(agc)):
-                self.resets += 1
+            reset = believed is not None and (found != believed or not self._agc_fixed(agc))
+            if reset:
                 logger.warning(f"{self.LOG}: the chip no longer held what was set "
                                f"(suppressor {found}, AGC on={agc[0]} gain={agc[1]:g}): "
                                "it was reset; setting it again")
-            if self.own is None:
-                self.own = FACTORY if found == DUPLEX else found
-            self._show(found)
-            # The AGC off at a fixed gain (see the module), unless it already is.
-            if not self._agc_fixed(agc):
-                _set(dev, PP_AGCONOFF, 0)
-                _set(dev, PP_AGCGAIN, self.gain, "<f")
-                on, gain = self._agc(dev)
-                if not self._agc_fixed((on, gain)):
-                    raise OSError(f"AGC read back on={on} gain={gain:g}, "
-                                  f"wrote off at {self.gain:g}")
-                # What was captured before was lifted by the AGC: not the bare echo.
-                self.shown_at = self._clock()
+            try:
+                if self.own is None:
+                    self.own = FACTORY if found == DUPLEX else found
+                self._show(found)
+                # The AGC off at a fixed gain (see the module), unless it already is.
+                if not self._agc_fixed(agc):
+                    _set(dev, PP_AGCONOFF, 0)
+                    _set(dev, PP_AGCGAIN, self.gain, "<f")
+                    on, gain = self._agc(dev)
+                    if not self._agc_fixed((on, gain)):
+                        raise OSError(f"AGC read back on={on} gain={gain:g}, "
+                                      f"wrote off at {self.gain:g}")
+                    # What was captured before was lifted by the AGC: not the bare echo.
+                    self.shown_at = self._clock()
+            finally:
+                if reset:
+                    # Counted once what the chip holds (and shown_at) is known again: a
+                    # meter that sees the count then measures nothing from before it.
+                    self.resets += 1
         want = DUPLEX if duplex else self.own
         if want != self.shown:
             self._show(None)  # part-written until it reads back whole
@@ -260,6 +266,9 @@ class EchoMeter:
         self.floor = collections.deque(maxlen=FLOOR_KEEP)
         self.gap: float | None = None
         self.recheck = False   # the last change was a recheck, not a measured verdict
+        # The chip resets (EchoSuppression.resets) this meter has taken into account:
+        # kept here, beside the echo it guards, so a card reopened meanwhile misses none.
+        self.resets_seen = 0
 
     def feed(self, mic_db: float, ref_db: float | None, bot_quiet: bool,
              conversing: bool = True, *, suppressor_off: bool) -> bool:

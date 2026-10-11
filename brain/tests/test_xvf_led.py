@@ -282,6 +282,26 @@ def test_a_flaky_ring_is_logged_once_per_quiet_spell():
     assert len(lines) == 3 and "9 more failures" in lines[2], lines
 
 
+def test_failures_during_a_logged_outage_are_counted_too():
+    clock = [0.0]
+    dev = FakeXvf()
+    lamp = _lamp(dev, clock=lambda: clock[0])
+    lines, sink = _messages()
+    try:
+        dev.fail = OSError(5, "Input/output error")
+        assert lamp.set(xvf_led.BUSY) is False     # logged
+        assert lamp.set(xvf_led.BUSY) is False     # the same outage: counted
+        dev.fail = None
+        assert lamp.set(xvf_led.BUSY)              # working again
+        dev.fail = OSError(5, "Input/output error")
+        assert lamp.set(xvf_led.IDLE) is False     # a moment later: counted
+        clock[0] += 400
+        assert lamp.set(xvf_led.IDLE) is False     # said again, with the two between
+    finally:
+        logger.remove(sink)
+    assert len(lines) == 3 and "2 more failures" in lines[2], lines
+
+
 def test_a_bad_status_is_an_error_not_a_hang():
     dev = FakeXvf()
     dev.control = lambda *a: bytes([1, 0])
