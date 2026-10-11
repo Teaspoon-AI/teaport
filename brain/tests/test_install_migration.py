@@ -14,7 +14,8 @@ import os
 import pathlib
 import stat
 import subprocess
-import tempfile
+
+from tempdirs import tempdir
 
 INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
 START = "# --- one brain process (issue #58): retiring teaport-sip-brain"
@@ -47,7 +48,7 @@ def _functions(root: str) -> str:
 
 
 def _fixture(adversarial=False):
-    root = tempfile.mkdtemp(prefix="teaport-mig-")
+    root = tempdir("teaport-mig-")
     sysd, etc = os.path.join(root, "sys"), os.path.join(root, "etc")
     sipd = os.path.join(sysd, "teaport-sip-brain.service.d")
     talkd = os.path.join(sysd, "teaport-brain.service.d")

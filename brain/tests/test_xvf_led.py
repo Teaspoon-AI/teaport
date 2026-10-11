@@ -18,10 +18,8 @@
 # Run: python test_xvf_led.py
 #
 import asyncio
-import atexit
 import ctypes
 import os
-import shutil
 import struct
 import sys
 import tempfile
@@ -32,11 +30,11 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from loguru import logger  # noqa: E402
 
 from teaport_brain import xvf_led  # noqa: E402
+from tempdirs import tempdir  # noqa: E402
 
 RED = 0xFF0000
 ROOM = (xvf_led.EFFECT_DOA, 0x002040)  # what the appliance's ring read before a call
-_TMP = tempfile.mkdtemp(prefix="test_xvf_led-")
-atexit.register(shutil.rmtree, _TMP, True)
+_TMP = tempdir("teaport-xvf-led-")
 
 
 class FakeXvf:

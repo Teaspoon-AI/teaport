@@ -12,12 +12,11 @@
 #
 # Run: python test_cli_sip_conf.py   (or via pytest test_suite.py)
 #
-import atexit
 import os
 import pathlib
-import shutil
 import subprocess
-import tempfile
+
+from tempdirs import tempdir
 
 CLI = pathlib.Path(__file__).resolve().parents[2] / "cli" / "teaport"
 DISPATCH = 'cmd="${1:-}"; shift || true'
@@ -50,9 +49,8 @@ def _run(secrets, steps, stubs=""):
 
 
 def _secrets():
-    d = pathlib.Path(tempfile.mkdtemp(prefix="teaport-cli-"))
+    d = pathlib.Path(tempdir("teaport-cli-"))
     os.chmod(d, 0o700)
-    atexit.register(shutil.rmtree, d, True)
     return d
 
 

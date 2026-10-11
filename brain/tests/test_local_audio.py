@@ -4,13 +4,13 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 
 import numpy as np
 import pytest
 import soxr
 
 from teaport_brain import local_audio as la
+from tempdirs import tempdir
 
 
 def _tone(rate, secs, hz=440, amp=8000):
@@ -189,7 +189,7 @@ def test_pcm_status_dir_from_the_device_string():
 
 
 def test_read_pcm_status_picks_our_substream():
-    d = tempfile.mkdtemp()
+    d = tempdir()
     for sub, text in (("sub0", RUNNING.replace("15188", "999")), ("sub1", RUNNING), ("sub2", "closed\n")):
         os.makedirs(os.path.join(d, sub))
         with open(os.path.join(d, sub, "status"), "w") as f:
@@ -356,8 +356,8 @@ def _fake_card(monkeypatch, capture_script, flag):
     monkeypatch.setattr(la, "_spawn", spawn)
     monkeypatch.setattr(la, "DEVICE", "fake")
     monkeypatch.setattr(la, "RETRY_SECS", 0.3)
-    monkeypatch.setattr(la, "FACE_SOCK", os.path.join(tempfile.mkdtemp(), "face.sock"))
-    monkeypatch.setattr(la, "VOLUME_FILE", os.path.join(tempfile.mkdtemp(), "volume.json"))
+    monkeypatch.setattr(la, "FACE_SOCK", os.path.join(tempdir(), "face.sock"))
+    monkeypatch.setattr(la, "VOLUME_FILE", os.path.join(tempdir(), "volume.json"))
 
     async def unknown():
         return None                              # a brain that cannot say (no /talk/status here)
@@ -379,7 +379,7 @@ async def _talk(on_connect):
 
 
 def test_dead_card_never_dials(monkeypatch):
-    flag = tempfile.mktemp()
+    flag = os.path.join(tempdir(), "speaking")
     _fake_card(monkeypatch, DEAD, flag)
 
     async def run():
@@ -398,7 +398,7 @@ def test_dead_card_never_dials(monkeypatch):
 
 
 def test_first_session_dials_at_once_later_ones_wait_for_a_voice(monkeypatch):
-    flag = tempfile.mktemp()
+    flag = os.path.join(tempdir(), "speaking")
     _fake_card(monkeypatch, ARECORD, flag)
     got = {}
 
@@ -512,7 +512,7 @@ def _redials(monkeypatch, close_code, active):
     """A first session the brain closes with `close_code`, then someone talking near the
     box (the flag) while the brain reports `active()` for /talk/status. Returns the
     connection count after 1 s of voice."""
-    flag = tempfile.mktemp()
+    flag = os.path.join(tempdir(), "speaking")
     _fake_card(monkeypatch, ARECORD, flag)
     monkeypatch.setattr(la, "BACKOFF_POLL_SECS", 0.05)
     polls, conns = [0], [0]
@@ -608,7 +608,7 @@ def test_without_wake_words_a_phone_call_holds_the_mic_off_until_it_ends(monkeyp
 def _first_dials(monkeypatch, active, secs=1.5):
     """A bridge process starting while the brain reports active() (called per poll).
     Returns (connections, voice-free) after `secs`, nobody speaking."""
-    flag = tempfile.mktemp()                     # never created: nobody speaks
+    flag = os.path.join(tempdir(), "speaking")  # never created: nobody speaks
     _fake_card(monkeypatch, ARECORD, flag)
     monkeypatch.setattr(la, "START_SETTLE_SECS", 0.5)
     monkeypatch.setattr(la, "START_POLL_SECS", 0.05)
@@ -887,7 +887,7 @@ def test_volume_is_saved_by_rename(tmp_path, monkeypatch):
 
 def test_client_tools_dispatch():
     class Card:
-        volume = la.Volume(os.path.join(tempfile.mkdtemp(), "v.json"))
+        volume = la.Volume(os.path.join(tempdir(), "v.json"))
     quiet = _Quiet()
     restart = la.Restart(quiet, quiet)
     r = la.client_tool(Card, {"name": "set_volume", "args": {"level": 40}}, restart)
@@ -977,7 +977,7 @@ def test_restart_session_redials_at_once_without_a_voice(monkeypatch):
     """restart_session: the bridge answers the tool, lets the goodbye play (none here,
     so it waits RESTART_SPEECH_WAIT_SECS), ends the session and dials a fresh one
     straight away — no voice needed, unlike a session the brain ended."""
-    flag = tempfile.mktemp()                       # never created: nobody speaks
+    flag = os.path.join(tempdir(), "speaking")  # never created: nobody speaks
     _fake_card(monkeypatch, ARECORD, flag)
     monkeypatch.setattr(la, "RESTART_SPEECH_WAIT_SECS", 0.3)
     got = {}
@@ -1149,7 +1149,7 @@ HELLO = json.dumps({"type": "hello", "features": {}, "wake": "asleep"})
 
 def _wake_card(monkeypatch, **status):
     """A fake card in wake mode; /talk/status answers `status` (call: bool)."""
-    flag = tempfile.mktemp()
+    flag = os.path.join(tempdir(), "speaking")
     _fake_card(monkeypatch, ARECORD, flag)
     monkeypatch.setattr(la, "WAKE_WORDS", "hey teaport")
     monkeypatch.setattr(la, "KEEPALIVE_POLL_SECS", 0.05)
