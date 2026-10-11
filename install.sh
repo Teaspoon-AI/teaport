@@ -1696,13 +1696,13 @@ phase_bridge() {
     local repo tag work; repo="$(mget brain.repo)"; tag="$(mget brain.tag)"
     work="$STATE/bridge-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
     # Same re-run == repair fix as resolve_brain_src: `git clone` dies on a non-empty destination.
-    # This clone is pure staging too — index.js/package.json are copied out below.
+    # This clone is pure staging too — index.js/env.js/package.json are copied out below.
     if [ -e "$work" ]; then run rm -rf "$work"; fi
     run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$work"
     src="$work/bridge/discord"
   fi
   SUDO mkdir -p "$PREFIX/bridge"; SUDO chown -R "$RUN_USER" "$PREFIX/bridge"
-  run cp "$src/index.js" "$src/package.json" "$PREFIX/bridge/"
+  run cp "$src/index.js" "$src/env.js" "$src/package.json" "$PREFIX/bridge/"
   # --omit=dev; the host toolchain builds @discordjs/opus from source (JetPack ships gcc/make/python3).
   run npm install --omit=dev --no-audit --no-fund --prefix "$PREFIX/bridge"
 

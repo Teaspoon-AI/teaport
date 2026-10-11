@@ -86,10 +86,17 @@ def empty_problem(r: dict) -> str | None:
             or not isinstance(r["empty"], str) or not r["empty"]):
         return "empty is the words for what \"\" means, on a text row"
     # Unset reads as the default and set-but-empty as "": with default "" they are one
-    # value, and `empty` would name a difference there is not. `required` may go with
-    # `empty`: the operator must choose, and off is a choice.
-    if r.get("default") == "":
-        return "empty with default \"\": unset already reads as \"\""
+    # value, and `empty` would name a difference there is not -- nor may a default_by
+    # entry be "", or unset is off in that mode. `required` may go with `empty`: the
+    # operator must choose, and off is a choice.
+    if r.get("default") == "" or any(
+            "" in table.values() for table in r.get("default_by", {}).values()):
+        return "empty with a default of \"\": unset already reads as \"\""
+    # The config page has no control for "" as a value on a text row (clearing the field
+    # is unset), so such a row is the installer's: TEAPORT_SIP_SOCKET, whose "off" is
+    # `teaport sip`'s to set, not a field's.
+    if r.get("tier") != "installer":
+        return "empty on a row the config page edits: it has no control for \"\""
     return None
 
 
@@ -337,12 +344,14 @@ def main() -> int:
         if "min" in r and "max" in r and r["min"] > r["max"]:
             problems.append(f"{n}: min > max")
 
-    for bad in ({"type": "int", "empty": "off"}, {"type": "path", "empty": ""},
-                {"type": "path", "empty": "off", "default": ""}):
+    ok = {"type": "path", "empty": "off", "tier": "installer"}
+    for bad in ({**ok, "type": "int"}, {**ok, "empty": ""}, {**ok, "default": ""},
+                {**ok, "default_by": {"MODE": {"a": "/x", "": ""}}}, {**ok, "tier": "setup"}):
         if empty_problem(bad) is None:
             problems.append(f"self-test: empty accepted on {bad}")
-    if empty_problem({"type": "path", "empty": "off", "required": True}) is not None:
-        problems.append("self-test: empty refused on a required row")
+    for good in ({**ok, "required": True}, {**ok, "default_by": {"MODE": {"a": "/x", "": "/y"}}}):
+        if empty_problem(good) is not None:
+            problems.append(f"self-test: empty refused on {good}")
 
     for c in schema.get("constraints", []):
         refs = []

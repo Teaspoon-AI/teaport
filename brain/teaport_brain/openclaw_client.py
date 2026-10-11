@@ -30,10 +30,9 @@ import uuid
 from dataclasses import dataclass
 
 from loguru import logger
-from teaport_brain.settings import setting
+from teaport_brain.settings import secret_file, setting
 
 GATEWAY_URL = setting("OPENCLAW_GATEWAY_URL").rstrip("/")
-TOKEN_FILE = os.path.expanduser("~/.config/teaport/openclaw_token")
 # The last failed CLI consult's full stderr, for a postmortem (the log line is cut).
 CONSULT_ERR_FILE = "/tmp/teaport-consult-last.err"
 
@@ -97,14 +96,7 @@ MEMORY_DIR = setting("OPENCLAW_MEMORY_DIR")
 
 def _token() -> str | None:
     """Gateway bearer token: OPENCLAW_GATEWAY_TOKEN, else ~/.config/teaport/openclaw_token."""
-    tok = setting("OPENCLAW_GATEWAY_TOKEN")
-    if tok:
-        return tok.strip()
-    try:
-        with open(TOKEN_FILE) as f:
-            return f.read().strip() or None
-    except OSError:
-        return None
+    return setting("OPENCLAW_GATEWAY_TOKEN") or secret_file("OPENCLAW_GATEWAY_TOKEN")
 
 
 def _invoke_sync(tool: str, args: dict, token: str, timeout: float) -> dict | None:

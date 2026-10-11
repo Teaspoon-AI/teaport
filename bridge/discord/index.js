@@ -40,10 +40,12 @@ import {
 import { Client, GatewayIntentBits } from "discord.js";
 import prism from "prism-media";
 
+import { setting, strip } from "./env.js";
+
 // Required: which server to serve and which user to follow into voice.
 // No baked defaults — every deployment names its own.
-const GUILD_ID = process.env.BRIDGE_GUILD_ID || "";
-const FOLLOW_USER_ID = process.env.BRIDGE_FOLLOW_USER_ID || "";
+const GUILD_ID = setting("BRIDGE_GUILD_ID", "snowflake") || "";
+const FOLLOW_USER_ID = setting("BRIDGE_FOLLOW_USER_ID", "snowflake") || "";
 if (!GUILD_ID || !FOLLOW_USER_ID) {
   console.error(
     "discord-bridge: set BRIDGE_GUILD_ID (your Discord server id) and " +
@@ -51,11 +53,11 @@ if (!GUILD_ID || !FOLLOW_USER_ID) {
   );
   process.exit(1);
 }
-const BRAIN_URL = process.env.BRAIN_URL || "ws://127.0.0.1:7861/talk";
-const FORCE_JOIN_CHANNEL_ID = process.env.BRIDGE_JOIN_CHANNEL_ID || "";
-const VOICE = process.env.TEAPORT_VOICE || "";
+const BRAIN_URL = setting("BRAIN_URL", "ws_url") || "ws://127.0.0.1:7861/talk";
+const FORCE_JOIN_CHANNEL_ID = setting("BRIDGE_JOIN_CHANNEL_ID", "snowflake") || "";
+const VOICE = setting("TEAPORT_VOICE") || "";
 const TOKEN_FILE =
-  process.env.DISCORD_BOT_TOKEN_FILE || `${process.env.HOME}/.config/teaport/discord_bot_token`;
+  setting("DISCORD_BOT_TOKEN_FILE") || `${process.env.HOME}/.config/teaport/discord_bot_token`;
 
 const FRAME_MS = 20;
 const BRAIN_RATE = 24000;
@@ -67,13 +69,12 @@ const DOWNLINK_FRAME_BYTES = (DISCORD_RATE / 1000) * FRAME_MS * 2 * 2; // 20 ms 
 // mid-word gap. Tunable by ear via BRIDGE_PRIME_MS (default 40; was 80 during
 // bring-up, when choppiness later traced to an engine race was mistaken for
 // underruns). Lower = less latency; 0 = start on the first frame.
-const DOWNLINK_PRIME_MS = Math.max(0, Number(process.env.BRIDGE_PRIME_MS ?? 40));
+const DOWNLINK_PRIME_MS = Number(setting("BRIDGE_PRIME_MS", "int") ?? 40); // below 0 starts at once, as 0 does
 const DOWNLINK_PRIME_BYTES = Math.round(DOWNLINK_PRIME_MS / FRAME_MS) * DOWNLINK_FRAME_BYTES;
 const DOWNLINK_IDLE_MS = 60; // delivery gap this long ⇒ utterance settled: drain/flush its tail
 
 function botToken() {
-  if (process.env.DISCORD_BOT_TOKEN) return process.env.DISCORD_BOT_TOKEN.trim();
-  return readFileSync(TOKEN_FILE, "utf-8").trim();
+  return setting("DISCORD_BOT_TOKEN") ?? strip(readFileSync(TOKEN_FILE, "utf-8"));
 }
 
 // Who this bridge is to the brain's session arbiter (?client=): one bridge per box, so a

@@ -8,8 +8,12 @@ env var shadows its file, and the tables below say which file each one belongs
 in.
 
 Boolean settings accept `0`/`false`/`no`/`off` and `1`/`true`/`yes`/`on`. An
-empty value means *unset* — the default applies. A flag that is off says so in
-the journal at startup. (`LEDGER_TRACE` is the one exception; see its row.)
+empty value means *unset* — the default applies — and spaces around a value are
+not part of it. A flag that is off says so in the journal at startup.
+(`LEDGER_TRACE` is the one exception; see its row.) The engine, the SIP gateway,
+and a library or unit command line that reads a `brain.env` setting
+(`HF_HUB_OFFLINE`, `BRAIN_PORT`) take the text as written: there an empty value
+is empty, not the default.
 
 There is a page for all of this: **`http://<box>:7861/config`** on the brain,
 opened with the same `GATEWAY_TOKEN` the Talk plugin uses (`?token=…` once, then
