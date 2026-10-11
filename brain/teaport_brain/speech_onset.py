@@ -26,9 +26,23 @@
 # starts (onset) and when the line has been below the threshold for the VAD's own
 # stop_secs (offset). It changes nothing the VAD decides.
 #
+# It also keeps track of three things for the STT's commit (stt.py, "the caller's
+# voice"): where on the input stream it last heard voice at that same confidence, where
+# the VAD's latest stop tripped, and how much audio it has been handed. All three are
+# sample positions counted from the session's first audio frame. The STT counts the same
+# way on its side, as the audio it passes down: every frame it passes reaches this
+# analyzer, in order. A commit that lands after the stop but over the caller's resumed
+# voice cuts their words (issue #140), and these positions let the STT see that voice
+# before the VAD's start does. The onset's confidence is used rather than the VAD's
+# speech test because the VAD's volume gate integrates over 400 ms. After a pause as
+# long as the smart-turn ceiling, the first ~0.2 s of resumed speech reads as silence
+# to it, and that is exactly the audio the ceiling's commit claimed as silence and cut.
+#
 import math
+from typing import NamedTuple, Optional
 
 from loguru import logger
+from pipecat.audio.vad.vad_analyzer import VADState
 
 from teaport_brain.settings import setting
 
@@ -36,6 +50,15 @@ from teaport_brain.settings import setting
 ONSET_CONFIDENCE = setting("TEAPORT_ONSET_CONFIDENCE")
 # This much consecutive speech is an onset. 128 ms = 4 of Silero's 32 ms chunks.
 ONSET_MIN_MS = setting("TEAPORT_ONSET_MIN_MS")
+
+
+class VoiceMarks(NamedTuple):
+    """Positions on the input stream, in samples from the session's first audio frame
+    (see the module note), read on the event loop by the STT."""
+    received: int                # handed to the analyzer and run through it
+    analyzed: int                # through the last chunk whose confidence is known
+    voice_end: Optional[int]     # the end of the last chunk at ONSET_CONFIDENCE
+    stop_at: Optional[int]       # where the VAD's latest stop tripped
 
 
 class SpeechOnsetMixin:
@@ -48,7 +71,8 @@ class SpeechOnsetMixin:
         st = getattr(self, "_onset", None)
         if st is None:
             st = self._onset = {"run": 0, "quiet": 0, "active": False, "events": [],
-                                "listeners": []}
+                                "listeners": [], "received": 0, "analyzed": 0,
+                                "voice_end": None, "stop_at": None, "speaking": False}
         return st
 
     @property
@@ -58,6 +82,15 @@ class SpeechOnsetMixin:
     @property
     def onset_active(self) -> bool:
         return self._onset_state()["active"]
+
+    def voice_marks(self) -> VoiceMarks:
+        """Where the caller's voice was last heard and where the VAD last stopped,
+        against how much audio the analyzer has run through (see the module note).
+        The executor thread advances `analyzed` before it moves `voice_end`, so a read
+        that races a chunk sees voice at or past what it counts as analyzed. It can
+        never see a quiet stretch longer than the real one."""
+        st = self._onset_state()
+        return VoiceMarks(st["received"], st["analyzed"], st["voice_end"], st["stop_at"])
 
     def voice_confidence(self, buffer) -> float:
         conf = super().voice_confidence(buffer)
@@ -72,6 +105,9 @@ class SpeechOnsetMixin:
         st = self._onset_state()
         if chunk_s <= 0:
             return
+        st["analyzed"] += round(chunk_s * self.sample_rate)
+        if conf >= ONSET_CONFIDENCE:
+            st["voice_end"] = st["analyzed"]
         need = max(1, math.ceil(ONSET_MIN_MS / 1000.0 / chunk_s - 1e-9))
         stop = max(1, math.ceil(self.params.stop_secs / chunk_s - 1e-9))
         if conf >= ONSET_CONFIDENCE:
@@ -92,6 +128,14 @@ class SpeechOnsetMixin:
         # Back on the loop: the executor call above has returned, so whatever it
         # appended is visible here and nothing appends concurrently.
         st = self._onset_state()
+        st["received"] += len(buffer) // 2
+        # The VAD's stop, read the way its controller reads it: the state settling to
+        # QUIET after SPEAKING. STARTING and STOPPING are transient on both edges.
+        if state == VADState.SPEAKING:
+            st["speaking"] = True
+        elif state == VADState.QUIET and st["speaking"]:
+            st["speaking"] = False
+            st["stop_at"] = st["analyzed"]
         if st["events"]:
             events, st["events"] = st["events"], []
             for started in events:

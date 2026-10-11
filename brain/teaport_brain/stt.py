@@ -99,7 +99,8 @@ _EMPTY_FINAL_RUN = 5
 # VAD stop, not the raw stop.
 #
 #   verdict   The stop strategy answers every VAD stop with a TurnVerdictFrame
-#             (endpointing.py). COMPLETE commits at once; INCOMPLETE holds the segment
+#             (endpointing.py). COMPLETE commits at once (unless the caller's voice
+#             is back: see THE CALLER'S VOICE below); INCOMPLETE holds the segment
 #             OPEN -- if the caller resumes, their next words land in the same segment,
 #             and if they do not, the analyzer's silence ceiling (SMARTTURN_STOP_SECS)
 #             sends a second, complete verdict and that commits.
@@ -237,6 +238,76 @@ _HOLD_SLACK_SECS = 1.0
 # before -- the A/B switch, not a fallback the service takes on its own.
 STT_SILENCE_HINT = setting("TEAPORT_STT_SILENCE_HINT")
 _HINT_MARGIN_MS = setting("TEAPORT_STT_SILENCE_HINT_MARGIN_MS")
+
+# THE CALLER'S VOICE: no segment boundary over the caller's resumed words (issue #140).
+#
+# Everything above treats the audio after a VAD stop as silence until a VAD start says
+# otherwise. The start is slow, though. Silero needs start_secs of speech at its
+# confidence AND its volume gate, and the gate integrates over 400 ms, so after a long
+# pause the start trails the caller's first word by 0.2-0.4 s. A commit that goes out
+# inside that window is drawn over words the VAD has not yet admitted to, and it loses
+# them in two ways (2026-10-10 Talk session, 4 of ~24 utterances cut, every one spoken
+# in the clear):
+#
+#   * The hint over-claims. It counts everything since the stop's speech end as
+#     silence, so the commit tells the engine to skip decoding the tail that holds the
+#     onset of the next words. Those words were sent before the commit, so the next
+#     segment does not have them either. Worst on the ceiling's commit, which claims
+#     the whole hold: "vad 0, client 787" took "fusion" out of "then a fusion
+#     reaction".
+#   * The boundary falls mid-word. Even with no hint, a commit inside a word loses or
+#     garbles it in both segments ("There's" -> "" / "Essa phone call"). On Talk the
+#     0.2 s stop with a COMPLETE verdict commits at short in-sentence pauses, and on
+#     each drop the VAD start reached the STT within ~0.3 s of the commit.
+#
+# The fix applies one rule to both: the session's VAD analyzer (speech_onset.py) keeps
+# where it last heard the caller's voice at the onset test's confidence, which has no
+# volume gate to lag behind, and where the VAD's last stop tripped. Voice heard after
+# that stop decides two things:
+#
+#   * The hint counts from the later of the stop's speech end and the end of that
+#     voice (_silence_hint_ms). It never claims silence the caller has broken.
+#   * A complete verdict does not draw the boundary while that voice is recent. The
+#     segment stays held, as it is under an INCOMPLETE verdict, and is committed at the
+#     caller's next pause: the stop's own stop_secs of quiet, measured on the voice. If
+#     the VAD start comes first, the existing resume path keeps the segment open and the
+#     next stop asks again. Only the boundary moves. The verdict has already reached
+#     the turn, and the stop strategy waits for this close (LateStartTurnStopStrategy's
+#     owed close), so the turn still ends on the words it was waiting for.
+#
+# The analyzer has to have heard the audio before it can vouch for it. It runs
+# downstream, in the user aggregator, and the aggregator does not analyze anything
+# while Smart Turn's inference runs on the VAD stop. So when the model's verdict
+# arrives, the ~0.1-0.3 s of audio that came in during the inference is still
+# unanalyzed, and that is the window the Talk drops fell in. The commit therefore
+# waits until the analyzer has been handed all the audio this service had passed down
+# when the verdict came (_passed_samples against VoiceMarks.received; both count the
+# same frames from the session's first). That is the one cost every COMPLETE commit
+# pays: the backlog's VAD passes, milliseconds on an idle box and tens of them on the
+# appliance's ARM cores, plus up to one _VOICE_POLL_SECS. A ceiling's verdict comes
+# from the audio path itself and finds the analyzer current. Two bounds keep a wait
+# from becoming a stall:
+#
+#   * _VOICE_CATCHUP_SECS for the analyzer to catch up. Past it, the boundary is
+#     decided on what has been heard, with a warning, because the counts no longer
+#     line up or the box is badly backed up.
+#   * smartturn_stop_secs for the voice to pause. That is the session's own bound on
+#     honouring a "not done", and it is the worst case a reply waits here. A caller who
+#     never pauses, or steady noise at speech confidence (a TV in the room), gets the
+#     commit at that bound with a warning. The hint then claims nothing, since the
+#     voice is current.
+#
+# What it cannot see: voice in the last chunk or two before the commit, which Silero
+# has not yet scored at onset confidence. The hint's margin covers that much of an
+# over-claim. A boundary there can still clip the first phoneme of a word; the engine
+# holding back its last ~200 ms when its own VAD hears speech would close that, and
+# that change is the engine's to make.
+#
+# Without an analyzer that keeps the marks (a session built without the onset mixin,
+# or the unit tests that drive this service alone) none of this applies: the verdict
+# commits at once and the hint counts from the stop, as before.
+_VOICE_CATCHUP_SECS = 0.25
+_VOICE_POLL_SECS = 0.01
 
 # SPEECH_DECODED: the engine's transcription report (teagram-engine's
 # transcription.progress), turned into SpeechDecodedFrame for the stop strategy.
@@ -443,6 +514,10 @@ class _Commit:
     at: float     # monotonic time of the send, for the segment line's latency
     why: str      # what triggered it: vad-stop | verdict | backstop | ...
     hint: Optional[int] = None   # trailing_silence_ms it carried, if any (STT_SILENCE_HINT)
+    # How long a complete verdict's commit was held, in s, and whether for the caller's
+    # pause rather than only for the VAD analyzer to catch up (THE CALLER'S VOICE).
+    waited: Optional[float] = None
+    for_voice: bool = False
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -488,13 +563,17 @@ class TeaportSTTService(WebsocketSTTService):
         # until the session-wide fallback finds nothing answering the VAD stops.
         self._commit_on = "verdict"
         # verdict mode: a VAD stop has been seen for the open segment and the commit that
-        # answers it is deferred to the verdict. Cleared by the commit, whichever path
+        # answers it is deferred to the verdict, and after a complete verdict to the
+        # caller's pause (THE CALLER'S VOICE). Cleared by the commit, whichever path
         # sends it, and by a VAD start (the caller resumed: the next stop asks again).
         self._commit_pending = False
-        # The hold's expiry -- see _HOLD_SLACK_SECS -- and what it needs to say: whether
-        # THIS stop got the model's verdict (then it is the ceiling's that is missing),
-        # and whether ANY verdict has ever arrived (then the wiring is known to work).
+        # The hold's timer: its expiry until the verdict comes (see _HOLD_SLACK_SECS),
+        # then the wait for the caller's pause if one is needed. One slot, so every path
+        # that ends a hold ends either. And what the expiry needs to say: whether THIS
+        # stop got the model's verdict (then it is the ceiling's that is missing), and
+        # whether ANY verdict has ever arrived (then the wiring is known to work).
         self._hold_task = None
+        self._hold_kind = "expiry"
         self._verdict_seen = False
         self._verdicts = 0
         # The session-wide fallback (the commit note above _VAD_STOP_COMMITS): set when
@@ -556,6 +635,17 @@ class TeaportSTTService(WebsocketSTTService):
         self._sent_samples = 0
         self._speech_end = None
         self._hint_gap = False
+        # THE CALLER'S VOICE. The session's VAD analyzer, read for where it last heard
+        # the caller (speech_onset.VoiceMarks; set by build_agent_session, None: the
+        # verdict commits at once). The audio this service has passed down to it, on
+        # the analyzer's count, which is how far it has to have heard before it can
+        # vouch for the audio sent so far. The stop's silence window, which is also
+        # the pause a held boundary waits for. And whether the two counts have been
+        # caught disagreeing, which turns the marks off for the session.
+        self.vad_analyzer = None
+        self._passed_samples = 0
+        self._stop_secs = 0.0
+        self._marks_unaligned = False
         # The engine's transcription report (SPEECH_DECODED): _sent_samples when the
         # engine session opened (the report counts from there), how far it has
         # transcribed on our clock (None: no report yet, or none offered), and the VAD
@@ -728,6 +818,9 @@ class TeaportSTTService(WebsocketSTTService):
         await super().process_audio_frame(frame, direction)
         if self._sent_samples == before and frame.audio:
             self._hint_gap = True
+        # Sent or not, the frame goes on down to the VAD: the analyzer's count
+        # (THE CALLER'S VOICE).
+        self._passed_samples += len(frame.audio) // 2
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -756,6 +849,7 @@ class TeaportSTTService(WebsocketSTTService):
             else:
                 rate = self.sample_rate or 16000
                 self._speech_end = self._sent_samples - round(frame.stop_secs * rate)
+            self._stop_secs = frame.stop_secs
             # The engine may be past it already (SPEECH_DECODED) -- or, with no speech
             # end to pass, no report can speak for this stop: the window decides it.
             self._stop_at = time.monotonic()
@@ -847,12 +941,121 @@ class TeaportSTTService(WebsocketSTTService):
             logger.trace(f"{self}: verdict {frame.source} complete={frame.complete} "
                          "with no commit pending; ignored")
             return
+        if self._hold_task is not None and self._hold_kind == "pause":
+            # A complete verdict is already waiting for the caller's pause, and a
+            # second one answers the same stop: the wait it started stands, bound
+            # included.
+            logger.trace(f"{self}: verdict {frame.source} while the boundary waits for "
+                         "the caller's pause; ignored")
+            return
         self._verdict_seen = True
         if frame.complete:
-            await self._send_commit(final=True, why=frame.source)
+            await self._commit_at_pause(frame.source)
         else:
             logger.debug(f"{self}: verdict INCOMPLETE -- holding the segment open for "
                          f"the ceiling ({self.smartturn_stop_secs}s) or the caller")
+
+    # ---- the caller's voice ----------------------------------------------------
+    # See THE CALLER'S VOICE (issue #140): a complete verdict draws the segment
+    # boundary only once the analyzer has heard the audio sent so far and found no
+    # voice since the stop, or found the caller paused again. Held until then in the
+    # hold's own slot, so a VAD start, a disconnect or another path's commit ends the
+    # wait exactly as it ends a hold.
+
+    def _voice_marks(self):
+        """The analyzer's VoiceMarks, or None when there are none to go on: no
+        analyzer that keeps them, or counts that have been caught disagreeing."""
+        marks = getattr(self.vad_analyzer, "voice_marks", None)
+        if marks is None or self._marks_unaligned:
+            return None
+        w = marks()
+        if w.received > self._passed_samples:
+            # The analyzer has been handed more audio than this service passed it:
+            # something else feeds it, or its count started elsewhere. Positions on
+            # the two counts cannot be compared, so the marks are off for the session.
+            self._marks_unaligned = True
+            logger.warning(f"{self}: the VAD analyzer has heard {w.received} samples "
+                           f"and this service passed it {self._passed_samples} -- the "
+                           "counts disagree, so commits stop reading the caller's voice "
+                           "for this session (THE CALLER'S VOICE)")
+            return None
+        return w
+
+    @staticmethod
+    def _voice_since_stop(w) -> Optional[int]:
+        """Where the voice heard since the VAD's latest stop ended, on the passed count,
+        or None if the analyzer has heard none since.
+
+        The stop is where the analyzer saw it trip, which is the stop this service is
+        answering: a later one could only follow a VAD start, which ends the hold. The
+        one stop the analyzer never sees is the one its controller raises when audio
+        stops arriving mid-speech. Then the voice reads as current, and the commit
+        waits out the bound, which is a fair answer to a client that went quiet
+        mid-word."""
+        if w.voice_end is None or w.stop_at is None or w.voice_end <= w.stop_at:
+            return None
+        return w.voice_end
+
+    def _boundary_wait(self, w, heard_through: int) -> Optional[str]:
+        """Why the boundary must not be drawn yet: "unheard" while the analyzer has not
+        been handed the audio up to `heard_through`, "voice" while the caller's voice
+        since the stop is more recent than the stop's own silence window. None: draw it."""
+        if w.received < heard_through:
+            return "unheard"
+        voice = self._voice_since_stop(w)
+        if voice is not None:
+            rate = self.sample_rate or 16000
+            if w.analyzed - voice < round(self._stop_secs * rate):
+                return "voice"
+        return None
+
+    async def _commit_at_pause(self, why: str):
+        """Commit a complete verdict's segment now if nothing says the caller is
+        speaking, otherwise hold it for _wait_for_pause."""
+        w = self._voice_marks()
+        if w is None or self._boundary_wait(w, self._passed_samples) is None:
+            await self._send_commit(final=True, why=why)
+            return
+        self._hold_kind = "pause"
+        err = await self._restart_timer("_hold_task",
+                                        self._wait_for_pause(why, self._passed_samples))
+        if err is not None:
+            logger.warning(f"{self}: cannot wait for the caller's pause ({err}); "
+                           "committing now")
+            await self._send_commit(final=True, why=why)
+
+    async def _wait_for_pause(self, why: str, heard_through: int):
+        start = time.monotonic()
+        voiced = False
+        while True:
+            waited = time.monotonic() - start
+            w = self._voice_marks()
+            wait = None if w is None else self._boundary_wait(w, heard_through)
+            if wait == "unheard" and waited >= _VOICE_CATCHUP_SECS:
+                short = (heard_through - w.received) * 1000 // (self.sample_rate or 16000)
+                logger.warning(f"{self}: the VAD analyzer is still {short}ms short of the "
+                               f"audio sent at the verdict after {waited:.2f}s -- drawing "
+                               "the boundary on what it has heard")
+                heard_through = w.received
+                wait = self._boundary_wait(w, heard_through)
+            if wait is None:
+                break
+            if wait == "voice" and not voiced:
+                voiced = True
+                logger.debug(f"{self}: verdict {why} with the caller's voice heard since "
+                             "the stop -- the segment boundary waits for their pause")
+            if waited >= self.smartturn_stop_secs:
+                # The hint claims nothing here: the voice is current (_silence_hint_ms).
+                logger.warning(f"{self}: the caller's voice has not paused "
+                               f"{self.smartturn_stop_secs}s after the verdict -- "
+                               "committing over it")
+                break
+            await asyncio.sleep(_VOICE_POLL_SECS)
+        self._hold_task = None
+        if not self._commit_pending:
+            return
+        await self._send_commit(final=True, why=why, waited=time.monotonic() - start,
+                                for_voice=voiced)
 
     # ---- the hold's expiry ---------------------------------------------------
     # See the commit note above _VAD_STOP_COMMITS: a segment held on an INCOMPLETE
@@ -863,6 +1066,7 @@ class TeaportSTTService(WebsocketSTTService):
     # _handle_message). Same timer discipline as the backstop below.
 
     async def _arm_hold_expiry(self):
+        self._hold_kind = "expiry"
         err = await self._restart_timer("_hold_task", self._commit_when_hold_expires())
         if err is not None:
             logger.warning(f"{self}: cannot arm the hold's expiry ({err}); committing at "
@@ -870,6 +1074,7 @@ class TeaportSTTService(WebsocketSTTService):
             await self._send_commit(final=True, why="vad-stop")
 
     async def _cancel_hold_expiry(self):
+        # Whichever the slot holds: the expiry, or the wait for the caller's pause.
         await self._cancel_timer("_hold_task")
 
     async def _commit_when_hold_expires(self):
@@ -1028,6 +1233,12 @@ class TeaportSTTService(WebsocketSTTService):
             credit = f", hint {commit.hint}ms"
         if msg.get("credited_ms") is not None:
             credit += f", credited {msg['credited_ms']}ms"
+        # How long the boundary was held after a complete verdict, and what for: the
+        # live measure of what THE CALLER'S VOICE costs, and of how often it is the
+        # caller who resumed rather than the analyzer lagging.
+        if commit and commit.waited is not None:
+            credit += (f", held {commit.waited * 1000:.0f}ms "
+                       f"{'for the caller to pause' if commit.for_voice else 'for the VAD'}")
         line = (f"{self}: segment {secs:.2f}s audio, {self._seg_interims} interims, "
                 f"commit={why} -> done in {lat}: {verdict}{credit}")
         # An empty final on a segment the engine DID stream interims for is the shape
@@ -1072,17 +1283,29 @@ class TeaportSTTService(WebsocketSTTService):
 
     def _silence_hint_ms(self) -> Optional[int]:
         """What the commit going out now may claim as trailing silence, in ms: the
-        audio sent since Silero's speech end, less the margin -- or None when there is
-        no placed speech end to count from, the count is not positive, or the hint is
-        off (see STT_SILENCE_HINT)."""
+        audio sent since Silero's speech end, or since the caller's voice heard after
+        the stop where there was some (THE CALLER'S VOICE), less the margin -- or None
+        when there is no placed speech end to count from, the count is not positive,
+        or the hint is off (see STT_SILENCE_HINT)."""
         if not STT_SILENCE_HINT or self._speech_end is None:
             return None
+        end = self._speech_end
+        w = self._voice_marks()
+        voice = None if w is None else self._voice_since_stop(w)
+        if voice is not None:
+            # From the passed count onto the send clock. Nothing has passed unsent
+            # since the caller last started speaking, or the speech end would not be
+            # placed, so the two have moved together since this voice.
+            end = max(end, self._sent_samples - (self._passed_samples - voice))
         rate = self.sample_rate or 16000
-        ms = (self._sent_samples - self._speech_end) * 1000 // rate - _HINT_MARGIN_MS
+        ms = (self._sent_samples - end) * 1000 // rate - _HINT_MARGIN_MS
         return int(ms) if ms > 0 else None
 
-    async def _send_commit(self, final: bool = True, why: str = "other"):
-        """Force a final. `why` is recorded so the segment line says which path fired."""
+    async def _send_commit(self, final: bool = True, why: str = "other",
+                           waited: Optional[float] = None, for_voice: bool = False):
+        """Force a final. `why` is recorded so the segment line says which path fired,
+        and `waited` how long a complete verdict's commit was held for the VAD analyzer
+        or, `for_voice`, for the caller's pause (THE CALLER'S VOICE)."""
         # The hold's timer first: cancelling a live task is the one await in here that
         # can actually suspend, and the bookkeeping below must be atomic with the send
         # -- a VAD stop landing between "pending = False" and the commit going out would
@@ -1090,7 +1313,7 @@ class TeaportSTTService(WebsocketSTTService):
         # segment was waiting on is answered.
         await self._cancel_hold_expiry()
         commit = _Commit(n=self._vad_stops, at=time.monotonic(), why=why,
-                         hint=self._silence_hint_ms())
+                         hint=self._silence_hint_ms(), waited=waited, for_voice=for_voice)
         # Whatever this commit claims, the next one starts from a fresh segment and
         # must place its own speech end. The backstop never has one to take: it fires
         # on a segment whose stop never came, and a stop that did come has already

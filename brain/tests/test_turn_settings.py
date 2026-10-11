@@ -79,6 +79,10 @@ def test_a_call_and_a_talk_session_in_one_process_are_built_with_their_own_value
     assert talk.vad_analyzer.params.stop_secs == 0.2
     assert sip.vad_analyzer.params.stop_secs == endpointing.ENDPOINT_STOP_SECS
     assert (talk.stt.smartturn_stop_secs, sip.stt.smartturn_stop_secs) == (0.6, endpointing.SMARTTURN_STOP_SECS)
+    # The STT reads the session's own analyzer for the caller's voice (issue #140).
+    for session in (sip, talk):
+        assert session.stt.vad_analyzer is session.vad_analyzer
+        assert session.vad_analyzer.voice_marks().received == 0
     assert sip.turns.interrupt_min_words == 3 and talk.turns.interrupt_min_words == endpointing.INTERRUPT_MIN_WORDS
 
 

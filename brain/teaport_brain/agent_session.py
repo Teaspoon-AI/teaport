@@ -979,6 +979,9 @@ def build_agent_session(transport, *, voice: str | None = None,
 
     stt = make_stt(makeup_db=stt_makeup_db)
     stt.smartturn_stop_secs = turns.smartturn_stop_secs
+    # Where the analyzer last heard the caller, so a commit is never drawn over their
+    # resumed words (stt.py, THE CALLER'S VOICE).
+    stt.vad_analyzer = vad_analyzer
     if wake_gate is not None:
         stt.wake_gate = wake_gate
     llm = make_llm()
