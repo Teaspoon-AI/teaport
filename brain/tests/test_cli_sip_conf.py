@@ -341,8 +341,58 @@ def test_a_root_owned_conf_goes_to_the_units_user_when_root_rewrites_it():
     assert "password=s3cret" in conf.read_text() and _temps(d) == []
 
 
+def _fake_gateway(d):
+    # Stands in for the gateway binary: a probe that reaches it leaves a mark.
+    gw = d / "gw"
+    gw.write_text(f"#!/bin/sh\ntouch {d}/probed\n"); os.chmod(gw, 0o755)
+    return gw
+
+
+def test_a_filler_failing_with_2_never_names_the_wizards_password():
+    # Only a source file is ever named in "could not read": the wizard's filler arguments
+    # hold the password, so a 2 from it reads as a failed write.
+    d = _secrets()
+    fail = "sip_emit_conf() { return 2; }"
+    probe = f"SIP_GATEWAY={_fake_gateway(d)}; sip_test_register sbc.example.com sbc.example.com bob s3cret"
+    rc, out = _run(d, probe, fail)
+    assert rc == 1 and "could not write a probe conf" in out and "s3cret" not in out, out
+    assert not (d / "probed").exists()
+    rc, out = _run(d, WIZARD, WIZARD_STUBS + fail)
+    assert rc == 1 and f"could not write {d}/teaport-sip.conf" in out and "s3cret" not in out, out
+    assert "TURN_ON" not in out and _temps(d) == []
+
+
+def test_a_conf_someone_else_owns_is_refused_before_prompts_or_probe():
+    # As anyone but root, a conf another user owns (root:root, say) cannot be rewritten:
+    # said up front, not after the password prompt and the ~8 s test registration. The
+    # probe is the real one, up to a stand-in gateway. Not really root's, so the conf's
+    # owner is what stat reports.
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("password=old\n"); os.chmod(conf, 0o600)
+    src = d / "src.conf"; src.write_text(CONF)
+    gw = _fake_gateway(d)
+    stubs = (f'stat() {{ [ "$*" = "-c %u {conf.resolve()}" ] && echo 0 || command stat "$@"; }}\n'
+             'sip_refuse_hand_launched() { :; }\nread() { echo PROMPTED; }\n')
+    for steps in ("sip_configure", WIZARD, f"sip_adopt_conf {src}"):
+        rc, out = _run(d, f"SIP_GATEWAY={gw}; {steps}", stubs)
+        assert rc == 1 and "sudo -E" in out and "nothing tested" in out, (steps, out)
+        assert "PROMPTED" not in out and "test-registering" not in out, (steps, out)
+        assert not (d / "probed").exists(), steps
+        assert conf.read_text() == "password=old\n" and _temps(d) == [], steps
+
+
+def test_adopt_says_which_file_it_installed():
+    d = _secrets()
+    src = d / "src.conf"; src.write_text(CONF)
+    rc, out = _run(d, f"sip_adopt_conf {src}", ADOPT_STUBS)
+    assert rc == 0 and f"installed {src} -> {d}/teaport-sip.conf (" in out, out
+    rc, out = _run(d, WIZARD, WIZARD_STUBS)
+    assert rc == 0 and f"installed {d}/teaport-sip.conf (" in out and "->" not in out, out
+
+
 def main():
-    fns =[v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
         fn()
         print(f"  ok {fn.__name__}")
