@@ -1,12 +1,13 @@
 #
 # echo_guard.py — the room mic must not hear the bot's own voice as the user.
 #
-# The XVF3800 cancels the speaker's echo, and at low volume its suppressor is off so the
-# user is heard over the bot (xvf_echo.py). What echo is left can still reach the STT
-# as words: live 2026-10-10 at volume 80 with the suppressor off, the bot's story came
-# back as user turns ("A curious", "In a quiet orchard of magic", "The tiny pistachio")
-# and the bot kept interrupting itself; at volume 65 in a controlled take, the bot's
-# words were prefixed to the user's ("This began with a camera. Is it a horned owl?").
+# The XVF3800 cancels the speaker's echo, and its suppressor is off so the user is heard
+# over the bot, unless the bridge measures the echo within LOCAL_AUDIO_ECHO_MARGIN_DB of
+# the user's voice (xvf_echo.py). What echo is left can still reach the STT as words:
+# live 2026-10-10 at volume 80 with the suppressor off, the bot's story came back as
+# user turns ("A curious", "In a quiet orchard of magic", "The tiny pistachio") and the
+# bot kept interrupting itself; at volume 65 in a controlled take, the bot's words were
+# prefixed to the user's ("This began with a camera. Is it a horned owl?").
 #
 # So on the room mic's sessions (a client that says it is at the box, ?features=local)
 # the STT asks the guard before it pushes any transcript, as it asks the wake gate:

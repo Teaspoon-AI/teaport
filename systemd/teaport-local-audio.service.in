@@ -16,8 +16,9 @@ ConditionPathExists=@ETC@/local-audio.env
 [Service]
 Type=simple
 User=@USER@
-# The XVF3800's echo suppression follows the volume (xvf_echo.py): its usbfs node, as for
-# the brain's busy lamp (install.sh install_busy_lamp: the udev rule and the group).
+# The XVF3800's echo suppression follows the measured echo (xvf_echo.py): its usbfs
+# node, as for the brain's busy lamp (install.sh install_busy_lamp: the udev rule and
+# the group).
 SupplementaryGroups=audio teaport-hw
 EnvironmentFile=@ETC@/brain.env
 EnvironmentFile=@ETC@/local-audio.env

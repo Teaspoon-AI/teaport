@@ -2172,7 +2172,7 @@ max = 0.0
 unit = "dB"
 read = "startup"
 tier = "tuning"
-help = "Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not."
+help = "Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. Measured on the appliance with the XVF3800's automatic gain off at the default LOCAL_AUDIO_MIC_GAIN_DB (16 dB): the quiet room about -50 dBFS (the quietest fifth of 100 ms blocks), a voice 3-4 m from the box about -28 dBFS (its median; -21 at its loudest tenth). Raise it if noise reconnects, lower it if speech does not."
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_WORDS"
