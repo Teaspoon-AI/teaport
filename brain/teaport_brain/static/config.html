@@ -390,7 +390,7 @@
         h('div', { class: 'row-head' }, h('label', { for: id }, row.name), ...badges),
         row.help ? h('p', { class: 'help' }, row.help) : null,
         row.note ? h('p', { class: 'note' }, row.note) : null,
-        row.source ? h('div', { class: 'source' }, row.source) : null),
+        row.source ? h('div', { class: 'source' }, row.source.join(', ')) : null),
       h('div', { class: 'control' }, ...control(row, writable)));
     const first = $('input, select, textarea', el); if (first) first.id = id;
     if (row.name in edits) el.classList.add('changed');

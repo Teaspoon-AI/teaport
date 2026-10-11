@@ -30,7 +30,9 @@
 #   note      operator-facing caveat, rendered after help
 #   consumer  when a library, not our code, reads it (glibc, huggingface_hub)
 #   source    for a row the brain does NOT read: the repo-relative file that does (no
-#             line). Brain reads need none: setting("NAME") is found by its name.
+#             line), or a list of them when it is read or written in more than one
+#             place (the unit reads it and install.sh writes it). Brain reads need
+#             none: setting("NAME") is found by its name.
 
 schema_version = 1
 
@@ -1734,7 +1736,7 @@ default = "1"
 read = "startup"
 tier = "installer"
 help = "Never fetch from the Hub on the appliance. Also set by the package at import."
-source = "brain/teaport_brain/__init__.py"
+source = ["brain/teaport_brain/__init__.py", "install.sh"]
 
 # ================================================================ engine.env
 
@@ -1748,7 +1750,7 @@ read = "startup"
 tier = "installer"
 help = "The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device."
 note = "The engine's own default (50) OOMs an 8 GB box. The installer derives this from whether an agent is present and rewrites it on every run, so it is not editable here: re-run install.sh to change what is resident."
-source = "install.sh"
+source = ["install.sh", "cli/teaport"]
 
 [[settings]]
 name = "ENGINE_PORT"
@@ -1762,7 +1764,7 @@ default = 8000
 read = "unit"
 tier = "installer"
 help = "--serve. TEAPORT_URL and ENGINE_TTS_URL in brain.env must follow it."
-source = "systemd/teaport-engine.service.in"
+source = ["systemd/teaport-engine.service.in", "install.sh"]
 
 [[settings]]
 name = "ENGINE_DELAY"
@@ -1773,7 +1775,7 @@ default = 240
 read = "unit"
 tier = "installer"
 help = "--delay to the engine binary."
-source = "systemd/teaport-engine.service.in"
+source = ["systemd/teaport-engine.service.in", "install.sh"]
 
 [[settings]]
 name = "TTS_CTX"
@@ -1784,7 +1786,7 @@ default = 192
 read = "unit"
 tier = "installer"
 help = "--tts-ctx to the engine binary."
-source = "systemd/teaport-engine.service.in"
+source = ["systemd/teaport-engine.service.in", "install.sh"]
 
 [[settings]]
 name = "VOX_REQUIRE_DICT_G2P"
@@ -1965,7 +1967,7 @@ type = "snowflake"
 required = true
 tier = "setup"
 help = "The Discord guild. The unit stays inert until this and BRIDGE_FOLLOW_USER_ID are set."
-source = "bridge/discord/index.js"
+source = ["bridge/discord/index.js", "install.sh"]
 
 [[settings]]
 name = "BRIDGE_FOLLOW_USER_ID"
@@ -1975,7 +1977,7 @@ type = "snowflake"
 required = true
 tier = "setup"
 help = "The user whose voice channel the bot follows."
-source = "bridge/discord/index.js"
+source = ["bridge/discord/index.js", "install.sh"]
 
 [[settings]]
 name = "BRIDGE_JOIN_CHANNEL_ID"
@@ -1994,7 +1996,7 @@ type = "ws_url"
 default = "ws://127.0.0.1:7861/talk"
 tier = "installer"
 help = "Derived from BRAIN_PORT."
-source = "bridge/discord/index.js"
+source = ["bridge/discord/index.js", "install.sh"]
 
 [[settings]]
 name = "TEAPORT_VOICE"
@@ -2025,7 +2027,7 @@ type = "path"
 default = "~/.config/teaport/discord_bot_token"
 tier = "installer"
 help = "Where the bot token is read from."
-source = "bridge/discord/index.js"
+source = ["bridge/discord/index.js", "install.sh"]
 
 [[settings]]
 name = "DISCORD_BOT_TOKEN"
