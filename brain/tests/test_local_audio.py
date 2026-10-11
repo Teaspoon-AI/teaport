@@ -83,10 +83,12 @@ def test_speech_is_played_and_clear_drops_what_was_not_yet_handed_over():
 
 
 def test_mouth_level_tracks_loudness():
-    assert la.mouth_level(bytes(1280)) == 0.0
-    quiet = la.mouth_level(np.full(640, 50, "<i2").tobytes())      # ~ -56 dBFS
-    mid = la.mouth_level(np.full(640, 2000, "<i2").tobytes())      # ~ -24 dBFS
-    loud = la.mouth_level(np.full(640, 20000, "<i2").tobytes())    # ~ -4 dBFS
+    def mouth(pcm):
+        return la.mouth_opening(la.level_db(pcm))
+    assert mouth(np.zeros(640, "<i2")) == 0.0
+    quiet = mouth(np.full(640, 50, "<i2"))       # ~ -56 dBFS
+    mid = mouth(np.full(640, 2000, "<i2"))       # ~ -24 dBFS
+    loud = mouth(np.full(640, 20000, "<i2"))     # ~ -4 dBFS
     assert quiet == 0.0 and 0.6 < mid < 1.0 and loud == 1.0
 
 
@@ -362,6 +364,9 @@ def _fake_card(monkeypatch, capture_script):
     monkeypatch.setattr(la, "RETRY_SECS", 0.3)
     monkeypatch.setattr(la, "FACE_SOCK", os.path.join(d, "face.sock"))
     monkeypatch.setattr(la, "VOLUME_FILE", os.path.join(d, "volume.json"))
+    # No real XVF3800: run on the box, the bridge would set the live chip. A test that
+    # wants a chip passes its own fake to the Card.
+    monkeypatch.setattr(la, "echo_control", lambda volume: (None, None))
     return flag
 
     async def unknown():

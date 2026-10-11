@@ -77,12 +77,17 @@ class EchoSuppression(xvf_led.ChipSetting):
     LOG = "mic echo suppression"
 
     def __init__(self, find=xvf_led.find_node, opener=xvf_led.UsbfsDevice,
-                 enabled: bool = ECHO_CONTROL, gain_db: float = MIC_GAIN_DB):
+                 enabled: bool = ECHO_CONTROL, gain_db: float = MIC_GAIN_DB,
+                 clock=time.monotonic):
         super().__init__(find, opener)
         self.enabled = enabled
         self.gain = 10 ** (gain_db / 20)
+        self._clock = clock
         self.own = None        # that chip's own suppressor values, read when first seen
         self.shown = None      # the suppressor set it holds as last written or read
+        # When `shown` last changed (clock()): audio captured before then was made under
+        # what the chip held before.
+        self.shown_at = -math.inf
 
     def apply(self, duplex, verify: bool = False) -> bool:
         """The suppressor off (`duplex`, or a function returning it, read once the lock
@@ -117,10 +122,18 @@ class EchoSuppression(xvf_led.ChipSetting):
         return self.shown == (DUPLEX if duplex else self.own)
 
     def _forget(self) -> None:
-        self.own = self.shown = None  # plugged in, out, or reset: its own values, read anew
+        self.own = None  # plugged in, out, or reset: its own values, read anew
+        self._show(None)
 
     def _failed(self) -> None:
-        self.shown = None
+        self._show(None)
+
+    def _show(self, held) -> None:
+        if held != self.shown:
+            # The time first: a reader that sees the new set must not pair it with the
+            # old time.
+            self.shown_at = self._clock()
+            self.shown = held
 
     def _change(self, dev, duplex: bool, verify: bool) -> None:
         # What the chip holds is read back when it is not known (a chip first seen, a
@@ -129,7 +142,7 @@ class EchoSuppression(xvf_led.ChipSetting):
             found = tuple((cmd, _get(dev, cmd)) for cmd, _ in FACTORY)
             if self.own is None:
                 self.own = FACTORY if found == DUPLEX else found
-            self.shown = found
+            self._show(found)
             # The AGC off at a fixed gain (see the module), unless it already is.
             if not self._agc_fixed(self._agc(dev)):
                 _set(dev, PP_AGCONOFF, 0)
@@ -140,13 +153,13 @@ class EchoSuppression(xvf_led.ChipSetting):
                                   f"wrote off at {self.gain:g}")
         want = DUPLEX if duplex else self.own
         if want != self.shown:
-            self.shown = None  # part-written until it reads back whole
+            self._show(None)  # part-written until it reads back whole
             for cmd, value in want:
                 _set(dev, cmd, value)
             got = tuple((cmd, _get(dev, cmd)) for cmd, _ in want)
             if got != want:
                 raise OSError(f"read back {got}, wrote {want}")
-            self.shown = want
+            self._show(want)
 
     @staticmethod
     def _agc(dev) -> tuple[int, float]:

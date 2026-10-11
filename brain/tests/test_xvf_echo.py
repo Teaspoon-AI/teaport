@@ -8,14 +8,14 @@
 # The chip: its AGC off at a fixed gain; the suppressor off, or its own values as read
 # from it (factory if found off); each set written whole and read back, not twice; a
 # replugged chip written again, and one reset under the same node found out when it is
-# read back; ECHO_CONTROL off or no chip: no USB at all; a failing chip logged once,
-# never raising.
+# read back (the card opening, the periodic check); ECHO_CONTROL off or no chip: no USB
+# at all; a failing chip logged once, never raising.
 #
 # The meter: a user near the box stays heard over the bot; one whose voice is barely
 # above the echo turns the suppressor on; talking over the bot does not count as echo;
 # a volume change moves the verdict; it does not flap; while the suppressor is on, or
-# the chip does not hold it off, it does not measure the suppressor as the echo; no
-# verdict without enough to go on.
+# the chip does not hold it off, or for audio captured before it let go, it does not
+# measure the suppressor as the echo; no verdict without enough to go on.
 #
 # The device is a fake with the PP registers behind the same control-transfer call the
 # usbfs transport makes (resource 17, command | 0x80 to read, the status byte). The live
@@ -102,6 +102,7 @@ class FakePP:
 def _echo(dev, **kw):
     kw.setdefault("enabled", True)
     kw.setdefault("gain_db", 16.0)
+    kw.setdefault("clock", lambda: 0.0)
     return E.EchoSuppression(find=dev.find, opener=dev.open, **kw)
 
 
@@ -421,7 +422,9 @@ class _CardLike:
 
 
 class _Holds:
-    """An echo suppression whose chip holds `held` (True: the suppressor off)."""
+    """An echo suppression whose chip holds `held` (True: the suppressor off), since
+    for ever."""
+    shown_at = -math.inf
 
     def __init__(self, held=True):
         self.held = held
@@ -515,6 +518,7 @@ def test_a_verdict_that_holds_still_logs_how_far_the_voice_was_above_the_echo():
             return False
     meter = Meter()
     card = _CardLike(play, meter, _Holds())
+    card._echo_check = 1e9                     # the periodic check is another test's
     lines = []
     sink = logger.add(lambda m: lines.append(str(m)), level="INFO")
     real = local_audio.time.monotonic
@@ -533,7 +537,6 @@ def test_a_verdict_that_holds_still_logs_how_far_the_voice_was_above_the_echo():
     assert "30.0 dB" in said[1], said
     # A chip that does not hold the suppressor off is not said to.
     card.echo.held = False
-    card._echo_check = 1e9                     # its retry is another test's
     sink = logger.add(lambda m: lines.append(str(m)), level="INFO")
     local_audio.time.monotonic = clock
     try:
@@ -587,16 +590,91 @@ def test_the_echo_is_measured_only_while_the_chip_holds_the_suppressor_off():
     assert asyncio.run(_echo_measured(_Holds(held=False))) == 0   # it holds it on
 
 
+class _LateCapture:
+    """A capture clock whose chunks reach the meter `lag` after they were captured."""
+
+    def __init__(self, lag):
+        self.lag = lag
+
+    def read(self, frames, now):
+        return now - self.lag
+
+
+async def _measured_across_a_switch():
+    # The chip held the suppressor on; at t=1 the meter's recheck turns it off. The chunks
+    # read just after were captured before (arecord's period, the pipe): still the
+    # suppressor's work, not the echo.
+    clock = Clock()
+    dev = FakePP()
+    echo = _echo(dev, clock=clock)
+    assert echo.apply(False)
+    play = local_audio.Playback(lambda b: None, clock=clock)
+    meter = E.EchoMeter(clock=clock)
+    card = _CardLike(play, meter, echo)
+    card._echo_check = 1e9
+    card._cap_clock = _LateCapture(0.125)
+    play.push(_tone(4.0), voiced=True)
+    chunk = (np.ones(local_audio.CHUNK_FRAMES) * 3000).astype("<i2")
+    real = local_audio.time.monotonic
+    local_audio.time.monotonic = clock
+    counts = {}
+    try:
+        while clock.t < 3.0:
+            if abs(clock.t - 1.0) < 1e-9:
+                assert echo.apply(True)        # lands at t=1
+            play.pump()
+            clock.t = round(clock.t + 0.02, 6)
+            card._meter(chunk)
+            counts[round(clock.t, 2)] = len(meter.coupling)
+    finally:
+        local_audio.time.monotonic = real
+    return counts
+
+
+def test_audio_captured_before_the_suppressor_let_go_is_not_the_echo():
+    counts = asyncio.run(_measured_across_a_switch())
+    # Every chunk read by then was captured before the switch (0.125 s late, 20 ms
+    # long): nothing of them measured...
+    before = 1.0 + 0.125 + 0.02
+    assert all(n == 0 for t, n in counts.items() if t <= before), counts
+    # ...and the bare echo after.
+    assert counts[3.0] > 0, counts
+
+
+async def _reset_under_an_open_card():
+    dev = FakePP()
+    echo = _echo(dev)
+    assert echo.apply(True)
+    node = dev.node
+    dev.replug()                               # its saved settings back, AGC on...
+    dev.node = node                            # ...under the same node: the cache holds
+    assert echo.holds(True)
+    clock = Clock()
+    play = local_audio.Playback(lambda b: None, clock=clock)
+    card = _CardLike(play, E.EchoMeter(clock=clock), echo)
+    card._meter(np.zeros(local_audio.CHUNK_FRAMES, dtype="<i2"))   # the periodic check
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if dev.state() == E.DUPLEX:
+            break
+    assert dev.state() == E.DUPLEX and dev.agc()[0] == 0
+
+
+def test_a_chip_reset_under_an_open_card_is_found_by_the_periodic_check():
+    asyncio.run(_reset_under_an_open_card())
+
+
 def test_the_meter_steers_channel_0_only():
-    saved_channel, saved_control = local_audio.CAPTURE_CHANNEL, E.ECHO_CONTROL
+    saved_channel = local_audio.CAPTURE_CHANNEL
     volume = local_audio.Volume(os.devnull + ".none")
+    volume.percent = 50
     lines = []
     sink = logger.add(lambda m: lines.append(str(m)), level="INFO")
     try:
         local_audio.CAPTURE_CHANNEL = 0
         echo, meter = local_audio.echo_control(volume)
         assert echo is not None and meter is not None
-        assert meter._gain_db() == volume.gain_db
+        assert meter._gain_db() == -20.0       # the volume's gain, not a meter's default
         local_audio.CAPTURE_CHANNEL = 1        # the ASR beam: the suppressor never acts on it
         assert local_audio.echo_control(volume) == (None, None)
         assert any("channel 1" in ln and "left as it is" in ln for ln in lines), lines
@@ -644,6 +722,12 @@ def test_a_voice_between_conversations_is_not_the_users():
     for _ in range(1500):                      # 30 s of a loud TV, nobody conversing
         room.meter.feed(room._j(0.0), None, True, conversing=False, suppressor_off=True)
     assert room.meter.gap == gap
+
+
+def test_levels_are_averaged_as_power():
+    assert abs(E.power_mean_db([0.0, -180.0]) - 10 * math.log10(0.5)) < 1e-6   # -3.01
+    assert abs(E.power_mean_db([-20.0] * 4) + 20.0) < 1e-6
+    assert abs(E.power_mean_db([-10.0, -20.0]) - 10 * math.log10(0.055)) < 1e-6
 
 
 def test_volume_gain_in_db():

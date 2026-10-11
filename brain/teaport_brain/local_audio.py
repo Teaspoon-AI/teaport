@@ -240,9 +240,14 @@ HEARD_KEEP_SECS = 2.0
 # Captured audio is placed by the least delayed of its arrivals over this long
 # (CaptureClock): frames lost to an overrun misplace it for at most this long.
 CAPTURE_CLOCK_SECS = 3.0
-# A chip write the meter needs that did not take (or a chip found late) is tried again
-# this often.
-ECHO_RETRY_SECS = 15.0
+# The chip is read back this often while the card is open, and set again if it does not
+# hold the meter's verdict: a write that did not take, a chip found late, or one reset
+# under the open card (EchoSuppression.holds is only what was last written or read).
+ECHO_CHECK_SECS = 15.0
+# The chip's suppressor, once it reads back off, is taken to have let go of the echo this
+# long after: audio captured before then is still its work, and is not measured as the
+# bare echo.
+ECHO_SETTLE_SECS = 0.1
 # The meter's measure is logged when it first has one, then when it has moved this many
 # dB since the last one logged, at most once per GAP_LOG_SECS: a verdict that never
 # changes still shows how far the voice was above the echo.
@@ -286,11 +291,6 @@ def level_db(pcm: np.ndarray) -> float:
         return -180.0
     x = pcm.astype(np.float32)
     return float(20 * np.log10(np.sqrt(np.mean(x * x)) / 32768 + 1e-9))
-
-
-def mouth_level(chunk: bytes) -> float:
-    """Loudness of one chunk of device PCM as a mouth opening, 0 (closed) to 1."""
-    return mouth_opening(level_db(np.frombuffer(chunk, dtype="<i2")))
 
 
 def mouth_opening(db: float) -> float:
@@ -1082,6 +1082,7 @@ class Card:
             # A card (re)opened may be a chip replugged or reset to its own settings,
             # under the same node or a new one: read it back, write what differs.
             meter = self.meter
+            self._echo_check = time.monotonic() + ECHO_CHECK_SECS
             await asyncio.to_thread(self.echo.apply, lambda: meter.duplex, True)
 
     async def _open_capture(self) -> tuple[asyncio.subprocess.Process, bytes]:
@@ -1210,22 +1211,24 @@ class Card:
     def _meter(self, mono: np.ndarray) -> None:
         now = time.monotonic()
         end = self._cap_clock.read(len(mono), now)
-        ref, voiced = self.play.heard_between(end - len(mono) / DEVICE_RATE, end)
+        start = end - len(mono) / DEVICE_RATE
+        ref, voiced = self.play.heard_between(start, end)
         meter, echo = self.meter, self.echo
         # Not the bot talking: silence, or the thinking sound (it neither counts as the
         # bot's speech nor leaves the room quiet).
         quiet = ref is None and self.play.echo_free(now)
-        # The echo is measured only while the chip holds its suppressor off, which is
-        # not the verdict until the write has landed (and never, with no chip).
-        bare = echo is not None and echo.holds(True)
+        # The echo is measured only from audio captured while the chip held its
+        # suppressor off: not the verdict until the write has landed (never, with no
+        # chip), and not a chunk captured before it landed, which arrives after it.
+        bare = (echo is not None and echo.holds(True)
+                and start > echo.shown_at + ECHO_SETTLE_SECS)
         changed = meter.feed(level_db(mono), ref if voiced else None, quiet, self.conversing,
                              suppressor_off=bare)
         if echo is not None and not changed and now >= self._echo_check:
-            # A write that did not take (a USB error, a chip plugged in late) is tried
-            # again: the meter's verdict means nothing on a chip that does not hold it.
-            self._echo_check = now + ECHO_RETRY_SECS
-            if not echo.holds(meter.duplex):
-                asyncio.get_running_loop().run_in_executor(None, echo.apply, lambda: meter.duplex)
+            # The chip read back and set again if need be (ECHO_CHECK_SECS): the meter's
+            # verdict means nothing on a chip that does not hold it.
+            self._echo_check = now + ECHO_CHECK_SECS
+            asyncio.get_running_loop().run_in_executor(None, echo.apply, lambda: meter.duplex, True)
         if not changed:
             gap = meter.gap
             if gap is not None and (self._gap_logged is None or (

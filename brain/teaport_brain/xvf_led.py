@@ -204,11 +204,12 @@ class ChipSetting:
     def _failed(self) -> None:
         """A change raised part-way: what the chip holds is no longer known."""
 
-    def _run(self, doing, change) -> bool:
+    def _run(self, doing, change, again: str | None = None) -> bool:
         """change(node) under the lock, `node` the chip's usbfs node now (None: no chip),
         returning whether it reached the chip (False: there was nothing to do). True once
         it has run; False on an error, logged once as could not `doing` (a string, or a
-        function giving one once the change has run)."""
+        function giving one once the change has run). Working again after one, it says
+        so with `again` in brackets (`doing` if None)."""
         with self._lock:
             try:
                 node = self._find()
@@ -226,8 +227,9 @@ class ChipSetting:
                     self._failing = True
                 return False
             if reached and self._failing:
-                what = doing() if callable(doing) else doing
-                logger.info(f"{self.LOG}: working again ({what})")
+                if again is None:
+                    again = doing() if callable(doing) else doing
+                logger.info(f"{self.LOG}: working again ({again})")
                 self._failing = False
             return True
 
@@ -263,7 +265,7 @@ class BusyLamp(ChipSetting):
                     self._apply(dev, state)
             self.shown = state  # with no XVF3800 here: nothing to show
             return node is not None
-        return self._run(f"set the XVF3800 ring {state}", change)
+        return self._run(f"set the XVF3800 ring {state}", change, again=state)
 
     def _forget(self) -> None:
         self.shown = None  # a re-enumerated ring is back at its own look
