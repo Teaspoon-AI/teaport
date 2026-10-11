@@ -1277,6 +1277,28 @@ engine's finish for the first half to outlast the rest of the sentence plus the 
 floor and the model's verdict — the GPU-contended finish — and its cost is one cut reply,
 the shape the fix is for, at a small fraction of its old rate.
 
+### The caller's voice (#140)
+
+The VAD's start trails the caller's first word by 0.2–0.4 s, so after a stop the caller
+can be talking again with no start sent. A complete verdict that commits then draws the
+segment boundary inside their words, and the silence hint claims those words as
+silence. In the environment, `voice` is that speech as the VAD analyzer's marks see it
+(`VoiceOn`, `VoicePause`, bounded by `MaxVoice`): `on` since the stop, `paused` for the
+stop's own window afterwards, or `none`. `VOICE` selects the STT's answer:
+
+| `VOICE` | design | `NoCutVoice` | `NoOrphanedHold` | the rest |
+|---|---|---|---|---|
+| `blind` | before #140: a complete verdict commits over the voice (`sc_voice_blind`) | ✗ | | |
+| `pause` | as shipped: the commit is held (`deferred`, in the hold's own timer slot) until `PauseCommit` (the voice paused), `VadStart` (the segment resumes) or `PauseCap` (the session's ceiling) (`sc_voice`) | ✓ | ✓ | ✓ |
+
+The wait is a hold that no verdict will end, so `NoOrphanedHold` takes it as an escape.
+`sc_voice_reach` keeps the property as it read before, `HeldOnlyForVerdict`, as the
+witness that the wait is reached at all. The cap can fire at any point of the wait, over
+voice that is still on. That is the bound's accepted cost (`capCut`, recorded apart as
+the hold's expiry is), and `sc_voice_cap` keeps it visible. `sc_voice_final` runs the
+final's protocol under the wait on the marked engine: no stale turn end, no stranded
+turn. Every existing row runs with `MaxVoice = 0`, where nothing changes.
+
 ### Known limits of this model
 
 - **Durations are out of scope**, as everywhere here, and two timing facts are stated as
@@ -1288,6 +1310,11 @@ the shape the fix is for, at a small fraction of its old rate.
   from). `Backstop` can fire whenever the segment has words and no stop has claimed them,
   including while the caller is still talking: that is the known edge `stt.py` documents
   (stalled interims), kept.
+- **The analyzer's catch-up is abstracted (#140).** The STT waits for the VAD analyzer to
+  have heard the audio sent at the verdict before it reads the voice; the model reads
+  `voice` at the verdict as if that wait were instant. Voice in the last unscored chunk
+  before a commit is below what either can see. The hold's expiry and the backstop are
+  not charged with a cut over the voice: they are bounds with their own documented edges.
 - **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
   once (the flush is the barge-in, teagram-engine#7); it is the `vadStop` design applied to
   one stop, and the verdict that follows is ignored exactly as a stale one is.
@@ -1341,6 +1368,8 @@ the shape the fix is for, at a small fraction of its old rate.
   `MaxBackstops = 1`, `MaxMissed = 0` — with the missed stop on as well the space passes
   30 million and the row is not worth its minutes); the three that fall find their trace in
   under ten states. `check.sh` passes `-deadlock`: the bounds make terminal states ordinary.
+  The #140 rows: `sc_voice` (two stretches of voice, both faults on) is 5.8 million
+  distinct states; the three that fall find their trace in under ten states.
 
 ## Worth modeling next
 

@@ -303,6 +303,10 @@ _HINT_MARGIN_MS = setting("TEAPORT_STT_SILENCE_HINT_MARGIN_MS")
 # holding back its last ~200 ms when its own VAD hears speech would close that, and
 # that change is the engine's to make.
 #
+# brain/formal/SttCommit.tla (VOICE, the sc_voice rows) checks the wait against the
+# commit protocol: its three ways out, the hold it shares a slot with, and the final's
+# rules for ending the turn.
+#
 # Without an analyzer that keeps the marks (a session built without the onset mixin,
 # or the unit tests that drive this service alone) none of this applies: the verdict
 # commits at once and the hint counts from the stop, as before.

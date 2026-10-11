@@ -139,6 +139,13 @@ run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did ri
 run SttCommit.tla sc_verdict_silentStop "(expected: FAILS NoOrphanedHold — the first cut: nothing reported when the turn is closed under the ceiling)"
 run SttCommit.tla sc_verdict       "(expected: holds — as shipped: a lost verdict, a missed stop and a turn closed under the ceiling)"
 echo
+echo "SttCommit.tla — the caller's voice (#140): no commit drawn over words the VAD has not started on"
+run SttCommit.tla sc_voice_blind "(expected: FAILS NoCutVoice — before #140: the verdict commits over the resumed voice)"
+run SttCommit.tla sc_voice       "(expected: holds — as shipped: held for the pause, a VAD start or the bound)"
+run SttCommit.tla sc_voice_reach "(expected: FAILS HeldOnlyForVerdict — witness: the wait is reached, a hold no verdict ends)"
+run SttCommit.tla sc_voice_cap   "(expected: FAILS NoCapCut — the ACCEPTED RESIDUAL: the bound commits over voice that never paused)"
+run SttCommit.tla sc_voice_final "(expected: holds — the final's protocol under the wait, on the marked engine)"
+echo
 echo "SttCommit.tla — the final (PR #49): whose utterance a late final is, and when the turn may end on it"
 run SttCommit.tla sc_final_clock         "(expected: FAILS NoStaleTurnEnd — the first cut: finals placed by clock)"
 run SttCommit.tla sc_final_clock_marked  "(expected: FAILS NoStaleTurnEnd — the clock rule falls even on a marked wire)"
