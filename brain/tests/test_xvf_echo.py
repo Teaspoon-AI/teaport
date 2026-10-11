@@ -4,10 +4,11 @@
 # opening, set_volume).
 #
 # Up to LOCAL_AUDIO_DUPLEX_MAX_VOLUME the chip's suppressor is off (the user is heard
-# over the bot); above it, and at 0, the chip's own settings. Each set is written whole
-# and read back; the same set is not written twice; a replugged chip (back at its own
-# settings) is written again; no chip does nothing; a failing chip is logged once and
-# never raises.
+# over the bot); above it, and at 0, the chip's own settings -- as read from it, not
+# assumed. Each set is written whole and read back; the same set is not written twice;
+# a replugged chip (back at its own settings) is written again; changes made in quick
+# succession land for the volume as it is; a limit of 0 never touches the chip; no
+# chip does nothing; a failing chip is logged once and never raises.
 #
 # The device is a fake with int32 registers behind the same control-transfer call the
 # usbfs transport makes, so the wire format (resource 17, command | 0x80 to read, the
@@ -33,8 +34,9 @@ class FakePP:
     """The XVF3800's PP registers (int32) behind control(). `retries` reads answer
     "retry" first; `stuck` ignores writes (a chip that will not take them)."""
 
-    def __init__(self, retries=0, stuck=False, fail=None):
-        self.regs = dict(E.FACTORY)
+    def __init__(self, retries=0, stuck=False, fail=None, own=E.FACTORY):
+        self.regs = dict(own)
+        self.opened = 0
         self.retries, self.stuck, self.fail = retries, stuck, fail
         self.node, self.devnum = "/dev/bus/usb/001/004", 4
         self.writes = []
@@ -51,6 +53,7 @@ class FakePP:
         assert node == self.node, (node, self.node)
         if self.fail is not None:
             raise self.fail
+        self.opened += 1
         return self
 
     def __enter__(self):
@@ -109,12 +112,40 @@ def test_the_measured_settings():
     assert dict(E.FACTORY) == {E.PP_ECHOONOFF: 1, E.PP_NLATTENONOFF: 1, E.PP_DTSENSITIVE: 0}
 
 
-def test_silent_and_switched_off_mean_the_chips_own():
+def test_silent_means_the_chips_own_and_a_limit_of_0_never_touches_it():
     dev = FakePP()
-    assert _echo(dev).apply(0) and dev.state() == E.FACTORY
+    echo = _echo(dev)
+    echo.apply(30)
+    assert echo.apply(0) and dev.state() == E.FACTORY
     dev = FakePP()
     echo = _echo(dev, max_volume=0)
     assert echo.apply(20) and echo.apply(100)
+    assert dev.opened == 0 and dev.writes == []
+
+
+def test_the_chips_own_saved_values_are_what_comes_back():
+    tuned = ((E.PP_ECHOONOFF, 1), (E.PP_NLATTENONOFF, 1), (E.PP_DTSENSITIVE, 3))
+    dev = FakePP(own=tuned)                    # someone saved their own tuning to it
+    echo = _echo(dev)
+    assert echo.apply(80) and dev.writes == []  # already its own: nothing written
+    assert echo.apply(40) and dev.state() == E.DUPLEX
+    assert echo.apply(80) and dev.state() == tuned
+
+
+def test_a_chip_left_with_the_suppressor_off_gets_the_factory_values_back():
+    dev = FakePP(own=E.DUPLEX)                 # a bridge that stopped at volume 40
+    echo = _echo(dev)
+    assert echo.apply(80) and dev.state() == E.FACTORY
+
+
+def test_changes_in_quick_succession_land_for_the_volume_as_it_is():
+    dev = FakePP()
+    echo = _echo(dev)
+    level = [40]
+    queued = [lambda: level[0], lambda: level[0]]  # 40 queued, then 80 queued...
+    level[0] = 80                                  # ...and the level is 80 by the time
+    for get in reversed(queued):                   # they run, in either order
+        echo.apply(get)
     assert dev.state() == E.FACTORY
 
 
@@ -140,7 +171,7 @@ def test_no_chip_does_nothing():
     dev = FakePP()
     dev.node = None
     assert _echo(dev).apply(40)
-    assert dev.writes == []
+    assert dev.writes == [] and dev.opened == 0
 
 
 def test_a_read_that_says_retry_is_asked_again():
@@ -184,7 +215,7 @@ def test_the_bridge_volume_drives_the_chip():
     echo = _echo(dev)
     with tempfile.TemporaryDirectory() as d:
         volume = local_audio.Volume(os.path.join(d, "v.json"))
-        volume.on_change = echo.apply            # run_bridge does it on a worker thread
+        volume.on_change = lambda _: echo.apply(lambda: volume.percent)  # as run_bridge
         volume.apply({"level": 80})
         assert dev.state() == E.FACTORY
         volume.apply({"level": 50})

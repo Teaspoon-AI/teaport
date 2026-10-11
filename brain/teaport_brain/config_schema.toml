@@ -966,6 +966,16 @@ tier = "tuning"
 help = "Comma-separated words or phrases that end a reply on their own while it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS says (with the bot silent there is no echo to garble into one). Only an utterance made entirely of them counts, so \"don't stop\" does not; any \"shh\" spelling is shh. \"No\" is left out on purpose: over the bot it is as often an answer as an objection."
 
 [[settings]]
+name = "TEAPORT_ECHO_GUARD"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "On the room mic, drop the bot's own words when the mic hears them back from the speaker, so the bot does not interrupt itself or answer its own sentence. Words that follow what the bot just said are taken off the front of a transcript; one made only of them is ignored. Off: every transcript goes through as heard."
+
+[[settings]]
 name = "TEAPORT_STRANDED_INTERIM_SECS"
 store = "brain_env"
 group = "turn_taking"
@@ -2125,7 +2135,7 @@ min = 0
 max = 100
 read = "startup"
 tier = "tuning"
-help = "Up to this speaker volume (percent) the XVF3800's echo suppressor is off, so the mic hears you while the bot is talking. Above it the chip's own echo suppression comes back, because the bot's voice would leak into what you say. 0 keeps the chip's own settings at every volume."
+help = "Up to this speaker volume (percent) the XVF3800's echo suppressor is off, so the mic hears you while the bot is talking. Above it the chip's own echo suppression (its settings as the bridge first read them) comes back, because the bot's voice would leak into what you say. 0 leaves the chip alone."
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"

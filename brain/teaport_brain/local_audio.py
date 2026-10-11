@@ -985,7 +985,7 @@ class Card:
         self._run(self._capture(arecord, first))
         if self.echo is not None:
             # A card (re)opened may be a chip replugged or reset to its own settings.
-            await asyncio.to_thread(self.echo.apply, self.volume.percent)
+            await asyncio.to_thread(self.echo.apply, lambda: self.volume.percent)
 
     async def _open_capture(self) -> tuple[asyncio.subprocess.Process, bytes]:
         # Playback is running by now; give it a moment, and retry a capture that
@@ -1671,7 +1671,8 @@ async def run_bridge() -> None:
     logger.info(f"volume: {volume.percent}%")
     echo = xvf_echo.EchoSuppression()
     loop = asyncio.get_running_loop()
-    volume.on_change = lambda percent: loop.run_in_executor(None, echo.apply, percent)
+    # The level as it is when the write runs, not as it was queued (xvf_echo.py).
+    volume.on_change = lambda _: loop.run_in_executor(None, echo.apply, lambda: volume.percent)
     connect_now = True  # the first session dials at once (and is greeted)
     backoff = None  # another client took the box: a Backoff to wait out (kept across card reopens)
     card_wait = dial_wait = RETRY_SECS

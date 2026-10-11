@@ -66,6 +66,7 @@ from teaport_brain.endpointing import (
     keep_barge_in_reachable,
     turn_settings,
 )
+from teaport_brain import echo_guard
 from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard
@@ -946,7 +947,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     - client_features: what the connected client can do itself (a /talk client's
       ?features=, tools.parse_client_features): offers the client tools that need
       them (set_volume, restart_session), and "phonemes" makes the TTS send each word's
-      timed phonemes with the audio (the OLED face's mouth). SIP passes none.
+      timed phonemes with the audio (the OLED face's mouth). SIP passes none. A client
+      at the box ("local": the room mic's bridge) also gets the echo guard (echo_guard.py).
     - reply_hold_enabled: hold a reply's first audio while the caller is talking
       (reply_hold.py). Per front-end: sip_server passes reply_hold.SIP_ENABLED (on by
       default), gateway_server reply_hold.TALK_ENABLED (off by default).
@@ -981,6 +983,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     stt.smartturn_stop_secs = turns.smartturn_stop_secs
     if wake_gate is not None:
         stt.wake_gate = wake_gate
+    # The room mic hears the box's own speaker: the bot's words it transcribes are not
+    # the user's (echo_guard.py). The tap that tells it what played joins the pipeline.
+    guard = echo_guard.EchoGuard() if echo_guard.ENABLED and "local" in client_features else None
+    stt.echo_guard = guard
     llm = make_llm()
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
 
@@ -1246,6 +1252,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # Bot{Started,Stopped}SpeakingFrames and pauses the transport itself.
         barge_pauser,
         transport_output,
+        # Directly below the transport: each word's text frame passes here as it plays.
+        guard.tap() if guard is not None else None,
         followup_gate,  # track user/bot/LLM activity → hold async follow-ups for a clear moment
         CaptionTap(activity, every_final=caption_every_final),  # AFTER the transport: playout-paced partials + per-utterance finals
         MemoryReclaim(),  # per-turn: hand glibc arena pages back to the OS (CUDA at session end)
