@@ -1321,8 +1321,9 @@ changes.
   before a commit is below what either can see. The hold's expiry and the backstop are
   not charged with a cut over the voice: they are bounds with their own documented edges.
   Two session-wide policies are not modelled as switches, for the reason the no-verdict
-  fallback is not. The wait stands down after three commits running that hit the cap:
-  any other commit breaks the run, and so does a VAD start during a wait. The marks go
+  fallback is not. The wait stands down after three verdict commits running that hit
+  the cap: any other verdict commit breaks the run, and so does a VAD start during a
+  wait; commits that answer no verdict leave it alone. The marks go
   off when a catch-up that missed its bound has still not got there by the next
   verdict; slowness alone only commits on what was heard. Each is a policy on repeated
   faults; what runs while either is in force is the `blind` design, and

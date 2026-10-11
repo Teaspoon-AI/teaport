@@ -307,12 +307,14 @@ _HINT_MARGIN_MS = setting("TEAPORT_STT_SILENCE_HINT_MARGIN_MS")
 #     honouring a "not done", and it is the worst case a reply waits here. A caller
 #     who never pauses gets the commit at that bound with a warning, and the hint then
 #     claims nothing, since the voice is current.
-#   * _VOICE_STRIKES commits running that hit that bound stand the wait down for the
-#     session, logged once. Any other commit breaks the run, and so does a VAD start
-#     during a wait. A VAD start between turns does not: every verdict follows a stop,
-#     and every stop a start, so a run broken by any start could never reach two. Such
-#     a run is steady noise at speech confidence (a TV in the room, a phone line's
-#     floor), which would otherwise cost every turn the whole ceiling.
+#   * _VOICE_STRIKES verdict commits running that hit that bound stand the wait down
+#     for the session, logged once. Any other verdict commit breaks the run, and so
+#     does a VAD start during a wait. Commits that answer no verdict (a stop over the
+#     bot's reply, the backstop, a tail, an expired hold) neither count nor break it,
+#     and nor does a VAD start between turns: every verdict follows a stop, and every
+#     stop a start, so a run broken by any start could never reach two. Such a run is
+#     steady noise at speech confidence (a TV in the room, a phone line's floor),
+#     which would otherwise cost every turn the whole ceiling.
 #
 # What it cannot see: voice in the last chunk or two before the commit, which Silero
 # has not yet scored at onset confidence. The hint's margin covers that much of an
@@ -1105,8 +1107,12 @@ class TeaportSTTService(WebsocketSTTService):
         self._slow_since_log = 0
 
     def _count_capout(self, capped: bool):
-        """The run of commits that hit the pause's bound (_VOICE_STRIKES): any other
-        commit breaks it; the third running stands the wait down for the session."""
+        """The run of verdict commits that hit the pause's bound (_VOICE_STRIKES): any
+        other commit answering a verdict breaks it; the third running stands the wait
+        down for the session. Only the commits that answer a complete verdict count,
+        either way: with a TV in the room every one of those caps, and a commit of
+        another kind between them -- the flush of a stop over the bot's reply, the
+        backstop, a tail, an expired hold -- says nothing about the noise."""
         if not capped:
             self._pause_capouts = 0
             return
@@ -1127,6 +1133,7 @@ class TeaportSTTService(WebsocketSTTService):
             w = None
         wait = None if w is None else self._boundary_wait(w, self._passed_samples)
         if wait is None:
+            self._count_capout(False)
             await self._send_commit(final=True, why=why)
             return
         self._hold_kind = "pause"
@@ -1135,6 +1142,7 @@ class TeaportSTTService(WebsocketSTTService):
         if err is not None:
             logger.warning(f"{self}: cannot wait for the caller's pause ({err}); "
                            "committing now")
+            self._count_capout(False)
             await self._send_commit(final=True, why=why)
 
     async def _wait_for_pause(self, why: str, heard_through: int):
@@ -1150,8 +1158,9 @@ class TeaportSTTService(WebsocketSTTService):
         self._hold_task = None
         if not self._commit_pending:
             return
+        self._count_capout(capped)
         await self._send_commit(final=True, why=why, waited=time.monotonic() - start,
-                                for_voice=voiced, capped=capped)
+                                for_voice=voiced)
 
     async def _until_pause(self, why: str, heard_through: int, start: float):
         """Wait, woken by the analyzer, until the boundary may be drawn or a bound is
@@ -1442,20 +1451,16 @@ class TeaportSTTService(WebsocketSTTService):
         return int(ms) if ms > 0 else None
 
     async def _send_commit(self, final: bool = True, why: str = "other",
-                           waited: Optional[float] = None, for_voice: bool = False,
-                           capped: bool = False):
+                           waited: Optional[float] = None, for_voice: bool = False):
         """Force a final. `why` is recorded so the segment line says which path fired,
         and `waited` how long a complete verdict's commit was held for the VAD analyzer
-        or, `for_voice`, for the caller's pause (THE CALLER'S VOICE); `capped`: it was
-        held to the pause's bound."""
+        or, `for_voice`, for the caller's pause (THE CALLER'S VOICE)."""
         # The hold's timer first: cancelling a live task is the one await in here that
         # can actually suspend, and the bookkeeping below must be atomic with the send
         # -- a VAD stop landing between "pending = False" and the commit going out would
         # arm a hold this commit then never clears. Whatever sent it, the stop this
         # segment was waiting on is answered.
         await self._cancel_hold_expiry()
-        # Every commit counts toward the run of capped ones, or breaks it.
-        self._count_capout(capped)
         commit = _Commit(n=self._vad_stops, at=time.monotonic(), why=why,
                          hint=self._silence_hint_ms(), waited=waited, for_voice=for_voice)
         # Whatever this commit claims, the next one starts from a fresh segment and

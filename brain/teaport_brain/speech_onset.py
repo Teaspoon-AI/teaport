@@ -121,7 +121,16 @@ class SpeechOnsetMixin:
                           st["in_run"], st["paused"], st["stop_at"], st["speech_end"])
 
     def voice_confidence(self, buffer) -> float:
-        conf = super().voice_confidence(buffer)
+        try:
+            conf = super().voice_confidence(buffer)
+        except Exception:
+            # The analyzer has taken this chunk off its buffer whatever the model did,
+            # so it is past it: the positions move on with it, its voice unknown and
+            # not claimed. Otherwise every position after it would sit one chunk short
+            # of the audio for the rest of the session.
+            st = self._onset_state()
+            st["analyzed"] += len(buffer) // 2
+            raise
         try:
             self._onset_feed(conf, len(buffer) // 2)
         except Exception as e:  # noqa: BLE001 -- never let the side channel break the VAD
@@ -158,11 +167,20 @@ class SpeechOnsetMixin:
         st["analyzed"] = end
 
     async def analyze_audio(self, buffer):
-        state = await super().analyze_audio(buffer)
+        st = self._onset_state()
+        try:
+            state = await super().analyze_audio(buffer)
+        finally:
+            # Handed over whatever the analysis did: a model error the aggregator
+            # swallows must not leave this count a frame behind the STT's for the
+            # rest of the session, which would hold every commit to its catch-up
+            # bound. The wait is woken either way; it runs only once this task next
+            # yields, so it reads the stop marks below as well.
+            st["received"] += len(buffer) // 2
+            if st["heard"] is not None:
+                st["heard"].set()
         # Back on the loop: the executor call above has returned, so whatever it
         # appended is visible here and nothing appends concurrently.
-        st = self._onset_state()
-        st["received"] += len(buffer) // 2
         # The VAD's own speech end and stop, read the way its controller reads them:
         # the state settling to QUIET after SPEAKING (STARTING and STOPPING are
         # transient on both edges). An input frame carries less than one Silero
@@ -174,8 +192,6 @@ class SpeechOnsetMixin:
             st["speaking"] = False
             st["speech_end"] = st["vad_speech_end"]
             st["stop_at"] = st["analyzed"]
-        if st["heard"] is not None:
-            st["heard"].set()
         if st["events"]:
             events, st["events"] = st["events"], []
             for started in events:

@@ -65,6 +65,8 @@ require_pinned()
 from loguru import logger  # noqa: E402
 from pipecat.audio.vad.vad_analyzer import VADAnalyzer, VADParams, VADState  # noqa: E402
 from pipecat.frames.frames import (  # noqa: E402
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     InputAudioRawFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
@@ -131,11 +133,15 @@ class Scripted(VADAnalyzer):
                          params=VADParams(stop_secs=STOP_SECS, start_secs=0.2,
                                           min_volume=0.0))
         self.conf = 0.0
+        self.fail_next = False
 
     def num_frames_required(self):
         return CHUNK
 
     def voice_confidence(self, buffer):
+        if self.fail_next:
+            self.fail_next = False
+            raise RuntimeError("onnx: transient failure")
         return self.conf
 
 
@@ -164,7 +170,10 @@ class Line:
 
     async def _analyze(self, buf, conf):
         self.vad.conf = conf
-        state = await self.vad.analyze_audio(buf)
+        try:
+            state = await self.vad.analyze_audio(buf)
+        except Exception:  # noqa: BLE001 -- pipecat's aggregator swallows it too
+            return
         if state == VADState.SPEAKING and not self.speaking:
             self.speaking = True
             await self.stt.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2), UP)
@@ -492,6 +501,40 @@ async def test_a_forced_stop_does_not_take_the_last_utterances_speech_end():
     assert line.stt._speech_end > sent_before, (
         "the speech end must not be placed before this utterance began: "
         f"{line.stt._speech_end} <= {sent_before}")
+
+
+async def test_a_commit_that_answers_no_verdict_neither_counts_nor_breaks_the_run():
+    """With a TV in the room every verdict's commit caps. A stop over the bot's reply
+    between them commits at once, answering no verdict: it says nothing about the
+    noise, and the third capped verdict commit still stands the wait down."""
+    line = Line()
+    await steady_noise_turn(line)
+    await steady_noise_turn(line)
+    await line.stt.process_frame(BotStartedSpeakingFrame(), UP)
+    before = len(line.commits())
+    await line.utterance()                         # the flush over the bot's reply
+    assert len(line.commits()) == before + 1
+    await line.stt.process_frame(BotStoppedSpeakingFrame(), UP)
+    assert line.stt._pause_capouts == 2, "the bot-speaking commit left the run alone"
+    await steady_noise_turn(line)
+    assert line.stt._pause_off, "three capped verdict commits running"
+
+
+async def test_one_failed_analysis_leaves_no_shortfall():
+    """A transient model error in the VAD, which the aggregator swallows: the frame was
+    still handed over, and the chunk is still behind the analyzer. The counts stay in
+    line, and the next turn's verdict commits at once rather than waiting out the
+    catch-up bound on every turn for the rest of the session."""
+    line = Line()
+    await line.feed(5, QUIET)
+    line.vad.fail_next = True
+    await line.feed(1, QUIET)                      # the model raises on this chunk
+    marks = line.vad.voice_marks()
+    assert marks.received == line.stt._passed_samples, marks
+    assert marks.analyzed == marks.received, f"positions drifted: {marks}"
+    await line.utterance()
+    await line.verdict(True)
+    assert len(line.commits()) == 1, "committed in the verdict's own call"
 
 
 async def test_a_slow_analyzer_is_not_switched_off_and_is_logged_once():
