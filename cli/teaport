@@ -137,10 +137,10 @@ if not c:
 if c == e:
     print("ok\tTTS pacing: %s" % e)
 else:
-    print("warn\tTTS_PACING=%s, but the brain paces %s: pipecat %s lacks TTSService %s"
-          " (replies still play; a barge-in throws away more synthesis) — if the brain venv"
+    print("warn\tTTS_PACING=%s, but the brain paces %s: it does not fit pipecat %s (%s)"
+          " — replies still play, a barge-in throws away more synthesis; if the brain venv"
           " drifted from uv.lock: install.sh --only brain; if not, engine_tts.py needs new hooks"
-          % (c, e, p.get("pipecat") or "?", ", ".join(p.get("missing") or ["?"])))' 2>/dev/null)" || return 0
+          % (c, e, p.get("pipecat") or "?", "; ".join(p.get("missing") or ["?"])))' 2>/dev/null)" || return 0
   case "$line" in
     ok$'\t'*)   ok "${line#*$'\t'}" ;;
     warn$'\t'*) warnc "${line#*$'\t'}" ;;
