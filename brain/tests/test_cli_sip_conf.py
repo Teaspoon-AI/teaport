@@ -158,11 +158,11 @@ def test_adopt_says_read_or_write_and_leaves_nothing_behind():
     # pipefail and without (the verdict reads both statuses, not the pipeline's).
     for pf in ("-o", "+o"):
         rc, out = _run(d, f'''set {pf} pipefail
-          sip_adopt_copy {d}/nope 5060 /s > {d}/x || echo "rc=$?"
-          sip_adopt_copy {src} 5060 /s > /dev/full || echo "rc=$?"
-          sip_adopt_copy {src} 5060 /s > {d}/no/such/dir || echo "rc=$?"
-          sip_adopt_copy {src} 5060 /s > {d}/ok && echo "rc=0"
-          set -e; sip_adopt_copy {src} 5060 /s > {d}/ok2; echo "rc=0 under set -e"''')
+          sip_adopt_copy 5060 /s {d}/nope > {d}/x || echo "rc=$?"
+          sip_adopt_copy 5060 /s {src} > /dev/full || echo "rc=$?"
+          sip_adopt_copy 5060 /s {src} > {d}/no/such/dir || echo "rc=$?"
+          sip_adopt_copy 5060 /s {src} > {d}/ok && echo "rc=0"
+          set -e; sip_adopt_copy 5060 /s {src} > {d}/ok2; echo "rc=0 under set -e"''')
         assert rc == 0, (pf, out)
         assert (out.count("rc=2"), out.count("rc=1"), out.count("rc=0")) == (1, 2, 2), (pf, out)
     # And a clean adopt installs the forced keys, 0600, with no temp left.
@@ -298,6 +298,46 @@ def test_wizard_replaces_an_installed_conf_by_rename_and_leaves_it_0600():
         assert rc == 0 and "TURN_ON" in out and "mode 600" in out, out
         assert held.read() == "password=old\n"
     assert conf.stat().st_ino != old_ino and oct(conf.stat().st_mode & 0o777) == "0o600"
+    assert "password=s3cret" in conf.read_text() and _temps(d) == []
+
+
+def test_wizard_fills_its_temp_only_once_it_is_0600():
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("password=old\n"); os.chmod(conf, 0o640)
+    # The filler notes the mode of the temp it is writing the new password into.
+    fill = f'sip_emit_conf() {{ stat -c %a {d}/teaport-sip.conf.?????? > {d}/fill.mode; echo password=new; }}'
+    rc, out = _run(d, WIZARD, WIZARD_STUBS + fill)
+    assert rc == 0, out
+    assert (d / "fill.mode").read_text() == "600\n"
+    assert conf.read_text() == "password=new\n" and oct(conf.stat().st_mode & 0o777) == "0o600"
+
+
+def test_wizard_refuses_an_ownerless_root_conf_before_prompting():
+    d = _secrets()
+    stubs = WIZARD_STUBS + ROOT_STUBS + 'read() { echo PROMPTED; }'
+    rc, out = _run(d, "UNIT_USER=''; PROBE_HOOK='echo PROBED'; sip_configure", stubs)
+    assert rc == 1 and "gateway cannot open" in out and "nothing tested" in out, out
+    assert "PROMPTED" not in out and "PROBED" not in out, out
+    assert not (d / "teaport-sip.conf").exists() and _temps(d) == [], _temps(d)
+
+
+def test_a_root_owned_conf_goes_to_the_units_user_when_root_rewrites_it():
+    # A box the pre-#134 wizard left with a root:root conf: as root, the rewrite hands it
+    # to the unit's User=; as anyone else it is refused with the sudo -E hint. Not really
+    # root, so the conf's owner is what stat reports.
+    me = subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("password=old\n"); os.chmod(conf, 0o600)
+    root_owned = f'stat() {{ [ "$*" = "-c %u:%g {conf.resolve()}" ] && echo 0:0 || command stat "$@"; }}\n'
+    chown_log = f'chown() {{ echo "$1" >> {d}/chown.log; command chown "$@"; }}\n'
+    rc, out = _run(d, WIZARD, WIZARD_STUBS + root_owned)
+    assert rc == 1 and "sudo -E" in out and "TURN_ON" not in out, out
+    assert conf.read_text() == "password=old\n" and _temps(d) == []
+    rc, out = _run(d, f"UNIT_USER={me}; {WIZARD}", WIZARD_STUBS + ROOT_STUBS + root_owned + chown_log)
+    assert rc == 0 and "TURN_ON" in out, out
+    assert (d / "chown.log").read_text() == f"{me}:\n"
     assert "password=s3cret" in conf.read_text() and _temps(d) == []
 
 
