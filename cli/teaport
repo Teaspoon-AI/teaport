@@ -409,13 +409,21 @@ sip_unit_ids() {
 # comes from $HOME — under a plain `sudo`, which resets HOME, it named
 # /root/.config/teaport/teaport-sip.conf: installed where the unit never looks (its
 # condition kept the line down) and given, with a directory made for it in /root, to a
-# user who cannot reach it.
+# user who cannot reach it. EVERY ConditionPathExists= counts (the unit file's and its
+# drop-ins', an empty one resetting the list, as systemd reads them; a |/! prefix
+# stripped): the SIP guard's drop-in adds one on /nonexistent to keep the line down, and
+# taking the last value alone refused a configure that writes the unit's own conf. The
+# conf is the unit's when it is any of them.
 sip_conf_preflight() {
-  local dest unit
+  local dest p
+  local -a paths=()
   dest="$(sip_conf_target "$SIP_CONF")"
-  unit="$(systemctl cat teaport-sip.service 2>/dev/null | sed -n 's/^ConditionPathExists=//p' | tail -n 1)" || unit=""
-  if [ -n "$unit" ] && [ "$(sip_conf_target "$unit")" != "$dest" ]; then
-    die "teaport-sip.service reads $unit, not $SIP_CONF — run this as the user the units run as (sudo -E as root: plain sudo resets HOME), or set TEAPORT_SIP_CONF — nothing tested, nothing installed"
+  mapfile -t paths < <(systemctl cat teaport-sip.service 2>/dev/null | awk '
+    /^ConditionPathExists=/ { v = substr($0, 21); if (v == "") n = 0; else { sub(/^[|!]+/, "", v); p[++n] = v } }
+    END { for (i = 1; i <= n; i++) print p[i] }')
+  if [ "${#paths[@]}" != 0 ]; then
+    for p in "${paths[@]}"; do [ "$(sip_conf_target "$p")" != "$dest" ] || paths=(); done
+    [ "${#paths[@]}" = 0 ] || die "teaport-sip.service reads ${paths[*]}, not $SIP_CONF — run this as the user the units run as (sudo -E as root: plain sudo resets HOME), or set TEAPORT_SIP_CONF — nothing tested, nothing installed"
   fi
   sip_conf_owner "$dest" || die "$SIP_WHY — nothing tested, nothing installed"
 }
@@ -591,7 +599,7 @@ sip_drop() {
 # run as a regular uid logged a [reg] 200 that --system showed to nobody, root
 # included, and the default scope showed to root, to adm, and to that uid itself.
 sip_last_reg() {
-  local inv; inv="$(systemctl show -p InvocationID --value teaport-sip.service 2>/dev/null || true)"
+  local inv; inv="$(sip_unit_prop InvocationID)"
   [ -n "$inv" ] || return 0
   journalctl -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
 }
@@ -613,7 +621,7 @@ sip_last_reg() {
 sip_journal_note() {
   local uid
   journalctl --system -q -n 1 -o cat >/dev/null 2>&1 && return 0
-  uid="$(id -u "$(systemctl show -p User --value teaport-sip.service 2>/dev/null || true)" 2>/dev/null || true)"
+  uid="$(id -u "$(sip_unit_prop User)" 2>/dev/null || true)"
   [ -n "$uid" ] && [ -n "$(journalctl -q -n 1 -o short "_UID=$uid" 2>/dev/null || true)" ] && return 0
   printf 'journal not readable by %s — add them to systemd-journal (sudo usermod -aG systemd-journal %s; re-login) or run: sudo teaport sip status' "$(id -un)" "$(id -un)"
   return 1

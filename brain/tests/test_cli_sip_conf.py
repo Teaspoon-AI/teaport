@@ -20,7 +20,9 @@ import grp
 import os
 import pathlib
 import pwd
+import signal
 import subprocess
+import time
 
 from tempdirs import tempdir
 
@@ -48,13 +50,17 @@ def _functions() -> str:
 
 # teaport-sip.service as the CLI reads it, so no run sees the host's own unit (on the
 # box it is installed, and names its own conf): installed (UNIT_LOAD), with UNIT_USER,
-# UNIT_GROUP, and a ConditionPathExists=UNIT_CONF when one is set.
+# UNIT_GROUP, and a ConditionPathExists=UNIT_CONF when one is set — followed, as on a
+# box with the line held off, by the SIP guard's drop-in and its own condition.
 UNIT_STUB = r'''
 systemctl() { case "$*" in
   "show -p LoadState --value teaport-sip.service") printf '%s\n' "${UNIT_LOAD-loaded}" ;;
   "show -p User --value teaport-sip.service") printf '%s\n' "${UNIT_USER-}" ;;
   "show -p Group --value teaport-sip.service") printf '%s\n' "${UNIT_GROUP-}" ;;
-  "cat teaport-sip.service") [ -n "${UNIT_CONF-}" ] && printf 'ConditionPathExists=%s\n' "$UNIT_CONF" ;;
+  "cat teaport-sip.service") [ -n "${UNIT_CONF-}" ] && printf '%s\n' \
+      "# /etc/systemd/system/teaport-sip.service" "[Unit]" "ConditionPathExists=$UNIT_CONF" "" \
+      "# /run/systemd/system/teaport-sip.service.d/zz-fake-sip-guard.conf" "[Unit]" \
+      "ConditionPathExists=/nonexistent/fake-sip-guard" ;;
   *) command systemctl "$@" ;;
 esac; }
 '''
@@ -621,8 +627,112 @@ def test_configure_refuses_a_conf_the_unit_does_not_read():
         assert rc == 1 and "reads /home/someone/.config/teaport/teaport-sip.conf" in out, (steps, out)
         assert "nothing tested" in out and "PROMPTED" not in out and "PROBED" not in out, (steps, out)
         assert not (d / "teaport-sip.conf").exists() and _temps(d) == [], steps
+    # The unit's own conf goes ahead with the SIP guard's drop-in condition after it
+    # (UNIT_STUB): every ConditionPathExists= counts, not the last one.
     rc, out = _run(d, f"UNIT_USER={ME}; UNIT_CONF={d}/teaport-sip.conf; {WIZARD}", stubs)
     assert rc == 0 and "TURN_ON" in out, out
+    # An empty ConditionPathExists= resets the list, as systemd reads it.
+    reset = (f'systemctl() {{ [ "$*" = "cat teaport-sip.service" ] || return 1; printf "%s\\n" '
+             f'"ConditionPathExists={d}/teaport-sip.conf" "ConditionPathExists=" "ConditionPathExists=!/x/guard"; }}\n')
+    rc, out = _run(d, f"sip_conf_preflight && echo PREFLIGHT_OK", stubs + reset)
+    assert rc == 1 and "reads /x/guard," in out and "PREFLIGHT_OK" not in out, out
+
+
+def _popen(secrets, steps, stubs="", env_extra=None):
+    # As _run, in a session of its own, so its whole process group can be signalled as a
+    # Ctrl-C would be.
+    script = _functions() + OLD_SET + UNIT_STUB + stubs + "\n" + steps + "\n"
+    env = dict(os.environ, TEAPORT_SECRETS_DIR=str(secrets), HOME=str(secrets), **(env_extra or {}))
+    env.pop("TEAPORT_SIP_CONF", None)
+    return subprocess.Popen(["bash", "-c", script], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, env=env, start_new_session=True)
+
+
+def _wait_for(path, secs=5.0):
+    for _ in range(int(secs / 0.02)):
+        if path.exists():
+            return
+        time.sleep(0.02)
+    raise AssertionError(f"{path} never appeared")
+
+
+def test_a_ctrl_c_to_the_group_while_mktemp_runs_leaves_no_temp():
+    # A signal to the process group reaches mktemp too: run with INT/TERM as they are, it
+    # can die after making the file and before printing its name, and nobody can remove
+    # it. sip_mktemp runs it with them ignored, so it finishes and the temp is listed.
+    real = subprocess.run(["bash", "-c", "command -v mktemp"], capture_output=True, text=True).stdout.strip()
+    for sig, code in ((signal.SIGTERM, 143), (signal.SIGINT, 130)):
+        d = _secrets()
+        conf = d / "teaport-sip.conf"
+        conf.write_text(CONF); os.chmod(conf, 0o600)
+        bindir = d / "bin"; bindir.mkdir()
+        (bindir / "mktemp").write_text(f'#!/bin/sh\nf="$({real} "$@")" || exit 1\ntouch {d}/made\nsleep 0.5\n'
+                                       'printf "%s\\n" "$f"\n')
+        os.chmod(bindir / "mktemp", 0o755)
+        p = _popen(d, f"sip_conf_set {conf} aec false", env_extra={"PATH": f"{bindir}:{os.environ['PATH']}"})
+        _wait_for(d / "made")
+        os.killpg(p.pid, sig)
+        out, _ = p.communicate(timeout=10)
+        assert p.returncode == code and _temps(d) == [], (sig, p.returncode, out, _temps(d))
+        assert conf.read_text() == CONF
+
+
+def _gateway(d, body):
+    gw = d / "gw"
+    gw.write_text(f"#!/bin/sh\n{body}\n"); os.chmod(gw, 0o755)
+    return gw
+
+
+def test_a_ctrl_c_after_the_probes_gateway_exited_still_cleans_up():
+    # The gateway exits (a probe that could not bind :5062) and bash reaps it, so the
+    # cleanup's kill fails; under set -e that ended the trap before the rm, and the exit
+    # status became 1.
+    d = _secrets()
+    tmp = d / "tmp"; tmp.mkdir()
+    gw = _gateway(d, f"touch {d}/up; sleep 0.3")
+    sleep = f'sleep() {{ command sleep 1; [ -e {d}/up ] && kill -INT $$; command sleep 1; }}\n'
+    rc, out = _run(d, f"SIP_GATEWAY={gw}; sip_test_register h d u p", sleep, {"TMPDIR": str(tmp)})
+    assert rc == 130 and list(tmp.iterdir()) == [], (rc, out, list(tmp.iterdir()))
+
+
+def test_a_ctrl_c_in_the_probe_removes_the_socket_its_gateway_made():
+    # The test socket is the gateway's to make, so it is listed before the gateway starts.
+    d = _secrets()
+    tmp = d / "tmp"; tmp.mkdir()
+    gw = _gateway(d, f'uds="$(sed -n "s/^uds_path=//p" "$1")"; touch "$uds"; touch {d}/up; exec sleep 30')
+    sleep = f'sleep() {{ while [ ! -e {d}/up ]; do command sleep 0.05; done; kill -INT $$; command sleep 1; }}\n'
+    rc, out = _run(d, f"SIP_GATEWAY={gw}; sip_test_register h d u p", sleep, {"TMPDIR": str(tmp)})
+    assert rc == 130 and list(tmp.iterdir()) == [], (rc, out, list(tmp.iterdir()))
+
+
+def test_a_new_conf_is_refused_when_the_gateway_runs_as_someone_else():
+    # Not root: a new conf is the invoker's 0600, which a gateway run as a third user
+    # cannot open. Said before the test registration.
+    d = _secrets()
+    rc, out = _run(d, f"UNIT_USER=nobody; PROBE_HOOK='echo PROBED'; {WIZARD}", WIZARD_STUBS)
+    assert rc == 1 and "runs as nobody" in out and "gateway cannot open" in out, out
+    assert "PROBED" not in out and not (d / "teaport-sip.conf").exists() and _temps(d) == [], out
+
+
+def test_a_copy_that_did_not_come_out_right_is_not_installed():
+    # A chown the filesystem ignored (vfat; root_squash NFS refuses it): the staged copy
+    # is read back, and one that does not have the owner it was given is refused (3).
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("aec=true\n"); os.chmod(conf, 0o600)
+    stubs = ROOT_STUBS + _root_owned(conf) + "chown() { :; }\n"
+    rc, out = _run(d, f'UNIT_USER=nobody; sip_conf_set {conf} aec false || echo "rc=$? $SIP_WHY"', stubs)
+    assert "rc=3 a copy of" in out, out
+    assert conf.read_text() == "aec=true\n" and _temps(d) == [], out
+
+
+def test_a_world_readable_conf_is_closed_to_others_by_a_rewrite():
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("password=p\naec=true\n"); os.chmod(conf, 0o644)
+    rc, out = _run(d, "sip_aec off", AEC_STUBS)
+    assert rc == 0 and "aec=false" in conf.read_text(), out
+    assert oct(conf.stat().st_mode & 0o777) == "0o640", oct(conf.stat().st_mode)
 
 
 def main():
