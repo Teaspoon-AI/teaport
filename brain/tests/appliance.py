@@ -27,13 +27,9 @@
 #
 import os
 import socket
-import subprocess
 import sys
 import threading
-import traceback
 from urllib.parse import urlparse
-
-import tempdirs
 
 SKIP_EXIT = 77
 
@@ -104,60 +100,19 @@ def _probe(host: str, port: int, timeout: float):
 
 
 # --- file modes, as root -------------------------------------------------------------
-# A test that stages an unreadable file or a read-only dir proves nothing as root, which
-# reads and writes through any mode. These run their subject as a user instead: root
-# moves into a new user namespace that maps no uid, where its capabilities do not reach
-# files from outside it, so modes bind as for anyone else, while the files stay its own
-# (chmod still works). Where a kernel or sandbox refuses the namespace, those cases are
-# skipped, out loud (run_tests), rather than passed having tested nothing; the script's
-# other cases still run.
+# A case that stages an unreadable file or a read-only dir proves nothing as root, which
+# reads and writes through any mode. As root it is skipped by name, out loud (run_tests),
+# never passed having tested nothing; the script's other cases still run. CI runs as a
+# user, so it runs them all.
 
 class Unavailable(Exception):
     """This case cannot run here; run_tests reports it as a skip."""
 
 
-def drop_root():
-    """As root: leave root's capabilities behind (see above). A no-op for anyone else.
-    For subprocess's preexec_fn, or a forked child."""
-    if os.geteuid() == 0:
-        os.unshare(os.CLONE_NEWUSER)
-
-
 def require_modes_bind():
-    """Raise Unavailable unless drop_root() works here (always, for a user)."""
-    if os.geteuid() != 0:
-        return
-    try:
-        subprocess.run(["true"], preexec_fn=drop_root, check=True)
-    except (OSError, subprocess.SubprocessError) as e:
-        raise Unavailable(f"running as root, and a user namespace is refused here ({e}), so "
-                          f"file modes cannot be made to bind; run as a user") from None
-
-
-def as_user(fn):
-    """fn() under drop_root(): directly for a user, in a forked child as root. The child
-    leaves by os._exit, removing the temp dirs it made itself and no others."""
-    if os.geteuid() != 0:
-        return fn()
-    require_modes_bind()
-    sys.stdout.flush()
-    sys.stderr.flush()
-    pid = os.fork()
-    if pid == 0:
-        code = 1
-        try:
-            drop_root()
-            fn()
-            code = 0
-        except BaseException:
-            traceback.print_exc()
-        finally:
-            tempdirs.cleanup_forked()
-            sys.stdout.flush()
-            sys.stderr.flush()
-            os._exit(code)
-    _, status = os.waitpid(pid, 0)
-    assert os.waitstatus_to_exitcode(status) == 0, f"{fn.__name__} failed as a user (above)"
+    """Raise Unavailable as root: file modes do not bind it."""
+    if os.geteuid() == 0:
+        raise Unavailable("root reads through file modes; run as a user")
 
 
 def run_tests(fns):

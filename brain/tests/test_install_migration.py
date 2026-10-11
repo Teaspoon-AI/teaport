@@ -86,14 +86,9 @@ def _fixture(adversarial=False):
     return root
 
 
-def _run(root, steps, extra="", as_user=False):
-    """as_user: run as a user even when we are root, for a failure staged with file
-    modes (appliance.drop_root). Not by default: the steps chown as root does."""
-    if as_user:
-        appliance.require_modes_bind()
+def _run(root, steps, extra=""):
     script = STUBS + f'ETC="{root}/etc"\n' + _functions(root) + extra + "\n" + steps + "\n"
-    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
-                       preexec_fn=appliance.drop_root if as_user else None)
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -142,10 +137,11 @@ def test_secrets_quoting_empties_precedence_and_a_missing_newline():
 
 
 def test_a_failed_migration_stops_before_anything_is_swapped():
+    appliance.require_modes_bind()   # root writes through the read-only dir: skipped, by name
     root = _fixture()
     os.chmod(f"{root}/etc", 0o500)                                     # brain.env cannot be replaced
     try:
-        rc, out = _run(root, "sip_brain_detach; echo SWAPPED", as_user=True)
+        rc, out = _run(root, "sip_brain_detach; echo SWAPPED")
     finally:
         os.chmod(f"{root}/etc", 0o755)
     assert rc != 0 and "SWAPPED" not in out and "DIE" in out, out

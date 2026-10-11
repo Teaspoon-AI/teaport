@@ -58,15 +58,10 @@ def _line(prefix: str) -> str:
     return next(ln for ln in INSTALL.read_text().splitlines() if ln.startswith(prefix)) + "\n"
 
 
-def _run(tmp, script, fns=(), env=None, as_user=False):
-    """as_user: bash runs as a user even when this runs as root (appliance.drop_root),
-    for the cases staged with an unreadable file."""
-    if as_user:
-        appliance.require_modes_bind()
+def _run(tmp, script, fns=(), env=None):
     body = STUBS + "".join(_fn(f) for f in fns) + script
     e = {**os.environ, "T": str(tmp), **(env or {})}
-    p = subprocess.run(["bash", "-c", body], capture_output=True, text=True, env=e,
-                       preexec_fn=appliance.drop_root if as_user else None)
+    p = subprocess.run(["bash", "-c", body], capture_output=True, text=True, env=e)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -76,6 +71,8 @@ def _sudo_calls(tmp):
 
 
 def _env_file(tmp, text, readable=True):
+    if not readable:
+        appliance.require_modes_bind()   # root reads it anyway: skipped, by name
     path = pathlib.Path(tmp, "brain.env")
     path.write_text(text)
     path.chmod(0o640 if readable else 0o000)
@@ -95,13 +92,13 @@ def test_a_readable_env_file_is_read_without_sudo():
 def test_an_unreadable_env_file_is_read_with_sudo_and_a_refusal_is_the_callers_call():
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "GATEWAY_TOKEN=tok\n", readable=False)
-    rc, out = _run(tmp, f'read_env_file "{path}"', ["read_env_file"], as_user=True)
+    rc, out = _run(tmp, f'read_env_file "{path}"', ["read_env_file"])
     assert rc == 0 and "GATEWAY_TOKEN=tok" in out and _sudo_calls(tmp) == [f"cat {path}"], out
     # Refused: strict fails; --lenient prints nothing, says nothing, and succeeds.
-    rc, out = _run(tmp, f'read_env_file "{path}"', ["read_env_file"], {"SUDO_REFUSED": "1"}, as_user=True)
+    rc, out = _run(tmp, f'read_env_file "{path}"', ["read_env_file"], {"SUDO_REFUSED": "1"})
     assert rc != 0, out
     rc, out = _run(tmp, f'out="$(read_env_file "{path}" --lenient)"; echo "[$out]"',
-                   ["read_env_file"], {"SUDO_REFUSED": "1"}, as_user=True)
+                   ["read_env_file"], {"SUDO_REFUSED": "1"})
     assert rc == 0 and out.strip() == "[]", out
 
 
@@ -109,10 +106,10 @@ def test_the_gateway_token_is_reused_from_a_root_only_brain_env():
     tmp = tempdir("teaport-env-")
     _env_file(tmp, "BRAIN_PORT=1\nGATEWAY_TOKEN=keepme\n", readable=False)
     script = f'ETC="{tmp}"; resolve_gateway_token; echo "TOKEN $GATEWAY_TOKEN"'
-    rc, out = _run(tmp, script, ["read_env_file", "resolve_gateway_token"], as_user=True)
+    rc, out = _run(tmp, script, ["read_env_file", "resolve_gateway_token"])
     assert rc == 0 and "TOKEN keepme" in out, out
     # sudo refused: a fresh token, not an installer that dies with no message.
-    rc, out = _run(tmp, script, ["read_env_file", "resolve_gateway_token"], {"SUDO_REFUSED": "1"}, as_user=True)
+    rc, out = _run(tmp, script, ["read_env_file", "resolve_gateway_token"], {"SUDO_REFUSED": "1"})
     assert rc == 0 and "TOKEN " in out and "TOKEN keepme" not in out, out
 
 
@@ -128,7 +125,7 @@ def test_no_brain_env_mints_a_token_without_asking_sudo():
 def test_write_env_keeps_operator_settings_from_a_root_only_file():
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "GATEWAY_TOKEN=old\nOPERATOR_KNOB=7\n", readable=False)
-    rc, out = _run(tmp, f'write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"], as_user=True)
+    rc, out = _run(tmp, f'write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"])
     assert rc == 0, out
     written = pathlib.Path(f"{path}.written").read_text()
     assert written == "GATEWAY_TOKEN=new\nOPERATOR_KNOB=7\n", written
@@ -138,7 +135,7 @@ def test_write_env_refuses_to_overwrite_a_file_it_cannot_read():
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "OPERATOR_KNOB=7\n", readable=False)
     rc, out = _run(tmp, f'write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"],
-                   {"SUDO_REFUSED": "1"}, as_user=True)
+                   {"SUDO_REFUSED": "1"})
     assert rc != 0 and "DIE cannot read" in out, out
     assert not pathlib.Path(f"{path}.written").exists()
 
@@ -146,7 +143,7 @@ def test_write_env_refuses_to_overwrite_a_file_it_cannot_read():
 def test_write_env_dry_run_does_not_sudo_and_says_what_a_real_run_reads():
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "OPERATOR_KNOB=7\n", readable=False)
-    rc, out = _run(tmp, f'DRY_RUN=1; write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"], as_user=True)
+    rc, out = _run(tmp, f'DRY_RUN=1; write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"])
     assert rc == 0 and "a real run reads it with sudo" in out, out
     assert _sudo_calls(tmp) == []
 
@@ -170,10 +167,10 @@ def test_brain_verify_polls_the_port_from_a_root_only_brain_env():
     tmp = tempdir("teaport-env-")
     _env_file(tmp, 'BRAIN_PORT="9123"\n', readable=False)
     script = f'{BRAIN_VERIFY_STUBS}ETC="{tmp}"; brain_verify teaport-brain.service; echo VERIFIED'
-    rc, out = _run(tmp, script, ["read_env_file", "brain_verify"], as_user=True)
+    rc, out = _run(tmp, script, ["read_env_file", "brain_verify"])
     assert rc == 0 and "CURL http://127.0.0.1:9123/health" in out and "VERIFIED" in out, out
     # sudo refused: the default port, and still no failure from the read itself.
-    rc, out = _run(tmp, script, ["read_env_file", "brain_verify"], {"SUDO_REFUSED": "1"}, as_user=True)
+    rc, out = _run(tmp, script, ["read_env_file", "brain_verify"], {"SUDO_REFUSED": "1"})
     assert rc == 0 and "CURL http://127.0.0.1:7861/health" in out, out
 
 
@@ -353,7 +350,7 @@ def _tools_box(*sources):
 
 
 def _tools_run(tmp, script, extra_fns=()):
-    return _run(tmp, TOOLS_STUBS + _line("CONFIG_HELPER=") + script, TOOLS_FNS + list(extra_fns))
+    return _run(tmp, TOOLS_STUBS + _line("CONFIG_HELPER=") + _line("STAGED=") + script, TOOLS_FNS + list(extra_fns))
 
 
 def _installed(tmp):
@@ -451,11 +448,34 @@ mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"
 build r2 v2; brain_swap "$BRAIN_VENVS/r2" --auto-rollback'''
     rc, out = _tools_run(tmp, script, ["brain_swap"])
     assert rc != 0 and "DIE rolled back" in out, out
-    assert "were left as they were" in out and "are back too" not in out, out
+    assert "are still /" in out and "/r2's (" in out and "are back too" not in out, out
     # A dry run says the same before anything moves.
     rc, out = _tools_run(tmp, 'DRY_RUN=1; brain_units() { SWAP_JUDGE=""; }; brain_swap "$BRAIN_VENVS/r0" ""',
                          ["brain_swap"])
     assert rc == 0 and "operator tools left as they are (it has none of its own)" in out, out
+
+
+def test_a_dry_run_shows_the_tools_it_would_stage_keep_and_swap_and_touches_nothing():
+    tmp = _tools_box("v1")
+    pathlib.Path(tmp, "lib").mkdir()
+    pathlib.Path(tmp, "bin/teaport").parent.mkdir()
+    pathlib.Path(tmp, "bin/teaport").write_text("cli old\n")
+    pathlib.Path(tmp, "lib/config_apply.py").write_text("helper old\n")
+    script = r'''
+DRY_RUN=1 SWAP_ALSO=""
+SUDO() { printf 'DRY sudo %s\n' "$*"; }   # install.sh's SUDO under --dry-run
+brain_units() { SWAP_JUDGE=teaport-brain.service; }
+mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"
+STAGED="$BRAIN_VENVS/r1"; SRC_DIR="$T/v1/brain"
+brain_stage_tools "$STAGED"; brain_swap "$STAGED" --auto-rollback'''
+    rc, out = _tools_run(tmp, script, ["brain_swap"])
+    assert rc == 0, out
+    assert "DRY sudo install -m 0755 -o root -g root" in out and "releases/r1/teaport" in out, out
+    assert "the installed teaport CLI and config helper are kept as r0's" in out, out
+    assert "its operator tools too; restart teaport-brain.service" in out, out
+    assert "none of its own" not in out, out
+    assert sorted(os.listdir(pathlib.Path(tmp, "lib"))) == ["config_apply.py"], out
+    assert _installed(tmp) == ("cli old", "helper old") and not os.path.islink(pathlib.Path(tmp, "bin/teaport"))
 
 
 def test_pruning_removes_the_tools_of_removed_venvs_and_keeps_the_live_ones():

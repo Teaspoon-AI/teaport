@@ -404,10 +404,7 @@ def test_apply_helper_backup_ring_spares_operator_backups():
 
 
 def test_unreadable_store_is_reported_not_fatal():
-    appliance.as_user(_unreadable_store)   # as root, too: as a user root reads nothing
-
-
-def _unreadable_store():
+    appliance.require_modes_bind()   # root reads anything: skipped, by name
     client, etc, home, calls = setup()
     os.chmod(os.path.join(etc, "brain.env"), 0)
     try:

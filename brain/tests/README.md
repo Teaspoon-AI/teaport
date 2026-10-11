@@ -52,10 +52,10 @@ and read-only dirs included) when the script exits. The suite runs each script w
 `TMPDIR` of its own and fails one that leaves anything there but pytest's own basetemp
 (issue #135: thousands of temp dirs had piled up in a desktop's `/tmp`).
 
-A test that stages an unreadable file or a read-only dir runs its subject as a user
-even when the suite runs as root, which reads and writes through any mode:
-`appliance.drop_root` (a subprocess's `preexec_fn`) or `appliance.as_user` (in-process).
-Where root cannot have the user namespace that takes, the script is skipped, not passed.
+A case that stages an unreadable file or a read-only dir calls
+`appliance.require_modes_bind()`: as root, which reads and writes through any mode, it is
+skipped by name (the script's `appliance.run_tests` reports it), never passed having
+tested nothing. CI runs as a user, so it runs them all.
 
 ## What needs what
 

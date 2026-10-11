@@ -758,8 +758,9 @@ brain_swap() {
   # shellcheck disable=SC2086  # word lists of unit names
   set -- $SWAP_JUDGE
   if [ "$DRY_RUN" = 1 ]; then
-    local tools="its operator tools too"
-    tools_has "$target" || tools="operator tools left as they are (it has none of its own)"
+    tools_adopt   # what a real run's first flip keeps (SUDO only prints here)
+    local tools="its operator tools too"   # $STAGED's: phase_brain stages them (printed, here)
+    [ "$target" = "$STAGED" ] || tools_has "$target" || tools="operator tools left as they are (it has none of its own)"
     if [ $# = 0 ]; then printf '  [dry-run] %s -> %s, %s (no brain unit to restart)\n' "$BRAIN_LINK" "$target" "$tools"; return 0; fi
     printf '  [dry-run] %s -> %s, %s; restart %s, verify %s%s\n' "$BRAIN_LINK" "$target" "$tools" \
       "$SWAP_ALSO${SWAP_ALSO:+ }$*" "$*" "${auto:+ (back to the previous venv if they do not come up)}"
@@ -793,7 +794,7 @@ brain_swap() {
   rm -f "$BRAIN_PREV"
   if brain_restart "$SWAP_ALSO" "$@"; then
     local tools="Its teaport CLI and config helper are back too"
-    [ "$TOOLS_MOVED" = 1 ] || tools="The teaport CLI and config helper were left as they were ($prev has none of its own)"
+    [ "$TOOLS_MOVED" = 1 ] || tools="The teaport CLI and config helper are still $target's ($prev has none of its own)"
     die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: $journal. $tools"
   fi
   die "rolled back to $prev, but the brain is not healthy there either — see: $journal"
@@ -847,7 +848,10 @@ phase_brain() {
 # it until that restart, which takes every brain process with it. Pruning waits until
 # after the restart, when no process can still be running an older release.
 brain_activate() {
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s -> %s, its operator tools too\n' "$BRAIN_LINK" "$STAGED"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    tools_adopt
+    printf '  [dry-run] %s -> %s, its operator tools too\n' "$BRAIN_LINK" "$STAGED"; return 0
+  fi
   brain_point_at "$STAGED"
   log "brain venv: $BRAIN_LINK -> $STAGED"
 }
