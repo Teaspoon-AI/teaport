@@ -47,7 +47,6 @@ import asyncio
 import os
 import socket
 import sys
-import tempfile
 import threading
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -59,6 +58,7 @@ from pipecat.frames.frames import EndFrame  # noqa: E402
 from teaport_brain import display, sip_server  # noqa: E402
 from teaport_brain.sip_serializer import encode_control  # noqa: E402
 from teaport_brain.sip_transport import SipConnection  # noqa: E402
+from tempdirs import short_tempdir  # noqa: E402
 
 
 # --- 3. concurrent sends on one fd ----------------------------------------------
@@ -185,7 +185,7 @@ class _Harness:
     pipeline itself stubbed out."""
 
     def __init__(self):
-        self.dir = tempfile.mkdtemp(prefix="teaport-sip-test-")
+        self.dir = short_tempdir("teaport-sip-test-")
         self.path = os.path.join(self.dir, "gw.sock")
         self.listener = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
         self.listener.bind(self.path)

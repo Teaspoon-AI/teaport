@@ -46,10 +46,11 @@ them one per subprocess rather than as pytest natives. Pytest is configured
 (`brain/pyproject.toml`) to collect only `test_suite.py`, so the scripts don't also get
 collected directly and re-run.
 
-A script that needs a temp dir takes it from `tempdirs.tempdir(prefix)`, which removes
-it (mode-000 files and read-only dirs included) when the script exits. The suite runs
-each script with a `TMPDIR` of its own and fails one that leaves a `teaport-*` entry
-behind (issue #135: thousands had piled up in a desktop's `/tmp`).
+A script that needs a temp dir takes it from `tempdirs.tempdir(prefix)` (or
+`short_tempdir` for one that binds AF_UNIX sockets), which removes it (mode-000 files
+and read-only dirs included) when the script exits. The suite runs each script with a
+`TMPDIR` of its own and fails one that leaves anything there but pytest's own basetemp
+(issue #135: thousands of temp dirs had piled up in a desktop's `/tmp`).
 
 ## What needs what
 

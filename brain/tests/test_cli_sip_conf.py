@@ -49,9 +49,7 @@ def _run(secrets, steps, stubs=""):
 
 
 def _secrets():
-    d = pathlib.Path(tempdir("teaport-cli-"))
-    os.chmod(d, 0o700)
-    return d
+    return pathlib.Path(tempdir("teaport-cli-"))
 
 
 def _temps(d):

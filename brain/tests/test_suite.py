@@ -149,7 +149,9 @@ def test_script(script, timeout):
             cwd=HERE, capture_output=True, text=True, timeout=timeout,
             env={**os.environ, "HF_HUB_OFFLINE": "1", "TMPDIR": tmp},
         )
-        leaked = sorted(n for n in os.listdir(tmp) if n.startswith("teaport-"))
+        # pytest's own basetemp, which a pytest-style script's tmp_path makes and pytest
+        # prunes itself, is the one thing allowed to stay.
+        leaked = sorted(n for n in os.listdir(tmp) if not n.startswith("pytest-of-"))
     # A script whose dependency is genuinely absent exits SKIP_EXIT (see
     # appliance.py). Skipping is what keeps the suite readable off the appliance:
     # it used to FAIL there, so `pytest brain/tests/` could never be green while
@@ -162,6 +164,6 @@ def test_script(script, timeout):
     if proc.returncode != 0:
         tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-25:])
         pytest.fail(f"{script} exited {proc.returncode}\n{tail}")
-    # Issue #135: thousands of teaport-* dirs had piled up in a desktop's /tmp, a few
-    # more every run. A dir from tempdirs.tempdir() is removed when the script exits.
+    # Issue #135: thousands of temp dirs had piled up in a desktop's /tmp, a few more
+    # every run. A dir from tempdirs.tempdir() is removed when the script exits.
     assert not leaked, f"{script} left these in $TMPDIR: {leaked} (use tempdirs.tempdir)"
