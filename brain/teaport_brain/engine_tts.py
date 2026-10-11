@@ -17,6 +17,7 @@
 import asyncio
 import functools
 import math
+import os
 import time
 from contextlib import aclosing
 from typing import AsyncGenerator
@@ -35,7 +36,7 @@ from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.tts_service import TTSService
 
 from teaport_brain import tts_text as tts_text_lead  # noqa: E402  (shared caption-lead constant)
-from teaport_brain.settings import setting
+from teaport_brain.settings import ROWS, normalize, parse, setting
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.reply_hold import PlayoutHoldFrame
 from teaport_brain.tts_text import split_clauses_ramp
@@ -188,7 +189,7 @@ def _parse_lead_s(raw: str):
 # every arm), because synthesis now runs ~30x real time and greedy's burst barely
 # overlaps STT; an interrupted reply discarded ~3-5 s of synthesis instead of
 # ~15-45 s. Hence off by default: it saves GPU work, not latency, on this hardware.
-_PACING = setting("TTS_PACING")
+# TTS_PACING itself is read once, by pacing_status().
 _LEAD_S = _parse_lead_s(setting("TTS_LEAD_S"))
 _LEAD_AUTO_FLOOR_S = 1.5
 _LEAD_AUTO_SYNTH_MULT = 2.0
@@ -384,75 +385,124 @@ def _require_context_end_hook():
                              "needs a new hook")
 
 
+# The timeout _missing_pacing_hooks hands its probe and looks for again. Any positive
+# number would do; an odd one cannot pass as a default the constructor fell back to.
+_PROBE_TIMEOUT_S = 7.25
+
+
 def _missing_pacing_hooks(cls=TTSService) -> tuple[str, ...]:
-    """"lead" pacing (_pace) leans on two PRIVATE pipecat 1.8.1 TTSService internals:
+    """"lead" pacing (_pace) leans on PRIVATE pipecat 1.8.1 TTSService internals:
     _refresh_audio_context(context_id), the keepalive that stops the audio-context
-    watchdog closing a reply mid-wait, and _stop_frame_timeout_s, that watchdog's
-    timeout. A pipecat bump that drops either would raise mid-reply on a live call
-    (issue #87). Unlike _require_context_end_hook this only reports: pacing saves GPU
-    work, and greedy is safe without either. Everything here reads the class (`cls`,
-    TTSService but for tests), not a session's instance: it is a property of the
-    installed pipecat, which pacing_status asks about once. Each entry says what
-    does not fit, for the WARNING and `teaport doctor`."""
+    watchdog (_handle_audio_context) closing a reply mid-wait, and
+    _stop_frame_timeout_s, that watchdog's timeout. A pipecat bump that drops one
+    would raise mid-reply on a live call (issue #87). Unlike _require_context_end_hook
+    this only reports: pacing saves GPU work, and greedy is safe without either. Each
+    entry says what does not fit, for the WARNING and `teaport doctor`.
+
+    It asks the installed pipecat (`cls`: TTSService but for tests), once per process
+    (pacing_status), without a session. A bare instance (no pipeline, no event loop,
+    ~0.1 ms to build) shows where the constructor keeps the timeout it is given,
+    however it stores it: a setattr loop, a helper, a decorator. Reading __init__'s
+    bytecode for the name could not see those, and called them missing. That pipecat
+    has the hooks is what this answers; that a paced wait really keeps a reply alive
+    is test_tts_pacing.py's real pipeline, which CI runs against the pipecat in
+    uv.lock, the only one a box installs."""
     import inspect
-    missing = []
-    hook = getattr(cls, "_refresh_audio_context", None)
-    # _pace calls it without await: an async one would queue no keepalive at all.
-    if (hook is None or inspect.iscoroutinefunction(hook)
-            or "context_id" not in inspect.signature(hook).parameters):
-        missing.append("no sync _refresh_audio_context(context_id)")
-    # The constructor sets it on every instance from its stop_frame_timeout_s argument.
-    # Some __init__ up the MRO (pipecat may move it into a base) must still assign it:
-    # bytecode names each attribute a function assigns, and is there even without .py
-    # sources. And that argument must default to a positive number: _pace divides it.
-    inits = [inspect.unwrap(c.__dict__["__init__"]) for c in cls.__mro__
-             if "__init__" in c.__dict__]
-    if not any("_stop_frame_timeout_s" in getattr(getattr(f, "__code__", None),
-                                                  "co_names", ()) for f in inits):
-        missing.append("no __init__ that sets _stop_frame_timeout_s")
-    params = [p for f in inits for p in _signature_params(f)
-              if p.name == "stop_frame_timeout_s"]   # the most derived one first
-    default = params[0].default if params else None
-    if not (isinstance(default, (int, float)) and not isinstance(default, bool)
-            and default > 0):
-        missing.append("no positive stop_frame_timeout_s default")
-    # Present is not enough: the watchdog must still time out on that value and still
-    # skip the keepalive. Without .py sources, skip this part, as
-    # _require_context_end_hook does.
     try:
-        source = inspect.getsource(cls._handle_audio_context)
-    except (OSError, TypeError):
-        return tuple(missing)
+        probe = type("_PacingProbe", (cls,), {"run_tts": None})(
+            stop_frame_timeout_s=_PROBE_TIMEOUT_S)
+    except Exception as e:  # noqa: BLE001 - whatever it is, lead cannot build on it
+        return (f"TTSService(stop_frame_timeout_s=...) raises {e!r}",)
+    missing = []
+    hook = getattr(probe, "_refresh_audio_context", None)
+    # _pace calls hook(context_id), without await: an async one queues no keepalive.
+    if hook is None or inspect.iscoroutinefunction(hook) or not _binds(hook, "ctx"):
+        missing.append("no sync _refresh_audio_context(context_id)")
+    if getattr(probe, "_stop_frame_timeout_s", None) != _PROBE_TIMEOUT_S:
+        missing.append("its constructor does not keep stop_frame_timeout_s in "
+                       "_stop_frame_timeout_s")
+    # Present is not enough: the watchdog must still time out on that value and skip
+    # the keepalive.
+    used = _names_used(cls, getattr(cls, "_handle_audio_context", None))
     missing += [f"its watchdog (_handle_audio_context) no longer uses {name}"
                 for name in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE")
-                if name not in source]
+                if name not in used]
     return tuple(missing)
 
 
-def _signature_params(f):
+def _binds(f, *args) -> bool:
+    """Whether f(*args) matches f's signature."""
     import inspect
     try:
-        return inspect.signature(f).parameters.values()
-    except (TypeError, ValueError):  # a C slot such as object.__init__
-        return ()
+        inspect.signature(f).bind(*args)
+    except (TypeError, ValueError):
+        return False
+    return True
+
+
+def _names_used(cls, func) -> set[str]:
+    """Every attribute and global name `func`'s bytecode reads (bytecode is there
+    without .py sources), with the functions it reaches: those nested in it (closures,
+    comprehensions), the one a decorator wraps (with functools.wraps or without: a
+    closure cell) and, transitively, the methods of `cls` it names, such as a helper
+    it calls on self. Not the source text of `func` alone, which called a name moved
+    into any of those missing."""
+    import inspect
+    import types
+    names, seen, todo = set(), set(), [func]
+    while todo:
+        f = todo.pop()
+        f = getattr(f, "__func__", f)  # a bound, static or class method
+        code = getattr(f, "__code__", None)
+        if not isinstance(code, types.CodeType) or code in seen:
+            continue
+        seen.add(code)
+        todo.append(getattr(f, "__wrapped__", None))
+        for cell in getattr(f, "__closure__", None) or ():
+            try:
+                todo.append(cell.cell_contents)
+            except ValueError:  # a cell not filled yet
+                pass
+        codes = [code]
+        while codes:
+            c = codes.pop()
+            names.update(c.co_names)
+            codes += [k for k in c.co_consts if isinstance(k, types.CodeType)]
+            todo += [inspect.getattr_static(cls, n, None) for n in c.co_names]
+    return names
 
 
 @functools.cache
 def pacing_status() -> dict:
-    """TTS_PACING as configured, the pacing sessions actually run, and what "lead"
-    found missing from pipecat when it fell back to "greedy" (issue #138), with the
-    pipecat version that was checked. Worked out once per process (the startup TTS
-    warm-up asks first): every session's pacing, its WARNING, /health and, through
-    /health, `teaport doctor` all read this one answer. Shared, so "missing" is a
-    tuple."""
+    """TTS_PACING as set, the pacing sessions actually run, and why the two differ
+    (issue #138). Worked out once per process (the startup TTS warm-up asks first):
+    every session's pacing, its WARNING, /health and, through /health, `teaport
+    doctor` and the config page all read this one answer. Shared, so "missing" is a
+    tuple.
+
+      configured  what the operator set: the schema's spelling of a value that reads
+                  ("LEAD" is "lead"), their own text for one that does not ("fast"),
+                  the default when unset
+      effective   what sessions run, "greedy" or "lead"
+      invalid     why `configured` is not a pacing, or None. setting() then warned
+                  once and fell back to the default, a WARNING that scrolls away.
+      missing     what "lead" found missing from pipecat, falling back to "greedy"
+      pipecat     the pipecat version checked
+
+    So configured != effective exactly when the brain does not pace as set."""
     from importlib.metadata import PackageNotFoundError, version
-    missing = _missing_pacing_hooks() if _PACING == "lead" else ()
+    row = ROWS["TTS_PACING"]
+    text = normalize(row, os.environ.get("TTS_PACING"))
+    pacing = setting("TTS_PACING")
+    invalid = parse(row, text)[1] if text else None
+    missing = _missing_pacing_hooks() if pacing == "lead" else ()
     try:
         pipecat = version("pipecat-ai")
     except PackageNotFoundError:
         pipecat = "unknown"
-    return {"configured": _PACING, "effective": "greedy" if missing else _PACING,
-            "missing": missing, "pipecat": pipecat}
+    return {"configured": text if invalid else pacing,
+            "effective": "greedy" if missing else pacing,
+            "invalid": invalid, "missing": missing, "pipecat": pipecat}
 
 
 class EngineTTSService(TTSService):
@@ -698,8 +748,9 @@ class EngineTTSService(TTSService):
         if self._pacing != "lead":
             return 0.0
         target = self._lead_target(clause)
-        # pacing_status vouches for the class default; an instance built with a bad
-        # value still must not raise mid-reply (issue #87): refresh every 0.5 s then.
+        # pacing_status vouches that pipecat keeps the timeout it is given; that value,
+        # TTS_STOP_FRAME_TIMEOUT_S, is bounded on the config page, not when it is read.
+        # A bad one still must not raise mid-reply (issue #87): refresh every 0.5 s then.
         timeout = getattr(self, "_stop_frame_timeout_s", None)
         step = (min(1.0, timeout / 2) if isinstance(timeout, (int, float))
                 and not isinstance(timeout, bool) and timeout > 0 else 0.5)
