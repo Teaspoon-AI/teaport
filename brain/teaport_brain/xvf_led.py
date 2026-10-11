@@ -40,6 +40,7 @@ import ctypes
 import fcntl
 import glob
 import json
+import math
 import os
 import struct
 import threading
@@ -60,6 +61,9 @@ MARKER = "/run/teaport-busy-lamp/saved.json"
 STATUS_OK, STATUS_RETRY = 0, 64
 TIMEOUT_MS = 500
 READ_ATTEMPTS = 20
+# A chip that fails, works and fails again is logged at most once this often (the
+# failure, and its "working again" with it): a flaky one must not fill the journal.
+LOG_QUIET_SECS = 300.0
 
 ENABLED = setting("TEAPORT_BUSY_LAMP") == "auto"
 
@@ -172,7 +176,8 @@ def show(dev, effect: int, color: int) -> None:
 # The busy lamp here (in the brain) and the mic's echo suppression (xvf_echo.py, in the
 # local audio bridge) keep their settings on the chip the same way, from worker threads:
 # the chip found anew for each change, what was known of it forgotten when its node
-# changes, one change at a time, and a failure logged once.
+# changes, one change at a time, and a failure logged once (and at most once per
+# LOG_QUIET_SECS).
 #
 # Two processes, one chip, and no lock between them: the brain's lamp and the bridge's
 # echo suppression can send their transfers interleaved. Each read or write is one
@@ -187,15 +192,19 @@ class ChipSetting:
     (a replug, a firmware reset) is under a new node, and what was known of the old one
     is forgotten (_forget). Changes run one at a time: one cancelled mid-write must
     finish before the next looks at what it left. It never raises: a failure is logged
-    once, until the chip has been reached again (which is logged too), and the change
-    returns False so the caller can try again later."""
+    once, until the chip has been reached again (which is logged too), and not again
+    within LOG_QUIET_SECS of the last one logged; the change returns False so the
+    caller can try again later."""
 
     LOG = "XVF3800"  # what the log lines are about
 
-    def __init__(self, find=find_node, opener=UsbfsDevice):
+    def __init__(self, find=find_node, opener=UsbfsDevice, clock=time.monotonic):
         self._find, self._opener = find, opener
+        self._clock = clock
         self.node = None       # the device's usbfs node when last looked
         self._failing = False  # an error was logged and the chip has not been reached since
+        self._logged_at = -math.inf  # when a failure was last logged (clock())
+        self._unlogged = 0     # failures since then that were not
         self._lock = threading.Lock()
 
     def _forget(self) -> None:
@@ -220,11 +229,17 @@ class ChipSetting:
             except Exception as e:  # noqa: BLE001 — a setting must never fail a call or the mic
                 self._failed()
                 if not self._failing:
+                    now = self._clock()
+                    if now - self._logged_at < LOG_QUIET_SECS:
+                        self._unlogged += 1  # a flaky chip: said a moment ago
+                        return False
                     what = doing() if callable(doing) else doing
                     logger.warning(f"{self.LOG}: could not {what}: {e!r}"
                                    + (" (needs the installer's udev rule and the teaport-hw group)"
-                                      if isinstance(e, PermissionError) else ""))
-                    self._failing = True
+                                      if isinstance(e, PermissionError) else "")
+                                   + (f" ({self._unlogged} more failures since the last one "
+                                      "logged)" if self._unlogged else ""))
+                    self._failing, self._logged_at, self._unlogged = True, now, 0
                 return False
             if reached and self._failing:
                 if again is None:
@@ -243,8 +258,8 @@ class BusyLamp(ChipSetting):
     LOG = "busy lamp"
 
     def __init__(self, find=find_node, opener=UsbfsDevice, color: int = COLOR,
-                 enabled: bool = ENABLED, marker: str = MARKER):
-        super().__init__(find, opener)
+                 enabled: bool = ENABLED, marker: str = MARKER, clock=time.monotonic):
+        super().__init__(find, opener, clock)
         self.color = color
         self.enabled = enabled
         self.marker = marker

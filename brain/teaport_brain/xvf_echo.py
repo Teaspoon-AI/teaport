@@ -31,8 +31,9 @@
 #     HYSTERESIS_DB. The brain's echo guard (echo_guard.py) takes what leaks either way.
 #
 # Written at run time only (never SAVE_CONFIGURATION): a replug or a chip reset brings
-# its saved values back. So when the bridge opens the card it reads the chip's AGC and
-# suppressor back and writes again whatever differs, a new node or not. Each set is
+# its saved values back. So the bridge reads the chip's AGC and suppressor back when it
+# opens the card and every ECHO_CHECK_SECS while it is open (local_audio), and writes
+# again whatever differs, a new node or not; a chip found reset is logged. Each set is
 # written whole and read back. The transport and its upkeep are xvf_led's (USB vendor
 # control transfers on endpoint 0, the PP resource 17; xvf_led.ChipSetting): no device,
 # no Linux, nothing done; never raises; a failure is logged once until it works again.
@@ -79,24 +80,27 @@ class EchoSuppression(xvf_led.ChipSetting):
     def __init__(self, find=xvf_led.find_node, opener=xvf_led.UsbfsDevice,
                  enabled: bool = ECHO_CONTROL, gain_db: float = MIC_GAIN_DB,
                  clock=time.monotonic):
-        super().__init__(find, opener)
+        super().__init__(find, opener, clock)
         self.enabled = enabled
         self.gain = 10 ** (gain_db / 20)
-        self._clock = clock
         self.own = None        # that chip's own suppressor values, read when first seen
         self.shown = None      # the suppressor set it holds as last written or read
-        # When `shown` last changed (clock()): audio captured before then was made under
-        # what the chip held before.
+        # When `shown` last changed, or the AGC was set again (clock()): audio captured
+        # before then was made under what the chip held before.
         self.shown_at = -math.inf
+        # Times a read-back found the chip no longer holding what was set (a reset under
+        # the same node): the meter drops what it measured since (local_audio).
+        self.resets = 0
 
     def apply(self, duplex, verify: bool = False) -> bool:
         """The suppressor off (`duplex`, or a function returning it, read once the lock
         is held: the meter's verdict as it is when the write runs, not as it was queued)
         or the chip's own. `verify`: read the chip back first instead of trusting what
-        was last written (a card opening: the chip may have reset to its saved values
-        without re-enumerating). True once the chip holds it (or there is no chip, or the
-        bridge is to leave it alone); False on an error (logged once). Blocking: a few
-        ms of USB."""
+        was last written, as the bridge does when it opens the card and every
+        ECHO_CHECK_SECS while it is open: the chip may have reset to its saved values
+        without re-enumerating (counted in `resets`, and logged). True once the chip
+        holds it (or there is no chip, or the bridge is to leave it alone); False on an
+        error (logged once). Blocking: a few ms of USB."""
         if not self.enabled:
             return True
         asked = None
@@ -111,7 +115,9 @@ class EchoSuppression(xvf_led.ChipSetting):
             return True
 
         def doing() -> str:
-            return "set the suppressor" + {True: " off", False: " to the chip's own"}.get(asked, "")
+            way = {True: " off", False: " to the chip's own"}.get(asked, "")
+            return f"check the chip holds the suppressor{way}" if verify \
+                else f"set the suppressor{way}"
         return self._run(doing, change)
 
     def holds(self, duplex: bool) -> bool:
@@ -139,18 +145,27 @@ class EchoSuppression(xvf_led.ChipSetting):
         # What the chip holds is read back when it is not known (a chip first seen, a
         # change that failed part-way) or when asked to check it.
         if self.shown is None or verify:
+            believed = self.shown
             found = tuple((cmd, _get(dev, cmd)) for cmd, _ in FACTORY)
+            agc = self._agc(dev)
+            if believed is not None and (found != believed or not self._agc_fixed(agc)):
+                self.resets += 1
+                logger.warning(f"{self.LOG}: the chip no longer held what was set "
+                               f"(suppressor {found}, AGC on={agc[0]} gain={agc[1]:g}): "
+                               "it was reset; setting it again")
             if self.own is None:
                 self.own = FACTORY if found == DUPLEX else found
             self._show(found)
             # The AGC off at a fixed gain (see the module), unless it already is.
-            if not self._agc_fixed(self._agc(dev)):
+            if not self._agc_fixed(agc):
                 _set(dev, PP_AGCONOFF, 0)
                 _set(dev, PP_AGCGAIN, self.gain, "<f")
                 on, gain = self._agc(dev)
                 if not self._agc_fixed((on, gain)):
                     raise OSError(f"AGC read back on={on} gain={gain:g}, "
                                   f"wrote off at {self.gain:g}")
+                # What was captured before was lifted by the AGC: not the bare echo.
+                self.shown_at = self._clock()
         want = DUPLEX if duplex else self.own
         if want != self.shown:
             self._show(None)  # part-written until it reads back whole

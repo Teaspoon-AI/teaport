@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -367,11 +368,11 @@ def _fake_card(monkeypatch, capture_script):
     # No real XVF3800: run on the box, the bridge would set the live chip. A test that
     # wants a chip passes its own fake to the Card.
     monkeypatch.setattr(la, "echo_control", lambda volume: (None, None))
-    return flag
 
     async def unknown():
         return None                              # a brain that cannot say (no /talk/status here)
     monkeypatch.setattr(la, "talk_active", unknown)
+    return flag
 
 
 async def _talk(on_connect):
@@ -1763,8 +1764,12 @@ def test_opening_the_card_reads_the_chip_back_and_sets_the_verdict(monkeypatch):
     async def opened():
         card = la.Card(la.FaceTap(send=lambda d: None, features=lambda: {}),
                        echo=echo, meter=meter)
+        # Only the opening sets the chip here: the meter's periodic check would too.
+        card._meter = lambda mono: None
         try:
+            t0 = time.monotonic()
             await card.open()
+            return card._echo_check - t0
         finally:
             await card.close()
 
@@ -1773,8 +1778,11 @@ def test_opening_the_card_reads_the_chip_back_and_sets_the_verdict(monkeypatch):
     node = dev.node
     dev.replug()                               # factory settings, AGC on...
     dev.node = node                            # ...under the same node
-    asyncio.run(opened())
+    next_check = asyncio.run(opened())
     assert dev.state() == xvf_echo.DUPLEX and dev.agc()[0] == 0
+    assert echo.resets == 1
+    # Just read back: the next check is a whole ECHO_CHECK_SECS away, not at once.
+    assert la.ECHO_CHECK_SECS - 5 < next_check <= la.ECHO_CHECK_SECS + 5, next_check
 
 
 def test_the_meter_hears_a_conversation_only_while_one_is_on(monkeypatch):

@@ -417,6 +417,7 @@ class _CardLike:
     def __init__(self, play, meter, echo=None):
         self.play, self.meter, self.echo = play, meter, echo
         self._cap_clock, self._echo_check = local_audio.CaptureClock(), 0.0
+        self._resets = getattr(echo, "resets", 0)
         self._gap_logged, self._gap_log_at = None, 0.0
         self.conversing = True
 
@@ -424,7 +425,7 @@ class _CardLike:
 class _Holds:
     """An echo suppression whose chip holds `held` (True: the suppressor off), since
     for ever."""
-    shown_at = -math.inf
+    shown_at, resets = -math.inf, 0
 
     def __init__(self, held=True):
         self.held = held
@@ -639,6 +640,90 @@ def test_audio_captured_before_the_suppressor_let_go_is_not_the_echo():
     assert all(n == 0 for t, n in counts.items() if t <= before), counts
     # ...and the bare echo after.
     assert counts[3.0] > 0, counts
+
+
+def test_the_suppressor_is_given_time_to_let_go():
+    # Each chunk's capture start against whether it counted as the bare echo, around a
+    # switch to the suppressor off at t=1: the chip lets go of the echo a moment after
+    # it reads back off, so a chunk captured just after is not the bare echo yet.
+    clock = Clock()
+    echo = _echo(FakePP(), clock=clock)
+    assert echo.apply(False)
+    play = local_audio.Playback(lambda b: None, clock=clock)
+    seen = []
+
+    class Meter:
+        duplex, gap, coupling = True, None, []
+
+        def feed(self, mic, ref, quiet, conversing, suppressor_off):
+            seen.append((start[0], suppressor_off))
+            return False
+    card = _CardLike(play, Meter(), echo)
+    card._echo_check = 1e9
+    card._cap_clock = _LateCapture(0.0)
+    chunk = np.zeros(local_audio.CHUNK_FRAMES, dtype="<i2")
+    start = [0.0]
+    real = local_audio.time.monotonic
+    local_audio.time.monotonic = clock
+    try:
+        for i in range(90, 140):               # chunks captured from t=0.88 on, 10 ms apart
+            clock.t = i / 100
+            if i == 100:
+                assert echo.apply(True)        # reads back off at t=1
+            start[0] = round(clock.t - 0.02, 3)
+            card._meter(chunk)
+    finally:
+        local_audio.time.monotonic = real
+    assert not any(bare for t, bare in seen if t <= 1.05), seen
+    assert all(bare for t, bare in seen if t >= 1.2), seen
+
+
+def test_the_agc_set_again_restarts_the_bare_echo():
+    clock = Clock()
+    dev = FakePP()
+    echo = _echo(dev, clock=clock)
+    assert echo.apply(True)
+    dev.regs[E.PP_AGCONOFF] = struct.pack("<i", 1)   # the AGC back on, the suppressor not
+    clock.t = 5.0
+    assert echo.apply(True, verify=True)
+    assert dev.agc()[0] == 0 and echo.shown_at == 5.0
+    assert echo.resets == 1
+
+
+async def _reset_found(meter):
+    dev = FakePP()
+    echo = _echo(dev)
+    assert echo.apply(True)
+    clock = Clock()
+    card = _CardLike(local_audio.Playback(lambda b: None, clock=clock), meter, echo)
+    card._echo_check = 1e9
+    node = dev.node
+    dev.replug()                               # reset under the open card
+    dev.node = node
+    meter.coupling.extend([-30.0] * 60)        # measured since: the suppressor's work
+    with _Warnings() as lines:
+        assert echo.apply(True, verify=True)   # the periodic check
+        assert echo.apply(True, verify=True)   # and the next one: holds again
+    card._meter(np.zeros(local_audio.CHUNK_FRAMES, dtype="<i2"))
+    return echo, lines
+
+
+def test_a_reset_found_by_a_check_is_logged_and_the_meter_forgets_its_echo():
+    meter = E.EchoMeter(clock=Clock())
+    echo, lines = asyncio.run(_reset_found(meter))
+    assert echo.resets == 1
+    assert len(lines) == 1 and "reset" in lines[0], lines
+    assert len(meter.coupling) == 0
+
+
+def test_a_failed_check_is_said_to_be_one():
+    dev = FakePP()
+    echo = _echo(dev)
+    assert echo.apply(True)
+    dev.fail = OSError(5, "Input/output error")
+    with _Warnings() as lines:
+        assert not echo.apply(True, verify=True)
+    assert len(lines) == 1 and "could not check the chip holds the suppressor off" in lines[0], lines
 
 
 async def _reset_under_an_open_card():

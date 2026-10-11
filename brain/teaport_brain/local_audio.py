@@ -991,6 +991,8 @@ class Card:
         self.echo = echo
         self.meter = meter
         self._echo_check = 0.0
+        # The chip resets the meter has seen (EchoSuppression.resets).
+        self._resets = echo.resets if echo is not None else 0
         self._gap_logged: float | None = None
         self._gap_log_at = 0.0
         # When the captured frames were captured, for the meter.
@@ -1217,6 +1219,11 @@ class Card:
         # Not the bot talking: silence, or the thinking sound (it neither counts as the
         # bot's speech nor leaves the room quiet).
         quiet = ref is None and self.play.echo_free(now)
+        if echo is not None and echo.resets != self._resets:
+            # A read-back found the chip reset: what the meter took for the bare echo
+            # since then was the chip's own suppressor at work.
+            self._resets = echo.resets
+            meter.coupling.clear()
         # The echo is measured only from audio captured while the chip held its
         # suppressor off: not the verdict until the write has landed (never, with no
         # chip), and not a chunk captured before it landed, which arrives after it.

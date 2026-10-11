@@ -223,8 +223,9 @@ def test_off_never_touches_the_ring():
 
 
 def test_an_error_is_logged_once_and_never_raised():
+    clock = [0.0]
     dev = FakeXvf(fail=PermissionError(13, "Permission denied"))
-    lamp = _lamp(dev)
+    lamp = _lamp(dev, clock=lambda: clock[0])
     with _Warnings() as lines:
         for _ in range(5):
             assert lamp.set(xvf_led.BUSY) is False
@@ -233,10 +234,52 @@ def test_an_error_is_logged_once_and_never_raised():
     dev.fail = None                         # the rule landed: it works, and says so
     assert lamp.set(xvf_led.BUSY) and dev.look() == (xvf_led.EFFECT_SINGLE, RED)
     dev.fail = OSError(5, "Input/output error")
+    clock[0] += xvf_led.LOG_QUIET_SECS
     with _Warnings() as lines:
         lamp.set(xvf_led.IDLE)
         lamp.set(xvf_led.IDLE)
-    assert len(lines) == 1, lines           # a new outage is logged again, once
+    assert len(lines) == 1, lines           # a new outage, minutes on, is logged again, once
+
+
+def _messages(level="INFO"):
+    lines = []
+    return lines, logger.add(lambda m: lines.append(m.record["message"]), level=level)
+
+
+def test_the_recovery_line_is_the_lamps_own():
+    dev = FakeXvf(fail=OSError(5, "Input/output error"))
+    lamp = _lamp(dev)
+    lines, sink = _messages()
+    try:
+        assert lamp.set(xvf_led.BUSY) is False
+        dev.fail = None
+        assert lamp.set(xvf_led.BUSY)
+    finally:
+        logger.remove(sink)
+    assert lines == ["busy lamp: could not set the XVF3800 ring busy: "
+                     "OSError(5, 'Input/output error')",
+                     "busy lamp: working again (busy)"], lines
+
+
+def test_a_flaky_ring_is_logged_once_per_quiet_spell():
+    clock = [0.0]
+    dev = FakeXvf()
+    lamp = _lamp(dev, clock=lambda: clock[0])
+    lines, sink = _messages()
+    try:
+        for state in (xvf_led.BUSY, xvf_led.IDLE) * 5:  # fails, works, fails, works...
+            dev.fail = OSError(5, "Input/output error")
+            assert lamp.set(state) is False
+            dev.fail = None
+            assert lamp.set(state)
+            clock[0] += 10
+        assert len(lines) == 2 and "working again (busy)" in lines[1], lines
+        clock[0] += xvf_led.LOG_QUIET_SECS     # minutes on, still flaky: said again
+        dev.fail = OSError(5, "Input/output error")
+        assert lamp.set(xvf_led.BUSY) is False
+    finally:
+        logger.remove(sink)
+    assert len(lines) == 3 and "9 more failures" in lines[2], lines
 
 
 def test_a_bad_status_is_an_error_not_a_hang():
