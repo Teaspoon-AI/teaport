@@ -19,6 +19,7 @@
 #
 # Run: python test_xvf_echo.py
 #
+import asyncio
 import math
 import os
 import random
@@ -343,17 +344,123 @@ def test_a_silent_speaker_decides_nothing():
 
 # ---------------------------------------------------------------- the bridge's taps
 
-def test_the_playback_level_is_given_as_it_is_heard_and_before_the_volume():
+def _tone(secs=1.0):
+    return (np.sin(np.arange(int(24000 * secs)) / 10) * 10000).astype("<i2").tobytes()
+
+
+def test_the_playback_level_is_looked_up_by_when_it_was_heard_and_before_the_volume():
     clock = Clock()
-    written = []
-    play = local_audio.Playback(written.append, clock=clock, gain=lambda: 0.01)
-    tone = (np.sin(np.arange(24000) / 10) * 10000).astype("<i2").tobytes()  # 1 s at 24 kHz
-    play.push(tone, voiced=True)
-    play.pump()                                # LEAD_SECS handed to the card
-    assert play.heard_due(clock.t - 0.001) is None
-    clock.t += 0.06
-    got = play.heard_due(clock.t)
-    assert got is not None and -20 < got < -6, got   # the tone's own level, not -40 dB less
+    play = local_audio.Playback(lambda b: None, clock=clock, gain=lambda: 0.01)
+    play.push(_tone(), voiced=True)
+    play.pump()                                # LEAD_SECS handed to the card, from t=0
+    db, voiced = play.heard_between(0.0, 0.02)
+    assert voiced and -20 < db < -6, db        # the tone's own level, not 40 dB less
+    assert play.heard_between(1.0, 1.02) == (None, False)   # nothing played then
+
+
+def test_the_thinking_sound_is_not_the_bot_talking():
+    clock = Clock()
+    play = local_audio.Playback(lambda b: None, clock=clock)
+    play.push(_tone(0.5), voiced=False)        # uncaptioned audio: the typing bed
+    play.pump()
+    db, voiced = play.heard_between(0.0, 0.1)
+    assert db is not None and not voiced
+
+
+def test_playback_levels_are_not_kept_for_ever():
+    clock = Clock()
+    play = local_audio.Playback(lambda b: None, clock=clock)
+    for _ in range(500):                       # 10 s of silence fed, nobody asking
+        clock.t += 0.02
+        play.pump()
+    assert len(play._heard) <= local_audio.HEARD_KEEP_SECS * 50 + 10
+
+
+class _CardLike:
+    """What Card._meter uses of a Card."""
+    _meter = local_audio.Card._meter
+
+    def __init__(self, play, meter, echo=None):
+        self.play, self.meter, self.echo = play, meter, echo
+        self._cap_frames, self._cap_t0, self._echo_check = 0, None, 0.0
+        self.conversing = True
+
+
+def test_a_burst_of_capture_is_placed_by_when_it_was_captured():
+    # arecord hands over ~125 ms at once: the chunks of a burst were captured one after
+    # another, not all in the instant they were read.
+    clock = Clock()
+    play = local_audio.Playback(lambda b: None, clock=clock)
+    seen = []
+
+    class Meter:
+        duplex = True
+
+        def feed(self, mic, ref, quiet, conversing):
+            seen.append(ref)
+            return False
+    card = _CardLike(play, Meter())
+    real = local_audio.time.monotonic
+    local_audio.time.monotonic = clock
+    try:
+        chunk = np.zeros(local_audio.CHUNK_FRAMES, dtype="<i2")
+        clock.t = 0.125                        # the first burst lands
+        for _ in range(6):
+            card._meter(chunk)
+        play.push(_tone(0.08), voiced=True)    # the bot starts at 0.125...
+        play.pump()
+        clock.t = 0.25                         # ...and the next burst arrives
+        for _ in range(6):
+            card._meter(chunk)
+    finally:
+        local_audio.time.monotonic = real
+    # The first burst's chunks were captured before the bot spoke; of the second, the
+    # ones captured while the tone played see it, and the rest see silence again.
+    assert all(r is None for r in seen[:6]), seen
+    heard = [i for i, r in enumerate(seen) if r is not None]
+    assert heard and heard[0] == 6 and 2 <= len(heard) <= 4, seen
+    assert heard == list(range(6, 6 + len(heard))) and seen[-1] is None, seen
+
+
+async def _retry():
+    dev = FakePP(fail=OSError("usb gone"))
+    echo = _echo(dev)
+    assert not echo.apply(True)                # the open's write failed
+    dev.fail = None
+    clock = Clock()
+    play = local_audio.Playback(lambda b: None, clock=clock)
+    meter = E.EchoMeter(clock=clock)
+    card = _CardLike(play, meter, echo)
+    card._meter(np.zeros(local_audio.CHUNK_FRAMES, dtype="<i2"))
+    for _ in range(50):
+        await asyncio.sleep(0.01)
+        if echo.holds(True):
+            break
+    assert echo.holds(True) and dev.state() == E.DUPLEX
+
+
+def test_a_chip_write_that_did_not_take_is_tried_again():
+    asyncio.run(_retry())
+
+
+def test_a_muted_mic_is_not_measured():
+    room = Room(coupling=-14, voice=-12)
+    room.conversation()
+    gap = room.meter.gap
+    for _ in range(500):                       # 10 s of digital silence, bot talking
+        room.meter.feed(-180.0, -20.0, False)
+    for _ in range(500):                       # and with the bot quiet
+        room.meter.feed(-180.0, None, True)
+    assert room.meter.gap == gap and -60 < E._pct(room.meter.floor, E.FLOOR_PCT) < -40
+
+
+def test_a_voice_between_conversations_is_not_the_users():
+    room = Room(coupling=-14, voice=-12)
+    room.conversation()
+    gap = room.meter.gap
+    for _ in range(1500):                      # 30 s of a loud TV, nobody conversing
+        room.meter.feed(room._j(0.0), None, True, conversing=False)
+    assert room.meter.gap == gap
 
 
 def test_volume_gain_in_db():

@@ -2133,7 +2133,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Let the bridge tune the XVF3800 so it hears you while the bot is talking: the chip's automatic gain is replaced by a fixed gain, and its echo suppressor stays off unless the bot's echo comes too close to your voice. Off: the chip keeps its own settings."
+help = "Let the bridge tune the XVF3800 so it hears you while the bot is talking: the chip's automatic gain is replaced by a fixed gain, and its echo suppressor stays off unless the bot's echo comes too close to your voice. Off: the bridge leaves the chip alone (one it already tuned keeps that until it is replugged)."
 
 [[settings]]
 name = "LOCAL_AUDIO_MIC_GAIN_DB"

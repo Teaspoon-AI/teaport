@@ -105,6 +105,13 @@ class EchoSuppression:
         with self._lock:
             return self._apply(duplex() if callable(duplex) else duplex)
 
+    def holds(self, duplex: bool) -> bool:
+        """The chip holds what `duplex` asks, as last written (a chip that was never
+        reached, or failed, does not)."""
+        if self.own is None:
+            return False
+        return self.shown == (DUPLEX if duplex else self.own)
+
     def _apply(self, duplex: bool) -> bool:
         name = "off (the user is heard over the bot)" if duplex else "the chip's own"
         try:
@@ -148,6 +155,7 @@ class EchoSuppression:
 # --- the meter ---
 
 BLOCK_CHUNKS = 5             # 20 ms chunks per measured block (100 ms)
+MUTED_DB = -120.0            # a block this quiet is a muted mic (digital silence): skipped
 REF_VOICED_DB = -70.0        # a block of playback this loud is the bot talking
 VOICE_OVER_FLOOR_DB = 12.0   # a block with the bot quiet this far over the room's floor
                              # is someone talking
@@ -180,9 +188,10 @@ class EchoMeter:
     """How far the user's voice stands above the bot's echo at the mic (gap), and from
     it whether the suppressor should be off (duplex).
 
-    Fed every capture chunk with the mic's level, the level of the playback heard at
-    that moment (as synthesized, before the volume; None when nothing was due), and
-    whether the bot is quiet; `gain_db` is the volume's gain now. In 100 ms blocks:
+    Fed every capture chunk with the mic's level, the level of the bot's speech the
+    speaker played while it was captured (as synthesized, before the volume; None when
+    there was none), whether the speaker was quiet, and whether a conversation is on;
+    `gain_db` is the volume's gain now. In 100 ms blocks:
 
       * the bot talking: the echo's COUPLING, mic minus playback. Its 30th percentile:
         the user talking over the bot raises some blocks and not the low ones -- over a
@@ -192,8 +201,9 @@ class EchoMeter:
         (so after RECHECK_SECS on, it is turned off to measure again).
       * the bot talking: the playback's loud level (90th percentile); the echo's loud
         level is that plus the coupling.
-      * the bot quiet: the room's floor (20th percentile), and the user's loud level
-        (90th percentile of the blocks VOICE_OVER_FLOOR_DB over it).
+      * the bot quiet: the room's floor (20th percentile), and, in a conversation, the
+        user's loud level (90th percentile of the blocks VOICE_OVER_FLOOR_DB over it;
+        between conversations a voice in the room may be the TV).
 
     gap = the voice's loud level - the echo's. The playback is kept as synthesized and
     the volume applied when the gap is taken, so a volume change moves the gap at once;
@@ -206,7 +216,7 @@ class EchoMeter:
         self._clock = clock
         self.duplex = True
         self._since = None
-        self._mic, self._ref, self._quiet = [], [], True
+        self._mic, self._ref, self._quiet, self._talk = [], [], True, True
         self.coupling = collections.deque(maxlen=COUPLING_KEEP)
         self.ref = collections.deque(maxlen=REF_KEEP)
         self.voice = collections.deque(maxlen=VOICE_KEEP)
@@ -214,21 +224,25 @@ class EchoMeter:
         self.gap: float | None = None
         self.recheck = False   # the last change was a recheck, not a measured verdict
 
-    def feed(self, mic_db: float, ref_db: float | None, bot_quiet: bool) -> bool:
+    def feed(self, mic_db: float, ref_db: float | None, bot_quiet: bool,
+             conversing: bool = True) -> bool:
         """One capture chunk. True when the verdict (duplex) changed with it."""
         self._mic.append(mic_db)
         if ref_db is not None:
             self._ref.append(ref_db)
         self._quiet = self._quiet and bot_quiet
+        self._talk = self._talk and conversing
         if len(self._mic) < BLOCK_CHUNKS:
             return False
         mic = _power_mean_db(self._mic)
-        ref = _power_mean_db(self._ref) if self._ref else None
-        quiet = self._quiet
-        self._mic, self._ref, self._quiet = [], [], True
-        return self._block(mic, ref, quiet)
+        ref = _power_mean_db(self._ref) if len(self._ref) == BLOCK_CHUNKS else None
+        quiet, talk = self._quiet, self._talk
+        self._mic, self._ref, self._quiet, self._talk = [], [], True, True
+        if mic < MUTED_DB:
+            return False
+        return self._block(mic, ref, quiet, talk)
 
-    def _block(self, mic: float, ref: float | None, quiet: bool) -> bool:
+    def _block(self, mic: float, ref: float | None, quiet: bool, talk: bool = True) -> bool:
         gain = self._gain_db()
         if ref is not None and ref + gain > REF_VOICED_DB:
             self.ref.append(ref)
@@ -236,7 +250,8 @@ class EchoMeter:
                 self.coupling.append(mic - (ref + gain))
         elif quiet:
             self.floor.append(mic)
-            if len(self.floor) >= VOICE_MIN and mic > _pct(self.floor, FLOOR_PCT) + VOICE_OVER_FLOOR_DB:
+            if (talk and len(self.floor) >= VOICE_MIN
+                    and mic > _pct(self.floor, FLOOR_PCT) + VOICE_OVER_FLOOR_DB):
                 self.voice.append(mic)
         if (len(self.coupling) < COUPLING_MIN or len(self.voice) < VOICE_MIN
                 or len(self.ref) < VOICE_MIN):
