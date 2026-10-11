@@ -15,10 +15,12 @@
 # --only brain is how a brain change reaches an appliance that is already installed:
 # `git pull && ./install.sh --only brain` from a checkout, or the one-liner with
 # `--only brain` appended. It builds a NEW venv from brain/uv.lock beside the live one
-# (the brain keeps serving meanwhile), self-checks it, swaps it in, restarts the one
-# brain unit (teaport-brain: Talk and the phone line's front-end both live in it) and
-# checks it comes back — rolling back on its own if it does not. No EULA, no system packages, no engine download, no credential prompts, no
-# unit or env rendering: engine, agent, front door, bridge and SIP are left as they are.
+# (the brain keeps serving meanwhile), self-checks it, swaps it in with the teaport CLI
+# and config helper it was built with (a rollback puts the old ones back), restarts the
+# one brain unit (teaport-brain: Talk and the phone line's front-end both live in it) and
+# checks it comes back — rolling back on its own if it does not. No EULA, no system
+# packages, no engine download, no credential prompts, no unit or env rendering:
+# engine, agent, front door, bridge and SIP are left as they are.
 # (One exception, once: a box that still has the retired teaport-sip-brain unit has it
 # stopped before the swap and removed after it — sip_brain_detach / sip_brain_retire —
 # since the new brain serves the phone line itself; its drop-in tuning moves to brain.env.)
@@ -435,7 +437,7 @@ BRAIN_LEGACY="$PREFIX/venv.pre-uv"
 # read-only callers like this one).
 SRC_DIR=""
 # What --only brain installs from a checkout, and so all its freshness check looks at:
-# the brain (brain_stage), the CLI (brain_install_tools), the busy lamp's udev rule
+# the brain (brain_stage), the CLI (brain_stage_tools), the busy lamp's udev rule
 # (install_busy_lamp) — and install.sh itself. The installer is not just the runner: how
 # the brain is built lives in it (uv's flags and pin: a checkout one commit behind the
 # --reinstall-package fix installed the PREVIOUS build's code under the new revision),
@@ -590,7 +592,9 @@ brain_stage() {
   # the live venv against this record, so a later hand `pip install` into it — the drift
   # the per-install venv exists to end — shows up as drift instead of going unnoticed.
   # -I (isolated) so `python -m` imports the venv's teaport_brain and nothing else — not a
-  # PYTHONPATH the operator has exported (a dev checkout's, say), not the cwd.
+  # PYTHONPATH the operator has exported (a dev checkout's, say), not the cwd. A venv
+  # already damaged (two records of one package, a nameless one) is not recorded, and so
+  # is discarded here.
   if [ -f "$src/teaport_brain/lockcheck.py" ]; then
     ("$STAGED/bin/python" -I -m teaport_brain.lockcheck record "$STAGED/teaport-build.json" \
        --source "$src" --revision "${BRAIN_REV:-unknown}" \
@@ -617,7 +621,8 @@ brain_stage() {
 }
 
 # brain_point_at <venv> — make $BRAIN_LINK resolve to <venv>, atomically, and record the
-# one it replaces as $BRAIN_PREV.
+# one it replaces as $BRAIN_PREV. <venv>'s operator tools go live first (tools_point_at),
+# so a refused sudo stops it before anything has moved.
 #
 # Done UNDER the running brain unit, which brain_swap restarts right after — never
 # stop, swap, start. A stopped brain does not stay stopped: teaport-engine Upholds=
@@ -633,12 +638,15 @@ brain_stage() {
 # restart follows at once).
 brain_point_at() {
   local target="$1" old=""
+  if [ ! -L "$BRAIN_LINK" ] && [ -d "$BRAIN_LINK" ] && [ -e "$BRAIN_LEGACY" ]; then
+    die "$BRAIN_LEGACY already exists — move it aside and re-run"
+  fi
+  tools_point_at "$target"
   if [ -L "$BRAIN_LINK" ]; then
     old="$(readlink "$BRAIN_LINK")"
   elif [ -d "$BRAIN_LINK" ]; then
     # The pre-uv venv: a real directory at the link's path. Move it aside, don't delete
     # it — until a uv-built venv has proved itself, it is the only way back.
-    [ ! -e "$BRAIN_LEGACY" ] || die "$BRAIN_LEGACY already exists — move it aside and re-run"
     mv "$BRAIN_LINK" "$BRAIN_LEGACY"; old="$BRAIN_LEGACY"
     log "pre-uv venv moved to $BRAIN_LEGACY (kept as the rollback target)"
   fi
@@ -750,8 +758,11 @@ brain_swap() {
   # shellcheck disable=SC2086  # word lists of unit names
   set -- $SWAP_JUDGE
   if [ "$DRY_RUN" = 1 ]; then
-    if [ $# = 0 ]; then printf '  [dry-run] %s -> %s (no brain unit to restart)\n' "$BRAIN_LINK" "$target"; return 0; fi
-    printf '  [dry-run] %s -> %s; restart %s, verify %s%s\n' "$BRAIN_LINK" "$target" \
+    tools_adopt   # what a real run's first flip keeps (SUDO only prints here)
+    local tools="its operator tools too"   # $STAGED's: phase_brain stages them (printed, here)
+    [ "$target" = "$STAGED" ] || tools_has "$target" || tools="operator tools left as they are (it has none of its own)"
+    if [ $# = 0 ]; then printf '  [dry-run] %s -> %s, %s (no brain unit to restart)\n' "$BRAIN_LINK" "$target" "$tools"; return 0; fi
+    printf '  [dry-run] %s -> %s, %s; restart %s, verify %s%s\n' "$BRAIN_LINK" "$target" "$tools" \
       "$SWAP_ALSO${SWAP_ALSO:+ }$*" "$*" "${auto:+ (back to the previous venv if they do not come up)}"
     return 0
   fi
@@ -761,8 +772,9 @@ brain_swap() {
   # `sudo -v` wants a password unless EVERY sudoers rule for the user is NOPASSWD (its
   # verifypw default), so on a box with a NOPASSWD rule beside a password one — the
   # appliance's own — it would prompt although the restart itself never would.
-  if [ $# -gt 0 ] && [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
-    sudo -v || die "sudo is needed to restart $* — nothing was swapped"
+  # Needed with no unit to restart too: the operator tools flip with the link.
+  if [ "$(id -u)" != 0 ] && ! sudo -n true 2>/dev/null; then
+    sudo -v || die "sudo is needed to swap the brain's operator tools${1:+ and restart $*} — nothing was swapped"
   fi
   brain_point_at "$target"
   log "brain venv: $BRAIN_LINK -> $target"
@@ -781,7 +793,9 @@ brain_swap() {
   # bounds how many of those stay.
   rm -f "$BRAIN_PREV"
   if brain_restart "$SWAP_ALSO" "$@"; then
-    die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: $journal. The teaport CLI was not updated (it is installed only after a verified swap), so it still matches $prev"
+    local tools="Its teaport CLI and config helper are back too"
+    [ "$TOOLS_MOVED" = 1 ] || tools="The teaport CLI and config helper are still $target's ($prev has none of its own)"
+    die "rolled back: the brain is running on $prev again. The failed venv is kept at $target — see: $journal. $tools"
   fi
   die "rolled back to $prev, but the brain is not healthy there either — see: $journal"
 }
@@ -792,6 +806,7 @@ brain_swap() {
 # that failed their swap (kept for inspection) are bounded by the count rather than
 # piling up until a swap succeeds. Never fails the run. Falls back to SUDO because a
 # pre-uv venv has usually had `sudo pip install` run into it, leaving parts of it root's.
+# A release's operator tools go with its venv; the live ones (current) always stay.
 BRAIN_KEEP=3
 brain_prune() {
   local d n=0
@@ -806,10 +821,16 @@ brain_prune() {
     log "removing old brain venv $d"
     run rm -rf "$d" 2>/dev/null || SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
   done < <({ find "$BRAIN_VENVS" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null | sort -rz; printf '%s\0' "$BRAIN_LEGACY"; })
+  while IFS= read -r -d '' d; do
+    if [ -d "$BRAIN_VENVS/${d##*/}" ] || [ "$d" -ef "$TOOLS_DIR/current" ] \
+       || { [ "${d##*/}" = "${BRAIN_LEGACY##*/}" ] && [ -d "$BRAIN_LEGACY" ]; }; then continue; fi
+    log "removing old operator tools $d"
+    SUDO rm -rf "$d" || warn "could not remove $d — harmless; remove it by hand"
+  done < <(find "$TOOLS_DIR/releases" -mindepth 1 -maxdepth 1 -type d -print0 2>/dev/null)
 }
 
-# phase_brain — build a new brain release (STAGED). It restarts nothing and moves no
-# link; the caller puts the release live:
+# phase_brain — build a new brain release (STAGED) and its operator tools. It restarts
+# nothing and moves no link; the caller puts the release live:
 #   full install: phase_services, once every unit and env file is written — it points the
 #     link and restarts the engine and every brain process together (brain_activate).
 #   --only brain: brain_swap — restart the brain units on it, verify, roll back.
@@ -819,6 +840,7 @@ phase_brain() {
   resolve_brain_src
   brain_release_id
   brain_stage "$SRC_DIR"
+  brain_stage_tools "$STAGED"
 }
 
 # brain_activate — the full install's way live, called by phase_services right before
@@ -826,33 +848,109 @@ phase_brain() {
 # it until that restart, which takes every brain process with it. Pruning waits until
 # after the restart, when no process can still be running an older release.
 brain_activate() {
-  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] %s -> %s\n' "$BRAIN_LINK" "$STAGED"; return 0; fi
+  if [ "$DRY_RUN" = 1 ]; then
+    tools_adopt
+    printf '  [dry-run] %s -> %s, its operator tools too\n' "$BRAIN_LINK" "$STAGED"; return 0
+  fi
   brain_point_at "$STAGED"
   log "brain venv: $BRAIN_LINK -> $STAGED"
 }
 
-# brain_install_tools — the operator CLI and the config page's root-owned helper, from the
-# brain SOURCE ($SRC_DIR), as before the per-release venvs. A full install runs it before
-# phase_services (whose install_config_sudoers needs the helper); --only brain runs it
-# only once the swap has been verified, so a swap that fails and rolls back leaves the
-# installed tools as they were. A hand --rollback brain does not touch them (see #59:
-# packaging the brain makes the tools part of the release).
-brain_install_tools() {
-  # ship the teaport operator CLI on PATH (repo root = the parent of the brain dir)
-  local cli; cli="$(dirname "$SRC_DIR")/cli/teaport"
-  if [ -f "$cli" ]; then log "install teaport CLI -> /usr/local/bin/teaport"; SUDO install -m 0755 "$cli" /usr/local/bin/teaport; fi
-  # The config page's privileged helper, as a ROOT-OWNED copy outside $PREFIX. The venv
-  # (owned by $RUN_USER, populated by an unprivileged uv sync) is the run user's to
-  # rewrite, so the sudoers line in install_config_sudoers must not trust anything in it —
-  # not its python, not its copy of this module: the helper is copied from the source,
-  # never out of a venv. The sudoers line trusts this copy and /usr/bin/python3.
-  local helper="$SRC_DIR/teaport_brain/config_apply.py"
-  if [ -f "$helper" ]; then
-    log "install config helper -> $CONFIG_HELPER"
-    SUDO install -d -m 0755 -o root -g root "$(dirname "$CONFIG_HELPER")"
-    SUDO install -m 0755 -o root -g root "$helper" "$CONFIG_HELPER"
+# --- operator tools: one copy per brain release, flipped with the venv ----------------
+# The teaport CLI and the config page's helper (the one script the sudoers line lets the
+# brain run as root: install_config_sudoers) are part of a brain release: its brain calls
+# its own helper, and its CLI knows its own layout. So each release gets its own copy,
+# and the same flip that makes a venv live (brain_point_at) makes its tools live, so
+# every rollback, automatic or by hand, puts the matching pair back:
+#
+#   /usr/local/lib/teaport/releases/<release>/{teaport,config_apply.py}  root:root 0755
+#   /usr/local/lib/teaport/current -> releases/<release>     (flipped with $PREFIX/venv)
+#   /usr/local/lib/teaport/config_apply.py -> current/config_apply.py   (sudoers, brain)
+#   /usr/local/bin/teaport -> /usr/local/lib/teaport/current/teaport
+#
+# <release> is the venv's directory name. Not inside the release directory: $PREFIX is
+# the run user's (uv builds there unprivileged), so a path through it is theirs to
+# rename, and a sudoers line trusting one would be `NOPASSWD: ALL` with extra steps.
+# Every directory above is root's and writable by root alone, the links included, so
+# the run user can neither edit a copy nor repoint one. The copies come from the brain
+# SOURCE when the release is built, never out of a venv (the run user's to edit).
+TOOLS_DIR=/usr/local/lib/teaport
+TOOLS_CLI=/usr/local/bin/teaport
+CONFIG_HELPER="$TOOLS_DIR/config_apply.py"
+
+# tools_id <venv> — the name <venv>'s tools are kept under: its directory name. One plain
+# path component or nothing: a rollback reads it from $BRAIN_PREV, a link the run user
+# could repoint.
+tools_id() {
+  local id; id="$(basename "$1")"
+  case "$id" in [A-Za-z0-9]*) ;; *) return 1 ;; esac
+  case "$id" in *[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s\n' "$id"
+}
+
+# brain_stage_tools <venv> — the root-owned copy of the tools <venv> was built with, from
+# the same brain source. Nothing uses it until brain_point_at makes <venv> live.
+brain_stage_tools() {
+  local id dir cli helper
+  id="$(tools_id "$1")" || die "cannot name the operator tools of $1"
+  dir="$TOOLS_DIR/releases/$id"
+  cli="$(dirname "$SRC_DIR")/cli/teaport"; helper="$SRC_DIR/teaport_brain/config_apply.py"
+  # A source without one of them (TEAPORT_BRAIN_SRC naming a bare brain/, say) keeps the
+  # installed one: links through `current` to a file the release lacks would take the
+  # CLI away, or leave the sudoers line naming nothing.
+  [ -f "$cli" ] || cli="$TOOLS_CLI"
+  [ -f "$helper" ] || helper="$CONFIG_HELPER"
+  log "operator tools (teaport CLI, config helper) -> $dir"
+  SUDO install -d -m 0755 -o root -g root "$TOOLS_DIR" "$TOOLS_DIR/releases" "$dir"
+  if [ -f "$cli" ]; then SUDO install -m 0755 -o root -g root "$cli" "$dir/teaport"; fi
+  if [ -f "$helper" ]; then SUDO install -m 0755 -o root -g root "$helper" "$dir/config_apply.py"; fi
+}
+
+# tools_point_at <venv> — make <venv>'s tools the installed ones: flip `current` to them,
+# atomically, and make the CLI and helper paths links through it. A release built before
+# tools were kept per release has none; the installed ones then stay (TOOLS_MOVED=0).
+TOOLS_MOVED=0
+tools_point_at() {
+  TOOLS_MOVED=0
+  tools_adopt
+  if ! tools_has "$1"; then
+    warn "$1 has no operator tools of its own (built before they were kept per release) — the installed teaport CLI and config helper stay as they are"
+    return 0
   fi
-  install_busy_lamp
+  local id; id="$(tools_id "$1")"
+  tools_link "$TOOLS_DIR/current" "releases/$id"
+  tools_link "$TOOLS_CLI" "$TOOLS_DIR/current/teaport"
+  tools_link "$CONFIG_HELPER" current/config_apply.py
+  TOOLS_MOVED=1
+}
+
+# tools_has <venv> — does <venv> have operator tools of its own?
+tools_has() { local id; id="$(tools_id "$1")" && [ -d "$TOOLS_DIR/releases/$id" ]; }
+
+# tools_adopt — once, on a box whose tools were installed as plain files: they came from
+# the live release's source, so they become that release's copy, and rolling back to it
+# later puts them back. A box with no live venv, or no such files, has nothing to keep.
+tools_adopt() {
+  local live id dir
+  [ ! -L "$TOOLS_DIR/current" ] || return 0
+  { [ -f "$TOOLS_CLI" ] && [ ! -L "$TOOLS_CLI" ]; } || { [ -f "$CONFIG_HELPER" ] && [ ! -L "$CONFIG_HELPER" ]; } || return 0
+  if [ -L "$BRAIN_LINK" ]; then live="$(readlink "$BRAIN_LINK")"
+  elif [ -d "$BRAIN_LINK" ]; then live="$BRAIN_LEGACY"   # where brain_point_at moves it
+  else return 0; fi
+  id="$(tools_id "$live")" || return 0
+  dir="$TOOLS_DIR/releases/$id"
+  log "operator tools: the installed teaport CLI and config helper are kept as $id's"
+  SUDO install -d -m 0755 -o root -g root "$TOOLS_DIR/releases" "$dir"
+  if [ -f "$TOOLS_CLI" ] && [ ! -L "$TOOLS_CLI" ]; then SUDO install -m 0755 -o root -g root "$TOOLS_CLI" "$dir/teaport"; fi
+  if [ -f "$CONFIG_HELPER" ] && [ ! -L "$CONFIG_HELPER" ]; then SUDO install -m 0755 -o root -g root "$CONFIG_HELPER" "$dir/config_apply.py"; fi
+  tools_link "$TOOLS_DIR/current" "releases/$id"
+}
+
+# tools_link <path> <target> — <path> becomes a link to <target> in one rename.
+tools_link() {
+  [ "$(readlink "$1" 2>/dev/null)" != "$2" ] || return 0
+  SUDO ln -sfn "$2" "$1.tmp"
+  SUDO mv -Tf "$1.tmp" "$1"
 }
 
 # The phone busy lamp (brain/teaport_brain/xvf_led.py): the brain turns a ReSpeaker
@@ -1466,13 +1564,13 @@ phase_services() {
 # above and restarts teaport-* units. The env files are root:$RUN_USER 0640 and a restart
 # is systemctl, so the brain — which runs as $RUN_USER — cannot do either itself. This
 # is the one line that lets it, through one script that only ever touches those files
-# and units: the root-owned copy of brain/teaport_brain/config_apply.py that phase_brain
-# installs at $CONFIG_HELPER, run by the system python. Both are outside $PREFIX on
-# purpose — the run user owns the venv, so a line trusting the venv's interpreter or
-# module would be `NOPASSWD: ALL` with extra steps. Everything after the script path is
-# its argv. The file is validated with visudo before it lands: a malformed sudoers.d
-# entry locks sudo for everyone, which on a headless box is a reinstall.
-CONFIG_HELPER=/usr/local/lib/teaport/config_apply.py
+# and units: the live release's root-owned copy of brain/teaport_brain/config_apply.py,
+# reached through $CONFIG_HELPER (see brain_stage_tools), run by the system python. Both
+# are outside $PREFIX on purpose — the run user owns the venv, so a line trusting the
+# venv's interpreter or module would be `NOPASSWD: ALL` with extra steps. Everything
+# after the script path is its argv. The file is validated with visudo before it lands:
+# a malformed sudoers.d entry locks sudo for everyone, which on a headless box is a
+# reinstall.
 install_config_sudoers() {
   local f=/etc/sudoers.d/teaport-config tmp
   if [ "$DRY_RUN" != 1 ] && [ ! -f "$CONFIG_HELPER" ]; then
@@ -2157,7 +2255,7 @@ main_brain_only() {
   sip_brain_detach
   brain_swap "$STAGED" --auto-rollback
   sip_brain_retire
-  brain_install_tools   # only now: the swap has been verified
+  install_busy_lamp   # only now: the swap has been verified
   brain_prune
   log "done — brain updated from uv.lock$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
   printf '  undo:    install.sh --rollback brain\n'
@@ -2198,7 +2296,7 @@ main() {
   phase_sysdeps
   phase_engine
   phase_brain
-  brain_install_tools
+  install_busy_lamp
   detect_agent
   phase_agent
   phase_credentials

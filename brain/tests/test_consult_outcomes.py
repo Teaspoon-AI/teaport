@@ -27,6 +27,9 @@ from loguru import logger  # noqa: E402
 
 from teaport_brain import consult_bridge, tools  # noqa: E402
 from teaport_brain import openclaw_client as oc  # noqa: E402
+from tempdirs import tempdir  # noqa: E402
+
+_CONSULT_ERR = os.path.join(tempdir("teaport-consult-"), "last.err")
 
 
 def _http(code, reason):
@@ -62,7 +65,8 @@ class _Patched:
         return self.cli_rc, self.cli_out, b""
 
     def __enter__(self):
-        self._saved = (oc._completions_sync, oc._run_openclaw, oc._token, asyncio.sleep)
+        self._saved = (oc._completions_sync, oc._run_openclaw, oc._token, asyncio.sleep, oc.CONSULT_ERR_FILE)
+        oc.CONSULT_ERR_FILE = _CONSULT_ERR   # not the box's file in /tmp
         oc._completions_sync = self.warm
         oc._run_openclaw = self._run
         oc._token = lambda: "tok"
@@ -71,7 +75,7 @@ class _Patched:
         return self
 
     def __exit__(self, *exc):
-        oc._completions_sync, oc._run_openclaw, oc._token, asyncio.sleep = self._saved
+        oc._completions_sync, oc._run_openclaw, oc._token, asyncio.sleep, oc.CONSULT_ERR_FILE = self._saved
 
 
 # --- the gateway / CLI lane ---------------------------------------------------------

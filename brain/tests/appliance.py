@@ -97,3 +97,36 @@ def _probe(host: str, port: int, timeout: float):
         return socket.create_connection((host, port), timeout=timeout)
     except OSError as e:
         return e
+
+
+# --- file modes, as root -------------------------------------------------------------
+# A case that stages an unreadable file or a read-only dir proves nothing as root, which
+# reads and writes through any mode. As root it is skipped by name, out loud (run_tests),
+# never passed having tested nothing; the script's other cases still run. CI runs as a
+# user, so it runs them all.
+
+class Unavailable(Exception):
+    """This case cannot run here; run_tests reports it as a skip."""
+
+
+def require_modes_bind():
+    """Raise Unavailable as root: file modes do not bind it."""
+    if os.geteuid() == 0:
+        raise Unavailable("root reads through file modes; run as a user")
+
+
+def run_tests(fns):
+    """A script's main: run every case, print ok/skip; when any could not run here, the
+    script exits SKIP_EXIT once the rest have passed, so the suite reports it."""
+    skipped = []
+    for fn in fns:
+        try:
+            fn()
+        except Unavailable as e:
+            skipped.append((fn.__name__, str(e)))
+            print(f"  SKIPPED {fn.__name__}: {e}")
+            continue
+        print(f"  ok {fn.__name__}")
+    if skipped:
+        skip(f"{len(skipped)} case(s) could not run here ({', '.join(n for n, _ in skipped)}): {skipped[0][1]}")
+    print("ALL PASS")

@@ -1,8 +1,10 @@
 #
 # install.sh's --only brain follow-ups (issue #59): it refuses a box with no brain venv
 # (main_brain_only), its freshness check looks only at what it installs
-# (check_brain_source), and the three privileged reads of an env file share one helper
-# (read_env_file: resolve_gateway_token, write_env, brain_verify).
+# (check_brain_source), the three privileged reads of an env file share one helper
+# (read_env_file: resolve_gateway_token, write_env, brain_verify), and a release's
+# teaport CLI and config helper go live and come back with its venv (brain_stage_tools,
+# tools_point_at, from brain_point_at).
 #
 # The functions are taken out of install.sh as they are and run by bash with the
 # commands around them stubbed (sudo, systemctl, curl, the phases), against a temp dir.
@@ -16,10 +18,10 @@ import pathlib
 import re
 import subprocess
 
+import appliance
 from tempdirs import tempdir
 
 INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
-AS_ROOT = os.geteuid() == 0   # root reads anything: the unreadable-file cases need a user
 
 STUBS = r'''
 set -euo pipefail
@@ -69,6 +71,8 @@ def _sudo_calls(tmp):
 
 
 def _env_file(tmp, text, readable=True):
+    if not readable:
+        appliance.require_modes_bind()   # root reads it anyway: skipped, by name
     path = pathlib.Path(tmp, "brain.env")
     path.write_text(text)
     path.chmod(0o640 if readable else 0o000)
@@ -86,8 +90,6 @@ def test_a_readable_env_file_is_read_without_sudo():
 
 
 def test_an_unreadable_env_file_is_read_with_sudo_and_a_refusal_is_the_callers_call():
-    if AS_ROOT:
-        return
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "GATEWAY_TOKEN=tok\n", readable=False)
     rc, out = _run(tmp, f'read_env_file "{path}"', ["read_env_file"])
@@ -101,8 +103,6 @@ def test_an_unreadable_env_file_is_read_with_sudo_and_a_refusal_is_the_callers_c
 
 
 def test_the_gateway_token_is_reused_from_a_root_only_brain_env():
-    if AS_ROOT:
-        return
     tmp = tempdir("teaport-env-")
     _env_file(tmp, "BRAIN_PORT=1\nGATEWAY_TOKEN=keepme\n", readable=False)
     script = f'ETC="{tmp}"; resolve_gateway_token; echo "TOKEN $GATEWAY_TOKEN"'
@@ -123,8 +123,6 @@ def test_no_brain_env_mints_a_token_without_asking_sudo():
 
 
 def test_write_env_keeps_operator_settings_from_a_root_only_file():
-    if AS_ROOT:
-        return
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "GATEWAY_TOKEN=old\nOPERATOR_KNOB=7\n", readable=False)
     rc, out = _run(tmp, f'write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"])
@@ -134,8 +132,6 @@ def test_write_env_keeps_operator_settings_from_a_root_only_file():
 
 
 def test_write_env_refuses_to_overwrite_a_file_it_cannot_read():
-    if AS_ROOT:
-        return
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "OPERATOR_KNOB=7\n", readable=False)
     rc, out = _run(tmp, f'write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"],
@@ -145,8 +141,6 @@ def test_write_env_refuses_to_overwrite_a_file_it_cannot_read():
 
 
 def test_write_env_dry_run_does_not_sudo_and_says_what_a_real_run_reads():
-    if AS_ROOT:
-        return
     tmp = tempdir("teaport-env-")
     path = _env_file(tmp, "OPERATOR_KNOB=7\n", readable=False)
     rc, out = _run(tmp, f'DRY_RUN=1; write_env "{path}" GATEWAY_TOKEN=new', ["read_env_file", "write_env"])
@@ -170,8 +164,6 @@ systemctl() { case "$1" in is-active) return 0 ;; show) echo inv-1 ;; esac; }
 
 
 def test_brain_verify_polls_the_port_from_a_root_only_brain_env():
-    if AS_ROOT:
-        return
     tmp = tempdir("teaport-env-")
     _env_file(tmp, 'BRAIN_PORT="9123"\n', readable=False)
     script = f'{BRAIN_VERIFY_STUBS}ETC="{tmp}"; brain_verify teaport-brain.service; echo VERIFIED'
@@ -188,7 +180,7 @@ ONLY_BRAIN_STUBS = r'''
 STAGED=/opt/teaport/venvs/new
 systemctl() { [ "$1" = cat ]; }   # the brain unit is installed
 for f in check_brain_source phase_brain sip_brain_detach brain_swap sip_brain_retire \
-         brain_install_tools brain_prune; do eval "$f() { echo STEP $f; }"; done
+         install_busy_lamp brain_prune; do eval "$f() { echo STEP $f; }"; done
 '''
 
 
@@ -307,7 +299,7 @@ _READS = {
 def test_every_checkout_path_only_brain_reads_is_in_its_freshness_check():
     paths = re.findall(r"\((.*)\)", _line("BRAIN_ONLY_PATHS="))[0].split()
     read = set()
-    for fn in ("brain_stage", "brain_install_tools", "install_busy_lamp"):
+    for fn in ("brain_stage", "brain_stage_tools", "install_busy_lamp"):
         body = _fn(fn)
         for pattern, base in _READS.items():
             read.update(base + m for m in re.findall(pattern, body))
@@ -318,13 +310,186 @@ def test_every_checkout_path_only_brain_reads_is_in_its_freshness_check():
     assert "install.sh" in paths
 
 
-def main():
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for fn in fns:
-        fn()
-        print(f"  ok {fn.__name__}")
+# --- the operator tools follow the venv ----------------------------------------------
+# brain_stage_tools / tools_point_at / tools_adopt with brain_point_at, brain_swap and
+# brain_prune around them, against a prefix, a tools dir and two brain sources in a temp
+# dir. SUDO runs what it is given, minus the -o root -g root a user cannot do, and logs
+# it: the ownership itself is root's to check (on a box, as root).
+
+TOOLS_STUBS = r'''
+sudo() { return 0; }
+run()  { "$@"; }
+SUDO() {
+  printf 'SUDO %s\n' "$*" >> "$T/sudo.log"
+  local a=() x skip=0
+  for x in "$@"; do
+    if [ "$skip" = 1 ]; then skip=0; continue; fi
+    case "$x" in -o|-g) skip=1 ;; *) a+=("$x") ;; esac
+  done
+  "${a[@]}"
+}
+PREFIX="$T/opt" BRAIN_KEEP=3 TOOLS_DIR="$T/lib" TOOLS_CLI="$T/bin/teaport"
+BRAIN_VENVS="$PREFIX/venvs" BRAIN_LINK="$PREFIX/venv" BRAIN_PREV="$PREFIX/venv.previous"
+BRAIN_LEGACY="$PREFIX/venv.pre-uv"
+mkdir -p "$BRAIN_VENVS" "$T/bin"
+# build <release> <source>: a venv dir and its tools, from $T/<source>
+build() { mkdir -p "$BRAIN_VENVS/$1"; SRC_DIR="$T/$2/brain"; brain_stage_tools "$BRAIN_VENVS/$1"; }
+'''
+TOOLS_FNS = ["tools_id", "brain_stage_tools", "tools_point_at", "tools_adopt", "tools_link", "tools_has",
+             "brain_point_at", "brain_prune"]
+
+
+def _tools_box(*sources):
+    tmp = tempdir("teaport-tools-")
+    for s in sources:
+        for rel, text in (("cli/teaport", f"cli {s}\n"), ("brain/teaport_brain/config_apply.py", f"helper {s}\n")):
+            p = pathlib.Path(tmp, s, rel)
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text(text)
+    return tmp
+
+
+def _tools_run(tmp, script, extra_fns=()):
+    return _run(tmp, TOOLS_STUBS + _line("CONFIG_HELPER=") + _line("STAGED=") + script, TOOLS_FNS + list(extra_fns))
+
+
+def _installed(tmp):
+    """The CLI and helper as a caller reaches them: through the fixed paths."""
+    cli, helper = pathlib.Path(tmp, "bin/teaport"), pathlib.Path(tmp, "lib/config_apply.py")
+    return cli.read_text().strip(), helper.read_text().strip()
+
+
+def test_a_swap_and_a_rollback_by_hand_move_the_tools_with_the_venv():
+    tmp = _tools_box("v1", "v2")
+    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"; build r2 v2; brain_point_at "$BRAIN_VENVS/r2"')
+    assert rc == 0 and _installed(tmp) == ("cli v2", "helper v2"), out
+    # What --rollback brain does (main_rollback_brain -> brain_swap -> brain_point_at).
+    rc, out = _tools_run(tmp, 'brain_point_at "$(readlink "$BRAIN_PREV")"')
+    assert rc == 0 and _installed(tmp) == ("cli v1", "helper v1"), out
+    # ... and again, to undo it.
+    rc, out = _tools_run(tmp, 'brain_point_at "$(readlink "$BRAIN_PREV")"')
+    assert rc == 0 and _installed(tmp) == ("cli v2", "helper v2"), out
+    # The fixed paths (the sudoers line's, PATH's) are links through `current`, into the
+    # tools dir and never into the run user's prefix; every write there went through
+    # SUDO, as root:root.
+    lib = pathlib.Path(tmp, "lib")
+    assert os.readlink(lib / "config_apply.py") == "current/config_apply.py"
+    assert os.readlink(pathlib.Path(tmp, "bin/teaport")) == f"{lib}/current/teaport"
+    assert os.readlink(lib / "current") == "releases/r2"
+    for f in ("bin/teaport", "lib/config_apply.py"):
+        assert os.path.realpath(pathlib.Path(tmp, f)).startswith(f"{lib}/releases/"), f
+    installs = [c for c in _sudo_calls(tmp) if c.startswith("SUDO install ")]
+    assert installs and all("-o root -g root" in c for c in installs), installs
+
+
+def test_an_automatic_rollback_puts_the_previous_tools_back():
+    tmp = _tools_box("v1", "v2")
+    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"')
+    assert rc == 0, out
+    # The new brain does not come back; the previous one does.
+    script = r'''
+DRY_RUN=0 SWAP_ALSO=""
+brain_units() { SWAP_JUDGE=teaport-brain.service; }
+brain_restart() { [ -e "$T/restarted" ] && return 0; touch "$T/restarted"; FAILED_UNIT=teaport-brain.service; return 1; }
+sip_brain_restore() { :; }
+build r2 v2; brain_swap "$BRAIN_VENVS/r2" --auto-rollback'''
+    rc, out = _tools_run(tmp, script, ["brain_swap"])
+    assert rc != 0 and "DIE rolled back" in out and "config helper are back too" in out, out
+    assert _installed(tmp) == ("cli v1", "helper v1"), out
+    assert os.readlink(pathlib.Path(tmp, "opt/venv")).endswith("/r1")
+
+
+def test_tools_installed_before_releases_had_their_own_become_the_live_releases():
+    tmp = _tools_box("v1")
+    # A box from before: plain files, and a live venv with no tools of its own.
+    pathlib.Path(tmp, "lib").mkdir()
+    pathlib.Path(tmp, "bin/teaport").parent.mkdir()
+    pathlib.Path(tmp, "bin/teaport").write_text("cli old\n")
+    pathlib.Path(tmp, "lib/config_apply.py").write_text("helper old\n")
+    rc, out = _tools_run(tmp, 'mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"; '
+                              'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"')
+    assert rc == 0 and _installed(tmp) == ("cli v1", "helper v1"), out
+    assert "kept as r0's" in out, out
+    rc, out = _tools_run(tmp, 'brain_point_at "$(readlink "$BRAIN_PREV")"')
+    assert rc == 0 and _installed(tmp) == ("cli old", "helper old"), out
+    assert os.path.islink(pathlib.Path(tmp, "bin/teaport")), out
+
+
+def test_a_release_with_no_tools_or_a_repointed_link_leaves_the_tools_alone():
+    tmp = _tools_box("v1", "v2")
+    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"; build r2 v2; brain_point_at "$BRAIN_VENVS/r2"')
+    assert rc == 0, out
+    for prev in ('mkdir "$BRAIN_VENVS/r0"; echo "$BRAIN_VENVS/r0"',   # built before per-release tools
+                 'mkdir -p "$T/x/.."; echo "$T/x/.."',                 # not a release name at all
+                 'echo "$TOOLS_DIR"'):                                 # a dir that is not a release
+        rc, out = _tools_run(tmp, f'tools_point_at "$({prev})"')
+        assert rc == 0 and "has no operator tools of its own" in out, (prev, out)
+        assert _installed(tmp) == ("cli v2", "helper v2"), (prev, out)
+
+
+def test_a_source_without_the_cli_or_helper_keeps_the_installed_one():
+    tmp = _tools_box("v1", "v2", "v3")
+    pathlib.Path(tmp, "v2/cli/teaport").unlink()                                  # a bare brain/
+    pathlib.Path(tmp, "v3/brain/teaport_brain/config_apply.py").unlink()          # predates the page
+    rc, out = _tools_run(tmp, 'build r1 v1; brain_point_at "$BRAIN_VENVS/r1"; build r2 v2; brain_point_at "$BRAIN_VENVS/r2"')
+    assert rc == 0 and _installed(tmp) == ("cli v1", "helper v2"), out
+    rc, out = _tools_run(tmp, 'build r3 v3; brain_point_at "$BRAIN_VENVS/r3"')
+    assert rc == 0 and _installed(tmp) == ("cli v3", "helper v2"), out
+
+
+def test_an_automatic_rollback_to_a_release_without_tools_says_they_stayed():
+    tmp = _tools_box("v2")
+    script = r'''
+DRY_RUN=0 SWAP_ALSO=""
+brain_units() { SWAP_JUDGE=teaport-brain.service; }
+brain_restart() { [ -e "$T/restarted" ] && return 0; touch "$T/restarted"; FAILED_UNIT=teaport-brain.service; return 1; }
+sip_brain_restore() { :; }
+mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"
+build r2 v2; brain_swap "$BRAIN_VENVS/r2" --auto-rollback'''
+    rc, out = _tools_run(tmp, script, ["brain_swap"])
+    assert rc != 0 and "DIE rolled back" in out, out
+    assert "are still /" in out and "/r2's (" in out and "are back too" not in out, out
+    # A dry run says the same before anything moves.
+    rc, out = _tools_run(tmp, 'DRY_RUN=1; brain_units() { SWAP_JUDGE=""; }; brain_swap "$BRAIN_VENVS/r0" ""',
+                         ["brain_swap"])
+    assert rc == 0 and "operator tools left as they are (it has none of its own)" in out, out
+
+
+def test_a_dry_run_shows_the_tools_it_would_stage_keep_and_swap_and_touches_nothing():
+    tmp = _tools_box("v1")
+    pathlib.Path(tmp, "lib").mkdir()
+    pathlib.Path(tmp, "bin/teaport").parent.mkdir()
+    pathlib.Path(tmp, "bin/teaport").write_text("cli old\n")
+    pathlib.Path(tmp, "lib/config_apply.py").write_text("helper old\n")
+    script = r'''
+DRY_RUN=1 SWAP_ALSO=""
+SUDO() { printf 'DRY sudo %s\n' "$*"; }   # install.sh's SUDO under --dry-run
+brain_units() { SWAP_JUDGE=teaport-brain.service; }
+mkdir "$BRAIN_VENVS/r0"; ln -s "$BRAIN_VENVS/r0" "$BRAIN_LINK"
+STAGED="$BRAIN_VENVS/r1"; SRC_DIR="$T/v1/brain"
+brain_stage_tools "$STAGED"; brain_swap "$STAGED" --auto-rollback'''
+    rc, out = _tools_run(tmp, script, ["brain_swap"])
+    assert rc == 0, out
+    assert "DRY sudo install -m 0755 -o root -g root" in out and "releases/r1/teaport" in out, out
+    assert "the installed teaport CLI and config helper are kept as r0's" in out, out
+    assert "its operator tools too; restart teaport-brain.service" in out, out
+    assert "none of its own" not in out, out
+    assert sorted(os.listdir(pathlib.Path(tmp, "lib"))) == ["config_apply.py"], out
+    assert _installed(tmp) == ("cli old", "helper old") and not os.path.islink(pathlib.Path(tmp, "bin/teaport"))
+
+
+def test_pruning_removes_the_tools_of_removed_venvs_and_keeps_the_live_ones():
+    tmp = _tools_box("v1")
+    script = ('for r in r1 r2 r3 r4 r5 r6; do build "$r" v1; done; '
+              'brain_point_at "$BRAIN_VENVS/r1"; brain_point_at "$BRAIN_VENVS/r2"; '
+              'rm -rf "$BRAIN_VENVS/r2"; brain_prune')   # the live venv's dir gone: its tools still stay
+    rc, out = _tools_run(tmp, script)
+    assert rc == 0, out
+    kept = sorted(os.listdir(pathlib.Path(tmp, "lib/releases")))
+    # Newest three venvs (r4-r6), the rollback target (r1), and current (r2).
+    assert kept == ["r1", "r2", "r4", "r5", "r6"], (kept, out)
+    assert sorted(os.listdir(pathlib.Path(tmp, "opt/venvs"))) == ["r1", "r4", "r5", "r6"]
 
 
 if __name__ == "__main__":
-    main()
-    print("ALL PASS")
+    appliance.run_tests([v for k, v in sorted(globals().items()) if k.startswith("test_")])

@@ -126,7 +126,9 @@ self-checks it, then swaps it in and restarts the brain — one unit, `teaport-b
 which serves Talk and the phone line alike. A Talk session in progress is dropped; a
 phone call stays up at the gateway, and the restarted brain picks it up again with a
 short "sorry, I lost you for a moment". If the brain does not come back healthy
-it puts the previous environment back by itself. The newest three environments are
+it puts the previous environment back by itself. The `teaport` command and the config
+page's helper come with each environment, so going back to one, automatically or by
+hand, puts back the ones it was built with. The newest three environments are
 kept, plus the running one and the rollback target. `--only brain` leaves the systemd units and `/etc/teaport` alone, so a brain
 change that needs a new setting there goes in with a full `./install.sh` run instead.
 A full run builds the brain the same way and restarts everything on it, but does not

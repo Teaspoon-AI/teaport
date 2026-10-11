@@ -27,12 +27,12 @@
 import asyncio
 import json
 import os
-import sys
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from teaport_brain import config_ui
+import appliance
 from tempdirs import tempdir
 
 BRAIN_ENV = """# hand-written comment
@@ -404,9 +404,8 @@ def test_apply_helper_backup_ring_spares_operator_backups():
 
 
 def test_unreadable_store_is_reported_not_fatal():
+    appliance.require_modes_bind()   # root reads anything: skipped, by name
     client, etc, home, calls = setup()
-    if os.geteuid() == 0:
-        return  # root reads anything; nothing to prove here
     os.chmod(os.path.join(etc, "brain.env"), 0)
     try:
         r = client.get("/api/config", headers=H)
@@ -565,19 +564,15 @@ def test_apply_helper_stop_also_cancels_a_scheduled_start():
                      "teaport-config-restart-teaport-wifi-setup-*.timer", "teaport-wifi-setup"]]
 
 
-def main() -> int:
-    for fn in (test_env_roundtrip, test_get_masks_secrets_and_requires_token,
-               test_get_shows_values_as_the_brain_reads_them,
-               test_token_compare_is_constant_time_and_total, test_put_validation,
-               test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
-               test_apply_helper_backup_ring_spares_operator_backups,
-               test_unreadable_store_is_reported_not_fatal, test_secret_file_pending_for_startup_readers,
-               test_opt_in_store_is_never_created_from_the_page, test_wifi_section,
-               test_apply_helper_stop_also_cancels_a_scheduled_start):
-        fn()
-        print("ok", fn.__name__)
-    return 0
-
-
 if __name__ == "__main__":
-    sys.exit(main())
+    appliance.run_tests([
+        test_env_roundtrip, test_get_masks_secrets_and_requires_token,
+        test_get_shows_values_as_the_brain_reads_them,
+        test_token_compare_is_constant_time_and_total, test_put_validation,
+        test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
+        test_apply_helper_backup_ring_spares_operator_backups,
+        test_unreadable_store_is_reported_not_fatal,
+        test_secret_file_pending_for_startup_readers,
+        test_opt_in_store_is_never_created_from_the_page, test_wifi_section,
+        test_apply_helper_stop_also_cancels_a_scheduled_start,
+    ])

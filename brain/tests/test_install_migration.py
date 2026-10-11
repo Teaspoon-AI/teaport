@@ -15,6 +15,7 @@ import pathlib
 import stat
 import subprocess
 
+import appliance
 from tempdirs import tempdir
 
 INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
@@ -136,8 +137,7 @@ def test_secrets_quoting_empties_precedence_and_a_missing_newline():
 
 
 def test_a_failed_migration_stops_before_anything_is_swapped():
-    if os.geteuid() == 0:
-        return  # root writes through the read-only dir this failure is staged with
+    appliance.require_modes_bind()   # root writes through the read-only dir: skipped, by name
     root = _fixture()
     os.chmod(f"{root}/etc", 0o500)                                     # brain.env cannot be replaced
     try:
@@ -237,13 +237,5 @@ def test_a_dry_run_changes_nothing_and_reports_what_a_real_run_would_move():
     assert "SIP_STT_MAKEUP_DB" in out
 
 
-def main():
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for fn in fns:
-        fn()
-        print(f"  ok {fn.__name__}")
-
-
 if __name__ == "__main__":
-    main()
-    print("ALL PASS")
+    appliance.run_tests([v for k, v in sorted(globals().items()) if k.startswith("test_")])

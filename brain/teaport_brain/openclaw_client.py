@@ -34,6 +34,8 @@ from teaport_brain.settings import setting
 
 GATEWAY_URL = setting("OPENCLAW_GATEWAY_URL").rstrip("/")
 TOKEN_FILE = os.path.expanduser("~/.config/teaport/openclaw_token")
+# The last failed CLI consult's full stderr, for a postmortem (the log line is cut).
+CONSULT_ERR_FILE = "/tmp/teaport-consult-last.err"
 
 # Per-search recall budget. This is NOT the turn's wall-clock budget: MemoryRecall fires
 # the search on INTERIM transcripts (re-firing as the query grows) and injects whatever has
@@ -447,7 +449,7 @@ async def agent_consult(message: str, *, session_key: str | None = None,
     if rc != 0:
         # Keep the full stderr for postmortem — the log line is truncated.
         try:
-            with open("/tmp/teaport-consult-last.err", "wb") as f:
+            with open(CONSULT_ERR_FILE, "wb") as f:
                 f.write(err)
         except OSError:
             pass

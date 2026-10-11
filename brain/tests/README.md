@@ -52,6 +52,11 @@ and read-only dirs included) when the script exits. The suite runs each script w
 `TMPDIR` of its own and fails one that leaves anything there but pytest's own basetemp
 (issue #135: thousands of temp dirs had piled up in a desktop's `/tmp`).
 
+A case that stages an unreadable file or a read-only dir calls
+`appliance.require_modes_bind()`: as root, which reads and writes through any mode, it is
+skipped by name (the script's `appliance.run_tests` reports it), never passed having
+tested nothing. CI runs as a user, so it runs them all.
+
 ## What needs what
 
 **Everything is hermetic except the two below.** Stated as an exception list on
