@@ -49,6 +49,10 @@ npm install     # native @discordjs/opus builds from source on arm64 (needs gcc/
 | `BRIDGE_JOIN_CHANNEL_ID` | no | force-join a voice channel at startup (smoke tests) |
 | `TEAPORT_VOICE` | no | TTS voice id passed to the brain |
 
+Each value is read the way the brain reads its own (`env.js`): spaces around it
+are dropped, an empty one is unset, and one that is not of its kind (an id that is
+not digits, a `BRAIN_URL` that is not `ws://`) is ignored with a warning.
+
 ## Run
 
 ```bash

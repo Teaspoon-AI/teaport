@@ -174,7 +174,7 @@ def test_normalize_is_the_text_a_value_reads_as():
     assert settings.normalize(sock, " \t ") == ""         # ... or "" where empty is a value
     assert settings.normalize(sock, None) is None
     assert settings.normalize(voice, " af_bella\n") == "af_bella"
-    assert settings.normalize(key, " two words ") == " two words "
+    assert settings.normalize(key, " two words ") == "two words"  # a secret too
     assert settings.normalize(key, "   ") is None
     # parse() takes normalized text: its patterns match whole, not up to a newline.
     assert parse(ROWS["TEAPORT_URL"], "ws://x\n")[1] is not None
@@ -186,10 +186,75 @@ def test_paths_expand_the_home_directory():
     assert setting("ENGINE_LOG", env={"ENGINE_LOG": "~/x.log"}) == os.path.join(home, "x.log")
 
 
-def test_a_secret_is_taken_verbatim_but_blank_is_unset():
-    assert setting("WIFI_SETUP_PASSWORD", env={"WIFI_SETUP_PASSWORD": " two words "}) == " two words "
+def test_a_secret_is_read_by_the_same_rule_from_its_env_var_or_its_file():
+    # Every reader of a secret strips it (wifi_setup.setup_password, the OpenClaw token,
+    # the Discord bridge, the SIP gateway's conf parser, /talk's bearer header), and the
+    # config page writes its file stripped: the env copy reads the same as the file.
+    from tempdirs import tempdir
+    assert setting("WIFI_SETUP_PASSWORD", env={"WIFI_SETUP_PASSWORD": " two words "}) == "two words"
     assert setting("GATEWAY_TOKEN", env={"GATEWAY_TOKEN": "   "}) == ""
     assert setting("LLM_API_KEY", env={}) is None
+    row = ROWS["LLM_API_KEY"]
+    home, old = tempdir("teaport-secret-"), row["file"]
+    row["file"] = os.path.join(home, "llm_key")
+    try:
+        assert settings.secret_file("LLM_API_KEY") is None  # no file
+        for text, want in (("\tsk-x \n", "sk-x"), ("  \n", None)):
+            with open(row["file"], "w") as f:
+                f.write(text)
+            assert settings.secret_file("LLM_API_KEY") == want, text
+            assert setting("LLM_API_KEY", env={"LLM_API_KEY": text}) == want, text
+        with open(row["file"], "wb") as f:  # not UTF-8, and then a directory: unreadable
+            f.write(b"\xffsk-x\n")             # as root too; warned, not raised
+        assert settings.secret_file("LLM_API_KEY") is None
+        os.remove(row["file"])
+        os.mkdir(row["file"])
+        assert settings.secret_file("LLM_API_KEY") is None
+    finally:
+        row["file"] = old
+    assert settings.secret_file("GATEWAY_TOKEN") is None  # a secret with no file
+
+
+def test_whole_numbers_are_ascii_digits():
+    # "\u0665" (Arabic-Indic five) passed Python's \d and int(); atoi, the bridge's
+    # Number() and the engine read it as no number at all.
+    assert setting("GATEWAY_PORT", env={"GATEWAY_PORT": "\u0667\u0668\u0666\u0661"}) == 7861
+    assert parse({"type": "snowflake"}, "\u0661\u0662")[1] is not None
+
+
+def test_canonical_is_the_brains_reading_in_one_spelling():
+    # What the config page shows and writes (#136 follow-up): the file's spelling is not
+    # what the brain reads, so a page that matched on it showed TRUNCATE as no option and
+    # yes as off.
+    cases = [("HEARD_MODE", "TRUNCATE", "truncate"), ("HEARD_MODE", " Note ", "note"),
+             ("TEAPORT_LLM_TEXT_GUARD", "yes", "1"), ("TEAPORT_LLM_TEXT_GUARD", "On", "1"),
+             ("TEAPORT_LLM_TEXT_GUARD", "NO", "0"), ("LEDGER_TRACE", "1", "1"),
+             ("LEDGER_TRACE", "off", "0"), ("GATEWAY_PORT", "+07999", "7999"),
+             ("GATEWAY_PORT", "-0", "0"), ("ENDPOINT_STOP_SECS", "0.50", "0.5"),
+             ("ENDPOINT_STOP_SECS", "1.0", "1"), ("ENDPOINT_STOP_SECS", "1_000", "1000"),
+             ("ENDPOINT_STOP_SECS", "1e-7", "1e-07"), ("ENDPOINT_STOP_SECS", "-0.0", "-0"),
+             ("LLM_EXTRA_BODY", '{ "a": [1, 2] }', '{"a":[1,2]}'),
+             ("LLM_EXTRA_BODY", '{"s": "\u2028"}', '{"s":"\\u2028"}'),
+             ("TTS_VOICE", " af_bella ", "af_bella"), ("TEAPORT_PERSONA_FILE", "~/p.md", "~/p.md"),
+             ("LLM_REASONING_EFFORT", "  ", ""), ("TEAPORT_SIP_SOCKET", "", "")]
+    for name, given, want in cases:
+        assert settings.canonical(ROWS[name], given) == (want, None), (name, given)
+    assert settings.canonical(ROWS["TTS_VOICE"], "  ") == (None, None)  # not set
+    assert settings.canonical(ROWS["TTS_VOICE"], None) == (None, None)
+    for name, given in (("HEARD_MODE", "loud"), ("GATEWAY_PORT", "7861.0"),
+                        ("TEAPORT_LLM_TEXT_GUARD", "maybe"), ("LEDGER_TRACE", "true")):
+        text, why = settings.canonical(ROWS[name], given)
+        assert text is None and why == parse(ROWS[name], given)[1], (name, given)
+    # The one spelling reads back as the same value, and is its own spelling, for every row.
+    samples = ["1", "0", "-3", "+5", " 0.25 ", "1e3", "yes", "OFF", "low", "NOTE", "truncate",
+               "8000", '{"k": 1}', "ws://h:1/x", "https://h", "123", "~/x", "text", ""]
+    for row in ROWS.values():
+        for given in samples:
+            text, why = settings.canonical(row, given)
+            if not text:
+                continue
+            assert parse(row, text)[0] == parse(row, settings.normalize(row, given))[0], (row["name"], given)
+            assert settings.canonical(row, text) == (text, None), (row["name"], given, text)
 
 
 def main():

@@ -20,6 +20,10 @@ What the routes know comes from config_schema.toml (types, bounds, tiers,
 which file, which unit) — nothing here names a setting. Secrets are never
 returned: the API says whether one is set, and accepts a new value.
 
+GET shows a value as the program that reads it takes it, not as the file spells
+it (_as_read), and PUT writes the brain's reading of what was typed (_accept,
+settings.canonical), so the page needs no parser of its own.
+
 "Pending": a store file newer than a unit's ActiveEnterTimestamp means that
 unit runs on stale config. That is the whole restart story — nothing hot-reloads
 — and it is computed from systemd's own clock, so it is right even for a save
@@ -62,6 +66,8 @@ _SECRET_LOOKING = re.compile(r".*(TOKEN|KEY|SECRET|PASSWORD)$", re.IGNORECASE)
 STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 STORE_FILES = {"engine_env": "engine.env", "brain_env": "brain.env", "bridge_env": "bridge.env",
                "local_audio_env": "local-audio.env"}
+# Shown, never written: the flashing step writes it (WIFI_SETUP_* for the paper insert).
+READ_ONLY_FILES = {"wifi_setup_env": "wifi-setup.env"}
 # Stores whose file IS the feature's on-switch (the unit's ConditionPathExists, and what
 # makes an installer repair keep the feature): the page edits them once the installer
 # has made them, and never creates one — saving a row would quietly opt the box in.
@@ -138,6 +144,24 @@ def parse_env(text: str) -> dict[str, str]:
     return out
 
 
+def parse_conf(text: str) -> dict[str, str]:
+    """The SIP gateway's conf as its own parser reads it (teaport-sip src/config.h,
+    loadConfig): a `#` starts a comment anywhere in a line; a line, its key and its value
+    are trimmed of space, tab, CR and LF only; the first `=` splits; quotes are part of
+    the value; a blank value is the value "" (the default is not used); the last of a
+    repeated key wins. A BOM before the first line is dropped, and a NUL byte ends the
+    file. Lines end at LF alone, so the file is read with newline=""."""
+    out: dict[str, str] = {}
+    for line in text.removeprefix("\ufeff").split("\n"):
+        if "\0" in line:
+            break
+        line = line.split("#", 1)[0].strip(" \t\r\n")
+        if "=" in line and not line.startswith("["):
+            key, _, value = line.partition("=")
+            out[key.strip(" \t\r\n")] = value.strip(" \t\r\n")
+    return out
+
+
 def render_env(text: str, updates: dict[str, str | None]) -> str:
     """Apply {key: value | None} to an env file's text, keeping every line we
     do not touch — comments, blank lines, keys the schema does not know —
@@ -172,40 +196,37 @@ def _rows() -> dict[str, dict]:
 
 
 def _store_path(store: str) -> str:
-    if store in STORE_FILES:
-        return os.path.join(ETC_DIR, STORE_FILES[store])
+    if store in STORE_FILES or store in READ_ONLY_FILES:
+        return os.path.join(ETC_DIR, {**STORE_FILES, **READ_ONLY_FILES}[store])
     if store == "sip_conf":
         return os.path.expanduser(SIP_CONF)
     raise HTTPException(status_code=400, detail=f"unknown store {store!r}")
 
 
-def _read_text(path: str) -> str | None:
+def _read_text(path: str, newline: str | None = None) -> str | None:
     """The file's text; "" when it does not exist; None when it exists but
     cannot be read (a root:root brain.env after a plain-sudo first install —
-    install.sh write_env documents the case). One unreadable store must not
-    take the whole page down."""
+    install.sh write_env documents the case — or not UTF-8). One unreadable store
+    must not take the whole page down. `newline` is open()'s."""
     try:
-        with open(path, encoding="utf-8") as f:
+        with open(path, encoding="utf-8", newline=newline) as f:
             return f.read()
     except FileNotFoundError:
         return ""
-    except OSError as e:
+    except (OSError, ValueError) as e:
         logger.warning(f"config: cannot read {path}: {e}")
         return None
 
 
 def _secret_is_set(row: dict, store_values: dict[str, str]) -> bool:
-    """Set in the process env, in the row's store (an env-file copy, or the
-    sip conf's password, which has no file), or in its secret file."""
-    if os.getenv(row["name"]) or store_values.get(row["name"]):
-        return True
-    path = row.get("file")
-    if not path:
-        return False
-    try:
-        return bool(open(os.path.expanduser(path), encoding="utf-8").read().strip())
-    except OSError:
-        return False
+    """Set in the brain's own env (for a brain.env secret: a unit drop-in counts),
+    in the row's store (an env-file copy, or the sip conf's password, which has no
+    file), or in its secret file — each read by settings.normalize, so a blank one
+    is not set."""
+    name = row["name"]
+    env = os.getenv(name) if row["store"] == "brain_env" else None
+    return any(settings.normalize(row, v) for v in (env, store_values.get(name))) \
+        or settings.secret_file(name) is not None
 
 
 def _is_hidden(name: str, rows: dict[str, dict]) -> bool:
@@ -216,66 +237,81 @@ def _is_hidden(name: str, rows: dict[str, dict]) -> bool:
     return bool(_SECRET_LOOKING.match(name))
 
 
-def _as_read(rows: dict[str, dict], file_values: dict[str, str]) -> dict[str, str]:
-    """A store's values for the page, as the brain reads them: a schema row's text
-    through settings.normalize (stripped; a blank one left out where it means unset,
-    "" where it is a value), a key the schema does not know as written, hidden keys
-    dropped. So the page shows what the box runs on, not the file's spelling of it."""
+# Who reads a row decides what GET shows for it. The brain (setting()) and the Discord
+# bridge (bridge/discord/env.js, the same rule) read a value as settings.canonical gives
+# it: stripped, blank is not set, a value not of the row's type is ignored (it reads as
+# not set: _ignored says what that means for the row). Every other reader gets the text as written and judges it its own way, so GET
+# shows that text, "" included:
+#   - engine.env, and a `read = "unit"` row: systemd hands the text over as is (a quoted
+#     " 240 " stays padded); a blank one is an empty argument, and `--serve ""` stops the
+#     engine rather than meaning its default;
+#   - a `consumer` row: the library reads it (HF_HUB_OFFLINE= is online, not the default);
+#   - the SIP gateway's conf: its own parser (parse_conf), where a blank value is "".
+AS_WRITTEN_STORES = ("engine_env", "sip_conf")
+
+
+def _read_by_rule(row: dict) -> bool:
+    return row["store"] not in AS_WRITTEN_STORES and row.get("read") != "unit" \
+        and "consumer" not in row
+
+
+def _as_read(rows: dict[str, dict], file_values: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+    """A store's values for the page, each as its reader takes it (_read_by_rule): the
+    brain's reading in its one spelling, left out where it is not set, or the text as
+    written; a key the schema does not know as written; hidden keys dropped. And
+    {name: the page's note} for each value the brain ignores (_ignored)."""
     out: dict[str, str] = {}
+    ignored: dict[str, str] = {}
     for name, value in file_values.items():
         if _is_hidden(name, rows):
             continue
-        if name in rows:
-            value = settings.normalize(rows[name], value)
+        if name in rows and _read_by_rule(rows[name]):
+            value, why = settings.canonical(rows[name], value)
+            if why is not None:
+                ignored[name] = _ignored(rows[name], why)
             if value is None:
                 continue
         out[name] = value
-    return out
+    return out, ignored
 
 
-def _validate(row: dict, value: str | None) -> str | None:
-    """None when `value` is an acceptable text for this row; else the reason.
-    `value` is _normalize's text: what the brain will read, None for "not set". What
-    a value IS comes from settings.parse, the same judgement the brain reads it with."""
-    t = row["type"]
-    if not value:
-        # Blank. normalize made it "" only where the code distinguishes it from unset.
-        if value == "" and settings.empty_is_value(row):
-            return None
-        return "empty — clear the field to unset it instead"
-    # An env-file value is one line, as str.splitlines() counts them (\v, \f, \x85,
-    # U+2028 too): quote() does not escape line breaks, and a value that spans lines
-    # would be refused by config_apply (which splits the same way) after validation
-    # had already passed — a 500 with no field named instead of this 400.
-    if t != "json" and value.splitlines() != [value]:
-        return "must be a single line"
-    parsed, problem = settings.parse(row, value)
-    if problem is None and t in ("int", "float"):
-        problem = settings.out_of_bounds(row, parsed)
-    return problem
+def _ignored(row: dict, why: str) -> str:
+    """The page's note for a file value its reader ignores: why, and what the reader does
+    instead, which is what it does with the setting unset."""
+    if row.get("required"):
+        instead = "the setting is missing"  # LLM_BASE_URL, the bridge's guild: it cannot run
+    elif "default" in row or "default_by" in row:
+        instead = "the default applies"
+    else:
+        instead = "it reads as not set"
+    return f"The value in the file is not used — {why}; {instead}."
 
 
-def _normalize(row: dict, value: str) -> str | None:
-    """The text that goes in the file: settings.normalize's, the text the brain reads
-    it as — stripped, a blank one None ("not set", which _validate refuses: clearing
-    the field is how to unset) or "" where the row says empty is a value. A json row
-    is what the page's textarea holds — pretty-printed pastes included — compacted to
-    one line; the JSON is unchanged."""
-    text = settings.normalize(row, value)
-    if row["type"] == "json" and text:
-        try:
-            return json.dumps(json.loads(text), separators=(",", ":"))
-        except ValueError:
-            return text  # _validate names the problem
-    return text
+def _accept(row: dict, value: str | None) -> tuple[str | None, str | None]:
+    """(the text to write, None) for a value typed on the page, or (None, the reason).
+    The text is the brain's reading of it (settings.canonical): stripped, in its one
+    spelling, so what the page writes is what the brain reads. Blank is refused where it
+    means "not set" (clearing the field is how to unset; a secret cannot be). An env file
+    holds one line per value, as str.splitlines() counts lines (\\v, \\f, \\x85, U+2028
+    too): quote() does not escape line breaks, and config_apply, which splits the same
+    way, would refuse the file — a 500 naming no field instead of this 400."""
+    text, problem = settings.canonical(row, value)
+    if text is None and problem is None:
+        problem = ("a secret cannot be cleared from here" if row["type"] == "secret"
+                   else "empty — clear the field to unset it instead")
+    elif text and text.splitlines() != [text]:
+        problem = "must be a single line"
+    elif text and row["type"] in ("int", "float"):
+        problem = settings.out_of_bounds(row, settings.parse(row, text)[0])
+    return (None, problem) if problem else (text, None)
 
 
 def _effective(rows: dict[str, dict], values: dict[str, str]) -> dict[str, float]:
     """Numeric view of the settings a constraint may name: the value in the
-    file if set and numeric (as the brain reads it), else the row default."""
+    file as the brain reads it, else (unset, or not a value) the row default."""
     out: dict[str, float] = {}
     for name, row in rows.items():
-        raw = settings.normalize(row, values.get(name))
+        raw, _ = settings.canonical(row, values.get(name))
         raw = row.get("default") if raw is None else raw
         try:
             out[name] = float(raw)  # type: ignore[arg-type]
@@ -407,17 +443,20 @@ async def get_config(request: Request):
     rows = _rows()
 
     values: dict[str, dict[str, str]] = {}
+    ignored: dict[str, str] = {}
     parsed: dict[str, dict[str, str]] = {}
     mtimes: dict[str, float | None] = {}
     unreadable: list[str] = []
-    for store in list(STORE_FILES) + ["sip_conf"]:
+    for store in [*STORE_FILES, *READ_ONLY_FILES, "sip_conf"]:
         path = _store_path(store)
-        text = await asyncio.to_thread(_read_text, path)
+        conf = store == "sip_conf"
+        text = await asyncio.to_thread(_read_text, path, "" if conf else None)
         if text is None:
             unreadable.append(store)
             text = ""
-        parsed[store] = parse_env(text)
-        values[store] = _as_read(rows, parsed[store])
+        parsed[store] = parse_conf(text) if conf else parse_env(text)
+        values[store], why = _as_read(rows, parsed[store])
+        ignored.update(why)
         mtimes[store] = _mtime(path)
 
     absent = [s for s in OPT_IN_STORES if not os.path.exists(_store_path(s))]
@@ -449,6 +488,7 @@ async def get_config(request: Request):
         "schema": {"groups": schema["groups"], "stores": schema["stores"],
                    "settings": schema["settings"], "constraints": schema.get("constraints", [])},
         "values": values,
+        "ignored": ignored,
         "secrets": secrets,
         "services": {u: s["state"] for u, s in states.items()},
         "pending": pending,
@@ -480,29 +520,21 @@ async def put_config(request: Request):
         if row["tier"] == "installer":
             errors[name] = "set by the installer; re-run install.sh to change it"
             continue
-        if value is None:
-            if row["type"] == "secret":
-                errors[name] = "a secret cannot be cleared from here"
-            else:
-                env_updates[name] = None
-            continue
-        if not isinstance(value, str):
+        if value is not None and not isinstance(value, str):
             errors[name] = "must be text"
             continue
-        if row["type"] == "secret":
-            if not value.strip() or "\n" in value or "\r" in value:
-                errors[name] = "must be one non-empty line"
-            elif not row.get("file"):
-                errors[name] = "has no secret file"
-            else:
-                secret_updates[name] = value.strip()
+        if value is None and row["type"] != "secret":
+            env_updates[name] = None
             continue
-        value = _normalize(row, value)
-        err = _validate(row, value)
+        text, err = _accept(row, value)
         if err:
             errors[name] = err
+        elif row["type"] != "secret":
+            env_updates[name] = text
+        elif not row.get("file"):
+            errors[name] = "has no secret file"
         else:
-            env_updates[name] = value
+            secret_updates[name] = text
     if errors:
         return JSONResponse(status_code=400, content={"errors": errors})
 

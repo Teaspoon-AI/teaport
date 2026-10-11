@@ -19,7 +19,9 @@
 # handles it -- a file, not a line, which went stale under every edit above it -- and
 # FORMS says what handling it means for that kind of file: the store's `writer` writes
 # it into the store, a unit expands it from the store, the CLI reads it from the store,
-# the Discord bridge reads process.env, the brain module setdefaults it. Each listed
+# the Discord bridge reads process.env (by name, or through its env.js: setting("NAME"),
+# a bare call, not some object's .setting()),
+# the brain module setdefaults it. Each listed
 # file must do so (merely naming it is not enough: install.sh names ENGINE_PORT as its
 # own shell variable and BRIDGE_GUILD_ID in a sed read-back), and no other file in
 # HANDLERS may do so unlisted.
@@ -57,7 +59,7 @@ FORMS = {
         (r"""<<-?[ \t]*(['"]?)(\w+)\1(?![^\s;&|<>)]).*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
     ("shell", "uses"): (r'\benvval[ \t]+"[^"\n]*/{file}"[ \t]+{name}\b',),
     ("unit", "uses"): (r"^EnvironmentFile=-?\S*/{file}$", r"\$\{{{name}\}}"),
-    ("js", "uses"): (r"\bprocess\.env\.{name}\b",),
+    ("js", "uses"): (r"""\bprocess\.env\.{name}\b|(?<![.\w$])setting\(\s*(["']){name}\1""",),
     ("python", "uses"): (SETDEFAULT,),
 }
 # Comments, by kind (python: tokenize): a shell `#` starts a word, a unit's a line.
@@ -86,10 +88,17 @@ def empty_problem(r: dict) -> str | None:
             or not isinstance(r["empty"], str) or not r["empty"]):
         return "empty is the words for what \"\" means, on a text row"
     # Unset reads as the default and set-but-empty as "": with default "" they are one
-    # value, and `empty` would name a difference there is not. `required` may go with
-    # `empty`: the operator must choose, and off is a choice.
-    if r.get("default") == "":
-        return "empty with default \"\": unset already reads as \"\""
+    # value, and `empty` would name a difference there is not -- nor may a default_by
+    # entry be "", or unset is off in that mode. `required` may go with `empty`: the
+    # operator must choose, and off is a choice.
+    if r.get("default") == "" or any(
+            "" in table.values() for table in r.get("default_by", {}).values()):
+        return "empty with a default of \"\": unset already reads as \"\""
+    # The config page has no control for "" as a value on a text row (clearing the field
+    # is unset), so such a row is the installer's: TEAPORT_SIP_SOCKET, whose "off" is
+    # `teaport sip`'s to set, not a field's.
+    if r.get("tier") != "installer":
+        return "empty on a row the config page edits: it has no control for \"\""
     return None
 
 
@@ -212,6 +221,10 @@ const U = process.env.BRAIN_URL || "ws://h", V = process.env.TEAPORT_VOICE;
 // const PRIME = process.env.BRIDGE_PRIME_MS;
 const J = /* process.env.BRIDGE_JOIN_CHANNEL_ID || */ "";
 log("set BRIDGE_GUILD_ID");
+const F = setting("BRIDGE_FOLLOW_USER_ID", "snowflake") || "", T = setting('DISCORD_BOT_TOKEN');
+// setting("DISCORD_BOT_TOKEN_FILE")
+const P = presetting("BRIDGE_PRIME_MS"), Q = setting("BRAIN_URL_X"), R = setting(`TTS_CTX`);
+const S = cfg.setting("ENGINE_LOG"), D = $setting("GATEWAY_PORT");
 """,
     "brain/teaport_brain/pkg.py": """import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -249,6 +262,8 @@ def source_self_test() -> list[str]:
             (True, "ENGINE_PORT", unit, "engine_env"),
             (True, "BRAIN_URL", js, "bridge_env"),
             (True, "TEAPORT_VOICE", js, "bridge_env"),           # after a ws://
+            (True, "BRIDGE_FOLLOW_USER_ID", js, "bridge_env"),   # env.js's setting("NAME", type)
+            (True, "DISCORD_BOT_TOKEN", js, "bridge_env"),       # setting('NAME')
             (True, "HF_HUB_OFFLINE", py, "brain_env"),
             (False, "ENGINE_PORT", sh, "engine_env"),            # its own shell variable
             (False, "BRIDGE_GUILD_ID", sh, "bridge_env"),        # a read-back and a warning
@@ -267,6 +282,12 @@ def source_self_test() -> list[str]:
             (False, "BRIDGE_PRIME_MS", js, "bridge_env"),        # a comment
             (False, "BRIDGE_JOIN_CHANNEL_ID", js, "bridge_env"),  # a /* comment */
             (False, "BRIDGE_GUILD_ID", js, "bridge_env"),        # a string
+            (False, "DISCORD_BOT_TOKEN_FILE", js, "bridge_env"),  # a setting() in a comment
+            (False, "BRIDGE_PRIME_MS", js, "bridge_env"),        # another function's call
+            (False, "BRAIN_URL_", js, "bridge_env"),             # a prefix of a setting() name
+            (False, "TTS_CTX", js, "bridge_env"),                # unmatched quotes
+            (False, "ENGINE_LOG", js, "bridge_env"),             # another object's .setting()
+            (False, "GATEWAY_PORT", js, "bridge_env"),           # another name ending in setting
             (False, "MALLOC_ARENA_MAX", py, "brain_env"),        # forced, not a default
             (False, "TTS_CTX", py, "brain_env"),                 # a comment
             (False, "ENGINE_PORT", "docs/README.md", "engine_env"),  # no FORMS rule
@@ -337,12 +358,14 @@ def main() -> int:
         if "min" in r and "max" in r and r["min"] > r["max"]:
             problems.append(f"{n}: min > max")
 
-    for bad in ({"type": "int", "empty": "off"}, {"type": "path", "empty": ""},
-                {"type": "path", "empty": "off", "default": ""}):
+    ok = {"type": "path", "empty": "off", "tier": "installer"}
+    for bad in ({**ok, "type": "int"}, {**ok, "empty": ""}, {**ok, "default": ""},
+                {**ok, "default_by": {"MODE": {"a": "/x", "": ""}}}, {**ok, "tier": "setup"}):
         if empty_problem(bad) is None:
             problems.append(f"self-test: empty accepted on {bad}")
-    if empty_problem({"type": "path", "empty": "off", "required": True}) is not None:
-        problems.append("self-test: empty refused on a required row")
+    for good in ({**ok, "required": True}, {**ok, "default_by": {"MODE": {"a": "/x", "": "/y"}}}):
+        if empty_problem(good) is not None:
+            problems.append(f"self-test: empty refused on {good}")
 
     for c in schema.get("constraints", []):
         refs = []

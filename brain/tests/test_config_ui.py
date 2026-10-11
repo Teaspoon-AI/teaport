@@ -9,6 +9,12 @@
 #   - GET never returns a secret, even one sitting in the env file (a schema
 #     secret, or a hand-added key that looks like one), and says whether each
 #     is set — from the env, the file, or the store (the sip password).
+#   - GET shows each value as its reader takes it: the brain's reading in one
+#     spelling (settings.canonical) for what the brain and the Discord bridge read,
+#     with the values the brain ignores named; the text as written for what the
+#     engine, a unit's command line, a library or the SIP gateway's parser reads.
+#   - A secret is written as the brain reads it (stripped), so its file and an
+#     env-file copy read the same.
 #   - PUT validates per row (type, bounds, enum, json, installer tier, one line,
 #     finite) and refuses the cross-row constraints unless forced; then writes
 #     through the privileged hook with the whole new file, and secrets to their
@@ -31,7 +37,7 @@ import os
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from teaport_brain import config_ui
+from teaport_brain import config_ui, settings
 import appliance
 from tempdirs import tempdir
 
@@ -159,21 +165,132 @@ def test_get_shows_values_as_the_brain_reads_them():
     # A hand-edited file's spelling is not what the page shows (#136): a blank flag is
     # unset (the brain reads its default, not "off"), a padded one is its word, a blank
     # enum that lists "" is "". A key the schema does not know stays as written.
+    # And the brain's reading in its one spelling, so the page's controls match it with
+    # no parser of their own: TRUNCATE is the truncate option, yes and On are on (1).
     client, etc, home, calls = setup()
     with open(os.path.join(etc, "brain.env"), "w") as f:
         f.write('TEAPORT_LLM_TEXT_GUARD=\nLEDGER_TRACE=" 1 "\nLLM_REASONING_EFFORT="  "\n'
-                'TTS_VOICE=" af_bella "\nOPERATOR_ONLY=" keep "\n')
-    values = client.get("/api/config", headers=H).json()["values"]["brain_env"]
+                'TTS_VOICE=" af_bella "\nOPERATOR_ONLY=" keep "\nHEARD_MODE=TRUNCATE\n'
+                'TEAPORT_TRACE=yes\nTEAPORT_THINKING_SOUND=On\nENDPOINT_STOP_SECS=0.50\n'
+                'GATEWAY_PORT=+7861\nLLM_EXTRA_BODY={ "a": 1 }\nVAD_SAMPLE_RATE=22050\n'
+                'TEAPORT_URL=http://x\n')
+    body = client.get("/api/config", headers=H).json()
+    values = body["values"]["brain_env"]
     assert "TEAPORT_LLM_TEXT_GUARD" not in values, values
     assert values["LEDGER_TRACE"] == "1"
     assert values["LLM_REASONING_EFFORT"] == ""
     assert values["TTS_VOICE"] == "af_bella"
     assert values["OPERATOR_ONLY"] == " keep "
+    assert (values["HEARD_MODE"], values["TEAPORT_TRACE"], values["TEAPORT_THINKING_SOUND"]) == \
+        ("truncate", "1", "1"), values
+    assert (values["ENDPOINT_STOP_SECS"], values["GATEWAY_PORT"], values["LLM_EXTRA_BODY"]) == \
+        ("0.5", "7861", '{"a":1}'), values
+    # A value the brain ignores (it reads the default) is not shown as the value; the page
+    # is told why, in the brain's words.
+    assert "VAD_SAMPLE_RATE" not in values and "TEAPORT_URL" not in values
+    rows = config_ui._rows()
+    why = {n: settings.parse(rows[n], v)[1] for n, v in (("VAD_SAMPLE_RATE", "22050"),
+                                                        ("TEAPORT_URL", "http://x"))}
+    assert body["ignored"] == {n: f"The value in the file is not used — {w}; the default applies."
+                               for n, w in why.items()}, body["ignored"]
     # The constraint check reads the file the same way: padded is the number.
     rows = config_ui._rows()
     assert config_ui._effective(rows, {"ENDPOINT_STOP_SECS": " 0.4 "})["ENDPOINT_STOP_SECS"] == 0.4
     assert config_ui._effective(rows, {"ENDPOINT_STOP_SECS": " "})["ENDPOINT_STOP_SECS"] == \
         float(rows["ENDPOINT_STOP_SECS"]["default"])
+
+
+def test_an_ignored_value_says_what_its_reader_does_and_can_be_removed():
+    # Ignored is "read as not set", which is the default only where there is one: a
+    # required row is missing (LLM_BASE_URL; the bridge exits without its guild), and a
+    # row with neither reads as not set.
+    client, etc, home, calls = setup()
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write("LLM_BASE_URL=ftp://x\nHEARD_MODE=loud\n")
+    with open(os.path.join(etc, "bridge.env"), "w") as f:
+        f.write("BRIDGE_GUILD_ID=12a\nBRIDGE_JOIN_CHANNEL_ID=12a\n")
+    ignored = client.get("/api/config", headers=H).json()["ignored"]
+    instead = {n: note.rsplit("; ", 1)[1] for n, note in ignored.items()}
+    assert instead == {"LLM_BASE_URL": "the setting is missing.", "HEARD_MODE": "the default applies.",
+                       "BRIDGE_GUILD_ID": "the setting is missing.",
+                       "BRIDGE_JOIN_CHANNEL_ID": "it reads as not set."}, ignored
+    # The page's "unset" on an ignored row is a real edit: it removes the line.
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"HEARD_MODE": None}})
+    assert r.status_code == 200, r.text
+    assert "HEARD_MODE" not in open(os.path.join(etc, "brain.env")).read()
+    assert "HEARD_MODE" not in client.get("/api/config", headers=H).json()["ignored"]
+
+
+def test_doctor_reads_a_blank_secret_as_not_set():
+    # `teaport doctor`'s two secret checks (cli/teaport cmd_doctor) by the same rule as the
+    # brain: a blank or whitespace-only llm_key and a GATEWAY_TOKEN="  " are not set. The
+    # CLI's functions as they are (everything above its dispatch, as test_tts_pacing.py
+    # takes them), then those two lines of cmd_doctor.
+    import pathlib
+    import subprocess
+    text = (pathlib.Path(__file__).resolve().parents[2] / "cli" / "teaport").read_text()
+    lines = [l for l in text.splitlines() if 'ok "GATEWAY_TOKEN set"' in l or 'ok "LLM API key present"' in l]
+    assert len(lines) == 2, lines
+    prefix = text[:text.index('cmd="${1:-}"; shift || true')]
+
+    def doctor(token_line, key_file, key_env=""):
+        etc, secrets = tempdir("doctor-etc-"), tempdir("doctor-secrets-")
+        with open(os.path.join(etc, "brain.env"), "w") as f:
+            f.write(token_line + "\n")
+        if key_file is not None:
+            with open(os.path.join(secrets, "llm_key"), "w") as f:
+                f.write(key_file)
+        script = (prefix + f"ETC={etc}; SECRETS={secrets}\n"
+                  'ok() { echo "OK $*"; }; warnc() { echo "WARN $*"; }\n' + "\n".join(lines) + "\n")
+        env = {k: v for k, v in os.environ.items() if k != "LLM_API_KEY"}
+        if key_env:
+            env["LLM_API_KEY"] = key_env
+        p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+        return [l.split()[0] for l in p.stdout.splitlines()]
+
+    assert doctor("GATEWAY_TOKEN=t0k3n", "sk-x\n") == ["OK", "OK"]
+    assert doctor('GATEWAY_TOKEN="  "', " \n\t\n") == ["WARN", "WARN"]
+    assert doctor("GATEWAY_TOKEN=", "") == ["WARN", "WARN"]
+    assert doctor("GATEWAY_TOKEN=''", None, key_env="  ") == ["WARN", "WARN"]
+    assert doctor('GATEWAY_TOKEN="t0k3n"', None, key_env="sk-x") == ["OK", "OK"]
+
+
+def test_get_shows_what_other_readers_get_as_written():
+    # Rows the brain does not read are shown as their reader receives the text, because
+    # each judges it its own way. engine.env and a unit's ${VAR}: systemd hands over a
+    # quoted value's padding, and a blank is an empty argument (`--serve ""` stops the
+    # engine; it does not mean the default). A library's row: HF_HUB_OFFLINE= is online.
+    client, etc, home, calls = setup()
+    with open(os.path.join(etc, "engine.env"), "w") as f:
+        f.write('ENGINE_PORT=\nENGINE_DELAY=" 240 "\nKOKORO_RESERVE_FPT=6.0\n')
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write("BRAIN_PORT=\nHF_HUB_OFFLINE=\nMALLOC_ARENA_MAX=0x2\n")
+    # The SIP gateway's own parser: `#` starts a comment anywhere, quotes are kept, a
+    # blank value is "" (its default is not used), the last of a repeated key wins, only
+    # space/tab/CR/LF are trimmed, a line without `=` or a [section] is skipped.
+    with open(config_ui.SIP_CONF, "w", newline="") as f:
+        f.write('\ufeff[sip]\r\naec = True   # A/B\r\nrealm =\nusername = "me"\n'
+                'registrar_uri = sip:a\nregistrar_uri = sip:b\nid_uri =\xa0x\xa0\nbogus\n'
+                'password = # fill in\nlog_level = 4\x00\nreg_timeout = 60\n')
+    body = client.get("/api/config", headers=H).json()
+    assert body["values"]["engine_env"] == {"ENGINE_PORT": "", "ENGINE_DELAY": " 240 ",
+                                            "KOKORO_RESERVE_FPT": "6.0"}, body["values"]["engine_env"]
+    assert body["values"]["brain_env"] == {"BRAIN_PORT": "", "HF_HUB_OFFLINE": "",
+                                           "MALLOC_ARENA_MAX": "0x2"}, body["values"]["brain_env"]
+    assert body["values"]["sip_conf"] == {"aec": "True", "realm": "", "username": '"me"',
+                                          "registrar_uri": "sip:b", "id_uri": "\xa0x\xa0"}, \
+        body["values"]["sip_conf"]
+    assert body["secrets"]["password"] is False  # `password = # fill in` is no password
+    assert body["ignored"] == {}
+    # wifi-setup.env is shown (read-only), not reported as unset.
+    with open(os.path.join(etc, "wifi-setup.env"), "w") as f:
+        f.write("WIFI_SETUP_SSID=teaport-box\nWIFI_SETUP_PASSWORD=12345678\n")
+    body = client.get("/api/config", headers=H).json()
+    assert body["values"]["wifi_setup_env"] == {"WIFI_SETUP_SSID": "teaport-box"}
+    assert body["secrets"]["WIFI_SETUP_PASSWORD"] is True and "12345678" not in json.dumps(body)
+    assert "wifi_setup_env" not in body["writable"]
+    r = client.put("/api/config", headers=H, json={"store": "wifi_setup_env", "values": {"WIFI_SETUP_SSID": "x"}})
+    assert r.status_code == 400 and calls == []
 
 
 def test_token_compare_is_constant_time_and_total():
@@ -263,10 +380,10 @@ def test_put_validation():
     assert "clear the field" in errs["LLM_MODEL"]
     assert "finite" in errs["SMARTTURN_COMPLETE_THRESHOLD"]
     for bad in ("inf", "1e999", "-nan"):
-        assert config_ui._validate({"type": "float"}, bad), bad
+        assert config_ui._accept({"type": "float"}, bad)[1], bad
     # every line break config_apply's splitlines() splits on, not only \n and \r
     for brk in "\v\f\x1c\x1d\x1e\x85\u2028\u2029":
-        assert config_ui._validate({"type": "string"}, f"a{brk}b") == "must be a single line", repr(brk)
+        assert config_ui._accept({"type": "string"}, f"a{brk}b") == (None, "must be a single line"), repr(brk)
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TTS_LANGUAGE": "en x"}})
     assert r.status_code == 400 and r.json()["errors"]["TTS_LANGUAGE"] == "must be a single line", r.text
     assert "installer" in errs["GATEWAY_TOKEN"]
@@ -291,7 +408,7 @@ def test_put_validation():
     assert r.status_code == 400 and "TTS_VOICE" in r.json()["errors"]
     # ... and where a row's `empty` says what "" means (#127). TEAPORT_SIP_SOCKET has one
     # but is installer tier, so the page shows its "off" and never writes it.
-    assert config_ui._validate({"type": "path", "empty": "off"}, "") is None
+    assert config_ui._accept({"type": "path", "empty": "off"}, "") == ("", None)
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": ""}})
     assert r.status_code == 400 and "installer" in r.json()["errors"]["TEAPORT_SIP_SOCKET"]
     from unittest import mock
@@ -302,14 +419,20 @@ def test_put_validation():
             r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": blank}})
         assert r.status_code == 200, r.text
         assert 'TEAPORT_SIP_SOCKET=""\n' in open(os.path.join(etc, "brain.env")).read()
-    # Whatever the page writes, the brain reads back as written: stripped, as setting() does.
+    # Whatever the page writes, the brain reads back as written: stripped, as setting()
+    # does, and in the one spelling GET shows it in.
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
-        "TTS_VOICE": " af_bella ", "ENDPOINT_STOP_SECS": " 0.5\n", "LLM_REASONING_EFFORT": "  "}})
+        "TTS_VOICE": " af_bella ", "ENDPOINT_STOP_SECS": " 0.50\n", "LLM_REASONING_EFFORT": "  ",
+        "HEARD_MODE": "NOTE", "TEAPORT_TRACE": "yes", "TTS_CONNECT_RETRIES": "+05"}})
     assert r.status_code == 200, r.text
     env = config_ui.parse_env(open(os.path.join(etc, "brain.env")).read())
-    assert (env["TTS_VOICE"], env["ENDPOINT_STOP_SECS"], env["LLM_REASONING_EFFORT"]) == ("af_bella", "0.5", ""), env
-    for name in ("TTS_VOICE", "ENDPOINT_STOP_SECS", "LLM_REASONING_EFFORT"):
-        assert config_ui.settings.normalize(rows[name], env[name]) == env[name]
+    written = {n: env[n] for n in ("TTS_VOICE", "ENDPOINT_STOP_SECS", "LLM_REASONING_EFFORT",
+                                   "HEARD_MODE", "TEAPORT_TRACE", "TTS_CONNECT_RETRIES")}
+    assert written == {"TTS_VOICE": "af_bella", "ENDPOINT_STOP_SECS": "0.5", "LLM_REASONING_EFFORT": "",
+                       "HEARD_MODE": "note", "TEAPORT_TRACE": "1", "TTS_CONNECT_RETRIES": "5"}, written
+    shown = client.get("/api/config", headers=H).json()["values"]["brain_env"]
+    for name, text in written.items():
+        assert settings.canonical(rows[name], text) == (text, None) and shown[name] == text, name
     # a pretty-printed JSON paste is compacted to the one line an env file can hold
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
         "LLM_EXTRA_BODY": '{\n  "provider": {\n    "order": ["Cerebras"]\n  }\n}\n'}})
@@ -340,7 +463,7 @@ def test_put_writes_env_and_secrets():
     assert "  INDENTED_BY_HAND=1\n" in new and "export EXPORTED_BY_HAND = 2\n" in new
     parsed = config_ui.parse_env(new)
     assert parsed["ENDPOINT_STOP_SECS"] == "0.5" and parsed["TTS_VOICE"] == "af_bella"
-    assert parsed["TEAPORT_LLM_TEXT_GUARD"] == "off"
+    assert parsed["TEAPORT_LLM_TEXT_GUARD"] == "0"  # the brain's reading of "off", spelled once
     key_path = os.path.join(home, "llm_key")
     assert open(key_path).read() == "sk-new-key\n"
     assert oct(os.stat(key_path).st_mode & 0o777) == "0o600"
@@ -356,6 +479,44 @@ def test_put_writes_env_and_secrets():
     assert r.status_code == 200 and calls[-1] == ("restart", "teaport-brain", None)
     r = client.post("/api/restart", headers=H, json={"unit": "sshd"})
     assert r.status_code == 400
+
+
+def test_a_secret_is_written_as_the_brain_reads_it():
+    # The rule for every secret, wherever it is read from: stripped, blank is not set
+    # (settings.normalize). The page writes the file by it, and the brain reads the file
+    # and an env-file copy by it, so the two agree whichever one the brain finds.
+    client, etc, home, calls = setup()
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"LLM_API_KEY": "\t sk-padded \n"}})
+    assert r.status_code == 200, r.text
+    key_path = os.path.join(home, "llm_key")
+    assert open(key_path).read() == "sk-padded\n"
+    assert settings.secret_file("LLM_API_KEY") == "sk-padded"
+    assert settings.setting("LLM_API_KEY", env={"LLM_API_KEY": "\t sk-padded \n"}) == "sk-padded"
+    from teaport_brain import openclaw_client, services
+    assert services.get_llm_api_key() == "sk-padded"
+    for bad in ("   ", None, "sk\nx", "sk\u2028x"):
+        r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"LLM_API_KEY": bad}})
+        assert r.status_code == 400 and "LLM_API_KEY" in r.json()["errors"], (bad, r.text)
+    assert open(key_path).read() == "sk-padded\n"
+    # OpenClaw's token: the env var, else the file, both by the same rule.
+    tok = os.path.join(home, "openclaw_token")
+    with open(tok, "w") as f:
+        f.write("  oc-tok\n")
+    os.environ.pop("OPENCLAW_GATEWAY_TOKEN", None)
+    assert openclaw_client._token() == "oc-tok"
+    os.environ["OPENCLAW_GATEWAY_TOKEN"] = "  "  # blank: not set, so the file
+    try:
+        assert openclaw_client._token() == "oc-tok"
+    finally:
+        os.environ.pop("OPENCLAW_GATEWAY_TOKEN")
+    # GET's "is it set" uses the same rule: a blank env-file copy and a blank file are not.
+    os.remove(tok)
+    with open(os.path.join(etc, "brain.env"), "a") as f:
+        f.write('OPENCLAW_GATEWAY_TOKEN="  "\n')
+    assert client.get("/api/config", headers=H).json()["secrets"]["OPENCLAW_GATEWAY_TOKEN"] is False
+    with open(tok, "w") as f:
+        f.write(" \n")
+    assert client.get("/api/config", headers=H).json()["secrets"]["OPENCLAW_GATEWAY_TOKEN"] is False
 
 
 def test_apply_helper_rejects_junk():
@@ -565,14 +726,6 @@ def test_apply_helper_stop_also_cancels_a_scheduled_start():
 
 
 if __name__ == "__main__":
-    appliance.run_tests([
-        test_env_roundtrip, test_get_masks_secrets_and_requires_token,
-        test_get_shows_values_as_the_brain_reads_them,
-        test_token_compare_is_constant_time_and_total, test_put_validation,
-        test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
-        test_apply_helper_backup_ring_spares_operator_backups,
-        test_unreadable_store_is_reported_not_fatal,
-        test_secret_file_pending_for_startup_readers,
-        test_opt_in_store_is_never_created_from_the_page, test_wifi_section,
-        test_apply_helper_stop_also_cancels_a_scheduled_start,
-    ])
+    # Every test_ function, in the order it is defined: a hand-kept list left
+    # test_wifi_setup_busy_reads_the_unit_and_its_pending_start unrun from 1f8840e on.
+    appliance.run_tests([fn for name, fn in list(globals().items()) if name.startswith("test_")])

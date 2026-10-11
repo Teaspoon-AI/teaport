@@ -12,7 +12,6 @@
 
 import asyncio
 import logging
-import os
 import time
 from dataclasses import dataclass
 from typing import Sequence
@@ -24,7 +23,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pipecat.frames.frames import FunctionCallFromLLM, SystemFrame
 from pipecat.services.openai.llm import OpenAILLMService
 
-from teaport_brain.settings import setting
+from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
 
 TEAPORT_URL = setting("TEAPORT_URL")
@@ -59,13 +58,9 @@ def get_llm_api_key() -> str:
     # LLM_API_KEY wins; else the installer-written key file. A local
     # OpenAI-compatible server that ignores auth still needs a placeholder —
     # set LLM_API_KEY=sk-local (or write it to the file).
-    key = setting("LLM_API_KEY")
+    key = setting("LLM_API_KEY") or secret_file("LLM_API_KEY")
     if key:
         return key
-    path = os.path.expanduser("~/.config/teaport/llm_key")
-    if os.path.exists(path):
-        with open(path) as f:
-            return f.read().strip()
     raise RuntimeError(
         "no LLM API key — set LLM_API_KEY or write ~/.config/teaport/llm_key "
         "(see docs/CONFIG.md)"
