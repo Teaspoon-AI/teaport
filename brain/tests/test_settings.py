@@ -204,9 +204,12 @@ def test_a_secret_is_read_by_the_same_rule_from_its_env_var_or_its_file():
                 f.write(text)
             assert settings.secret_file("LLM_API_KEY") == want, text
             assert setting("LLM_API_KEY", env={"LLM_API_KEY": text}) == want, text
-        os.chmod(row["file"], 0)
-        if os.geteuid() != 0:  # root reads anything
-            assert settings.secret_file("LLM_API_KEY") is None  # unreadable: warned, not raised
+        with open(row["file"], "wb") as f:  # not UTF-8, and then a directory: unreadable
+            f.write(b"\xffsk-x\n")             # as root too; warned, not raised
+        assert settings.secret_file("LLM_API_KEY") is None
+        os.remove(row["file"])
+        os.mkdir(row["file"])
+        assert settings.secret_file("LLM_API_KEY") is None
     finally:
         row["file"] = old
     assert settings.secret_file("GATEWAY_TOKEN") is None  # a secret with no file
