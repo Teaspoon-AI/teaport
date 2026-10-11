@@ -13,31 +13,45 @@
 #     still behind on the audio that came in during Smart Turn's inference, and the
 #     caller's next word had begun in it.
 #
+# Everything runs on the REAL analyzer the session builds -- pipecat's VAD state machine
+# under the speech-onset mixin, with Silero's confidence scripted per 32 ms chunk -- in
+# lockstep with the real service, frame by frame, the way the user aggregator drives it
+# behind the STT: its VAD starts and stops are what reach the service, and the audio
+# that came in during an inference waits in a backlog until the test lets it through.
+# 0.9 is speech by both tests, 0.65 is voice the onset test hears and the VAD does not,
+# 0.1 is quiet.
+#
 # What these pin, in order:
 #
 #   * the ceiling's commit no longer claims voice heard during the hold: with the
 #     voice still going it waits, and the VAD start then keeps the segment whole; with
-#     a blip long over, it commits at once and counts the hint from the blip's end;
-#   * a COMPLETE verdict waits for the analyzer to hear the inference's backlog, and
-#     voice in it holds the boundary, so the resumed sentence is one segment and one
-#     commit, stamped with the stop that closes it;
-#   * a blip that is not followed by a VAD start costs a pause of the stop's own window,
-#     no more, and the segment line says what the boundary was held for;
-#   * the bounds: voice that never pauses commits at the session's ceiling, an
-#     analyzer that never catches up is passed over after _VOICE_CATCHUP_SECS, each
-#     with a warning, and counts that disagree turn the marks off for the session;
-#   * with no voice since the stop nothing changes: a current analyzer commits at the
-#     verdict itself with the same hint as before, and a lagging one only for as long
-#     as its backlog takes;
-#   * and the real onset mixin, driven in lockstep with the service as the aggregator
-#     drives it, keeps marks on the same count the service keeps, so the positions the
-#     two compare are the same audio.
+#     a cough long over, it commits at once and counts the hint from the cough's end;
+#   * a COMPLETE verdict waits for the analyzer to hear the inference's backlog, and a
+#     word starting in it holds the boundary, so the resumed sentence is one segment and
+#     one commit, stamped with the stop that closes it;
+#   * a cough shorter than an onset costs nothing past its own end; an onset the VAD
+#     never starts on costs the stop's own window of quiet, no more, and the segment
+#     line says what the boundary was held for;
+#   * voice inside the stop's own window is not voice since the stop: the verdict
+#     commits at once (the stop's position, and the filter on it, are what decide);
+#   * with no voice since the stop, a lagging analyzer costs only its backlog: the
+#     commit follows its catch-up at once, woken by it, with the hint placed on the
+#     analyzer's own speech end;
+#   * the bounds: voice that never pauses commits at the session's ceiling, the third
+#     such turn running stands the wait down; an analyzer that never catches up is
+#     passed over after _VOICE_CATCHUP_SECS, the third time running turns the marks off,
+#     as do counts that disagree outright; and audio passed down unsent (a dead socket)
+#     is not a disagreement;
+#   * a second verdict during the wait changes nothing, the bound included; and a wait
+#     that fails still commits the segment.
 #
-# Run: python test_commit_over_resumed_voice.py   (or via pytest test_suite.py)
+# Run as a script: python test_commit_over_resumed_voice.py (or via test_suite.py).
+# `pytest` on this file directly does not run its async tests.
 #
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
@@ -56,21 +70,28 @@ from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 from stt_harness import WireRecorder  # noqa: E402
 
 import teaport_brain.stt as stt_mod  # noqa: E402
+from teaport_brain import speech_onset  # noqa: E402
 from teaport_brain.endpointing import TurnVerdictFrame  # noqa: E402
-from teaport_brain.speech_onset import SpeechOnsetMixin, VoiceMarks  # noqa: E402
+from teaport_brain.speech_onset import SpeechOnsetMixin  # noqa: E402
 from teaport_brain.stt import TeaportSTTService  # noqa: E402
 
 SAMPLE_RATE = 16000
-CHUNK_MS = 20
-FRAME = int(SAMPLE_RATE * CHUNK_MS / 1000)          # samples per 20 ms frame
-CHUNK = b"\x00\x02" * FRAME
-STOP_SECS = 0.2                                     # Talk's VAD stop
+CHUNK = 512                                         # one Silero chunk, 32 ms
+FRAME = b"\x00\x02" * CHUNK
+STOP_SECS = 0.2                                     # Talk's VAD stop: 6 chunks to trip
+PAUSE = 7                                           # chunks of quiet the onset's offset needs
 MARGIN = 100
 CEILING = 0.15                                      # the session's ceiling, shortened
 CATCHUP = 0.05                                      # _VOICE_CATCHUP_SECS, shortened
 
+SPEECH, VOICE, QUIET = 0.9, 0.65, 0.1
+
 DOWN = FrameDirection.DOWNSTREAM
 UP = FrameDirection.UPSTREAM
+
+
+def ms(chunks):
+    return chunks * CHUNK * 1000 // SAMPLE_RATE
 
 
 class Recorder(TeaportSTTService):
@@ -98,73 +119,82 @@ class Recorder(TeaportSTTService):
         task.cancel()
 
 
-class Analyzer:
-    """The session's VAD analyzer as the STT reads it: VoiceMarks on the count of audio
-    it has been handed. Moved by the test as the user aggregator would move it, frame
-    by frame behind the STT -- or not, for the audio queued behind Smart Turn's
-    inference (`behind`), until `catch_up`."""
+class Scripted(VADAnalyzer):
+    """pipecat's VAD state machine with Silero's confidence scripted, volume gate open."""
 
     def __init__(self):
-        self.received = 0
-        self.voice_end = None
-        self.stop_at = None
+        super().__init__(sample_rate=SAMPLE_RATE,
+                         params=VADParams(stop_secs=STOP_SECS, start_secs=0.2,
+                                          min_volume=0.0))
+        self.conf = 0.0
+
+    def num_frames_required(self):
+        return CHUNK
+
+    def voice_confidence(self, buffer):
+        return self.conf
+
+
+class Line:
+    """The service and the session's analyzer, driven as the pipeline drives them."""
+
+    def __init__(self, wired=True):
+        self.stt = Recorder()
+        self.vad = type("Onset", (SpeechOnsetMixin, Scripted), {})()
+        self.vad.set_sample_rate(SAMPLE_RATE)
+        if wired:
+            self.stt.vad_analyzer = self.vad
         self.backlog = []
+        self.speaking = False
 
-    def voice_marks(self):
-        return VoiceMarks(self.received, self.received, self.voice_end, self.stop_at)
+    async def feed(self, chunks, conf, behind=False):
+        """`chunks` frames through the service, then to the analyzer unless it is
+        `behind` (queued behind an inference until catch_up)."""
+        for _ in range(chunks):
+            f = InputAudioRawFrame(audio=FRAME, sample_rate=SAMPLE_RATE, num_channels=1)
+            await self.stt.process_frame(f, DOWN)
+            if behind:
+                self.backlog.append((f.audio, conf))
+            else:
+                await self._analyze(f.audio, conf)
 
-    def hear(self, voiced):
-        self.received += FRAME
-        if voiced:
-            self.voice_end = self.received
+    async def _analyze(self, buf, conf):
+        self.vad.conf = conf
+        state = await self.vad.analyze_audio(buf)
+        if state == VADState.SPEAKING and not self.speaking:
+            self.speaking = True
+            await self.stt.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2), UP)
+        elif state == VADState.QUIET and self.speaking:
+            self.speaking = False
+            await self.stt.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS),
+                                         UP)
 
-    def trip(self):
-        self.stop_at = self.received
+    async def catch_up(self):
+        backlog, self.backlog = self.backlog, []
+        for buf, conf in backlog:
+            await self._analyze(buf, conf)
 
-    def catch_up(self):
-        for voiced in self.backlog:
-            self.hear(voiced)
-        self.backlog = []
+    async def utterance(self, chunks=20):
+        """Speech, then the VAD's stop."""
+        await self.feed(chunks, SPEECH)
+        assert self.speaking, "the VAD started on the speech"
+        await self.feed(6, QUIET)
+        assert not self.speaking, "and stopped on the quiet"
 
+    async def verdict(self, complete, source="verdict"):
+        await self.stt.process_frame(TurnVerdictFrame(complete=complete, source=source), UP)
 
-def service(with_analyzer):
-    s = Recorder()
-    vad = Analyzer()
-    if with_analyzer:
-        s.vad_analyzer = vad
-    return s, vad
+    def commits(self):
+        return self.stt._websocket.commits()
 
-
-async def audio(s, vad, ms, voiced=False, behind=False):
-    """`ms` of audio through the STT, then to the analyzer unless it is `behind`."""
-    for _ in range(ms // CHUNK_MS):
-        await s.process_frame(InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE,
-                                                 num_channels=1), DOWN)
-        if behind:
-            vad.backlog.append(voiced)
-        else:
-            vad.hear(voiced)
-
-
-async def stop(s, vad):
-    vad.trip()
-    await s.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS), UP)
-
-
-async def start(s):
-    await s.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2), UP)
-
-
-async def verdict(s, complete, source="verdict"):
-    await s.process_frame(TurnVerdictFrame(complete=complete, source=source), UP)
+    def hints(self):
+        return [m.get("trailing_silence_ms") for m in self.commits()]
 
 
-def commits(s):
-    return s._websocket.commits()
-
-
-def hints(s):
-    return [m.get("trailing_silence_ms") for m in commits(s)]
+async def settle():
+    """Let the service's wait task run on what the analyzer has just heard."""
+    for _ in range(3):
+        await asyncio.sleep(0)
 
 
 class Journal:
@@ -186,314 +216,355 @@ class Journal:
 
 # ---- mechanism 1: the hint over-claims -------------------------------------------------
 
-async def the_ceiling_with_the_caller_back(with_analyzer):
-    """An INCOMPLETE stop; during the hold the caller starts again (300 ms of voice the
-    VAD has not yet started on) and the ceiling's verdict lands over it."""
-    s, vad = service(with_analyzer)
-    await start(s)
-    await audio(s, vad, 600, voiced=True)
-    await audio(s, vad, 200)                       # the stop's window
-    await stop(s, vad)
-    await verdict(s, False)
-    await audio(s, vad, 300)
-    await audio(s, vad, 300, voiced=True)          # "a fusion" ...
-    await verdict(s, True, source="ceiling")
-    return s, vad
+async def the_ceiling_with_the_caller_back(wired):
+    """An INCOMPLETE stop; during the hold the caller starts again with voice the VAD
+    does not start on, and the ceiling's verdict lands over it."""
+    line = Line(wired)
+    await line.utterance()
+    await line.verdict(False)
+    await line.feed(9, QUIET)
+    await line.feed(9, VOICE)                      # "a fusion" ...
+    await line.verdict(True, source="ceiling")
+    await settle()
+    return line
 
 
 async def test_reproduced_the_ceilings_commit_claimed_the_resumed_voice_as_silence():
-    s, _ = await the_ceiling_with_the_caller_back(with_analyzer=False)
-    assert hints(s) == [200 + 600 - MARGIN], (
+    line = await the_ceiling_with_the_caller_back(wired=False)
+    assert line.hints() == [200 + ms(18) - MARGIN], (
         "without the analyzer the hint counts the whole hold, voice included: the "
-        f"engine skips decoding the caller's resumed words; got {hints(s)}")
+        f"engine skips decoding the caller's resumed words; got {line.hints()}")
 
 
 async def test_the_ceiling_waits_over_current_voice_and_the_start_keeps_the_segment():
-    s, vad = await the_ceiling_with_the_caller_back(with_analyzer=True)
-    await asyncio.sleep(0.03)
-    assert commits(s) == [], "the ceiling's commit must not be drawn over current voice"
-    await audio(s, vad, 100, voiced=True)
-    await start(s)                                 # ... and the VAD admits it
-    await audio(s, vad, 600, voiced=True)          # "... reaction that generates light"
-    await audio(s, vad, 200)
-    await stop(s, vad)
-    await verdict(s, True)
-    assert len(commits(s)) == 1, f"one segment for the whole sentence; got {commits(s)}"
-    assert s._commits[0].n == 2, "the commit answers the stop that closed the sentence"
-    assert hints(s) == [200 - MARGIN], "the hint counts from the second stop only"
+    line = await the_ceiling_with_the_caller_back(wired=True)
+    assert line.commits() == [], "the ceiling's commit must not be drawn over current voice"
+    await line.feed(10, SPEECH)                    # ... and the VAD admits it
+    assert line.speaking
+    await line.feed(10, SPEECH)                    # "... reaction that generates light"
+    await line.feed(6, QUIET)
+    await line.verdict(True)
+    assert len(line.commits()) == 1, f"one segment for the sentence; got {line.commits()}"
+    assert line.stt._commits[0].n == 2, "the commit answers the stop that closed it"
+    assert line.hints() == [ms(6) - MARGIN], (
+        "the hint counts from the second stop's own speech end, as the analyzer placed "
+        f"it; got {line.hints()}")
     await asyncio.sleep(CEILING + 0.05)
-    assert len(commits(s)) == 1, "the abandoned wait must not commit later"
+    assert len(line.commits()) == 1, "the abandoned wait must not commit later"
 
 
-async def test_a_blip_long_over_commits_at_the_ceiling_with_the_hint_from_its_end():
-    s, vad = service(with_analyzer=True)
-    await start(s)
-    await audio(s, vad, 600, voiced=True)
-    await audio(s, vad, 200)
-    await stop(s, vad)
-    await verdict(s, False)
-    await audio(s, vad, 300)
-    await audio(s, vad, 60, voiced=True)           # a cough, no VAD start
-    await audio(s, vad, 300)
-    await verdict(s, True, source="ceiling")
-    assert hints(s) == [300 - MARGIN], (
-        "the commit goes out at once (the caller has been quiet a stop's window since), "
-        f"claiming only the silence after the cough, not {200 + 660 - MARGIN}; "
-        f"got {hints(s)}")
+async def test_a_cough_long_over_commits_at_the_ceiling_with_the_hint_from_its_end():
+    line = Line()
+    await line.utterance()
+    await line.verdict(False)
+    await line.feed(9, QUIET)
+    await line.feed(2, VOICE)                      # a cough, no VAD start
+    await line.feed(9, QUIET)
+    await line.verdict(True, source="ceiling")
+    assert line.hints() == [ms(9) - MARGIN], (
+        "committed at once, claiming only the silence after the cough, not "
+        f"{ms(6) + ms(20) - MARGIN}; got {line.hints()}")
 
 
-# ---- mechanism 2: the boundary mid-word -------------------------------------------------
+# ---- mechanism 2: the boundary mid-word ------------------------------------------------
 
-async def the_verdict_over_a_resumed_word(with_analyzer):
+async def the_verdict_over_a_resumed_word(wired):
     """A short in-sentence pause draws a COMPLETE verdict; while Smart Turn ran, the
     caller started the next word, in audio the analyzer has not heard yet."""
-    s, vad = service(with_analyzer)
-    await start(s)
-    await audio(s, vad, 1000, voiced=True)         # "For some reason you"
-    await audio(s, vad, 200)
-    await stop(s, vad)
-    await audio(s, vad, 80, behind=True)
-    await audio(s, vad, 80, voiced=True, behind=True)   # "con-"
-    await verdict(s, True)
-    return s, vad
+    line = Line(wired)
+    await line.utterance()                         # "For some reason you"
+    await line.feed(2, QUIET, behind=True)
+    await line.feed(3, SPEECH, behind=True)        # "con-"
+    await line.verdict(True)
+    return line
 
 
 async def test_reproduced_a_complete_verdict_committed_inside_the_next_word():
-    s, vad = await the_verdict_over_a_resumed_word(with_analyzer=False)
-    assert len(commits(s)) == 1, "without the analyzer the verdict commits at once"
-    vad.catch_up()
-    await audio(s, vad, 200, voiced=True)          # "-nected"
-    await start(s)
-    await audio(s, vad, 400, voiced=True)
-    await audio(s, vad, 200)
-    await stop(s, vad)
-    await verdict(s, True)
-    assert len(commits(s)) == 2, "the word straddles two segments"
+    line = await the_verdict_over_a_resumed_word(wired=False)
+    assert len(line.commits()) == 1, "without the analyzer the verdict commits at once"
+    await line.catch_up()
+    await line.feed(10, SPEECH)                    # "-nected to my"
+    await line.feed(6, QUIET)
+    await line.verdict(True)
+    assert len(line.commits()) == 2, "the word straddles two segments"
 
 
 async def test_the_verdict_waits_for_the_backlog_and_the_resumed_word_holds_it():
-    s, vad = await the_verdict_over_a_resumed_word(with_analyzer=True)
-    assert commits(s) == [], "the analyzer has not heard the inference's backlog yet"
-    vad.catch_up()
-    await asyncio.sleep(0.03)
-    assert commits(s) == [], "voice in the backlog: the boundary must wait"
-    await audio(s, vad, 200, voiced=True)
-    await start(s)
-    await audio(s, vad, 400, voiced=True)          # "to my Bluetooth speaker"
-    await audio(s, vad, 200)
-    await stop(s, vad)
-    await verdict(s, True)
-    assert len(commits(s)) == 1, f"one segment, one commit; got {commits(s)}"
-    assert s._commits[0].n == 2
+    line = await the_verdict_over_a_resumed_word(wired=True)
+    assert line.commits() == [], "the analyzer has not heard the inference's backlog yet"
+    await line.catch_up()
+    await settle()
+    assert line.commits() == [], "a run of voice in the backlog: the boundary waits"
+    await line.feed(10, SPEECH)                    # "-nected to my Bluetooth speaker"
+    assert line.speaking
+    await line.feed(6, QUIET)
+    await line.verdict(True)
+    assert len(line.commits()) == 1, f"one segment, one commit; got {line.commits()}"
+    assert line.stt._commits[0].n == 2
 
 
-async def test_a_blip_without_a_start_costs_one_stop_window_and_is_on_the_segment_line():
+async def test_a_cough_shorter_than_an_onset_costs_nothing_past_its_end():
     with Journal() as j:
-        s, vad = service(with_analyzer=True)
-        await start(s)
-        await audio(s, vad, 1000, voiced=True)
-        await audio(s, vad, 200)
-        await stop(s, vad)
-        await audio(s, vad, 100, behind=True)
-        await audio(s, vad, 60, voiced=True, behind=True)   # a cough under the inference
-        await verdict(s, True)
-        vad.catch_up()
-        await audio(s, vad, 180)
-        await asyncio.sleep(0.03)
-        assert commits(s) == [], "180 ms of quiet is short of the stop's 200 ms window"
-        await audio(s, vad, 20)
-        await asyncio.sleep(0.03)
-        assert len(commits(s)) == 1, "a stop's window of quiet after the cough commits"
-        assert hints(s) == [200 - MARGIN], (
-            f"the hint counts from the cough's end; got {hints(s)}")
-        await s._handle_message({"type": "transcription.done", "text": "hello",
-                                 "reason": "commit"})
-        line = j.having("commit=verdict")
-        assert len(line) == 1 and "for the caller to pause" in line[0], j.lines
+        line = Line()
+        await line.utterance()
+        await line.feed(3, QUIET, behind=True)
+        await line.feed(2, SPEECH, behind=True)    # a cough under the inference
+        await line.verdict(True)
+        await line.catch_up()
+        await settle()
+        assert line.commits() == [], "a run still going could be a word"
+        await line.feed(1, QUIET)
+        await settle()
+        assert len(line.commits()) == 1, "the run broke short of an onset: commit"
+        await line.stt._handle_message({"type": "transcription.done", "text": "hi",
+                                        "reason": "commit"})
+        assert "for the caller to pause" in j.having("commit=verdict")[0], j.lines
 
 
-# ---- the bounds -------------------------------------------------------------------------
+async def test_voice_the_vad_never_starts_on_costs_one_stop_window_of_quiet():
+    with Journal() as j:
+        line = Line()
+        await line.utterance()
+        await line.feed(1, QUIET, behind=True)
+        await line.feed(5, VOICE, behind=True)     # an onset by the onset test only
+        await line.verdict(True)
+        await line.catch_up()
+        await line.feed(PAUSE - 1, QUIET)
+        await settle()
+        assert line.commits() == [], "short of the onset's own offset"
+        await line.feed(1, QUIET)
+        await settle()
+        assert len(line.commits()) == 1, "the onset's offset point: commit"
+        assert line.hints() == [ms(PAUSE) - MARGIN], (
+            f"the hint counts from the voice's end; got {line.hints()}")
+        await line.stt._handle_message({"type": "transcription.done", "text": "hi",
+                                        "reason": "commit"})
+        assert "for the caller to pause" in j.having("commit=verdict")[0], j.lines
 
-async def test_voice_that_never_pauses_commits_at_the_ceiling_claiming_nothing():
+
+async def test_voice_inside_the_stops_window_is_not_voice_since_the_stop():
+    """The utterance's tail at 0.65 -- voice to the onset test, a run long enough to be
+    an onset, but quiet to the VAD -- falls inside the stop's own window. It is the
+    utterance's, not voice since the stop: the verdict commits at once. Placing the stop
+    where the VAD began STOPPING, or dropping the filter on it, holds this commit."""
+    line = Line()
+    await line.feed(20, SPEECH)
+    await line.feed(4, VOICE)
+    await line.feed(2, QUIET)
+    assert not line.speaking, "the VAD stopped: six chunks under its 0.7"
+    await line.verdict(True)
+    assert len(line.commits()) == 1, "committed in the verdict's own call"
+
+
+# ---- with no voice since the stop -----------------------------------------------------
+
+async def test_a_lagging_analyzer_costs_only_its_backlog():
+    with Journal() as j:
+        line = Line()
+        await line.utterance()
+        await line.feed(10, QUIET, behind=True)    # the inference's backlog, all quiet
+        await line.verdict(True)
+        assert line.commits() == [], "the analyzer has not heard the backlog yet"
+        t0 = time.monotonic()
+        await line.catch_up()
+        await settle()
+        took = time.monotonic() - t0
+        assert len(line.commits()) == 1, "the catch-up wakes the commit"
+        assert took < 0.01, f"woken by the analyzer, not a poll: {took * 1000:.1f} ms"
+        assert line.hints() == [ms(6) + ms(10) - MARGIN], (
+            f"the stop's speech end as the analyzer placed it, plus the backlog; "
+            f"got {line.hints()}")
+        await line.stt._handle_message({"type": "transcription.done", "text": "hi",
+                                        "reason": "commit"})
+        assert "for the VAD" in j.having("commit=verdict")[0], j.lines
+
+
+async def test_a_vad_start_during_the_catch_up_keeps_the_segment_open():
+    line = Line()
+    await line.utterance()
+    await line.feed(10, SPEECH, behind=True)
+    await line.verdict(True)
+    await line.catch_up()
+    assert line.speaking, "the backlog held a VAD start"
+    await asyncio.sleep(CEILING + 0.05)
+    assert line.commits() == [], "the caller resumed: the next stop asks again"
+
+
+# ---- the bounds -----------------------------------------------------------------------
+
+async def steady_noise_turn(line):
+    """A turn over steady voice at speech confidence the VAD never starts on."""
+    await line.utterance()
+    await line.feed(2, VOICE)
+    before = len(line.commits())
+    await line.verdict(True)
+    waited = 0.0
+    while len(line.commits()) == before and waited < CEILING + 0.2:
+        await line.feed(1, VOICE)
+        await asyncio.sleep(0.02)
+        waited += 0.02
+    return waited
+
+
+async def test_voice_that_never_pauses_commits_at_the_ceiling_and_three_stand_it_down():
     with Journal("WARNING") as j:
-        s, vad = service(with_analyzer=True)
-        await start(s)
-        await audio(s, vad, 600, voiced=True)
-        await audio(s, vad, 200)
-        await stop(s, vad)
-        await audio(s, vad, 40, voiced=True)       # steady noise at speech confidence
-        await verdict(s, True)
-        waited = 0.0
-        while not commits(s) and waited < CEILING + 0.2:
-            await audio(s, vad, 20, voiced=True)
-            await asyncio.sleep(0.02)
-            waited += 0.02
-        assert len(commits(s)) == 1, "the wait must end at the ceiling"
+        line = Line()
+        waited = await steady_noise_turn(line)
+        assert len(line.commits()) == 1, "the wait must end at the ceiling"
         assert CEILING - 0.03 <= waited <= CEILING + 0.08, f"committed after {waited:.2f}s"
-        assert hints(s) == [None], "voice is current: no silence to claim"
+        assert line.hints() == [None], "voice is current: no silence to claim"
         assert j.having("has not paused"), j.lines
+        await steady_noise_turn(line)
+        await steady_noise_turn(line)
+        assert len(j.having("commits stop waiting")) == 1, j.lines
+        assert line.stt._pause_off
+        await line.utterance()
+        await line.feed(2, VOICE)
+        await line.verdict(True)
+        assert len(line.commits()) == 4, "stood down: the fourth commits at the verdict"
 
 
-async def test_an_analyzer_that_never_catches_up_is_passed_over_with_a_warning():
+async def test_a_pause_or_a_start_breaks_the_run_of_cap_outs():
+    line = Line()
+    await steady_noise_turn(line)
+    await steady_noise_turn(line)
+    await line.utterance()
+    await line.feed(2, SPEECH)
+    await line.verdict(True)
+    await line.feed(10, SPEECH)                    # the caller resumes: VAD start
+    assert line.speaking and line.stt._pause_capouts == 0
+    await line.feed(6, QUIET)
+    await line.verdict(True)
+    await steady_noise_turn(line)
+    assert not line.stt._pause_off
+
+
+async def test_an_analyzer_that_never_catches_up_is_passed_over_and_three_turn_it_off():
     with Journal("WARNING") as j:
-        s, vad = service(with_analyzer=True)
-        await start(s)
-        await audio(s, vad, 600, voiced=True)
-        await audio(s, vad, 200)
-        await stop(s, vad)
-        await audio(s, vad, 100, behind=True)      # and it never hears it
-        await verdict(s, True)
-        await asyncio.sleep(CATCHUP + 0.04)
-        assert len(commits(s)) == 1, "the boundary is drawn on what has been heard"
-        assert j.having("short of the audio sent at the verdict"), j.lines
+        line = Line()
+        for turn in range(3):
+            await line.utterance()
+            await line.feed(5, QUIET, behind=True)  # and it never hears these
+            line.backlog = []
+            await line.verdict(True)
+            await asyncio.sleep(CATCHUP + 0.03)
+            assert len(line.commits()) == turn + 1, "drawn on what has been heard"
+        assert len(j.having("is still")) == 2, j.lines
+        assert len(j.having("counts disagree")) == 1, j.lines
+        assert line.stt._marks_unaligned
 
 
 async def test_counts_that_disagree_turn_the_marks_off_for_the_session():
     with Journal("WARNING") as j:
-        s, vad = service(with_analyzer=True)
-        await start(s)
-        await audio(s, vad, 600, voiced=True)
-        vad.received += 10 * FRAME                 # heard audio this service never passed
-        await audio(s, vad, 200)
-        await stop(s, vad)
-        await verdict(s, True)
-        assert len(commits(s)) == 1, "with the marks off the verdict commits at once"
-        assert s._marks_unaligned
+        line = Line()
+        await line.feed(20, SPEECH)
+        await line.vad.analyze_audio(FRAME)        # audio this service never passed
+        await line.feed(6, QUIET)
+        await line.verdict(True)
+        assert len(line.commits()) == 1, "with the marks off the verdict commits at once"
+        assert line.stt._marks_unaligned
         assert len(j.having("counts disagree")) == 1, j.lines
 
 
-# ---- with no voice since the stop, nothing changes --------------------------------------
+async def test_audio_passed_down_unsent_is_not_a_disagreement():
+    """A dead socket: frames go down to the VAD unsent. The passed count is what the
+    analyzer receives, sent or not, so the marks stay on and still hold a commit."""
+    class Dead:
+        async def send(self, raw):
+            raise OSError("socket gone")
 
-async def test_a_current_analyzer_commits_at_the_verdict_itself_with_the_same_hint():
-    s, vad = service(with_analyzer=True)
-    await start(s)
-    await audio(s, vad, 600, voiced=True)
-    await audio(s, vad, 200)
-    await stop(s, vad)
-    await audio(s, vad, 100)
-    await verdict(s, True)
-    assert hints(s) == [200 + 100 - MARGIN], "committed in the verdict's own call"
-
-
-async def test_a_lagging_analyzer_costs_only_its_backlog():
-    with Journal() as j:
-        s, vad = service(with_analyzer=True)
-        await start(s)
-        await audio(s, vad, 600, voiced=True)
-        await audio(s, vad, 200)
-        await stop(s, vad)
-        await audio(s, vad, 160, behind=True)
-        await verdict(s, True)
-        assert commits(s) == []
-        vad.catch_up()
-        await asyncio.sleep(0.03)
-        assert hints(s) == [200 + 160 - MARGIN], hints(s)
-        await s._handle_message({"type": "transcription.done", "text": "hi",
-                                 "reason": "commit"})
-        line = j.having("commit=verdict")
-        assert len(line) == 1 and "for the VAD" in line[0], j.lines
+    with Journal("WARNING") as j:
+        line = Line()
+        live = line.stt._websocket
+        line.stt._websocket = Dead()
+        await line.feed(20, SPEECH)
+        line.stt._websocket = live
+        await line.feed(6, QUIET)
+        await line.feed(5, SPEECH, behind=True)
+        await line.verdict(True)
+        await line.catch_up()
+        await settle()
+        assert not j.having("counts disagree"), j.lines
+        assert not line.stt._marks_unaligned
+        assert line.commits() == [], "the marks still see the caller's voice"
 
 
-async def test_a_vad_start_during_the_catch_up_keeps_the_segment_open():
-    s, vad = service(with_analyzer=True)
-    await start(s)
-    await audio(s, vad, 600, voiced=True)
-    await audio(s, vad, 200)
-    await stop(s, vad)
-    await audio(s, vad, 160, voiced=True, behind=True)
-    await verdict(s, True)
-    await start(s)
-    vad.catch_up()
-    await asyncio.sleep(CEILING + 0.05)
-    assert commits(s) == [], "the caller resumed: the next stop asks again"
+# ---- the wait itself ------------------------------------------------------------------
+
+async def test_a_second_verdict_during_the_wait_changes_nothing():
+    line = Line()
+    await line.utterance()
+    await line.feed(5, VOICE)
+    t0 = time.monotonic()
+    await line.verdict(True)
+    await asyncio.sleep(CEILING * 0.6)
+    await line.verdict(True, source="turn-stopped")
+    assert line.commits() == [], "the second verdict must not commit"
+    while not line.commits() and time.monotonic() - t0 < 3 * CEILING:
+        await line.feed(1, VOICE)
+        await asyncio.sleep(0.01)
+    took = time.monotonic() - t0
+    assert len(line.commits()) == 1
+    assert took < CEILING + 0.06, f"the bound counts from the first verdict: {took:.2f}s"
+    assert line.stt._commits[0].why == "verdict"
 
 
-# ---- the real mixin, in lockstep with the service ----------------------------------------
+async def test_a_wait_that_fails_still_commits_the_segment():
+    with Journal("WARNING") as j:
+        line = Line()
+        await line.utterance()
+        await line.feed(5, VOICE)
+        await line.verdict(True)
+        assert line.commits() == []
 
-class Scripted(VADAnalyzer):
-    """A VAD analyzer whose Silero confidences are scripted per 512-sample chunk, with
-    the volume gate open, so the VAD's own state follows the script."""
+        def broken(w, heard_through):
+            raise RuntimeError("boom")
 
-    def __init__(self, confs):
-        super().__init__(sample_rate=SAMPLE_RATE,
-                         params=VADParams(stop_secs=STOP_SECS, start_secs=0.064,
-                                          min_volume=0.0))
-        self.confs = list(confs)
-
-    def num_frames_required(self):
-        return 512
-
-    def voice_confidence(self, buffer):
-        return self.confs.pop(0) if self.confs else 0.0
+        line.stt._boundary_wait = broken
+        await line.feed(1, VOICE)                  # wakes the wait
+        await settle()
+        assert len(line.commits()) == 1, "the held segment must still close"
+        assert j.having("wait for the caller's pause failed"), j.lines
 
 
-async def test_the_onset_mixins_marks_are_on_the_services_count():
-    """Speech, a stop, then the caller back at 0.65 -- under the VAD's 0.7, so the VAD
-    never starts on it -- in audio queued behind the inference. The service, reading the
-    real mixin, holds the verdict's commit until the voice has paused, and claims only
-    the silence after it: positions the two counted separately, frame by frame."""
-    # Chunks of 32 ms. The stop trips on the 7th quiet chunk, so the voice starts in
-    # the audio that arrives while Smart Turn runs.
-    speech, quiet, back = 20, 7, 8
-    confs = [0.9] * speech + [0.1] * quiet + [0.65] * back + [0.1] * 30
-    vad = type("Onset", (SpeechOnsetMixin, Scripted), {})(confs)
-    vad.set_sample_rate(SAMPLE_RATE)
-    s = Recorder()
-    s.vad_analyzer = vad
-    s.smartturn_stop_secs = 1.0                    # this test paces in wall time
-    tripped = [False]
+def test_the_onset_test_and_the_wait_share_one_offset():
+    """The reply hold's offset event and the wait's pause are one decision: `paused`
+    turns true on the chunk the offset fires on."""
+    async def run():
+        line = Line()
+        events = []
 
-    async def frame(analyze=True):
-        f = InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE, num_channels=1)
-        await s.process_frame(f, DOWN)
-        if analyze:
-            await analyze_one(f.audio)
-        return f.audio
+        async def listener(started):
+            events.append((started, line.vad.voice_marks().paused))
 
-    async def analyze_one(buf):
-        state = await vad.analyze_audio(buf)
-        if state == VADState.SPEAKING and not tripped[0]:
-            await start(s)
-            tripped[0] = None
-        elif state == VADState.QUIET and tripped[0] is None:
-            tripped[0] = True
-            await s.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS), UP)
+        line.vad.onset_listeners.append(listener)
+        await line.feed(5, VOICE)
+        await line.feed(PAUSE - 1, QUIET)
+        assert events == [(True, False)] and not line.vad.voice_marks().paused
+        await line.feed(1, QUIET)
+        assert events == [(True, False), (False, True)], events
 
-    while tripped[0] is not True:
-        await frame()
-    marks = vad.voice_marks()
-    assert marks.stop_at is not None and marks.received == s._passed_samples, marks
-    # Smart Turn runs: the next frames reach the service and wait for the analyzer.
-    backlog = [await frame(analyze=False) for _ in range(10)]
-    await verdict(s, True)
-    for buf in backlog:
-        await analyze_one(buf)
-    await asyncio.sleep(0.03)
-    marks = vad.voice_marks()
-    assert marks.voice_end is not None and marks.voice_end > marks.stop_at, marks
-    assert commits(s) == [], "the caller's voice in the backlog holds the boundary"
-    while not commits(s):
-        await frame()
-        await asyncio.sleep(0.012)
-    marks = vad.voice_marks()
-    assert marks.received == s._passed_samples
-    assert marks.analyzed - marks.voice_end >= round(STOP_SECS * SAMPLE_RATE), marks
-    quiet_ms = (s._sent_samples - marks.voice_end) * 1000 // SAMPLE_RATE
-    assert hints(s) == [quiet_ms - MARGIN], (hints(s), quiet_ms)
-    assert vad._vad_state == VADState.QUIET, "the VAD itself never started on 0.65"
+    asyncio.run(run())
 
 
 def main():
     stt_mod._HINT_MARGIN_MS = MARGIN
     stt_mod.STT_SILENCE_HINT = True
     stt_mod._VOICE_CATCHUP_SECS = CATCHUP
+    assert speech_onset.ONSET_MIN_MS == 128, "these scripts assume a 4-chunk onset"
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
 
     async def run():
         for fn in tests:
-            await fn()
-            print(f"  ok {fn.__name__}")
+            if asyncio.iscoroutinefunction(fn):
+                await fn()
+                print(f"  ok {fn.__name__}")
+
     asyncio.run(run())
+    for fn in tests:
+        if not asyncio.iscoroutinefunction(fn):
+            fn()
+            print(f"  ok {fn.__name__}")
 
 
 if __name__ == "__main__":

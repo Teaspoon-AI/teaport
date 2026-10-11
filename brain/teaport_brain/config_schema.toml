@@ -905,7 +905,7 @@ max = 1
 default = 0.6
 read = "startup"
 tier = "tuning"
-help = "Silero confidence that counts toward the fast speech-onset signal the reply hold (and, on SIP, the barge-in pause) uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides. The STT also counts a chunk at this confidence after a VAD stop as the caller's voice: its commit waits for them to pause again, and the silence hint does not count past it."
+help = "Silero confidence that counts toward the fast speech-onset signal the reply hold (and, on SIP, the barge-in pause) uses. Below VAD_CONFIDENCE on purpose, and with no volume gate: it only has to say speech has begun, soon. It changes nothing the VAD decides. The STT reads the same test after a VAD stop: an onset since the stop holds a complete verdict's commit until the test's own offset (the caller paused again), and the silence hint does not count past any chunk at this confidence."
 
 [[settings]]
 name = "TEAPORT_ONSET_MIN_MS"
