@@ -54,7 +54,7 @@ FORMS = {
     ("shell", "writes env"):       # an argument of write_env "<dir>/<file>" (a ?seed too)
         (r'^[ \t]*write_env[ \t]+"[^"\n]*/{file}"[^\n]*"\??(?:\$\{{\w+\}})?{name}=',),
     ("shell", "writes keyvalue"):  # a `name=` line of a here-document
-        (r"""<<-?[ \t]*(['"]?)(\w+)\1.*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
+        (r"""<<-?[ \t]*(['"]?)(\w+)\b\1.*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
     ("shell", "uses"): (r'\benvval[ \t]+"[^"\n]*/{file}"[ \t]+{name}\b',),
     ("unit", "uses"): (r"^EnvironmentFile=-?\S*/{file}$", r"\$\{{{name}\}}"),
     ("js", "uses"): (r"\bprocess\.env\.{name}\b",),
@@ -154,7 +154,8 @@ def source_problem(name: str, src: str, store: dict, root: pathlib.Path = REPO) 
     file = pathlib.PurePosixPath(store["path"]).name
     if not all(re.search(f.format(name=re.escape(name), file=re.escape(file)), text, re.M)
                for f in forms):
-        return f"source {src!r} never {does.split()[0]} it ({file})"
+        return (f"source {src!r} never {does.split()[0]} it in a form FORMS knows for a "
+                f"{kind} file that {does} ({file})")
     return None
 
 
@@ -191,11 +192,11 @@ write_env "$ETC/engine.env" "HASH=a#b" "AFTER_HASH=${#x}"  # "TRAILING=1"
 """,
     "cli/teaport": """#!/usr/bin/env bash
 fpt="$(envval "$ETC/engine.env" KOKORO_RESERVE_FPT)"
-aec=true
 cat <<EOF
 # realm=*
 aec_tail_ms=256
 EOF
+aec=true
 """,
     "systemd/engine.service.in": """EnvironmentFile=@ETC@/engine.env
 ExecStart=/bin/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY}
@@ -253,7 +254,7 @@ def source_self_test() -> list[str]:
             (False, "ENGINE_DELA", sh, "engine_env"),            # a prefix
             (False, "DELAY", sh, "engine_env"),                  # a suffix
             (False, "KOKORO_RESERVE_FPT", cli, "brain_env"),     # read from another store
-            (False, "aec", cli, "sip_conf"),                     # a shell variable
+            (False, "aec", cli, "sip_conf"),                     # after the here-doc ends
             (False, "realm", cli, "sip_conf"),                   # a comment in the conf
             (False, "ENGINE_PORT", "systemd/brain.service.in", "engine_env"),  # another store
             (False, "TTS_CTX", unit, "engine_env"),              # a comment
@@ -272,12 +273,13 @@ def source_self_test() -> list[str]:
             wrong.append(f"{src!r} for {name}: {why or 'accepted'}")
 
     # A row lists every file that handles it and nothing else: install.sh writes
-    # ENGINE_DELAY, so the unit alone is not enough; a file that does not handle it fails
+    # ENGINE_DELAY and the unit expands it, so neither alone is enough; a file that does
+    # not handle it fails
     # the row first or last; an empty or repeating list, or a TOML value that is not a
     # list, is not a list of files; a lone string is one.
     for ok, name, srcs in (
             (True, "ENGINE_DELAY", [unit, sh]), (True, "ENGINE_PORT", unit),
-            (False, "ENGINE_DELAY", [unit]),
+            (False, "ENGINE_DELAY", [unit]), (False, "ENGINE_DELAY", [sh]),
             (False, "ENGINE_DELAY", [js, unit, sh]), (False, "ENGINE_DELAY", [unit, sh, js]),
             (False, "ENGINE_PORT", []), (False, "ENGINE_PORT", [unit, unit]),
             (False, "ENGINE_PORT", {"file": unit}), (False, "ENGINE_PORT", 1),
