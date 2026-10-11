@@ -52,6 +52,11 @@ and read-only dirs included) when the script exits. The suite runs each script w
 `TMPDIR` of its own and fails one that leaves anything there but pytest's own basetemp
 (issue #135: thousands of temp dirs had piled up in a desktop's `/tmp`).
 
+A test that stages an unreadable file or a read-only dir runs its subject as a user
+even when the suite runs as root, which reads and writes through any mode:
+`appliance.drop_root` (a subprocess's `preexec_fn`) or `appliance.as_user` (in-process).
+Where root cannot have the user namespace that takes, the script is skipped, not passed.
+
 ## What needs what
 
 **Everything is hermetic except the two below.** Stated as an exception list on

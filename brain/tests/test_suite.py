@@ -18,6 +18,7 @@ import tempfile
 import pytest
 
 import appliance
+import tempdirs
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 
@@ -138,12 +139,37 @@ def test_declared_appliance_scripts_match_their_guards():
     )
 
 
+SUITE_PREFIX = "teaport-suite-"
+
+
+def _private_tmpdir():
+    """A script's own TMPDIR, so whatever is left in it is that script's and nobody
+    else's (another run, another session on the same box): see test_script. Short
+    enough that the script's tempdirs.short_tempdir() lands inside it too (under a long
+    $TMPDIR it would fall back to /tmp, out of the check's sight): the suite's own dir
+    goes under /tmp instead."""
+    base = tempdirs.short_base(room=len(SUITE_PREFIX) + 9)   # a slash, mkdtemp's 8
+    return tempfile.TemporaryDirectory(prefix=SUITE_PREFIX, dir=base, ignore_cleanup_errors=True)
+
+
+def test_a_scripts_socket_dirs_land_in_its_private_tmpdir():
+    saved = tempfile.tempdir
+    try:
+        # A short $TMPDIR is kept; one far too long for sockets gives way to /tmp.
+        for outer, parent in (("/var/tmp", "/var/tmp"), ("/var/tmp/" + "x" * 120, "/tmp")):
+            tempfile.tempdir = outer
+            with _private_tmpdir() as tmp:
+                assert os.path.dirname(tmp) == parent, (outer, tmp)
+                tempfile.tempdir = tmp   # the script's view: TMPDIR=tmp
+                assert tempdirs.short_base() == tmp, (outer, tmp)
+    finally:
+        tempfile.tempdir = saved
+
+
 @pytest.mark.parametrize("script,timeout", SCRIPTS,
                          ids=[s for s, _ in SCRIPTS])
 def test_script(script, timeout):
-    # A TMPDIR of its own, so whatever is left in it is this script's and nobody
-    # else's (another run, another session on the same box): see the end.
-    with tempfile.TemporaryDirectory(prefix="teaport-suite-", ignore_cleanup_errors=True) as tmp:
+    with _private_tmpdir() as tmp:
         proc = subprocess.run(
             [sys.executable, os.path.join(HERE, script)],
             cwd=HERE, capture_output=True, text=True, timeout=timeout,

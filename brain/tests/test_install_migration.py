@@ -15,6 +15,7 @@ import pathlib
 import stat
 import subprocess
 
+import appliance
 from tempdirs import tempdir
 
 INSTALL = pathlib.Path(__file__).resolve().parents[2] / "install.sh"
@@ -85,9 +86,14 @@ def _fixture(adversarial=False):
     return root
 
 
-def _run(root, steps, extra=""):
+def _run(root, steps, extra="", as_user=False):
+    """as_user: run as a user even when we are root, for a failure staged with file
+    modes (appliance.drop_root). Not by default: the steps chown as root does."""
+    if as_user:
+        appliance.require_modes_bind()
     script = STUBS + f'ETC="{root}/etc"\n' + _functions(root) + extra + "\n" + steps + "\n"
-    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True)
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True,
+                       preexec_fn=appliance.drop_root if as_user else None)
     return p.returncode, p.stdout + p.stderr
 
 
@@ -136,12 +142,10 @@ def test_secrets_quoting_empties_precedence_and_a_missing_newline():
 
 
 def test_a_failed_migration_stops_before_anything_is_swapped():
-    if os.geteuid() == 0:
-        return  # root writes through the read-only dir this failure is staged with
     root = _fixture()
     os.chmod(f"{root}/etc", 0o500)                                     # brain.env cannot be replaced
     try:
-        rc, out = _run(root, "sip_brain_detach; echo SWAPPED")
+        rc, out = _run(root, "sip_brain_detach; echo SWAPPED", as_user=True)
     finally:
         os.chmod(f"{root}/etc", 0o755)
     assert rc != 0 and "SWAPPED" not in out and "DIE" in out, out
@@ -237,13 +241,5 @@ def test_a_dry_run_changes_nothing_and_reports_what_a_real_run_would_move():
     assert "SIP_STT_MAKEUP_DB" in out
 
 
-def main():
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
-    for fn in fns:
-        fn()
-        print(f"  ok {fn.__name__}")
-
-
 if __name__ == "__main__":
-    main()
-    print("ALL PASS")
+    appliance.run_tests([v for k, v in sorted(globals().items()) if k.startswith("test_")])

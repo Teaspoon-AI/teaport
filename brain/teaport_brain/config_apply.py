@@ -8,15 +8,18 @@ the one sudoers line that allows it:
 
     <run-user> ALL=(root) NOPASSWD: /usr/bin/python3 /usr/local/lib/teaport/config_apply.py *
 
-install.sh copies this file to /usr/local/lib/teaport/ as root:root 0755 — NOT
-the copy inside $PREFIX/venv. The venv, its bin/python and every module in it
-are owned by the run user (install.sh chowns the prefix so uv can populate it),
+install.sh keeps a root:root 0755 copy of this file per brain release under
+/usr/local/lib/teaport/releases/, and the path above links to the live one's (a
+root-owned link in a root-owned directory) — NOT the copy inside $PREFIX/venv.
+The venv, its bin/python and every module in it are owned by the run user
+(install.sh chowns the prefix so uv can populate it),
 so a sudoers line that trusted the venv's interpreter or the venv's copy of
 this module would let the run user edit either and run anything as root. The
 system python and a root-owned script are the two things that user cannot
 touch. Everything after the script path is argv to THIS code, which only ever
 touches the files and units named below. sudo's env_reset strips PYTHONPATH,
-and python puts the script's own (root-owned) directory first on sys.path.
+and python puts the script's own (root-owned) directory first on sys.path: the
+release's, since it resolves the links first.
 
     python3 config_apply.py write brain.env   < new-content
     python3 config_apply.py restart teaport-brain
