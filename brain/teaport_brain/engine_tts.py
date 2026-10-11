@@ -383,6 +383,35 @@ def _require_context_end_hook():
                              "needs a new hook")
 
 
+def _missing_pacing_hooks(tts) -> list[str]:
+    """"lead" pacing (_pace) leans on two PRIVATE pipecat 1.8.1 TTSService internals:
+    _refresh_audio_context(context_id), the keepalive that stops the audio-context
+    watchdog closing a reply mid-wait, and _stop_frame_timeout_s, that watchdog's
+    timeout. A pipecat bump that drops either would raise mid-reply on a live call
+    (issue #87), so check at session build. Unlike _require_context_end_hook this
+    only warns: pacing saves GPU work, and greedy is safe without either."""
+    import inspect
+    missing = []
+    hook = getattr(TTSService, "_refresh_audio_context", None)
+    # _pace calls it without await: an async one would queue no keepalive at all.
+    if (hook is None or inspect.iscoroutinefunction(hook)
+            or "context_id" not in inspect.signature(hook).parameters):
+        missing.append("_refresh_audio_context(context_id)")
+    if not isinstance(getattr(tts, "_stop_frame_timeout_s", None), (int, float)):
+        missing.append("_stop_frame_timeout_s")
+    # Present is not enough: the watchdog must still time out on that value and still
+    # skip the keepalive. Without .py sources, skip this part, as
+    # _require_context_end_hook does.
+    try:
+        source = inspect.getsource(TTSService._handle_audio_context)
+    except (OSError, TypeError):
+        return missing
+    missing += [f"_handle_audio_context using {name}"
+                for name in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE")
+                if name not in source]
+    return missing
+
+
 class EngineTTSService(TTSService):
     """Pipecat TTS service for the engine TTS (text-in) with per-word timestamps."""
 
@@ -503,6 +532,10 @@ class EngineTTSService(TTSService):
         )
         if self._speed != 1.0:
             logger.warning(f"engine TTS ignores speed={self._speed} (engine synthesizes at 1.0)")
+        if self._pacing == "lead" and (missing := _missing_pacing_hooks(self)):
+            logger.warning(f"TTS_PACING=lead needs pipecat TTSService {', '.join(missing)}, "
+                           "which this pipecat lacks: pacing greedy for this session")
+            self._pacing = "greedy"
         logger.info(f"EngineTTSService ready (engine text-in, voice={self._voice}, "
                     f"lang={self._espeak_lang}, 24kHz)")
 
