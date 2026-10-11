@@ -328,7 +328,7 @@ def test_the_suppressor_on_is_not_mistaken_for_a_quiet_echo():
     assert [d for _, d in room.changes] == [False], room.changes
     room.clock.t += E.RECHECK_SECS             # the recheck finds the echo still there
     room.conversation(rounds=6)
-    assert not room.meter.duplex, room.changes
+    assert [d for _, d in room.changes] == [False, True, False], room.changes
 
 
 def test_a_suppressor_held_on_is_rechecked():
