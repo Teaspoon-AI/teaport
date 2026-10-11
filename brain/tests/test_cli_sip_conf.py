@@ -158,11 +158,11 @@ def test_adopt_says_read_or_write_and_leaves_nothing_behind():
     # pipefail and without (the verdict reads both statuses, not the pipeline's).
     for pf in ("-o", "+o"):
         rc, out = _run(d, f'''set {pf} pipefail
-          sip_adopt_copy {d}/nope {d}/x 5060 /s || echo "rc=$?"
-          sip_adopt_copy {src} /dev/full 5060 /s || echo "rc=$?"
-          sip_adopt_copy {src} {d}/no/such/dir 5060 /s || echo "rc=$?"
-          sip_adopt_copy {src} {d}/ok 5060 /s && echo "rc=0"
-          set -e; sip_adopt_copy {src} {d}/ok2 5060 /s; echo "rc=0 under set -e"''')
+          sip_adopt_copy {d}/nope 5060 /s > {d}/x || echo "rc=$?"
+          sip_adopt_copy {src} 5060 /s > /dev/full || echo "rc=$?"
+          sip_adopt_copy {src} 5060 /s > {d}/no/such/dir || echo "rc=$?"
+          sip_adopt_copy {src} 5060 /s > {d}/ok && echo "rc=0"
+          set -e; sip_adopt_copy {src} 5060 /s > {d}/ok2; echo "rc=0 under set -e"''')
         assert rc == 0, (pf, out)
         assert (out.count("rc=2"), out.count("rc=1"), out.count("rc=0")) == (1, 2, 2), (pf, out)
     # And a clean adopt installs the forced keys, 0600, with no temp left.
@@ -229,8 +229,80 @@ def test_aec_toggle_checks_once_and_says_not_configured_once():
     assert rc == 0 and out.count("CHECK") == 1 and "SUDO systemctl restart" in out, out
 
 
+# The wizard (`sip configure` without --conf, issue #134) installs through the same
+# sip_conf_install as the adopt path: staged, given to the unit's User= when root writes a
+# new one, renamed into place, and 0600 whatever the installed conf was.
+WIZARD_STUBS = r'''
+sip_refuse_hand_launched() { :; }
+sip_test_register() { eval "${PROBE_HOOK:-:}"; }
+sip_turn_on() { echo TURN_ON; }
+sip_wait_registered() { :; }
+'''
+WIZARD = "sip_configure --host sbc.example.com --user bob --password s3cret --yes"
+
+
+def test_wizard_as_root_gives_a_new_conf_to_the_units_user_0600():
+    me = subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
+    d = _secrets()
+    # Not really root, so the hand-over is to ourselves: the chown is what shows it asked.
+    stubs = WIZARD_STUBS + ROOT_STUBS + f'chown() {{ echo "$1" >> {d}/chown.log; command chown "$@"; }}'
+    rc, out = _run(d, f"UNIT_USER={me}; PROBE_HOOK='echo PROBED'; {WIZARD}", stubs)
+    assert rc == 0 and "PROBED" in out and "TURN_ON" in out, out
+    assert (d / "chown.log").read_text() == f"{me}:\n"
+    conf = d / "teaport-sip.conf"
+    st = subprocess.run(["stat", "-c", "%U %a", conf], capture_output=True, text=True).stdout.strip()
+    assert st == f"{me} 600", st
+    body = conf.read_text()
+    assert "username=bob" in body and "password=s3cret" in body and "sip_port=5060" in body, body
+    assert _temps(d) == [], _temps(d)
+
+
+def test_wizard_as_root_refuses_an_ownerless_new_conf_before_the_test_registration():
+    for user in ("", "no-such-user-xyz"):
+        d = _secrets()
+        rc, out = _run(d, f"UNIT_USER='{user}'; PROBE_HOOK='echo PROBED'; {WIZARD}", WIZARD_STUBS + ROOT_STUBS)
+        assert rc == 1 and "gateway cannot open" in out and "nothing tested" in out, out
+        assert out.count("gateway cannot open") == 1, out
+        assert "PROBED" not in out and "TURN_ON" not in out, out
+        assert not (d / "teaport-sip.conf").exists() and _temps(d) == [], _temps(d)
+
+
+def test_a_signal_mid_wizard_write_removes_the_staged_conf():
+    for sig, code in (("TERM", 143), ("INT", 130)):
+        for installed in (False, True):
+            d = _secrets()
+            conf = d / "teaport-sip.conf"
+            if installed:
+                conf.write_text("password=old\n"); os.chmod(conf, 0o600)
+            stub = WIZARD_STUBS + f'mv() {{ ls {d} | grep -q "teaport-sip.conf\\." && echo STAGED; kill -{sig} $$; sleep 1; }}'
+            rc, out = _run(d, WIZARD, stub)
+            assert rc == code and "STAGED" in out and "TURN_ON" not in out, (sig, rc, out)
+            assert _temps(d) == [], (sig, _temps(d))
+            assert conf.exists() == installed and (not installed or conf.read_text() == "password=old\n")
+
+
+def test_wizard_replaces_an_installed_conf_by_rename_and_leaves_it_0600():
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("password=old\n"); os.chmod(conf, 0o640)
+    # A failed rename leaves the old conf as it was, mode and all, and no temp.
+    rc, out = _run(d, WIZARD, WIZARD_STUBS + "mv() { return 1; }")
+    assert rc == 1 and f"could not write {conf}" in out and "TURN_ON" not in out, out
+    assert conf.read_text() == "password=old\n" and oct(conf.stat().st_mode & 0o777) == "0o640"
+    assert _temps(d) == [], _temps(d)
+    # A good one installs a new inode (a reader holding the old conf still reads the old
+    # bytes: never truncated in place) and forces 0600 over the operator's 0640.
+    old_ino = conf.stat().st_ino
+    with open(conf) as held:
+        rc, out = _run(d, WIZARD, WIZARD_STUBS)
+        assert rc == 0 and "TURN_ON" in out and "mode 600" in out, out
+        assert held.read() == "password=old\n"
+    assert conf.stat().st_ino != old_ino and oct(conf.stat().st_mode & 0o777) == "0o600"
+    assert "password=s3cret" in conf.read_text() and _temps(d) == []
+
+
 def main():
-    fns = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
+    fns =[v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for fn in fns:
         fn()
         print(f"  ok {fn.__name__}")
