@@ -37,11 +37,15 @@
 #   * with no voice since the stop, a lagging analyzer costs only its backlog: the
 #     commit follows its catch-up at once, woken by it, with the hint placed on the
 #     analyzer's own speech end;
-#   * the bounds: voice that never pauses commits at the session's ceiling, the third
-#     such turn running stands the wait down; an analyzer that never catches up is
-#     passed over after _VOICE_CATCHUP_SECS, the third time running turns the marks off,
-#     as do counts that disagree outright; and audio passed down unsent (a dead socket)
-#     is not a disagreement;
+#   * the bounds: voice that never pauses commits at the session's ceiling, and the
+#     third such commit RUNNING stands the wait down -- any other commit breaks the
+#     run, a pause's or a clean turn's, and so does a VAD start during a wait; an
+#     analyzer that misses the catch-up bound is passed over, and is switched off only
+#     if it has still not got there by the next verdict (slowness is logged once, not
+#     punished), as are counts that disagree outright and marks that cannot be read;
+#     and audio passed down unsent (a dead socket) is not a disagreement;
+#   * a stop pipecat forces, which the analyzer never trips, does not take the last
+#     utterance's speech end;
 #   * a second verdict during the wait changes nothing, the bound included; and a wait
 #     that fails still commits the segment.
 #
@@ -424,7 +428,15 @@ async def test_voice_that_never_pauses_commits_at_the_ceiling_and_three_stand_it
         assert len(line.commits()) == 4, "stood down: the fourth commits at the verdict"
 
 
-async def test_a_pause_or_a_start_breaks_the_run_of_cap_outs():
+async def clean_turn(line):
+    """A turn the verdict commits at once: no voice since the stop."""
+    before = len(line.commits())
+    await line.utterance()
+    await line.verdict(True)
+    assert len(line.commits()) == before + 1
+
+
+async def test_a_start_during_a_wait_breaks_the_run_of_capped_commits():
     line = Line()
     await steady_noise_turn(line)
     await steady_noise_turn(line)
@@ -432,27 +444,123 @@ async def test_a_pause_or_a_start_breaks_the_run_of_cap_outs():
     await line.feed(2, SPEECH)
     await line.verdict(True)
     await line.feed(10, SPEECH)                    # the caller resumes: VAD start
-    assert line.speaking and line.stt._pause_capouts == 0
+    assert line.speaking and line.stt._pause_capouts == 0, "the start broke the run"
     await line.feed(6, QUIET)
     await line.verdict(True)
     await steady_noise_turn(line)
     assert not line.stt._pause_off
 
 
-async def test_an_analyzer_that_never_catches_up_is_passed_over_and_three_turn_it_off():
+async def test_a_wait_ended_by_a_pause_breaks_the_run_of_capped_commits():
+    line = Line()
+    await steady_noise_turn(line)
+    await steady_noise_turn(line)
+    await line.utterance()
+    await line.feed(5, VOICE)                      # an onset the VAD never starts on
+    await line.verdict(True)
+    await line.feed(PAUSE, QUIET)                  # ... that pauses
+    await settle()
+    assert len(line.commits()) == 3 and line.stt._pause_capouts == 0, \
+        "the pause's commit broke the run"
+    await steady_noise_turn(line)
+    await steady_noise_turn(line)
+    assert not line.stt._pause_off, "two capped commits since: not a run of three"
+
+
+async def test_clean_turns_break_the_run_of_capped_commits():
+    """Three capped commits spread over a long session, clean turns between them, are
+    not steady noise: the wait stays on."""
+    line = Line()
+    for _ in range(3):
+        await steady_noise_turn(line)
+        await clean_turn(line)
+        await clean_turn(line)
+    assert not line.stt._pause_off and line.stt._pause_capouts == 0
+
+
+async def test_a_forced_stop_does_not_take_the_last_utterances_speech_end():
+    """The stop pipecat forces when the client stops sending audio mid-speech is one
+    the analyzer never trips: its speech end is the previous utterance's. Placed from
+    it, the hint would claim this whole utterance as silence."""
+    line = Line()
+    await clean_turn(line)
+    sent_before = line.stt._sent_samples
+    await line.feed(20, SPEECH)
+    assert line.speaking
+    line.speaking = False                          # the forced stop, no trip
+    await line.stt.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS), UP)
+    assert line.stt._speech_end > sent_before, (
+        "the speech end must not be placed before this utterance began: "
+        f"{line.stt._speech_end} <= {sent_before}")
+
+
+async def test_a_slow_analyzer_is_not_switched_off_and_is_logged_once():
+    """A busy box misses the catch-up bound on commit after commit, and the analyzer
+    gets there each time a little later. That is slowness: commits are drawn on what
+    has been heard, the marks stay on, and one line says so."""
     with Journal("WARNING") as j:
         line = Line()
         for turn in range(3):
             await line.utterance()
-            await line.feed(5, QUIET, behind=True)  # and it never hears these
-            line.backlog = []
+            await line.feed(5, QUIET, behind=True)
             await line.verdict(True)
             await asyncio.sleep(CATCHUP + 0.03)
             assert len(line.commits()) == turn + 1, "drawn on what has been heard"
-        assert len(j.having("is still")) == 2, j.lines
-        assert len(j.having("counts disagree")) == 1, j.lines
-        assert line.stt._marks_unaligned
+            await line.catch_up()                  # ... and the analyzer gets there
+        await clean_turn(line)
+        assert not line.stt._marks_unaligned, j.lines
+        assert line.stt._behind is None
+        assert len(j.having("is still")) == 1, j.lines
 
+
+async def test_an_analyzer_that_never_gets_there_is_switched_off_at_the_next_verdict():
+    """An analyzer that stops hearing the frames this service passes it: the audio a
+    catch-up fell short of is still unheard at the next verdict."""
+    with Journal("WARNING") as j:
+        line = Line()
+        await line.utterance()
+        await line.feed(5, QUIET, behind=True)
+        await line.verdict(True)
+        await asyncio.sleep(CATCHUP + 0.03)
+        assert len(line.commits()) == 1
+        assert not line.stt._marks_unaligned, "one miss is slowness until shown otherwise"
+        line.backlog = []                          # it never hears them; nor anything after
+        await line.stt.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2), UP)
+        await line.feed(20, SPEECH, behind=True)
+        await line.stt.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS), UP)
+        await line.verdict(True)
+        assert len(line.commits()) == 2, "with the marks off the verdict commits at once"
+        assert line.stt._marks_unaligned
+        assert len(j.having("counts disagree")) == 1, j.lines
+
+
+async def test_marks_that_cannot_be_read_turn_off_and_the_wait_still_commits():
+    """A broken analyzer must not hold a segment: the wait, the hint and the speech end
+    all read the marks through one place, which turns them off and falls back."""
+    with Journal("WARNING") as j:
+        line = Line()
+        await line.utterance()
+        await line.feed(5, VOICE)
+        await line.verdict(True)
+        assert line.commits() == [], "waiting on the voice"
+
+        def broken():
+            raise RuntimeError("marks gone")
+
+        line.vad.voice_marks = broken
+        await line.feed(1, VOICE)                  # wakes the wait
+        await settle()
+        assert len(line.commits()) == 1 and not line.stt._commit_pending
+        assert line.hints() == [ms(6) + ms(6) - MARGIN], (
+            "with no marks the hint counts from the stop's speech end, as it did "
+            f"before #140; got {line.hints()}")
+        assert len(j.having("reading the VAD analyzer's marks failed")) == 1, j.lines
+
+    line = Line()
+    line.vad.voice_marks = broken                  # broken from the start
+    await line.utterance()                         # the stop places its speech end
+    await line.verdict(True)
+    assert line.hints() == [200 - MARGIN], "the stop window, as without the marks"
 
 async def test_counts_that_disagree_turn_the_marks_off_for_the_session():
     with Journal("WARNING") as j:

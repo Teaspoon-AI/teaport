@@ -1321,10 +1321,12 @@ changes.
   before a commit is below what either can see. The hold's expiry and the backstop are
   not charged with a cut over the voice: they are bounds with their own documented edges.
   Two session-wide policies are not modelled as switches, for the reason the no-verdict
-  fallback is not: the wait stands down after three turns running that hit the cap with
-  no VAD start, and the marks go off after three catch-ups running that miss their
-  bound. Each is a policy on repeated faults; what runs while either is in force is the
-  `blind` design, and `sc_voice_blind` is its cost. A disconnect during the wait is not
+  fallback is not. The wait stands down after three commits running that hit the cap:
+  any other commit breaks the run, and so does a VAD start during a wait. The marks go
+  off when a catch-up that missed its bound has still not got there by the next
+  verdict; slowness alone only commits on what was heard. Each is a policy on repeated
+  faults; what runs while either is in force is the `blind` design, and
+  `sc_voice_blind` is its cost. A disconnect during the wait is not
   modelled either: it drops the segment with the session, as it does a hold, and this
   model has no disconnect.
 - **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
@@ -1380,8 +1382,11 @@ changes.
   `MaxBackstops = 1`, `MaxMissed = 0` — with the missed stop on as well the space passes
   30 million and the row is not worth its minutes); the three that fall find their trace in
   under ten states. `check.sh` passes `-deadlock`: the bounds make terminal states ordinary.
-  The #140 rows: `sc_voice` (two stretches of voice, both faults on) is 5.8 million
-  distinct states; the three that fall find their trace in under ten states.
+  The #140 rows, measured 2026-10-11 on TLC 2.19: `sc_voice` (two stretches of voice,
+  both faults on) is 10.9 million distinct states (36.1 million generated) and
+  `sc_voice_final` 13.6 million (44.2 million generated). The six that fall
+  (`sc_voice_blind`, `sc_voice_reach`, `sc_voice_reach_pause`, `sc_voice_reach_resume`,
+  `sc_voice_cap`, `sc_voice_catchup`) each find a trace of under ten states.
 
 ## Worth modeling next
 
