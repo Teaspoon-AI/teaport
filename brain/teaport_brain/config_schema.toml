@@ -29,11 +29,17 @@
 #   help      one or two sentences; the docs generator copies it verbatim
 #   note      operator-facing caveat, rendered after help
 #   consumer  when a library, not our code, reads it (glibc, huggingface_hub)
-#   source    for a row the brain does NOT read: the repo-relative file that does (no
-#             line), or a list of them when it is read or written in more than one
-#             place (the unit reads it and install.sh writes it). The drift test
-#             checks that each listed file names the setting, not that it reads or
-#             writes it. Brain reads need none: setting("NAME") is found by its name.
+#   source    for a row the brain does not read (no setting()/getenv of it): every
+#             repo file that handles it, repo-relative, no line; a list, or a plain
+#             string for one file. Handling it is the store's `writer` writing it
+#             there, a unit expanding it from the store, the CLI reading it from the
+#             store, the Discord bridge reading process.env, or a brain module giving
+#             a library its default (os.environ.setdefault: not a read, the operator's
+#             value overrides it). The drift test checks each listed file does, in that
+#             kind of file's own form, and that no other such file does unlisted.
+#
+# Fields per [stores.*] table: path, owner, services, apply (the docs' table), format
+# and mode (the SIP conf), and writer: the repo file that writes the store, if one does.
 
 schema_version = 1
 
@@ -42,18 +48,21 @@ schema_version = 1
 [stores.engine_env]
 path = "/etc/teaport/engine.env"
 owner = "installer"
+writer = "install.sh"
 services = ["teaport-engine"]
 apply = "systemctl restart teaport-engine — reloads Voxtral + Kokoro onto the GPU; the brain loses its engine session (Talk and a live call alike)."
 
 [stores.brain_env]
 path = "/etc/teaport/brain.env"
 owner = "installer+operator"
+writer = "install.sh"
 services = ["teaport-brain"]
 apply = "systemctl restart teaport-brain — drops the live Talk session; a live phone call stays up at the gateway and is picked up again by the restarted brain (it says sorry, it lost you for a moment)."
 
 [stores.sip_conf]
 path = "~/.config/teaport/teaport-sip.conf"
 owner = "teaport sip configure"
+writer = "cli/teaport"
 services = ["teaport-sip"]
 format = "keyvalue"
 mode = "600"
@@ -62,12 +71,14 @@ apply = "Edit it and `teaport sip restart` (or re-run `teaport sip configure`, w
 [stores.bridge_env]
 path = "/etc/teaport/bridge.env"
 owner = "installer"
+writer = "install.sh"
 services = ["teaport-discord-bridge"]
 apply = "systemctl restart teaport-discord-bridge."
 
 [stores.local_audio_env]
 path = "/etc/teaport/local-audio.env"
 owner = "installer+operator"
+writer = "install.sh"
 services = ["teaport-local-audio"]
 apply = "systemctl restart teaport-local-audio (ends the local session; it redials the brain at once)."
 
