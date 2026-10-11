@@ -189,14 +189,70 @@ def test_get_shows_values_as_the_brain_reads_them():
     # is told why, in the brain's words.
     assert "VAD_SAMPLE_RATE" not in values and "TEAPORT_URL" not in values
     rows = config_ui._rows()
-    assert body["ignored"] == {
-        "VAD_SAMPLE_RATE": settings.parse(rows["VAD_SAMPLE_RATE"], "22050")[1],
-        "TEAPORT_URL": settings.parse(rows["TEAPORT_URL"], "http://x")[1]}, body["ignored"]
+    why = {n: settings.parse(rows[n], v)[1] for n, v in (("VAD_SAMPLE_RATE", "22050"),
+                                                        ("TEAPORT_URL", "http://x"))}
+    assert body["ignored"] == {n: f"The value in the file is not used — {w}; the default applies."
+                               for n, w in why.items()}, body["ignored"]
     # The constraint check reads the file the same way: padded is the number.
     rows = config_ui._rows()
     assert config_ui._effective(rows, {"ENDPOINT_STOP_SECS": " 0.4 "})["ENDPOINT_STOP_SECS"] == 0.4
     assert config_ui._effective(rows, {"ENDPOINT_STOP_SECS": " "})["ENDPOINT_STOP_SECS"] == \
         float(rows["ENDPOINT_STOP_SECS"]["default"])
+
+
+def test_an_ignored_value_says_what_its_reader_does_and_can_be_removed():
+    # Ignored is "read as not set", which is the default only where there is one: a
+    # required row is missing (LLM_BASE_URL; the bridge exits without its guild), and a
+    # row with neither reads as not set.
+    client, etc, home, calls = setup()
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write("LLM_BASE_URL=ftp://x\nHEARD_MODE=loud\n")
+    with open(os.path.join(etc, "bridge.env"), "w") as f:
+        f.write("BRIDGE_GUILD_ID=12a\nBRIDGE_JOIN_CHANNEL_ID=12a\n")
+    ignored = client.get("/api/config", headers=H).json()["ignored"]
+    instead = {n: note.rsplit("; ", 1)[1] for n, note in ignored.items()}
+    assert instead == {"LLM_BASE_URL": "the setting is missing.", "HEARD_MODE": "the default applies.",
+                       "BRIDGE_GUILD_ID": "the setting is missing.",
+                       "BRIDGE_JOIN_CHANNEL_ID": "it reads as not set."}, ignored
+    # The page's "unset" on an ignored row is a real edit: it removes the line.
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"HEARD_MODE": None}})
+    assert r.status_code == 200, r.text
+    assert "HEARD_MODE" not in open(os.path.join(etc, "brain.env")).read()
+    assert "HEARD_MODE" not in client.get("/api/config", headers=H).json()["ignored"]
+
+
+def test_doctor_reads_a_blank_secret_as_not_set():
+    # `teaport doctor`'s two secret checks (cli/teaport cmd_doctor) by the same rule as the
+    # brain: a blank or whitespace-only llm_key and a GATEWAY_TOKEN="  " are not set. The
+    # CLI's functions as they are (everything above its dispatch, as test_tts_pacing.py
+    # takes them), then those two lines of cmd_doctor.
+    import pathlib
+    import subprocess
+    text = (pathlib.Path(__file__).resolve().parents[2] / "cli" / "teaport").read_text()
+    lines = [l for l in text.splitlines() if 'ok "GATEWAY_TOKEN set"' in l or 'ok "LLM API key present"' in l]
+    assert len(lines) == 2, lines
+    prefix = text[:text.index('cmd="${1:-}"; shift || true')]
+
+    def doctor(token_line, key_file, key_env=""):
+        etc, secrets = tempdir("doctor-etc-"), tempdir("doctor-secrets-")
+        with open(os.path.join(etc, "brain.env"), "w") as f:
+            f.write(token_line + "\n")
+        if key_file is not None:
+            with open(os.path.join(secrets, "llm_key"), "w") as f:
+                f.write(key_file)
+        script = (prefix + f"ETC={etc}; SECRETS={secrets}\n"
+                  'ok() { echo "OK $*"; }; warnc() { echo "WARN $*"; }\n' + "\n".join(lines) + "\n")
+        env = {k: v for k, v in os.environ.items() if k != "LLM_API_KEY"}
+        if key_env:
+            env["LLM_API_KEY"] = key_env
+        p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+        return [l.split()[0] for l in p.stdout.splitlines()]
+
+    assert doctor("GATEWAY_TOKEN=t0k3n", "sk-x\n") == ["OK", "OK"]
+    assert doctor('GATEWAY_TOKEN="  "', " \n\t\n") == ["WARN", "WARN"]
+    assert doctor("GATEWAY_TOKEN=", "") == ["WARN", "WARN"]
+    assert doctor("GATEWAY_TOKEN=''", None, key_env="  ") == ["WARN", "WARN"]
+    assert doctor('GATEWAY_TOKEN="t0k3n"', None, key_env="sk-x") == ["OK", "OK"]
 
 
 def test_get_shows_what_other_readers_get_as_written():
@@ -672,7 +728,9 @@ def test_apply_helper_stop_also_cancels_a_scheduled_start():
 if __name__ == "__main__":
     appliance.run_tests([
         test_env_roundtrip, test_get_masks_secrets_and_requires_token,
-        test_get_shows_values_as_the_brain_reads_them, test_get_shows_what_other_readers_get_as_written,
+        test_get_shows_values_as_the_brain_reads_them,
+        test_an_ignored_value_says_what_its_reader_does_and_can_be_removed,
+        test_doctor_reads_a_blank_secret_as_not_set, test_get_shows_what_other_readers_get_as_written,
         test_token_compare_is_constant_time_and_total, test_put_validation,
         test_put_writes_env_and_secrets, test_a_secret_is_written_as_the_brain_reads_it,
         test_apply_helper_rejects_junk,

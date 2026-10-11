@@ -298,8 +298,11 @@
     return Object.prototype.hasOwnProperty.call(store, name) ? store[name] : null;
   };
   const current = (name) => Object.prototype.hasOwnProperty.call(edits, name) ? edits[name] : original(name);
+  // An ignored file value is not in data.values (its reader takes it as unset), but the
+  // line is still in the file: unsetting it is an edit, the one that removes the line.
+  const isIgnored = (name) => Object.prototype.hasOwnProperty.call(data.ignored || {}, name);
   const setEdit = (name, value) => {
-    if (value === original(name)) delete edits[name]; else edits[name] = value;
+    if (value === original(name) && !isIgnored(name)) delete edits[name]; else edits[name] = value;
     const row = $(`.row[data-name="${name}"]`);
     row.classList.toggle('changed', name in edits);
     row.classList.remove('invalid');
@@ -382,7 +385,8 @@
         row.note ? h('p', { class: 'note' }, row.note) : null,
         row.source ? h('div', { class: 'source' }, row.source.join(', ')) : null),
       h('div', { class: 'control' }, ...control(row, writable),
-        row.name in (data.ignored || {}) ? h('p', { class: 'field-err' }, `The value in the file is not used — ${data.ignored[row.name]}; the default applies.`) : null));
+        isIgnored(row.name) ? h('p', { class: 'field-err' }, data.ignored[row.name] + ' ',
+          writable && row.tier !== 'installer' ? h('button', { class: 'btn-ghost btn-sm', onclick: () => setEdit(row.name, null) }, h('span', { class: 'btn-label' }, 'Remove it from the file')) : null) : null));
     const first = $('input, select, textarea', el); if (first) first.id = id;
     if (row.name in edits) el.classList.add('changed');
     return el;

@@ -167,8 +167,8 @@ cmd_doctor() {
   elif [[ "$fpt" =~ ^[0-9]+$ ]] && [ "$fpt" -ge 40 ]; then warnc "KOKORO_RESERVE_FPT=$fpt is high (OOM risk on 8GB; expect 6 or 12)"
   else ok "KOKORO_RESERVE_FPT=$fpt"; fi
   [ -n "$(envval "$ETC/brain.env" LLM_BASE_URL)" ] && ok "LLM_BASE_URL set" || failc "LLM_BASE_URL unset in $ETC/brain.env"
-  [ -n "$(envval "$ETC/brain.env" GATEWAY_TOKEN)" ] && ok "GATEWAY_TOKEN set" || warnc "GATEWAY_TOKEN unset — /talk is unauthenticated"
-  if [ -f "$SECRETS/llm_key" ] || [ -n "${LLM_API_KEY:-}" ]; then ok "LLM API key present"; else warnc "no LLM key — set LLM_API_KEY or write $SECRETS/llm_key"; fi
+  [ -n "$(envval "$ETC/brain.env" GATEWAY_TOKEN | tr -d "\"' \t")" ] && ok "GATEWAY_TOKEN set" || warnc "GATEWAY_TOKEN unset — /talk is unauthenticated"
+  if grep -qs '[^[:space:]]' "$SECRETS/llm_key" || [[ "${LLM_API_KEY:-}" == *[![:space:]]* ]]; then ok "LLM API key present"; else warnc "no LLM key — set LLM_API_KEY or write $SECRETS/llm_key"; fi
   local u st
   for u in teaport-engine teaport-brain; do
     st="$(active "$u")"

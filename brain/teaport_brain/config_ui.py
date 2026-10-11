@@ -239,8 +239,8 @@ def _is_hidden(name: str, rows: dict[str, dict]) -> bool:
 
 # Who reads a row decides what GET shows for it. The brain (setting()) and the Discord
 # bridge (bridge/discord/env.js, the same rule) read a value as settings.canonical gives
-# it: stripped, blank is not set, a value not of the row's type is ignored (the default
-# applies). Every other reader gets the text as written and judges it its own way, so GET
+# it: stripped, blank is not set, a value not of the row's type is ignored (it reads as
+# not set: _ignored says what that means for the row). Every other reader gets the text as written and judges it its own way, so GET
 # shows that text, "" included:
 #   - engine.env, and a `read = "unit"` row: systemd hands the text over as is (a quoted
 #     " 240 " stays padded); a blank one is an empty argument, and `--serve ""` stops the
@@ -259,7 +259,7 @@ def _as_read(rows: dict[str, dict], file_values: dict[str, str]) -> tuple[dict[s
     """A store's values for the page, each as its reader takes it (_read_by_rule): the
     brain's reading in its one spelling, left out where it is not set, or the text as
     written; a key the schema does not know as written; hidden keys dropped. And
-    {name: why} for each value the brain ignores, which reads as its default."""
+    {name: the page's note} for each value the brain ignores (_ignored)."""
     out: dict[str, str] = {}
     ignored: dict[str, str] = {}
     for name, value in file_values.items():
@@ -268,11 +268,23 @@ def _as_read(rows: dict[str, dict], file_values: dict[str, str]) -> tuple[dict[s
         if name in rows and _read_by_rule(rows[name]):
             value, why = settings.canonical(rows[name], value)
             if why is not None:
-                ignored[name] = why
+                ignored[name] = _ignored(rows[name], why)
             if value is None:
                 continue
         out[name] = value
     return out, ignored
+
+
+def _ignored(row: dict, why: str) -> str:
+    """The page's note for a file value its reader ignores: why, and what the reader does
+    instead, which is what it does with the setting unset."""
+    if row.get("required"):
+        instead = "the setting is missing"  # LLM_BASE_URL, the bridge's guild: it cannot run
+    elif "default" in row or "default_by" in row:
+        instead = "the default applies"
+    else:
+        instead = "it reads as not set"
+    return f"The value in the file is not used — {why}; {instead}."
 
 
 def _accept(row: dict, value: str | None) -> tuple[str | None, str | None]:
