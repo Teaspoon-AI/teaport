@@ -22,8 +22,8 @@ const TYPES = {
 export const strip = (text) => text.replace(EDGES, "");
 
 // The text of setting `name`, or undefined: unset, blank, or (said once) not a `type`.
-export function setting(name, type, env = process.env) {
-  const text = strip(env[name] ?? "");
+export function setting(name, type) {
+  const text = strip(process.env[name] ?? "");
   if (!text) return undefined;
   if (type && !TYPES[type].test(text)) {
     console.warn(`${name}=${JSON.stringify(text)} is not a ${type}; using the default`);

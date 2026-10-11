@@ -19,7 +19,8 @@
 # handles it -- a file, not a line, which went stale under every edit above it -- and
 # FORMS says what handling it means for that kind of file: the store's `writer` writes
 # it into the store, a unit expands it from the store, the CLI reads it from the store,
-# the Discord bridge reads process.env (by name, or through its env.js: setting("NAME")),
+# the Discord bridge reads process.env (by name, or through its env.js: setting("NAME"),
+# a bare call, not some object's .setting()),
 # the brain module setdefaults it. Each listed
 # file must do so (merely naming it is not enough: install.sh names ENGINE_PORT as its
 # own shell variable and BRIDGE_GUILD_ID in a sed read-back), and no other file in
@@ -58,7 +59,7 @@ FORMS = {
         (r"""<<-?[ \t]*(['"]?)(\w+)\1(?![^\s;&|<>)]).*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
     ("shell", "uses"): (r'\benvval[ \t]+"[^"\n]*/{file}"[ \t]+{name}\b',),
     ("unit", "uses"): (r"^EnvironmentFile=-?\S*/{file}$", r"\$\{{{name}\}}"),
-    ("js", "uses"): (r"""\bprocess\.env\.{name}\b|\bsetting\(\s*(["']){name}\1""",),
+    ("js", "uses"): (r"""\bprocess\.env\.{name}\b|(?<![.\w$])setting\(\s*(["']){name}\1""",),
     ("python", "uses"): (SETDEFAULT,),
 }
 # Comments, by kind (python: tokenize): a shell `#` starts a word, a unit's a line.
@@ -223,6 +224,7 @@ log("set BRIDGE_GUILD_ID");
 const F = setting("BRIDGE_FOLLOW_USER_ID", "snowflake") || "", T = setting('DISCORD_BOT_TOKEN');
 // setting("DISCORD_BOT_TOKEN_FILE")
 const P = presetting("BRIDGE_PRIME_MS"), Q = setting("BRAIN_URL_X"), R = setting(`TTS_CTX`);
+const S = cfg.setting("ENGINE_LOG"), D = $setting("GATEWAY_PORT");
 """,
     "brain/teaport_brain/pkg.py": """import os
 os.environ.setdefault("HF_HUB_OFFLINE", "1")
@@ -284,6 +286,8 @@ def source_self_test() -> list[str]:
             (False, "BRIDGE_PRIME_MS", js, "bridge_env"),        # another function's call
             (False, "BRAIN_URL_", js, "bridge_env"),             # a prefix of a setting() name
             (False, "TTS_CTX", js, "bridge_env"),                # unmatched quotes
+            (False, "ENGINE_LOG", js, "bridge_env"),             # another object's .setting()
+            (False, "GATEWAY_PORT", js, "bridge_env"),           # another name ending in setting
             (False, "MALLOC_ARENA_MAX", py, "brain_env"),        # forced, not a default
             (False, "TTS_CTX", py, "brain_env"),                 # a comment
             (False, "ENGINE_PORT", "docs/README.md", "engine_env"),  # no FORMS rule

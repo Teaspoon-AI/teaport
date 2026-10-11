@@ -7,12 +7,14 @@
 # For every bridge.env row and a matrix of hand-written values (blank, padded with each
 # whitespace character Python strips, and U+FEFF, which it does not; numbers in several
 # spellings; values not of the type), node's reading must be the brain's: not set where
-# the brain reads not set or ignores the value, else the same text. And index.js must read
-# each row through env.js with the row's own type.
+# the brain reads not set or ignores the value, else the same text -- set in node's own
+# environment, read through env.js's setting() as index.js calls it. And index.js must
+# import that setting() and read each row through it with the row's own type.
 #
 # Run: python test_bridge_env.py   (or via pytest test_suite.py). Skipped without node.
 #
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -42,14 +44,17 @@ def bridge_reads() -> dict[str, str | None]:
             re.finditer(r'\bsetting\("([A-Z_]+)"(?:,\s*"(\w+)")?\)', src)}
 
 
-def node_reading(cases: list[dict]) -> list[str | None]:
+def node_reading(rows: dict[str, str | None], value: str | None) -> dict[str, str | None]:
+    """{NAME: what setting(NAME, type) returns} in a node whose environment holds `value`
+    for every name in `rows` ({NAME: type}), or none of them for None."""
+    env = {k: v for k, v in os.environ.items() if k not in rows}
+    if value is not None:
+        env.update(dict.fromkeys(rows, value))
     script = (f"import {{ setting }} from {json.dumps((BRIDGE / 'env.js').as_uri())};\n"
-              "let s = ''; process.stdin.on('data', (d) => (s += d)).on('end', () => {\n"
-              "  const out = JSON.parse(s).map(({ name, type, value }) =>\n"
-              "    setting(name, type, value === null ? {} : { [name]: value }) ?? null);\n"
-              "  process.stdout.write(JSON.stringify(out));\n"
-              "});\n")
-    r = subprocess.run(["node", "--input-type=module", "-e", script], input=json.dumps(cases),
+              f"const rows = {json.dumps(rows)};\n"
+              "process.stdout.write(JSON.stringify(Object.fromEntries(Object.entries(rows).map(\n"
+              "  ([name, type]) => [name, setting(name, type) ?? null]))));\n")
+    r = subprocess.run(["node", "--input-type=module", "-e", script], env=env,
                        capture_output=True, text=True, check=True)
     return json.loads(r.stdout)
 
@@ -64,19 +69,22 @@ def test_index_reads_each_row_through_env_js_by_its_type():
         assert reads[row["name"]] == want, (row["name"], reads[row["name"]], want)
     src = (BRIDGE / "index.js").read_text(encoding="utf-8")
     assert "process.env.BRIDGE_" not in src and "process.env.DISCORD_BOT_TOKEN" not in src
+    # The setting() it calls is env.js's, the one tested below: imported, not its own.
+    assert re.search(r"""import\s*\{[^}]*\bsetting\b[^}]*\}\s*from\s*["']\./env\.js["']""", src)
+    assert not re.search(r"\b(?:function|const|let|var)\s+setting\b", src)
 
 
 def test_the_bridge_reads_a_value_as_the_brain_does():
     rows = [r for r in settings.ROWS.values() if r["store"] == "bridge_env"]
     types = bridge_reads()
-    cases, want = [], []
-    for row in rows:
-        for value in [None] + VALUES:
-            cases.append({"name": row["name"], "type": types[row["name"]], "value": value})
+    wrong = []
+    for value in [None] + VALUES:
+        got = node_reading({r["name"]: types[r["name"]] for r in rows}, value)
+        for row in rows:
             text, _ = settings.canonical(row, value)
-            want.append(None if text is None else settings.normalize(row, value))
-    got = node_reading(cases)
-    wrong = [(c["name"], c["value"], g, w) for c, g, w in zip(cases, got, want) if g != w]
+            want = None if text is None else settings.normalize(row, value)
+            if got[row["name"]] != want:
+                wrong.append((row["name"], value, got[row["name"]], want))
     assert not wrong, f"{len(wrong)} readings differ, e.g. {wrong[:5]}"
 
 
