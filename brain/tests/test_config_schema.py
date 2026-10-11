@@ -54,7 +54,7 @@ FORMS = {
     ("shell", "writes env"):       # an argument of write_env "<dir>/<file>" (a ?seed too)
         (r'^[ \t]*write_env[ \t]+"[^"\n]*/{file}"[^\n]*"\??(?:\$\{{\w+\}})?{name}=',),
     ("shell", "writes keyvalue"):  # a `name=` line of a here-document
-        (r"""<<-?[ \t]*(['"]?)(\w+)\b\1.*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
+        (r"""<<-?[ \t]*(['"]?)(\w+)\1(?![^\s;&|<>)]).*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
     ("shell", "uses"): (r'\benvval[ \t]+"[^"\n]*/{file}"[ \t]+{name}\b',),
     ("unit", "uses"): (r"^EnvironmentFile=-?\S*/{file}$", r"\$\{{{name}\}}"),
     ("js", "uses"): (r"\bprocess\.env\.{name}\b",),
@@ -197,6 +197,10 @@ cat <<EOF
 aec_tail_ms=256
 EOF
 aec=true
+cat <<END-X
+log_level=3
+END-X
+uds_path=/x
 """,
     "systemd/engine.service.in": """EnvironmentFile=@ETC@/engine.env
 ExecStart=/bin/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY}
@@ -255,6 +259,8 @@ def source_self_test() -> list[str]:
             (False, "DELAY", sh, "engine_env"),                  # a suffix
             (False, "KOKORO_RESERVE_FPT", cli, "brain_env"),     # read from another store
             (False, "aec", cli, "sip_conf"),                     # after the here-doc ends
+            (False, "uds_path", cli, "sip_conf"),                # after an <<END-X one ends
+            (False, "log_level", cli, "sip_conf"),               # in one FORMS cannot read
             (False, "realm", cli, "sip_conf"),                   # a comment in the conf
             (False, "ENGINE_PORT", "systemd/brain.service.in", "engine_env"),  # another store
             (False, "TTS_CTX", unit, "engine_env"),              # a comment
