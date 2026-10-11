@@ -240,6 +240,11 @@ HEARD_KEEP_SECS = 2.0
 # A chip write the meter needs that did not take (or a chip found late) is tried again
 # this often.
 ECHO_RETRY_SECS = 15.0
+# The meter's measure is logged when it first has one, then when it has moved this many
+# dB since the last one logged, at most once per GAP_LOG_SECS: a verdict that never
+# changes still shows how far the voice was above the echo.
+GAP_LOG_DB = 3.0
+GAP_LOG_SECS = 30.0
 # The speaker has been quiet this long after a reply: the face goes back to idle (or
 # to thinking, while the thinking sound plays).
 FACE_IDLE_SECS = 0.8
@@ -942,6 +947,8 @@ class Card:
         self.echo = echo
         self.meter = meter
         self._echo_check = 0.0
+        self._gap_logged: float | None = None
+        self._gap_log_at = 0.0
         # The capture clock: when the frames read so far were captured (see _meter).
         self._cap_frames = 0
         self._cap_t0: float | None = None
@@ -1181,7 +1188,15 @@ class Card:
             if not self.echo.holds(meter.duplex):
                 asyncio.get_running_loop().run_in_executor(None, self.echo.apply, lambda: meter.duplex)
         if not changed:
+            gap = meter.gap
+            if gap is not None and (self._gap_logged is None or (
+                    abs(gap - self._gap_logged) >= GAP_LOG_DB and now >= self._gap_log_at)):
+                self._log_gap(now)
+                logger.info(f"mic echo: the voice is {gap:.1f} dB above the bot's echo "
+                            f"(margin {meter.margin:g} dB) -- suppressor still "
+                            + ("off" if meter.duplex else "on"))
             return
+        self._log_gap(now)
         if meter.recheck:
             logger.info("mic echo: suppressor off for a while to measure the echo again")
         else:
@@ -1191,6 +1206,9 @@ class Card:
                            else "on: the echo is too close to the voice"))
         if self.echo is not None:
             asyncio.get_running_loop().run_in_executor(None, self.echo.apply, lambda: meter.duplex)
+
+    def _log_gap(self, now: float) -> None:
+        self._gap_logged, self._gap_log_at = self.meter.gap, now + GAP_LOG_SECS
 
     # -- waiting
     async def _until(self, aw) -> None:

@@ -379,10 +379,12 @@ def test_playback_levels_are_not_kept_for_ever():
 class _CardLike:
     """What Card._meter uses of a Card."""
     _meter = local_audio.Card._meter
+    _log_gap = local_audio.Card._log_gap
 
     def __init__(self, play, meter, echo=None):
         self.play, self.meter, self.echo = play, meter, echo
         self._cap_frames, self._cap_t0, self._echo_check = 0, None, 0.0
+        self._gap_logged, self._gap_log_at = None, 0.0
         self.conversing = True
 
 
@@ -394,7 +396,7 @@ def test_a_burst_of_capture_is_placed_by_when_it_was_captured():
     seen = []
 
     class Meter:
-        duplex = True
+        duplex, gap = True, None
 
         def feed(self, mic, ref, quiet, conversing):
             seen.append(ref)
@@ -420,6 +422,35 @@ def test_a_burst_of_capture_is_placed_by_when_it_was_captured():
     heard = [i for i, r in enumerate(seen) if r is not None]
     assert heard and heard[0] == 6 and 2 <= len(heard) <= 4, seen
     assert heard == list(range(6, 6 + len(heard))) and seen[-1] is None, seen
+
+
+def test_a_verdict_that_holds_still_logs_how_far_the_voice_was_above_the_echo():
+    clock = Clock()
+    play = local_audio.Playback(lambda b: None, clock=clock)
+
+    class Meter:
+        duplex, margin, gap = True, 15.0, None
+
+        def feed(self, mic, ref, quiet, conversing):
+            return False
+    meter = Meter()
+    card = _CardLike(play, meter)
+    lines = []
+    sink = logger.add(lambda m: lines.append(str(m)), level="INFO")
+    real = local_audio.time.monotonic
+    local_audio.time.monotonic = clock
+    chunk = np.zeros(local_audio.CHUNK_FRAMES, dtype="<i2")
+    try:
+        card._meter(chunk)                           # nothing measured yet: nothing said
+        for clock.t, meter.gap in ((1, 24.0), (2, 25.0), (3, 30.0), (40, 30.0), (41, 34.0)):
+            card._meter(chunk)
+    finally:
+        local_audio.time.monotonic = real
+        logger.remove(sink)
+    said = [ln for ln in lines if "mic echo" in ln]
+    # The first measure; a 1 dB move is nothing; 6 dB inside 30 s waits, then shows.
+    assert len(said) == 2 and "24.0 dB" in said[0] and "still off" in said[0], said
+    assert "30.0 dB" in said[1], said
 
 
 async def _retry():
