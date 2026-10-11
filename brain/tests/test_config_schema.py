@@ -60,6 +60,22 @@ READS = {"startup", "session", "unit"}
 NOT_SETTINGS = {"SUDO_GID", "SUDO_UID", "SUDO_USER", "NOTIFY_SOCKET"}
 
 
+def empty_problem(r: dict) -> str | None:
+    """What is wrong with a row's `empty` field, or None."""
+    if "empty" not in r:
+        return None
+    # setting() returns "" for it: only a text row may (an enum lists "" in values).
+    if (r["type"] not in ("string", "path", "dir", "url", "ws_url")
+            or not isinstance(r["empty"], str) or not r["empty"]):
+        return "empty is the words for what \"\" means, on a text row"
+    # Unset reads as the default and set-but-empty as "": with default "" they are one
+    # value, and `empty` would name a difference there is not. `required` may go with
+    # `empty`: the operator must choose, and off is a choice.
+    if r.get("default") == "":
+        return "empty with default \"\": unset already reads as \"\""
+    return None
+
+
 def without_comments(source: str) -> str:
     lines = source.splitlines(keepends=True)
     for tok in tokenize.generate_tokens(io.StringIO(source).readline):
@@ -136,15 +152,20 @@ def main() -> int:
                 problems.append(f"{n}: enum without values")
             elif "default" in r and str(r["default"]) not in vals:
                 problems.append(f"{n}: default {r['default']!r} not in values")
-        # setting() returns "" for it: only a text row may (an enum lists "" in values).
-        if "empty" in r and (r["type"] not in ("string", "path", "dir", "url", "ws_url")
-                             or not isinstance(r["empty"], str) or not r["empty"]):
-            problems.append(f"{n}: empty is the words for what \"\" means, on a text row")
+        if why := empty_problem(r):
+            problems.append(f"{n}: {why}")
         if r["type"] == "secret" and r["store"] != "sip_conf" and "file" not in r \
                 and r["tier"] != "installer":
             problems.append(f"{n}: operator secret must name the file the UI writes")
         if "min" in r and "max" in r and r["min"] > r["max"]:
             problems.append(f"{n}: min > max")
+
+    for bad in ({"type": "int", "empty": "off"}, {"type": "path", "empty": ""},
+                {"type": "path", "empty": "off", "default": ""}):
+        if empty_problem(bad) is None:
+            problems.append(f"self-test: empty accepted on {bad}")
+    if empty_problem({"type": "path", "empty": "off", "required": True}) is not None:
+        problems.append("self-test: empty refused on a required row")
 
     for c in schema.get("constraints", []):
         refs = []

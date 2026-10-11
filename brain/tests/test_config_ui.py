@@ -155,6 +155,27 @@ def test_get_masks_secrets_and_requires_token():
     assert client.get("/config", headers=H).headers["content-type"].startswith("text/html")
 
 
+def test_get_shows_values_as_the_brain_reads_them():
+    # A hand-edited file's spelling is not what the page shows (#136): a blank flag is
+    # unset (the brain reads its default, not "off"), a padded one is its word, a blank
+    # enum that lists "" is "". A key the schema does not know stays as written.
+    client, etc, home, calls = setup()
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write('TEAPORT_LLM_TEXT_GUARD=\nLEDGER_TRACE=" 1 "\nLLM_REASONING_EFFORT="  "\n'
+                'TTS_VOICE=" af_bella "\nOPERATOR_ONLY=" keep "\n')
+    values = client.get("/api/config", headers=H).json()["values"]["brain_env"]
+    assert "TEAPORT_LLM_TEXT_GUARD" not in values, values
+    assert values["LEDGER_TRACE"] == "1"
+    assert values["LLM_REASONING_EFFORT"] == ""
+    assert values["TTS_VOICE"] == "af_bella"
+    assert values["OPERATOR_ONLY"] == " keep "
+    # The constraint check reads the file the same way: padded is the number.
+    rows = config_ui._rows()
+    assert config_ui._effective(rows, {"ENDPOINT_STOP_SECS": " 0.4 "})["ENDPOINT_STOP_SECS"] == 0.4
+    assert config_ui._effective(rows, {"ENDPOINT_STOP_SECS": " "})["ENDPOINT_STOP_SECS"] == \
+        float(rows["ENDPOINT_STOP_SECS"]["default"])
+
+
 def test_token_compare_is_constant_time_and_total():
     import hmac
     from unittest import mock
@@ -229,17 +250,25 @@ def test_put_validation():
         "LLM_BASE_URL": "ftp://nope",         # wrong scheme
         "TTS_VOICE": "af_bella\nrm -rf /",    # a second line would reach the file unquoted
         "TEAPORT_URL": "ws://x\n",            # `$` used to match before a trailing newline
+        "LLM_MODEL": "  ",                    # blank: the brain reads it as unset (#136)
         "SMARTTURN_COMPLETE_THRESHOLD": "nan",  # passes float() and every bound
     }})
     assert r.status_code == 400, r.text
     errs = r.json()["errors"]
     assert set(errs) == {"ENDPOINT_STOP_SECS", "TTS_CLAUSE_GROWTH", "VAD_SAMPLE_RATE", "LLM_EXTRA_BODY",
                          "TEAPORT_LLM_TEXT_GUARD", "GATEWAY_TOKEN", "KOKORO_RESERVE_FPT", "LLM_API_KEY",
-                         "LLM_BASE_URL", "TTS_VOICE", "TEAPORT_URL", "SMARTTURN_COMPLETE_THRESHOLD"}, errs
+                         "LLM_BASE_URL", "TTS_VOICE", "TEAPORT_URL", "LLM_MODEL",
+                         "SMARTTURN_COMPLETE_THRESHOLD"}, errs
     assert errs["TTS_VOICE"] == "must be a single line"
+    assert "clear the field" in errs["LLM_MODEL"]
     assert "finite" in errs["SMARTTURN_COMPLETE_THRESHOLD"]
     for bad in ("inf", "1e999", "-nan"):
         assert config_ui._validate({"type": "float"}, bad), bad
+    # every line break config_apply's splitlines() splits on, not only \n and \r
+    for brk in "\v\f\x1c\x1d\x1e\x85\u2028\u2029":
+        assert config_ui._validate({"type": "string"}, f"a{brk}b") == "must be a single line", repr(brk)
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TTS_LANGUAGE": "en x"}})
+    assert r.status_code == 400 and r.json()["errors"]["TTS_LANGUAGE"] == "must be a single line", r.text
     assert "installer" in errs["GATEWAY_TOKEN"]
     assert calls == []
     # constraints: ask_openclaw must exceed ack + native
@@ -268,10 +297,19 @@ def test_put_validation():
     from unittest import mock
     rows = config_ui._rows()
     rows["TEAPORT_SIP_SOCKET"] = {**rows["TEAPORT_SIP_SOCKET"], "tier": "tuning"}
-    with mock.patch.object(config_ui, "_rows", lambda: rows):  # an editable row with `empty`
-        r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": ""}})
+    for blank in ("", "  "):  # blank is what the brain reads it as (#136): ""
+        with mock.patch.object(config_ui, "_rows", lambda: rows):  # an editable row with `empty`
+            r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": blank}})
+        assert r.status_code == 200, r.text
+        assert 'TEAPORT_SIP_SOCKET=""\n' in open(os.path.join(etc, "brain.env")).read()
+    # Whatever the page writes, the brain reads back as written: stripped, as setting() does.
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
+        "TTS_VOICE": " af_bella ", "ENDPOINT_STOP_SECS": " 0.5\n", "LLM_REASONING_EFFORT": "  "}})
     assert r.status_code == 200, r.text
-    assert 'TEAPORT_SIP_SOCKET=""\n' in open(os.path.join(etc, "brain.env")).read()
+    env = config_ui.parse_env(open(os.path.join(etc, "brain.env")).read())
+    assert (env["TTS_VOICE"], env["ENDPOINT_STOP_SECS"], env["LLM_REASONING_EFFORT"]) == ("af_bella", "0.5", ""), env
+    for name in ("TTS_VOICE", "ENDPOINT_STOP_SECS", "LLM_REASONING_EFFORT"):
+        assert config_ui.settings.normalize(rows[name], env[name]) == env[name]
     # a pretty-printed JSON paste is compacted to the one line an env file can hold
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
         "LLM_EXTRA_BODY": '{\n  "provider": {\n    "order": ["Cerebras"]\n  }\n}\n'}})
@@ -529,6 +567,7 @@ def test_apply_helper_stop_also_cancels_a_scheduled_start():
 
 def main() -> int:
     for fn in (test_env_roundtrip, test_get_masks_secrets_and_requires_token,
+               test_get_shows_values_as_the_brain_reads_them,
                test_token_compare_is_constant_time_and_total, test_put_validation,
                test_put_writes_env_and_secrets, test_apply_helper_rejects_junk,
                test_apply_helper_backup_ring_spares_operator_backups,

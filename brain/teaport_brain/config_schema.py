@@ -63,6 +63,14 @@ def _md(text: str) -> str:
 
 
 def _default_cell(row: dict) -> str:
+    cell = _default_value_cell(row)
+    if "empty" in row:  # set-but-empty is a value, whatever unset means for the row
+        cell += f" ({EMPTY} = {row['empty']})"
+    return cell
+
+
+def _default_value_cell(row: dict) -> str:
+    """What the row reads as when unset."""
     t = row["type"]
     if "default_by" in row:
         (key, table), = row["default_by"].items()
@@ -91,8 +99,6 @@ def _default_cell(row: dict) -> str:
         return cell
     if d == "":
         return EMPTY
-    if "empty" in row:
-        return f"`{d}` ({EMPTY} = {row['empty']})"
     return f"`{d}`"
 
 
