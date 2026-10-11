@@ -34,8 +34,9 @@
 #
 # normalize() is the ONE answer to "what text does this file value read as" (stripped;
 # blank is unset or ""), and parse() to "is this text a value of this row's type", pure
-# data in and out. The config UI validates and writes with them and setting() reads
-# with them, so a value the page accepts is exactly a value the brain reads. Bounds
+# data in and out. The config UI shows, validates and writes non-secret values with
+# them (a secret goes to its own file, as typed but trimmed) and setting() reads with
+# them, so a value the page accepts is exactly a value the brain reads. Bounds
 # are a separate question (out_of_bounds): the page enforces them; at runtime they are
 # not enforced yet.
 #
@@ -150,8 +151,8 @@ def normalize(row: dict, given: str | None) -> str | None:
     (absent, or blank where empty is not a value), "" where empty_is_value(row) and it
     is blank, else the text stripped — a secret's verbatim: it is compared byte for
     byte elsewhere, and a passphrase may end in a space. setting() parses this text,
-    and the config page validates and writes it, so a value the page saves is the
-    value the brain reads, whitespace included."""
+    and the config page shows, validates and writes it for every non-secret row, so a
+    value the page saves is the value the brain reads, whitespace included."""
     if given is None or not given.strip():
         return "" if given is not None and empty_is_value(row) else None
     return given if row["type"] == "secret" else given.strip()

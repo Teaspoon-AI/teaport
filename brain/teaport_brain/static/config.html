@@ -328,8 +328,7 @@
     const name = row.name;
     const val = current(name);
     const ro = !writable || row.tier === 'installer';
-    // The brain reads a blank value as "" on a row with `empty` (settings.normalize).
-    const off = !!row.empty && val !== null && val.trim() === '';
+    const off = !!row.empty && val === '';  // values arrive as the brain reads them
     if (row.type === 'secret') {
       const isSet = !!(data.secrets || {})[name];
       const input = h('input', { type: 'password', autocomplete: 'new-password', placeholder: isSet ? 'set — type to replace' : 'not set', disabled: ro,

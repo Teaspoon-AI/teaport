@@ -216,6 +216,23 @@ def _is_hidden(name: str, rows: dict[str, dict]) -> bool:
     return bool(_SECRET_LOOKING.match(name))
 
 
+def _as_read(rows: dict[str, dict], file_values: dict[str, str]) -> dict[str, str]:
+    """A store's values for the page, as the brain reads them: a schema row's text
+    through settings.normalize (stripped; a blank one left out where it means unset,
+    "" where it is a value), a key the schema does not know as written, hidden keys
+    dropped. So the page shows what the box runs on, not the file's spelling of it."""
+    out: dict[str, str] = {}
+    for name, value in file_values.items():
+        if _is_hidden(name, rows):
+            continue
+        if name in rows:
+            value = settings.normalize(rows[name], value)
+            if value is None:
+                continue
+        out[name] = value
+    return out
+
+
 def _validate(row: dict, value: str | None) -> str | None:
     """None when `value` is an acceptable text for this row; else the reason.
     `value` is _normalize's text: what the brain will read, None for "not set". What
@@ -226,10 +243,11 @@ def _validate(row: dict, value: str | None) -> str | None:
         if value == "" and settings.empty_is_value(row):
             return None
         return "empty — clear the field to unset it instead"
-    # An env-file value is one line. quote() does not escape newlines, and a
-    # value that spans lines would be refused by config_apply after validation
+    # An env-file value is one line, as str.splitlines() counts them (\v, \f, \x85,
+    # U+2028 too): quote() does not escape line breaks, and a value that spans lines
+    # would be refused by config_apply (which splits the same way) after validation
     # had already passed — a 500 with no field named instead of this 400.
-    if t != "json" and ("\n" in value or "\r" in value):
+    if t != "json" and value.splitlines() != [value]:
         return "must be a single line"
     parsed, problem = settings.parse(row, value)
     if problem is None and t in ("int", "float"):
@@ -254,10 +272,11 @@ def _normalize(row: dict, value: str) -> str | None:
 
 def _effective(rows: dict[str, dict], values: dict[str, str]) -> dict[str, float]:
     """Numeric view of the settings a constraint may name: the value in the
-    file if set and numeric, else the row default."""
+    file if set and numeric (as the brain reads it), else the row default."""
     out: dict[str, float] = {}
     for name, row in rows.items():
-        raw = values.get(name, row.get("default"))
+        raw = settings.normalize(row, values.get(name))
+        raw = row.get("default") if raw is None else raw
         try:
             out[name] = float(raw)  # type: ignore[arg-type]
         except (TypeError, ValueError):
@@ -398,7 +417,7 @@ async def get_config(request: Request):
             unreadable.append(store)
             text = ""
         parsed[store] = parse_env(text)
-        values[store] = {k: v for k, v in parsed[store].items() if not _is_hidden(k, rows)}
+        values[store] = _as_read(rows, parsed[store])
         mtimes[store] = _mtime(path)
 
     absent = [s for s in OPT_IN_STORES if not os.path.exists(_store_path(s))]
