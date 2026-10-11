@@ -32,10 +32,12 @@
 #   degeneracy guard and enabled the thinking sound, and "no" disabled one but not the
 #   other.
 #
-# parse() is the ONE answer to "is this text a value of this row's type", pure data
-# in and out. The config UI validates with it and setting() reads with it, so a value
-# the page accepts is exactly a value the brain reads. Bounds are a separate question
-# (out_of_bounds): the page enforces them; at runtime they are not enforced yet.
+# normalize() is the ONE answer to "what text does this file value read as" (stripped;
+# blank is unset or ""), and parse() to "is this text a value of this row's type", pure
+# data in and out. The config UI validates and writes with them and setting() reads
+# with them, so a value the page accepts is exactly a value the brain reads. Bounds
+# are a separate question (out_of_bounds): the page enforces them; at runtime they are
+# not enforced yet.
 #
 # A name with no row is a KeyError at import — a setting nobody can see, document or
 # validate fails the first test that imports its module instead of shipping.
@@ -143,11 +145,23 @@ def empty_is_value(row: dict) -> bool:
     return "empty" in row or "" in row.get("values", ())
 
 
+def normalize(row: dict, given: str | None) -> str | None:
+    """The text a value as it stands in the env file is read as: None for "not set"
+    (absent, or blank where empty is not a value), "" where empty_is_value(row) and it
+    is blank, else the text stripped — a secret's verbatim: it is compared byte for
+    byte elsewhere, and a passphrase may end in a space. setting() parses this text,
+    and the config page validates and writes it, so a value the page saves is the
+    value the brain reads, whitespace included."""
+    if given is None or not given.strip():
+        return "" if given is not None and empty_is_value(row) else None
+    return given if row["type"] == "secret" else given.strip()
+
+
 def parse(row: dict, text: str):
     """(value, None) when `text` is a value of `row`'s type, else (None, the reason).
 
-    `text` is a non-empty value as it stands in the file. What an empty one means is
-    the caller's business: "not set" to setting(), refused by the page."""
+    `text` is a non-empty normalize()d value. What a blank one means is normalize's
+    answer: "not set", or "" where the row says empty is a value."""
     return PARSERS[row["type"]](text, row)
 
 
@@ -192,17 +206,15 @@ def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
     Unset or empty -> the row's default, or `default` for the few rows whose default
     is computed in code; set-but-empty is "" instead where empty_is_value(row). A value
     that does not parse warns and falls back the same way: these are read at import,
-    and an exception would crash-loop the service.
-    Values are stripped, except a secret's: it is compared byte for byte elsewhere,
-    and a passphrase may end in a space."""
+    and an exception would crash-loop the service. normalize() says what text a value
+    is read as (stripped, except a secret's)."""
     row = ROWS[name]
     fallback = default_of(row) if default is _SCHEMA_DEFAULT else default
-    given = env.get(name)
-    if not (given or "").strip():
-        if given is not None and empty_is_value(row):
-            return ""  # set, and the schema says empty is a value
+    raw = normalize(row, env.get(name))
+    if raw is None:
         return fallback
-    raw = given if row["type"] == "secret" else given.strip()
+    if raw == "":
+        return ""  # set, and the schema says empty is a value
     value, problem = parse(row, raw)
     if problem is not None:
         if row["type"] == "json":  # not echoed: an extra_body can carry a credential

@@ -229,14 +229,17 @@ def test_put_validation():
         "LLM_BASE_URL": "ftp://nope",         # wrong scheme
         "TTS_VOICE": "af_bella\nrm -rf /",    # a second line would reach the file unquoted
         "TEAPORT_URL": "ws://x\n",            # `$` used to match before a trailing newline
+        "LLM_MODEL": "  ",                    # blank: the brain reads it as unset (#136)
         "SMARTTURN_COMPLETE_THRESHOLD": "nan",  # passes float() and every bound
     }})
     assert r.status_code == 400, r.text
     errs = r.json()["errors"]
     assert set(errs) == {"ENDPOINT_STOP_SECS", "TTS_CLAUSE_GROWTH", "VAD_SAMPLE_RATE", "LLM_EXTRA_BODY",
                          "TEAPORT_LLM_TEXT_GUARD", "GATEWAY_TOKEN", "KOKORO_RESERVE_FPT", "LLM_API_KEY",
-                         "LLM_BASE_URL", "TTS_VOICE", "TEAPORT_URL", "SMARTTURN_COMPLETE_THRESHOLD"}, errs
+                         "LLM_BASE_URL", "TTS_VOICE", "TEAPORT_URL", "LLM_MODEL",
+                         "SMARTTURN_COMPLETE_THRESHOLD"}, errs
     assert errs["TTS_VOICE"] == "must be a single line"
+    assert "clear the field" in errs["LLM_MODEL"]
     assert "finite" in errs["SMARTTURN_COMPLETE_THRESHOLD"]
     for bad in ("inf", "1e999", "-nan"):
         assert config_ui._validate({"type": "float"}, bad), bad
@@ -268,10 +271,19 @@ def test_put_validation():
     from unittest import mock
     rows = config_ui._rows()
     rows["TEAPORT_SIP_SOCKET"] = {**rows["TEAPORT_SIP_SOCKET"], "tier": "tuning"}
-    with mock.patch.object(config_ui, "_rows", lambda: rows):  # an editable row with `empty`
-        r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": ""}})
+    for blank in ("", "  "):  # blank is what the brain reads it as (#136): ""
+        with mock.patch.object(config_ui, "_rows", lambda: rows):  # an editable row with `empty`
+            r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": blank}})
+        assert r.status_code == 200, r.text
+        assert 'TEAPORT_SIP_SOCKET=""\n' in open(os.path.join(etc, "brain.env")).read()
+    # Whatever the page writes, the brain reads back as written: stripped, as setting() does.
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
+        "TTS_VOICE": " af_bella ", "ENDPOINT_STOP_SECS": " 0.5\n", "LLM_REASONING_EFFORT": "  "}})
     assert r.status_code == 200, r.text
-    assert 'TEAPORT_SIP_SOCKET=""\n' in open(os.path.join(etc, "brain.env")).read()
+    env = config_ui.parse_env(open(os.path.join(etc, "brain.env")).read())
+    assert (env["TTS_VOICE"], env["ENDPOINT_STOP_SECS"], env["LLM_REASONING_EFFORT"]) == ("af_bella", "0.5", ""), env
+    for name in ("TTS_VOICE", "ENDPOINT_STOP_SECS", "LLM_REASONING_EFFORT"):
+        assert config_ui.settings.normalize(rows[name], env[name]) == env[name]
     # a pretty-printed JSON paste is compacted to the one line an env file can hold
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
         "LLM_EXTRA_BODY": '{\n  "provider": {\n    "order": ["Cerebras"]\n  }\n}\n'}})

@@ -216,15 +216,14 @@ def _is_hidden(name: str, rows: dict[str, dict]) -> bool:
     return bool(_SECRET_LOOKING.match(name))
 
 
-def _validate(row: dict, value: str) -> str | None:
+def _validate(row: dict, value: str | None) -> str | None:
     """None when `value` is an acceptable text for this row; else the reason.
-    Check with the normalized text (see _normalize) — a json row is compacted
-    to one line first, everything else must already be one. What a value IS comes
-    from settings.parse, the same judgement the brain reads it with."""
+    `value` is _normalize's text: what the brain will read, None for "not set". What
+    a value IS comes from settings.parse, the same judgement the brain reads it with."""
     t = row["type"]
-    if value == "":
-        # An explicit empty is only meaningful where the code distinguishes it.
-        if settings.empty_is_value(row):
+    if not value:
+        # Blank. normalize made it "" only where the code distinguishes it from unset.
+        if value == "" and settings.empty_is_value(row):
             return None
         return "empty — clear the field to unset it instead"
     # An env-file value is one line. quote() does not escape newlines, and a
@@ -238,16 +237,19 @@ def _validate(row: dict, value: str) -> str | None:
     return problem
 
 
-def _normalize(row: dict, value: str) -> str:
-    """The text that goes in the file. A json row is what the page's textarea
-    holds — pretty-printed pastes included — compacted to one line; the JSON
-    is unchanged. Everything else is written as typed."""
-    if row["type"] == "json" and value:
+def _normalize(row: dict, value: str) -> str | None:
+    """The text that goes in the file: settings.normalize's, the text the brain reads
+    it as — stripped, a blank one None ("not set", which _validate refuses: clearing
+    the field is how to unset) or "" where the row says empty is a value. A json row
+    is what the page's textarea holds — pretty-printed pastes included — compacted to
+    one line; the JSON is unchanged."""
+    text = settings.normalize(row, value)
+    if row["type"] == "json" and text:
         try:
-            return json.dumps(json.loads(value), separators=(",", ":"))
+            return json.dumps(json.loads(text), separators=(",", ":"))
         except ValueError:
-            return value  # _validate names the problem
-    return value
+            return text  # _validate names the problem
+    return text
 
 
 def _effective(rows: dict[str, dict], values: dict[str, str]) -> dict[str, float]:

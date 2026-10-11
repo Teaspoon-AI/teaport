@@ -166,6 +166,20 @@ def test_a_row_with_an_empty_field_reads_a_set_empty_value_as_itself():
     assert not settings.empty_is_value(settings.ROWS["TTS_VOICE"])
 
 
+def test_normalize_is_the_text_a_value_reads_as():
+    # The config page writes exactly this text (#136), so it reads back unchanged.
+    sock, voice, key = ROWS["TEAPORT_SIP_SOCKET"], ROWS["TTS_VOICE"], ROWS["GATEWAY_TOKEN"]
+    assert settings.normalize(voice, None) is None
+    assert settings.normalize(voice, " \t ") is None      # blank is "not set" ...
+    assert settings.normalize(sock, " \t ") == ""         # ... or "" where empty is a value
+    assert settings.normalize(sock, None) is None
+    assert settings.normalize(voice, " af_bella\n") == "af_bella"
+    assert settings.normalize(key, " two words ") == " two words "
+    assert settings.normalize(key, "   ") is None
+    # parse() takes normalized text: its patterns match whole, not up to a newline.
+    assert parse(ROWS["TEAPORT_URL"], "ws://x\n")[1] is not None
+
+
 def test_paths_expand_the_home_directory():
     home = os.path.expanduser("~")
     assert setting("TEAPORT_PERSONA_FILE", env={}) == os.path.join(home, ".config/teaport/persona.md")
