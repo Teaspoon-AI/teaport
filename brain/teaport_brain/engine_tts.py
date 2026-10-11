@@ -15,6 +15,7 @@
 # host/port (the stream path is derived), or ENGINE_TTS_STREAM_URL sets the stream URL directly.
 
 import asyncio
+import functools
 import math
 import time
 from contextlib import aclosing
@@ -383,13 +384,15 @@ def _require_context_end_hook():
                              "needs a new hook")
 
 
-def _missing_pacing_hooks(tts) -> list[str]:
+def _missing_pacing_hooks() -> list[str]:
     """"lead" pacing (_pace) leans on two PRIVATE pipecat 1.8.1 TTSService internals:
     _refresh_audio_context(context_id), the keepalive that stops the audio-context
     watchdog closing a reply mid-wait, and _stop_frame_timeout_s, that watchdog's
     timeout. A pipecat bump that drops either would raise mid-reply on a live call
-    (issue #87), so check at session build. Unlike _require_context_end_hook this
-    only warns: pacing saves GPU work, and greedy is safe without either."""
+    (issue #87). Unlike _require_context_end_hook this only reports: pacing saves GPU
+    work, and greedy is safe without either. Everything here reads the class, not a
+    session's instance: it is a property of the installed pipecat, which
+    pacing_status asks about once."""
     import inspect
     missing = []
     hook = getattr(TTSService, "_refresh_audio_context", None)
@@ -397,7 +400,10 @@ def _missing_pacing_hooks(tts) -> list[str]:
     if (hook is None or inspect.iscoroutinefunction(hook)
             or "context_id" not in inspect.signature(hook).parameters):
         missing.append("_refresh_audio_context(context_id)")
-    if not isinstance(getattr(tts, "_stop_frame_timeout_s", None), (int, float)):
+    # TTSService.__init__ is what sets it on every instance. Its bytecode names each
+    # attribute it assigns, and bytecode is there even without .py sources.
+    init = getattr(inspect.unwrap(TTSService.__init__), "__code__", None)
+    if init is None or "_stop_frame_timeout_s" not in init.co_names:
         missing.append("_stop_frame_timeout_s")
     # Present is not enough: the watchdog must still time out on that value and still
     # skip the keepalive. Without .py sources, skip this part, as
@@ -410,6 +416,23 @@ def _missing_pacing_hooks(tts) -> list[str]:
                 for name in ("_stop_frame_timeout_s", "_CONTEXT_KEEPALIVE")
                 if name not in source]
     return missing
+
+
+@functools.cache
+def pacing_status() -> dict:
+    """TTS_PACING as configured, the pacing sessions actually run, and what "lead"
+    found missing from pipecat when it fell back to "greedy" (issue #138), with the
+    pipecat version that was checked. Worked out once per process (the startup TTS
+    warm-up asks first): every session's pacing, its WARNING, /health and, through
+    /health, `teaport doctor` all read this one answer."""
+    from importlib.metadata import PackageNotFoundError, version
+    missing = _missing_pacing_hooks() if _PACING == "lead" else []
+    try:
+        pipecat = version("pipecat-ai")
+    except PackageNotFoundError:
+        pipecat = "unknown"
+    return {"configured": _PACING, "effective": "greedy" if missing else _PACING,
+            "missing": missing, "pipecat": pipecat}
 
 
 class EngineTTSService(TTSService):
@@ -464,7 +487,7 @@ class EngineTTSService(TTSService):
         self._user_quiet.set()
         self._speech_hold_max_s = _USER_SPEECH_HOLD_MAX_S
         self._hold_on_user_speech = _HOLD_ON_USER_SPEECH
-        self._pacing, self._lead_s, self._eager = _PACING, _LEAD_S, _EAGER
+        self._lead_s, self._eager = _LEAD_S, _EAGER
         # Per-session estimates of a clause's audio length and synth time (see
         # _est_synth_secs), learned from every clause this session synthesizes.
         self._secs_per_char = _SECS_PER_CHAR_SEED
@@ -532,10 +555,12 @@ class EngineTTSService(TTSService):
         )
         if self._speed != 1.0:
             logger.warning(f"engine TTS ignores speed={self._speed} (engine synthesizes at 1.0)")
-        if self._pacing == "lead" and (missing := _missing_pacing_hooks(self)):
-            logger.warning(f"TTS_PACING=lead needs pipecat TTSService {', '.join(missing)}, "
-                           "which this pipecat lacks: pacing greedy for this session")
-            self._pacing = "greedy"
+        pacing = pacing_status()
+        if pacing["missing"]:
+            logger.warning(f"TTS_PACING=lead needs pipecat TTSService "
+                           f"{', '.join(pacing['missing'])}, which pipecat "
+                           f"{pacing['pipecat']} lacks: pacing greedy for this session")
+        self._pacing = pacing["effective"]
         logger.info(f"EngineTTSService ready (engine text-in, voice={self._voice}, "
                     f"lang={self._espeak_lang}, 24kHz)")
 

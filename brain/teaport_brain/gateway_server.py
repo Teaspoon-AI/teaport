@@ -60,6 +60,7 @@ from teaport_brain.gateway_serializer import (
     TeaportGatewaySerializer,
 )
 from teaport_brain.captions import sends_every_final
+from teaport_brain.engine_tts import pacing_status
 from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
@@ -476,7 +477,10 @@ app.include_router(config_ui.router)
 async def health():
     # "sip": the SIP front-end's state (sip_server.status): off, waiting for a gateway,
     # or connected to one. `teaport sip status` and `teaport doctor` read it.
-    return {"ok": True, "tts": "engine", "sip": sip_server.status()}
+    # "tts_pacing": TTS_PACING as configured and as run, which differ when this pipecat
+    # lacks what "lead" needs ("missing"; issue #138). `teaport doctor` warns on that.
+    return {"ok": True, "tts": "engine", "sip": sip_server.status(),
+            "tts_pacing": pacing_status()}
 
 
 @app.get("/talk/status")
