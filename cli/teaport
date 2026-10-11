@@ -324,98 +324,168 @@ app_log_level=3
 EOF
 }
 
-# sip_conf_stage <dest> — the sibling temp sip_conf_install fills and renames over <dest>;
-# prints its path. A rename installs the TEMP's inode, so the temp is given dest's owner,
-# group, mode and ACLs first (`cp --preserve=mode` carries the ACLs; the filler's `>`
-# truncates and keeps them): a bare mktemp is 0600 and owned by whoever runs this, and a
-# `sudo -E teaport sip aec off` or `sudo -E teaport sip configure --conf` left a
-# root:root conf the User= gateway could not open at the next restart, and a group
-# member's edit of a 0660 conf left it 0600 and theirs. cp does not report an owner it
-# could not keep (a non-root user cannot give a file away; exit 0 all the same), so the
-# result is compared, and a conf this user cannot rewrite as its owner is refused rather
-# than installed unreadable. Everything but the access of OTHERS is kept: the conf holds
-# the trunk password, and both writers used to leave it 0600 whatever it was, so a conf
-# left 0644 is closed to others here rather than kept world-readable; owner, group and
-# ACL entries stay as the operator set them — but for root:root, which only ever meant a
-# conf the gateway cannot open (the wizard wrote them until #134): root rewriting one
-# hands it to the unit's User= when the unit names one, and as anyone else the refusal
-# says to use sudo -E.
-# A NEW conf is mktemp's: 0600 and the invoker's — unless the invoker is root (`sudo -E
-# teaport sip configure` on a fresh box), whose conf the User= gateway could not open:
-# then it is given the unit's User= (and that user's group), and refused when the unit
-# names none this host knows (units not installed yet, say) — sip_conf_new_owner; the
-# wizard and the adopt path ask it before their test registration (sip_conf_preflight).
-sip_conf_stage() {
-  local dest="$1" tmp owner want
-  tmp="$(mktemp "$dest.XXXXXX")" || return 1
-  if [ ! -e "$dest" ]; then
-    owner="$(sip_conf_new_owner "$dest")" || { rm -f "$tmp"; return 1; }
-    if [ -n "$owner" ] && ! chown "$owner:" "$tmp" 2>/dev/null; then
-      rm -f "$tmp"; printf 'note: could not give a new %s to %s\n' "$dest" "$owner" >&2; return 1
+# sip_conf_owner <dest> — the ONE answer to "can this invoker replace <dest>, and with
+# what owner?": sip_conf_preflight asks it before the prompts and the ~8 s test
+# registration, sip_conf_install before it stages, so the two cannot disagree (an
+# owner-only preflight passed a conf in a group the invoker is not in, or in a directory
+# it cannot write, and the staging refused it after the registration). Sets SIP_OWN, the
+# uid:gid the replacement gets, and returns 0; or sets SIP_WHY, the one sentence the
+# caller's one message is built on, and returns 1.
+# - An installed conf keeps its owner and group (sip_conf_stage keeps its mode and ACLs)
+#   — but for root:root, which only ever meant a conf the gateway cannot open (the
+#   wizard wrote them until #134): root gives that to the user the gateway runs as, the
+#   same as a NEW conf it writes (sip_unit_ids).
+# - A new conf anyone else writes is theirs (mktemp's), and refused when the unit runs as
+#   a third user, who could not open it.
+# - The replacement is a rename in the conf's directory (the nearest one that exists,
+#   for a mkdir -p), so the invoker must be able to write there; the conf's own mode is
+#   not consulted: a rename does not need it, root never had it consulted, and a 0400
+#   conf was refused by `sip aec` (`[ -w ]`) and replaced by the wizard. Anyone but root
+#   can give a copy only itself as owner, and only a group it is in.
+SIP_OWN=""; SIP_WHY=""   # sip_conf_owner's answer
+sip_conf_owner() {
+  local dest="$1" me dir ids="" mine
+  me="$(id -u)"; dir="$(dirname -- "$dest")"
+  while [ ! -e "$dir" ]; do dir="$(dirname -- "$dir")"; done
+  if [ ! -w "$dir" ] || [ ! -x "$dir" ]; then     # root too: a read-only filesystem
+    SIP_WHY="$(id -un) cannot write to $dir, where $dest is replaced"
+    [ "$me" = 0 ] || SIP_WHY="$SIP_WHY — run this as $(stat -c %U "$dir") or with sudo -E"
+    return 1
+  fi
+  [ ! -e "$dest" ] || ids="$(stat -c %u:%g "$dest")"
+  if [ -n "$ids" ] && { [ "$ids" != 0:0 ] || [ "$me" != 0 ]; }; then SIP_OWN="$ids"
+  elif [ "$me" = 0 ]; then sip_unit_ids "$dest" || return 1
+  else
+    mine="$me:$(id -g)"; SIP_OWN="$mine"
+    if [ "$(sip_unit_prop LoadState)" = loaded ]; then
+      sip_unit_ids "$dest" || return 1
+      case "${SIP_OWN%%:*}" in
+        0|"$me") SIP_OWN="$mine" ;;
+        *) SIP_WHY="teaport-sip.service runs as $(sip_name passwd "${SIP_OWN%%:*}"), and a new $dest written by $(id -un) is one the gateway cannot open — run this as that user, or with sudo -E"; return 1 ;;
+      esac
     fi
-    printf '%s' "$tmp"; return 0
   fi
-  cp --attributes-only --preserve=mode,ownership "$dest" "$tmp" 2>/dev/null || true
-  chmod o-rwx "$tmp" 2>/dev/null || true
-  want="$(stat -c %u:%g "$dest")"
-  if [ "$want" = 0:0 ] && owner="$(sip_conf_new_owner "$dest" 2>/dev/null)" && [ -n "$owner" ] \
-     && chown "$owner:" "$tmp" 2>/dev/null; then want="$(id -u "$owner"):$(id -g "$owner")"; fi
-  want="$want:$(printf '%o' "$(( 8#$(stat -c %a "$dest") & ~07 ))")"
-  if [ "$(stat -c %u:%g:%a "$tmp")" != "$want" ]; then rm -f "$tmp"; sip_conf_owner_note "$dest"; return 1; fi
-  printf '%s' "$tmp"
+  [ "$me" != 0 ] || return 0
+  if [ "${SIP_OWN%%:*}" != "$me" ]; then
+    SIP_WHY="$dest belongs to $(sip_name passwd "${SIP_OWN%%:*}"), and a copy written by $(id -un) cannot — run this as $(sip_name passwd "${SIP_OWN%%:*}") or with sudo -E"; return 1
+  fi
+  case " $(id -G) " in *" ${SIP_OWN#*:} "*) ;; *)
+    SIP_WHY="$dest is in group $(sip_name group "${SIP_OWN#*:}"), which $(id -un) is not in, so a copy it writes cannot be — run this with sudo -E"; return 1 ;;
+  esac
 }
-sip_conf_owner_note() {
-  printf 'note: %s is %s; a copy written by %s could not keep that — run this as %s or with sudo -E\n' \
-    "$1" "$(stat -c '%U:%G %a' "$1")" "$(id -un)" "$(stat -c %U "$1")" >&2
+sip_name() { local e; e="$(getent "$1" "$2" 2>/dev/null)" || e="$2"; printf '%s' "${e%%:*}"; }   # sip_name passwd|group <id>
+
+# sip_unit_ids <dest> — the uid:gid teaport-sip.service's gateway runs as, in SIP_OWN; or
+# SIP_WHY and 1 when there is none to give <dest> to. systemd's reading of the unit
+# (checked on systemd 255 with transient units): an empty User= runs as ROOT, which reads
+# a root:root conf — that is no refusal; User= is a name or a numeric uid, and either
+# one this host lacks fails every start (217/USER), as an unknown Group= does
+# (216/GROUP); an empty Group= is the user's login group. A unit that is not installed
+# shows an empty User= too, which means nobody yet, not root: LoadState tells them apart.
+# getent takes a name or a number, as systemd does (`chown 1000:`, the login-group form
+# the old code used, is "invalid spec" for a number).
+sip_unit_prop() { systemctl show -p "$1" --value teaport-sip.service 2>/dev/null || true; }
+sip_unit_ids() {
+  local user group e uid gid
+  if [ "$(sip_unit_prop LoadState)" != loaded ]; then
+    SIP_WHY="$1 written as root is one the gateway cannot open unless it goes to the user the gateway runs as, and teaport-sip.service is not installed to say who that is — install the units (install.sh) first, or run this as the user they will run as"; return 1
+  fi
+  user="$(sip_unit_prop User)"; group="$(sip_unit_prop Group)"
+  e="$(getent passwd "${user:-0}")" || {
+    SIP_WHY="teaport-sip.service runs as $user, a user this host does not have, so the gateway cannot open $1 or anything else — systemd does not start it at all (status 217/USER); fix the unit's User= (install.sh writes it)"; return 1; }
+  e="${e#*:*:}"; uid="${e%%:*}"; e="${e#*:}"; gid="${e%%:*}"         # name:x:UID:GID:…
+  if [ -n "$group" ]; then
+    e="$(getent group "$group")" || {
+      SIP_WHY="teaport-sip.service runs in group $group, which this host does not have, so the gateway cannot open $1 — systemd does not start it at all (status 216/GROUP); fix the unit's Group="; return 1; }
+    e="${e#*:*:}"; gid="${e%%:*}"                                     # name:x:GID:…
+  fi
+  SIP_OWN="$uid:$gid"
 }
 
-# sip_conf_new_owner <dest> — who a NEW conf at <dest> is given to: nobody (prints
-# nothing) unless this runs as root, then teaport-sip.service's User=. As root with a unit
-# that names no user this host has, it says why and returns 1: a conf root writes is one
-# the User= gateway cannot open.
-sip_conf_new_owner() {
-  local owner why
-  [ "$(id -u)" = 0 ] || return 0
-  owner="$(systemctl show -p User --value teaport-sip.service 2>/dev/null || true)"
-  if [ -n "$owner" ] && id -u "$owner" >/dev/null 2>&1; then printf '%s' "$owner"; return 0; fi
-  why="teaport-sip.service names no User= to give it to"
-  [ -z "$owner" ] || why="teaport-sip.service runs as $owner, a user this host does not have"
-  printf 'note: no %s yet, and a new one written as root is one the gateway cannot open — %s; install the units (install.sh) or run this as the user they run as\n' \
-    "$1" "$why" >&2
-  return 1
-}
-
-# sip_conf_preflight — `configure` (the wizard and --conf) refuses what sip_conf_stage
-# would refuse BEFORE its prompts and ~8 s test registration, not after them: a new conf
-# as root with no unit User=, and, as anyone but root, an installed conf someone else
-# owns (a root:root one included: only root can hand that to the unit's User=). Root
-# rewriting an installed conf is never refused: it keeps its owner, or goes from
-# root:root to the unit's User= when the unit names one.
+# sip_conf_preflight — `configure` (the wizard and --conf) refuses what sip_conf_install
+# would, BEFORE its prompts and ~8 s test registration: sip_conf_owner, the same
+# question. And a conf the gateway would never read: the unit starts on the path
+# install.sh rendered into its ConditionPathExists= (and ExecStart=), while $SIP_CONF
+# comes from $HOME — under a plain `sudo`, which resets HOME, it named
+# /root/.config/teaport/teaport-sip.conf: installed where the unit never looks (its
+# condition kept the line down) and given, with a directory made for it in /root, to a
+# user who cannot reach it.
 sip_conf_preflight() {
-  local dest; dest="$(sip_conf_target "$SIP_CONF")"
-  if [ ! -e "$dest" ]; then sip_conf_new_owner "$dest" >/dev/null || die "nothing tested, nothing installed"
-  elif [ "$(id -u)" != 0 ] && [ "$(stat -c %u "$dest")" != "$(id -u)" ]; then
-    sip_conf_owner_note "$dest"; die "nothing tested, nothing installed"
+  local dest unit
+  dest="$(sip_conf_target "$SIP_CONF")"
+  unit="$(systemctl cat teaport-sip.service 2>/dev/null | sed -n 's/^ConditionPathExists=//p' | tail -n 1)" || unit=""
+  if [ -n "$unit" ] && [ "$(sip_conf_target "$unit")" != "$dest" ]; then
+    die "teaport-sip.service reads $unit, not $SIP_CONF — run this as the user the units run as (sudo -E as root: plain sudo resets HOME), or set TEAPORT_SIP_CONF — nothing tested, nothing installed"
   fi
+  sip_conf_owner "$dest" || die "$SIP_WHY — nothing tested, nothing installed"
 }
 
 # sip_conf_install <conf> <mode> <fill> [args...] — how every conf writer (the wizard, the
-# adopt path, sip_conf_set) installs one: a sip_conf_stage temp beside <conf>'s target
-# (sip_conf_target), chmod <mode> when one is given — before the fill, so the password
-# never sits in a temp looser than that — filled with `<fill> <args...>`'s stdout, and
-# renamed over the target; the temp trapped until then. Returns <fill>'s 2 (a source it
-# could not read, for the caller to name), else 1 on any failure, the temp gone and the
-# conf as it was. Each step is checked by hand: a caller's `||` turns set -e off in here.
+# adopt path, sip_conf_set) installs one, at <conf>'s target (sip_conf_target):
+# sip_conf_owner asked, the directory made if missing (sip_conf_mkdir), a temp beside it
+# staged (sip_conf_stage), chmod <mode> when one is given — before the fill, so the
+# password never sits in a temp looser than that — filled with `<fill> <args...>`'s
+# stdout, and renamed over the target; the temp on the cleanup list until then. Returns
+# 0; 3 when sip_conf_owner or sip_conf_stage refused, with SIP_WHY saying why (the
+# caller's whole message: a note here and a "could not write" there said it twice);
+# <fill>'s 2 (a source it could not read, for the caller to name); else 1. On a failure
+# the temp is gone and the conf as it was. Each step is checked by hand: a caller's `||`
+# turns set -e off in here.
 sip_conf_install() {
-  local dest mode="$2" tmp rc=0
+  local dest mode="$2" tmp="" rc=0 ro=""
   dest="$(sip_conf_target "$1")"; shift 2
-  tmp="$(sip_conf_stage "$dest")" || return 1
-  sip_trap_rm "$tmp"
-  [ -z "$mode" ] || chmod "$mode" "$tmp" || rc=1
-  [ "$rc" != 0 ] || "$@" > "$tmp" || rc=$?
-  if [ "$rc" = 0 ] && mv -f "$tmp" "$dest"; then sip_untrap; return 0; fi
-  rm -f "$tmp"; sip_untrap
-  [ "$rc" = 2 ] && return 2; return 1
+  sip_conf_owner "$dest" || return 3
+  sip_conf_mkdir "$(dirname -- "$dest")" || return 1
+  sip_mktemp tmp "$dest.XXXXXX" || return 1
+  sip_conf_stage "$dest" "$tmp" || rc=3
+  [ "$rc" != 0 ] || [ -z "$mode" ] || chmod "$mode" "$tmp" || rc=1
+  # A conf its owner keeps read-only (0400) is staged 0400 too: writable for the fill.
+  [ "$rc" != 0 ] || [ -w "$tmp" ] || { ro=1; chmod u+w "$tmp"; } || rc=1
+  [ "$rc" != 0 ] || "$@" > "$tmp" || { rc=$?; [ "$rc" = 2 ] || rc=1; }
+  [ "$rc" != 0 ] || [ -z "$ro" ] || chmod u-w "$tmp" || rc=1
+  if [ "$rc" = 0 ] && mv -f "$tmp" "$dest"; then sip_drop "$tmp"; return 0; fi
+  rm -f "$tmp"; sip_drop "$tmp"
+  [ "$rc" = 0 ] && return 1; return "$rc"
+}
+
+# sip_conf_stage <dest> <tmp> — give the temp sip_conf_install renames over <dest> what an
+# installed conf has: a rename installs the TEMP's inode, and a bare mktemp is 0600 and
+# the invoker's (a `sudo -E teaport sip aec off` left a root:root conf the User= gateway
+# could not open at the next restart, and a group member's edit of a 0660 conf left it
+# 0600 and theirs). Owner and group are SIP_OWN (sip_conf_owner), set by number; mode
+# and ACLs are <dest>'s (`cp --preserve=mode` carries the ACLs; the filler's `>`
+# truncates and keeps them) but for the access of OTHERS: the conf holds the trunk
+# password, and both writers used to leave it 0600 whatever it was, so a conf left 0644
+# is closed to others here rather than kept world-readable. A new conf keeps mktemp's
+# 0600. Read back after: a filesystem can refuse or ignore a chown (root_squash NFS,
+# vfat), and a copy that did not come out right is refused (SIP_WHY), not installed.
+sip_conf_stage() {
+  local dest="$1" t="$2" want=600
+  if [ -e "$dest" ]; then
+    want="$(printf '%o' "$(( 8#$(stat -c %a "$dest") & ~07 ))")"
+    cp --attributes-only --preserve=mode "$dest" "$t" 2>/dev/null || true
+    chmod o-rwx "$t" 2>/dev/null || true
+  fi
+  chown "$SIP_OWN" "$t" 2>/dev/null || true
+  [ "$(stat -c %u:%g:%a "$t")" = "$SIP_OWN:$want" ] && return 0
+  SIP_WHY="a copy of $dest came out $(stat -c '%u:%g %a' "$t"), not $SIP_OWN $want, on this filesystem"; return 1
+}
+
+# sip_conf_mkdir <dir> — the conf's directory, made when it is missing (a box whose
+# ~/.config/teaport is gone, a TEAPORT_SIP_CONF elsewhere): 0700, since it holds the
+# trunk password, and given, with every directory made for it, to SIP_OWN like the conf
+# itself. Root's `mkdir -p "$SECRETS"` made them root:root, and the gateway could not
+# get into a root:root 0700 directory to open the conf handed to it. A directory that
+# exists is left as it is: a `chmod 700 "$SECRETS"` on every configure overrode the
+# group access an operator gave it, which the conf's owner, group and ACLs are kept for.
+# `chown -h`: one swapped for a symlink in between gives away the link, not its target.
+sip_conf_mkdir() {
+  local d="$1" made=()
+  while [ ! -e "$d" ]; do made+=("$d"); d="$(dirname -- "$d")"; done
+  [ "${#made[@]}" != 0 ] || return 0
+  # shellcheck disable=SC2174  # 0700 on the conf's own directory only, as meant
+  mkdir -p -m 700 -- "$1" || return 1
+  [ "$(id -u)" != 0 ] || chown -h "$SIP_OWN" -- "${made[@]}"
 }
 
 # sip_conf_set <file> <key> <value> — set one key in a gateway .conf. The gateway's
@@ -428,18 +498,16 @@ sip_conf_install() {
 # it O_TRUNC first, and a write that then failed (full filesystem, quota) left a
 # 0..N-byte conf with no password while the caller reported it unchanged — and
 # ConditionPathExists still saw a file, so the units came up on it at the next boot.
-# Returns 1 when the rewrite fails (read-only conf or directory, full filesystem, an
-# owner sip_conf_stage cannot keep): under set -e that stops the caller before it
-# prints "aec: true -> false" over a file that still says true.
+# Returns sip_conf_install's status (3: refused, SIP_WHY says why); under set -e a
+# failure stops the caller before it prints "aec: true -> false" over a file that still
+# says true. The conf is read by the filler, after sip_conf_owner has had its say: read
+# by the caller's `<`, a conf this user cannot read failed before the reason was asked.
 # A rename lands on the LINK when the conf is a symlink (a conf kept in a secrets
 # store, say): the CLI's path became a regular file with the new value while the
 # target — the copy the operator keeps — still said the old one. Rewrite the target.
 sip_conf_target() { readlink -f "$1" 2>/dev/null || printf '%s' "$1"; }
-sip_conf_set() {
-  [ -w "$1" ] || return 1
-  # shellcheck disable=SC2094  # written to a staged temp, renamed over the conf after
-  sip_conf_install "$1" "" sip_conf_force "$2=$3" < "$1" || return 1
-}
+sip_conf_set() { sip_conf_install "$1" "" sip_conf_force_file "$1" "$2=$3"; }
+sip_conf_force_file() { sip_conf_force "${@:2}" < "$1"; }
 
 # sip_conf_force key=value... — stdin to stdout, each key set as sip_conf_set describes
 # (its LAST line rewritten in place, earlier duplicates dropped, a missing key appended,
@@ -460,20 +528,53 @@ sip_conf_force() {
           for (i = 1; i <= nk; i++) if (!(i in last)) print key[i] "=" val[i] }' "$@"
 }
 
-# The conf writers' temps hold the SIP password. A Ctrl-C or SIGTERM between staging and
-# the rename left `teaport-sip.conf.XXXXXX` in $SECRETS indefinitely (only the error
-# path removed it), so each writer removes its temps on ANY exit while they exist, the
-# way the probe does: sip_trap_rm right after creating them, sip_untrap once they are
-# renamed or removed. INT/TERM leave through the EXIT trap. Never nested: the probe
-# (sip_probe_register) replaces the copy's trap with its own, which removes the same
-# file, and clears it before any writer stages.
-sip_trap_rm() {
-  # shellcheck disable=SC2064  # expanded NOW on purpose: these paths
-  trap "rm -f $(printf '%q ' "$@")" EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+# The conf writers' temps hold the SIP password, and the probe's gateway would outlive a
+# Ctrl-C (bash starts it with SIGINT ignored) on :5062. Each is removed (killed) on ANY
+# exit while it exists, by ONE trap over one list — SIP_LIVE (files) and SIP_PIDS — not
+# a trap per writer: a writer adds what it makes and sip_drop takes it off once it is
+# renamed, removed or reaped; the trap is set while the list has anything on it and
+# cleared when it empties, and nothing else in the CLI sets one. So nothing nests: a
+# writer inside a probe adds and drops its own entries, where the per-writer traps
+# replaced the outer one and then cleared it, leaving the outer temp to the next Ctrl-C.
+# INT/TERM leave through the EXIT trap (exit 130/143).
+# Making a thing and listing it are one step to a signal (sip_hold … sip_release): one
+# that arrives in between is recorded, not acted on, and acted on once the thing is
+# listed. `tmp="$(mktemp …)"` with the trap set after it returned left a TERM in between
+# (as root, a systemctl call long) the temp to keep, and a Ctrl-C to the process group
+# could kill mktemp between making the file and printing its name: mktemp runs with
+# INT/TERM ignored, and always finishes.
+# `|| true` on the kill: set -e applies inside a trap, and a gateway that has already
+# exited (bash reaps it at once) makes kill fail, which ended the trap before the rm.
+SIP_LIVE=(); SIP_PIDS=(); SIP_SIG=""
+sip_cleanup() {
+  [ "${#SIP_PIDS[@]}" = 0 ] || kill "${SIP_PIDS[@]}" 2>/dev/null || true
+  [ "${#SIP_LIVE[@]}" = 0 ] || rm -f -- "${SIP_LIVE[@]}" || true
 }
-sip_untrap() { trap - EXIT INT TERM; }
+sip_hold() { SIP_SIG=""; trap 'SIP_SIG=130' INT; trap 'SIP_SIG=143' TERM; }
+sip_release() {
+  if [ "${#SIP_LIVE[@]}" != 0 ] || [ "${#SIP_PIDS[@]}" != 0 ]; then
+    trap sip_cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
+  else trap - EXIT INT TERM; fi
+  [ -z "$SIP_SIG" ] || exit "$SIP_SIG"
+}
+# sip_mktemp <var> [mktemp args...] — a temp, listed before a signal can act on it.
+sip_mktemp() {
+  local _t
+  sip_hold
+  _t="$(trap '' INT TERM; mktemp "${@:2}")" || _t=""
+  [ -z "$_t" ] || SIP_LIVE+=("$_t")
+  sip_release
+  [ -n "$_t" ] && printf -v "$1" '%s' "$_t"
+}
+# sip_drop <path|pid>... — off the list: removed, renamed or reaped already.
+sip_drop() {
+  local x y keep
+  for y in "$@"; do
+    keep=(); for x in "${SIP_LIVE[@]}"; do [ "$x" = "$y" ] || keep+=("$x"); done; SIP_LIVE=("${keep[@]}")
+    keep=(); for x in "${SIP_PIDS[@]}"; do [ "$x" = "$y" ] || keep+=("$x"); done; SIP_PIDS=("${keep[@]}")
+  done
+  sip_release
+}
 
 # The gateway's last registration line ([reg] REGISTERED code=200 OK, or the failure)
 # from its CURRENT run only: a 200 from before the last restart says nothing about the
@@ -553,26 +654,18 @@ sip_wait_registered() {
 # and confirm it registers (200 OK). Returns 0 on success; on failure prints the
 # gateway's output and returns 1. Owns the end of the throwaway files' life: the conf
 # (it holds the password), the socket and the output capture are all removed here, on
-# every path, so there is one place that can forget the rm — not one per caller.
+# every path, so there is one place that can forget the rm — not one per caller. A
+# Ctrl-C (any exit) during the ~8 s: the cleanup list kills the gateway, which bash
+# started with SIGINT ignored and which would outlive this script on :5062, and removes
+# the files; the gateway is started and listed as one step (sip_hold).
 sip_probe_register() {
-  local testconf="$1" testuds="$2" label="$3" out
-  out="$(mktemp)"
+  local testconf="$1" testuds="$2" label="$3" out="" gpid ok=0 i
+  sip_mktemp out || die "could not write a probe log in ${TMPDIR:-/tmp} — no REGISTER attempted, nothing installed"
   printf 'test-registering %s (throwaway port %s — :5060 untouched)...\n' "$label" "$(confval "$testconf" sip_port)"
+  sip_hold
   "$SIP_GATEWAY" "$testconf" >"$out" 2>&1 &
-  local gpid=$! ok=0 i
-  # Ctrl-C during the ~8 s probe: bash starts a background command with SIGINT ignored,
-  # so the gateway would outlive this script on :5062, and the conf (with the password)
-  # would sit in /tmp. Kill and remove on any exit; INT/TERM leave through the EXIT
-  # trap. These replace the caller's sip_trap_rm on the same conf (the only other traps
-  # the CLI sets, never live at once with these), and the normal path clears them once
-  # it has cleaned up itself. `|| true` on the kill: set -e applies inside the trap, and a
-  # gateway that has already exited (bash reaps it at once — a probe that could not
-  # bind :5062 dies within the loop's sleep) makes kill fail, which ended the trap
-  # before the rm -f and turned the exit status into 1.
-  # shellcheck disable=SC2064  # expanded NOW on purpose: the pid and paths of this probe
-  trap "kill $gpid 2>/dev/null || true; rm -f $(printf '%q %q %q' "$testconf" "$testuds" "$out")" EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
+  gpid=$!; SIP_PIDS+=("$gpid")
+  sip_release
   for i in $(seq 1 16); do              # ~8s: 16 * 0.5s
     kill -0 "$gpid" 2>/dev/null || break                                  # binary exited early
     if grep -Eiq 'REGISTERED.*200|registration success|200 *OK' "$out"; then ok=1; break; fi
@@ -594,7 +687,7 @@ sip_probe_register() {
   else
     printf '%s\n' "$(c "$GREEN" 'registration OK (200)')"
   fi
-  rm -f "$out"; trap - EXIT INT TERM
+  rm -f "$out"; sip_drop "$testconf" "$testuds" "$out" "$gpid"
   [ "$ok" = 1 ]
 }
 
@@ -666,16 +759,16 @@ sip_require_gateway() {
 # conf that will be installed, on the test port and socket) into a throwaway conf, run by
 # sip_probe_register. A conf that cannot be prepared (a full or read-only TMPDIR, a
 # source gone unreadable) is not a registration failure: returned as one, the caller told
-# the operator to fix a trunk that was never tried. The die leaves through the trap,
-# which removes the copy. <source> is the file a filler reads (sip_adopt_copy's 2), named
-# in that message; the wizard has none (""), and its fillers' arguments hold the
-# password, so no message ever takes a name from them.
+# the operator to fix a trunk that was never tried. The die leaves through the cleanup
+# trap, which removes the copy. <source> is the file a filler reads (sip_adopt_copy's
+# 2), named in that message; the wizard has none (""), and its fillers' arguments hold
+# the password, so no message ever takes a name from them.
 sip_probe_with() {
-  local label="$1" src="$2" testconf testuds; shift 2
+  local label="$1" src="$2" testconf="" testuds; shift 2
   sip_require_gateway
-  testconf="$(mktemp)"
-  sip_trap_rm "$testconf"
+  sip_mktemp testconf || die "could not write a probe conf in ${TMPDIR:-/tmp} — no REGISTER attempted, nothing installed"
   testuds="$(mktemp -u --tmpdir teaport-sip-testreg.XXXXXX.sock)"
+  SIP_LIVE+=("$testuds")            # the gateway makes it; listed before it can
   "$1" 5062 "$testuds" "${@:2}" > "$testconf" || case "$?:$src" in
     2:?*) die "could not read $src — no REGISTER attempted, nothing installed" ;;
     *) die "could not write a probe conf in ${TMPDIR:-/tmp} — no REGISTER attempted, nothing installed" ;;
@@ -696,9 +789,9 @@ sip_test_register_conf() {
 # back. <source> as in sip_probe_with: the file named, "" for none.
 sip_go_live() {
   local mode="$1" src="$2"; shift 2
-  mkdir -p "$SECRETS"; chmod 700 "$SECRETS" 2>/dev/null || true
   sip_conf_install "$SIP_CONF" "$mode" "$1" 5060 "$SIP_UDS" "${@:2}" || case "$?:$src" in
     2:?*) die "could not read $src (changed since the test registration?) — nothing installed, the installed conf, if any, is unchanged" ;;
+    3:*) die "$SIP_WHY — nothing installed, the installed conf, if any, is unchanged" ;;
     *) die "could not write $SIP_CONF — the installed conf, if any, is unchanged" ;;
   esac
   printf 'installed %s%s (%s)\n' "${src:+$src -> }" "$SIP_CONF" "$(stat -L -c '%U:%G mode %a' "$SIP_CONF")"
@@ -860,7 +953,10 @@ sip_aec() {
   esac
   sip_require_on
   cur="$(confval "$SIP_CONF" aec)"
-  sip_conf_set "$SIP_CONF" aec "$val" || die "could not rewrite $SIP_CONF — aec left at ${cur:-unset}"
+  sip_conf_set "$SIP_CONF" aec "$val" || case $? in
+    3) die "$SIP_WHY — aec left at ${cur:-unset}" ;;
+    *) die "could not rewrite $SIP_CONF — aec left at ${cur:-unset}" ;;
+  esac
   printf 'aec: %s -> %s in %s\n' "${cur:-unset}" "$val" "$SIP_CONF"
   sip_restart_gateway
 }

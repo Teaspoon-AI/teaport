@@ -4,16 +4,22 @@
 # unit's User=; an adopt that fails says whether it could not READ the source or could
 # not WRITE the destination; the units' keys are forced in one pass that rewrites a conf
 # exactly as the old one-key-at-a-time sip_conf_set did; `sip aec on|off` checks its
-# preconditions once.
+# preconditions once. And (#139's leftovers) the unit's User=/Group= read as systemd
+# reads them (empty = root, numbers, unknown = never starts); one sip_conf_owner answer
+# for preflight and staging; temps listed before a signal can act; the conf's directory
+# made for the gateway; one cleanup trap that nests; one message per refusal.
 #
 # The CLI's functions are taken as they are (everything above its dispatch) and run by
 # bash with TEAPORT_SECRETS_DIR in a temp dir and systemctl/sudo/id stubbed where a test
-# needs them. Nothing outside a temp dir is touched; no service is.
+# needs them (teaport-sip.service always: UNIT_STUB). Nothing outside a temp dir is
+# touched; no service is.
 #
 # Run: python test_cli_sip_conf.py   (or via pytest test_suite.py)
 #
+import grp
 import os
 import pathlib
+import pwd
 import subprocess
 
 from tempdirs import tempdir
@@ -40,9 +46,23 @@ def _functions() -> str:
     return text[:text.index(DISPATCH)]
 
 
-def _run(secrets, steps, stubs=""):
-    script = _functions() + OLD_SET + stubs + "\n" + steps + "\n"
-    env = dict(os.environ, TEAPORT_SECRETS_DIR=str(secrets), HOME=str(secrets))
+# teaport-sip.service as the CLI reads it, so no run sees the host's own unit (on the
+# box it is installed, and names its own conf): installed (UNIT_LOAD), with UNIT_USER,
+# UNIT_GROUP, and a ConditionPathExists=UNIT_CONF when one is set.
+UNIT_STUB = r'''
+systemctl() { case "$*" in
+  "show -p LoadState --value teaport-sip.service") printf '%s\n' "${UNIT_LOAD-loaded}" ;;
+  "show -p User --value teaport-sip.service") printf '%s\n' "${UNIT_USER-}" ;;
+  "show -p Group --value teaport-sip.service") printf '%s\n' "${UNIT_GROUP-}" ;;
+  "cat teaport-sip.service") [ -n "${UNIT_CONF-}" ] && printf 'ConditionPathExists=%s\n' "$UNIT_CONF" ;;
+  *) command systemctl "$@" ;;
+esac; }
+'''
+
+
+def _run(secrets, steps, stubs="", env_extra=None):
+    script = _functions() + OLD_SET + UNIT_STUB + stubs + "\n" + steps + "\n"
+    env = dict(os.environ, TEAPORT_SECRETS_DIR=str(secrets), HOME=str(secrets), **(env_extra or {}))
     env.pop("TEAPORT_SIP_CONF", None)
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
     return p.returncode, p.stdout + p.stderr
@@ -171,33 +191,35 @@ def test_adopt_says_read_or_write_and_leaves_nothing_behind():
 
 ROOT_STUBS = r'''
 id() { if [ "${1:-}" = -u ] && [ $# = 1 ]; then echo 0; else command id "$@"; fi; }
-systemctl() { [ "$*" = "show -p User --value teaport-sip.service" ] && printf '%s\n' "$UNIT_USER"; }
 '''
+ME = pwd.getpwuid(os.getuid()).pw_name
+IDS = f"{os.getuid()}:{os.getgid()}"
 
 
 def test_a_new_conf_written_by_root_goes_to_the_units_user_or_is_refused():
-    me = subprocess.run(["id", "-un"], capture_output=True, text=True).stdout.strip()
     d = _secrets()
     dest = d / "teaport-sip.conf"
-    rc, out = _run(d, f'UNIT_USER={me}; t="$(sip_conf_stage {dest})"; stat -c "%U %a" "$t"', ROOT_STUBS)
-    assert rc == 0 and out.strip() == f"{me} 600", out
-    for user in ("", "no-such-user-xyz"):
+    rc, out = _run(d, f'UNIT_USER={ME}; sip_conf_install {dest} "" echo x; stat -c "%U %a" {dest}', ROOT_STUBS)
+    assert rc == 0 and out.strip() == f"{ME} 600", out
+    # The units not installed (nothing says who the gateway runs as), or a User= this host
+    # does not have.
+    for unit in ("UNIT_LOAD=not-found", "UNIT_USER=no-such-user-xyz"):
         d = _secrets()
-        rc, out = _run(d, f'UNIT_USER="{user}"; sip_conf_stage {d}/teaport-sip.conf || echo REFUSED', ROOT_STUBS)
-        assert "REFUSED" in out and "gateway cannot open" in out, out
-        assert _temps(d) == [], _temps(d)
+        rc, out = _run(d, f'{unit}; sip_conf_install {d}/teaport-sip.conf "" echo x || echo "REFUSED $?: $SIP_WHY"', ROOT_STUBS)
+        assert "REFUSED 3" in out and "gateway cannot open" in out, out
+        assert _temps(d) == [] and not (d / "teaport-sip.conf").exists(), _temps(d)
 
 
 def test_adopt_as_root_refuses_an_ownerless_new_conf_before_the_test_registration():
     d = _secrets()
     src = d / "src.conf"; src.write_text(CONF)
     stubs = ADOPT_STUBS + ROOT_STUBS
-    rc, out = _run(d, f"UNIT_USER=''; PROBE_HOOK='echo PROBED'; sip_adopt_conf {src}", stubs)
+    rc, out = _run(d, f"UNIT_LOAD=not-found; PROBE_HOOK='echo PROBED'; sip_adopt_conf {src}", stubs)
     assert rc == 1 and "gateway cannot open" in out and "nothing tested" in out, out
     assert "PROBED" not in out and not (d / "teaport-sip.conf").exists() and _temps(d) == [], out
     # An installed conf keeps its owner whoever runs this: nothing to ask the unit then.
     (d / "teaport-sip.conf").write_text("password=old\n"); os.chmod(d / "teaport-sip.conf", 0o600)
-    rc, out = _run(d, f"UNIT_USER=''; PROBE_HOOK='echo PROBED'; sip_adopt_conf {src}", stubs)
+    rc, out = _run(d, f"UNIT_LOAD=not-found; PROBE_HOOK='echo PROBED'; sip_adopt_conf {src}", stubs)
     assert rc == 0 and "PROBED" in out and "TURN_ON" in out, out
 
 
@@ -244,7 +266,7 @@ def test_wizard_as_root_gives_a_new_conf_to_the_units_user_0600():
     stubs = WIZARD_STUBS + ROOT_STUBS + f'chown() {{ echo "$1" >> {d}/chown.log; command chown "$@"; }}'
     rc, out = _run(d, f"UNIT_USER={me}; PROBE_HOOK='echo PROBED'; {WIZARD}", stubs)
     assert rc == 0 and "PROBED" in out and "TURN_ON" in out, out
-    assert (d / "chown.log").read_text() == f"{me}:\n"
+    assert (d / "chown.log").read_text() == f"{IDS}\n"        # by number (#139 used "name:")
     conf = d / "teaport-sip.conf"
     st = subprocess.run(["stat", "-c", "%U %a", conf], capture_output=True, text=True).stdout.strip()
     assert st == f"{me} 600", st
@@ -254,9 +276,9 @@ def test_wizard_as_root_gives_a_new_conf_to_the_units_user_0600():
 
 
 def test_wizard_as_root_refuses_an_ownerless_new_conf_before_the_test_registration():
-    for user in ("", "no-such-user-xyz"):
+    for unit in ("UNIT_LOAD=not-found", "UNIT_USER=no-such-user-xyz"):
         d = _secrets()
-        rc, out = _run(d, f"UNIT_USER='{user}'; PROBE_HOOK='echo PROBED'; {WIZARD}", WIZARD_STUBS + ROOT_STUBS)
+        rc, out = _run(d, f"{unit}; PROBE_HOOK='echo PROBED'; {WIZARD}", WIZARD_STUBS + ROOT_STUBS)
         assert rc == 1 and "gateway cannot open" in out and "nothing tested" in out, out
         assert out.count("gateway cannot open") == 1, out
         assert "PROBED" not in out and "TURN_ON" not in out, out
@@ -312,7 +334,7 @@ def test_wizard_fills_its_temp_only_once_it_is_0600():
 def test_wizard_refuses_an_ownerless_root_conf_before_prompting():
     d = _secrets()
     stubs = WIZARD_STUBS + ROOT_STUBS + 'read() { echo PROMPTED; }'
-    rc, out = _run(d, "UNIT_USER=''; PROBE_HOOK='echo PROBED'; sip_configure", stubs)
+    rc, out = _run(d, "UNIT_LOAD=not-found; PROBE_HOOK='echo PROBED'; sip_configure", stubs)
     assert rc == 1 and "gateway cannot open" in out and "nothing tested" in out, out
     assert "PROMPTED" not in out and "PROBED" not in out, out
     assert not (d / "teaport-sip.conf").exists() and _temps(d) == [], _temps(d)
@@ -333,7 +355,7 @@ def test_a_root_owned_conf_goes_to_the_units_user_when_root_rewrites_it():
     assert conf.read_text() == "password=old\n" and _temps(d) == []
     rc, out = _run(d, f"UNIT_USER={me}; {WIZARD}", WIZARD_STUBS + ROOT_STUBS + root_owned + chown_log)
     assert rc == 0 and "TURN_ON" in out, out
-    assert (d / "chown.log").read_text() == f"{me}:\n"
+    assert (d / "chown.log").read_text() == f"{IDS}\n"
     assert "password=s3cret" in conf.read_text() and _temps(d) == []
 
 
@@ -368,7 +390,7 @@ def test_a_conf_someone_else_owns_is_refused_before_prompts_or_probe():
     conf.write_text("password=old\n"); os.chmod(conf, 0o600)
     src = d / "src.conf"; src.write_text(CONF)
     gw = _fake_gateway(d)
-    stubs = (f'stat() {{ [ "$*" = "-c %u {conf.resolve()}" ] && echo 0 || command stat "$@"; }}\n'
+    stubs = (f'stat() {{ [ "$*" = "-c %u:%g {conf.resolve()}" ] && echo 0:0 || command stat "$@"; }}\n'
              'sip_refuse_hand_launched() { :; }\nread() { echo PROMPTED; }\n')
     for steps in ("sip_configure", WIZARD, f"sip_adopt_conf {src}"):
         rc, out = _run(d, f"SIP_GATEWAY={gw}; {steps}", stubs)
@@ -385,6 +407,222 @@ def test_adopt_says_which_file_it_installed():
     assert rc == 0 and f"installed {src} -> {d}/teaport-sip.conf (" in out, out
     rc, out = _run(d, WIZARD, WIZARD_STUBS)
     assert rc == 0 and f"installed {d}/teaport-sip.conf (" in out and "->" not in out, out
+
+
+def _root_owned(conf):
+    return f'stat() {{ [ "$*" = "-c %u:%g {conf.resolve()}" ] && echo 0:0 || command stat "$@"; }}\n'
+
+
+def test_root_reads_the_units_user_as_systemd_does():
+    # Checked with transient units on systemd 255: an empty User= runs as root (which
+    # reads a root:root conf: nothing to refuse); an unknown User= (name or number) fails
+    # every start with 217/USER, an unknown Group= with 216/GROUP; a unit that is not
+    # installed shows an empty User= too, and is no answer.
+    unused_uid = next(u for u in range(4_000_000, 4_001_000) if not _has(pwd.getpwuid, u))
+    cases = [  # (unit, root:root conf installed?, refused with)
+        ("UNIT_USER=''", False, None), ("UNIT_USER=''", True, None),
+        ("UNIT_USER=no-such-user-xyz", True, "217/USER"), ("UNIT_USER=no-such-user-xyz", False, "217/USER"),
+        (f"UNIT_USER={unused_uid}", True, "217/USER"),
+        (f"UNIT_USER={ME} UNIT_GROUP=no-such-group-xyz", True, "216/GROUP"),
+        ("UNIT_LOAD=not-found", True, "not installed"), ("UNIT_LOAD=not-found", False, "not installed"),
+    ]
+    for unit, installed, refused in cases:
+        d = _secrets()
+        conf = d / "teaport-sip.conf"
+        stubs = WIZARD_STUBS + ROOT_STUBS
+        if installed:
+            conf.write_text("password=old\naec=true\n"); os.chmod(conf, 0o600)
+            stubs += _root_owned(conf)
+        rc, out = _run(d, f"{unit}; PROBE_HOOK='echo PROBED'; sip_conf_preflight && echo PREFLIGHT_OK", stubs)
+        if refused is None:
+            assert rc == 0 and "PREFLIGHT_OK" in out and "error" not in out, (unit, installed, out)
+            continue
+        assert rc == 1 and refused in out and "nothing tested" in out, (unit, installed, out)
+        rc, out = _run(d, f"{unit}; PROBE_HOOK='echo PROBED'; {WIZARD}", stubs)
+        assert rc == 1 and refused in out and "PROBED" not in out and "TURN_ON" not in out, (unit, out)
+        if installed:   # `sip aec` too, with no probe to come before it: one message, conf as it was
+            rc, out = _run(d, f"{unit}; sip_aec off", stubs + AEC_STUBS)
+            assert rc == 1 and refused in out and "aec left at true" in out, (unit, out)
+            assert out.count("error:") == 1 and "SUDO" not in out, out
+            assert conf.read_text() == "password=old\naec=true\n" and _temps(d) == []
+
+
+def _has(lookup, key):
+    try:
+        lookup(key)
+        return True
+    except KeyError:
+        return False
+
+
+def test_a_numeric_unit_user_and_group_are_given_by_number():
+    # `chown 1000:` (the login-group form) is "invalid spec" for a number. Not really root,
+    # so the user is ourselves, by uid; the group, when the unit names one, one of ours.
+    others = [g for g in os.getgroups() if g != os.getgid()]
+    gid = others[0] if others else os.getgid()
+    for unit, want_gid in ((f"UNIT_USER={os.getuid()}", os.getgid()),
+                           (f"UNIT_USER={os.getuid()} UNIT_GROUP={gid}", gid),
+                           (f"UNIT_USER={ME} UNIT_GROUP={grp.getgrgid(gid).gr_name}", gid)):
+        d = _secrets()
+        rc, out = _run(d, f"{unit}; {WIZARD}", WIZARD_STUBS + ROOT_STUBS)
+        assert rc == 0 and "TURN_ON" in out, (unit, out)
+        st = (d / "teaport-sip.conf").stat()
+        assert (st.st_uid, st.st_gid, st.st_mode & 0o777) == (os.getuid(), want_gid, 0o600), unit
+
+
+def test_preflight_and_staging_give_one_answer():
+    # sip_conf_preflight (before the ~8 s registration) and the staging (sip aec, the
+    # install) ask ONE sip_conf_owner, so they refuse the same confs. Not really in a
+    # foreign group, so the conf's group is what stat reports.
+    foreign_gid = next(g for g in range(4_000_000, 4_001_000) if g not in os.getgroups())
+    cases = [  # (name, setup, refused with)
+        ("mine", "", None),
+        ("read-only to its owner", "chmod 400 {conf}", None),    # a rename does not need it
+        ("someone else's", "own 0:0", "sudo -E"),
+        ("a group I am not in", f"own {os.getuid()}:{foreign_gid}", "which"),
+        ("a directory I cannot write", "chmod 500 {d}", "cannot write to"),
+    ]
+    for name, setup, refused in cases:
+        d = _secrets()
+        conf = d / "teaport-sip.conf"
+        conf.write_text("password=old\naec=true\n"); os.chmod(conf, 0o600)
+        stubs = WIZARD_STUBS + AEC_STUBS
+        if setup.startswith("own "):
+            stubs += f'stat() {{ [ "$*" = "-c %u:%g {conf.resolve()}" ] && echo {setup[4:]} || command stat "$@"; }}\n'
+        elif setup:
+            subprocess.run(setup.format(conf=conf, d=d), shell=True, check=True)
+        rc1, pre = _run(d, "sip_conf_preflight && echo PREFLIGHT_OK", stubs)
+        rc2, aec = _run(d, "sip_aec off", stubs)
+        rc3, wiz = _run(d, f"PROBE_HOOK='echo PROBED'; {WIZARD}", stubs)
+        if refused is None:
+            assert rc1 == 0 and "PREFLIGHT_OK" in pre, (name, pre)
+            assert rc2 == 0 and "aec: true -> false" in aec, (name, aec)
+            assert rc3 == 0 and "PROBED" in wiz and "TURN_ON" in wiz, (name, wiz)
+        else:
+            assert rc1 == 1 and refused in pre and "nothing tested" in pre, (name, pre)
+            assert rc2 == 1 and refused in aec and "aec left at true" in aec, (name, aec)
+            assert rc3 == 1 and refused in wiz and "PROBED" not in wiz, (name, wiz)
+            assert conf.read_text() == "password=old\naec=true\n", name
+        os.chmod(d, 0o700)
+        assert _temps(d) == [], (name, _temps(d))
+    # The read-only one kept its mode through `sip aec` (and the wizard's 0600 after).
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("aec=true\n"); os.chmod(conf, 0o400)
+    rc, out = _run(d, "sip_aec off", AEC_STUBS)
+    assert rc == 0 and conf.read_text() == "aec=false\n" and oct(conf.stat().st_mode & 0o777) == "0o400", out
+
+
+# mktemp as it would be if the signal landed just after it made the file: the parent is
+# signalled, mktemp still prints the name.
+SIGNAL_IN_MKTEMP = r'''
+mktemp() { local f; f="$(command mktemp "$@")" || return; case " $* " in *" -u "*) ;; *) kill -"$MKTEMP_SIG" $$; sleep 0.2 ;; esac; printf '%s\n' "$f"; }
+'''
+
+
+def test_a_signal_while_a_temp_is_made_leaves_nothing():
+    # `t="$(mktemp)"` with the trap set after it returned: a TERM in between (as root, a
+    # systemctl call long) kept the temp. Every temp is listed before a signal can act.
+    for sig, code in (("TERM", 143), ("INT", 130)):
+        d = _secrets()
+        conf = d / "teaport-sip.conf"
+        conf.write_text(CONF); os.chmod(conf, 0o600)
+        rc, out = _run(d, f"MKTEMP_SIG={sig}; sip_conf_set {conf} aec false", SIGNAL_IN_MKTEMP)
+        assert rc == code and _temps(d) == [] and conf.read_text() == CONF, (sig, rc, out, _temps(d))
+        # The probe's throwaway conf and its log, in TMPDIR.
+        tmp = d / "tmp"; tmp.mkdir()
+        probe = f"MKTEMP_SIG={sig}; SIP_GATEWAY={_fake_gateway(d)}; sip_test_register h d u p"
+        rc, out = _run(d, probe, SIGNAL_IN_MKTEMP, {"TMPDIR": str(tmp)})
+        assert rc == code and list(tmp.iterdir()) == [] and not (d / "probed").exists(), (sig, rc, out)
+
+
+def test_a_signal_in_the_probe_leaves_nothing_and_no_gateway():
+    # The probe's log was made and only then trapped (after a printf), and its gateway is
+    # started with SIGINT ignored: both are on the cleanup list from the moment they exist.
+    for sig, code, hook in (("TERM", 143, "confval"), ("INT", 130, "confval"), ("TERM", 143, "sleep")):
+        d = _secrets()
+        tmp = d / "tmp"; tmp.mkdir()
+        gw = d / "gw"
+        gw.write_text(f"#!/bin/sh\necho $$ > {d}/gw.pid\nexec sleep 30\n"); os.chmod(gw, 0o755)
+        # confval runs while the label is printed, before the gateway starts; sleep, in the
+        # wait for its 200 OK, once the gateway is up.
+        wait = f"while [ ! -s {d}/gw.pid ]; do command sleep 0.05; done; " if hook == "sleep" else ""
+        stub = f'{hook}() {{ {wait}kill -{sig} $$; command sleep 0.2; }}\n'
+        rc, out = _run(d, f"SIP_GATEWAY={gw}; sip_test_register h d u p", stub, {"TMPDIR": str(tmp)})
+        assert rc == code and list(tmp.iterdir()) == [], (sig, hook, rc, out, list(tmp.iterdir()))
+        assert (d / "gw.pid").exists() == (hook == "sleep"), hook
+        if hook == "sleep":
+            pid = (d / "gw.pid").read_text().strip()
+            gone = "for i in $(seq 20); do kill -0 %s 2>/dev/null || exit 0; sleep 0.05; done; exit 1" % pid
+            assert subprocess.run(["bash", "-c", gone]).returncode == 0, (hook, pid)
+
+
+def test_a_writer_inside_a_probe_keeps_the_probes_cleanup():
+    # One trap over one list: a writer that runs while the probe's conf is listed adds
+    # and drops its own temp, and the probe's conf is still removed by a later signal.
+    # Per-writer traps replaced the probe's and then cleared it.
+    d = _secrets()
+    tmp = d / "tmp"; tmp.mkdir()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("aec=true\n"); os.chmod(conf, 0o600)
+    nest = f'nest() {{ sip_conf_set {conf} aec false; kill -TERM $$; sleep 1; }}\n'
+    rc, out = _run(d, f'SIP_GATEWAY={_fake_gateway(d)}; sip_probe_with label "" nest', nest, {"TMPDIR": str(tmp)})
+    assert rc == 143 and list(tmp.iterdir()) == [], (rc, out, list(tmp.iterdir()))
+    assert conf.read_text() == "aec=false\n" and _temps(d) == []
+    rc, out = _run(d, f"sip_mktemp a; sip_mktemp b; sip_drop $b; rm -f $b; trap -p EXIT; echo $a > {d}/a",
+                   "", {"TMPDIR": str(tmp)})
+    assert rc == 0 and "sip_cleanup" in out and list(tmp.iterdir()) == [], (out, list(tmp.iterdir()))
+
+
+def test_a_refused_rewrite_is_one_message():
+    # A note from the staging and then "could not write …" said it twice.
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text("password=old\naec=true\n"); os.chmod(conf, 0o600)
+    rc, out = _run(d, "sip_aec off", AEC_STUBS + _root_owned(conf))
+    out = out.replace("CHECK\n", "")        # the stubbed units check
+    assert rc == 1 and out.count("\n") == 1 and out.count("error:") == 1 and "note:" not in out, out
+    assert "sudo -E" in out and "aec left at true" in out, out
+    # The install itself (past the preflight: an owner that changed since, say).
+    rc, out = _run(d, "sip_go_live 600 '' sip_emit_conf h d u p", WIZARD_STUBS + _root_owned(conf))
+    assert rc == 1 and out.count("\n") == 1 and "sudo -E" in out and "unchanged" in out, out
+    assert "could not write" not in out and "note:" not in out, out
+    assert conf.read_text() == "password=old\naec=true\n" and _temps(d) == []
+
+
+def test_a_missing_conf_directory_is_made_for_the_gateway():
+    # As root, `mkdir -p "$SECRETS"` made it root:root 0700, which the gateway cannot get
+    # into to open the conf given to it. Every directory made goes to the conf's owner
+    # (by number, -h: never through a link), the conf's own 0700. Not really root, so the
+    # owner is ourselves: the chown is what shows it asked.
+    d = _secrets()
+    secrets = d / "home" / ".config" / "teaport"
+    log = f'chown() {{ echo "$*" >> {d}/chown.log; command chown "$@"; }}\n'
+    rc, out = _run(secrets, f"UNIT_USER={ME}; {WIZARD}", WIZARD_STUBS + ROOT_STUBS + log)
+    assert rc == 0 and "TURN_ON" in out, out
+    made = f"-h {IDS} -- {secrets} {secrets.parent} {d / 'home'}"
+    assert made in (d / "chown.log").read_text().splitlines(), (d / "chown.log").read_text()
+    assert oct(secrets.stat().st_mode & 0o777) == "0o700" and (secrets / "teaport-sip.conf").exists()
+    # A directory that exists is left as the operator set it (not re-chmodded 0700).
+    os.chmod(secrets, 0o750)
+    rc, out = _run(secrets, WIZARD, WIZARD_STUBS)
+    assert rc == 0 and oct(secrets.stat().st_mode & 0o777) == "0o750", out
+
+
+def test_configure_refuses_a_conf_the_unit_does_not_read():
+    # Plain `sudo` resets HOME: $SIP_CONF named /root/.config/teaport/teaport-sip.conf, a
+    # conf the unit (ConditionPathExists= the user's) never reads.
+    d = _secrets()
+    src = d / "src.conf"; src.write_text(CONF)
+    stubs = WIZARD_STUBS + ADOPT_STUBS + ROOT_STUBS + "read() { echo PROMPTED; }\n"
+    for steps in ("sip_configure", WIZARD, f"sip_adopt_conf {src}"):
+        rc, out = _run(d, f"UNIT_USER={ME}; UNIT_CONF=/home/someone/.config/teaport/teaport-sip.conf; "
+                          f"PROBE_HOOK='echo PROBED'; {steps}", stubs)
+        assert rc == 1 and "reads /home/someone/.config/teaport/teaport-sip.conf" in out, (steps, out)
+        assert "nothing tested" in out and "PROMPTED" not in out and "PROBED" not in out, (steps, out)
+        assert not (d / "teaport-sip.conf").exists() and _temps(d) == [], steps
+    rc, out = _run(d, f"UNIT_USER={ME}; UNIT_CONF={d}/teaport-sip.conf; {WIZARD}", stubs)
+    assert rc == 0 and "TURN_ON" in out, out
 
 
 def main():
