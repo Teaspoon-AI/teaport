@@ -20,8 +20,9 @@ below, for editing by hand over ssh.
 
 The tables below are generated from `brain/teaport_brain/config_schema.toml`,
 which is also what the config UI reads — a setting that is not in the schema is
-not a setting. Each knob is explained at length where it is read; the **source**
-column of the schema names the file and line.
+not a setting. Each knob is explained at length where it is read: a search for
+its name finds the brain's reads, and for a setting the brain does not read, the
+schema row's `source` names the file(s) that read or write it.
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 

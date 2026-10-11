@@ -15,14 +15,21 @@
 # a search for the name finds it. Rows it does not read (the installer's, the units',
 # the CLI's, the Discord bridge's, a library's) name the file that does in `source` --
 # a file, not a line, because line numbers went stale under every edit above them
-# (17 of 113 when they were first checked, and ~60 per refactor after that).
-# The file must also name the setting, as a whole word outside a comment line (the
+# (17 of 113 when they were first checked, and ~60 per refactor after that). A setting
+# read or written in more than one place (the engine unit reads ENGINE_DELAY,
+# install.sh writes it) lists every file; config_schema.normalise makes a lone string
+# a one-file list, so the check below always walks a list.
+# Each file must also name the setting, as a whole word outside a comment line (the
 # sources are shell, JS, a systemd template and Python: `#` and `//` cover them), so a
 # rename or removal there fails here instead of leaving the row pointing at a file
 # that no longer reads it. A sip_conf key must start a `key=` line, as the conf
 # template in cli/teaport writes it: the bare words (`aec`, `register`, `password`)
 # are also subcommands, flags and prompts there. A library's row (`consumer`) names
 # our file that sets it, which names it too.
+# The check is that each listed file NAMES the setting, not that it reads or writes
+# it: install.sh also names ENGINE_PORT as its own shell variable and BRIDGE_GUILD_ID
+# in a sed read-back and a warning, so deleting the line that writes either one to
+# its env file still passes here.
 #
 # Run: python test_config_schema.py   (or via pytest)
 #
@@ -32,11 +39,12 @@ import pathlib
 import re
 import sys
 import tokenize
-import tomllib
 
 PKG = pathlib.Path(__file__).resolve().parent.parent / "teaport_brain"
-SCHEMA = PKG / "config_schema.toml"
 REPO = PKG.parent.parent
+
+sys.path.insert(0, str(PKG.parent))
+from teaport_brain import config_schema  # noqa: E402  (stdlib-only: tomllib)
 
 READ_RE = re.compile(
     r'(?:getenv|\bsetting|environ\.get|environ\[)\(?\s*(["\'])([A-Z][A-Z0-9_]+)\1'
@@ -88,8 +96,17 @@ def source_problem(name: str, src: str, store: str) -> str | None:
     return None
 
 
+def sources_problems(row: dict) -> list[str]:
+    """Why the files a (normalised) row's `source` lists cannot all be its sources."""
+    srcs = row["source"]
+    if not isinstance(srcs, list) or not srcs or not all(isinstance(s, str) for s in srcs) \
+            or len(set(srcs)) < len(srcs):
+        return [f"source must be a file or a list of distinct files, not {srcs!r}"]
+    return [why for src in srcs if (why := source_problem(row["name"], src, row["store"]))]
+
+
 def main() -> int:
-    schema = tomllib.load(open(SCHEMA, "rb"))
+    schema = config_schema.load()
     rows = schema["settings"]
     names = [r["name"] for r in rows]
     stores = set(schema["stores"])
@@ -147,13 +164,13 @@ def main() -> int:
         problems.append(f"schema row, never read by the brain: {n}")
 
     for r in rows:
-        n, src = r["name"], r.get("source")
-        if n in code and src is not None:
+        n, srcs = r["name"], r.get("source")
+        if n in code and srcs is not None:
             problems.append(f"{n}: the brain reads it, so no source (searching the name finds it)")
-        elif n not in code and src is None:
+        elif n not in code and srcs is None:
             problems.append(f"{n}: not read by the brain, so source must name the file that reads it")
-        elif src is not None and (why := source_problem(n, src, r["store"])):
-            problems.append(f"{n}: {why}")
+        elif srcs is not None:
+            problems += [f"{n}: {why}" for why in sources_problems(r)]
 
     # The source check must be able to fail: a real file that reads other settings, a
     # name that is only a prefix or a suffix of one the file reads, a name only a
@@ -170,6 +187,20 @@ def main() -> int:
                           ("ENGINE_PORT", "systemd/teaport-engine.service.in:1", "engine_env")):
         if source_problem(n, src, store) is None:
             problems.append(f"self-test: source {src!r} accepted for {n}")
+
+    # A list is checked file by file: one listed file that never names the setting fails
+    # the row wherever it sits (install.sh writes HF_HUB_OFFLINE, the Discord bridge
+    # never names it); an empty or repeating list, or a TOML value that is not a list
+    # (an inline table, an int, a bool), is not a list of sources; a lone string is one.
+    def row(source):
+        r = {"name": "HF_HUB_OFFLINE", "store": "brain_env", "source": source}
+        return config_schema.normalise({"settings": [r]})["settings"][0]
+    for bad in (["install.sh", "bridge/discord/index.js"], ["bridge/discord/index.js", "install.sh"],
+                [], ["install.sh", "install.sh"], {"file": "install.sh"}, 1, True):
+        if not sources_problems(row(bad)):
+            problems.append(f"self-test: source {bad!r} accepted for HF_HUB_OFFLINE")
+    if why := sources_problems(row("install.sh")):
+        problems.append(f"self-test: a single-file source is rejected: {why}")
 
     for p in problems:
         print("FAIL", p)

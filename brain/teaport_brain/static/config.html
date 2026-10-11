@@ -221,7 +221,7 @@
       <section class="group" id="g-wifi" hidden></section>
       <div id="groups"></div>
       <footer class="foot">
-        Rendered from <span class="mono">config_schema.toml</span> — the same table <span class="mono">docs/CONFIG.md</span> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the file named under it.
+        Rendered from <span class="mono">config_schema.toml</span> — the same table <span class="mono">docs/CONFIG.md</span> is generated from. Every setting is explained at length where it is read: search the code for its name, or, for one read outside the brain, the files named under it.
       </footer>
     </div>
   </div>
@@ -390,7 +390,7 @@
         h('div', { class: 'row-head' }, h('label', { for: id }, row.name), ...badges),
         row.help ? h('p', { class: 'help' }, row.help) : null,
         row.note ? h('p', { class: 'note' }, row.note) : null,
-        row.source ? h('div', { class: 'source' }, row.source) : null),
+        row.source ? h('div', { class: 'source' }, row.source.join(', ')) : null),
       h('div', { class: 'control' }, ...control(row, writable)));
     const first = $('input, select, textarea', el); if (first) first.id = id;
     if (row.name in edits) el.classList.add('changed');

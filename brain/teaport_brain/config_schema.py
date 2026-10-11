@@ -33,7 +33,19 @@ END = "<!-- end generated -->"
 @functools.cache
 def load() -> dict:
     with open(SCHEMA_PATH, "rb") as f:
-        return tomllib.load(f)
+        return normalise(tomllib.load(f))
+
+
+def normalise(schema: dict) -> dict:
+    """Give every consumer one shape: a row's `source`, when present, is a list of files.
+
+    The TOML writes one file as a plain string and a setting read or written in more
+    than one place as a list; nothing past this point has to tell the two apart.
+    """
+    for row in schema["settings"]:
+        if isinstance(row.get("source"), str):
+            row["source"] = [row["source"]]
+    return schema
 
 
 def settings_by_group(schema: dict) -> dict[str, list[dict]]:
