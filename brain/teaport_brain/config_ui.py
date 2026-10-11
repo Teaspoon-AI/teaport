@@ -224,7 +224,7 @@ def _validate(row: dict, value: str) -> str | None:
     t = row["type"]
     if value == "":
         # An explicit empty is only meaningful where the code distinguishes it.
-        if t == "enum" and "" in row.get("values", []):
+        if settings.empty_is_value(row):
             return None
         return "empty — clear the field to unset it instead"
     # An env-file value is one line. quote() does not escape newlines, and a

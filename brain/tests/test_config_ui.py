@@ -260,6 +260,18 @@ def test_put_validation():
     assert 'LLM_REASONING_EFFORT=""\n' in open(os.path.join(etc, "brain.env")).read()
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TTS_VOICE": ""}})
     assert r.status_code == 400 and "TTS_VOICE" in r.json()["errors"]
+    # ... and where a row's `empty` says what "" means (#127). TEAPORT_SIP_SOCKET has one
+    # but is installer tier, so the page shows its "off" and never writes it.
+    assert config_ui._validate({"type": "path", "empty": "off"}, "") is None
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": ""}})
+    assert r.status_code == 400 and "installer" in r.json()["errors"]["TEAPORT_SIP_SOCKET"]
+    from unittest import mock
+    rows = config_ui._rows()
+    rows["TEAPORT_SIP_SOCKET"] = {**rows["TEAPORT_SIP_SOCKET"], "tier": "tuning"}
+    with mock.patch.object(config_ui, "_rows", lambda: rows):  # an editable row with `empty`
+        r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {"TEAPORT_SIP_SOCKET": ""}})
+    assert r.status_code == 200, r.text
+    assert 'TEAPORT_SIP_SOCKET=""\n' in open(os.path.join(etc, "brain.env")).read()
     # a pretty-printed JSON paste is compacted to the one line an env file can hold
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
         "LLM_EXTRA_BODY": '{\n  "provider": {\n    "order": ["Cerebras"]\n  }\n}\n'}})

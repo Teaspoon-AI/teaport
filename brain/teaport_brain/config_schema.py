@@ -79,6 +79,8 @@ def _default_cell(row: dict) -> str:
         return cell
     if d == "":
         return EMPTY
+    if "empty" in row:
+        return f"`{d}` ({EMPTY} = {row['empty']})"
     return f"`{d}`"
 
 
