@@ -364,7 +364,9 @@ It test-registers against your trunk (briefly, on a throwaway port — never
 `:5060`, so a running gateway is untouched) and only on a `200 OK` writes
 `~/.config/teaport/teaport-sip.conf` (mode `600`, holds the SIP password) and
 enables the gateway. On a failed register it writes nothing and leaves telephony
-off. `teaport sip status` shows the gateway, the brain's SIP front-end, the config,
+off. Run it as the user the units run as; as root, use `sudo -E` (a plain `sudo`
+resets `HOME`, so it would write a conf the gateway never reads, and is refused): the
+conf, and its directory if it has to make one, are given to the gateway's user. `teaport sip status` shows the gateway, the brain's SIP front-end, the config,
 and this run's registration; `teaport sip disable [--purge]` turns it back off.
 
 Already have a gateway `.conf` — from a box that ran `teaport-sip` by hand, or
