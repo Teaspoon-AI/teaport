@@ -3,13 +3,13 @@
 import json
 import os
 import socket
-import tempfile
 import threading
 import time
 
 import pytest
 
 from teaport_brain import display
+from tempdirs import tempdir
 
 
 def _screen(refresh=0.02, features=lambda path: {"screen": 1}):
@@ -77,7 +77,7 @@ def _features(path, text):
 def test_an_avatar_that_does_not_say_it_draws_screens_is_sent_nothing():
     # An older avatar takes the datagram, draws nothing and logs it: the password with
     # it. Only its features file tells the two apart.
-    path = os.path.join(tempfile.mkdtemp(), "face.sock")
+    path = os.path.join(tempdir(), "face.sock")
     sent = []
     screen = display.Screen("t", path=path, refresh_secs=0.02,
                             send=lambda ev, p: sent.append(ev["screen"]) or True)
@@ -100,7 +100,7 @@ def test_an_avatar_that_does_not_say_it_draws_screens_is_sent_nothing():
 
 
 def test_an_avatar_that_comes_up_mid_hold_gets_the_screen_at_the_next_refresh():
-    path = os.path.join(tempfile.mkdtemp(), "face.sock")
+    path = os.path.join(tempdir(), "face.sock")
     sent, got = [], threading.Event()
     screen = display.Screen("t", path=path, refresh_secs=0.02,
                             send=lambda ev, p: sent.append(ev["screen"]) or got.set() or True)
@@ -116,7 +116,7 @@ def test_an_avatar_that_comes_up_mid_hold_gets_the_screen_at_the_next_refresh():
 
 
 def test_the_event_reaches_a_listening_socket():
-    path = os.path.join(tempfile.mkdtemp(), "face.sock")
+    path = os.path.join(tempdir(), "face.sock")
     with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
         s.bind(path)
         s.settimeout(2)
@@ -160,7 +160,7 @@ def test_a_qr_code_goes_with_the_screen_and_draws_asks_the_avatar():
 
 
 def test_features_reads_the_file_and_anything_else_is_none():
-    d = tempfile.mkdtemp()
+    d = tempdir()
     path = os.path.join(d, "face.sock")
     assert display.features(path) == {}
     for content, want in (('{"screen": 1, "qr": 1}', {"screen": 1, "qr": 1}),

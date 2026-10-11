@@ -8,13 +8,13 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 import time
 
 import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
+from tempdirs import tempdir  # noqa: E402
 
 require_pinned()
 
@@ -106,7 +106,7 @@ class Voice(wv.WifiSetupVoice):
 
 
 def _path():
-    return os.path.join(tempfile.mkdtemp(), "status.json")
+    return os.path.join(tempdir(), "status.json")
 
 
 def _write(path, run_id="r1", at=None, **status):
