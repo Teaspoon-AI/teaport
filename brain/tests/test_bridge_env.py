@@ -41,7 +41,7 @@ def bridge_reads() -> dict[str, str | None]:
     """{NAME: the type index.js passes to setting(), or None} for its setting() calls."""
     src = (BRIDGE / "index.js").read_text(encoding="utf-8")
     return {m.group(1): m.group(2) for m in
-            re.finditer(r'\bsetting\("([A-Z_]+)"(?:,\s*"(\w+)")?\)', src)}
+            re.finditer(r'(?<![.\w$])setting\("([A-Z_]+)"(?:,\s*"(\w+)")?\)', src)}
 
 
 def node_reading(rows: dict[str, str | None], value: str | None) -> dict[str, str | None]:

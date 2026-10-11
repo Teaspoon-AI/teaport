@@ -726,17 +726,6 @@ def test_apply_helper_stop_also_cancels_a_scheduled_start():
 
 
 if __name__ == "__main__":
-    appliance.run_tests([
-        test_env_roundtrip, test_get_masks_secrets_and_requires_token,
-        test_get_shows_values_as_the_brain_reads_them,
-        test_an_ignored_value_says_what_its_reader_does_and_can_be_removed,
-        test_doctor_reads_a_blank_secret_as_not_set, test_get_shows_what_other_readers_get_as_written,
-        test_token_compare_is_constant_time_and_total, test_put_validation,
-        test_put_writes_env_and_secrets, test_a_secret_is_written_as_the_brain_reads_it,
-        test_apply_helper_rejects_junk,
-        test_apply_helper_backup_ring_spares_operator_backups,
-        test_unreadable_store_is_reported_not_fatal,
-        test_secret_file_pending_for_startup_readers,
-        test_opt_in_store_is_never_created_from_the_page, test_wifi_section,
-        test_apply_helper_stop_also_cancels_a_scheduled_start,
-    ])
+    # Every test_ function, in the order it is defined: a hand-kept list left
+    # test_wifi_setup_busy_reads_the_unit_and_its_pending_start unrun from 1f8840e on.
+    appliance.run_tests([fn for name, fn in list(globals().items()) if name.startswith("test_")])
