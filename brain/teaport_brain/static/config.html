@@ -328,6 +328,7 @@
     const name = row.name;
     const val = current(name);
     const ro = !writable || row.tier === 'installer';
+    const off = !!row.empty && val === '';  // values arrive as the brain reads them
     if (row.type === 'secret') {
       const isSet = !!(data.secrets || {})[name];
       const input = h('input', { type: 'password', autocomplete: 'new-password', placeholder: isSet ? 'set — type to replace' : 'not set', disabled: ro,
@@ -335,7 +336,7 @@
       return [input, h('span', { class: 'secret-state' + (isSet ? ' set' : '') }, isSet ? 'A value is stored on the box. It is never shown here.' : 'No value stored.')];
     }
     if (ro) {
-      return [h('div', { class: 'readonly' }, val === null ? h('span', { style: 'color:var(--faint)' }, 'unset (default)') : (val === '' && row.empty ? row.empty : val), h('span', { class: 'lock' }, row.tier === 'installer' ? 'set by the installer' : 'read-only here'))];
+      return [h('div', { class: 'readonly' }, val === null ? h('span', { style: 'color:var(--faint)' }, 'unset (default)') : (off ? row.empty : val), h('span', { class: 'lock' }, row.tier === 'installer' ? 'set by the installer' : 'read-only here'))];
     }
     if (row.type === 'flag') {
       const sel = h('select', { onchange: (e) => setEdit(name, e.target.value === '' ? null : e.target.value) });
@@ -367,13 +368,13 @@
       return [h('textarea', { spellcheck: 'false', placeholder: '{ … }', oninput: (e) => setEdit(name, e.target.value.trim() === '' ? null : e.target.value) }, val ?? '')];
     }
     const input = h('input', { type: 'text', spellcheck: 'false', autocomplete: 'off', value: val ?? '', placeholder: 'default' in row ? String(row.default) : (row.required ? 'required' : ''),
-      disabled: !!row.empty && val === '', oninput: (e) => setEdit(name, e.target.value === '' ? null : e.target.value) });
+      disabled: off, oninput: (e) => setEdit(name, e.target.value.trim() === '' ? null : e.target.value) });
     if (!row.empty) return [input];
     // Empty is a value here (TEAPORT_SIP_SOCKET: off), and clearing the field means
     // "unset", so empty gets its own box.
-    const box = h('input', { type: 'checkbox', checked: val === '', onchange: (e) => {
+    const box = h('input', { type: 'checkbox', checked: off, onchange: (e) => {
       input.disabled = e.target.checked;
-      setEdit(name, e.target.checked ? '' : (input.value === '' ? null : input.value));
+      setEdit(name, e.target.checked ? '' : (input.value.trim() === '' ? null : input.value));
     } });
     return [input, h('label', { class: 'toggle' }, box, row.empty)];
   };
