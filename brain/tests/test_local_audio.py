@@ -328,7 +328,7 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == ("ws://h/talk?features=volume,restart,local&client=local-audio"
+    assert la._url() == ("ws://h/talk?features=volume,restart,local,phonemes&client=local-audio"
                          f"&keepalive={la.KEEPALIVE_SECS:g}&token=a%2Bb%26c%3Dd%20%25")
 
 
@@ -1096,7 +1096,7 @@ def test_no_wake_words_is_the_bridge_as_before(monkeypatch):
     monkeypatch.setattr(la, "URL", "ws://h/talk")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     assert not la.wake_mode()
-    assert la._url() == f"ws://h/talk?features=volume,restart,local&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
+    assert la._url() == f"ws://h/talk?features=volume,restart,local,phonemes&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
 
 
 def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
@@ -1105,7 +1105,7 @@ def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     import urllib.parse
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url()).query)
-    assert q["features"] == ["volume,restart,local,sleep"]
+    assert q["features"] == ["volume,restart,local,phonemes,sleep"]
     assert q["wake"] == ["hey teaport, привет чайник"] and "awake" not in q
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url(awake=True)).query)
     assert q["awake"] == ["1"]
@@ -1618,7 +1618,9 @@ def test_phonemes_come_due_where_their_audio_lands():
     play, clock, sunk = _playback()
     play.push(_tone(24000, 0.3).tobytes(), voiced=True)     # 300 ms already queued
     play.phonemes(1000, [["h", 1000, 1060], ["a", 1060, 1200], ["ɪ", 1200, 1300],
-                         ["x", 900, 950]])                   # one from before: dropped
+                         ["x", 900, 950],                    # ended before: dropped
+                         ["y", 990, 1000],                   # ends right there: dropped
+                         ["z", 900, float("inf")], [None], "q"])   # malformed: skipped
     play.push(_tone(24000, 0.5).tobytes(), voiced=True)     # the audio they belong to
     play.pump()
     t0 = clock.t                                             # the first frame is heard now
@@ -1628,6 +1630,32 @@ def test_phonemes_come_due_where_their_audio_lands():
     assert play.phonemes_due(t0 + 0.499) == []
     assert play.phonemes_due(t0 + 0.501) == ["ɪ"]            # 500 ms in
     assert play.phonemes_due(t0 + 1.0) == []
+
+
+def test_a_phoneme_the_lead_trim_cut_into_starts_at_the_anchor():
+    play, clock, sunk = _playback()
+    play.phonemes(1000, [["ˈ", 980, 1040], ["a", 1040, 1200]])
+    play.push(_tone(24000, 0.5).tobytes(), voiced=True)
+    play.pump()
+    t0 = clock.t
+    assert play.phonemes_due(t0) == ["ˈ"]                     # clamped to the audio's start
+    assert play.phonemes_due(t0 + 0.041) == ["a"]
+    for bad in (float("nan"), float("inf"), None, "x"):
+        play.phonemes(bad, [["a", 0, 10]])                   # an unusable anchor: nothing
+    assert play.phonemes_due(t0 + 10) == []
+
+
+def test_hiss_of_audio_pumped_before_its_caption_counts_once_vouched_for():
+    play, clock, sunk = _playback()
+    rng = np.random.default_rng(3)
+    play.push((rng.standard_normal(4800) * 6000).astype("<i2").tobytes())   # no caption yet
+    play.pump()
+    play.mark_voiced()                                       # the caption comes after
+    assert play.mouth_due(clock.t) is not None and play.hiss > 0.8
+    play, clock, sunk = _playback()
+    play.push((rng.standard_normal(4800) * 6000).astype("<i2").tobytes())   # never vouched for
+    play.pump()
+    assert play.mouth_due(clock.t) == 0.0 and play.hiss == 0.0
 
 
 def test_a_barge_in_drops_the_phonemes_of_the_audio_it_drops():
@@ -1661,6 +1689,58 @@ def test_face_sends_phonemes_and_hiss_only_to_an_avatar_that_draws_them():
     sent.clear()
     face.phoneme("a")                                        # not speaking: no shapes
     assert sent == []
+
+
+def test_a_reply_s_phonemes_reach_the_face_as_they_are_heard(monkeypatch):
+    """End to end through the bridge: a caption, a phonemes message and the audio it
+    describes come in on /talk; the avatar (one that draws phonemes) gets each phoneme
+    in order, around when it plays, and the levels carry their hiss."""
+    import socket as _socket
+    _fake_card(monkeypatch, ARECORD)
+    face_sock = la.FACE_SOCK
+    with open(face_sock + ".features", "w") as f:
+        json.dump({"phonemes": 1}, f)
+    rx = _socket.socket(_socket.AF_UNIX, _socket.SOCK_DGRAM)
+    rx.bind(face_sock)
+    rx.setblocking(False)
+    got, dialled = [], []
+
+    def collect():
+        while True:
+            try:
+                got.append(json.loads(rx.recv(4096)))
+            except BlockingIOError:
+                return
+
+    async def run():
+        async def on_connect(ws, n):
+            dialled.append(ws.request.path)
+            await ws.send(json.dumps({"type": "ready"}))
+            await ws.send(json.dumps({"type": "transcript", "role": "assistant",
+                                      "text": "Hi there", "final": False}))
+            await ws.send(json.dumps({"type": "phonemes", "at_ms": 0, "phonemes": [
+                ["h", 0, 60], ["a", 60, 250], ["ɪ", 250, 400], ["s", 400, 600]]}))
+            await ws.send(_tone(24000, 0.6).tobytes())
+            await _drain(ws, 3.0)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+
+        def phones():
+            collect()
+            return [e["phoneme"] for e in got if "phoneme" in e]
+        assert await _until(lambda: phones() == ["h", "a", "ɪ", "s"], 5), got
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    try:
+        asyncio.run(run())
+    finally:
+        rx.close()
+    assert "phonemes" in dialled[0]
+    assert any("hiss" in e for e in got if "mouth" in e), got
 
 
 if __name__ == "__main__":

@@ -81,10 +81,11 @@
 # chunk handed to the card carries its loudness, sent as {"mouth": 0..1} at the moment
 # that chunk becomes audible, so the jaw moves on syllables. An avatar that says it draws
 # phonemes (its features file: "phonemes": 1) also gets what is said: we announce
-# ?features=phonemes, the brain sends each word's phonemes as the engine timed them, just
-# ahead of their audio ({"type": "phonemes"}, engine_tts.py), and each is sent as
-# {"phoneme": "a"} when it becomes audible, beside the level's "hiss" (how much of the
-# chunk is s, sh, f: hiss_level) for a mouth that shows its teeth on them. Only audio a caption has
+# ?features=phonemes (always: the avatar may start, or be upgraded, after we dial), the brain
+# sends each word's phonemes as the engine timed them, just ahead of their audio
+# ({"type": "phonemes"}, engine_tts.py), and each is sent as {"phoneme": "a"} when it
+# becomes audible, beside the level's "hiss" (how much of the chunk is s, sh, f:
+# hiss_level) for a mouth that shows its teeth on them -- to an avatar that draws them. Only audio a caption has
 # vouched for counts as speech: the brain's thinking sound (a typing loop during a long
 # consult) is audio too, and it shows as "thinking", jaw shut. Datagrams are
 # fire-and-forget: no daemon, no face, nothing else changes.
@@ -98,6 +99,7 @@
 import asyncio
 import glob
 import json
+import math
 import os
 import re
 import signal
@@ -219,7 +221,9 @@ DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audi
 # CONTRACT): volume and restart are client tools it performs (set_volume,
 # restart_session); local says someone is at the box itself, which Wi-Fi setup needs
 # (the brain runs that one). Each is offered only where its TEAPORT_TOOL_* switch is on.
-FEATURES = ("volume", "restart", "local")
+# phonemes asks for the words' timed phonemes with the audio, for the avatar's mouth
+# (FaceTap passes them on only to an avatar that draws them).
+FEATURES = ("volume", "restart", "local", "phonemes")
 # ...and with wake words, end_conversation (back to sleep): with none there is no sleep.
 WAKE_FEATURES = ("sleep",)
 # set_volume: a percent kept across sessions and reboots. 100 is the card's own level
@@ -255,7 +259,7 @@ MOUTH_STEP = 0.05  # smaller changes are not worth a datagram...
 # stopped" timeout never lapses on a steady (or clamped-at-1.0) vowel.
 MOUTH_KEEPALIVE_SECS = 0.2
 # hiss_level: the difference/signal energy ratio counts as no hiss up to HISS_FROM (voiced
-# sound, up to ~1.5 kHz) and as all hiss HISS_SPAN above it (~4.5 kHz); chunks under
+# sound, up to ~1.5 kHz) and as all hiss HISS_SPAN above it (~3.9 kHz); chunks under
 # HISS_FLOOR_RMS (int16 units, ~-50 dBFS) are not judged.
 HISS_FROM = 0.08
 HISS_SPAN = 0.4
@@ -738,25 +742,30 @@ class Playback:
 
         at_ms is the sentence time (the engine's) of the next audio's first sample, and
         each phoneme [symbol, start_ms, end_ms] is in that time too: it is heard where the
-        next audio lands in our timeline, plus its offset. One already behind that point
-        (its audio came before the message) is dropped. The next audio lands after what
-        is written, what is queued, and what the resampler still holds of earlier pushes."""
+        next audio lands in our timeline, plus its offset. One that ended before that
+        point (its audio came before the message) is dropped; one that began before it
+        (the sentence's lead trim cut into it) starts there. The next audio lands after
+        what is written, what is queued, and what the resampler still holds of earlier
+        pushes."""
         if not isinstance(phones, list):
             return
         try:
             at = float(at_ms)
         except (TypeError, ValueError):
             return
+        if not math.isfinite(at):
+            return
         held = max(0, round(self._rs_in * DEVICE_RATE / RELAY_RATE) - self._rs_out)
         anchor = self._written + self._pending_bytes // (DEVICE_CHANNELS * 2) + held
         last = self._phones[-1][0] if self._phones else 0
         for p in phones:
             try:
-                sym, start = str(p[0]), float(p[1])
+                sym, start, end = str(p[0]), float(p[1]), float(p[2])
             except (TypeError, ValueError, IndexError):
                 continue
-            if not sym or start < at:
+            if not sym or not (math.isfinite(start) and math.isfinite(end)) or end <= at:
                 continue
+            start = max(start, at)
             pos = max(last, anchor + round((start - at) * DEVICE_RATE / 1000))
             self._phones.append((pos, sym))
             last = pos
@@ -814,8 +823,8 @@ class Playback:
         while self._written / DEVICE_RATE - (now - self._start) < LEAD_SECS:
             chunk, voiced = self._take()
             # The mouth follows the voice as synthesized, not the volume knob.
-            self._levels.append([self._written, mouth_level(chunk), voiced,
-                                 hiss_level(chunk) if voiced else 0.0])
+            # hiss too, voiced or not: a caption can vouch for it after it was pumped
+            self._levels.append([self._written, mouth_level(chunk), voiced, hiss_level(chunk)])
             gain = self._gain()
             if gain != 1.0 and chunk.strip(b"\0"):
                 pcm = np.frombuffer(chunk, dtype="<i2").astype(np.float32) * gain
@@ -841,7 +850,7 @@ class Playback:
         level = None
         while self._levels and self._start + self._levels[0][0] / DEVICE_RATE <= now:
             _, lv, voiced, hiss = self._levels.popleft()
-            lv = lv if voiced else 0.0
+            lv, hiss = (lv, hiss) if voiced else (0.0, 0.0)
             if level is None or lv >= level:
                 self.hiss = hiss   # the hiss of the chunk whose level is sent
             level = lv if level is None else max(level, lv)
@@ -1115,9 +1124,7 @@ def wake_mode() -> bool:
 
 
 def _url(awake: bool = False) -> str:
-    # phonemes only for an avatar that draws them (its features file, read now)
-    phones = ("phonemes",) if display.features(FACE_SOCK).get("phonemes") else ()
-    query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ()) + phones),
+    query = {"features": ",".join(FEATURES + (WAKE_FEATURES if wake_mode() else ())),
              "client": CLIENT_ID}
     if not wake_mode():
         # Without wake words the brain counts our session as asleep (a Talk client may take

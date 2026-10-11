@@ -145,6 +145,12 @@ _STREAM_AUDIO = setting("TTS_STREAM_AUDIO")
 _PLAYOUT_GAP_MS = 20.0
 # Per-context audio tallies kept at most (see EngineTTSService._ctx_audio_secs).
 _MAX_CTX_TALLIES = 8
+# The /talk transport writes audio in blocks of audio_out_10ms_chunks (pipecat's default 4)
+# x 10 ms and holds a partial block back until the next frame completes it, while a
+# message frame queues at once: a {"type": "phonemes"} message overtakes the held part of
+# the audio before it, so its at_ms is moved back by that much (_speak_clause). A reply
+# starts with nothing held: its end pads and flushes the last block (TTSStoppedFrame).
+_TRANSPORT_BLOCK_MS = 40
 
 # GPU-yield hold: Kokoro synthesis and Voxtral STT share ONE CUDA context in the
 # engine, and synthesis starves transcription (measured 2026-07-21: decode
@@ -524,6 +530,10 @@ class EngineTTSService(TTSService):
         # 2.3 s instead of 0.3 s). A context's entry goes at that same point
         # (_maybe_reset_word_timestamps), all of them on a barge-in.
         self._ctx_audio_secs: dict[str, float] = {}
+        # Bytes of audio each context has yielded: what the transport still holds of a
+        # partial block when a phonemes message goes out (_TRANSPORT_BLOCK_MS). Same life
+        # as the tallies above.
+        self._ctx_audio_bytes: dict[str, int] = {}
         # When the audio emitted so far finishes playing (time.monotonic(); 0 = idle
         # since the last barge-in), for _note_playout.
         self._play_end = 0.0
@@ -941,19 +951,25 @@ class EngineTTSService(TTSService):
                     await self._place_words(words, max(0.0, emitted() - sent),
                                             trim.lead_cut, context_id)
                     words = []
-                # The phonemes that start in this audio, just ahead of it: the message and
-                # the audio reach the client in this order (the output transport queues
-                # both on its audio queue), so the client pins them to where this audio
-                # lands in its playback. at_ms is this audio's first sample in the engine's
-                # sentence time (the trim only ever cuts the sentence's lead).
+                # The phonemes that start in this audio, just ahead of it: the client pins
+                # them to where the message lands in its playback. at_ms is the engine's
+                # sentence time there: this audio's first sample (the trim only ever cuts
+                # the sentence's lead), less what of the audio before it the transport
+                # still holds back in a partial block -- the message overtakes that part.
                 if phones and (trim.started or event[0] == "end"):
+                    block_bytes = round(_TRANSPORT_BLOCK_MS * self.sample_rate / 1000) * 2
+                    held = self._ctx_audio_bytes.get(context_id, 0) % block_bytes
                     yield OutputTransportMessageFrame(message={
-                        "type": "phonemes", "at_ms": round((trim.lead_cut + sent) * 1000),
+                        "type": "phonemes",
+                        "at_ms": round((trim.lead_cut + sent) * 1000 - held / 2 / self.sample_rate * 1000),
                         "phonemes": phones})
                     phones = []
                 if audio.shape[0]:
                     pcm = (np.clip(audio, -1.0, 1.0) * 32767.0).astype(np.int16).tobytes()
                     yield TTSAudioRawFrame(pcm, self.sample_rate, 1, context_id=context_id)
+                    self._ctx_audio_bytes[context_id] = self._ctx_audio_bytes.get(context_id, 0) + len(pcm)
+                    while len(self._ctx_audio_bytes) > _MAX_CTX_TALLIES:
+                        self._ctx_audio_bytes.pop(next(iter(self._ctx_audio_bytes)))
                     secs = audio.shape[0] / self.sample_rate
                     sent += secs
                     # Re-inserted, so the dict's order is "least recently updated first".
@@ -1037,6 +1053,7 @@ class EngineTTSService(TTSService):
             self._prev_audio_end_ns = 0
             self._interrupted = False
             self._ctx_audio_secs.clear()
+            self._ctx_audio_bytes.clear()
         await super().reset_word_timestamps()
 
     async def _maybe_reset_word_timestamps(self, context_id: str):
@@ -1050,6 +1067,7 @@ class EngineTTSService(TTSService):
         # a context end -- and must not forget a real end.)
         base = self._initial_word_timestamp
         secs = self._ctx_audio_secs.pop(context_id, 0.0)
+        self._ctx_audio_bytes.pop(context_id, None)
         if base != -1 and not self._interrupted:
             self._prev_audio_end_ns = base + int(secs * 1e9) + self._ctx_held_ns
             self._ctx_held_ns = 0
@@ -1189,15 +1207,17 @@ class EngineTTSService(TTSService):
             return None
 
         def parse_phones(ts):
-            # The words' "phonemes" ([[symbol, start_ms, end_ms]]) in one flat list; a
-            # malformed entry is skipped (it only costs the face a mouth shape).
+            # The words' "phonemes" ([[symbol, start_ms, end_ms]]) in one flat list. Any
+            # malformed part (a word, a list, an entry, a number) is skipped: it only costs
+            # the face a mouth shape, never the reply.
             out = []
             for w in ts if isinstance(ts, list) else ():
-                for p in (w.get("phonemes") or ()) if isinstance(w, dict) else ():
+                ps = w.get("phonemes") if isinstance(w, dict) else None
+                for p in ps if isinstance(ps, list) else ():
                     try:
                         sym, a, b = p
                         out.append([str(sym), int(a), int(b)])
-                    except (TypeError, ValueError):
+                    except (TypeError, ValueError, OverflowError):
                         continue
             return out
 
@@ -1224,7 +1244,6 @@ class EngineTTSService(TTSService):
                     if not isinstance(b64, str):
                         raise _EngineError(f"malformed audio: {type(b64).__name__}")
                     words = parse_words(data.get("timestamps"))
-                    phones = parse_phones(data.get("timestamps")) if self._phonemes else []
                     if not b64:
                         # The trailing empty chunk: the sentence's full word list.
                         trailing = words or []
@@ -1241,6 +1260,8 @@ class EngineTTSService(TTSService):
                     if pcm.shape[0] == 0:
                         continue
                     heard = True
+                    # (the trailing list's phonemes are not wanted: they ride their chunks)
+                    phones = parse_phones(data.get("timestamps")) if self._phonemes else []
                     block = pcm.astype(np.float32) / 32768.0
                     if _STREAM_AUDIO:
                         yield "audio", block, words, phones
