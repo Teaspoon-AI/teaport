@@ -28,12 +28,12 @@ import asyncio
 import json
 import os
 import sys
-import tempfile
 
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from teaport_brain import config_ui
+from tempdirs import tempdir
 
 BRAIN_ENV = """# hand-written comment
 BRAIN_PORT=7861
@@ -53,8 +53,8 @@ _REAL_WIFI_SETUP_BUSY = config_ui._wifi_setup_busy
 
 
 def setup():
-    etc = tempfile.mkdtemp(prefix="teaport-etc-")
-    home = tempfile.mkdtemp(prefix="teaport-home-")
+    etc = tempdir("teaport-etc-")
+    home = tempdir("teaport-home-")
     with open(os.path.join(etc, "brain.env"), "w") as f:
         f.write(BRAIN_ENV)
     with open(os.path.join(etc, "engine.env"), "w") as f:
@@ -350,7 +350,7 @@ def test_apply_helper_rejects_junk():
 
 def test_apply_helper_backup_ring_spares_operator_backups():
     from teaport_brain import config_apply
-    etc = tempfile.mkdtemp(prefix="teaport-apply-")
+    etc = tempdir("teaport-apply-")
     config_apply.ETC = etc
     mine = ["brain.env.bak-20260805", "brain.env.bak-gptoss", "brain.env.bak-20260901-154338-stopsecs"]
     for name in mine + ["brain.env"]:
@@ -438,7 +438,7 @@ class _WifiNM:
 def test_wifi_section(monkeypatch=None):
     client, etc, home, calls = setup()
     from teaport_brain import wifi_setup, wifi_voice
-    status_dir = tempfile.mkdtemp()
+    status_dir = tempdir()
     with open(os.path.join(status_dir, wifi_setup.STATUS_FILE), "w") as f:
         json.dump({"phase": "ap_up", "ssid": "teaport-9e35", "password": "47190352"}, f)
     old = (config_ui._wifi_nm, wifi_setup.STATUS_DIR, wifi_voice.available)

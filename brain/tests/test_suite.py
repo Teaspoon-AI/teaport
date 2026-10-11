@@ -13,6 +13,7 @@ import ast
 import os
 import subprocess
 import sys
+import tempfile
 
 import pytest
 
@@ -140,11 +141,15 @@ def test_declared_appliance_scripts_match_their_guards():
 @pytest.mark.parametrize("script,timeout", SCRIPTS,
                          ids=[s for s, _ in SCRIPTS])
 def test_script(script, timeout):
-    proc = subprocess.run(
-        [sys.executable, os.path.join(HERE, script)],
-        cwd=HERE, capture_output=True, text=True, timeout=timeout,
-        env={**os.environ, "HF_HUB_OFFLINE": "1"},
-    )
+    # A TMPDIR of its own, so whatever is left in it is this script's and nobody
+    # else's (another run, another session on the same box): see the end.
+    with tempfile.TemporaryDirectory(prefix="teaport-suite-", ignore_cleanup_errors=True) as tmp:
+        proc = subprocess.run(
+            [sys.executable, os.path.join(HERE, script)],
+            cwd=HERE, capture_output=True, text=True, timeout=timeout,
+            env={**os.environ, "HF_HUB_OFFLINE": "1", "TMPDIR": tmp},
+        )
+        leaked = sorted(n for n in os.listdir(tmp) if n.startswith("teaport-"))
     # A script whose dependency is genuinely absent exits SKIP_EXIT (see
     # appliance.py). Skipping is what keeps the suite readable off the appliance:
     # it used to FAIL there, so `pytest brain/tests/` could never be green while
@@ -157,3 +162,6 @@ def test_script(script, timeout):
     if proc.returncode != 0:
         tail = "\n".join((proc.stdout + "\n" + proc.stderr).splitlines()[-25:])
         pytest.fail(f"{script} exited {proc.returncode}\n{tail}")
+    # Issue #135: thousands of teaport-* dirs had piled up in a desktop's /tmp, a few
+    # more every run. A dir from tempdirs.tempdir() is removed when the script exits.
+    assert not leaked, f"{script} left these in $TMPDIR: {leaked} (use tempdirs.tempdir)"
