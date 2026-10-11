@@ -48,6 +48,7 @@ import websockets  # noqa: E402
 
 from fake_engine import GREETING_REPLY, TOOL_REPLY, FakeEngine  # noqa: E402
 from fake_sip_gateway import FakeSipGateway, load_wav  # noqa: E402
+from tempdirs import short_tempdir  # noqa: E402
 
 QUESTION_WAV = os.path.join(BRAIN, "test", "question.wav")
 ANSWER_AFTER = 1.5
@@ -55,15 +56,6 @@ CALLER = "+15551234567"
 CALLER_SAID = "+1 555 123 4567"   # sip_server.caller_id, as the question says it
 RELAY_RATE = 24000
 FRAME_BYTES = RELAY_RATE * 2 // 50  # 20 ms of PCM16 mono at 24 kHz
-
-
-def _short_tmpdir() -> str:
-    import tempfile
-    d = tempfile.mkdtemp(prefix="cx-")
-    if len(d) > 90:  # AF_UNIX paths stop at 107 bytes
-        shutil.rmtree(d)
-        d = tempfile.mkdtemp(prefix="cx-", dir="/tmp")
-    return d
 
 
 def phone_answers(messages, offered):
@@ -85,7 +77,7 @@ class Rig:
     child process with /talk on a free port."""
 
     def __init__(self, transcripts=None, *, auto_answer=False, start_brain=True, **env):
-        self.dir = _short_tmpdir()
+        self.dir = short_tempdir("teaport-cx-")
         self.sock = os.path.join(self.dir, "gw.sock")
         self.engine = FakeEngine(transcripts=transcripts, tool_call=phone_answers)
         self.gw = FakeSipGateway(self.sock, auto_answer=auto_answer)

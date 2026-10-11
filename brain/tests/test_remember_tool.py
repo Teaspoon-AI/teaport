@@ -17,20 +17,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import appliance  # noqa: E402
 
-# Before the imports below — pipecat, loguru, tempfile.mkdtemp — so a box missing
+# Before the imports below — pipecat, loguru, the temp dir — so a box missing
 # this dependency skips in milliseconds instead of paying for all of that first
 # (measured: ~1.9s of avoidable import/setup cost before this used to run).
 appliance.require_env("LLM_BASE_URL", "a live OpenAI-compatible LLM")
 
 import asyncio  # noqa: E402
-import tempfile  # noqa: E402
 
 # Import the PACKAGE (not just a submodule) before pipecat: teaport_brain/__init__.py
 # sets HF_HUB_OFFLINE, and that only guards imports that come after it runs.
 import teaport_brain  # noqa: E402, F401
+from tempdirs import tempdir  # noqa: E402
 
 # Isolate the write BEFORE importing openclaw_client (it reads MEMORY_DIR at import).
-_TMP_MEM = tempfile.mkdtemp(prefix="teaport-remember-test-")
+_TMP_MEM = tempdir("teaport-remember-test-")
 os.environ["OPENCLAW_MEMORY_DIR"] = _TMP_MEM
 
 from loguru import logger  # noqa: E402
@@ -155,9 +155,4 @@ async def main() -> int:
 
 
 if __name__ == "__main__":
-    try:
-        rc = asyncio.run(main())
-    finally:
-        import shutil
-        shutil.rmtree(_TMP_MEM, ignore_errors=True)
-    sys.exit(rc)
+    sys.exit(asyncio.run(main()))

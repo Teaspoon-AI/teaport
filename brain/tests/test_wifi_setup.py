@@ -5,7 +5,6 @@ details digit by digit, following status.json, repeat and cancel). No radio need
 import asyncio
 import json
 import os
-import tempfile
 import threading
 import time
 import urllib.parse
@@ -16,6 +15,7 @@ import pytest
 from teaport_brain import display, i18n, wifi
 from teaport_brain import wifi_setup as ws
 from teaport_brain import wifi_voice as wv
+from tempdirs import tempdir
 
 
 # ------------------------------------------------------------------ identity
@@ -388,7 +388,7 @@ def _run_setup(nm, minutes=1.0, post=None, screen=None, ssid="teaport-9e35"):
     """Run a Setup in a thread on a free port; post(form) each time the AP comes up. The
     page is bound to 127.0.0.1 here (on the box: wifi.AP_ADDRESS). The return code is
     the exception instead when the run raised one."""
-    status = _Recorded(tempfile.mkdtemp())
+    status = _Recorded(tempdir())
     setup = ws.Setup(nm, status, port=0, minutes=minutes, screen=screen, bind="127.0.0.1")
     _no_avahi(setup)
     result = {}
@@ -633,7 +633,7 @@ def test_sigterm_becomes_one_clean_stop():
 # ------------------------------------------------------------------ the page's server
 
 def _setup_server():
-    setup = ws.Setup(FakeNM([]), _Recorded(tempfile.mkdtemp()), port=0, bind="127.0.0.1")
+    setup = ws.Setup(FakeNM([]), _Recorded(tempdir()), port=0, bind="127.0.0.1")
     setup.serve()
     return setup
 
@@ -676,7 +676,7 @@ def test_a_slow_request_times_out_and_connections_are_capped(monkeypatch):
 
 
 def test_the_page_is_bound_to_the_setup_network_only():
-    setup = ws.Setup(FakeNM([]), _Recorded(tempfile.mkdtemp()), port=0)
+    setup = ws.Setup(FakeNM([]), _Recorded(tempdir()), port=0)
     assert setup.bind is None and setup.address == wifi.AP_ADDRESS   # never 0.0.0.0
     setup.serve()   # IP_FREEBIND: bound although this machine has no such address
     try:
@@ -686,7 +686,7 @@ def test_the_page_is_bound_to_the_setup_network_only():
 
 
 def _bound(nm):
-    setup = ws.Setup(nm, _Recorded(tempfile.mkdtemp()), port=0, minutes=0.005)
+    setup = ws.Setup(nm, _Recorded(tempdir()), port=0, minutes=0.005)
     _no_avahi(setup)
     assert setup.run("teaport-9e35", "47190352") == 2      # nobody came: timeout
     return setup.server.server_address[0], setup.status.history[1]["address"]
@@ -776,7 +776,7 @@ def _write(path, age=0.0, **status):
 
 def test_the_voice_flow_confirms_starts_speaks_and_finishes(monkeypatch):
     monkeypatch.setattr(wv, "POLL_SECS", 0.02)
-    path = os.path.join(tempfile.mkdtemp(), "status.json")
+    path = os.path.join(tempdir(), "status.json")
     _write(path, age=60, phase="connected", target="stale")   # an earlier run's file
 
     async def run():
@@ -807,7 +807,7 @@ def test_the_voice_flow_confirms_starts_speaks_and_finishes(monkeypatch):
 
 def test_no_and_cancel_and_mumbling(monkeypatch):
     monkeypatch.setattr(wv, "POLL_SECS", 0.02)
-    path = os.path.join(tempfile.mkdtemp(), "status.json")
+    path = os.path.join(tempdir(), "status.json")
 
     async def run():
         v = _Voice(path)
@@ -828,7 +828,7 @@ def test_no_and_cancel_and_mumbling(monkeypatch):
 
 def test_a_unit_that_will_not_start_is_said_not_hidden():
     async def run():
-        v = _Voice(os.path.join(tempfile.mkdtemp(), "s.json"), results={"restart": (1, "denied")})
+        v = _Voice(os.path.join(tempdir(), "s.json"), results={"restart": (1, "denied")})
         await v._heard("set up wifi")
         await v._heard("yes")
         return v.state, v.said[-1]

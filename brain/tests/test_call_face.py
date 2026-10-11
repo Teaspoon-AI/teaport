@@ -35,6 +35,7 @@ for k, v in (("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime"),
 import test_sip_call_lifecycle as lc  # noqa: E402
 from teaport_brain import display, sip_server  # noqa: E402
 from teaport_brain import session_arbiter as arb  # noqa: E402
+from tempdirs import short_tempdir  # noqa: E402
 
 FROM = '"WIRELESS CALLER" <sip:13462348500@teaspoonai>'
 SHOWN = "+1 346 234 8500"
@@ -45,7 +46,7 @@ class FakeFace:
     """The avatar's socket and features file, in a directory of their own."""
 
     def __init__(self, features=FEATURES):
-        self.dir = tempfile.mkdtemp(prefix="teaport-face-test-")
+        self.dir = short_tempdir("teaport-face-test-")
         self.path = os.path.join(self.dir, "face.sock")
         self.sock = socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM)
         self.sock.bind(self.path)

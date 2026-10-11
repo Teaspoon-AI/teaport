@@ -33,7 +33,6 @@ import signal
 import socket
 import subprocess
 import sys
-import tempfile
 import time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -46,16 +45,9 @@ from fake_engine import DEFAULT_TRANSCRIPT, FakeEngine  # noqa: E402
 import fake_sip_gateway  # noqa: E402
 from fake_sip_gateway import (  # noqa: E402
     BYTES_PER_FRAME, MSG_AUDIO_IN, MSG_AUDIO_OUT, MSG_CONTROL, FakeSipGateway, run_call)
+from tempdirs import short_tempdir  # noqa: E402
 
 QUESTION_WAV = os.path.join(BRAIN, "test", "question.wav")
-
-
-def _short_tmpdir() -> str:
-    d = tempfile.mkdtemp(prefix="fsg-")
-    if len(d) > 90:  # AF_UNIX paths stop at 107 bytes
-        shutil.rmtree(d)
-        d = tempfile.mkdtemp(prefix="fsg-", dir="/tmp")
-    return d
 
 
 class Rig:
@@ -64,7 +56,7 @@ class Rig:
     the session arbiter for the engine per call -- so a restart can be a real SIGKILL."""
 
     def __init__(self, **gw_kw):
-        self.dir = _short_tmpdir()
+        self.dir = short_tempdir("teaport-fsg-")
         self.sock = os.path.join(self.dir, "gw.sock")
         self.engine = FakeEngine()
         self.gw = FakeSipGateway(self.sock, **gw_kw)
@@ -267,7 +259,7 @@ class _Client:
 
 
 async def test_the_fake_replays_a_live_call_before_any_audio():
-    d = _short_tmpdir()
+    d = short_tempdir("teaport-fsg-")
     try:
         async with FakeSipGateway(os.path.join(d, "gw.sock")) as gw:
             a = _Client(gw.path)
@@ -311,7 +303,7 @@ async def test_the_fake_replays_a_live_call_before_any_audio():
 
 
 async def test_the_fake_as_an_older_gateway_does_not_replay():
-    d = _short_tmpdir()
+    d = short_tempdir("teaport-fsg-")
     try:
         async with FakeSipGateway(os.path.join(d, "gw.sock"), replay=False) as gw:
             a = _Client(gw.path)
@@ -331,7 +323,7 @@ async def test_the_fake_as_an_older_gateway_does_not_replay():
 
 
 async def test_the_fake_waits_for_call_answer_without_auto_answer():
-    d = _short_tmpdir()
+    d = short_tempdir("teaport-fsg-")
     try:
         async with FakeSipGateway(os.path.join(d, "gw.sock"), auto_answer=False) as gw:
             a = _Client(gw.path)
@@ -378,7 +370,7 @@ async def test_the_fake_waits_for_call_answer_without_auto_answer():
 
 async def test_the_fake_flags_what_the_real_gateway_would_mangle():
     """The gateway plays one datagram as one 20 ms frame and truncates past 2048 B."""
-    d = _short_tmpdir()
+    d = short_tempdir("teaport-fsg-")
     try:
         async with FakeSipGateway(os.path.join(d, "gw.sock")) as gw:
             a = _Client(gw.path)
@@ -403,7 +395,7 @@ async def test_the_fake_flags_what_the_real_gateway_would_mangle():
 
 async def test_the_fake_will_not_take_over_a_socket_in_use():
     """Not by its own path, and not through a symlink to it (/var/run is /run)."""
-    d = _short_tmpdir()
+    d = short_tempdir("teaport-fsg-")
     live = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
     try:
         real = os.path.join(d, "real")
