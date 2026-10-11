@@ -1219,12 +1219,9 @@ class Card:
         quiet = ref is None and self.play.echo_free(now)
         if echo is not None and echo.resets != meter.resets_seen:
             # A read-back found the chip reset: what the meter took for the bare echo
-            # since then was the chip's own suppressor at work. Only with the verdict
-            # off is any of it there to drop; with it on, the meter measures no echo,
-            # and emptied it could never reach its recheck.
+            # since then may have been the chip's own suppressor at work.
             meter.resets_seen = echo.resets
-            if meter.duplex:
-                meter.coupling.clear()
+            meter.coupling.clear()
         # The echo is measured only from audio captured while the chip held its
         # suppressor off: not the verdict until the write has landed (never, with no
         # chip), and not a chunk captured before it landed, which arrives after it.

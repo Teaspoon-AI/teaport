@@ -718,16 +718,14 @@ def test_a_reset_found_by_a_check_is_logged_and_the_meter_forgets_its_echo():
     assert len(meter.coupling) == 0
 
 
-def test_a_reset_found_with_the_suppressor_on_keeps_the_echo_and_the_recheck():
-    # With the verdict on the meter measures no echo: there is nothing to drop, and an
-    # emptied history would never let it recheck (it needs one to decide anything).
+def test_a_reset_found_with_the_suppressor_on_still_lets_it_recheck():
+    # The echo is dropped whatever the verdict; held on, the meter has none to measure
+    # again, and the recheck must not wait for any.
     clock = Clock()
     meter = E.EchoMeter(clock=clock)
     meter.duplex, meter._since = False, 0.0
     asyncio.run(_reset_found(meter))
-    assert len(meter.coupling) == 60
-    meter.voice.extend([-20.0] * E.VOICE_MIN)
-    meter.ref.extend([-20.0] * E.VOICE_MIN)
+    assert len(meter.coupling) == 0
     clock.t = E.RECHECK_SECS + 1
     assert meter._block(-60.0, -20.0, False, True, False)
     assert meter.duplex and meter.recheck
@@ -744,13 +742,14 @@ def test_a_reset_found_between_two_cards_is_not_missed():
     dev.node = node
     assert echo.apply(True, verify=True)       # ...found by the old card's last check
     meter.coupling.extend([-30.0] * 60)
-    card = _CardLike(local_audio.Playback(lambda b: None, clock=Clock()), meter, echo)
-    card._echo_check = 1e9
-    asyncio.run(_run_meter_once(card))
+    asyncio.run(_open_card_and_meter(echo, meter))   # a real Card, built after the reset
     assert echo.resets == 1 and len(meter.coupling) == 0
 
 
-async def _run_meter_once(card):
+async def _open_card_and_meter(echo, meter):
+    card = local_audio.Card(None, volume=object(), echo=echo, meter=meter)
+    card.play = local_audio.Playback(lambda b: None, clock=Clock())
+    card._echo_check = 1e9
     card._meter(np.zeros(local_audio.CHUNK_FRAMES, dtype="<i2"))
 
 

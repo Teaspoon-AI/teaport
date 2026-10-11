@@ -167,6 +167,9 @@ class EchoSuppression(xvf_led.ChipSetting):
                                       f"wrote off at {self.gain:g}")
                     # What was captured before was lifted by the AGC: not the bare echo.
                     self.shown_at = self._clock()
+            except BaseException:
+                self._show(None)  # not known after all: nothing is bare until it is
+                raise
             finally:
                 if reset:
                     # Counted once what the chip holds (and shown_at) is known again: a
@@ -301,6 +304,13 @@ class EchoMeter:
             if (talk and len(self.floor) >= VOICE_MIN
                     and mic > _pct(self.floor, FLOOR_PCT) + VOICE_OVER_FLOOR_DB):
                 self.voice.append(mic)
+        now = self._clock()
+        # The recheck needs no measure: a suppressor held on must come off to be measured
+        # again, however little echo there is to go on (a chip reset empties it).
+        if not self.duplex and now - self._since >= RECHECK_SECS:
+            self.duplex, self._since, self.recheck = True, now, True
+            self.coupling.clear()
+            return True
         if (len(self.coupling) < COUPLING_MIN or len(self.voice) < VOICE_MIN
                 or len(self.ref) < VOICE_MIN):
             return False
@@ -308,11 +318,6 @@ class EchoMeter:
             return False  # silent: no echo, nothing to decide
         echo = _pct(self.ref, LOUD_PCT) + gain + _pct(self.coupling, COUPLING_PCT)
         self.gap = _pct(self.voice, LOUD_PCT) - echo
-        now = self._clock()
-        if not self.duplex and now - self._since >= RECHECK_SECS:
-            self.duplex, self._since, self.recheck = True, now, True
-            self.coupling.clear()
-            return True
         if self._since is not None and now - self._since < DWELL_SECS:
             return False
         want = self.gap >= self.margin + (0 if self.duplex else HYSTERESIS_DB)
