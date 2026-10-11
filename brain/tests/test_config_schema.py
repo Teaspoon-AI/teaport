@@ -26,6 +26,10 @@
 # template in cli/teaport writes it: the bare words (`aec`, `register`, `password`)
 # are also subcommands, flags and prompts there. A library's row (`consumer`) names
 # our file that sets it, which names it too.
+# The check is that each listed file NAMES the setting, not that it reads or writes
+# it: install.sh also names ENGINE_PORT as its own shell variable and BRIDGE_GUILD_ID
+# in a sed read-back and a warning, so deleting the line that writes either one to
+# its env file still passes here.
 #
 # Run: python test_config_schema.py   (or via pytest)
 #
@@ -95,7 +99,8 @@ def source_problem(name: str, src: str, store: str) -> str | None:
 def sources_problems(row: dict) -> list[str]:
     """Why the files a (normalised) row's `source` lists cannot all be its sources."""
     srcs = row["source"]
-    if not srcs or not all(isinstance(s, str) for s in srcs) or len(set(srcs)) < len(srcs):
+    if not isinstance(srcs, list) or not srcs or not all(isinstance(s, str) for s in srcs) \
+            or len(set(srcs)) < len(srcs):
         return [f"source must be a file or a list of distinct files, not {srcs!r}"]
     return [why for src in srcs if (why := source_problem(row["name"], src, row["store"]))]
 
@@ -184,12 +189,14 @@ def main() -> int:
             problems.append(f"self-test: source {src!r} accepted for {n}")
 
     # A list is checked file by file: one listed file that never names the setting fails
-    # the row (install.sh writes HF_HUB_OFFLINE, the Discord bridge never names it), an
-    # empty or repeating list is not a list of sources, and a lone string is still one.
+    # the row wherever it sits (install.sh writes HF_HUB_OFFLINE, the Discord bridge
+    # never names it); an empty or repeating list, or a TOML value that is not a list
+    # (an inline table, an int, a bool), is not a list of sources; a lone string is one.
     def row(source):
         r = {"name": "HF_HUB_OFFLINE", "store": "brain_env", "source": source}
         return config_schema.normalise({"settings": [r]})["settings"][0]
-    for bad in (["install.sh", "bridge/discord/index.js"], [], ["install.sh", "install.sh"]):
+    for bad in (["install.sh", "bridge/discord/index.js"], ["bridge/discord/index.js", "install.sh"],
+                [], ["install.sh", "install.sh"], {"file": "install.sh"}, 1, True):
         if not sources_problems(row(bad)):
             problems.append(f"self-test: source {bad!r} accepted for HF_HUB_OFFLINE")
     if why := sources_problems(row("install.sh")):

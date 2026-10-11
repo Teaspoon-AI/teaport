@@ -31,8 +31,9 @@
 #   consumer  when a library, not our code, reads it (glibc, huggingface_hub)
 #   source    for a row the brain does NOT read: the repo-relative file that does (no
 #             line), or a list of them when it is read or written in more than one
-#             place (the unit reads it and install.sh writes it). Brain reads need
-#             none: setting("NAME") is found by its name.
+#             place (the unit reads it and install.sh writes it). The drift test
+#             checks that each listed file names the setting, not that it reads or
+#             writes it. Brain reads need none: setting("NAME") is found by its name.
 
 schema_version = 1
 
