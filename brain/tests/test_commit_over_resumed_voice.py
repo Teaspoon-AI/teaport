@@ -425,7 +425,12 @@ async def test_voice_that_never_pauses_commits_at_the_ceiling_and_three_stand_it
         waited = await steady_noise_turn(line)
         assert len(line.commits()) == 1, "the wait must end at the ceiling"
         assert CEILING - 0.03 <= waited <= CEILING + 0.08, f"committed after {waited:.2f}s"
-        assert line.hints() == [None], "voice is current: no silence to claim"
+        # Voice is current: nothing to claim but what the commit's carry sends again
+        # (CARRY THE TAIL, test_commit_carries_the_tail.py), which is all of it here.
+        carried = line.stt._commits[0].carry_ms
+        hint = line.hints()[0]
+        assert carried and hint and hint <= carried, (
+            f"the claim lies inside the carry; got {line.hints()}, carried {carried}")
         assert j.having("has not paused"), j.lines
         await steady_noise_turn(line)
         await steady_noise_turn(line)

@@ -333,6 +333,61 @@ _VOICE_CATCHUP_SECS = 0.1
 _VOICE_STRIKES = 3
 _SLOW_LOG_SECS = 60.0
 
+# CARRY THE TAIL: the next segment opens at the speech end, not at the commit (#154).
+#
+# THE CALLER'S VOICE keeps a verdict's boundary off voice the analyzer has heard. It
+# cannot keep it off voice that starts in the last chunk or two before the commit, or
+# just after it, and it does not cover the commit of a stop over the bot's reply (the
+# barge-in flush, sent at once). A room session replayed through the box's engine
+# (2026-10-11, 58 live cuts) lost "You're" from "You're not supposed to know" to a
+# barge-in commit drawn 0.14 s into the word ("He led the post to know"), and "No little
+# opening" came back "No, they'll opening" from a verdict committed 0.1 s before the
+# caller's next word, with no audio ahead of that word in its segment.
+#
+# So every commit, whatever path sends it, sends the audio after the speech end it
+# placed again, as the start of the next segment: the commit goes out, then that audio,
+# then the live stream goes on. The next segment holds everything after the speech end,
+# the caller's next word whole and the silence before it; the committed one decodes up
+# to where the hint says the speech ended. The carry covers all the hint claims and the
+# margin before it, so no audio is decoded by neither segment, and only the margin (by
+# Silero, silence) by both. Bounded: never more than _CARRY_MS, never back past the
+# previous commit (or the session's start), and nothing while a chunk is still on its
+# way to the socket (the order on the wire is the point). A commit that claims nothing
+# -- no speech end placed (the backstop, audio passed unsent), or the hint off --
+# carries nothing: its segment decodes its whole tail, and a carry would hand the next
+# one the same words again.
+#
+# Since the claimed silence is sent again, the hint no longer has to stop short of voice
+# heard since the stop (THE CALLER'S VOICE) when the carry covers it: that voice is in
+# the next segment, and claiming it keeps the committed segment from decoding the same
+# onset a second time. Where the bound cuts the carry short of the claim, #140's rule
+# stands.
+#
+# The clocks. _sent_samples stays the count of the caller's audio sent once -- the clock
+# the speech end, the hint, the VAD's counts and the gap check are on -- and the carry
+# does not move it. The engine's clock (its transcription report) counts every sample
+# appended, the carried ones too, so each carry moves _session_origin back by what it
+# sent: a report inside the carried stretch then names exactly the audio it holds, and
+# one before it reads early, the safe side (SPEECH_DECODED).
+#
+# Measured on that replay (the box's engine and model, the live cut schedule, scored
+# against Deepgram): 26 word edits without the carry, 23 with it (21 vs 28 decoding each
+# segment on its own), and the two phrases above right in all four runs that carried
+# from the speech end (or from it plus the margin).
+# Starting the carry at the speech end plus the margin instead scored 30 and 24: the
+# silence ahead of the word helps the next segment, and the shifts of a segment's start
+# alone move the score by 3-4 edits either way, so the totals are noise around the two
+# fixes. What the carry does not fix: a segment that opens on a short function word
+# ("of the T-Port", "to make sure", "I mean") still gets it wrong with the word whole,
+# because the decoder starts each segment with no context. Only the previous words give
+# it that -- not cutting there (a guard on every commit, which costs every turn its
+# length), or an engine that keeps its context across a commit. The protocol in
+# brain/formal/SttCommit.tla is unchanged: no commit or done is added or moved, only
+# audio appended after a commit.
+#
+# 0 turns it off (the A/B switch): the next segment opens at the commit, as before.
+_CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
+
 # SPEECH_DECODED: the engine's transcription report (teagram-engine's
 # transcription.progress), turned into SpeechDecodedFrame for the stop strategy.
 #
@@ -542,6 +597,8 @@ class _Commit:
     # pause rather than only for the VAD analyzer to catch up (THE CALLER'S VOICE).
     waited: Optional[float] = None
     for_voice: bool = False
+    # Audio re-sent behind it as the next segment's start, in ms (CARRY THE TAIL).
+    carry_ms: int = 0
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -663,6 +720,14 @@ class TeaportSTTService(WebsocketSTTService):
         self._passed_samples = 0
         self._unsent_at_start = 0
         self._passed_at_start = 0
+        # CARRY THE TAIL: the last _CARRY_MS of audio sent (as sent, after the makeup
+        # gain), ending at _sent_samples; the sent position no carry reaches back past
+        # (the last commit, or the session's start); and the order of the wire --
+        # appends begun, and appends still on their way to the socket.
+        self._tail = bytearray()
+        self._carry_floor = 0
+        self._appends = 0
+        self._appending = 0
         # THE CALLER'S VOICE. The session's VAD analyzer, read for where it last heard
         # the caller (speech_onset.VoiceMarks; set by build_agent_session, None: the
         # verdict commits at once). The stop's silence window. Whether the marks have
@@ -815,13 +880,18 @@ class TeaportSTTService(WebsocketSTTService):
         self._seg_bytes += len(audio)
         if self._websocket:
             payload = base64.b64encode(audio).decode("ascii")
+            # The wire's order, for a commit's carry (CARRY THE TAIL): an append begun,
+            # and one not yet through to the socket.
+            self._appends += 1
+            self._appending += 1
             try:
                 await self._websocket.send(
                     json.dumps({"type": "input_audio_buffer.append", "audio": payload})
                 )
                 # On the wire: the hint's clock advances (see _hint_gap for the paths
-                # that leave audio behind).
+                # that leave audio behind), and the tail a commit carries with it.
                 self._sent_samples += len(audio) // 2
+                self._keep_tail(audio)
                 if self._streaming and not self._gen_started:
                     # One commit for the whole call, once there is audio to work on:
                     # this STARTS generation. Everything after it streams.
@@ -833,7 +903,18 @@ class TeaportSTTService(WebsocketSTTService):
                 # Connection died under us — drop the chunk. The receive task
                 # owns reconnection; raising here would kill the pipeline task.
                 logger.warning(f"{self}: audio chunk dropped, send failed: {e}")
+            finally:
+                self._appending -= 1
         yield None
+
+    def _keep_tail(self, audio: bytes):
+        """Keep the last _CARRY_MS of audio sent, for the next commit to carry."""
+        if not _CARRY_MS or self._streaming:
+            return
+        self._tail += audio
+        keep = 2 * (_CARRY_MS * (self.sample_rate or 16000) // 1000)
+        if len(self._tail) > keep:
+            del self._tail[:len(self._tail) - keep]
 
     @property
     def _hint_gap(self) -> bool:
@@ -1387,6 +1468,8 @@ class TeaportSTTService(WebsocketSTTService):
         if commit and commit.waited is not None:
             credit += (f", held {commit.waited * 1000:.0f}ms "
                        f"{'for the caller to pause' if commit.for_voice else 'for the VAD'}")
+        if commit and commit.carry_ms:
+            credit += f", carried {commit.carry_ms}ms"
         line = (f"{self}: segment {secs:.2f}s audio, {self._seg_interims} interims, "
                 f"commit={why} -> done in {lat}: {verdict}{credit}")
         # An empty final on a segment the engine DID stream interims for is the shape
@@ -1429,16 +1512,35 @@ class TeaportSTTService(WebsocketSTTService):
                     "after the stop")
         await self.push_frame(SpeechDecodedFrame(stop_n=self._vad_stops))
 
-    def _silence_hint_ms(self) -> Optional[int]:
+    def _carry_from(self) -> Optional[int]:
+        """Where the next segment opens, on the send clock, for the commit going out now
+        (CARRY THE TAIL): the speech end placed for it, or the bound back from here
+        (_CARRY_MS, the previous commit), whichever is later. None:
+        nothing to carry -- off, the streaming backend, no claim to carry (no speech end
+        placed, or the hint off), nothing sent since the bound, or an append still on its
+        way to the socket, when where the commit falls is not known. Decided before the
+        hint, so the hint never claims voice that is not carried."""
+        if (not _CARRY_MS or self._streaming or self._appending or not STT_SILENCE_HINT
+                or self._speech_end is None):
+            return None
+        start = max(self._sent_samples - len(self._tail) // 2, self._carry_floor,
+                    self._speech_end)
+        return start if start < self._sent_samples else None
+
+    def _silence_hint_ms(self, carry_from: Optional[int] = None) -> Optional[int]:
         """What the commit going out now may claim as trailing silence, in ms: the
         audio sent since Silero's speech end, or since the caller's voice heard after
         the stop where there was some (THE CALLER'S VOICE), less the margin -- or None
         when there is no placed speech end to count from, the count is not positive,
-        or the hint is off (see STT_SILENCE_HINT)."""
+        or the hint is off (see STT_SILENCE_HINT). Voice the commit's carry re-sends
+        does not hold the claim back (`carry_from`, CARRY THE TAIL)."""
         if not STT_SILENCE_HINT or self._speech_end is None:
             return None
         end = self._speech_end
-        w = self._voice_marks()
+        rate = self.sample_rate or 16000
+        carried = (carry_from is not None
+                   and carry_from <= self._speech_end + _HINT_MARGIN_MS * rate // 1000)
+        w = None if carried else self._voice_marks()
         voice = None if w is None else self._voice_since_stop(w)
         if voice is not None:
             # Any voiced chunk counts here, not only an onset: the hint must never claim
@@ -1446,7 +1548,6 @@ class TeaportSTTService(WebsocketSTTService):
             # nothing has passed unsent since the caller last started speaking, or the
             # speech end would not be placed, so the two have moved together since.
             end = max(end, self._sent_samples - (self._passed_samples - voice))
-        rate = self.sample_rate or 16000
         ms = (self._sent_samples - end) * 1000 // rate - _HINT_MARGIN_MS
         return int(ms) if ms > 0 else None
 
@@ -1461,8 +1562,12 @@ class TeaportSTTService(WebsocketSTTService):
         # arm a hold this commit then never clears. Whatever sent it, the stop this
         # segment was waiting on is answered.
         await self._cancel_hold_expiry()
+        # Where the next segment opens (CARRY THE TAIL), before the hint, which claims
+        # what the carry re-sends, and before the speech end goes below.
+        carry_from = self._carry_from()
         commit = _Commit(n=self._vad_stops, at=time.monotonic(), why=why,
-                         hint=self._silence_hint_ms(), waited=waited, for_voice=for_voice)
+                         hint=self._silence_hint_ms(carry_from), waited=waited,
+                         for_voice=for_voice)
         # Whatever this commit claims, the next one starts from a fresh segment and
         # must place its own speech end. The backstop never has one to take: it fires
         # on a segment whose stop never came, and a stop that did come has already
@@ -1496,6 +1601,14 @@ class TeaportSTTService(WebsocketSTTService):
             msg = {"type": "input_audio_buffer.commit", "final": final}
             if commit.hint is not None:
                 msg["trailing_silence_ms"] = commit.hint
+            # The carry is the tail as it stands at the commit's position, and no later
+            # carry reaches back past this commit.
+            carry = b""
+            if carry_from is not None:
+                carry = bytes(self._tail[len(self._tail)
+                                         - 2 * (self._sent_samples - carry_from):])
+            self._carry_floor = self._sent_samples
+            appends = self._appends
             try:
                 await self._websocket.send(json.dumps(msg))
             except (websockets.exceptions.ConnectionClosed, OSError) as e:
@@ -1506,6 +1619,28 @@ class TeaportSTTService(WebsocketSTTService):
                 logger.warning(f"{self}: commit dropped, send failed: {e}")
                 return
             self._commits.append(commit)
+            if carry:
+                await self._send_carry(commit, carry, appends)
+
+    async def _send_carry(self, commit: _Commit, carry: bytes, appends: int):
+        """Re-send the audio after the commit's speech end as the next segment's start
+        (CARRY THE TAIL). `appends` is the wire's count when the commit went out: a live
+        chunk sent since went ahead of the carry, which would then follow audio it
+        precedes, so it is dropped."""
+        if self._appends != appends or not self._websocket:
+            logger.debug(f"{self}: audio went out behind the commit before its carry -- "
+                         "the next segment opens at the commit")
+            return
+        payload = base64.b64encode(carry).decode("ascii")
+        try:
+            await self._websocket.send(
+                json.dumps({"type": "input_audio_buffer.append", "audio": payload}))
+        except (websockets.exceptions.ConnectionClosed, OSError) as e:
+            logger.warning(f"{self}: the commit's carry was dropped, send failed: {e}")
+            return
+        # The engine counts it; the send clock does not (CARRY THE TAIL: the clocks).
+        self._session_origin -= len(carry) // 2
+        commit.carry_ms = len(carry) // 2 * 1000 // (self.sample_rate or 16000)
 
     async def _schedule_stream_boundary(self):
         """Draw the segment boundary once the model's trailing deltas have landed.
@@ -1586,6 +1721,8 @@ class TeaportSTTService(WebsocketSTTService):
                 # sends nothing on the new socket before this is taken.
                 self._session_origin = self._sent_samples
                 self._decoded_through = None
+                # Nor does a carry reach back into the last session's audio.
+                self._carry_floor = self._sent_samples
                 # Handshake: the engine is single-model and just acknowledges this --
                 # and an engine with the report starts sending it (one without ignores
                 # the field). Not to the streaming backend: vLLM validates its session.

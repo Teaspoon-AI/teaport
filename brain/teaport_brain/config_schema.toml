@@ -994,7 +994,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Tell the engine, on each commit, how much trailing silence the VAD has already established (the stop's silence window plus everything sent since, or only what was sent after the caller's voice where it came back after the stop), so it can shorten the fixed ~1 s padding it decodes before answering. The engine takes the larger of this and its own count, clamped to what it has; one without the field's support ignores it. Off: the engine credits only what its own VAD counted, which on a phone line is often nothing."
+help = "Tell the engine, on each commit, how much trailing silence the VAD has already established (the stop's silence window plus everything sent since, or only what was sent after the caller's voice where it came back after the stop and TEAPORT_STT_CARRY_MS does not send it again), so it can shorten the fixed ~1 s padding it decodes before answering. The engine takes the larger of this and its own count, clamped to what it has; one without the field's support ignores it. Off: the engine credits only what its own VAD counted, which on a phone line is often nothing."
 
 [[settings]]
 name = "TEAPORT_STT_SILENCE_HINT_MARGIN_MS"
@@ -1007,6 +1007,19 @@ default = 100
 read = "startup"
 tier = "tuning"
 help = "Held back from the silence hint, for the tail the VAD's confidence gate drops before the decoder is done with it. Over-claiming by up to 240 ms cost nothing on the engine's measured corpus; 400 ms truncated the last word on 7 of 30 utterances."
+
+[[settings]]
+name = "TEAPORT_STT_CARRY_MS"
+store = "brain_env"
+group = "turn_taking"
+type = "int"
+unit = "ms"
+min = 0
+max = 2000
+default = 500
+read = "startup"
+tier = "tuning"
+help = "After each commit, send the audio since the end of the caller's speech again as the start of the next segment, at most this much, so a word the caller begins just as a segment is closed reaches the engine whole, with the silence before it, instead of split between two segments. Needs TEAPORT_STT_SILENCE_HINT: the carry is the stretch the hint claims as silence, plus its margin. 0: the next segment opens at the commit, as before."
 
 [[settings]]
 name = "HEARD_MODE"
