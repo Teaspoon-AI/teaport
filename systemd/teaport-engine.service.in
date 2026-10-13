@@ -15,7 +15,9 @@ Upholds=teaport-brain.service
 Type=simple
 User=@USER@
 EnvironmentFile=@ETC@/engine.env
-ExecStart=@PREFIX@/bin/voxtral -d @PREFIX@/models/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY} --tts-ctx ${TTS_CTX} --tts-model @PREFIX@/models/kokoro/Kokoro_espeak_F16.gguf --vad --vad-mode 1 --vad-commit hard
+# --reprime 1500: each segment after a final starts from the last one's tail
+# (teagram-engine#88, teaport#154); needs an engine release that has it.
+ExecStart=@PREFIX@/bin/voxtral -d @PREFIX@/models/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY} --tts-ctx ${TTS_CTX} --tts-model @PREFIX@/models/kokoro/Kokoro_espeak_F16.gguf --vad --vad-mode 1 --vad-commit hard --reprime 1500
 Restart=on-failure
 RestartSec=5
 
