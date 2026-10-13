@@ -279,7 +279,7 @@ In `/etc/teaport/engine.env`.
 |---|---|---|
 | `KOKORO_RESERVE_FPT` | — | The engine memory reserve. 6 with any agent resident (a NemoClaw sandbox or a host OpenClaw gateway share the RAM), 12 for a voice-only device. One of `6`, `12`. The engine's own default (50) OOMs an 8 GB box. The installer derives this from whether an agent is present and rewrites it on every run, so it is not editable here: re-run install.sh to change what is resident. *Set by the installer.* |
 | `ENGINE_PORT` | **8000** port (1–65535) | --serve. TEAPORT_URL and ENGINE_TTS_URL in brain.env must follow it. *Set by the installer.* |
-| `ENGINE_DELAY` | **240** | --delay to the engine binary. *Set by the installer.* |
+| `ENGINE_DELAY` | **480** | --delay to the engine binary. *Set by the installer.* |
 | `TTS_CTX` | **192** | --tts-ctx to the engine binary. *Set by the installer.* |
 | `VOX_REQUIRE_DICT_G2P` | `1` | Refuse to serve if the en-us G2P dict failed to load, rather than degrade silently to espeak-only prosody. Engine ≤ 1.3 ignores it. One of `1`. *Set by the installer.* |
 

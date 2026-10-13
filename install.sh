@@ -261,17 +261,21 @@ phase_preflight() {
 }
 
 phase_sysdeps() {
-  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), python3.12-venv (brain)"
+  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), libcudnn9-cuda-13 (engine TTS convs), python3.12-venv (brain)"
   # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child) —
   # but ONLY as the OOV + non-English fallback. The en-us G2P is the misaki-derived dict
   # that phase_engine installs to bin/g2p/; espeak-only en-us speaks robotic prosody.
   # libopenblas0 provides libopenblas.so.0, which the engine links against. JetPack does not
   # ship it, so without this the engine binary fails to load at first start.
+  # libcudnn9-cuda-13 provides libcudnn.so.9: engine 1.5 on runs the Kokoro convs on
+  # cuDNN (~2x TTS throughput, teagram-engine README). Full JetPack has it, the bare L4T
+  # BSP does not; NVIDIA's Jetson apt repo, which L4T configures, carries it.
   SUDO apt-get update -qq
-  SUDO apt-get install -y espeak-ng libopenblas0 python3.12-venv
+  SUDO apt-get install -y espeak-ng libopenblas0 libcudnn9-cuda-13 python3.12-venv
   if [ "$DRY_RUN" != 1 ]; then
     have espeak-ng || die "espeak-ng not installed"
     contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
+    contains 'libcudnn.so.9' "$(ldconfig -p 2>/dev/null || true)" || die "libcudnn.so.9 not installed"
   fi
   # Bootstrap uv HERE, before phase_engine's ~15GB of downloads: a uv fetch that is going
   # to fail (proxy, DNS, an unwritable $PREFIX) should fail in the first minute, not the
@@ -1486,10 +1490,13 @@ phase_services() {
 
   # VOX_REQUIRE_DICT_G2P: refuse to serve if the en-us G2P dict failed to load
   # rather than silently fall back to espeak-only prosody (see phase_engine).
-  # Engine <= 1.3 ignores it; from the next release it turns a degraded box
-  # into a loud restart loop that `teaport doctor` / journalctl names.
+  # Engine 1.3 ignores it; from 1.5 it turns a degraded box into a loud restart
+  # loop that `teaport doctor` / journalctl names.
+  # ENGINE_DELAY 480: the appliance's value since 2026-09-30 and the one engine 1.5 is
+  # validated at (its batched decode is bit-identical to the unbatched one only there;
+  # at 240 it scored a point worse, and --reprime's measurements are all at 480).
   write_env "$ETC/engine.env" \
-    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=240" "TTS_CTX=192" \
+    "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192" \
     "VOX_REQUIRE_DICT_G2P=1"
   # TEAPORT_AGENT tells the brain what this fork already knows: with a gateway (host
   # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and reads
