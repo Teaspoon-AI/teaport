@@ -1095,10 +1095,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # both the refusal and the frame that lifts it. It raises AttributeError here, at
     # session build, if a pipecat bump moves any of it.
     keep_barge_in_reachable(context_aggregator.user()._user_turn_controller)
-    # And the turn a barge-in opens is not committed ahead of the reply it cut: the
-    # commit waits for the interruption to reach the assistant aggregator, which is what
-    # puts the cut reply into the context (and the reply hold sees that interruption
-    # before the commit arms it). Its head and tail go around the two aggregators below.
+    # And the turn a barge-in opens is not committed ahead of the reply it cut
+    # (endpointing.CutReplyFence). Its head and tail go around the two aggregators below.
     cut_fence = CutReplyFence()
     cut_fence.hold_commits(context_aggregator.user())
     if wifi_closer is not None:
@@ -1124,14 +1122,15 @@ def build_agent_session(transport, *, voice: str | None = None,
         # Ask the LLM on the settled interim (or a final) of a turn the stop strategy
         # has not concluded on; the service adopts the stream at the commit if the
         # context is still what was asked. The corrector's rewrite of a cut reply is
-        # applied before the snapshot so it cannot be what changed in between. See
-        # speculate.py.
+        # applied before the snapshot so it cannot be what changed in between, and the
+        # snapshot waits for a cut reply still on its way (the fence). See speculate.py.
         # MemoryRecall's note, injected on the final, is put in the snapshot taken on the
         # interim before it.
         speculator = speculate.Speculator(
             llm=llm, aggregator=context_aggregator.user(),
             before_snapshot=heard_corrector.reconcile_for_snapshot,
-            pending=memory_recall.pending_messages if memory_recall is not None else None)
+            pending=memory_recall.pending_messages if memory_recall is not None else None,
+            cut_fence=cut_fence)
         stop_strategy.speculator = speculator
         llm.speculator = speculator
         # The engine's transcription report is asked for only when it will be used.

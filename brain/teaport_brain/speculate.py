@@ -69,9 +69,11 @@
 #     also folds pending notes into the context at the commit, after the snapshot: that
 #     turn is a miss, never a stale reply. The one writer that is OURS and ran at the
 #     commit, the heard-context corrector, is run before the snapshot instead so its
-#     rewrite is inside it (see Speculator). The equality check stays whole-context
-#     regardless, because nothing in the machine prevents a new writer, and the check
-#     is what makes a new one a miss rather than a wrong reply.
+#     rewrite is inside it (see Speculator) -- once the reply a barge-in cut has been
+#     committed (endpointing.CutReplyFence), or the corrector would spend the cut on a
+#     context without it and the reply would stay whole. The equality check stays
+#     whole-context regardless, because nothing in the machine prevents a new writer,
+#     and the check is what makes a new one a miss rather than a wrong reply.
 #   * Replay is at the CHUNK level, below base_llm's parser. A speculated tool call is
 #     buffered as deltas and parsed and dispatched by _process_context only once the real
 #     turn adopts the stream; nothing executes early.
@@ -247,7 +249,8 @@ class Speculator:
     reaches for the aggregator's `_aggregation` the same way, for the same reason.
     """
 
-    def __init__(self, *, llm, aggregator, before_snapshot=None, pending=None):
+    def __init__(self, *, llm, aggregator, before_snapshot=None, pending=None,
+                 cut_fence=None):
         self._llm = llm
         self._agg = aggregator
         self._controller = aggregator._user_turn_controller
@@ -270,6 +273,12 @@ class Speculator:
         # the context, before the user message); if a fresher hit replaces it before the
         # final, the context the commit has is not the snapshot and take() misses.
         self._pending = pending
+        # endpointing.CutReplyFence, when wired: a barge-in's cut reply is committed by
+        # the assistant aggregator once its interruption has crossed the pipeline, and
+        # the corrector above can only rewrite it once it is there. Live 2026-10-13 a
+        # snapshot taken 15 ms after the interruption spent the ledger's cut on a context
+        # without the reply, which was then committed, and asked, whole.
+        self._cut_fence = cut_fence
         self._current: _Speculation | None = None
         # Strong refs, for the readers and the detached closes: the loop holds tasks
         # weakly, and a reader whose speculation nothing else references any more would
@@ -317,6 +326,16 @@ class Speculator:
         text = (text or "").strip()
         if not text:
             return False
+        if self._cut_fence is not None:
+            if not await self._cut_fence.wait_for_cuts():
+                # The cut reply may still land after the snapshot, the corrector having
+                # nothing to rewrite now: no speculation, rather than one on a context
+                # the commit will not have.
+                logger.info(f"[SPEC] not started {text[:40]!r}: a cut reply is still "
+                            "on its way to the context")
+                return False
+            if not self._controller._user_turn:
+                return False  # committed while it waited
         if self._before_snapshot is not None:
             self._before_snapshot()
         ctx = self._agg.context

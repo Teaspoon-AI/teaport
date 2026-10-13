@@ -23,7 +23,10 @@
 # broadcast). Run with the fence and without it: without it, the context the model gets is
 # the reported one, so the test is known to be testing the failure. The reply hold is
 # checked on the way: the same order made it read the barge-in's own interruption as a
-# dropped reply and request a TurnMerge that the next turn then received.
+# dropped reply and request a TurnMerge that the next turn then received. And the
+# speculative reply's snapshot, whose corrector pass consumed the ledger's cut on a
+# context the cut reply had not reached yet (live 2026-10-13, 15 ms after the
+# interruption), waits on the same fence.
 #
 # All utterances are synthetic.
 #
@@ -73,6 +76,7 @@ from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
 from teaport_brain.barge_pause import PauseAwareMinWordsStrategy  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
+    CUT_COMMIT_WAIT_SECS,
     CutReplyFence,
     LateStartTurnStopStrategy,
     SegmentDoneSink,
@@ -80,6 +84,7 @@ from teaport_brain.endpointing import (  # noqa: E402
 )
 from teaport_brain.heard_context import HeardContextCorrector, _clean_prefix  # noqa: E402
 from teaport_brain.reply_hold import ReplyHoldGate, TurnMerge  # noqa: E402
+from teaport_brain.speculate import Speculator  # noqa: E402
 from teaport_brain.stt import FinalTranscriptionFrame  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
@@ -101,9 +106,38 @@ CROSSING_S = 0.06
 STARTUP_S = 0.5
 
 
-class Complete(BaseSmartTurn):
+class Scripted(BaseSmartTurn):
+    """Smart Turn answering what the test says: COMPLETE unless told otherwise."""
+
+    complete = True
+
     def _predict_endpoint(self, audio_array):
-        return {"prediction": 1, "probability": 0.98}
+        return ({"prediction": 1, "probability": 0.98} if self.complete
+                else {"prediction": 0, "probability": 0.1})
+
+
+class SpecStream:
+    """A speculation's stream: one chunk, then done."""
+
+    def __aiter__(self):
+        return self._gen()
+
+    async def _gen(self):
+        yield "chunk"
+
+    async def close(self):
+        pass
+
+
+class SpecLLM:
+    """The request-opening seam the Speculator calls: records what it was asked."""
+
+    def __init__(self):
+        self.asked = []
+
+    async def _open_stream(self, ctx):
+        self.asked.append([dict(m) for m in ctx.get_messages()])
+        return SpecStream()
 
 
 class ScriptedLLM(FrameProcessor):
@@ -115,12 +149,18 @@ class ScriptedLLM(FrameProcessor):
         self.contexts = []
         self.asked_at = []
         self._task = None
+        # As the LLM service does, when the session speculates: asks the Speculator
+        # for its stream first. True for each request it was adopted for.
+        self.speculator = None
+        self.adopted = []
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMContextFrame):
             self.contexts.append([dict(m) for m in frame.context.get_messages()])
             self.asked_at.append(time.monotonic())
+            if self.speculator is not None:
+                self.adopted.append(await self.speculator.take(frame.context) is not None)
             text = COUNT if len(self.contexts) == 1 else ANSWER
             self._task = self.create_task(self._complete(text))
             return
@@ -212,16 +252,17 @@ class Playout(FrameProcessor):
 class Call:
     """One session's turn path, as agent_session builds it, minus STT and audio I/O."""
 
-    def __init__(self, with_fence: bool):
+    def __init__(self, with_fence: bool, speculate: bool = False):
         self.context = LLMContext([{"role": "system", "content": "sys"}])
+        self.smart_turn = Scripted(sample_rate=IN_SR, params=SmartTurnParams(stop_secs=1.0))
+        self.stop = LateStartTurnStopStrategy(turn_analyzer=self.smart_turn)
         self.pair = LLMContextAggregatorPair(
             self.context,
             user_params=LLMUserAggregatorParams(
                 user_mute_strategies=[],
                 user_turn_strategies=UserTurnStrategies(
                     start=[PauseAwareMinWordsStrategy(min_words=2)],
-                    stop=[LateStartTurnStopStrategy(turn_analyzer=Complete(
-                        sample_rate=IN_SR, params=SmartTurnParams(stop_secs=1.0)))],
+                    stop=[self.stop],
                 ),
             ),
         )
@@ -252,11 +293,19 @@ class Call:
             orig()
         self.merge.request = merge_request
 
+        self.corrector = HeardContextCorrector(self.ledger, self.context, merge=self.merge)
+        # As agent_session wires it.
+        self.spec_llm = SpecLLM()
+        self.speculator = Speculator(
+            llm=self.spec_llm, aggregator=user,
+            before_snapshot=self.corrector.reconcile_for_snapshot,
+            cut_fence=self.fence) if speculate else None
+        self.stop.speculator = self.llm.speculator = self.speculator
+
         head = self.fence.head if self.fence is not None else None
         tail = self.fence.tail if self.fence is not None else None
         self.task = PipelineTask(Pipeline([p for p in [
-            user, head, SegmentDoneSink(), HeardContextCorrector(self.ledger, self.context,
-                                                                 merge=self.merge),
+            user, head, SegmentDoneSink(), self.corrector,
             self.llm, self.tts, self.gate, Playout(), self.pair.assistant(), tail,
         ] if p is not None]), observers=[self.ledger], cancel_on_idle_timeout=False)
 
@@ -279,9 +328,37 @@ class Call:
         final.finalized = True
         await self.task.queue_frame(final)
 
+    async def incomplete_barge_in(self, text, stop_n, opened_by, speech_s=0.6,
+                                  flush_s=0.2, silence_s=1.4):
+        """The over-the-bot stop under an INCOMPLETE verdict, as the speculative reply
+        sees it: the words land ~0.2 s after the VAD stop, opening the turn -- on their
+        last interim with the final ~10 ms behind it (`opened_by` "interim"), or on the
+        final itself -- and the analyzer's silence ceiling commits the turn later. The
+        line stays open, as it does live, for the ceiling to count."""
+        self.smart_turn.complete = False
+        await self.task.queue_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        for _ in range(round(speech_s / 0.02)):
+            await self.task.queue_frame(
+                InputAudioRawFrame(audio=MIC_CHUNK, sample_rate=IN_SR, num_channels=1))
+            await asyncio.sleep(0.02)
+        await self.task.queue_frame(VADUserStoppedSpeakingFrame(stop_secs=0.5))
+        words_at = round(flush_s / 0.02)
+        for i in range(round(silence_s / 0.02)):
+            if i == words_at:
+                if opened_by == "interim":
+                    await self.task.queue_frame(InterimTranscriptionFrame(text, "caller", "t"))
+                    await asyncio.sleep(0.01)
+                final = FinalTranscriptionFrame(text, "caller", "t", stop_n=stop_n)
+                final.finalized = True
+                await self.task.queue_frame(final)
+            await self.task.queue_frame(
+                InputAudioRawFrame(audio=MIC_CHUNK, sample_rate=IN_SR, num_channels=1))
+            await asyncio.sleep(0.02)
 
-async def _the_call(with_fence: bool, late_request: bool = False):
-    call = Call(with_fence)
+
+async def _the_call(with_fence: bool, late_request: bool = False,
+                    speculate_opened_by: str | None = None):
+    call = Call(with_fence, speculate=speculate_opened_by is not None)
     run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(call.task))
     await asyncio.sleep(STARTUP_S)
     # The request, with the bot silent: one word is a turn, and the count begins. As
@@ -289,7 +366,10 @@ async def _the_call(with_fence: bool, late_request: bool = False):
     await call.utterance(REQUEST, stop_n=1, late=late_request)
     await asyncio.sleep(1.8)          # with the utterance below, ~2.5 s of the count plays
     # "Okay, stop there." over the count.
-    await call.utterance(STOP, stop_n=2)
+    if speculate_opened_by is None:
+        await call.utterance(STOP, stop_n=2)
+    else:
+        await call.incomplete_barge_in(STOP, stop_n=2, opened_by=speculate_opened_by)
     await asyncio.sleep(1.0)
     await call.task.cancel()
     await run
@@ -335,11 +415,13 @@ async def test_the_barge_in_turn_is_committed_after_the_reply_it_cut():
     _check_the_fixed_order(call)
     assert call.fence.waits == 1 and call.fence.timeouts == 0, (call.fence.waits,
                                                                 call.fence.timeouts)
-    # What the order costs: the commit waits for the interruption's crossing, no more.
+    # What the order costs: the commit waits for the interruption's crossing, no more
+    # (no timeout above; the bound itself is the only ceiling a loaded machine cannot
+    # stretch past).
     wait = _opened_to_committed(call)
     print(f"    barge-in turn: opened -> committed in {wait * 1000:.0f} ms "
           f"(the interruption's crossing: {CROSSING_S * 1000:.0f} ms)")
-    assert CROSSING_S - 0.01 <= wait < CROSSING_S + 0.15, wait
+    assert CROSSING_S - 0.01 <= wait < CUT_COMMIT_WAIT_SECS, wait
 
 
 async def test_without_the_fence_the_turn_overtakes_the_cut_reply():
@@ -379,25 +461,124 @@ async def test_a_late_start_with_the_bot_silent_merges_nothing():
         f"without the fence the request's false merge should swallow the stop: {users!r}")
 
 
+async def test_a_speculation_waits_for_the_reply_its_turn_cut():
+    # The barge-in's words land under an INCOMPLETE verdict, the turn opened by their
+    # last interim and the final ~10 ms behind it: the final asks for a speculation
+    # while the interruption is still crossing. Its snapshot runs the corrector, which
+    # used to consume the ledger's cut right then, on a context without the cut reply
+    # -- which then landed whole, and the request at the ceiling carried every word
+    # of the count (live 2026-10-13). Now the snapshot waits for the cut reply, the
+    # request carries the heard prefix, and it is the speculation's.
+    call = await _the_call(with_fence=True, speculate_opened_by="interim")
+    _check_the_fixed_order(call)
+    assert call.spec_llm.asked == [call.llm.contexts[1]], (call.spec_llm.asked,
+                                                          call.llm.contexts)
+    assert call.llm.adopted == [False, True], call.llm.adopted
+
+
+async def test_without_the_fence_the_speculation_spends_the_cut():
+    # The same call with nothing to wait on (the brain before the fence reached the
+    # speculation): the snapshot lacks the count, the corrector's cut is spent on it,
+    # and the count reaches the model whole -- not adopted, and not corrected either.
+    call = await _the_call(with_fence=False, speculate_opened_by="interim")
+    asked = call.llm.contexts
+    assert len(asked) == 2, asked
+    roles = [(m["role"], m.get("content")) for m in asked[1]]
+    assert roles == [("system", "sys"), ("user", REQUEST), ("assistant", COUNT),
+                     ("user", STOP)], f"expected the count whole in the request: {roles!r}"
+    assert call.spec_llm.asked[0][-2:] == [{"role": "user", "content": REQUEST},
+                                           {"role": "user", "content": STOP}], (
+        call.spec_llm.asked)
+    assert call.llm.adopted == [False, False], call.llm.adopted
+
+
+async def test_the_final_that_opens_the_turn_over_the_bot_speculates():
+    # The barge-in's final opening the turn itself under an INCOMPLETE verdict: it used
+    # to be refused a speculation (its snapshot would have missed the cut reply), a
+    # second check for what the fence now covers. It waits like the rest, and hits.
+    call = await _the_call(with_fence=True, speculate_opened_by="final")
+    _check_the_fixed_order(call)
+    assert call.spec_llm.asked == [call.llm.contexts[1]], call.spec_llm.asked
+    assert call.llm.adopted == [False, True], call.llm.adopted
+
+
+class _Aggregator:
+    """What the fence and the Speculator touch on the user aggregator."""
+
+    def __init__(self, words=()):
+        self._aggregation = list(words)
+        self.context = LLMContext([{"role": "system", "content": "sys"}])
+        self._user_turn_controller = type("Ctl", (), {"_user_turn": True})()
+        self.pushed = 0
+
+    async def push_aggregation(self):
+        self.pushed += 1
+        self._aggregation = []
+
+
 async def test_a_commit_with_nothing_in_flight_does_not_wait():
     # The request above opened its turn the same way, with the bot silent: its
     # interruption crossed too, and cut nothing. Only what is in flight is waited on.
     fence = CutReplyFence()
     t = time.monotonic()
-    await fence._wait()
+    assert await fence.wait_for_cuts()
     assert fence.waits == 0 and time.monotonic() - t < 0.005
+
+
+async def test_an_empty_commit_does_not_wait():
+    # pipecat's push_aggregation commits nothing for an empty aggregation, and the
+    # session's end (EndFrame, a hangup's CancelFrame) calls it regardless: it must not
+    # sit out an interruption's crossing for that.
+    fence = CutReplyFence(timeout=0.2)
+    agg = _Aggregator()
+    fence.hold_commits(agg)
+    fence._sent(InterruptionFrame())
+    t = time.monotonic()
+    await agg.push_aggregation()
+    assert fence.waits == 0 and agg.pushed == 1 and time.monotonic() - t < 0.1
+    agg._aggregation = ["words"]
+    await agg.push_aggregation()
+    assert fence.waits == 1 and fence.timeouts == 1 and agg.pushed == 2
 
 
 async def test_a_lost_interruption_costs_one_bounded_wait():
     fence = CutReplyFence(timeout=0.1)
     fence._sent(InterruptionFrame())          # swallowed somewhere: never lands
     t = time.monotonic()
-    await fence._wait()
+    assert not await fence.wait_for_cuts()
     assert 0.09 <= time.monotonic() - t < 0.3 and fence.timeouts == 1
     # Forgotten: the next commit does not pay for it again.
     t = time.monotonic()
-    await fence._wait()
+    assert await fence.wait_for_cuts()
     assert time.monotonic() - t < 0.005 and fence.waits == 1
+
+
+async def test_a_wait_sharing_a_forgotten_frame_gives_up_with_it():
+    # Two waits on one lost frame (a commit and a snapshot): when the first times out
+    # and forgets it, the second ends with it and reports it lost, rather than reading
+    # the frame as landed.
+    fence = CutReplyFence(timeout=0.2)
+    fence._sent(InterruptionFrame())
+    first = asyncio.create_task(fence.wait_for_cuts())
+    await asyncio.sleep(0.1)
+    second = asyncio.create_task(fence.wait_for_cuts())
+    assert await first is False
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert second.done(), "the second wait sat out its own bound on a forgotten frame"
+    assert second.result() is False and fence.timeouts == 2
+
+
+async def test_a_speculation_whose_wait_timed_out_is_not_started():
+    # The cut reply may still land after a snapshot taken now, with the corrector's cut
+    # spent: no speculation (so none to adopt), and the corrector is not run.
+    fence = CutReplyFence(timeout=0.1)
+    fence._sent(InterruptionFrame())
+    reconciled = []
+    spec = Speculator(llm=SpecLLM(), aggregator=_Aggregator(),
+                      before_snapshot=lambda: reconciled.append(1), cut_fence=fence)
+    assert await spec.start(STOP) is False
+    assert spec.text is None and not reconciled and fence.timeouts == 1
 
 
 async def test_the_session_places_the_fence_around_the_aggregators():
