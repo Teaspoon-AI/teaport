@@ -1006,7 +1006,7 @@ min = 0
 default = 100
 read = "startup"
 tier = "tuning"
-help = "Held back from the silence hint, for the tail the VAD's confidence gate drops before the decoder is done with it. Over-claiming by up to 240 ms cost nothing on the engine's measured corpus; 400 ms truncated the last word on 7 of 30 utterances."
+help = "Held back from the silence hint, for the tail the VAD's confidence gate drops before the decoder is done with it. Over-claiming by up to 240 ms cost nothing on the engine's measured corpus; 400 ms truncated the last word on 7 of 30 utterances. It never takes a hint below 100 ms, the pause the engine needs to hear of before it re-primes the next segment: where the stop's window is that short (Talk's 0.2 s stop confirms 192 ms), the margin shrinks instead, at most to nothing."
 
 [[settings]]
 name = "TEAPORT_STT_CARRY_MS"

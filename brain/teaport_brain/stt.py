@@ -238,10 +238,20 @@ _HOLD_SLACK_SECS = 1.0
 # ms over cost nothing on 30 utterances, 400 ms truncated the last word on 7. 100 ms
 # sits well inside that, on top of the engine's own one-token margin.
 #
+# The margin gives way at one floor: it never takes a claim below _REPRIME_MS, the pause
+# the engine must be told of before it re-primes the next segment (teagram-engine's
+# --reprime, CARRY THE TAIL). Talk's 0.2 s stop confirms 192 ms of quiet (six 32 ms
+# Silero chunks), so the barge-in commit at that stop, with nothing in transit, would
+# claim 92 ms and lose the re-prime the carry is there for. Where the window is short
+# the margin shrinks instead, as far as Silero's speech end itself: an over-claim of the
+# decoder's unvoiced tail at most, inside the 240 ms that cost nothing above. A window
+# under _REPRIME_MS keeps the whole margin; it cannot vouch for the pause either way.
+#
 # Off (0/false): the commit carries no field and the engine credits its own count, as
 # before -- the A/B switch, not a fallback the service takes on its own.
 STT_SILENCE_HINT = setting("TEAPORT_STT_SILENCE_HINT")
 _HINT_MARGIN_MS = setting("TEAPORT_STT_SILENCE_HINT_MARGIN_MS")
+_REPRIME_MS = 100
 
 # THE CALLER'S VOICE: no segment boundary over the caller's resumed words (issue #140).
 #
@@ -382,12 +392,16 @@ _SLOW_LOG_SECS = 60.0
 # THE WIRE. The carry must follow its commit with nothing between them, and the claim is
 # made at the commit's position on the wire, which _sent_samples must name exactly. One
 # lock (_wire, through _on_wire) is held around every append run_stt sends and around a
-# commit with its carry. Only a timer's commit (the wait for the caller's pause, the
-# hold's expiry, the backstop) runs beside run_stt, and the two meet only while a send
-# waits on the socket's back-pressure, when either would wait for the same drain anyway.
-# A timer holds the lock from the check that decides it through its commit, so the state
-# it acts on is the one the wire has. The commit and its carry go on the socket the
-# commit went out on: a session closed in between takes its segment and the carry along.
+# commit with its carry, and every commit is DECIDED under it too: the VAD's stop and
+# start and the verdict are handled holding it (_turn_edge), and a timer (the wait for
+# the caller's pause, the hold's expiry, the backstop) takes it before the check that
+# decides its commit and gives up its slot only then (_fired). A decision taken outside
+# could queue behind a timer's commit and go out after it, a second commit for one stop
+# (SttCommit.tla takes deciding and committing as one step). The timers are the only
+# commits beside the input task, and they meet run_stt only while a send waits on the
+# socket's back-pressure, when either would wait for the same drain anyway. The commit
+# and its carry go on the socket the commit went out on: a session closed in between
+# takes its segment and the carry along.
 #
 # The clocks. _sent_samples stays the count of the caller's audio sent once -- the clock
 # the speech end, the hint, the VAD's counts and the gap check are on -- and the carry
@@ -413,7 +427,7 @@ _SLOW_LOG_SECS = 60.0
 # length), or an engine that keeps its context across a commit. No commit or done is
 # added or moved; what changes for brain/formal/SttCommit.tla is that the segment after
 # a quiet commit is fed (the carry), so an interim, and the backstop behind it, can
-# follow it (CommitAt, MaxCarries).
+# follow it (CommitAt, CARRY).
 #
 # 0 turns it off (the A/B switch): the next segment opens at the commit, as before.
 _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
@@ -951,6 +965,16 @@ class TeaportSTTService(WebsocketSTTService):
             finally:
                 self._wire_owner = None
 
+    def _fired(self, attr: str) -> bool:
+        """For a timer that has just taken the wire: whether its slot (`attr`) still
+        holds it, emptied now if so. Until then the slot is the timer's, so a VAD start
+        or a commit that comes first cancels it there and a second verdict sees the
+        wait still running; one that has replaced it has cancelled it already."""
+        if getattr(self, attr) is not asyncio.current_task():
+            return False
+        setattr(self, attr, None)
+        return True
+
     def _keep_tail(self, audio: bytes):
         """Keep the last _CARRY_MS of audio sent, for the next commit to carry."""
         if not _CARRY_MS or self._streaming:
@@ -994,6 +1018,21 @@ class TeaportSTTService(WebsocketSTTService):
         # its silence ceiling answers again when an INCOMPLETE one falls through. So
         # the chain is VAD stop -> verdict -> commit -> final -> turn stop, with no
         # cycle in it.
+        if isinstance(frame, (VADUserStoppedSpeakingFrame, VADUserStartedSpeakingFrame,
+                              TurnVerdictFrame)):
+            # Every commit is decided under the wire's lock, the timers' as well as
+            # these (CARRY THE TAIL: THE WIRE): a decision taken outside it could queue
+            # behind a timer's and go out after it, a second commit for one stop.
+            async with self._on_wire():
+                await self._turn_edge(frame)
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            self._bot_speaking = False
+
+    async def _turn_edge(self, frame: Frame):
+        """The VAD's stop and start and the verdict, as they reach the STT: what each
+        does to the open segment. Called under the wire's lock."""
         if isinstance(frame, VADUserStoppedSpeakingFrame):
             # Counted before anything here can commit, so a commit sent at this stop
             # is stamped with it.
@@ -1070,10 +1109,6 @@ class TeaportSTTService(WebsocketSTTService):
                     await self._arm_stranded_commit()
         elif isinstance(frame, TurnVerdictFrame):
             await self._handle_verdict(frame)
-        elif isinstance(frame, BotStartedSpeakingFrame):
-            self._bot_speaking = True
-        elif isinstance(frame, BotStoppedSpeakingFrame):
-            self._bot_speaking = False
 
     async def _handle_verdict(self, frame: TurnVerdictFrame):
         """Act on Smart Turn's answer to the VAD stop this segment is waiting on."""
@@ -1280,11 +1315,10 @@ class TeaportSTTService(WebsocketSTTService):
         except Exception as e:  # noqa: BLE001 -- the segment must still close
             logger.warning(f"{self}: the wait for the caller's pause failed ({e!r}); "
                            "committing the held segment")
-        self._hold_task = None
-        # A timer beside run_stt: from the check to the commit under the wire's lock, so
-        # an append still on its way lands first (CARRY THE TAIL: THE WIRE).
+        # A timer beside run_stt and the input task: from the check to the commit under
+        # the wire's lock (CARRY THE TAIL: THE WIRE), and its slot given up only there.
         async with self._on_wire():
-            if not self._commit_pending:
+            if not self._fired("_hold_task") or not self._commit_pending:
                 return
             self._count_capout(capped)
             await self._send_commit(final=True, why=why, waited=time.monotonic() - start,
@@ -1355,10 +1389,10 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _commit_when_hold_expires(self):
         await asyncio.sleep(self.smartturn_stop_secs + _HOLD_SLACK_SECS)
-        self._hold_task = None
-        # A timer beside run_stt (CARRY THE TAIL: THE WIRE, as in _wait_for_pause).
+        # A timer (CARRY THE TAIL: THE WIRE, as in _wait_for_pause).
         async with self._on_wire():
-            await self._commit_expired_hold()
+            if self._fired("_hold_task"):
+                await self._commit_expired_hold()
 
     async def _commit_expired_hold(self):
         """The expiry's check and commit, under the wire's lock."""
@@ -1456,10 +1490,10 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _stranded_commit_after_quiet(self):
         await asyncio.sleep(_STRANDED_INTERIM_SECS)
-        self._stranded_task = None
-        # A timer beside run_stt (CARRY THE TAIL: THE WIRE, as in _wait_for_pause).
+        # A timer (CARRY THE TAIL: THE WIRE, as in _wait_for_pause).
         async with self._on_wire():
-            await self._commit_stranded()
+            if self._fired("_stranded_task"):
+                await self._commit_stranded()
 
     async def _commit_stranded(self):
         """The backstop's check and commit, under the wire's lock."""
@@ -1577,7 +1611,8 @@ class TeaportSTTService(WebsocketSTTService):
 
         The claim: the audio sent since Silero's speech end, or since the caller's voice
         heard after the stop where there was some (THE CALLER'S VOICE), less the margin
-        -- None when there is no placed speech end to count from, the count is not
+        -- the margin giving way where it would take the claim below _REPRIME_MS -- or
+        None when there is no placed speech end to count from, the count is not
         positive, or the hint is off (see STT_SILENCE_HINT). That voice does not hold it
         back when the carry reaches the speech end, unless the commit was held for that
         voice (`for_voice`).
@@ -1605,7 +1640,12 @@ class TeaportSTTService(WebsocketSTTService):
                 # speaking, or the speech end would not be placed, so the two have moved
                 # together since.
                 end = max(end, sent - (self._passed_samples - voice))
-        ms = (sent - end) * 1000 // rate - _HINT_MARGIN_MS
+        quiet = (sent - end) * 1000 // rate
+        ms = quiet - _HINT_MARGIN_MS
+        if quiet >= _REPRIME_MS:
+            # The margin gives way rather than take the claim below the re-prime floor
+            # (STT_SILENCE_HINT).
+            ms = max(ms, _REPRIME_MS)
         if ms <= 0:
             return None, None
         carry = None if bound is None else max(bound, end)
@@ -1616,12 +1656,13 @@ class TeaportSTTService(WebsocketSTTService):
         """Force a final. `why` is recorded so the segment line says which path fired,
         and `waited` how long a complete verdict's commit was held for the VAD analyzer
         or, `for_voice`, for the caller's pause (THE CALLER'S VOICE)."""
-        # The wire's lock first (CARRY THE TAIL: THE WIRE), then the hold's timer:
-        # taking the one and cancelling a live task under the other are the only awaits
-        # here that can actually suspend, and the bookkeeping below must be atomic with
-        # the send -- a VAD stop landing between "pending = False" and the commit going
-        # out would arm a hold this commit then never clears. Whatever sent it, the stop
-        # this segment was waiting on is answered.
+        # The wire's lock (CARRY THE TAIL: THE WIRE): every caller holds it already,
+        # from the check that decided this commit, and it is taken again here so no
+        # commit can go out without it. Then the hold's timer: cancelling a live task
+        # is the one await here that can actually suspend, and the bookkeeping below
+        # must be atomic with the send -- a VAD stop landing between "pending = False"
+        # and the commit going out would arm a hold this commit then never clears.
+        # Whatever sent it, the stop this segment was waiting on is answered.
         async with self._on_wire():
             await self._cancel_hold_expiry()
             # The claim and where the next segment opens, at the commit's position on

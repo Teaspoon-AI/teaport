@@ -135,13 +135,18 @@
 (* No commit or done is added or moved, but the segment after a commit the  *)
 (* caller was quiet for is no longer empty: what it was sent can stream an  *)
 (* interim (the voice since the stop the carry holds, or the margin's       *)
-(* tail), and the backstop can follow that interim. CommitAt may therefore  *)
-(* leave the next segment fed (`spoke`) though the caller is quiet, on any  *)
-(* commit but the backstop's (which places no speech end, so claims and     *)
-(* carries nothing). The carried audio holds no utterance's words by the    *)
+(* tail), and the backstop can follow that interim. With CARRY, CommitAt    *)
+(* leaves the next segment fed (`spoke`) though the caller is quiet, on any *)
+(* commit but the backstop's: under the wire's lock every commit is decided *)
+(* and sent in one step, as each action here is, so a speech end the        *)
+(* backstop could see belongs to a stop that is holding, and the backstop   *)
+(* stands down for it; it claims and carries nothing (stt.py, THE WIRE).    *)
+(* The carried audio holds no utterance's words by the                      *)
 (* VAD's count -- it starts at or after the speech end -- so segAudio is    *)
 (* unchanged; an interim it streams is words nobody's stop is waiting on.   *)
-(* Bounded by MaxCarries; 0 is the STT before #154.                         *)
+(* CARRY = FALSE is the STT before #154. With it on, every such commit      *)
+(* feeds: a superset of the code (a commit that claims nothing carries      *)
+(* nothing), since `spoke` only enables Delta and no action needs it unset. *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences
 
@@ -156,7 +161,7 @@ CONSTANTS MODE,        \* "vadStop" | "verdict"
           MaxBackstops, \* bound on backstop commits (each opens a segment the caller can refill)
           VOICE,       \* "blind" | "pause": the STT and the caller's voice after a stop (#140)
           MaxVoice,    \* bound on stretches of voice the VAD has not started on
-          MaxCarries   \* bound on commits whose carry feeds the next segment (#154; 0: off)
+          CARRY        \* BOOLEAN: a commit's carry feeds the next segment (#154)
 
 \* Utterances are numbered by VAD start; a done's words are the utterances whose
 \* audio was in the segment it closed. NONE is "no stop": owed's rest value.
@@ -219,9 +224,7 @@ VARIABLES
     catchupCut,     \* a verdict's commit over voice the analyzer had not caught up
                     \* with by its bound (the other bound)
     pauseExit,      \* a wait for the caller's pause ended on the pause
-    resumeExit,     \* a wait for the caller's pause ended on a VAD start
-    \* --- the carry (#154) ---
-    carries         \* commits so far whose carry fed the next segment (bound)
+    resumeExit      \* a wait for the caller's pause ended on a VAD start
 
 \* The caller's voice, and its monitors (#140).
 voiceEnv == <<voice, voices>>
@@ -233,7 +236,7 @@ vars == <<userSpeaking, utt, toStrategy, toStt, fromEngine,
           spoke, segAudio, segSpeech, pending, hold, backstop, closedUnasked, commits,
           lastCommitN, stops, lost, missed, closes, backstops, lostHere,
           closedUnjudged, answered, split, doubleAnswer, staleClose, staleEnd, mispaired,
-          deferred, voiceEnv, voiceMon, carries>>
+          deferred, voiceEnv, voiceMon>>
 
 \* The strategy's per-turn state, as _reset() + analyzer.clear() leave it.
 stratVars == <<turnOpen, text, finalized, turnComplete, vadStopped, netArmed, netFired,
@@ -273,7 +276,6 @@ Init ==
     /\ deferred = FALSE /\ voice = "none" /\ voices = 0
     /\ cutVoice = FALSE /\ capCut = FALSE /\ catchupCut = FALSE
     /\ pauseExit = FALSE /\ resumeExit = FALSE
-    /\ carries = 0
 
 (***************************************************************************)
 (* What every commit does to the STT -- _send_commit and the engine's       *)
@@ -287,11 +289,7 @@ Init ==
 CommitAt(n, speaking, mayCarry) ==
     /\ fromEngine' = Append(fromEngine, [asked |-> TRUE, words |-> segAudio])
     /\ segAudio' = IF speaking THEN {utt} ELSE {}
-    /\ \/ /\ spoke' = speaking
-          /\ UNCHANGED carries
-       \/ /\ mayCarry /\ ~speaking /\ carries < MaxCarries
-          /\ spoke' = TRUE
-          /\ carries' = carries + 1
+    /\ spoke' = (speaking \/ (mayCarry /\ CARRY))
     \* Only the design's own stamp is kept: the other is dead state.
     /\ commits' = Append(commits, [n |-> IF DESIGN = "stop" THEN n ELSE 0,
                                    c |-> IF DESIGN = "clock" THEN stratStarts ELSE 0])
@@ -379,7 +377,7 @@ VadStop ==
               /\ closedUnjudged' = FALSE
               /\ answered' = FALSE
               /\ UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, commits, lastCommitN,
-                             deferred, carries>>
+                             deferred>>
     /\ UNCHANGED <<utt, toStt, stratSpeaking, stratStops, stratStarts, stopUtt, stratVars,
                    closedUnasked, lost, missed, closes, backstops, split, doubleAnswer, staleClose,
                    staleEnd, mispaired>>
@@ -717,12 +715,12 @@ Verdict ==
     /\ IF ~pending \/ deferred \/ Head(toStt).v = "incomplete"
          THEN UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, pending, hold, backstop,
                           commits, lastCommitN, answered, doubleAnswer, staleClose,
-                          deferred, cutVoice, catchupCut, carries>>
+                          deferred, cutVoice, catchupCut>>
          ELSE IF VOICE = "pause" /\ voice = "on"
          THEN \/ /\ deferred' = TRUE
                  /\ UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, pending, hold,
                                 backstop, commits, lastCommitN, answered, doubleAnswer,
-                                staleClose, cutVoice, catchupCut, carries>>
+                                staleClose, cutVoice, catchupCut>>
               \/ /\ Commit
                  /\ answered' = TRUE
                  /\ doubleAnswer' = (doubleAnswer \/ answered)
@@ -850,17 +848,14 @@ Backstop ==
 
 \* The turn's end has priority: the code ends the turn inside the handler that made
 \* it possible, so no other step can come between.
-\* The carry's count moves only on a commit (CommitAt), so the actions that never
-\* commit leave it here rather than each in its own list.
 Next ==
-    \/ EndTurn /\ UNCHANGED carries
+    \/ EndTurn
     \/ /\ ~CanEnd
-       /\ \/ /\ \/ VadStart \/ VadStopMissed \/ Delta \/ EngineClose
-                \/ StratStart \/ StratStop \/ StratDelta \/ StratFinal \/ StratDone
-                \/ Ceiling \/ Net \/ TurnStop \/ LoseVerdict \/ Done
-                \/ VoiceOn \/ VoicePause
-             /\ UNCHANGED carries
-          \/ VadStop \/ Verdict \/ HoldExpire \/ Backstop \/ PauseCommit \/ PauseCap
+       /\ \/ VadStart \/ VadStop \/ VadStopMissed \/ Delta \/ EngineClose
+          \/ StratStart \/ StratStop \/ StratDelta \/ StratFinal \/ StratDone
+          \/ Ceiling \/ Net \/ TurnStop \/ LoseVerdict
+          \/ Verdict \/ Done \/ HoldExpire \/ Backstop
+          \/ VoiceOn \/ VoicePause \/ PauseCommit \/ PauseCap
 
 Spec == Init /\ [][Next]_vars
 
@@ -1003,7 +998,7 @@ TypeOK ==
     /\ deferred \in BOOLEAN /\ voice \in {"none", "on", "paused"} /\ voices \in 0..MaxVoice
     /\ cutVoice \in BOOLEAN /\ capCut \in BOOLEAN /\ catchupCut \in BOOLEAN
     /\ pauseExit \in BOOLEAN /\ resumeExit \in BOOLEAN
-    /\ carries \in 0..MaxCarries
+    /\ CARRY \in BOOLEAN
     /\ VOICE \in {"blind", "pause"}
     /\ (VOICE = "blind" => ~deferred)
     /\ \A i \in 1..Len(toStrategy):

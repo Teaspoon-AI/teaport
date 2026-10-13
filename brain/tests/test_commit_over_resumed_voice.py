@@ -260,9 +260,9 @@ async def test_the_ceiling_waits_over_current_voice_and_the_start_keeps_the_segm
     await line.verdict(True)
     assert len(line.commits()) == 1, f"one segment for the sentence; got {line.commits()}"
     assert line.stt._commits[0].n == 2, "the commit answers the stop that closed it"
-    assert line.hints() == [ms(6) - MARGIN], (
+    assert line.hints() == [max(ms(6) - MARGIN, stt_mod._REPRIME_MS)], (
         "the hint counts from the second stop's own speech end, as the analyzer placed "
-        f"it; got {line.hints()}")
+        f"it (the margin giving way at the re-prime floor); got {line.hints()}")
     await asyncio.sleep(CEILING + 0.05)
     assert len(line.commits()) == 1, "the abandoned wait must not commit later"
 

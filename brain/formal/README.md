@@ -1314,15 +1314,38 @@ carry it is fed. What a carry sends starts at or after the speech end, so it hol
 utterance's words by the VAD's count (`segAudio` is unchanged), but the engine can stream
 an interim for it -- voice since the stop that the carry holds, or the margin's tail --
 and the backstop can follow that interim, stamped with a stop already answered.
-`CommitAt` therefore may leave `spoke` set on any commit but the backstop's (which places
-no speech end, so claims and carries nothing), bounded by `MaxCarries`.
+
+`CARRY` switches it: with it on, `CommitAt` leaves `spoke` set on every commit but the
+backstop's -- `spoke' = speaking \/ (mayCarry /\ CARRY)`. That is a superset of the code
+(a commit that claims nothing carries nothing): `spoke` only enables `Delta`, and no
+action needs it unset, so feeding the next segment on every commit covers feeding it on
+some, with no counter in the state. The backstop is the exception the code guarantees:
+every commit is decided and sent under one lock (`stt.py`, THE WIRE), as each action here
+is one step, so a speech end the backstop could see belongs to a stop that is holding,
+and the backstop stands down for it.
 
 `sc_carry_off` and `sc_carry_reach` are the pair that shows the carry reaches the space:
 with the engine's own close off, a segment that holds no utterance's words never streams
-an interim without a carry (`NoWordlessInterim` holds) and does with one (it falls). Every
-row that describes the STT as shipped runs with `MaxCarries = 1`; the rows kept for a
-design that was rejected (`sc_verdict_silentStop`, `sc_voice_blind`, the two clock rows)
-keep 0.
+an interim without a carry (`NoWordlessInterim` holds) and does with one (it falls). The
+rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_blind`, the
+two clock rows) run without it.
+
+**The default run and `--full`.** The carry multiplies the three largest rows' state
+spaces, so `check.sh` runs those three without it and `check.sh --full` (nightly, not the
+CI job) adds a copy of each with it on:
+
+| row | default run | `--full` copy, with the carry |
+|---|---|---|
+| `sc_vadStop_sound` | `CARRY = FALSE` | `sc_vadStop_sound_carry` |
+| `sc_voice` | `CARRY = FALSE` | `sc_voice_carry` |
+| `sc_voice_final` | `CARRY = FALSE` | `sc_voice_final_carry` |
+
+Every other row that describes the STT as shipped runs with the carry in the default run:
+`sc_verdict` (the commit protocol with both faults), the three `sc_final_stop` rows (the
+final's protocol), the voice witnesses, and the carry pair. What the default run does not
+check with the carry is the wait for the caller's pause under both faults and two voices
+(`sc_voice`), the final's protocol under that wait (`sc_voice_final`), and the no-verdict
+fallback (`sc_vadStop_sound`); those are the nightly's.
 
 ### Known limits of this model
 
@@ -1408,14 +1431,18 @@ keep 0.
   `sc_voice_final` 13.6 million (44.2 million generated). The six that fall
   (`sc_voice_blind`, `sc_voice_reach`, `sc_voice_reach_pause`, `sc_voice_reach_resume`,
   `sc_voice_cap`, `sc_voice_catchup`) each find a trace of under ten states.
-  With the carry (#154, `MaxCarries = 1`), measured 2026-10-12 on the same TLC:
-  `sc_voice` 29.8 million distinct states (96.9 million generated, 4 min 50 s),
-  `sc_voice_final` 40.7 million (130.1 million, 9 min 12 s), `sc_vadStop_sound` 25.1
-  million (5.9 million without the carry; 4 min 46 s), `sc_verdict` 2.4 million (1.0
-  million without), `sc_final_stop_residual` and `_marked` 8.5 and 7.8 million (about
-  2 min each). One carry is the bound: the property it adds a path to -- a segment fed
-  by a carry alone streams an interim and the backstop can follow -- needs one, and the
-  reviewer's unbounded first try put `sc_voice` past 800 MB of state queue.
+  The carry (#154), measured 2026-10-12 on the same TLC and desktop. In the default run:
+  `sc_verdict` 1.6 million distinct states with it (16 s), `sc_final_stop_residual`
+  and `_marked` 6.2 and 5.7 million (about a minute each, against 43 s without), and
+  the carry pair a few seconds (`sc_carry_off` 54,000 states; the pair runs without
+  the faults, its point being reachability). Under `--full`: `sc_vadStop_sound_carry`
+  24.4 million (5 min 53 s; 5.9 million without the carry), `sc_voice_carry` 19.9
+  million (4 min 35 s), `sc_voice_final_carry` 29.8 million (7 min 27 s). The whole
+  default run took 526 s here before #154 (`sc_voice_final` 143 s, `sc_voice` 108 s,
+  `sc_vadStop_sound` 67 s of it) and about 665 s with it; `--full` adds about 18 min.
+  The first encoding (a counted, nondeterministic carry, `MaxCarries = 1`) cost more
+  for less: `sc_voice` 29.8 million and `sc_voice_final` 40.7 million with one carry,
+  where `CARRY` covers every commit's.
 
 ## Worth modeling next
 

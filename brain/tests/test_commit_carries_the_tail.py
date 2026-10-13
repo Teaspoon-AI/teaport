@@ -56,6 +56,7 @@ from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     InputAudioRawFrame,
     VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 
 from stt_harness import WireRecorder  # noqa: E402
@@ -147,14 +148,16 @@ async def test_a_verdict_commit_carries_all_its_hint_claims_and_the_margin():
     await line.utterance()
     await line.verdict(True)
     assert len(line.commits()) == 1
-    claim = ms(6) - MARGIN
-    assert line.hints() == [claim], line.hints()
+    window = ms(6)                                 # the stop's 192 ms, nothing in transit
+    assert line.hints() == [stt_mod._REPRIME_MS], (
+        f"the window less the margin, which gives way at the re-prime floor; got "
+        f"{line.hints()}")
     behind = line.after_commit()
     assert len(behind) == 1, "the carry, and nothing live yet"
     carried = audio(behind[0])
-    assert carried == line.before_commit()[-2 * samples(claim + MARGIN):], (
+    assert carried == line.before_commit()[-2 * samples(window):], (
         "the carry is the audio since the speech end, as it was sent")
-    assert line.stt._commits[0].carry_ms == claim + MARGIN
+    assert line.stt._commits[0].carry_ms == window
     await line.feed(3, SPEECH)
     behind = line.after_commit()
     assert [audio(m) for m in behind[1:]] == [chunk(SPEECH)] * 3, (
@@ -173,8 +176,8 @@ async def test_the_barge_in_commit_carries_the_word_it_cut():
         await line.feed(2, VOICE)                  # "You'-"
         assert not line.speaking, "stopped: six chunks under the VAD's 0.7"
         assert len(line.commits()) == 1, "the barge-in flush, at once"
-        claim = ms(6) - MARGIN
-        assert line.hints() == [claim], line.hints()
+        assert line.hints() == [stt_mod._REPRIME_MS], (
+            f"the stop's window vouches for the re-prime; got {line.hints()}")
         carried = audio(line.after_commit()[0])
         assert carried.endswith(chunk(VOICE) * 2), "the word's onset opens the next segment"
         await line.feed(8, SPEECH)                 # "-re not supposed to know"
@@ -182,7 +185,7 @@ async def test_the_barge_in_commit_carries_the_word_it_cut():
         assert nxt == carried + chunk(SPEECH) * 8, "onset, then the rest of the word"
         await line.stt._handle_message({"type": "transcription.done", "text": "No.",
                                         "reason": "commit"})
-        assert f"carried {claim + MARGIN}ms" in j.having("commit=bot-speaking")[0], j.lines
+        assert f"carried {ms(6)}ms" in j.having("commit=bot-speaking")[0], j.lines
 
 
 async def a_click_after_the_stop(line):
@@ -307,6 +310,11 @@ def check_one_rule(line, label):
             f"{what}: voice decoded by neither segment")
         if stamp.for_voice:
             assert not voiced(carry), f"{what}: the voice it was held for, carried away"
+        if stamp.why in ("bot-speaking", "vad-stop", "tail"):
+            # Committed at the stop: its window alone must vouch for the pause the
+            # engine re-primes the next segment on (the barge-in's above all).
+            assert hint is not None and hint >= stt_mod._REPRIME_MS, (
+                f"{what}: hint {hint} ms, under the re-prime floor")
 
 
 async def the_verdict(line):
@@ -636,6 +644,164 @@ async def test_a_timer_decides_its_commit_on_the_state_after_the_append_it_waite
         assert line.commits() == [], "the caller resumed: no commit"
     finally:
         stt_mod._HOLD_SLACK_SECS = slack
+
+
+@contextlib.contextmanager
+def timers(hold=None, stranded=None):
+    """The hold's expiry and the backstop, shortened so a test need not sit them out."""
+    was = stt_mod._HOLD_SLACK_SECS, stt_mod._STRANDED_INTERIM_SECS
+    if hold is not None:
+        stt_mod._HOLD_SLACK_SECS = hold
+    if stranded is not None:
+        stt_mod._STRANDED_INTERIM_SECS = stranded
+    try:
+        yield
+    finally:
+        stt_mod._HOLD_SLACK_SECS, stt_mod._STRANDED_INTERIM_SECS = was
+
+
+async def a_timer_waits_on_a_drain(line, wire, fire_secs, then=None):
+    """An append stuck on back-pressure (it holds the wire), and a timer that fires
+    behind it: returns the input task, to be let through by setting wire.gate. `then`:
+    the frame that task handles next, as soon as the append is through and before it
+    yields, as the pipeline's input task goes on to its next queued frame."""
+    wire.gate = asyncio.Event()
+
+    async def the_input_task():
+        await line.feed(1, QUIET, behind=True)
+        if then is not None:
+            await then()
+
+    stuck = asyncio.ensure_future(the_input_task())
+    await asyncio.sleep(fire_secs + 0.06)          # the timer has fired, and waits
+    assert line.commits() == [], "nothing gets past the append on its way"
+    return stuck
+
+
+async def test_the_expiry_and_a_late_verdict_raced_across_a_drain_commit_once():
+    """The hold expires while an append drains; the ceiling's verdict, late, is the
+    next frame the input task handles. One of the two answers the stop -- the expiry,
+    which got the wire first -- and the verdict is logged late, not lost. (No analyzer
+    marks: the verdict commits at once, with no catch-up to wait out.)"""
+    with timers(hold=0.0), Journal("WARNING") as j:
+        line = Tagged(wired=False)
+        wire = line.stt._websocket = Gated()
+        line.stt.smartturn_stop_secs = 0.02
+        await line.utterance()
+        await line.verdict(False)
+        stuck = await a_timer_waits_on_a_drain(
+            line, wire, 0.02, then=lambda: line.verdict(True, source="ceiling"))
+        wire.gate.set()
+        await stuck
+        await settle()
+        assert [c.why for c in line.stt._commits] == ["hold-expired"], (
+            f"one commit for the stop; got {[c.why for c in line.stt._commits]}")
+        assert j.having("late, not lost"), j.lines
+
+
+async def test_a_pause_wait_raced_against_a_drain_and_a_reconnect_commits_nothing():
+    """The caller pauses while an append drains, so the wait for their pause decides to
+    commit and waits for the wire. The session closes and a new one opens before it
+    gets it: the close cancels the wait (its slot is still the wait's), and nothing
+    goes out on the new session."""
+    line = Tagged()
+    wire = line.stt._websocket = Gated()
+    wire.state = None
+    await line.utterance()
+    await line.feed(4, VOICE, behind=True)
+    await line.verdict(True)
+    await line.catch_up()
+    await settle()
+    await line.feed(7, QUIET, behind=True)         # the pause, not yet heard
+    wire.gate = asyncio.Event()
+    stuck = asyncio.ensure_future(line.feed(1, QUIET, behind=True))
+    await settle()
+    await line.catch_up()                          # heard: the wait decides to commit
+    await settle()
+    assert line.commits() == [], "the wait is waiting for the wire"
+    fresh = await reconnect(line)
+    wire.gate.set()
+    await stuck
+    await settle()
+    assert line.commits() == [] and wire.commits() == [], (
+        f"no commit on either session; got {fresh.types()}")
+
+
+async def reconnect(line):
+    """The session closes and a new one opens, as the receive task's reconnect does."""
+    fresh = WireRecorder()
+
+    async def connect(url):
+        return fresh
+
+    real = stt_mod.websockets.connect
+    stt_mod.websockets.connect = connect
+    try:
+        await line.stt._disconnect_websocket()
+        await line.stt._connect_websocket()
+    finally:
+        stt_mod.websockets.connect = real
+    return fresh
+
+
+async def test_an_expiry_raced_against_a_drain_and_a_reconnect_commits_nothing():
+    """The same race for the hold's expiry: its slot stays its own until it has the
+    wire, so the close cancels it."""
+    with timers(hold=0.0):
+        line = Tagged()
+        wire = line.stt._websocket = Gated()
+        wire.state = None
+        line.stt.smartturn_stop_secs = 0.02
+        await line.utterance()
+        stuck = await a_timer_waits_on_a_drain(line, wire, 0.02)
+        fresh = await reconnect(line)
+        wire.gate.set()
+        await stuck
+        await settle()
+        assert line.commits() == [] and wire.commits() == [], (
+            f"no commit on either session; got {fresh.types()}")
+
+
+async def test_a_backstop_raced_against_a_drain_stands_down_for_a_fresh_interim():
+    """The backstop fires while an append drains, and an interim lands before it gets
+    the wire: the engine is still streaming, the quiet it fired on is broken, and the
+    re-arm cancels it there (its slot is still its own)."""
+    with timers(stranded=0.02):
+        line = Tagged()
+        wire = line.stt._websocket = Gated()
+        await line.feed(20, SPEECH)
+        await line.stt._handle_message({"type": "transcription.delta", "delta": "I"})
+        stuck = await a_timer_waits_on_a_drain(line, wire, 0.02)
+        stt_mod._STRANDED_INTERIM_SECS = 5.0       # the re-armed one, out of the way
+        await line.stt._handle_message({"type": "transcription.delta", "delta": " mean"})
+        wire.gate.set()
+        await stuck
+        await settle()
+        assert line.commits() == [], "the backstop that fired was cancelled by the re-arm"
+        line.stt._stranded_task.cancel()
+
+
+async def test_a_backstop_raced_against_a_stop_carries_nothing():
+    """The backstop fires while an append drains, and the VAD's stop over the bot's
+    reply is the next frame handled. The backstop gets the wire first and commits what
+    it was armed for: no speech end is placed yet, so it claims and carries nothing.
+    The stop then places its own and commits the flush."""
+    with timers(stranded=0.02):
+        line = Tagged()
+        wire = line.stt._websocket = Gated()
+        await line.stt.process_frame(BotStartedSpeakingFrame(), UP)
+        await line.feed(20, SPEECH)
+        await line.stt._handle_message({"type": "transcription.delta", "delta": "No,"})
+        stuck = await a_timer_waits_on_a_drain(
+            line, wire, 0.02, then=lambda: line.stt.process_frame(
+                VADUserStoppedSpeakingFrame(stop_secs=0.2), UP))
+        wire.gate.set()
+        await stuck
+        await settle()
+        assert [c.why for c in line.stt._commits] == ["backstop", "bot-speaking"], (
+            [c.why for c in line.stt._commits])
+        assert line.hints()[0] is None and line.stt._commits[0].carry_ms == 0, (
+            "the backstop claims and carries nothing")
 
 
 async def test_a_session_closed_under_a_commit_takes_its_stamp_and_carry():
