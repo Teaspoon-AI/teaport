@@ -1019,7 +1019,7 @@ max = 2000
 default = 500
 read = "startup"
 tier = "tuning"
-help = "After each commit, send the audio since the end of the caller's speech again as the start of the next segment, at most this much, so a word the caller begins just as a segment is closed reaches the engine whole, with the silence before it, instead of split between two segments. Needs TEAPORT_STT_SILENCE_HINT: the carry is the stretch the hint claims as silence, plus its margin. 0: the next segment opens at the commit, as before."
+help = "After each commit, send the audio from where the silence hint's claim starts again, as the start of the next segment: at most this much, and never back past the previous commit. A word the caller begins just as a segment is closed then reaches the engine whole, with the silence before it, instead of split between two segments; only the hint's margin is decoded by both. Where this much does not reach back to the end of the caller's speech, or the commit was held for the caller's pause, voice heard since the stop stays in the closed segment and the carry starts after it. Needs TEAPORT_STT_SILENCE_HINT: a commit that claims no silence carries nothing. 0: the next segment opens at the commit, as before."
 
 [[settings]]
 name = "HEARD_MODE"

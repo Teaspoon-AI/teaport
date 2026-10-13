@@ -1304,6 +1304,26 @@ that commits on what the analyzer has heard because it has not heard the rest in
 turn end, no stranded turn. Every existing row runs with `MaxVoice = 0`, where nothing
 changes.
 
+### The carry (#154)
+
+After every commit the STT sends the audio from where the commit's silence claim starts
+again, as the start of the next segment (`stt.py`, CARRY THE TAIL). No commit or done is
+added or moved, so the protocol above is unchanged, but one premise is not: a commit the
+caller was quiet for used to leave the next segment empty (`spoke' = FALSE`), and with the
+carry it is fed. What a carry sends starts at or after the speech end, so it holds no
+utterance's words by the VAD's count (`segAudio` is unchanged), but the engine can stream
+an interim for it -- voice since the stop that the carry holds, or the margin's tail --
+and the backstop can follow that interim, stamped with a stop already answered.
+`CommitAt` therefore may leave `spoke` set on any commit but the backstop's (which places
+no speech end, so claims and carries nothing), bounded by `MaxCarries`.
+
+`sc_carry_off` and `sc_carry_reach` are the pair that shows the carry reaches the space:
+with the engine's own close off, a segment that holds no utterance's words never streams
+an interim without a carry (`NoWordlessInterim` holds) and does with one (it falls). Every
+row that describes the STT as shipped runs with `MaxCarries = 1`; the rows kept for a
+design that was rejected (`sc_verdict_silentStop`, `sc_voice_blind`, the two clock rows)
+keep 0.
+
 ### Known limits of this model
 
 - **Durations are out of scope**, as everywhere here, and two timing facts are stated as
@@ -1388,6 +1408,14 @@ changes.
   `sc_voice_final` 13.6 million (44.2 million generated). The six that fall
   (`sc_voice_blind`, `sc_voice_reach`, `sc_voice_reach_pause`, `sc_voice_reach_resume`,
   `sc_voice_cap`, `sc_voice_catchup`) each find a trace of under ten states.
+  With the carry (#154, `MaxCarries = 1`), measured 2026-10-12 on the same TLC:
+  `sc_voice` 29.8 million distinct states (96.9 million generated, 4 min 50 s),
+  `sc_voice_final` 40.7 million (130.1 million, 9 min 12 s), `sc_vadStop_sound` 25.1
+  million (5.9 million without the carry; 4 min 46 s), `sc_verdict` 2.4 million (1.0
+  million without), `sc_final_stop_residual` and `_marked` 8.5 and 7.8 million (about
+  2 min each). One carry is the bound: the property it adds a path to -- a segment fed
+  by a carry alone streams an interim and the backstop can follow -- needs one, and the
+  reviewer's unbounded first try put `sc_voice` past 800 MB of state queue.
 
 ## Worth modeling next
 

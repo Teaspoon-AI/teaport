@@ -128,9 +128,9 @@ class Recorder(TeaportSTTService):
 class Scripted(VADAnalyzer):
     """pipecat's VAD state machine with Silero's confidence scripted, volume gate open."""
 
-    def __init__(self):
+    def __init__(self, stop_secs=STOP_SECS):
         super().__init__(sample_rate=SAMPLE_RATE,
-                         params=VADParams(stop_secs=STOP_SECS, start_secs=0.2,
+                         params=VADParams(stop_secs=stop_secs, start_secs=0.2,
                                           min_volume=0.0))
         self.conf = 0.0
         self.fail_next = False
@@ -148,9 +148,10 @@ class Scripted(VADAnalyzer):
 class Line:
     """The service and the session's analyzer, driven as the pipeline drives them."""
 
-    def __init__(self, wired=True):
+    def __init__(self, wired=True, stop_secs=STOP_SECS):
         self.stt = Recorder()
-        self.vad = type("Onset", (SpeechOnsetMixin, Scripted), {})()
+        self.stop_secs = stop_secs
+        self.vad = type("Onset", (SpeechOnsetMixin, Scripted), {})(stop_secs=stop_secs)
         self.vad.set_sample_rate(SAMPLE_RATE)
         if wired:
             self.stt.vad_analyzer = self.vad
@@ -179,8 +180,8 @@ class Line:
             await self.stt.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2), UP)
         elif state == VADState.QUIET and self.speaking:
             self.speaking = False
-            await self.stt.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS),
-                                         UP)
+            await self.stt.process_frame(
+                VADUserStoppedSpeakingFrame(stop_secs=self.stop_secs), UP)
 
     async def catch_up(self):
         backlog, self.backlog = self.backlog, []
@@ -191,7 +192,7 @@ class Line:
         """Speech, then the VAD's stop."""
         await self.feed(chunks, SPEECH)
         assert self.speaking, "the VAD started on the speech"
-        await self.feed(6, QUIET)
+        await self.feed(self.vad._vad_stop_frames, QUIET)
         assert not self.speaking, "and stopped on the quiet"
 
     async def verdict(self, complete, source="verdict"):
@@ -425,12 +426,12 @@ async def test_voice_that_never_pauses_commits_at_the_ceiling_and_three_stand_it
         waited = await steady_noise_turn(line)
         assert len(line.commits()) == 1, "the wait must end at the ceiling"
         assert CEILING - 0.03 <= waited <= CEILING + 0.08, f"committed after {waited:.2f}s"
-        # Voice is current: nothing to claim but what the commit's carry sends again
-        # (CARRY THE TAIL, test_commit_carries_the_tail.py), which is all of it here.
-        carried = line.stt._commits[0].carry_ms
-        hint = line.hints()[0]
-        assert carried and hint and hint <= carried, (
-            f"the claim lies inside the carry; got {line.hints()}, carried {carried}")
+        # Voice is current, and the commit was held for it: its segment keeps that
+        # voice, so there is no silence to claim and nothing to carry, whatever the
+        # carry's bound (CARRY THE TAIL, test_commit_carries_the_tail.py).
+        assert line.hints() == [None], "voice is current: no silence to claim"
+        assert line.stt._commits[0].for_voice and line.stt._commits[0].carry_ms == 0, (
+            "a commit held for the caller's voice carries none of it")
         assert j.having("has not paused"), j.lines
         await steady_noise_turn(line)
         await steady_noise_turn(line)

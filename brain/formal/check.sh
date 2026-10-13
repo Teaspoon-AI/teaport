@@ -149,6 +149,10 @@ run SttCommit.tla sc_voice_cap   "(expected: FAILS NoCapCut — the ACCEPTED RES
 run SttCommit.tla sc_voice_catchup "(expected: FAILS NoCatchupCut — the ACCEPTED RESIDUAL: the catch-up bound commits over voice not yet heard)"
 run SttCommit.tla sc_voice_final "(expected: holds — the final's protocol under the wait, on the marked engine)"
 echo
+echo "SttCommit.tla — the carry (#154): the segment after a commit the caller was quiet for is fed"
+run SttCommit.tla sc_carry_off   "(expected: holds — control: without a carry, no interim for a segment with no words)"
+run SttCommit.tla sc_carry_reach "(expected: FAILS NoWordlessInterim — witness: a carry's audio streams an interim, the backstop behind it)"
+echo
 echo "SttCommit.tla — the final (PR #49): whose utterance a late final is, and when the turn may end on it"
 run SttCommit.tla sc_final_clock         "(expected: FAILS NoStaleTurnEnd — the first cut: finals placed by clock)"
 run SttCommit.tla sc_final_clock_marked  "(expected: FAILS NoStaleTurnEnd — the clock rule falls even on a marked wire)"
