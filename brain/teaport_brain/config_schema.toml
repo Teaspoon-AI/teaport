@@ -794,7 +794,7 @@ unit = "s"
 min = 0.1
 read = "startup"
 tier = "tuning"
-help = "ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0."
+help = "ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0."
 
 [[settings]]
 name = "TALK_SMARTTURN_STOP_SECS"
@@ -805,7 +805,7 @@ unit = "s"
 min = 0
 read = "startup"
 tier = "tuning"
-help = "SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0."
+help = "SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0."
 
 [[settings]]
 name = "TALK_SMARTTURN_COMPLETE_THRESHOLD"
@@ -816,7 +816,7 @@ min = 0
 max = 1
 read = "startup"
 tier = "tuning"
-help = "SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart."
+help = "SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart."
 
 [[settings]]
 name = "TALK_INTERRUPT_MIN_WORDS"
@@ -826,7 +826,52 @@ type = "int"
 min = 1
 read = "startup"
 tier = "tuning"
-help = "TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart."
+help = "TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart."
+
+[[settings]]
+name = "ROOM_ENDPOINT_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0.1
+default = 0.3
+read = "startup"
+tier = "tuning"
+help = "ENDPOINT_STOP_SECS for the box's own microphone (the room mic) only; it does not fall back to the shared value or to Talk's. People talking across a room pause mid-sentence: a replay of 20 min of room recordings (issue #159) picked 0.3 / 1.5 against the 0.2 / 0.6 the room had from Talk, cutting the mid-sentence splits from about 18 of 29 to about 6, for +0.1 s on a typical turn end."
+
+[[settings]]
+name = "ROOM_SMARTTURN_STOP_SECS"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+unit = "s"
+min = 0
+default = 1.5
+read = "startup"
+tier = "tuning"
+help = "SMARTTURN_STOP_SECS for the box's own microphone (the room mic) only; it does not fall back to the shared value or to Talk's. The ceiling is the room's main lever against mid-sentence splits (issue #159: 0.6 -> 1.5 at a 0.3 s stop took them from about 14 of 29 to about 6). Its cost falls on the turn ends Smart Turn calls unfinished, about a quarter in the replay, which wait ROOM_ENDPOINT_STOP_SECS + this (1.8 s) instead of 0.8 s; with TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated under it."
+
+[[settings]]
+name = "ROOM_SMARTTURN_COMPLETE_THRESHOLD"
+store = "brain_env"
+group = "turn_taking"
+type = "float"
+min = 0
+max = 1
+read = "startup"
+tier = "tuning"
+help = "SMARTTURN_COMPLETE_THRESHOLD for the box's own microphone (the room mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD."
+
+[[settings]]
+name = "ROOM_INTERRUPT_MIN_WORDS"
+store = "brain_env"
+group = "turn_taking"
+type = "int"
+min = 1
+read = "startup"
+tier = "tuning"
+help = "TEAPORT_INTERRUPT_MIN_WORDS for the box's own microphone (the room mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS."
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD"

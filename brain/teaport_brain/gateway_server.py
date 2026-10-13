@@ -324,8 +324,9 @@ async def run_relay_bot(websocket: WebSocket):
         wake_gate=gate,
         # A wake session asleep for hours is not idle: the bridge ends it (keep-alive).
         cancel_on_idle_timeout=False if gate is not None else None,
-        # Talk's own turn-taking (TALK_* over the shared knobs; endpointing.turn_settings).
-        front_end="talk",
+        # Talk's own turn-taking (TALK_* over the shared knobs; endpointing.turn_settings),
+        # or the room's (ROOM_*): across a room people pause mid-sentence (issue #159).
+        front_end="room" if room else "talk",
     )
     session_holder["s"] = session
 

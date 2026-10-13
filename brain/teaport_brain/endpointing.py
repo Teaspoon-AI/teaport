@@ -10,7 +10,7 @@
 #
 import asyncio
 import time
-from dataclasses import dataclass
+from dataclasses import astuple, dataclass
 
 from loguru import logger
 
@@ -169,9 +169,36 @@ INTERRUPT_MIN_WORDS = setting("TEAPORT_INTERRUPT_MIN_WORDS")
 # tuned apart in blind A/Bs (Talk: ENDPOINT_STOP_SECS 0.2 / SMARTTURN_STOP_SECS 0.6;
 # the phone stays on 0.5 / 1.0, with its own barge-in word count). So the four turn-taking
 # knobs above are the SHARED values, and each front-end may override them with its own
-# name: SIP_<name> for phone calls, TALK_<name> for /talk sessions (the interrupt count
-# drops its TEAPORT_ prefix: SIP_INTERRUPT_MIN_WORDS, TALK_INTERRUPT_MIN_WORDS). They are
-# read when a session is built (build_agent_session), not at import.
+# name: SIP_<name> for phone calls, TALK_<name> for /talk sessions, ROOM_<name> for the
+# box's own mic (the interrupt count drops its TEAPORT_ prefix: SIP_INTERRUPT_MIN_WORDS,
+# ...). They are read when a session is built (build_agent_session), not at import.
+#
+# The box's own microphone (the XVF3800 room mic, through the local audio bridge) is a
+# /talk client, but it is a third front-end here, "room", with ROOM_<name> of its own
+# (issue #159). It had been taking Talk's 0.2 / 0.6, which were chosen on a headset or
+# a laptop at arm's length; across a room people pause mid-sentence, and on 2026-10-11..13
+# about 7 of 115 awake room transcripts were one sentence cut into 2 to 6 turns, with
+# Smart Turn calling 244-377 ms tails ("... the, the,") COMPLETE at p~0.98. Its stop and
+# ceiling have schema defaults of their own, 0.3 / 1.5, picked by replaying 20 min of
+# room recordings through pipecat's Silero VAD and this file's Smart Turn analyzer
+# (2026-10-13, three framings each; 105 pauses labelled from a local transcript):
+#
+#   stop/ceiling  mid-sentence splits (of 29)  turn end -> commit: median   p90
+#   0.2 / 0.6     17.7  (the live setting)                         0.20 s   0.77 s
+#   0.3 / 1.0     11.7                                             0.30 s   1.28 s
+#   0.3 / 1.5      6.3                                             0.30 s   1.76 s
+#   0.5 / 1.0      7.7                                             0.52 s   1.51 s
+#   0.5 / 1.5      5.7                                             0.52 s   1.99 s
+#
+# The ceiling is the lever: a stop over 0.3 buys about half a split for 0.2 s on every
+# turn. ~5 splits are in every row (a confident COMPLETE at a comma, and pauses the live
+# bot's reply had already lengthened), so they are not the knobs' to fix. About a
+# quarter of the turn ends draw INCOMPLETE and wait the whole 1.8 s; the speculative
+# reply (speculate.py) runs under it. The verdicts at the splits scored 0.4-0.98, mostly
+# over 0.8, so no threshold would have spared them: the threshold and the barge-in word
+# count fall back to the shared values like every other override. Everything else a Talk
+# session does (the relay, captions, context notes, the call prompt) a room session
+# still does: only the turn-taking is keyed on "room".
 
 
 @dataclass(frozen=True)
@@ -182,25 +209,33 @@ class TurnSettings:
     interrupt_min_words: int = INTERRUPT_MIN_WORDS
 
 
+# Each front-end's own value of each knob, in TurnSettings' field order: None where it
+# has none (unset, unreadable, and no schema default), and then the shared value
+# applies. One literal setting("NAME") per knob, so a search for a name finds its read.
+FRONT_ENDS = {
+    "sip": lambda: (setting("SIP_ENDPOINT_STOP_SECS"), setting("SIP_SMARTTURN_STOP_SECS"),
+                    setting("SIP_SMARTTURN_COMPLETE_THRESHOLD"),
+                    setting("SIP_INTERRUPT_MIN_WORDS")),
+    "talk": lambda: (setting("TALK_ENDPOINT_STOP_SECS"), setting("TALK_SMARTTURN_STOP_SECS"),
+                     setting("TALK_SMARTTURN_COMPLETE_THRESHOLD"),
+                     setting("TALK_INTERRUPT_MIN_WORDS")),
+    "room": lambda: (setting("ROOM_ENDPOINT_STOP_SECS"), setting("ROOM_SMARTTURN_STOP_SECS"),
+                     setting("ROOM_SMARTTURN_COMPLETE_THRESHOLD"),
+                     setting("ROOM_INTERRUPT_MIN_WORDS")),
+}
+
+
 def turn_settings(front_end: str | None) -> TurnSettings:
-    """The turn-taking knobs for a session of `front_end` ("sip" or "talk"): its own
-    SIP_/TALK_ override where set, else the shared value."""
+    """The turn-taking knobs for a session of `front_end` (a FRONT_ENDS key, or None
+    for the shared values alone): its own value where it has one, else the shared
+    value. An unknown name raises: a typo here would otherwise build a session on the
+    shared values with nothing to say so."""
     shared = TurnSettings()
-    if front_end == "sip":
-        return TurnSettings(
-            endpoint_stop_secs=setting("SIP_ENDPOINT_STOP_SECS", default=shared.endpoint_stop_secs),
-            smartturn_stop_secs=setting("SIP_SMARTTURN_STOP_SECS", default=shared.smartturn_stop_secs),
-            smartturn_complete_threshold=setting("SIP_SMARTTURN_COMPLETE_THRESHOLD",
-                                                 default=shared.smartturn_complete_threshold),
-            interrupt_min_words=setting("SIP_INTERRUPT_MIN_WORDS", default=shared.interrupt_min_words))
-    if front_end == "talk":
-        return TurnSettings(
-            endpoint_stop_secs=setting("TALK_ENDPOINT_STOP_SECS", default=shared.endpoint_stop_secs),
-            smartturn_stop_secs=setting("TALK_SMARTTURN_STOP_SECS", default=shared.smartturn_stop_secs),
-            smartturn_complete_threshold=setting("TALK_SMARTTURN_COMPLETE_THRESHOLD",
-                                                 default=shared.smartturn_complete_threshold),
-            interrupt_min_words=setting("TALK_INTERRUPT_MIN_WORDS", default=shared.interrupt_min_words))
-    return shared
+    if front_end is None:
+        return shared
+    own = FRONT_ENDS[front_end]()
+    return TurnSettings(*(mine if mine is not None else base
+                          for mine, base in zip(own, astuple(shared))))
 
 
 class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):

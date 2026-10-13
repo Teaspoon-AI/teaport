@@ -125,10 +125,14 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | `SIP_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. |
 | `SIP_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
 | `SIP_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for phone calls (the SIP front-end) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
-| `TALK_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
-| `TALK_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
-| `TALK_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
-| `TALK_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord, the box's mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
+| `TALK_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
+| `TALK_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
+| `TALK_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
+| `TALK_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
+| `ROOM_ENDPOINT_STOP_SECS` | **0.3** s (≥ 0.1) | ENDPOINT_STOP_SECS for the box's own microphone (the room mic) only; it does not fall back to the shared value or to Talk's. People talking across a room pause mid-sentence: a replay of 20 min of room recordings (issue #159) picked 0.3 / 1.5 against the 0.2 / 0.6 the room had from Talk, cutting the mid-sentence splits from about 18 of 29 to about 6, for +0.1 s on a typical turn end. |
+| `ROOM_SMARTTURN_STOP_SECS` | **1.5** s (≥ 0) | SMARTTURN_STOP_SECS for the box's own microphone (the room mic) only; it does not fall back to the shared value or to Talk's. The ceiling is the room's main lever against mid-sentence splits (issue #159: 0.6 -> 1.5 at a 0.3 s stop took them from about 14 of 29 to about 6). Its cost falls on the turn ends Smart Turn calls unfinished, about a quarter in the replay, which wait ROOM_ENDPOINT_STOP_SECS + this (1.8 s) instead of 0.8 s; with TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated under it. |
+| `ROOM_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for the box's own microphone (the room mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. |
+| `ROOM_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for the box's own microphone (the room mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. |
 | `TEAPORT_REPLY_HOLD` | — | Retired, never shipped in a release: the reply hold is set per front-end by TEAPORT_REPLY_HOLD_SIP and TEAPORT_REPLY_HOLD_TALK. If it is still set, the brain ignores it and logs a warning saying so. |
 | `TEAPORT_REPLY_HOLD_SIP` | **on** | Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed. |
 | `TEAPORT_REPLY_HOLD_TALK` | **off** | The same reply hold for the OpenClaw Talk path. Off until a Talk session has been measured with it: the only measurement so far is a telephony call. |
@@ -526,6 +530,13 @@ them in `brain.env`: `SIP_ENDPOINT_STOP_SECS`, `TALK_ENDPOINT_STOP_SECS`, and so
 (the interrupt count drops its `TEAPORT_` prefix: `SIP_INTERRUPT_MIN_WORDS`,
 `TALK_INTERRUPT_MIN_WORDS`). An unset or unreadable override falls back to the shared
 value. Each session logs the values it was built with (`turn-taking (sip): …`).
+
+The box's own microphone (the room mic, through the local audio bridge) connects as
+a Talk client, but it is a front-end of its own here, `room`, with `ROOM_*` overrides
+(`ROOM_ENDPOINT_STOP_SECS` and so on); `TALK_*` does not reach it. People talking to a
+speaker across a room pause mid-sentence, so its stop and Smart Turn ceiling have
+defaults of their own, picked by replaying room recordings (issue #159). Its log line
+reads `turn-taking (room): …`.
 
 ## One engine, one conversation
 
