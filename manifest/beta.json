@@ -20,6 +20,11 @@
       "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-g2p.dict",
       "sha256": "TODO"
     },
+    "pos_model": {
+      "_note": "engine/g2p/kokoro_pos.bin: averaged-perceptron part-of-speech tagger distilled from spaCy en_core_web_sm tags, so the G2P can pick misaki's POS-keyed homograph readings (read/lead/live/...). Training sources and licenses are in the engine's NOTICE and THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ beside the dict — without it homographs read in their default form. Arch-independent; rides the engine release.",
+      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-pos.bin",
+      "sha256": "TODO"
+    },
     "notices": {
       "_note": "engine/THIRD_PARTY_NOTICES.txt from the commit the engine binary above was built from. Carries the MIT/BSD/Apache-2.0 attributions for the engine's third-party components. install.sh installs it to $PREFIX/THIRD_PARTY_NOTICES.txt; re-cut with every engine release.",
       "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-TODO-THIRD_PARTY_NOTICES.txt",
