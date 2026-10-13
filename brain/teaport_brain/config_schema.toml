@@ -29,6 +29,10 @@
 #   help      one or two sentences; the docs generator copies it verbatim
 #   note      operator-facing caveat, rendered after help
 #   consumer  when a library, not our code, reads it (glibc, huggingface_hub)
+#   kept      true for a sip_conf row its writer never writes: set by hand in the conf, and
+#             kept by `teaport sip configure` from the conf it replaces (every key it does
+#             not set is). Its `source` is the writer, which must read it (confval), not
+#             write it
 #   source    for a row the brain does not read (no setting()/getenv of it): every
 #             repo file that handles it, repo-relative, no line; a list, or a plain
 #             string for one file. Handling it is the store's `writer` writing it
@@ -161,7 +165,7 @@ title = "Speech engine service"
 [[groups]]
 id = "sip"
 title = "SIP gateway"
-blurb = "Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on."
+blurb = "Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it."
 
 [[groups]]
 id = "bridge"
@@ -1990,6 +1994,30 @@ max = 6
 default = 3
 tier = "diag"
 help = "Gateway app log level."
+source = "cli/teaport"
+
+[[settings]]
+name = "sip_source_filter"
+store = "sip_conf"
+group = "sip"
+type = "enum"
+values = ["enforce", "log", "off"]
+default = "log"
+tier = "setup"
+kept = true
+help = "Which addresses may send the gateway SIP requests (teaport-sip#33; gateway v0.6.6 and later): its allowlist is every address registrar_uri resolves to, all its DNS SRV targets included, plus sip_source_allow. enforce drops a request from any other address, with no answer and no state (responses to our REGISTERs are never filtered); log accepts it as before and logs an `[acl] ... NOT on the allowlist` line for each new address and method; off is no filter and no lines. Any case; another value is a config error, and the gateway exits 78 rather than start. The gateway logs the mode it runs on at startup (`[acl] source filter ...`); `teaport sip status` and doctor show it."
+note = "Switch to enforce only once the trunk's call-delivery addresses are confirmed to be its registrar's or on sip_source_allow (teaport-sip#37): run in log first and read the `[acl]` lines over a few real calls, since an address the filter does not know drops the call with nothing sent and nothing seen by the brain. It checks the packet's source address, which can be forged: it is not authentication. With register = false it needs at least one sip_source_allow entry."
+source = "cli/teaport"
+
+[[settings]]
+name = "sip_source_allow"
+store = "sip_conf"
+group = "sip"
+type = "string"
+tier = "setup"
+kept = true
+help = "More addresses the gateway takes SIP requests from, besides its registrar's (sip_source_filter): IPv4 or IPv6 addresses or CIDR networks, comma- or space-separated, and the key may be repeated, each line adding to the list. No names (nothing resolves them), no /0 (that is sip_source_filter = off), no address bits beyond the prefix: each is a config error. Unset: the registrar's addresses alone."
+note = "Repeated lines add up, where every other key's last line wins: the config page shows the last line only, `teaport sip status` counts them all."
 source = "cli/teaport"
 
 # ================================================================ bridge.env

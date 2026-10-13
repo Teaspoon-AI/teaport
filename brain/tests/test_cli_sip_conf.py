@@ -7,7 +7,9 @@
 # preconditions once. And (#139's leftovers) the unit's User=/Group= read as systemd
 # reads them (empty = root, numbers, unknown = never starts); one sip_conf_owner answer
 # for preflight and staging; temps listed before a signal can act; the conf's directory
-# made for the gateway; one cleanup trap that nests; one message per refusal.
+# made for the gateway; one cleanup trap that nests; one message per refusal. And (#155)
+# a re-configure keeps the gateway settings the wizard does not set — sip_source_filter,
+# every sip_source_allow line, the rest — test-registers them, and never prints a value.
 #
 # The CLI's functions are taken as they are (everything above its dispatch) and run by
 # bash with TEAPORT_SECRETS_DIR in a temp dir and systemctl/sudo/id stubbed where a test
@@ -20,6 +22,7 @@ import grp
 import os
 import pathlib
 import pwd
+import re
 import signal
 import subprocess
 import time
@@ -733,6 +736,244 @@ def test_a_world_readable_conf_is_closed_to_others_by_a_rewrite():
     rc, out = _run(d, "sip_aec off", AEC_STUBS)
     assert rc == 0 and "aec=false" in conf.read_text(), out
     assert oct(conf.stat().st_mode & 0o777) == "0o640", oct(conf.stat().st_mode)
+
+
+# ---- #155: a re-configure keeps the operator's gateway settings -------------------------
+
+WIZARD2 = "sip_configure --host sbc2.example.com --user carol --password n3w-s3cret --yes"
+# What the operator added to a wizard's conf, by hand or with `sip aec`: the source
+# allowlist (teaport-sip#33), its comment, a repeated key (one line comma-separated),
+# keys this CLI has never written, and a wizard key changed.
+OPERATOR = """# trunk call-delivery SBCs, captured 2026-10-12 (teaport-sip#37)
+sip_source_filter = enforce   # was log
+sip_source_allow = 192.0.2.10, 192.0.2.11
+nameserver = 192.0.2.53
+sip_source_allow=198.51.100.0/24
+capture_dir = /var/tmp/cap
+"""
+OWNED = ("id_uri", "registrar_uri", "username", "password", "realm", "sip_port", "uds_path",
+         "register", "auto_answer")
+
+
+def _gateway_view(text):
+    # The gateway's parser (config.h loadConfig): `#` cuts a line, trimmed, a [section] or
+    # a line without `=` skipped, the last of a key wins but for the two that add up.
+    vals, lists = {}, {"sip_source_allow": [], "nameserver": []}
+    for line in text.split("\n"):
+        line = line.split("#", 1)[0].strip(" \t\r\n")
+        if not line or line.startswith("[") or "=" not in line:
+            continue
+        k, v = (x.strip(" \t\r\n") for x in line.split("=", 1))
+        if k in lists:
+            lists[k] += [x for x in re.split(r"[, \t]+", v) if x]
+        else:
+            vals[k] = v
+    return vals, lists
+
+
+def _keys(text):
+    return [line.split("=", 1)[0].strip() for line in text.split("\n")
+            if "=" in line.split("#", 1)[0] and not line.lstrip().startswith("#")]
+
+
+def _probing_gateway(d):
+    # Registers at once, and keeps the conf it was handed: the probe's, to hold up
+    # against what is installed.
+    return _gateway(d, f'cp "$1" {d}/probe.conf; echo "[reg] REGISTERED code=200 OK"; exec sleep 30')
+
+
+LIVE_STUBS = "sip_refuse_hand_launched() { :; }\nsip_turn_on() { echo TURN_ON; }\nsip_wait_registered() { :; }\n"
+
+
+def test_reconfigure_keeps_the_operators_settings_and_tests_them():
+    d = _secrets()
+    tmp = d / "tmp"; tmp.mkdir()
+    conf = d / "teaport-sip.conf"
+    rc, out = _run(d, WIZARD, WIZARD_STUBS)
+    assert rc == 0, out
+    first = conf.read_text()
+    conf.write_text(first.replace("aec=true\n", "aec=false\n") + OPERATOR); os.chmod(conf, 0o640)
+    before = conf.read_text()
+    # The real test registration, up to a stand-in gateway.
+    rc, out = _run(d, f"SIP_GATEWAY={_probing_gateway(d)}; {WIZARD2}", LIVE_STUBS, {"TMPDIR": str(tmp)})
+    assert rc == 0 and "TURN_ON" in out and "registration OK" in out, out
+    after = conf.read_text()
+    vals, lists = _gateway_view(after)
+    # Kept: every operator line as it was, in its order, the repeated key's every line.
+    assert after.endswith(OPERATOR), after
+    assert lists["sip_source_allow"] == ["192.0.2.10", "192.0.2.11", "198.51.100.0/24"], lists
+    assert lists["nameserver"] == ["192.0.2.53"] and vals["capture_dir"] == "/var/tmp/cap", vals
+    assert vals["sip_source_filter"] == "enforce" and vals["aec"] == "false", vals
+    # Replaced: the trunk's and the units' keys, each once; the old password gone.
+    assert {k: vals[k] for k in OWNED} == {
+        "id_uri": "sip:carol@sbc2.example.com", "registrar_uri": "sip:sbc2.example.com",
+        "username": "carol", "password": "n3w-s3cret", "realm": "*", "sip_port": "5060",
+        "uds_path": "/run/teaport/teaport-sip.sock", "register": "true", "auto_answer": "false"}, vals
+    assert all(_keys(after).count(k) == 1 for k in OWNED) and "s3cret\n" not in after.replace("n3w-s3cret\n", ""), after
+    # Nothing else changed: the old conf with the four answers' lines rewritten in place.
+    old = dict(_gateway_view(before)[0])
+    swapped = before
+    for k in ("id_uri", "registrar_uri", "username", "password"):
+        swapped = swapped.replace(f"{k}={old[k]}\n", f"{k}={vals[k]}\n")
+    assert after == swapped, (after, swapped)
+    # What was tested is what was installed, but for the probe's port and socket.
+    probe = (d / "probe.conf").read_text()
+    probe = re.sub(r"(?m)^sip_port=5062$", "sip_port=5060", probe)
+    probe = re.sub(r"(?m)^uds_path=.*$", "uds_path=/run/teaport/teaport-sip.sock", probe)
+    assert probe == after, (probe, after)
+    # Mode and inode as for any wizard install; nothing left in TMPDIR or beside the conf.
+    assert oct(conf.stat().st_mode & 0o777) == "0o600" and list(tmp.iterdir()) == [] and _temps(d) == []
+    # Said: what it keeps (names, never values), and that enforce stays, with its list.
+    assert "keeping the settings in" in out and "sip_source_allow (2 lines)" in out, out
+    assert "sip_source_filter = enforce is kept, with its allowlist: 3 sip_source_allow entries" in out, out
+    assert "the registrar changes (sip:sbc.example.com -> sip:sbc2.example.com)" in out, out
+    for secret in ("s3cret", "192.0.2.", "198.51.100", "/var/tmp/cap"):
+        assert secret not in out, (secret, out)
+
+
+def test_reconfigure_rewrites_only_the_keys_it_owns():
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    # Over a wizard's conf nobody touched, the same answers write it byte for byte, and a
+    # new password changes its one line.
+    rc, out = _run(d, WIZARD, WIZARD_STUBS)
+    assert rc == 0, out
+    first = conf.read_bytes()
+    rc, out = _run(d, WIZARD, WIZARD_STUBS)
+    assert rc == 0 and conf.read_bytes() == first, out
+    rc, out = _run(d, WIZARD.replace("s3cret", "other"), WIZARD_STUBS)
+    assert rc == 0 and conf.read_bytes() == first.replace(b"password=s3cret", b"password=other"), out
+    # Over a hand-written one: every owned key set, its LAST line rewritten in place and
+    # earlier ones dropped (the parser takes the last), whatever its spacing; the
+    # wizard's other keys added where missing; the rest as it was. A hand conf's
+    # register = false and auto_answer = true are the units' to set.
+    hand = ("[sip]\n# mine\npassword = old1\nbind_addr = 192.168.1.105\nrealm = acme\n"
+            "  sip_port\t= 5070   # hand launch\nregister = false\nuds_path=/tmp/old.sock\n"
+            "auto_answer=true\npassword=old2\n#password=old3\nlog_level = 5\nsip_source_filter=log\n")
+    conf.write_text(hand); os.chmod(conf, 0o600)
+    rc, out = _run(d, WIZARD, WIZARD_STUBS)
+    assert rc == 0, out
+    assert conf.read_text() == (
+        "[sip]\n# mine\nbind_addr = 192.168.1.105\nrealm=*\nsip_port=5060\nregister=true\n"
+        "uds_path=/run/teaport/teaport-sip.sock\nauto_answer=false\npassword=s3cret\n#password=old3\n"
+        "log_level = 5\nsip_source_filter=log\nid_uri=sip:bob@sbc.example.com\n"
+        "registrar_uri=sip:sbc.example.com\nusername=bob\nreg_timeout=300\naec=true\naec_tail_ms=256\n"
+        "app_log_level=3\n"), conf.read_text()
+    # No conf: the template, as before.
+    d2 = _secrets()
+    rc, out = _run(d2, WIZARD, WIZARD_STUBS)
+    assert rc == 0 and (d2 / "teaport-sip.conf").read_bytes() == first and "keeping" not in out, out
+
+
+def test_reconfigure_as_root_keeps_the_settings_and_the_hand_over():
+    # A pre-#134 root:root conf, rewritten as root: given to the unit's user as before,
+    # and its operator settings kept.
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text(CONF + OPERATOR); os.chmod(conf, 0o600)
+    chown_log = f'chown() {{ echo "$1" >> {d}/chown.log; command chown "$@"; }}\n'
+    rc, out = _run(d, f"UNIT_USER={ME}; {WIZARD}", WIZARD_STUBS + ROOT_STUBS + _root_owned(conf) + chown_log)
+    assert rc == 0 and "TURN_ON" in out, out
+    assert (d / "chown.log").read_text() == f"{IDS}\n"
+    body = conf.read_text()
+    assert OPERATOR in body and "password=s3cret" in body and "hunter2" not in body, body
+    assert oct(conf.stat().st_mode & 0o777) == "0o600" and _temps(d) == []
+
+
+def test_reconfigure_refuses_a_conf_it_cannot_keep_before_prompting():
+    # Writing the template over a conf it could not read is the silent loss itself: said
+    # before a password is typed, the conf as it was.
+    cases = [("NUL bytes", lambda c: c.write_bytes(b"password=old\nsip_source_filter=enforce\x00\n"), "NUL bytes")]
+    if os.geteuid() != 0:   # root reads a 000 file
+        cases.append(("unreadable", lambda c: (c.write_text("password=old\n"), os.chmod(c, 0)), "cannot read"))
+    for name, setup, said in cases:
+        d = _secrets()
+        conf = d / "teaport-sip.conf"
+        setup(conf)
+        was = conf.read_bytes() if name != "unreadable" else None
+        stubs = WIZARD_STUBS + "read() { echo PROMPTED; }\n"
+        for steps in ("sip_configure", WIZARD):
+            rc, out = _run(d, f"PROBE_HOOK='echo PROBED'; {steps}", stubs)
+            assert rc == 1 and said in out and "nothing tested, nothing installed" in out, (name, out)
+            assert "PROMPTED" not in out and "PROBED" not in out and "TURN_ON" not in out, (name, out)
+            assert out.count("error:") == 1 and _temps(d) == [], (name, out)
+        os.chmod(conf, 0o600)
+        assert was is None or conf.read_bytes() == was, name
+
+
+def test_reconfigure_refuses_a_conf_changed_during_the_test_registration():
+    # The install would put back the conf as it was read before the probe: refused, and
+    # the change left in place.
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    conf.write_text(CONF + "aec=true\n"); os.chmod(conf, 0o600)
+    rc, out = _run(d, f"PROBE_HOOK='sip_conf_set {conf} aec false'; {WIZARD}", WIZARD_STUBS)
+    assert rc == 1 and "changed during the test registration" in out and "TURN_ON" not in out, out
+    assert conf.read_text() == CONF + "aec=false\n" and _temps(d) == [], conf.read_text()
+    # Untouched, it goes ahead (the stamp is the conf's, not the clock's).
+    rc, out = _run(d, f"PROBE_HOOK='cat {conf} >/dev/null'; {WIZARD}", WIZARD_STUBS)
+    assert rc == 0 and "TURN_ON" in out and "aec=false" in conf.read_text(), out
+
+
+def test_reconfigure_says_what_it_keeps_by_name_only():
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    # A key that is not one (a pasted secret), a mixed-case one, and enforce with no list.
+    conf.write_text(CONF + "Tr0ub4dor&3 = horse\nAEC_X = 1\nsip_source_filter = ENFORCE\nnameserver = none\n")
+    os.chmod(conf, 0o600)
+    rc, out = _run(d, WIZARD, WIZARD_STUBS)
+    assert rc == 0, out
+    assert "configure does not set: bind_addr, sip_source_filter, nameserver, 2 more line(s) whose key is not shown" in out, out
+    assert "sip_source_filter = enforce is kept: SIP requests are taken only from the registrar's addresses" in out, out
+    assert "the registrar changes" not in out, out      # the same registrar
+    for secret in ("Tr0ub4dor", "horse", "AEC_X", "hunter2", "s3cret"):
+        assert secret not in out, (secret, out)
+    assert "Tr0ub4dor&3 = horse\n" in conf.read_text() and "hunter2" not in conf.read_text()
+    # Not enforce: nothing said about the filter.
+    conf.write_text(CONF + "sip_source_filter = log\n"); os.chmod(conf, 0o600)
+    rc, out = _run(d, WIZARD, WIZARD_STUBS)
+    assert rc == 0 and "is kept:" not in out and "is kept," not in out and "sip_source_filter" in out, out
+
+
+def test_a_refused_kept_setting_fails_the_test_registration_and_installs_nothing():
+    # A kept value the gateway refuses (it exits 78) fails the probe like a bad password,
+    # and the message points at the kept settings too.
+    d = _secrets()
+    tmp = d / "tmp"; tmp.mkdir()
+    conf = d / "teaport-sip.conf"
+    conf.write_text(CONF + "sip_source_filter = enforcing\n"); os.chmod(conf, 0o600)
+    gw = _gateway(d, 'grep -q "^sip_source_filter = enforcing" "$1" && { echo "[config] sip_source_filter = \\"enforcing\\" is not one of enforce, log, off"; exit 78; }; echo "[reg] REGISTERED code=200 OK"; exec sleep 30')
+    rc, out = _run(d, f"SIP_GATEWAY={gw}; {WIZARD}", LIVE_STUBS, {"TMPDIR": str(tmp)})
+    assert rc == 1 and "registration FAILED" in out and "is not one of enforce, log, off" in out, out
+    assert f"or a setting kept from {d}/teaport-sip.conf" in out and "TURN_ON" not in out, out
+    assert conf.read_text() == CONF + "sip_source_filter = enforcing\n" and list(tmp.iterdir()) == []
+    assert "s3cret" not in out and "hunter2" not in out, out
+
+
+def test_status_shows_the_source_filter():
+    d = _secrets()
+    conf = d / "teaport-sip.conf"
+    stubs = "svc_line() { :; }\nsip_line() { :; }\nsip_last_reg() { :; }\nactive() { echo inactive; }\n"
+    for text, said, rc_want in (
+            ("", "log (the default): requests from elsewhere are logged", 0),
+            ("sip_source_filter = Log\n", "Log: requests from elsewhere are logged", 0),
+            ("sip_source_filter = off # A/B\n", "off: no filter", 0),
+            ("sip_source_filter=enforce\nsip_source_allow = 192.0.2.10\n",
+             "enforce: SIP requests only from the registrar's addresses and 1 sip_source_allow entry", 0),
+            ("sip_source_filter=enforce\nsip_source_allow = 192.0.2.10, 192.0.2.11 192.0.2.12\n"
+             "#sip_source_allow = 192.0.2.99\nsip_source_allow=2001:db8::/32\n",
+             "and 4 sip_source_allow entries", 0),
+            ("sip_source_filter = enforcing\n", "not enforce, log or off: the gateway refuses to start on it", 1)):
+        conf.write_text(CONF + text); os.chmod(conf, 0o600)
+        rc, out = _run(d, "sip_status", stubs)
+        assert rc == 0 and re.search(r"(?m)^  source filter +.*" + re.escape(said), out), (text, out)
+        rc, out = _run(d, f'sip_filter_desc {conf} && echo " rc=0" || echo " rc=$?"', stubs)
+        assert out.endswith(f" rc={rc_want}\n"), (text, out)
+    if os.geteuid() != 0:
+        os.chmod(conf, 0)
+        rc, out = _run(d, f'sip_filter_desc {conf} && echo " rc=0" || echo " rc=$?"')
+        assert "unknown (" in out and out.endswith(" rc=2\n"), out
+        os.chmod(conf, 0o600)
 
 
 def main():

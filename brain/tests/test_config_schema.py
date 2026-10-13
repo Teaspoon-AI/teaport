@@ -24,7 +24,10 @@
 # the brain module setdefaults it. Each listed
 # file must do so (merely naming it is not enough: install.sh names ENGINE_PORT as its
 # own shell variable and BRIDGE_GUILD_ID in a sed read-back), and no other file in
-# HANDLERS may do so unlisted.
+# HANDLERS may do so unlisted. A `kept` row (a SIP conf key `teaport sip configure` keeps
+# from the conf it replaces and never writes: sip_source_filter) is the one exception to
+# "the writer writes it": its writer must read it from the store (confval/confvals) and
+# must not write it, or the row is not kept but written.
 #
 # Run: python test_config_schema.py   (or via pytest)
 #
@@ -57,6 +60,8 @@ FORMS = {
         (r'^[ \t]*write_env[ \t]+"[^"\n]*/{file}"[^\n]*"\??(?:\$\{{\w+\}})?{name}=',),
     ("shell", "writes keyvalue"):  # a `name=` line of a here-document
         (r"""<<-?[ \t]*(['"]?)(\w+)\1(?![^\s;&|<>)]).*\n(?:(?![ \t]*\2$).*\n)*?{name}=""",),
+    ("shell", "keeps keyvalue"):   # read by confval/confvals, for the conf's key=value form
+        (r'\bconfvals?[ \t]+"[^"\n]*"[ \t]+{name}\b',),
     ("shell", "uses"): (r'\benvval[ \t]+"[^"\n]*/{file}"[ \t]+{name}\b',),
     ("unit", "uses"): (r"^EnvironmentFile=-?\S*/{file}$", r"\$\{{{name}\}}"),
     ("js", "uses"): (r"""\bprocess\.env\.{name}\b|(?<![.\w$])setting\(\s*(["']){name}\1""",),
@@ -149,22 +154,32 @@ def kind_and_text(path: pathlib.Path) -> tuple[str | None, str]:
     return kind, text.replace("\\\n", " ") if kind == "shell" else text
 
 
-def role(src: str, store: dict) -> str:
-    return f"writes {store.get('format', 'env')}" if src == store.get("writer") else "uses"
+def role(src: str, store: dict, kept: bool = False) -> str:
+    if src != store.get("writer"):
+        return "uses"
+    return f"{'keeps' if kept else 'writes'} {store.get('format', 'env')}"
 
 
-def source_problem(name: str, src: str, store: dict, root: pathlib.Path = REPO) -> str | None:
+def _handles(forms: tuple[str, ...], name: str, file: str, text: str) -> bool:
+    return all(re.search(f.format(name=re.escape(name), file=re.escape(file)), text, re.M)
+               for f in forms)
+
+
+def source_problem(name: str, src: str, store: dict, root: pathlib.Path = REPO,
+                   kept: bool = False) -> str | None:
     """Why `src` is not a file that handles the setting `name` of `store`, or None."""
     if why := path_problem(src, root):
         return f"source {why}"
-    (kind, text), does = kind_and_text(root / src), role(src, store)
+    (kind, text), does = kind_and_text(root / src), role(src, store, kept)
     if (forms := FORMS.get((kind, does))) is None:
         return f"source {src!r}: no FORMS rule for a {kind or 'file of unknown kind'} that {does}"
     file = pathlib.PurePosixPath(store["path"]).name
-    if not all(re.search(f.format(name=re.escape(name), file=re.escape(file)), text, re.M)
-               for f in forms):
+    if not _handles(forms, name, file, text):
         return (f"source {src!r} never {does.split()[0]} it in a form FORMS knows for a "
                 f"{kind} file that {does} ({file})")
+    writes = FORMS.get((kind, role(src, store)), ()) if does.startswith("keeps") else ()
+    if writes and _handles(writes, name, file, text):
+        return f"source {src!r} writes it, so it is not kept: drop `kept`"
     return None
 
 
@@ -180,10 +195,11 @@ def sources_problems(row: dict, stores: dict, root: pathlib.Path = REPO) -> list
     if not isinstance(srcs, list) or not srcs or not all(isinstance(s, str) for s in srcs) \
             or len(set(srcs)) < len(srcs):
         return [f"source must be a file or a list of distinct files, not {srcs!r}"]
-    found = [why for src in srcs if (why := source_problem(row["name"], src, store, root))]
+    kept = row.get("kept") is True
+    found = [why for src in srcs if (why := source_problem(row["name"], src, store, root, kept))]
     return found + [f"{src!r} handles it too, so source must list it"
                     for src in sorted(handlers(root) - set(srcs))
-                    if source_problem(row["name"], src, store, root) is None]
+                    if source_problem(row["name"], src, store, root, kept) is None]
 
 
 # A tree of small files in each kind FORMS knows, for the source check's self-test: each
@@ -210,6 +226,11 @@ cat <<END-X
 log_level=3
 END-X
 uds_path=/x
+mode="$(confval "$SIP_CONF" sip_source_filter)"
+n="$(confvals "$1" sip_source_allow | wc -l)"
+echo "set nameserver = 192.0.2.53 in $SIP_CONF"
+x="$(confval "$SIP_CONF" reg_failover_x)"  # confval "$SIP_CONF" capture_dir
+y="$(confval "$SIP_CONF" aec_tail_ms)"
 """,
     "systemd/engine.service.in": """EnvironmentFile=@ETC@/engine.env
 ExecStart=/bin/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY}
@@ -277,6 +298,7 @@ def source_self_test() -> list[str]:
             (False, "uds_path", cli, "sip_conf"),                # after an <<END-X one ends
             (False, "log_level", cli, "sip_conf"),               # in one FORMS cannot read
             (False, "realm", cli, "sip_conf"),                   # a comment in the conf
+            (False, "sip_source_filter", cli, "sip_conf"),       # read, not written, not kept
             (False, "ENGINE_PORT", "systemd/brain.service.in", "engine_env"),  # another store
             (False, "TTS_CTX", unit, "engine_env"),              # a comment
             (False, "BRIDGE_PRIME_MS", js, "bridge_env"),        # a comment
@@ -298,6 +320,17 @@ def source_self_test() -> list[str]:
         why = source_problem(name, src, FIXTURE_STORES[store], root)
         if ok != (why is None):
             wrong.append(f"{src!r} for {name}: {why or 'accepted'}")
+
+    # A kept row: its writer reads it (confval, confvals), and does not write it.
+    for ok, name in ((True, "sip_source_filter"), (True, "sip_source_allow"),
+                     (False, "nameserver"),       # a string
+                     (False, "capture_dir"),      # a comment
+                     (False, "reg_failover"),     # a prefix of the key read
+                     (False, "aec_tail_ms"),      # read, but written as well
+                     (False, "realm")):           # a comment in the conf
+        why = source_problem(name, cli, FIXTURE_STORES["sip_conf"], root, kept=True)
+        if ok != (why is None):
+            wrong.append(f"kept {name}: {why or 'accepted'}")
 
     # A row lists every file that handles it and nothing else: install.sh writes
     # ENGINE_DELAY and the unit expands it, so neither alone is enough; a file that does
@@ -355,6 +388,9 @@ def main() -> int:
         if r["type"] == "secret" and r["store"] != "sip_conf" and "file" not in r \
                 and r["tier"] != "installer":
             problems.append(f"{n}: operator secret must name the file the UI writes")
+        if "kept" in r and (r["kept"] is not True or r["store"] not in stores
+                            or schema["stores"][r["store"]].get("format") != "keyvalue"):
+            problems.append(f"{n}: kept is `true`, on a row of the keyvalue store (sip_conf)")
         if "min" in r and "max" in r and r["min"] > r["max"]:
             problems.append(f"{n}: min > max")
 
