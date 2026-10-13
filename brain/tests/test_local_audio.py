@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 
 import numpy as np
 import pytest
@@ -83,10 +84,12 @@ def test_speech_is_played_and_clear_drops_what_was_not_yet_handed_over():
 
 
 def test_mouth_level_tracks_loudness():
-    assert la.mouth_level(bytes(1280)) == 0.0
-    quiet = la.mouth_level(np.full(640, 50, "<i2").tobytes())      # ~ -56 dBFS
-    mid = la.mouth_level(np.full(640, 2000, "<i2").tobytes())      # ~ -24 dBFS
-    loud = la.mouth_level(np.full(640, 20000, "<i2").tobytes())    # ~ -4 dBFS
+    def mouth(pcm):
+        return la.mouth_opening(la.level_db(pcm))
+    assert mouth(np.zeros(640, "<i2")) == 0.0
+    quiet = mouth(np.full(640, 50, "<i2"))       # ~ -56 dBFS
+    mid = mouth(np.full(640, 2000, "<i2"))       # ~ -24 dBFS
+    loud = mouth(np.full(640, 20000, "<i2"))     # ~ -4 dBFS
     assert quiet == 0.0 and 0.6 < mid < 1.0 and loud == 1.0
 
 
@@ -362,11 +365,14 @@ def _fake_card(monkeypatch, capture_script):
     monkeypatch.setattr(la, "RETRY_SECS", 0.3)
     monkeypatch.setattr(la, "FACE_SOCK", os.path.join(d, "face.sock"))
     monkeypatch.setattr(la, "VOLUME_FILE", os.path.join(d, "volume.json"))
-    return flag
+    # No real XVF3800: run on the box, the bridge would set the live chip. A test that
+    # wants a chip passes its own fake to the Card.
+    monkeypatch.setattr(la, "echo_control", lambda volume: (None, None))
 
     async def unknown():
         return None                              # a brain that cannot say (no /talk/status here)
     monkeypatch.setattr(la, "talk_active", unknown)
+    return flag
 
 
 async def _talk(on_connect):
@@ -1740,6 +1746,113 @@ def test_a_reply_s_phonemes_reach_the_face_as_they_are_heard(monkeypatch):
         rx.close()
     assert "phonemes" in dialled[0]
     assert any("hiss" in e for e in got if "mouth" in e), got
+
+
+# ------------------------------------------------- the mic's echo suppression (xvf_echo)
+
+def test_opening_the_card_reads_the_chip_back_and_sets_the_verdict(monkeypatch):
+    """A card (re)opened writes the meter's verdict to the chip, and finds a chip that
+    reset to its saved settings without re-enumerating (the cache would say it holds)."""
+    from test_xvf_echo import FakePP, _echo
+    from teaport_brain import xvf_echo
+    _fake_card(monkeypatch, ARECORD)
+    dev = FakePP()
+    echo = _echo(dev)
+    meter = xvf_echo.EchoMeter()
+
+    async def opened():
+        card = la.Card(la.FaceTap(send=lambda d: None, features=lambda: {}),
+                       echo=echo, meter=meter)
+        # Only the opening sets the chip here: the meter's periodic check would too.
+        card._meter = lambda mono: None
+        try:
+            t0 = time.monotonic()
+            await card.open()
+            return card._echo_check - t0
+        finally:
+            await card.close()
+
+    asyncio.run(opened())
+    assert dev.state() == xvf_echo.DUPLEX and dev.agc()[0] == 0
+    node = dev.node
+    dev.replug()                               # factory settings, AGC on...
+    dev.node = node                            # ...under the same node
+    next_check = asyncio.run(opened())
+    assert dev.state() == xvf_echo.DUPLEX and dev.agc()[0] == 0
+    assert echo.resets == 1
+    # Just read back: the next check is a whole ECHO_CHECK_SECS away, not at once.
+    assert la.ECHO_CHECK_SECS - 5 < next_check <= la.ECHO_CHECK_SECS + 5, next_check
+
+
+def test_the_meter_hears_a_conversation_only_while_one_is_on(monkeypatch):
+    """Card.conversing (whether the voice the meter hears is the user's): off while a
+    wake-mode session is asleep, on once it wakes, off again when it ends."""
+    _wake_card(monkeypatch)
+    monkeypatch.setattr(la, "KEEPALIVE_SECS", 0.4)
+    cards, seen = [], []
+
+    class Card(la.Card):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            cards.append(self)
+    monkeypatch.setattr(la, "Card", Card)
+
+    async def run():
+        async def on_connect(ws, n):
+            await ws.send(HELLO)
+            if n == 1:
+                await _drain(ws, 0.3)
+                seen.append(("asleep", cards[-1].conversing))
+                await ws.send(json.dumps({"type": "wake", "phrase": "hey teaport",
+                                          "greeted": True, "resumed": False}))
+                await _drain(ws, 0.15)
+                seen.append(("awake", cards[-1].conversing))
+            else:
+                await _drain(ws, 0.3)
+                seen.append(("asleep again", cards[-1].conversing))
+            await _drain(ws)
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: len(seen) == 3, 4), seen
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+
+    asyncio.run(run())
+    assert seen == [("asleep", False), ("awake", True), ("asleep again", False)], seen
+    assert not cards[-1].conversing                    # no session: nobody conversing
+
+
+def test_without_wake_words_a_session_is_a_conversation(monkeypatch):
+    _fake_card(monkeypatch, ARECORD)
+    cards, seen = [], []
+
+    class Card(la.Card):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            cards.append(self)
+    monkeypatch.setattr(la, "Card", Card)
+
+    async def run():
+        async def on_connect(ws, n):
+            await asyncio.wait_for(ws.recv(), 2)       # the mic is flowing
+            seen.append(cards[-1].conversing)
+            await ws.close()
+
+        server, url, count = await _talk(on_connect)
+        monkeypatch.setattr(la, "URL", url)
+        bridge = asyncio.create_task(la.run_bridge())
+        assert await _until(lambda: seen, 3)
+        await asyncio.sleep(0.3)                       # the session has ended
+        after = cards[-1].conversing
+        bridge.cancel()
+        await asyncio.gather(bridge, return_exceptions=True)
+        server.close()
+        return after
+
+    assert asyncio.run(run()) is False and seen == [True], seen
 
 
 if __name__ == "__main__":

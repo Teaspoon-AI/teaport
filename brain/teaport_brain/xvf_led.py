@@ -40,6 +40,7 @@ import ctypes
 import fcntl
 import glob
 import json
+import math
 import os
 import struct
 import threading
@@ -60,6 +61,9 @@ MARKER = "/run/teaport-busy-lamp/saved.json"
 STATUS_OK, STATUS_RETRY = 0, 64
 TIMEOUT_MS = 500
 READ_ATTEMPTS = 20
+# A chip that fails, works and fails again is logged at most once this often (the
+# failure, and its "working again" with it): a flaky one must not fill the journal.
+LOG_QUIET_SECS = 300.0
 
 ENABLED = setting("TEAPORT_BUSY_LAMP") == "auto"
 
@@ -138,18 +142,15 @@ class UsbfsDevice:
 
 # --- the commands ---
 
-def write_u32(dev, cmd: int, *values: int) -> None:
-    dev.control(VENDOR_OUT, cmd, LED_RESID, struct.pack(f"<{len(values)}I", *values))
+def write(dev, cmd: int, data: bytes, resid: int = LED_RESID) -> None:
+    """Set a write command's value: `data`, little-endian as the command takes it."""
+    dev.control(VENDOR_OUT, cmd, resid, data)
 
 
-def write_u8(dev, cmd: int, value: int) -> None:
-    dev.control(VENDOR_OUT, cmd, LED_RESID, bytes([value]))
-
-
-def read(dev, cmd: int, size: int) -> bytes:
+def read(dev, cmd: int, size: int, resid: int = LED_RESID) -> bytes:
     """The value of a read command (`size` bytes, the status byte stripped)."""
     for _ in range(READ_ATTEMPTS):
-        got = dev.control(VENDOR_IN, 0x80 | cmd, LED_RESID, size + 1)
+        got = dev.control(VENDOR_IN, 0x80 | cmd, resid, size + 1)
         if got and got[0] == STATUS_OK and len(got) == size + 1:
             return got[1:]
         if not got or got[0] != STATUS_RETRY:
@@ -166,8 +167,88 @@ def read_look(dev) -> tuple[int, int]:
 
 
 def show(dev, effect: int, color: int) -> None:
-    write_u32(dev, LED_COLOR, color)  # colour first: the effect then starts in it
-    write_u8(dev, LED_EFFECT, effect)
+    write(dev, LED_COLOR, struct.pack("<I", color))  # colour first: the effect then starts in it
+    write(dev, LED_EFFECT, bytes([effect]))
+
+
+# --- a setting kept on the chip ---
+#
+# The busy lamp here (in the brain) and the mic's echo suppression (xvf_echo.py, in the
+# local audio bridge) keep their settings on the chip the same way, from worker threads:
+# the chip found anew for each change, what was known of it forgotten when its node
+# changes, one change at a time, and a failure logged once (and at most once per
+# LOG_QUIET_SECS).
+#
+# Two processes, one chip, and no lock between them: the brain's lamp and the bridge's
+# echo suppression can send their transfers interleaved. Each read or write is one
+# control transfer, which the kernel does not interleave with another, and the two use
+# different resources (20 and 17). What is not ruled out is a read the chip answers
+# "retry": between that answer and the read asked again, the other process's transfers
+# can reach the chip. Nothing has been seen to go wrong there; it is noted, not guarded.
+
+class ChipSetting:
+    """A setting kept on the XVF3800 by worker threads (BusyLamp, and xvf_echo's
+    EchoSuppression). _run finds the chip anew for every change: one that re-enumerated
+    (a replug, a firmware reset) is under a new node, and what was known of the old one
+    is forgotten (_forget). Changes run one at a time: one cancelled mid-write must
+    finish before the next looks at what it left. It never raises: a failure is logged
+    once, until the chip has been reached again (which is logged too), and not again
+    within LOG_QUIET_SECS of the last one logged; the change returns False so the
+    caller can try again later."""
+
+    LOG = "XVF3800"  # what the log lines are about
+
+    def __init__(self, find=find_node, opener=UsbfsDevice, clock=time.monotonic):
+        self._find, self._opener = find, opener
+        self._clock = clock
+        self.node = None       # the device's usbfs node when last looked
+        self._failing = False  # an error was logged and the chip has not been reached since
+        self._logged_at = -math.inf  # when a failure was last logged (clock())
+        self._unlogged = 0     # failures since then that were not
+        self._lock = threading.Lock()
+
+    def _forget(self) -> None:
+        """The node changed: nothing known of the old chip holds for this one."""
+
+    def _failed(self) -> None:
+        """A change raised part-way: what the chip holds is no longer known."""
+
+    def _run(self, doing, change, again: str | None = None) -> bool:
+        """change(node) under the lock, `node` the chip's usbfs node now (None: no chip),
+        returning whether it reached the chip (False: there was nothing to do). True once
+        it has run; False on an error, logged once as could not `doing` (a string, or a
+        function giving one once the change has run). Working again after one, it says
+        so with `again` in brackets (`doing` if None)."""
+        with self._lock:
+            try:
+                node = self._find()
+                if node != self.node:  # plugged in, out, or re-enumerated
+                    self.node = node
+                    self._forget()
+                reached = change(node)
+            except Exception as e:  # noqa: BLE001 — a setting must never fail a call or the mic
+                self._failed()
+                if self._failing:
+                    self._unlogged += 1  # the outage already said: counted for the next line
+                else:
+                    now = self._clock()
+                    if now - self._logged_at < LOG_QUIET_SECS:
+                        self._unlogged += 1  # a flaky chip: said a moment ago
+                        return False
+                    what = doing() if callable(doing) else doing
+                    logger.warning(f"{self.LOG}: could not {what}: {e!r}"
+                                   + (" (needs the installer's udev rule and the teaport-hw group)"
+                                      if isinstance(e, PermissionError) else "")
+                                   + (f" ({self._unlogged} more failures since the last one "
+                                      "logged)" if self._unlogged else ""))
+                    self._failing, self._logged_at, self._unlogged = True, now, 0
+                return False
+            if reached and self._failing:
+                if again is None:
+                    again = doing() if callable(doing) else doing
+                logger.info(f"{self.LOG}: working again ({again})")
+                self._failing = False
+            return True
 
 
 # --- the lamp ---
@@ -175,53 +256,36 @@ def show(dev, effect: int, color: int) -> None:
 IDLE, BUSY, RINGING = "idle", "busy", "ringing"
 
 
-class BusyLamp:
+class BusyLamp(ChipSetting):
+    LOG = "busy lamp"
+
     def __init__(self, find=find_node, opener=UsbfsDevice, color: int = COLOR,
-                 enabled: bool = ENABLED, marker: str = MARKER):
-        self._find, self._opener = find, opener
+                 enabled: bool = ENABLED, marker: str = MARKER, clock=time.monotonic):
+        super().__init__(find, opener, clock)
         self.color = color
         self.enabled = enabled
         self.marker = marker
-        self.node = None       # the device's usbfs node when last looked
         self.shown = None      # the state the ring was last set to; None = not known
         self.saved = None      # (effect, colour) from before the call, to put back
-        self._failing = False  # an error was logged and the lamp has not worked since
-        # set() runs on worker threads: one cancelled mid-write must finish before the
-        # next one looks at `shown`, or a stop's restore could land before its red.
-        self._lock = threading.Lock()
 
     def set(self, state: str) -> bool:
         """Show `state` (IDLE, BUSY or RINGING). True once the ring shows it, or when
         there is no ring to show it on; False on an error (logged once)."""
         if not self.enabled:
             return True
-        with self._lock:
-            return self._set(state)
 
-    def _set(self, state: str) -> bool:
-        try:
-            node = self._find()
-            if node != self.node:  # plugged in, out, or re-enumerated: its own look again
-                self.node, self.shown = node, None
+        def change(node) -> bool:
             if state == self.shown:
-                return True
-            if node is None:
-                self.shown = state  # no XVF3800 here: nothing to show
-                return True
-            with self._opener(node) as dev:
-                self._apply(dev, state)
-        except Exception as e:  # noqa: BLE001 — a lamp must never fail a call
-            if not self._failing:
-                logger.warning(f"busy lamp: could not set the XVF3800 ring {state}: {e!r}"
-                               + (" (needs the installer's udev rule and the teaport-hw group)"
-                                  if isinstance(e, PermissionError) else ""))
-                self._failing = True
-            return False
-        if self._failing:
-            logger.info(f"busy lamp: working again ({state})")
-            self._failing = False
-        self.shown = state
-        return True
+                return False
+            if node is not None:
+                with self._opener(node) as dev:
+                    self._apply(dev, state)
+            self.shown = state  # with no XVF3800 here: nothing to show
+            return node is not None
+        return self._run(f"set the XVF3800 ring {state}", change, again=state)
+
+    def _forget(self) -> None:
+        self.shown = None  # a re-enumerated ring is back at its own look
 
     def _apply(self, dev, state: str) -> None:
         if state == IDLE:

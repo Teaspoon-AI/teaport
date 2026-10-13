@@ -966,6 +966,16 @@ tier = "tuning"
 help = "Comma-separated words or phrases that end a reply on their own while it is paused for the caller's speech, whatever TEAPORT_INTERRUPT_MIN_WORDS says (with the bot silent there is no echo to garble into one). Only an utterance made entirely of them counts, so \"don't stop\" does not; any \"shh\" spelling is shh. \"No\" is left out on purpose: over the bot it is as often an answer as an objection."
 
 [[settings]]
+name = "TEAPORT_ECHO_GUARD"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "On the room mic, drop the bot's own words when the mic hears them back from the speaker, so the bot does not interrupt itself or answer its own sentence. Words that follow what the bot just said are taken off the front of a transcript; one made only of them is ignored. Off: every transcript goes through as heard."
+
+[[settings]]
 name = "TEAPORT_STRANDED_INTERIM_SECS"
 store = "brain_env"
 group = "turn_taking"
@@ -2129,6 +2139,42 @@ tier = "tuning"
 help = "Which capture channel is the mic. On the XVF3800, 0 is the echo-cancelled conversation beam and 1 the ASR-tuned beam."
 
 [[settings]]
+name = "LOCAL_AUDIO_ECHO_CONTROL"
+store = "local_audio_env"
+group = "local_audio"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "Let the bridge tune the XVF3800 so it hears you while the bot is talking: the chip's automatic gain is replaced by a fixed gain, and its echo suppressor stays off unless the bot's echo comes too close to your voice. Off: the bridge leaves the chip alone (one it already tuned keeps that until it is replugged)."
+
+[[settings]]
+name = "LOCAL_AUDIO_MIC_GAIN_DB"
+store = "local_audio_env"
+group = "local_audio"
+type = "float"
+default = 16.0
+min = 0.0
+max = 36.0
+unit = "dB"
+read = "startup"
+tier = "tuning"
+help = "The fixed gain the XVF3800 applies to the mic in place of its automatic gain (which also boosted the bot's echo). Raise it if the speech engine misses quiet speech, lower it if loud speech clips."
+
+[[settings]]
+name = "LOCAL_AUDIO_ECHO_MARGIN_DB"
+store = "local_audio_env"
+group = "local_audio"
+type = "float"
+default = 15.0
+min = 0.0
+max = 40.0
+unit = "dB"
+read = "startup"
+tier = "tuning"
+help = "How far your voice must stay above the bot's echo, as the bridge measures them at the mic, for the chip's echo suppressor to stay off. Closer than that, the bot's words start leaking in as yours and the suppressor comes on (it also muffles you while the bot talks)."
+
+[[settings]]
 name = "LOCAL_AUDIO_WAKE_DB"
 store = "local_audio_env"
 group = "local_audio"
@@ -2139,7 +2185,7 @@ max = 0.0
 unit = "dB"
 read = "startup"
 tier = "tuning"
-help = "Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. The XVF3800's room measured about -50 dBFS idle. Raise it if noise reconnects, lower it if speech does not."
+help = "Without wake words: how loud (dBFS RMS on the capture channel) a voice in the room must be to reconnect after a session ended. The bridge dials the brain at start, then waits for ~0.26 s of sound above this before dialling again, so it never dials into a busy box on a timer. Measured on the appliance with the XVF3800's automatic gain off at the default LOCAL_AUDIO_MIC_GAIN_DB (16 dB): the quiet room about -50 dBFS (the quietest fifth of 100 ms blocks), a voice 3-4 m from the box about -28 dBFS (its median; -21 at its loudest tenth). Raise it if noise reconnects, lower it if speech does not."
 
 [[settings]]
 name = "LOCAL_AUDIO_WAKE_WORDS"

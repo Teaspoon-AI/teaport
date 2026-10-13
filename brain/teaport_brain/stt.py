@@ -76,6 +76,7 @@ from pipecat.services.stt_service import WebsocketSTTService
 from pipecat.transcriptions.language import Language
 from pipecat.utils.time import time_now_iso8601
 
+from teaport_brain import echo_guard
 from teaport_brain.endpointing import (
     SMARTTURN_STOP_SECS,
     SegmentDoneFrame,
@@ -724,6 +725,13 @@ class TeaportSTTService(WebsocketSTTService):
         # a session that opens asleep: asked before any transcript is pushed or logged,
         # so the room's words never become a frame while it sleeps. None: every word goes.
         self.wake_gate = None
+        # The room mic's echo guard (echo_guard.EchoGuard), set by build_agent_session:
+        # the bot's own words, heard back through the speaker, are taken off the front of
+        # every transcript before it is pushed. None: nothing is taken off.
+        self.echo_guard = None
+        # When the open segment's first words arrived (the guard's clock): it
+        # decides by when the speech began, not when its final lands. None: no words yet.
+        self._seg_since = None
 
         # STREAMING BACKEND (vLLM serving Voxtral-Mini-4B-Realtime).
         #
@@ -1920,6 +1928,7 @@ class TeaportSTTService(WebsocketSTTService):
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"{self}: could not push the segment reset ({e})")
             self._interim_buffer = ""
+            self._seg_since = None
             # Per-session, like the buffer beside it: a run of 4 empty finals before a
             # reconnect plus 1 after is not 5 finals of the same microphone.
             self._empty_finals = 0
@@ -1973,10 +1982,18 @@ class TeaportSTTService(WebsocketSTTService):
                 return
             # Asleep, a hypothesis of the room goes nowhere (wake_gate.py) -- but it is
             # still a segment streaming, which the backstop below must keep watching.
-            if self.wake_gate is None or not self.wake_gate.asleep:
+            # The bot's own words are held back (echo_guard.py): only what the guard
+            # emptied is skipped, an interim that was empty is announced as before.
+            heard, echo = self._interim_buffer, False
+            if self.echo_guard is not None and heard:
+                if self._seg_since is None and heard.strip():
+                    self._seg_since = self.echo_guard.bot.clock()
+                heard = self.echo_guard.strip(heard, final=False, since=self._seg_since)
+                echo = not heard
+            if not echo and (self.wake_gate is None or not self.wake_gate.asleep):
                 await self.push_frame(
                     InterimTranscriptionFrame(
-                        self._interim_buffer,
+                        heard,
                         self._user_id,
                         time_now_iso8601(),
                         self._language,
@@ -2051,6 +2068,7 @@ class TeaportSTTService(WebsocketSTTService):
                 logger.debug(f"{self}: empty final — falling back to the interim "
                              f"hypothesis ({len(text)} chars) to close the turn")
             self._interim_buffer = ""
+            since, self._seg_since = self._seg_since, None
             # The stamp the final (or the SegmentDoneFrame) below carries: the VAD stop
             # this close answers, for the stop strategy to hold against its own count
             # (see FinalTranscriptionFrame). A commit's answer is stamped with the
@@ -2118,6 +2136,14 @@ class TeaportSTTService(WebsocketSTTService):
                                 f"{self._empty_finals} empty finals")
                 self._empty_finals = 0
             result = msg
+            if text and self.echo_guard is not None:
+                # Before the wake gate: "hey teaport" in the bot's own voice wakes nothing.
+                kept = self.echo_guard.strip(text, final=True, since=since)
+                if kept != text and (self.wake_gate is None or not self.wake_gate.asleep):
+                    # Never the room's words while it sleeps (wake_gate.py).
+                    echo_guard.log_strip("final", text, kept)
+                    result = {**msg, "text": kept}
+                text = kept
             if text and self.wake_gate is not None:
                 # Asleep: no wake phrase -> nothing; one -> what follows it (wake_gate.py).
                 gated = await self.wake_gate.final(text, self.push_frame)
