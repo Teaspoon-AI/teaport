@@ -9,6 +9,10 @@
 # than import them — it pushes audio through the two ONNX models the pipeline loads in
 # process (Silero VAD, which also measures loudness, and Smart Turn v3).
 #
+# Both models are built through onnx_sessions.install() first, as build_agent_session
+# builds them: the check runs the sessions the brain runs (shared, CPU arena off), not
+# pipecat's stock ones.
+#
 # Hermetic on purpose: no engine, no LLM, no network, no services touched. It is safe to
 # run against a venv that is not live yet, and on a box whose engine is busy with a call.
 # Exit 0 = pass; anything else names the check that failed.
@@ -27,6 +31,14 @@ def _check_imports():
     # module, so a missing or ABI-broken dependency anywhere in the tree fails here.
     for mod in ("teaport_brain.gateway_server", "teaport_brain.sip_server"):
         importlib.import_module(mod)
+
+
+def _install_onnx_sessions():
+    # Not a pass/fail on the sharing itself: a site that did not take still builds a
+    # working (per-session) model, and tests/test_onnx_sessions.py is what fails on the
+    # pipecat bump that would cause it. This only has to run before the two checks below.
+    from teaport_brain import onnx_sessions
+    onnx_sessions.install()
 
 
 def _check_vad():
@@ -70,6 +82,7 @@ def _check_smart_turn():
 def main() -> int:
     checks = [
         ("import both front-ends", _check_imports),
+        ("shared ONNX sessions (onnx_sessions)", _install_onnx_sessions),
         ("Silero VAD (onnxruntime) + loudness", _check_vad),
         ("Smart Turn v3 (onnxruntime)", _check_smart_turn),
     ]
