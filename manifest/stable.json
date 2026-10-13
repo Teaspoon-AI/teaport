@@ -3,7 +3,7 @@
   "channel": "stable",
   "_note": "Release manifest \u2014 single source of truth for install.sh, `teaport update`, and box OTA. All URLs served from get.teaspoon.tech (no HF, no binaries repo). Placeholder values until the first release is cut.",
   "engine": {
-    "release": "1.5",
+    "release": "1.6",
     "eula": {
       "version": "1.0",
       "url": "https://get.teaspoon.tech/eula/teaport-engine-license-1.0.txt",
@@ -11,23 +11,23 @@
     },
     "assets": {
       "l4t38-cu13": {
-        "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.5-l4t38-cu13",
-        "sha256": "057ad4d66ddad63d8efa00842ed29f745800c68bb3150e5e287d362e1769ef42"
+        "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-l4t38-cu13",
+        "sha256": "eb21fc9060abbb5ddd23faafffa5b0175c4573e56580857d3497508ba62fa4c6"
       }
     },
     "g2p_dict": {
       "_note": "en-us G2P lexicon (teagram-engine engine/g2p/kokoro_g2p.dict, v2 format: silver flag + part-of-speech readings). GENERATED FROM the misaki en-US gold/silver lexicons (Apache-2.0, hexgrad and the misaki contributors, https://github.com/hexgrad/misaki) by teagram-engine tools/g2p_dict_convert.py, which merges silver under gold and keeps the POS-keyed readings \u2014 a derivative work, not a file copied from misaki. Attribution ships in the engine's THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ \u2014 without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Must be the same engine release as the binary (an older flattened dict loses the homograph readings). Arch-independent; rides the engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.5-g2p.dict",
+      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-g2p.dict",
       "sha256": "58f9f2abca1b6eb1db7e86ec3cb5e7e0eebffbe16fd8f6bfc3bb98a0cf81c7e0"
     },
     "pos_model": {
       "_note": "engine/g2p/kokoro_pos.bin: averaged-perceptron part-of-speech tagger distilled from spaCy en_core_web_sm tags, so the G2P can pick misaki's POS-keyed homograph readings (read/lead/live/...). Training sources and licenses are in the engine's NOTICE and THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ beside the dict \u2014 without it homographs read in their default form. Arch-independent; rides the engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.5-pos.bin",
+      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-pos.bin",
       "sha256": "cd841122066856592b25d576e669e7c4b184ca19eccfc021178512ead39468c4"
     },
     "notices": {
       "_note": "engine/THIRD_PARTY_NOTICES.txt from the commit the engine binary above was built from (teagram-engine `make -C engine check-third-party` guarantees it is current there). Carries the MIT/BSD/Apache-2.0 attributions \u2014 including the \u00a74(b) modification statements \u2014 for the engine's third-party components (misaki, Marlin, Voxtral, Kokoro, civetweb, fvad, ggml, \u2026). install.sh installs it to $PREFIX/THIRD_PARTY_NOTICES.txt; re-cut with every engine release.",
-      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.5-THIRD_PARTY_NOTICES.txt",
+      "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt",
       "sha256": "9a3a283b784bdcfe9d770714fe29f26f288cae9d495de33858c80e328ec8ddc2"
     }
   },
