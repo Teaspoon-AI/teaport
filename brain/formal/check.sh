@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Run every model in this directory. Needs Java 11+ and tla2tools.jar:
-#   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh
+#   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh          # the default run (CI)
+#   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh --full   # plus the long rows (by hand)
+#
+# --full adds the rows too large for the default run: today the three SttCommit rows
+# with the carry on (#154) whose state spaces are tens of millions (formal/README.md).
+# Nothing runs it automatically (CI runs the default on push and pull request): it is a
+# manual gate, to run before merging any change to SttCommit.tla or to the commit paths
+# it models (stt.py's commits, the hold, the backstop, the carry). About 18 min.
 #
 # Each row prints the design checked and its verdict, and is GATED against the
 # expectation in the last column: this script exits nonzero if any row misses it --
@@ -18,6 +25,11 @@
 # falling properties would name a different one run to run.
 set -u
 fails=0            # rows whose verdict did not match the expectation they declare
+case "${1:-}" in
+  --full) FULL=1 ;;
+  "")     FULL=0 ;;
+  *)      echo "usage: $0 [--full]" >&2; exit 2 ;;
+esac
 JAR="${TLA_TOOLS:-tla2tools.jar}"
 [ -f "$JAR" ] || { echo "tla2tools.jar not found; set TLA_TOOLS=/path/to/tla2tools.jar" >&2; exit 2; }
 cd "$(dirname "$0")"
@@ -148,6 +160,16 @@ run SttCommit.tla sc_voice_reach_resume "(expected: FAILS NoResumeExit — witne
 run SttCommit.tla sc_voice_cap   "(expected: FAILS NoCapCut — the ACCEPTED RESIDUAL: the bound commits over voice that never paused)"
 run SttCommit.tla sc_voice_catchup "(expected: FAILS NoCatchupCut — the ACCEPTED RESIDUAL: the catch-up bound commits over voice not yet heard)"
 run SttCommit.tla sc_voice_final "(expected: holds — the final's protocol under the wait, on the marked engine)"
+echo
+echo "SttCommit.tla — the carry (#154): the segment after a commit the caller was quiet for is fed"
+run SttCommit.tla sc_carry_off   "(expected: holds — control: without a carry, no interim for a segment with no words)"
+run SttCommit.tla sc_carry_reach "(expected: FAILS NoWordlessInterim — witness: a carry's audio streams an interim, the backstop behind it)"
+if [ "$FULL" = 1 ]; then
+  echo "  --full: the carry on the rows the default run checks without it"
+  run SttCommit.tla sc_vadStop_sound_carry "(expected: holds — the fallback's rows, with the carry)"
+  run SttCommit.tla sc_voice_carry         "(expected: holds — the caller's voice, with the carry)"
+  run SttCommit.tla sc_voice_final_carry   "(expected: holds — the final under the wait, with the carry)"
+fi
 echo
 echo "SttCommit.tla — the final (PR #49): whose utterance a late final is, and when the turn may end on it"
 run SttCommit.tla sc_final_clock         "(expected: FAILS NoStaleTurnEnd — the first cut: finals placed by clock)"

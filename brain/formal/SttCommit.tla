@@ -129,6 +129,24 @@
 (* NoCutVoice is the property. The two bounds' cuts are recorded apart      *)
 (* (capCut, catchupCut) and accepted, as the hold's expiry is; each has a   *)
 (* row that shows it reachable, as do the pause and the resume exits.       *)
+(*                                                                          *)
+(* CARRY THE TAIL (#154). After a commit the STT sends the audio from where *)
+(* the commit's silence claim starts again, as the next segment's start.    *)
+(* No commit or done is added or moved, but the segment after a commit the  *)
+(* caller was quiet for is no longer empty: what it was sent can stream an  *)
+(* interim (the voice since the stop the carry holds, or the margin's       *)
+(* tail), and the backstop can follow that interim. With CARRY, CommitAt    *)
+(* leaves the next segment fed (`spoke`) though the caller is quiet, on any *)
+(* commit but the backstop's: under the wire's lock every commit is decided *)
+(* and sent in one step, as each action here is, so a speech end the        *)
+(* backstop could see belongs to a stop that is holding, and the backstop   *)
+(* stands down for it; it claims and carries nothing (stt.py, THE WIRE).    *)
+(* The carried audio holds no utterance's words by the                      *)
+(* VAD's count -- it starts at or after the speech end -- so segAudio is    *)
+(* unchanged; an interim it streams is words nobody's stop is waiting on.   *)
+(* CARRY = FALSE is the STT before #154. With it on, every such commit      *)
+(* feeds: a superset of the code (a commit that claims nothing carries      *)
+(* nothing), since `spoke` only enables Delta and no action needs it unset. *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences
 
@@ -142,7 +160,8 @@ CONSTANTS MODE,        \* "vadStop" | "verdict"
           MaxCloses,   \* bound on segments the engine closes on its own
           MaxBackstops, \* bound on backstop commits (each opens a segment the caller can refill)
           VOICE,       \* "blind" | "pause": the STT and the caller's voice after a stop (#140)
-          MaxVoice     \* bound on stretches of voice the VAD has not started on
+          MaxVoice,    \* bound on stretches of voice the VAD has not started on
+          CARRY        \* BOOLEAN: a commit's carry feeds the next segment (#154)
 
 \* Utterances are numbered by VAD start; a done's words are the utterances whose
 \* audio was in the segment it closed. NONE is "no stop": owed's rest value.
@@ -264,12 +283,13 @@ Init ==
 (* per final commit, in order); its stamp -- the VAD stop count n, and the  *)
 (* strategy's start count c for the clock design -- joins the queue of      *)
 (* commits awaiting an answer; the timers that were closing it are done; a  *)
-(* caller still talking keeps feeding the next segment.                     *)
+(* caller still talking keeps feeding the next segment, and so may the      *)
+(* commit's carry (#154) when `mayCarry`.                                   *)
 (***************************************************************************)
-CommitAt(n, speaking) ==
+CommitAt(n, speaking, mayCarry) ==
     /\ fromEngine' = Append(fromEngine, [asked |-> TRUE, words |-> segAudio])
     /\ segAudio' = IF speaking THEN {utt} ELSE {}
-    /\ spoke' = speaking
+    /\ spoke' = (speaking \/ (mayCarry /\ CARRY))
     \* Only the design's own stamp is kept: the other is dead state.
     /\ commits' = Append(commits, [n |-> IF DESIGN = "stop" THEN n ELSE 0,
                                    c |-> IF DESIGN = "clock" THEN stratStarts ELSE 0])
@@ -280,7 +300,7 @@ CommitAt(n, speaking) ==
     /\ backstop' = FALSE
     /\ deferred' = FALSE
 
-Commit == CommitAt(stops, userSpeaking)
+Commit == CommitAt(stops, userSpeaking, TRUE)
 
 \* The engine closes the segment on its own: its endpointer, on a silence shorter
 \* than the VAD's floor or a breath inside a sentence. The words go into a done the
@@ -348,7 +368,7 @@ VadStop ==
     /\ voice' = "none"
     /\ UNCHANGED <<voices, voiceMon>>
     /\ IF MODE = "vadStop" \/ (closedUnasked /\ ~segSpeech)
-         THEN /\ CommitAt(stops + 1, FALSE)
+         THEN /\ CommitAt(stops + 1, FALSE, TRUE)
               /\ closedUnjudged' = (MODE = "vadStop")
               /\ answered' = TRUE
          ELSE /\ pending' = TRUE
@@ -815,7 +835,8 @@ Backstop ==
     /\ UNCHANGED <<voiceEnv, voiceMon>>
     /\ BackstopReady /\ backstops < MaxBackstops
     /\ backstops' = backstops + 1
-    /\ Commit
+    \* No speech end placed for it, so it claims no silence and carries nothing (#154).
+    /\ CommitAt(stops, userSpeaking, FALSE)
     \* A backstop that fired into a HELD segment would have closed it under a stop
     \* nobody has judged. The guard above (stt.py's fire-time check) makes this a
     \* no-op; it is here so that removing the guard makes NoSplitOnIncomplete fall.
@@ -921,6 +942,13 @@ NoPauseExit == ~pauseExit
 
 NoResumeExit == ~resumeExit
 
+\* An interim streamed for a segment that holds no utterance's words. With the engine's
+\* own close off, only a carry (#154) feeds such a segment: the property holds without
+\* one (sc_carry_off) and falls with it (sc_carry_reach), the witness that the carry's
+\* interims -- and the backstop that can follow them -- are in the space the other rows
+\* check.
+NoWordlessInterim == ~(segSpeech /\ segAudio = {})
+
 \* The wait for the caller's pause is a hold: in the hold's slot, ended by the hold's
 \* release, never outliving it.
 DeferredIsHeld == deferred => (pending /\ hold)
@@ -970,6 +998,7 @@ TypeOK ==
     /\ deferred \in BOOLEAN /\ voice \in {"none", "on", "paused"} /\ voices \in 0..MaxVoice
     /\ cutVoice \in BOOLEAN /\ capCut \in BOOLEAN /\ catchupCut \in BOOLEAN
     /\ pauseExit \in BOOLEAN /\ resumeExit \in BOOLEAN
+    /\ CARRY \in BOOLEAN
     /\ VOICE \in {"blind", "pause"}
     /\ (VOICE = "blind" => ~deferred)
     /\ \A i \in 1..Len(toStrategy):
