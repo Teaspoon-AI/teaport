@@ -302,7 +302,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
     fi
   fi
   # The en-us G2P dict MUST land at bin/g2p/ — the engine probes
-  # <exe_dir>/g2p/kokoro_g2p.dict and, if absent, silently degrades to
+  # <exe_dir>/g2p/kokoro_g2p.v2.dict (v2 header; an older binary keeps reading its own kokoro_g2p.dict, so a binary-only rollback works) and, if absent, silently degrades to
   # espeak-only English: every function word gets its stressed citation form,
   # the duration predictor doubles it, and speech goes robotic with no error
   # anywhere (shipped exactly so, 2026-08-05). espeak-ng (phase_sysdeps) is
@@ -321,7 +321,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
     local g2p_msg="manifest has no engine.g2p_dict (url+sha256) — a box installed without the dict speaks robotic en-us prosody; republish the manifest"
     if [ "$DRY_RUN" = 1 ]; then warn "$g2p_msg"; else die "$g2p_msg"; fi
   else
-    download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.dict" "$g2p_sha"
+    download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.v2.dict" "$g2p_sha"
   fi
   # The part-of-speech tagger beside the dict (kokoro_pos.bin, distilled from spaCy
   # en_core_web_sm tags; sources/licenses in the engine's NOTICE). The engine probes

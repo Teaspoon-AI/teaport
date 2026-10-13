@@ -12,13 +12,13 @@
     "assets": {
       "l4t38-cu13": {
         "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-l4t38-cu13",
-        "sha256": "eb21fc9060abbb5ddd23faafffa5b0175c4573e56580857d3497508ba62fa4c6"
+        "sha256": "6907bdef144b913ce0c072101cfece6375b3478484df7fc23217a765a0479e6e"
       }
     },
     "g2p_dict": {
-      "_note": "en-us G2P lexicon (teagram-engine engine/g2p/kokoro_g2p.dict, v2 format: silver flag + part-of-speech readings). GENERATED FROM the misaki en-US gold/silver lexicons (Apache-2.0, hexgrad and the misaki contributors, https://github.com/hexgrad/misaki) by teagram-engine tools/g2p_dict_convert.py, which merges silver under gold and keeps the POS-keyed readings \u2014 a derivative work, not a file copied from misaki. Attribution ships in the engine's THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ \u2014 without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Must be the same engine release as the binary (an older flattened dict loses the homograph readings). Arch-independent; rides the engine release.",
+      "_note": "en-us G2P lexicon (teagram-engine engine/g2p/kokoro_g2p.v2.dict, v2 format: silver flag + part-of-speech readings). GENERATED FROM the misaki en-US gold/silver lexicons (Apache-2.0, hexgrad and the misaki contributors, https://github.com/hexgrad/misaki) by teagram-engine tools/g2p_dict_convert.py, which merges silver under gold and keeps the POS-keyed readings \u2014 a derivative work, not a file copied from misaki. Attribution ships in the engine's THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ \u2014 without it the engine silently degrades to espeak-only G2P and prosody goes robotic (2026-08-05). Must be the same engine release as the binary (an older flattened dict loses the homograph readings). Arch-independent; rides the engine release.",
       "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-g2p.dict",
-      "sha256": "58f9f2abca1b6eb1db7e86ec3cb5e7e0eebffbe16fd8f6bfc3bb98a0cf81c7e0"
+      "sha256": "1bc7dfba345c246b93367f1381de5f9f5783042d180fde4c16456369f459fd1e"
     },
     "pos_model": {
       "_note": "engine/g2p/kokoro_pos.bin: averaged-perceptron part-of-speech tagger distilled from spaCy en_core_web_sm tags, so the G2P can pick misaki's POS-keyed homograph readings (read/lead/live/...). Training sources and licenses are in the engine's NOTICE and THIRD_PARTY_NOTICES.txt. MUST install to bin/g2p/ beside the dict \u2014 without it homographs read in their default form. Arch-independent; rides the engine release.",
@@ -28,7 +28,7 @@
     "notices": {
       "_note": "engine/THIRD_PARTY_NOTICES.txt from the commit the engine binary above was built from (teagram-engine `make -C engine check-third-party` guarantees it is current there). Carries the MIT/BSD/Apache-2.0 attributions \u2014 including the \u00a74(b) modification statements \u2014 for the engine's third-party components (misaki, Marlin, Voxtral, Kokoro, civetweb, fvad, ggml, \u2026). install.sh installs it to $PREFIX/THIRD_PARTY_NOTICES.txt; re-cut with every engine release.",
       "url": "https://get.teaspoon.tech/dl/engine/teaport-engine-1.6-THIRD_PARTY_NOTICES.txt",
-      "sha256": "9a3a283b784bdcfe9d770714fe29f26f288cae9d495de33858c80e328ec8ddc2"
+      "sha256": "84b6a21a5324ed991a057bc2cce8140c9762f28289fcc814e236b05d1a7ede76"
     }
   },
   "models": {
