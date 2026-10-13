@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
 # Run every model in this directory. Needs Java 11+ and tla2tools.jar:
 #   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh          # the default run (CI)
-#   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh --full   # plus the long rows (nightly)
+#   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh --full   # plus the long rows (by hand)
 #
 # --full adds the rows too large for the default run: today the three SttCommit rows
 # with the carry on (#154) whose state spaces are tens of millions (formal/README.md).
+# Nothing runs it automatically (CI runs the default on push and pull request): it is a
+# manual gate, to run before merging any change to SttCommit.tla or to the commit paths
+# it models (stt.py's commits, the hold, the backstop, the carry). About 18 min.
 #
 # Each row prints the design checked and its verdict, and is GATED against the
 # expectation in the last column: this script exits nonzero if any row misses it --

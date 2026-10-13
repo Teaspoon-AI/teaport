@@ -238,19 +238,24 @@ _HOLD_SLACK_SECS = 1.0
 # ms over cost nothing on 30 utterances, 400 ms truncated the last word on 7. 100 ms
 # sits well inside that, on top of the engine's own one-token margin.
 #
-# The margin gives way at one floor: it never takes a claim below _REPRIME_MS, the pause
-# the engine must be told of before it re-primes the next segment (teagram-engine's
-# --reprime, CARRY THE TAIL). Talk's 0.2 s stop confirms 192 ms of quiet (six 32 ms
-# Silero chunks), so the barge-in commit at that stop, with nothing in transit, would
-# claim 92 ms and lose the re-prime the carry is there for. Where the window is short
-# the margin shrinks instead, as far as Silero's speech end itself: an over-claim of the
-# decoder's unvoiced tail at most, inside the 240 ms that cost nothing above. A window
-# under _REPRIME_MS keeps the whole margin; it cannot vouch for the pause either way.
+# With the carry on (TEAPORT_STT_CARRY_MS), the margin gives way at one floor: it never
+# takes a claim below _REPRIME_MS, the pause the engine must be told of before it
+# re-primes the next segment, the one the carry opens (CARRY THE TAIL). Talk's 0.2 s
+# stop confirms 192 ms of quiet (six 32 ms Silero chunks), so the barge-in commit at
+# that stop, with nothing in transit, would claim 92 ms and lose the re-prime the carry
+# is there for. Where the window is short the margin shrinks instead, as far as Silero's
+# speech end itself: an over-claim of the decoder's unvoiced tail at most, inside the
+# 240 ms that cost nothing above. A window under _REPRIME_MS keeps the whole margin; it
+# cannot vouch for the pause either way. With the carry off there is no re-prime to
+# serve, and the margin is held back whole, as before #154.
 #
 # Off (0/false): the commit carries no field and the engine credits its own count, as
 # before -- the A/B switch, not a fallback the service takes on its own.
 STT_SILENCE_HINT = setting("TEAPORT_STT_SILENCE_HINT")
 _HINT_MARGIN_MS = setting("TEAPORT_STT_SILENCE_HINT_MARGIN_MS")
+# Mirrors the engine's REPRIME_MIN_PAUSE (teagram-engine --reprime, issue #154): the
+# engine gates re-prime eligibility on the raw hint this service sends, so a hint of at
+# least this much makes the commit eligible. Nothing of the engine's VAD is modelled here.
 _REPRIME_MS = 100
 
 # THE CALLER'S VOICE: no segment boundary over the caller's resumed words (issue #140).
@@ -1611,7 +1616,8 @@ class TeaportSTTService(WebsocketSTTService):
 
         The claim: the audio sent since Silero's speech end, or since the caller's voice
         heard after the stop where there was some (THE CALLER'S VOICE), less the margin
-        -- the margin giving way where it would take the claim below _REPRIME_MS -- or
+        -- with the carry on, the margin giving way where it would take the claim below
+        _REPRIME_MS -- or
         None when there is no placed speech end to count from, the count is not
         positive, or the hint is off (see STT_SILENCE_HINT). That voice does not hold it
         back when the carry reaches the speech end, unless the commit was held for that
@@ -1642,9 +1648,9 @@ class TeaportSTTService(WebsocketSTTService):
                 end = max(end, sent - (self._passed_samples - voice))
         quiet = (sent - end) * 1000 // rate
         ms = quiet - _HINT_MARGIN_MS
-        if quiet >= _REPRIME_MS:
-            # The margin gives way rather than take the claim below the re-prime floor
-            # (STT_SILENCE_HINT).
+        if bound is not None and quiet >= _REPRIME_MS:
+            # With the carry on, the margin gives way rather than take the claim below
+            # the re-prime floor (STT_SILENCE_HINT); off, it is held back whole.
             ms = max(ms, _REPRIME_MS)
         if ms <= 0:
             return None, None

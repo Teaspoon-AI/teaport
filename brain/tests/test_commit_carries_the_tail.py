@@ -836,6 +836,20 @@ async def test_off_the_wire_is_as_it_was():
         assert not line.stt._tail, "nothing kept"
 
 
+async def test_off_the_barge_in_keeps_the_whole_margin():
+    """With no carry there is no re-prime to serve: the barge-in at Talk's 0.2 s stop
+    claims its 192 ms less the whole margin, as before #154, under the floor."""
+    with carry_ms(0):
+        line = Tagged()
+        await line.stt.process_frame(BotStartedSpeakingFrame(), UP)
+        await line.feed(20, SPEECH)
+        await line.feed(6, QUIET)
+        assert len(line.commits()) == 1, "the barge-in flush, at once"
+        assert line.hints() == [ms(6) - MARGIN] and ms(6) - MARGIN < stt_mod._REPRIME_MS, (
+            f"the margin held back whole; got {line.hints()}")
+        assert line.after_commit() == [], "and nothing carried"
+
+
 def main():
     stt_mod._HINT_MARGIN_MS = MARGIN
     stt_mod.STT_SILENCE_HINT = True

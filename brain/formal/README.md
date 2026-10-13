@@ -1331,8 +1331,11 @@ rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_bli
 two clock rows) run without it.
 
 **The default run and `--full`.** The carry multiplies the three largest rows' state
-spaces, so `check.sh` runs those three without it and `check.sh --full` (nightly, not the
-CI job) adds a copy of each with it on:
+spaces, so `check.sh` runs those three without it and `check.sh --full` adds a copy of
+each with it on. Nothing runs `--full` automatically -- CI runs the default run on push
+and pull request -- so it is a manual gate: run it before merging any change to
+`SttCommit.tla` or to the commit paths it models (`stt.py`'s commits, the hold, the
+backstop, the carry), about 18 min on the desktop.
 
 | row | default run | `--full` copy, with the carry |
 |---|---|---|
@@ -1345,7 +1348,12 @@ Every other row that describes the STT as shipped runs with the carry in the def
 final's protocol), the voice witnesses, and the carry pair. What the default run does not
 check with the carry is the wait for the caller's pause under both faults and two voices
 (`sc_voice`), the final's protocol under that wait (`sc_voice_final`), and the no-verdict
-fallback (`sc_vadStop_sound`); those are the nightly's.
+fallback (`sc_vadStop_sound`); those are `--full`'s.
+
+Last `--full` run of the three carry rows: 2026-10-12, at the `CARRY` encoding (this
+branch, 9fdda09's model): all three hold -- `sc_vadStop_sound_carry` 24.4 million
+distinct states (5 min 53 s), `sc_voice_carry` 19.9 million (4 min 35 s),
+`sc_voice_final_carry` 29.8 million (7 min 27 s).
 
 ### Known limits of this model
 
