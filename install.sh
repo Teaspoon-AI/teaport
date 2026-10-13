@@ -302,7 +302,7 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
     fi
   fi
   # The en-us G2P dict MUST land at bin/g2p/ — the engine probes
-  # <exe_dir>/g2p/kokoro_g2p.dict and, if absent, silently degrades to
+  # <exe_dir>/g2p/kokoro_g2p.v2.dict (v2 header; an older binary keeps reading its own kokoro_g2p.dict, so a binary-only rollback works) and, if absent, silently degrades to
   # espeak-only English: every function word gets its stressed citation form,
   # the duration predictor doubles it, and speech goes robotic with no error
   # anywhere (shipped exactly so, 2026-08-05). espeak-ng (phase_sysdeps) is
@@ -321,7 +321,21 @@ the engine ships for JetPack 7.2 (L4T R38/R39, CUDA 13) — report this with the
     local g2p_msg="manifest has no engine.g2p_dict (url+sha256) — a box installed without the dict speaks robotic en-us prosody; republish the manifest"
     if [ "$DRY_RUN" = 1 ]; then warn "$g2p_msg"; else die "$g2p_msg"; fi
   else
-    download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.dict" "$g2p_sha"
+    download "$g2p_url" "$PREFIX/bin/g2p/kokoro_g2p.v2.dict" "$g2p_sha"
+  fi
+  # The part-of-speech tagger beside the dict (kokoro_pos.bin, distilled from spaCy
+  # en_core_web_sm tags; sources/licenses in the engine's NOTICE). The engine probes
+  # <exe_dir>/g2p/kokoro_pos.bin; without it the dict still works but every homograph
+  # (read/lead/live/content/...) reads its default form, with one journal line saying so.
+  # Fail-fast like the dict: that is a silent quality regression, not an error.
+  local pos_url pos_sha
+  pos_url="$(mget engine.pos_model.url 2>/dev/null)" || pos_url=""
+  pos_sha="$(mget engine.pos_model.sha256 2>/dev/null)" || pos_sha=""
+  if [ -z "$pos_url" ] || [ -z "$pos_sha" ]; then
+    local pos_msg="manifest has no engine.pos_model (url+sha256) — a box installed without the POS tagger reads every homograph in its default form; republish the manifest"
+    if [ "$DRY_RUN" = 1 ]; then warn "$pos_msg"; else die "$pos_msg"; fi
+  else
+    download "$pos_url" "$PREFIX/bin/g2p/kokoro_pos.bin" "$pos_sha"
   fi
   # THIRD_PARTY_NOTICES.txt — the MIT/BSD/Apache-2.0 attributions (misaki, Marlin, Voxtral,
   # Kokoro, civetweb, fvad, ggml, …) for the engine binary and the dict above, per the engine
@@ -2179,6 +2193,10 @@ phase_verify() {
   local g2p_log; g2p_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'dict G2P' | tail -1 || true)"
   if contains "dict G2P unavailable" "$g2p_log"; then
     warn "engine is running WITHOUT the en-us G2P dict (espeak-only fallback — robotic prosody): $g2p_log"; ok=0
+  fi
+  local pos_log; pos_log="$(SUDO journalctl -u teaport-engine.service --since '-10 min' 2>/dev/null | grep 'POS tagger' | tail -1 || true)"
+  if contains "POS tagger unavailable" "$pos_log"; then
+    warn "engine is running WITHOUT the POS tagger (homographs read in their default form): $pos_log"; ok=0
   fi
   [ "$ok" = 1 ] && log "engine + brain are up" || warn "something is not up — 'teaport doctor' / journalctl -u teaport-brain"
 }
