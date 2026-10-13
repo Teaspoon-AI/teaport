@@ -6,7 +6,8 @@
 # the ceiling on honouring Smart Turn's "not done", the Smart Turn threshold the
 # semantic eagerness, INTERRUPT_MIN_WORDS how much speech counts as a barge-in — and
 # keep_barge_in_reachable at the bottom, which is what stops an open user turn from
-# swallowing every barge-in there is.
+# swallowing every barge-in there is, and CutReplyFence below it, which keeps a barge-in's
+# turn from being committed ahead of the reply it cut.
 #
 import asyncio
 import time
@@ -20,6 +21,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     DataFrame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     SystemFrame,
     UninterruptibleFrame,
 )
@@ -339,11 +341,12 @@ class NoSpeechReportFrame(DataFrame, UninterruptibleFrame):
 
 class SegmentDoneSink(FrameProcessor):
     """Drops the STT's frames for the stop strategy -- SegmentDoneFrame,
-    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame, NoSpeechReportFrame. Sits right after the user
-    aggregator, whose stock process_frame forwards every data frame it does not itself
-    consume: the frames are for the stop strategy (which the aggregator hands them to)
-    and would otherwise ride the queue of every processor down to the transport, one
-    per wordless close."""
+    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame, NoSpeechReportFrame. Sits
+    right after the user aggregator (behind only CutReplyFence's head, which passes
+    every frame on inline), whose stock process_frame forwards every data frame it does
+    not itself consume: the frames are for the stop strategy (which the aggregator hands
+    them to) and would otherwise ride the queue of every processor down to the
+    transport, one per wordless close."""
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
@@ -428,9 +431,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     One final is left alone: the one that OPENS the turn over the bot (the "Okay, stop."
     barge-in under the 2-word guard). The interruption it caused was broadcast in this
     same controller call and has not reached the pipeline, so neither the ledger's cut
-    nor the assistant aggregator's commit of the cut reply is in the context yet; a
-    snapshot taken now is the context minus the truncation the corrector will make at
-    the commit, i.e. a guaranteed ctx-changed miss and a billed request for nothing. The
+    nor the assistant aggregator's commit of the cut reply is in the context yet (the
+    turn's own commit waits for that one: CutReplyFence); a snapshot taken now is the
+    context minus the cut reply and the truncation the corrector will make at the
+    commit, i.e. a guaranteed ctx-changed miss and a billed request for nothing. The
     settled-interim trigger keeps the same rule as a timer can: it does not fire while
     the bot is still speaking (the interruption has not reached the transport), and the
     barge-in's own final, which the over-the-bot commit always brings, asks instead.
@@ -1014,6 +1018,183 @@ def keep_barge_in_reachable(controller) -> None:
     controller._trigger_user_turn_inference_triggered = _inference
     controller._trigger_user_turn_stop = _stop
     controller.process_frame = _process_frame
+
+
+# --- The cut reply is committed before the turn that cut it --------------------------
+# A barge-in puts two messages into the context, from two ends of the pipeline: the
+# reply it cut, committed by the ASSISTANT aggregator (the last processor, below the
+# transport) when the InterruptionFrame reaches it, and the caller's words, committed by
+# the USER aggregator when the turn's stop fires. HeardContextCorrector then rewrites the
+# cut reply down to what was heard, and it finds that reply by POSITION: the assistant
+# message just before the turn being committed (heard_context._truncate). So the design
+# has always needed the first commit to land before the second -- and nothing enforced
+# it. pipecat 1.8.1's broadcast_interruption() only queues the frame; it does not wait
+# for it to cross the pipeline (push_interruption_task_frame_and_wait is deprecated and
+# delegates to it).
+#
+# The order held by accident while every barge-in turn waited before committing. d78396d
+# (2026-09-10, LateStartTurnStopStrategy) removed the 0.45 s safety net from the commonest
+# barge-in shape -- the turn opens on the final AFTER its own VAD stop, with Smart Turn's
+# COMPLETE verdict already in hand -- so the turn now opens, broadcasts its interruption
+# and commits inside ONE controller call. Live 2026-10-13 10:31:29 (SIP), "Okay, stop
+# there." over the bot counting from one to twenty: the interruption broadcast at 29.4273,
+# the user message committed at 29.4377, the corrector found no cut reply to correct at
+# 29.4433 ("cut turn left no committed message"), the LLM was asked at 29.4499 with the
+# caller's two turns back to back -- and the count was committed only after that, AFTER
+# the stop and at full length (the TTS's text runs ahead of its audio). The model counted
+# again. The box's journal from 2026-10-12 01:22 has 19 late-start barge-ins that cut a
+# reply: 9 committed ~0.03 s after their interruption, 7 of those lost the cut reply;
+# of the 5 that committed >= 0.3 s later (an INCOMPLETE verdict, the silence ceiling),
+# 4 were corrected properly. Talk and SIP alike.
+#
+# It also tripped the reply hold (reply_hold.py): ReplyHoldGate is armed by the commit
+# (on_user_turn_message_added) and reads an interruption reaching an armed gate as "the
+# reply to the last commit never played". A turn committed this way armed it before its
+# own interruption got there, so it requested a TurnMerge, and the next turn received it:
+# every such barge-in, and a late-start turn with the bot silent too (its interruption
+# cuts nothing, but it crosses all the same -- test_barge_commit_order has the request
+# folded into the caller's next turn that way).
+#
+# CutReplyFence restores the order explicitly instead of by a delay: the user turn's
+# commit (push_aggregation) waits until every InterruptionFrame that went down the
+# pipeline ahead of it has been handled by the assistant aggregator, i.e. until the cut
+# reply is in the context. Then the corrector's ordinary path rewrites it, in place. Only
+# a commit with an interruption still in flight waits at all -- in practice the
+# late-start shape -- and it waits for exactly as long as the interruption takes to cross:
+# ~70 ms over a playing reply (the bot stopped at 29.497 above), a few ms with the bot
+# silent, nothing to tear down. Every other commit is untouched.
+#
+# Why it cannot deadlock. The wait runs inside the controller call (the final's
+# transcription handling, on the user aggregator's frame task), so that task is blocked
+# while it waits. What it waits FOR is an InterruptionFrame crossing the processors BELOW
+# the user aggregator, each on its own input task (it is a SystemFrame), and none of
+# them waits on the user aggregator for anything. The frames the user aggregator would
+# have processed meanwhile stay queued, in order; its system frames (VAD, audio) still
+# run on its input task, and a VAD start that lands in the wait is the shape
+# keep_barge_in_reachable already handles (the inference runs, the finalize is refused,
+# then re-applied at the next quiet moment). The verdict plumbing does not move: in the
+# late-start shape the TurnVerdictFrame for the stop went upstream before the turn
+# opened, the STT's held segment closes on it as before, and the wait only delays the
+# push of the words. (A commit at a VAD stop that finds an interruption still in flight
+# -- a turn opened on an interim within the last ~70 ms -- pushes its verdict after the
+# wait, as late as the commit.) Nor does the speculative reply's rule for the barge-in
+# final ("One final is left alone", LateStartTurnStopStrategy): the stop fired on that
+# final, which is all that rule reads. And the wait is bounded (CUT_COMMIT_WAIT_SECS): a
+# pipeline that never delivers the frame costs one bounded wait, logged, and the commit
+# goes ahead in the old order.
+#
+# Deliberately not defensive about what it wraps, as keep_barge_in_reachable is not: a
+# pipecat that renames push_aggregation raises AttributeError at session build, and one
+# that stops committing through it fails tests/test_barge_commit_order.py.
+
+# The longest a commit waits for the cut reply's. ~70 ms is the live crossing; this is a
+# ceiling for a loop under load (a long completion being parsed, the TTS tearing down
+# a synthesis), well short of the 0.45 s that every such turn paid before d78396d.
+CUT_COMMIT_WAIT_SECS = 0.5
+
+# InterruptionFrames remembered at most: each is forgotten when it lands, so only frames
+# something swallowed accumulate, and a commit's timed-out wait forgets those too.
+_MAX_IN_FLIGHT = 64
+
+
+class CutReplyFence:
+    """The user turn's commit waits for the reply its interruption cut to be committed.
+    See the note above. Three parts, built and placed by agent_session:
+
+      * `head`: DIRECTLY below the user aggregator. It is called inside the aggregator's
+        own push of the InterruptionFrame, so the frame is on record before the
+        controller call that broadcast it can reach the commit. Any processor between
+        them would take the frame on its own task, later.
+      * `tail`: directly below the assistant aggregator, the last processor. A frame
+        reaching it has been handled there: the cut reply is in the context.
+      * hold_commits(user aggregator): the wait, at the commit itself.
+
+    Both processors run in direct mode (as pipecat's own pipeline source and sink do):
+    they pass every frame on inline, adding no task and no queue to the path."""
+
+    def __init__(self, *, timeout: float = CUT_COMMIT_WAIT_SECS):
+        self._timeout = timeout
+        # InterruptionFrame id -> a future resolved when it reaches the tail.
+        self._in_flight: dict = {}
+        self.head = _CutFenceHead(self)
+        self.tail = _CutFenceTail(self)
+        # Tallies, for the tests.
+        self.waits = 0
+        self.timeouts = 0
+
+    def hold_commits(self, aggregator) -> None:
+        """Wrap ONE user aggregator's push_aggregation -- every path that commits the
+        caller's words passes there: the stop strategy's inference, the turn's stop,
+        the controller's watchdog."""
+        push_aggregation = aggregator.push_aggregation
+
+        async def _push_aggregation():
+            await self._wait()
+            return await push_aggregation()
+
+        aggregator.push_aggregation = _push_aggregation
+
+    def _sent(self, frame) -> None:
+        self._in_flight[frame.id] = asyncio.get_running_loop().create_future()
+        while len(self._in_flight) > _MAX_IN_FLIGHT:
+            self._in_flight.pop(next(iter(self._in_flight))).cancel()
+
+    def _landed(self, frame) -> None:
+        fut = self._in_flight.pop(frame.id, None)
+        if fut is not None and not fut.done():
+            fut.set_result(None)
+
+    async def _wait(self) -> None:
+        ahead = list(self._in_flight.values())
+        if not ahead:
+            return
+        self.waits += 1
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        _, late = await asyncio.wait(ahead, timeout=self._timeout)
+        waited = loop.time() - t0
+        if late:
+            # Forgotten, not waited on again: a frame something swallowed must not tax
+            # every commit after this one.
+            self.timeouts += 1
+            for key, fut in list(self._in_flight.items()):
+                if fut in late:
+                    del self._in_flight[key]
+                    fut.cancel()
+            logger.warning(f"CUT-FENCE: {len(late)} interruption(s) had not reached the "
+                           f"assistant aggregator after {waited:.2f}s -- committing the "
+                           "caller's turn anyway; a reply they cut may land after it")
+            return
+        logger.debug(f"CUT-FENCE: the turn's commit waited {waited * 1000:.0f} ms for the "
+                     "interruption ahead of it to commit the reply it cut")
+
+
+class _CutFenceHead(FrameProcessor):
+    """CutReplyFence's record of the interruptions going down. See CutReplyFence."""
+
+    def __init__(self, fence: CutReplyFence):
+        super().__init__(enable_direct_mode=True)
+        self._fence = fence
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._fence._sent(frame)
+        await self.push_frame(frame, direction)
+
+
+class _CutFenceTail(FrameProcessor):
+    """CutReplyFence's record of the interruptions the assistant aggregator has handled."""
+
+    def __init__(self, fence: CutReplyFence):
+        super().__init__(enable_direct_mode=True)
+        self._fence = fence
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._fence._landed(frame)
+        await self.push_frame(frame, direction)
 
 
 # --- Silero's inference rate -----------------------------------------------------

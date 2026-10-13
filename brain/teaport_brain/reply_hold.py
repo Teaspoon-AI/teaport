@@ -406,6 +406,11 @@ class ReplyHoldGate(FrameProcessor):
         await self.push_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
 
     async def _on_interruption(self):
+        # Armed means the LAST commit's reply has not played, which holds only if a new
+        # turn's interruption gets here before that turn's own commit arms the gate.
+        # endpointing.CutReplyFence holds the commit back until it has; without it, a
+        # turn opened on its final after its own VAD stop armed the gate first, and this
+        # requested a merge for every such barge-in (live 2026-10-13).
         was_armed, self._armed = self._armed, False
         self._shift.clear()
         self._arrivals.clear()

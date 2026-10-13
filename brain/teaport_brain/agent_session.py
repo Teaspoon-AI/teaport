@@ -56,6 +56,7 @@ from teaport_brain.captions import (
 )
 from teaport_brain.client_notes import SYSTEM_LINE as CONTEXT_NOTES_LINE, ClientNotes
 from teaport_brain.endpointing import (
+    CutReplyFence,
     EagerSmartTurnAnalyzer,
     LateStartTurnStopStrategy,
     NarrowbandSileroMixin,
@@ -1094,6 +1095,12 @@ def build_agent_session(transport, *, voice: str | None = None,
     # both the refusal and the frame that lifts it. It raises AttributeError here, at
     # session build, if a pipecat bump moves any of it.
     keep_barge_in_reachable(context_aggregator.user()._user_turn_controller)
+    # And the turn a barge-in opens is not committed ahead of the reply it cut: the
+    # commit waits for the interruption to reach the assistant aggregator, which is what
+    # puts the cut reply into the context (and the reply hold sees that interruption
+    # before the commit arms it). Its head and tail go around the two aggregators below.
+    cut_fence = CutReplyFence()
+    cut_fence.hold_commits(context_aggregator.user())
     if wifi_closer is not None:
         wifi_closer.aggregator = context_aggregator.user()
 
@@ -1203,6 +1210,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # speculator; None without a gateway).
         memory_recall,
         context_aggregator.user(),
+        # DIRECTLY below the aggregator: it is called inside the aggregator's own push of
+        # an interruption, so the frame is on record before the commit can look for it.
+        cut_fence.head,
         # The STT's wordless segment closes are for the stop strategy, which the
         # aggregator has just handed them to; the stock aggregator forwards every
         # other data frame, so they are dropped here rather than ride to the transport.
@@ -1261,6 +1271,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         CaptionTap(activity, every_final=caption_every_final),  # AFTER the transport: playout-paced partials + per-utterance finals
         MemoryReclaim(),  # per-turn: hand glibc arena pages back to the OS (CUDA at session end)
         context_aggregator.assistant(),
+        # Last: an interruption that gets here has had its cut reply committed above.
+        cut_fence.tail,
     ] if p is not None])
 
     # The idle timeout counts what pipecat counts, and a held conversation's keep-alive.
