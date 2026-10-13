@@ -606,6 +606,63 @@ async def test_the_session_places_the_fence_around_the_aggregators():
     assert p.next._fence is head._fence, "head and tail of two different fences"
 
 
+
+async def _waiting_start(text=STOP):
+    """A Speculator whose start() is held at the fence by an interruption in flight:
+    (speculator, its LLM, the frame to land, the waiting start)."""
+    fence = CutReplyFence()
+    frame = InterruptionFrame()
+    fence._sent(frame)
+    llm, agg = SpecLLM(), _Aggregator()
+    spec = Speculator(llm=llm, aggregator=agg, cut_fence=fence)
+    waiting = asyncio.create_task(spec.start(text))
+    await asyncio.sleep(0.02)
+    assert not waiting.done(), "start() should be waiting for the cut reply"
+    return spec, llm, agg, fence, frame, waiting
+
+
+async def _settled(spec):
+    for _ in range(5):
+        await asyncio.sleep(0)
+    await spec.close()
+
+
+async def test_a_cancel_during_the_wait_starts_nothing():
+    # The caller resumed while the cut reply was landing: the VAD start's cancel ran on
+    # the other task with nothing live to cancel. The waiting start must not go ahead
+    # on the words it had.
+    spec, llm, _agg, fence, frame, waiting = await _waiting_start()
+    await spec.cancel("resumed")
+    fence._landed(frame)
+    assert await waiting is False
+    await _settled(spec)
+    assert spec.text is None and llm.asked == [], llm.asked
+
+
+async def test_a_turn_committed_during_the_wait_starts_nothing():
+    # The ceiling committed the turn while the snapshot waited: nothing cancels at a
+    # commit (the speculation would be the commit's to take), so the turn is asked.
+    spec, llm, agg, fence, frame, waiting = await _waiting_start()
+    agg._user_turn_controller._user_turn = False
+    fence._landed(frame)
+    assert await waiting is False
+    await _settled(spec)
+    assert spec.text is None and llm.asked == [], llm.asked
+
+
+async def test_a_newer_start_supersedes_one_still_waiting():
+    # A start held on the input task, and the next final's start on the frame task:
+    # only the newer words are asked, once.
+    newer = "Okay, stop there. Thanks."
+    spec, llm, _agg, fence, frame, older = await _waiting_start()
+    newest = asyncio.create_task(spec.start(newer))
+    await asyncio.sleep(0.02)
+    fence._landed(frame)
+    assert await older is False and await newest is True
+    await _settled(spec)
+    assert [m[-1]["content"] for m in llm.asked] == [newer], llm.asked
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and asyncio.iscoroutinefunction(v)]

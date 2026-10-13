@@ -279,6 +279,12 @@ class Speculator:
         # snapshot taken 15 ms after the interruption spent the ledger's cut on a context
         # without the reply, which was then committed, and asked, whole.
         self._cut_fence = cut_fence
+        # Bumped by every cancel() and every start() that gets as far as the fence: a
+        # start() that waited there goes ahead only if neither came in meanwhile. The
+        # wait runs on the strategy's frame (or input) task, and the VAD start that
+        # cancels, or the newer final that supersedes, runs on the other one -- with
+        # nothing live yet for it to cancel.
+        self._epoch = 0
         self._current: _Speculation | None = None
         # Strong refs, for the readers and the detached closes: the loop holds tasks
         # weakly, and a reader whose speculation nothing else references any more would
@@ -327,6 +333,8 @@ class Speculator:
         if not text:
             return False
         if self._cut_fence is not None:
+            self._epoch += 1
+            epoch = self._epoch
             if not await self._cut_fence.wait_for_cuts():
                 # The cut reply may still land after the snapshot, the corrector having
                 # nothing to rewrite now: no speculation, rather than one on a context
@@ -334,8 +342,13 @@ class Speculator:
                 logger.info(f"[SPEC] not started {text[:40]!r}: a cut reply is still "
                             "on its way to the context")
                 return False
-            if not self._controller._user_turn:
-                return False  # committed while it waited
+            # Cancelled or superseded while it waited: the words are stale. And a turn
+            # that closed meanwhile cancels nothing (its speculation is the commit's to
+            # take), so the turn is asked about again.
+            if self._epoch != epoch or not self._controller._user_turn:
+                logger.debug(f"[SPEC] not started {text[:40]!r}: cancelled, superseded "
+                             "or committed while the cut reply landed")
+                return False
         if self._before_snapshot is not None:
             self._before_snapshot()
         ctx = self._agg.context
@@ -362,6 +375,7 @@ class Speculator:
         return True
 
     async def cancel(self, reason: str):
+        self._epoch += 1
         spec, self._current = self._current, None
         if spec is None:
             return
