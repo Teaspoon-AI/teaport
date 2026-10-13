@@ -71,7 +71,7 @@ UP = FrameDirection.UPSTREAM
 
 class Recorder(TeaportSTTService):
     """The real service, its wire recorded; audio driven through the real frame path so
-    process_audio_frame (the gap watch) is exercised, not bypassed."""
+    the passed and sent counts (the gap watch) are exercised, not bypassed."""
 
     def __init__(self, **kwargs):
         super().__init__(url="ws://127.0.0.1:1/none", **kwargs)

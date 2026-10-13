@@ -32,8 +32,8 @@
 #     of it reaches the LLM, the agent, a caption or a log. A wake word wakes that
 #     session; what was said after it ("hey teaport, what's the weather") is the first
 #     turn. Awake, the conversation needs no wake word until nobody (user or bot) has
-#     spoken for LOCAL_AUDIO_KEEPALIVE_SECS, or LOCAL_AUDIO_AWAKE_MAX_SECS have passed
-#     since the last wake word, or the user sends the box to sleep (end_conversation):
+#     spoken for LOCAL_AUDIO_KEEPALIVE_SECS, or the user sends the box to sleep
+#     (end_conversation):
 #     then the session ENDS and a new asleep one opens. The conversation itself goes on:
 #     a wake within LOCAL_AUDIO_CONVERSATION_SECS continues it, ungreeted (the brain
 #     keeps its messages). Nothing here falls back to listening without the wake words:
@@ -158,11 +158,11 @@ PREROLL_SECS = 1.0
 # Wake words: a comma-separated list of phrases, any language ("hey teaport, tea port").
 # Any value at all means wake mode; the brain matches them (wake_words.py).
 WAKE_WORDS = setting("LOCAL_AUDIO_WAKE_WORDS", default="")
-# Awake, the session ends once nobody (user or bot) has spoken for KEEPALIVE_SECS, or
-# AWAKE_MAX_SECS after the last wake word with the bot quiet: a TV the bot keeps
-# answering must not hold the room open for good. Saying a wake word again restarts it.
+# Awake, the session ends once nobody (user or bot) has spoken for KEEPALIVE_SECS. There
+# is no cap on a conversation that goes on: one that slept five minutes after its wake
+# word cut the user off mid-chat (2026-10-11). A TV the bot keeps answering is sent to
+# sleep by saying so (end_conversation).
 KEEPALIVE_SECS = setting("LOCAL_AUDIO_KEEPALIVE_SECS")
-AWAKE_MAX_SECS = setting("LOCAL_AUDIO_AWAKE_MAX_SECS")
 KEEPALIVE_POLL_SECS = 0.25
 # A wake this soon after the last mic conversation ended continues it (the brain keeps
 # its messages) and is not greeted; later, a new conversation and a greeting.
@@ -1429,33 +1429,25 @@ class Ungated(RuntimeError):
 
 class KeepAlive:
     """An awake wake-word conversation: over once nobody (user or bot) has spoken for
-    KEEPALIVE_SECS, or AWAKE_MAX_SECS after the last wake word with the bot quiet."""
+    KEEPALIVE_SECS."""
 
-    def __init__(self, secs: float | None = None, cap_secs: float | None = None,
-                 clock=time.monotonic):
+    def __init__(self, secs: float | None = None, clock=time.monotonic):
         self._secs = KEEPALIVE_SECS if secs is None else secs
-        self._cap = AWAKE_MAX_SECS if cap_secs is None else cap_secs
         self._clock = clock
-        self._last = self._woke = clock()
+        self._last = clock()
 
     def activity(self) -> None:
         self._last = self._clock()
 
-    def woke(self) -> None:
-        """A wake word (again): the cap counts from here."""
-        self._last = self._woke = self._clock()
-
     def over(self, busy: bool = False) -> str | None:
-        """"keepalive" or "awake-max" once it is over, else None. `busy`: the bot is
-        still being heard -- that is speech, and no cap cuts a reply off."""
+        """"keepalive" once it is over, else None. `busy`: the bot is still being
+        heard -- that is speech."""
         now = self._clock()
         if busy:
             self._last = now
             return None
         if now - self._last >= self._secs:
             return "keepalive"
-        if now - self._woke >= self._cap:
-            return "awake-max"
         return None
 
 
@@ -1546,8 +1538,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
     conversation is live), "yield" when a phone call has the engine.
 
     `wake`: a wake-word session, opened asleep (or `awake`: restart_session's fresh
-    conversation). It also ends "sleep" (end_conversation), "keepalive" / "awake-max"
-    (KeepAlive) or "stt:<reason>" (its STT could not connect)."""
+    conversation). It also ends "sleep" (end_conversation), "keepalive" (KeepAlive)
+    or "stt:<reason>" (its STT could not connect)."""
     import websockets
 
     face, play = card.face, card.play
@@ -1640,9 +1632,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                                 + ("continuing the conversation" if m.get("resumed")
                                    else "a new conversation"))
                 else:
-                    alive.woke()
-                    logger.info(f'wake word "{m.get("phrase")}" heard again — '
-                                f"awake for up to {AWAKE_MAX_SECS:g} s more")
+                    alive.activity()
+                    logger.info(f'wake word "{m.get("phrase")}" heard again')
             elif kind == "client_tool":
                 result = client_tool(card, m, restart)
                 await ws.send(json.dumps({"type": "tool_result", "call_id": m.get("call_id"),
@@ -1685,10 +1676,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
             why = alive.over(busy=play.speaking or face.voiced or waiting or hold["on"]
                              or not play.echo_free(now))
             if why:
-                logger.info(f"no speech for {KEEPALIVE_SECS:g} s — the conversation sleeps"
-                            if why == "keepalive" else
-                            f"{AWAKE_MAX_SECS:g} s since the last wake word — the "
-                            "conversation sleeps")
+                logger.info(f"no speech for {KEEPALIVE_SECS:g} s — the conversation sleeps")
                 return why
 
     restarter = asyncio.create_task(restart_when_heard_out())
@@ -1809,7 +1797,7 @@ async def run_wake_sessions(card: Card, st: WakeState) -> None:
             await card.idle_for(st.wait)
             st.wait = min(st.wait * 2, RETRY_MAX_SECS)
             continue
-        if ended in ("sleep", "keepalive", "awake-max"):
+        if ended in ("sleep", "keepalive"):
             st.wait = RETRY_SECS
             continue
         # The brain ended it (a restart of its own, an error): open the next one, but
@@ -1861,7 +1849,7 @@ async def run_bridge() -> None:
     if wake is not None:
         phrases = wake_phrases(WAKE_WORDS)
         logger.info(f"wake words: {', '.join(phrases) or 'NONE usable'} (keep-alive "
-                    f"{KEEPALIVE_SECS:g} s, awake at most {AWAKE_MAX_SECS:g} s, "
+                    f"{KEEPALIVE_SECS:g} s, "
                     f"conversation kept {CONVERSATION_SECS:g} s)")
         if not phrases:
             logger.warning(f"LOCAL_AUDIO_WAKE_WORDS={WAKE_WORDS!r} holds no word to listen "

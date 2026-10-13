@@ -1277,6 +1277,84 @@ engine's finish for the first half to outlast the rest of the sentence plus the 
 floor and the model's verdict — the GPU-contended finish — and its cost is one cut reply,
 the shape the fix is for, at a small fraction of its old rate.
 
+### The caller's voice (#140)
+
+The VAD's start trails the caller's first word by 0.2–0.4 s, so after a stop the caller
+can be talking again with no start sent. A complete verdict that commits then draws the
+segment boundary inside their words, and the silence hint claims those words as
+silence. In the environment, `voice` is that speech as the VAD analyzer's marks see it
+(`VoiceOn`, `VoicePause`, bounded by `MaxVoice`): `on` since the stop, `paused` for the
+stop's own window afterwards, or `none`. `VOICE` selects the STT's answer:
+
+| `VOICE` | design | `NoCutVoice` | `NoOrphanedHold` | the rest |
+|---|---|---|---|---|
+| `blind` | before #140: a complete verdict commits over the voice (`sc_voice_blind`) | ✗ | | |
+| `pause` | as shipped: the commit is held (`deferred`, in the hold's own timer slot) until `PauseCommit` (the voice paused), `VadStart` (the segment resumes) or `PauseCap` (the session's ceiling) (`sc_voice`) | ✓ | ✓ | ✓ |
+
+The wait is a hold that no verdict will end, so `NoOrphanedHold` takes it as an escape.
+`sc_voice_reach` keeps the property as it read before, `HeldOnlyForVerdict`, as the
+witness that the wait is reached at all, and `sc_voice_reach_pause` and
+`sc_voice_reach_resume` fall on the first trace in which the pause, or a VAD start,
+ends one: both exits are reached, not only declared. The two bounds commit over voice
+by design, and each has its own row to keep that visible rather than a property that
+holds by construction. The cap (`PauseCap`, `capCut`, `sc_voice_cap`) can fire at any
+point of the wait. The catch-up bound (`catchupCut`, `sc_voice_catchup`) is a verdict
+that commits on what the analyzer has heard because it has not heard the rest in time.
+`sc_voice_final` runs the final's protocol under the wait on the marked engine: no stale
+turn end, no stranded turn. Every existing row runs with `MaxVoice = 0`, where nothing
+changes.
+
+### The carry (#154)
+
+After every commit the STT sends the audio from where the commit's silence claim starts
+again, as the start of the next segment (`stt.py`, CARRY THE TAIL). No commit or done is
+added or moved, so the protocol above is unchanged, but one premise is not: a commit the
+caller was quiet for used to leave the next segment empty (`spoke' = FALSE`), and with the
+carry it is fed. What a carry sends starts at or after the speech end, so it holds no
+utterance's words by the VAD's count (`segAudio` is unchanged), but the engine can stream
+an interim for it -- voice since the stop that the carry holds, or the margin's tail --
+and the backstop can follow that interim, stamped with a stop already answered.
+
+`CARRY` switches it: with it on, `CommitAt` leaves `spoke` set on every commit but the
+backstop's -- `spoke' = speaking \/ (mayCarry /\ CARRY)`. That is a superset of the code
+(a commit that claims nothing carries nothing): `spoke` only enables `Delta`, and no
+action needs it unset, so feeding the next segment on every commit covers feeding it on
+some, with no counter in the state. The backstop is the exception the code guarantees:
+every commit is decided and sent under one lock (`stt.py`, THE WIRE), as each action here
+is one step, so a speech end the backstop could see belongs to a stop that is holding,
+and the backstop stands down for it.
+
+`sc_carry_off` and `sc_carry_reach` are the pair that shows the carry reaches the space:
+with the engine's own close off, a segment that holds no utterance's words never streams
+an interim without a carry (`NoWordlessInterim` holds) and does with one (it falls). The
+rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_blind`, the
+two clock rows) run without it.
+
+**The default run and `--full`.** The carry multiplies the three largest rows' state
+spaces, so `check.sh` runs those three without it and `check.sh --full` adds a copy of
+each with it on. Nothing runs `--full` automatically -- CI runs the default run on push
+and pull request -- so it is a manual gate: run it before merging any change to
+`SttCommit.tla` or to the commit paths it models (`stt.py`'s commits, the hold, the
+backstop, the carry), about 18 min on the desktop.
+
+| row | default run | `--full` copy, with the carry |
+|---|---|---|
+| `sc_vadStop_sound` | `CARRY = FALSE` | `sc_vadStop_sound_carry` |
+| `sc_voice` | `CARRY = FALSE` | `sc_voice_carry` |
+| `sc_voice_final` | `CARRY = FALSE` | `sc_voice_final_carry` |
+
+Every other row that describes the STT as shipped runs with the carry in the default run:
+`sc_verdict` (the commit protocol with both faults), the three `sc_final_stop` rows (the
+final's protocol), the voice witnesses, and the carry pair. What the default run does not
+check with the carry is the wait for the caller's pause under both faults and two voices
+(`sc_voice`), the final's protocol under that wait (`sc_voice_final`), and the no-verdict
+fallback (`sc_vadStop_sound`); those are `--full`'s.
+
+Last `--full` run of the three carry rows: 2026-10-12, at the `CARRY` encoding (this
+branch, 9fdda09's model): all three hold -- `sc_vadStop_sound_carry` 24.4 million
+distinct states (5 min 53 s), `sc_voice_carry` 19.9 million (4 min 35 s),
+`sc_voice_final_carry` 29.8 million (7 min 27 s).
+
 ### Known limits of this model
 
 - **Durations are out of scope**, as everywhere here, and two timing facts are stated as
@@ -1288,6 +1366,21 @@ the shape the fix is for, at a small fraction of its old rate.
   from). `Backstop` can fire whenever the segment has words and no stop has claimed them,
   including while the caller is still talking: that is the known edge `stt.py` documents
   (stalled interims), kept.
+- **The analyzer's catch-up is abstracted (#140).** The STT waits for the VAD analyzer to
+  have heard the audio sent at the verdict before it reads the voice; the model reads
+  `voice` at the verdict as if that wait were instant. Voice in the last unscored chunk
+  before a commit is below what either can see. The hold's expiry and the backstop are
+  not charged with a cut over the voice: they are bounds with their own documented edges.
+  Two session-wide policies are not modelled as switches, for the reason the no-verdict
+  fallback is not. The wait stands down after three verdict commits running that hit
+  the cap: any other verdict commit breaks the run, and so does a VAD start during a
+  wait; commits that answer no verdict leave it alone. The marks go
+  off when a catch-up that missed its bound has still not got there by the next
+  verdict; slowness alone only commits on what was heard. Each is a policy on repeated
+  faults; what runs while either is in force is the `blind` design, and
+  `sc_voice_blind` is its cost. A disconnect during the wait is not
+  modelled either: it drops the segment with the session, as it does a hold, and this
+  model has no disconnect.
 - **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
   once (the flush is the barge-in, teagram-engine#7); it is the `vadStop` design applied to
   one stop, and the verdict that follows is ignored exactly as a stale one is.
@@ -1341,6 +1434,23 @@ the shape the fix is for, at a small fraction of its old rate.
   `MaxBackstops = 1`, `MaxMissed = 0` — with the missed stop on as well the space passes
   30 million and the row is not worth its minutes); the three that fall find their trace in
   under ten states. `check.sh` passes `-deadlock`: the bounds make terminal states ordinary.
+  The #140 rows, measured 2026-10-11 on TLC 2.19: `sc_voice` (two stretches of voice,
+  both faults on) is 10.9 million distinct states (36.1 million generated) and
+  `sc_voice_final` 13.6 million (44.2 million generated). The six that fall
+  (`sc_voice_blind`, `sc_voice_reach`, `sc_voice_reach_pause`, `sc_voice_reach_resume`,
+  `sc_voice_cap`, `sc_voice_catchup`) each find a trace of under ten states.
+  The carry (#154), measured 2026-10-12 on the same TLC and desktop. In the default run:
+  `sc_verdict` 1.6 million distinct states with it (16 s), `sc_final_stop_residual`
+  and `_marked` 6.2 and 5.7 million (about a minute each, against 43 s without), and
+  the carry pair a few seconds (`sc_carry_off` 54,000 states; the pair runs without
+  the faults, its point being reachability). Under `--full`: `sc_vadStop_sound_carry`
+  24.4 million (5 min 53 s; 5.9 million without the carry), `sc_voice_carry` 19.9
+  million (4 min 35 s), `sc_voice_final_carry` 29.8 million (7 min 27 s). The whole
+  default run took 526 s here before #154 (`sc_voice_final` 143 s, `sc_voice` 108 s,
+  `sc_vadStop_sound` 67 s of it) and about 665 s with it; `--full` adds about 18 min.
+  The first encoding (a counted, nondeterministic carry, `MaxCarries = 1`) cost more
+  for less: `sc_voice` 29.8 million and `sc_voice_final` 40.7 million with one carry,
+  where `CARRY` covers every commit's.
 
 ## Worth modeling next
 

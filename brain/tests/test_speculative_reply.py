@@ -1317,7 +1317,8 @@ async def test_with_the_real_stt_the_held_segment_speculates_when_the_engine_is_
         await stt._handle_message({"type": "session.created", "id": "s", "created": 1,
                                    "capabilities": ["transcription.progress"]})
         await rig.both(VADUserStartedSpeakingFrame(start_secs=0.2))
-        stt._sent_samples += 16000 * 2                       # 2 s of audio on the wire
+        stt._sent_samples += 16000 * 2                       # 2 s of audio on the wire,
+        stt._passed_samples += 16000 * 2                     # and passed down to the VAD
         await rig.audio(400)
         await rig.delta(" tell me")
         await rig.both(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
