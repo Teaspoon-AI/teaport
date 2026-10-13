@@ -165,7 +165,7 @@ title = "Speech engine service"
 [[groups]]
 id = "sip"
 title = "SIP gateway"
-blurb = "Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it."
+blurb = "Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it; `teaport sip configure --fresh` keeps nothing and writes the template."
 
 [[groups]]
 id = "bridge"
@@ -2005,7 +2005,7 @@ values = ["enforce", "log", "off"]
 default = "log"
 tier = "setup"
 kept = true
-help = "Which addresses may send the gateway SIP requests (teaport-sip#33; gateway v0.6.6 and later): its allowlist is every address registrar_uri resolves to, all its DNS SRV targets included, plus sip_source_allow. enforce drops a request from any other address, with no answer and no state (responses to our REGISTERs are never filtered); log accepts it as before and logs an `[acl] ... NOT on the allowlist` line for each new address and method; off is no filter and no lines. Any case; another value is a config error, and the gateway exits 78 rather than start. The gateway logs the mode it runs on at startup (`[acl] source filter ...`); `teaport sip status` and doctor show it."
+help = "Which addresses may send the gateway SIP requests (teaport-sip#33; gateway v0.6.6 and later): its allowlist is every address registrar_uri resolves to, all its DNS SRV targets included, plus sip_source_allow. enforce drops a request from any other address, with no answer and no state (responses to our REGISTERs are never filtered); log accepts it as before and logs an `[acl] ... NOT on the allowlist` line for each new address and method; off is no filter and no lines. Any case; another value is a config error, and the gateway exits 78 rather than start. The gateway logs the mode it runs on at startup (`[acl] source filter ...`); `teaport sip status` and doctor show the conf's mode as confirmed only when that line (this run) agrees and the gateway's `--check-config` passes the conf; a gateway older than v0.6.6 ignores the key, and they say so."
 note = "Switch to enforce only once the trunk's call-delivery addresses are confirmed to be its registrar's or on sip_source_allow (teaport-sip#37): run in log first and read the `[acl]` lines over a few real calls, since an address the filter does not know drops the call with nothing sent and nothing seen by the brain. It checks the packet's source address, which can be forged: it is not authentication. With register = false it needs at least one sip_source_allow entry."
 source = "cli/teaport"
 
