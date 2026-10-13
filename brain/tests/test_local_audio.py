@@ -1122,9 +1122,9 @@ def test_the_face_sleeps_only_where_the_avatar_draws_it():
         {"state": "sleeping"}, {"state": "listening"}, {"state": "idle"}]
 
 
-def test_keep_alive_ends_on_quiet_and_on_the_cap_since_the_last_wake_word():
+def test_keep_alive_ends_on_quiet_only():
     clock = _Clock()
-    alive = la.KeepAlive(45, 300, clock=clock)
+    alive = la.KeepAlive(45, clock=clock)
     clock.t += 44
     assert alive.over() is None
     alive.activity()                            # a transcript, a caption, bot audio
@@ -1132,15 +1132,14 @@ def test_keep_alive_ends_on_quiet_and_on_the_cap_since_the_last_wake_word():
     assert alive.over() is None
     clock.t += 1
     assert alive.over() == "keepalive"
-    # A TV the bot keeps answering: always activity, but the cap ends it...
-    alive = la.KeepAlive(45, 300, clock=clock)
-    for _ in range(30):
+    # A conversation that goes on is never cut off, however long since its wake word.
+    alive = la.KeepAlive(45, clock=clock)
+    for _ in range(360):
         clock.t += 10
         alive.activity()
-    assert alive.over() == "awake-max"
-    assert alive.over(busy=True) is None        # ...though never mid-reply
-    alive.woke()                                # a wake word again: the cap restarts
     assert alive.over() is None
+    clock.t += 50
+    assert alive.over(busy=True) is None        # the bot still talking is speech
 
 
 # What a brain that gates the room says first (gateway_server's hello).
@@ -1275,10 +1274,10 @@ def test_restart_is_one_shot_whatever_its_dial_does(monkeypatch):
     assert st.restart is False
 
 
-def test_ending_by_keep_alive_cap_or_voice_reopens_asleep(monkeypatch):
+def test_ending_by_keep_alive_or_voice_reopens_asleep(monkeypatch):
     monkeypatch.setattr(la, "SHORT_SESSION_SECS", 0.0)
-    dials, card = _drive(monkeypatch, ["keepalive", "awake-max", "sleep", None])
-    assert dials == [False] * 5 and card.idled == []
+    dials, card = _drive(monkeypatch, ["keepalive", "sleep", None])
+    assert dials == [False] * 4 and card.idled == []
 
 
 def test_fail_closed_a_brain_or_stt_that_will_not_take_us_leaves_the_box_deaf(monkeypatch):
