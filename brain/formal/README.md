@@ -1277,6 +1277,33 @@ engine's finish for the first half to outlast the rest of the sentence plus the 
 floor and the model's verdict — the GPU-contended finish — and its cost is one cut reply,
 the shape the fix is for, at a small fraction of its old rate.
 
+### The caller's voice (#140)
+
+The VAD's start trails the caller's first word by 0.2–0.4 s, so after a stop the caller
+can be talking again with no start sent. A complete verdict that commits then draws the
+segment boundary inside their words, and the silence hint claims those words as
+silence. In the environment, `voice` is that speech as the VAD analyzer's marks see it
+(`VoiceOn`, `VoicePause`, bounded by `MaxVoice`): `on` since the stop, `paused` for the
+stop's own window afterwards, or `none`. `VOICE` selects the STT's answer:
+
+| `VOICE` | design | `NoCutVoice` | `NoOrphanedHold` | the rest |
+|---|---|---|---|---|
+| `blind` | before #140: a complete verdict commits over the voice (`sc_voice_blind`) | ✗ | | |
+| `pause` | as shipped: the commit is held (`deferred`, in the hold's own timer slot) until `PauseCommit` (the voice paused), `VadStart` (the segment resumes) or `PauseCap` (the session's ceiling) (`sc_voice`) | ✓ | ✓ | ✓ |
+
+The wait is a hold that no verdict will end, so `NoOrphanedHold` takes it as an escape.
+`sc_voice_reach` keeps the property as it read before, `HeldOnlyForVerdict`, as the
+witness that the wait is reached at all, and `sc_voice_reach_pause` and
+`sc_voice_reach_resume` fall on the first trace in which the pause, or a VAD start,
+ends one: both exits are reached, not only declared. The two bounds commit over voice
+by design, and each has its own row to keep that visible rather than a property that
+holds by construction. The cap (`PauseCap`, `capCut`, `sc_voice_cap`) can fire at any
+point of the wait. The catch-up bound (`catchupCut`, `sc_voice_catchup`) is a verdict
+that commits on what the analyzer has heard because it has not heard the rest in time.
+`sc_voice_final` runs the final's protocol under the wait on the marked engine: no stale
+turn end, no stranded turn. Every existing row runs with `MaxVoice = 0`, where nothing
+changes.
+
 ### Known limits of this model
 
 - **Durations are out of scope**, as everywhere here, and two timing facts are stated as
@@ -1288,6 +1315,21 @@ the shape the fix is for, at a small fraction of its old rate.
   from). `Backstop` can fire whenever the segment has words and no stop has claimed them,
   including while the caller is still talking: that is the known edge `stt.py` documents
   (stalled interims), kept.
+- **The analyzer's catch-up is abstracted (#140).** The STT waits for the VAD analyzer to
+  have heard the audio sent at the verdict before it reads the voice; the model reads
+  `voice` at the verdict as if that wait were instant. Voice in the last unscored chunk
+  before a commit is below what either can see. The hold's expiry and the backstop are
+  not charged with a cut over the voice: they are bounds with their own documented edges.
+  Two session-wide policies are not modelled as switches, for the reason the no-verdict
+  fallback is not. The wait stands down after three verdict commits running that hit
+  the cap: any other verdict commit breaks the run, and so does a VAD start during a
+  wait; commits that answer no verdict leave it alone. The marks go
+  off when a catch-up that missed its bound has still not got there by the next
+  verdict; slowness alone only commits on what was heard. Each is a policy on repeated
+  faults; what runs while either is in force is the `blind` design, and
+  `sc_voice_blind` is its cost. A disconnect during the wait is not
+  modelled either: it drops the segment with the session, as it does a hold, and this
+  model has no disconnect.
 - **The over-bot path is not modelled.** A VAD stop while the bot is speaking commits at
   once (the flush is the barge-in, teagram-engine#7); it is the `vadStop` design applied to
   one stop, and the verdict that follows is ignored exactly as a stale one is.
@@ -1341,6 +1383,11 @@ the shape the fix is for, at a small fraction of its old rate.
   `MaxBackstops = 1`, `MaxMissed = 0` — with the missed stop on as well the space passes
   30 million and the row is not worth its minutes); the three that fall find their trace in
   under ten states. `check.sh` passes `-deadlock`: the bounds make terminal states ordinary.
+  The #140 rows, measured 2026-10-11 on TLC 2.19: `sc_voice` (two stretches of voice,
+  both faults on) is 10.9 million distinct states (36.1 million generated) and
+  `sc_voice_final` 13.6 million (44.2 million generated). The six that fall
+  (`sc_voice_blind`, `sc_voice_reach`, `sc_voice_reach_pause`, `sc_voice_reach_resume`,
+  `sc_voice_cap`, `sc_voice_catchup`) each find a trace of under ten states.
 
 ## Worth modeling next
 
