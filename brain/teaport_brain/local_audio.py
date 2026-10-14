@@ -271,6 +271,10 @@ FACE_STALE_SECS = 12.0
 FACE_ADVANCE_SECS = setting("LOCAL_AUDIO_FACE_ADVANCE_MS") / 1000
 # How often the avatar's features file is re-read for "phonemes" (FaceTap.draws_phonemes).
 PHONES_RECHECK_SECS = 5.0
+# After the model sets a mood, the reply's text is not scored for one (VADER would read the
+# words and replace the model's choice when the final caption arrives, after the speech):
+# this long, which covers a reply and the caption that trails it.
+MOOD_TEXT_QUIET_SECS = 30.0
 # Chunk loudness -> mouth opening: closed at or below the floor, fully open SPAN dB above.
 MOUTH_FLOOR_DB = -45.0
 MOUTH_SPAN_DB = 25.0
@@ -340,6 +344,7 @@ class FaceTap:
         self._mouth = 0.0
         self._mouth_t = 0.0
         self._hiss = 0.0
+        self._mood_at = None     # when the model last set a mood
         self._drawn_at = {}      # feature -> when the avatar's features were last read for it
         self._drawn = {}         # feature -> whether it said it takes it
         self._active_t = clock()
@@ -406,7 +411,7 @@ class FaceTap:
             self._voiced = False
         elif fresh:
             self._voiced = True
-        if final and text:
+        if final and text and not self._mood_is_the_models():
             self._emit({"text": text})
         return fresh
 
@@ -434,12 +439,17 @@ class FaceTap:
     def draws_phonemes(self) -> bool:
         return self.takes("phonemes")
 
+    def _mood_is_the_models(self) -> bool:
+        return (self._mood_at is not None
+                and self._clock() - self._mood_at < MOOD_TEXT_QUIET_SECS)
+
     def mood(self, name: str) -> None:
         """The model's own mood for the reply it is giving (mood_tag.py): the avatar's
         {"mood": name}, to one that lists moods in its features (an older one would not
         know it). The avatar relaxes it to neutral by itself, so it is sent once."""
         if name and self.takes("moods"):
             self._activity()
+            self._mood_at = self._clock()
             self._emit({"mood": name})
 
     def mouth(self, level: float, hiss: float | None = None) -> None:

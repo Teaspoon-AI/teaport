@@ -1868,3 +1868,15 @@ def test_the_models_mood_reaches_only_an_avatar_that_lists_moods():
     old = la.FaceTap(send=sent.append, features=lambda: {"screen": 1})
     old.mood("sad")
     assert [json.loads(d) for d in sent] == [{"mood": "sad"}]
+
+
+def test_a_reply_text_does_not_overwrite_the_models_mood():
+    sent, clock = [], _Clock()
+    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
+                      features=lambda: {"moods": ["sad"]})
+    face.mood("disgusted")
+    face.assistant("ugh, gross", True)
+    assert {"text": "ugh, gross"} not in sent and {"mood": "disgusted"} in sent
+    clock.t += la.MOOD_TEXT_QUIET_SECS + 1
+    face.assistant("lovely day", True)
+    assert {"text": "lovely day"} in sent
