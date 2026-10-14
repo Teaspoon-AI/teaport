@@ -1855,52 +1855,101 @@ def test_without_wake_words_a_session_is_a_conversation(monkeypatch):
     assert asyncio.run(run()) is False and seen == [True], seen
 
 
-if __name__ == "__main__":
-    # test_suite.py runs this file as a script: without this it would pass having run nothing.
-    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+def _mood_face(source="tag", features=None):
+    sent, clock = [], _Clock()
+    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
+                      features=lambda: {"moods": ["sad"]} if features is None else features)
+    face.set_mood_source(source)
+    return face, sent, clock
+
+
+def _moods(sent):
+    return [e["mood"] for e in sent if "mood" in e]
 
 
 def test_the_models_mood_reaches_only_an_avatar_that_lists_moods():
-    sent = []
-    face = la.FaceTap(send=sent.append, features=lambda: {"moods": ["happy", "sad"]})
+    face, sent, _ = _mood_face()
     face.mood("sad")
     face.mood("")
-    old = la.FaceTap(send=sent.append, features=lambda: {"screen": 1})
-    old.mood("sad")
     face.assistant("Oh no", False, "u1")      # shown when its reply is heard
+    old, old_sent, _ = _mood_face(features={"screen": 1})
+    old.mood("sad")
     old.assistant("Oh no", False, "u1")
-    assert [e for e in map(json.loads, sent) if "mood" in e] == [{"mood": "sad"}]
+    assert _moods(sent) == ["sad"] and _moods(old_sent) == []
 
 
 def test_the_models_mood_follows_its_own_reply():
-    sent, clock = [], _Clock()
-    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
-                      features=lambda: {"moods": ["sad"]})
-    moods = lambda: [e["mood"] for e in sent if "mood" in e]
-    texts = lambda: [e["text"] for e in sent if "text" in e]
+    face, sent, clock = _mood_face()
     face.assistant("so", False, "u1")                  # reply 1 is captioning...
     face.mood("disgusted")                            # ...when reply 2's mood arrives
-    assert moods() == []                              # ahead of its audio: not shown yet
     face.assistant("so far", False, "u1")             # reply 1's tail: not this mood's
     face.assistant("so far.", True, "u1")
-    assert moods() == [] and texts() == ["so far."]
+    assert _moods(sent) == ["neutral"]                # (reply 1 untagged: scored: "neutral")
     face.assistant("ugh", False, "u2")                # reply 2's first words are heard
-    assert moods() == ["disgusted"]
+    assert _moods(sent) == ["neutral", "disgusted"]
     clock.t += la.MOOD_RESEND_SECS + 0.1
     face.assistant("ugh, gross", False, "u2")         # kept up while it speaks
-    assert moods() == ["disgusted", "disgusted"]
-    face.assistant("ugh, gross", True, "u2")          # its text must not replace the mood
-    assert texts() == ["so far."]
-    face.assistant("lovely", False, "u3")             # an untagged reply is scored again
-    face.assistant("lovely day", True, "u3")
-    assert texts() == ["so far.", "lovely day"] and len(moods()) == 2
+    face.assistant("ugh, gross", True, "u2")          # its words must not replace the mood
+    assert _moods(sent) == ["neutral", "disgusted", "disgusted"]
+    face.assistant("what a lovely day", True, "u3")   # an untagged reply is scored again
+    assert _moods(sent)[-1] == "happy"
 
 
-def test_a_mood_for_a_reply_the_user_talked_over_is_dropped():
-    sent = []
-    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=_Clock(),
-                      features=lambda: {"moods": ["sad"]})
+def test_a_one_shot_reply_keeps_its_mood():
+    face, sent, _ = _mood_face()
     face.mood("sad")
-    face.user("wait", False)
-    face.assistant("Sure", False, "u2")
-    assert not any("mood" in e for e in sent)
+    face.assistant("Oh no.", True, "u1")               # first caption is also the final
+    assert _moods(sent) == ["sad"]
+
+
+def test_two_moods_before_either_reply_is_heard_stay_in_order():
+    face, sent, _ = _mood_face()
+    face.mood("sad")
+    face.mood("angry")
+    face.assistant("one", True, "u1")
+    face.assistant("two", True, "u2")
+    assert _moods(sent) == ["sad", "angry"]
+
+
+def test_a_mood_for_a_reply_never_heard_does_not_colour_a_later_one():
+    face, sent, clock = _mood_face()
+    face.mood("sad")                                   # a reply the tool call replaced
+    clock.t += la.MOOD_PENDING_SECS + 1
+    face.assistant("Done.", True, "u9")
+    assert _moods(sent) == ["neutral"]
+    face.mood("angry")
+    face.user("wait", False)                           # talked over
+    face.interrupted()
+    face.assistant("Sure", True, "u10")
+    assert "angry" not in _moods(sent)
+
+
+def test_the_face_mood_setting_picks_the_source():
+    text, sent, _ = _mood_face("text")
+    text.mood("sad")                                   # (the brain sends none, but if one came)
+    text.assistant("This is terrible.", True, "u1")
+    assert _moods(sent) == ["angry"]
+    off, sent, _ = _mood_face("off")
+    off.mood("sad")
+    off.assistant("This is terrible.", True, "u1")
+    assert _moods(sent) == [] and not any("text" in e for e in sent)
+
+
+def test_an_avatar_without_moods_still_scores_the_text_itself():
+    face, sent, _ = _mood_face(features={"screen": 1})
+    face.assistant("All fixed now.", True, "u1")
+    assert {"text": "All fixed now."} in sent and _moods(sent) == []
+
+
+def test_the_hello_says_where_the_mood_comes_from():
+    face, _, _ = _mood_face()
+    face.set_mood_source("off")
+    face.set_mood_source(None)                         # an older brain says nothing
+    face.set_mood_source("bogus")
+    assert face._mood_source == "off"
+
+
+if __name__ == "__main__":
+    # test_suite.py runs this file as a script: without this it would pass having run nothing.
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

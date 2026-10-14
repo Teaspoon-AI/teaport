@@ -20,7 +20,10 @@
 #
 #   us -> plugin (serialize):
 #       OutputAudioRawFrame       -> binary raw PCM16 24 kHz  (bot speech)
-#       {"type":"hello","features":{"context":{limits}}}  (on accept, written straight
+#       {"type":"hello","features":{"context":{limits}}[,"face_mood":tag|text|off]}
+#                                                           (face_mood: only to a client that
+#                                                           announced ?features=mood)
+#                                                           (on accept, written straight
 #                                                           to the socket by gateway_server)
 #       {"type":"response","state":"start"|"done"}  (frames an utterance said outside
 #                                                     the pipeline: the busy line to a

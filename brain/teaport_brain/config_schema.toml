@@ -270,14 +270,15 @@ tier = "tuning"
 help = "Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse."
 
 [[settings]]
-name = "TEAPORT_MOODS"
+name = "TEAPORT_FACE_MOOD"
 store = "brain_env"
 group = "llm"
-type = "flag"
-default = true
+type = "enum"
+values = ["tag", "text", "off"]
+default = "tag"
 read = "startup"
 tier = "tuning"
-help = "Let the model begin a reply with a mood tag ([mood: sad]) for the face of a client that shows moods (the OLED avatar). The tag is never spoken."
+help = "Where the OLED face's mood comes from. tag: the model begins a reply with a mood tag ([mood: sad], never spoken) when it has a clear feeling, and the reply's words are scored (VADER) when it gave none. text: the words only, no tag. off: the face is given no mood."
 
 [[settings]]
 name = "TEAPORT_LLM_GUARD_RECOVERY"

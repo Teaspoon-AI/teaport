@@ -73,6 +73,8 @@ dependencies = [
   "websockets>=16,<17",
   "httpx",
   "openai",
+  # The face mood from a reply's words (face_mood.py), when the model gave none.
+  "vaderSentiment==3.3.2",
 ]
 
 [dependency-groups]

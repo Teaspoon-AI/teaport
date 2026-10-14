@@ -115,6 +115,7 @@ import soxr
 from loguru import logger
 
 from teaport_brain import display, xvf_echo
+from teaport_brain.face_mood import LazyVader
 from teaport_brain.wake_words import parse_phrases as wake_phrases
 from teaport_brain.settings import setting
 
@@ -274,6 +275,9 @@ PHONES_RECHECK_SECS = 5.0
 # A model mood is shown when its reply's first words are heard, and re-sent this often
 # while that reply speaks: the avatar relaxes a mood to neutral 4 s after the last one.
 MOOD_RESEND_SECS = 2.0
+# A mood the model set waits this long for its reply to be heard (a reply cut off or
+# answered by a tool never is), so it cannot colour a later one.
+MOOD_PENDING_SECS = 20.0
 # Chunk loudness -> mouth opening: closed at or below the floor, fully open SPAN dB above.
 MOUTH_FLOOR_DB = -45.0
 MOUTH_SPAN_DB = 25.0
@@ -343,8 +347,13 @@ class FaceTap:
         self._mouth = 0.0
         self._mouth_t = 0.0
         self._hiss = 0.0
+        # Where the face's mood comes from (TEAPORT_FACE_MOOD, said in the brain's hello):
+        # "tag" the model's, and the reply's words (VADER) when it gave none; "text" the
+        # words only; "off" neither.
+        self._mood_source = "tag"
+        self._vader = LazyVader()
         self._utt = None         # the utterance the last caption belonged to
-        self._mood_next = None   # (mood, last utterance) the model set, shown at the next reply
+        self._moods = deque(maxlen=2)   # (mood, when) the model set, not yet heard
         self._mood_now = None    # [mood, utterance, last sent] of the reply being heard
         self._drawn_at = {}      # feature -> when the avatar's features were last read for it
         self._drawn = {}         # feature -> whether it said it takes it
@@ -390,7 +399,7 @@ class FaceTap:
     def user(self, text: str, final: bool) -> None:
         self._activity()
         if text:
-            self._mood_next = None   # speech over a reply: its mood died unheard
+            self._moods.clear()      # speech over a reply: its mood died unheard
         if final:
             if text.strip():
                 self.state("thinking")
@@ -415,15 +424,15 @@ class FaceTap:
             self._voiced = False
         elif fresh:
             self._voiced = True
-        mine = self._mood_now is not None and self._mood_now[1] == utterance
-        if fresh:
-            self._show_mood(utterance)
-        if final and text and not mine:     # (VADER would replace the model's mood)
-            self._emit({"text": text})
-        if final:
-            self._mood_now = None
+        new = utterance is not None and utterance != self._utt
         if utterance is not None:
             self._utt = utterance
+        if fresh:
+            self._show_mood(new, utterance)
+        if final and text and not (self._mood_now and self._mood_now[1] == utterance):
+            self._score(text)       # (a reply with a mood of the model's is not scored)
+        if final:
+            self._mood_now = None
         return fresh
 
     def audio(self) -> None:
@@ -450,28 +459,44 @@ class FaceTap:
     def draws_phonemes(self) -> bool:
         return self.takes("phonemes")
 
-    def _show_mood(self, utterance) -> None:
-        """Words of `utterance` are heard: bring up the mood the model set for it, or keep
+    def set_mood_source(self, source) -> None:
+        """TEAPORT_FACE_MOOD, as the brain's hello says it (an older brain says nothing)."""
+        if source in ("tag", "text", "off"):
+            self._mood_source = source
+
+    def _show_mood(self, new: bool, utterance) -> None:
+        """Words of `utterance` are heard: bring up the mood the model set for it (the
+        oldest it has not shown, for a reply whose words have not been heard yet), or keep
         up the one it is showing."""
         now = self._clock()
-        if self._mood_next and (self._mood_next[1] is None or utterance != self._mood_next[1]):
-            # (the reply before it may still be captioning its tail: not that one)
-            self._mood_now = [self._mood_next[0], utterance, now]
-            self._mood_next = None
+        while self._moods and now - self._moods[0][1] > MOOD_PENDING_SECS:
+            self._moods.popleft()
+        if new and self._moods:
+            self._mood_now = [self._moods.popleft()[0], utterance, now]
             self._emit({"mood": self._mood_now[0]})
         elif (self._mood_now and utterance == self._mood_now[1]
               and now - self._mood_now[2] >= MOOD_RESEND_SECS):
             self._mood_now[2] = now
             self._emit({"mood": self._mood_now[0]})
 
+    def _score(self, text: str) -> None:
+        """The mood the words of a reply show, to the avatar: as {"mood"}, or as {"text"}
+        (which it scores itself) when it does not list moods yet."""
+        if self._mood_source == "off":
+            return
+        if self.takes("moods"):
+            self._emit({"mood": self._vader.mood(text)})
+        else:
+            self._emit({"text": text})
+
     def mood(self, name: str) -> None:
         """The model's own mood for the reply it is giving (mood_tag.py). It arrives as the
         reply starts, ahead of its audio, so it waits for the reply's first heard words
         (assistant) and is kept up while they last. Only to an avatar that lists moods in its
         features (an older one would not know it)."""
-        if name and self.takes("moods"):
+        if name and self._mood_source == "tag" and self.takes("moods"):
             self._activity()
-            self._mood_next = (name, self._utt)
+            self._moods.append((name, self._clock()))
 
     def mouth(self, level: float, hiss: float | None = None) -> None:
         if self._state != "speaking":
@@ -497,6 +522,7 @@ class FaceTap:
 
     def interrupted(self) -> None:
         self._activity()
+        self._moods.clear()
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self.state("listening")
@@ -1647,10 +1673,12 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                     # Our asleep session has the engine, so nothing else is live: the face
                     # may sleep now (not at the dial, which the brain may refuse).
                     face.sleep()
-            elif kind == "hello" and wake:
-                if m.get("wake") not in ("asleep", "awake"):
-                    raise Ungated("the brain's hello does not say it gates the room")
-                gated.set()
+            elif kind == "hello":
+                face.set_mood_source(m.get("face_mood"))
+                if wake:
+                    if m.get("wake") not in ("asleep", "awake"):
+                        raise Ungated("the brain's hello does not say it gates the room")
+                    gated.set()
             elif kind == "hold":
                 hold["on"] = bool(m.get("on"))
                 logger.info("on hold: a phone call has the box — the conversation waits"

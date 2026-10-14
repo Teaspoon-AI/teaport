@@ -6,6 +6,8 @@ import asyncio
 import os
 import sys
 
+import pytest
+
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
 
@@ -130,3 +132,7 @@ def test_a_reply_of_only_a_tag_is_not_left_silent():
     text, moods = run(["[mood: sad]", " \n"])
     assert text.strip() == RECOVERY_TEXT.strip() and moods == ["sad"]
     assert run(["[mood: sad] ok"]) == ("ok", ["sad"])
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

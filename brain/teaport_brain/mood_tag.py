@@ -33,7 +33,11 @@ from teaport_brain.llm_text_guard import RECOVERY_TEXT
 from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.settings import setting
 
-ENABLED = setting("TEAPORT_MOODS")
+# TEAPORT_FACE_MOOD: "tag" lets the model tag a reply's mood (this module); "text" and "off"
+# do not, and the client is told which (gateway_server's hello): the local audio bridge
+# scores the words itself (face_mood.py) for "tag" and "text", and not at all for "off".
+MODE = setting("TEAPORT_FACE_MOOD")
+ENABLED = MODE == "tag"
 
 # What the model may name: the avatar's eight emotions, and its two plain faces. (The
 # avatar knows aliases too; the model is shown, and held to, these.)
