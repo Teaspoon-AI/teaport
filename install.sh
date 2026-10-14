@@ -1142,14 +1142,25 @@ cap_openclaw_heap() {
   [ -n "$unit" ] && [ -f "$unit" ] || { warn "no openclaw-gateway unit file: its heap limit stays OpenClaw's"; return 1; }
   local want="--max-old-space-size=$OPENCLAW_HEAP_MIB"
   if grep -qE -- "^ExecStart=.* $want( |$)" "$unit"; then return 1; fi
+  # Called from an && / || list, where set -e does not reach: each step checks for itself.
   if grep -qE -- '^ExecStart=.*--max-old-space-size=[0-9]+' "$unit"; then
-    sed -i -E "/^ExecStart=/s/--max-old-space-size=[0-9]+/$want/" "$unit"
+    sed -i -E "/^ExecStart=/s/--max-old-space-size=[0-9]+/$want/" "$unit" \
+      || { warn "could not edit $unit: the gateway heap limit stays OpenClaw's"; return 1; }
+  elif grep -qE '^ExecStart=([^ "]*/)?node ' "$unit"; then
+    # No flag of its own (OpenClaw found no capacity, or NODE_OPTIONS carried one) and node
+    # runs the script directly: a flag right after it is a node option.
+    sed -i -E "s#^(ExecStart=([^ \"]*/)?node) #\\1 $want #" "$unit" \
+      || { warn "could not edit $unit: the gateway heap limit stays OpenClaw's"; return 1; }
   else
-    # No flag of its own (OpenClaw found no capacity, or NODE_OPTIONS carried one): node is
-    # the first word, and a flag ahead of the script is a node option.
-    sed -i -E "s#^(ExecStart=[^ ]+) #\1 $want #" "$unit"
+    # A wrapper or bun runs it (OpenClaw leaves the heap out for both), or a quoted path:
+    # a flag after the first word would be an argument to something else.
+    warn "the gateway unit does not run node directly ($unit): its heap limit stays OpenClaw's"
+    return 1
   fi
-  systemctl --user daemon-reload
+  # OpenClaw reads the loaded unit back when it rewrites it: an edit systemd never loaded
+  # would be overwritten with the old flag.
+  systemctl --user daemon-reload \
+    || { warn "systemctl --user daemon-reload failed: the gateway heap limit may not hold"; return 1; }
   log "OpenClaw gateway heap limit -> ${OPENCLAW_HEAP_MIB} MiB ($unit)"
 }
 
@@ -1347,6 +1358,9 @@ BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 GATEWAY_PORT="${TEAPORT_GATEWAY_PORT:-18789}"     # OpenClaw gateway (sandbox -> host forward)
 OPENCLAW_HEAP_MIB="${TEAPORT_OPENCLAW_HEAP_MIB:-1536}"   # its JS heap limit (cap_openclaw_heap)
+# Checked here, before anything is installed: a value node refuses ("2G") would crash-loop
+# the gateway, and found at the agent phase it would stop the install halfway.
+[[ $OPENCLAW_HEAP_MIB =~ ^[1-9][0-9]*$ ]] || die "TEAPORT_OPENCLAW_HEAP_MIB must be a whole number of MiB, not '$OPENCLAW_HEAP_MIB'"
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS
 # Where 'tls internal' keeps its CA. The Debian caddy package runs the daemon with
 # HOME=/var/lib/caddy, so its data dir is the XDG default underneath that.

@@ -24,8 +24,10 @@ RestartSec=5
 # engine's GPU buffers (~4.3 GB, unswappable) make it the biggest process on an 8 GB box:
 # unadjusted it scores close to the OpenClaw gateway, so a growing agent could get the
 # engine killed and the box would go silent. -500 puts the voice path (engine, brain, SIP
-# gateway, local audio) behind everything else; not -1000, so a leak of its own can
-# still be stopped.
+# gateway, local audio) behind everything else. The offset is half of RAM+swap (11.75 GB
+# with the appliance's 16 GB swap file, more than its RAM), so in practice these go only
+# once nothing else is left to kill, a leak of their own included. -1000 would exempt them
+# outright; nothing needs that.
 OOMScoreAdjust=-500
 
 [Install]
