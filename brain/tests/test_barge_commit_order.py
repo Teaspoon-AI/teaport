@@ -663,6 +663,26 @@ async def test_a_newer_start_supersedes_one_still_waiting():
     assert [m[-1]["content"] for m in llm.asked] == [newer], llm.asked
 
 
+async def test_changed_or_dropped_words_during_the_wait_start_nothing():
+    # The settle window's start held at the fence, then on the frame task the interim
+    # changes (or the segment resets). Nothing is live, so the strategy used to cancel
+    # nothing, and the waiting start went ahead on the words it had.
+    for change in ("interim", "reset"):
+        spec, llm, _agg, fence, frame, waiting = await _waiting_start()
+        strategy = LateStartTurnStopStrategy(
+            turn_analyzer=Scripted(sample_rate=IN_SR, params=SmartTurnParams(stop_secs=1.0)),
+            speculator=spec)
+        strategy._interim = STOP
+        if change == "interim":
+            await strategy._handle_interim(InterimTranscriptionFrame(STOP + " there", "u", "t"))
+        else:
+            await strategy._handle_segment_reset()
+        fence._landed(frame)
+        assert await waiting is False, change
+        await _settled(spec)
+        assert spec.text is None and llm.asked == [], (change, llm.asked)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and asyncio.iscoroutinefunction(v)]

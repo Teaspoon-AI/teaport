@@ -281,9 +281,10 @@ class Speculator:
         self._cut_fence = cut_fence
         # Bumped by every cancel() and every start() that gets as far as the fence: a
         # start() that waited there goes ahead only if neither came in meanwhile. The
-        # wait runs on the strategy's frame (or input) task, and the VAD start that
-        # cancels, or the newer final that supersedes, runs on the other one -- with
-        # nothing live yet for it to cancel.
+        # wait runs on the frame task (a final, the engine's report), the input task
+        # (the VAD stop) or the settle window's timer, and what cancels or supersedes
+        # it (a VAD start, a changed or reset interim, a newer start) can run on
+        # another -- with nothing live yet for it to cancel.
         self._epoch = 0
         self._current: _Speculation | None = None
         # Strong refs, for the readers and the detached closes: the loop holds tasks
@@ -342,7 +343,8 @@ class Speculator:
                 logger.info(f"[SPEC] not started {text[:40]!r}: a cut reply is still "
                             "on its way to the context")
                 return False
-            # Cancelled or superseded while it waited: the words are stale. And a turn
+            # Cancelled while it waited (the caller resumed, or their words changed or
+            # were dropped) or superseded by a newer start: the words are stale. A turn
             # that closed meanwhile cancels nothing (its speculation is the commit's to
             # take), so the turn is asked about again.
             if self._epoch != epoch or not self._controller._user_turn:

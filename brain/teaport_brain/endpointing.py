@@ -624,7 +624,9 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
 
     async def _handle_interim(self, frame):
         """The open segment's words, as the STT has them so far. A change cancels a
-        speculation asked on other words and, under the ceiling, re-arms the window."""
+        speculation asked on other words -- live, or a start still waiting at the cut
+        fence, which has nothing live to compare -- and, under the ceiling, re-arms the
+        window."""
         text = (frame.text or "").strip()
         if text == self._interim:
             return
@@ -632,8 +634,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._interim_at = time.monotonic()
         if self.speculator is None:
             return
-        live = self.speculator.text
-        if live is not None and live != self.speculator.candidate(text):
+        if self.speculator.text != self.speculator.candidate(text):
             await self.speculator.cancel("superseded")
         # With the engine's report, words still on their way are its to announce
         # (_speculate_when_decoded); words after it are not, and the window decides them.
@@ -687,15 +688,14 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     async def _handle_segment_reset(self):
         """The STT's open segment is gone without a close (SegmentResetFrame): its
         interim is no one's words now. Forget it, stop its window, and drop a
-        speculation asked on it."""
+        speculation asked on it (or still waiting at the cut fence to be)."""
         if not self._interim:
             return
         self._interim = ""
         await self._cancel_settle()
-        if self.speculator is not None:
-            live = self.speculator.text
-            if live is not None and live != self.speculator.candidate(""):
-                await self.speculator.cancel("segment-reset")
+        if (self.speculator is not None
+                and self.speculator.text != self.speculator.candidate("")):
+            await self.speculator.cancel("segment-reset")
 
     async def _arm_settle(self, delay: float):
         await self._cancel_settle()
