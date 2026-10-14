@@ -70,6 +70,7 @@ from teaport_brain import echo_guard
 from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
 from teaport_brain import llm_text_guard
+from teaport_brain import onnx_sessions
 from teaport_brain import agent_backend
 from teaport_brain import barge_pause
 from teaport_brain import call_prompt
@@ -974,6 +975,10 @@ def build_agent_session(transport, *, voice: str | None = None,
                     f"ceiling {turns.smartturn_stop_secs}s, threshold "
                     f"{turns.smartturn_complete_threshold}, barge-in "
                     f"{turns.interrupt_min_words} word(s)")
+    # Every session's VAD and Smart Turn run on ONE ONNX session per model, built with
+    # the CPU arena off (onnx_sessions.py); before the analyzers are built, every time
+    # (it is idempotent), so no front-end can build one ahead of it.
+    onnx_sessions.install()
     vad_analyzer = _vad_cls()(
         params=VADParams(
             confidence=VAD_CONFIDENCE, min_volume=VAD_MIN_VOLUME,
