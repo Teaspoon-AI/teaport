@@ -1975,6 +1975,17 @@ def test_a_late_caption_of_a_cut_off_reply_shows_nothing():
     assert _moods(sent) == ["sad"]                       # not scored (neutral) after the cut
 
 
+def test_a_cut_off_replys_late_final_leaves_the_next_replys_mood_alone():
+    face, sent, _ = _mood_face()
+    face.assistant("Let me think about", False, "uA")
+    face.interrupted()
+    face.mood("happy", ["great", "news", "today", "folks"])
+    face.assistant("Great news today folks", False, "uB")
+    face.assistant("Let me think about it", True, "uA")   # late, from the cut reply
+    face.assistant("Great news today folks, all", True, "uB")
+    assert _moods(sent) == ["happy"]                         # B was not scored over it
+
+
 def test_the_face_mood_setting_picks_the_source():
     text, sent, _ = _mood_face("text")
     text.mood("sad", ["this", "is"])                    # (the brain sends none, but if one came)

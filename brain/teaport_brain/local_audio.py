@@ -414,6 +414,8 @@ class FaceTap:
         """A caption. True when it brought new words: the audio still queued is speech.
         `utterance` is the reply it belongs to (captions carry their TTS context id)."""
         self._activity()
+        if utterance is not None and utterance == self._cut:
+            return False                # (a reply the user cut off: its late words show nothing)
         text = text or ""
         prev = self._caption
         new = text[len(prev):] if text.startswith(prev) else text
@@ -431,12 +433,11 @@ class FaceTap:
         new = utterance is not None and utterance != self._utt
         if utterance is not None:
             self._utt = utterance
-        cut = utterance is not None and utterance == self._cut     # (a reply the user cut off)
-        if not cut and (fresh or (final and text and self._matching is not None
-                                  and self._matching == utterance)):
+        if fresh or (final and text and self._matching is not None
+                     and self._matching == utterance):
             self._show_mood(new, utterance, text, final)    # (a final that adds no words
         #                                                     still decides a held pick)
-        if final and text and not cut and not (self._mood_now and self._mood_now[1] == utterance):
+        if final and text and not (self._mood_now and self._mood_now[1] == utterance):
             self._score(text)       # (a reply with a mood of the model's is not scored)
         if final:
             self._mood_now = None
