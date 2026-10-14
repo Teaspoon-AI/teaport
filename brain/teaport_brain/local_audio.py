@@ -480,14 +480,21 @@ class FaceTap:
             self._matching = utterance
         words = lead_words(text)
         if self._matching is not None and self._matching == utterance and self._moods:
-            for i, (mood, starts, _) in enumerate(self._moods):
+            hits = []
+            for i, (_, starts, _) in enumerate(self._moods):
                 k = min(len(words), len(starts))
                 if not starts or (k and words[:k] == starts[:k]):
-                    del self._moods[i]       # (the others wait for their own, or expire)
-                    self._mood_now = [mood, utterance, now]
-                    self._matching = None
-                    self._emit({"mood": mood})
-                    return
+                    hits.append((-k, i))
+            # One or two words fit a stale entry as well as the right one: wait for more of
+            # the reply to tell them apart; with them all, the longest agreement (oldest first).
+            if hits and (len(hits) == 1 or len(words) >= LEAD_WORDS):
+                i = min(hits)[1]
+                mood = self._moods[i][0]
+                del self._moods[i]       # (the others wait for their own, or expire)
+                self._mood_now = [mood, utterance, now]
+                self._matching = None
+                self._emit({"mood": mood})
+                return
         if len(words) >= LEAD_WORDS:
             self._matching = None       # its first words are all in: it had no tag
         if (self._mood_now and utterance == self._mood_now[1]

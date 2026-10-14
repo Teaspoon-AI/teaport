@@ -1937,6 +1937,16 @@ def test_a_mood_is_matched_as_the_words_arrive():
     assert _moods(sent2) == ["neutral"]
 
 
+def test_a_short_caption_prefix_does_not_take_a_stale_moods_place():
+    face, sent, _ = _mood_face()
+    face.mood("sad", ["sure", "thing", "i", "can"])     # its reply was never heard
+    face.mood("happy", ["sure", "happy", "to", "help"])
+    face.assistant("Sure", False, "u1")                  # fits both: wait
+    assert _moods(sent) == []
+    face.assistant("Sure happy to help", False, "u1")
+    assert _moods(sent) == ["happy"]
+
+
 def test_the_face_mood_setting_picks_the_source():
     text, sent, _ = _mood_face("text")
     text.mood("sad", ["this", "is"])                    # (the brain sends none, but if one came)
