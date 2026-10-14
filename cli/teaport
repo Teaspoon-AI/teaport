@@ -65,6 +65,10 @@ envval()    { sed -n "/^$2=/{s///p;q;}" "$1" 2>/dev/null || true; }
 # also like the parser, so `aec = true   # A/B` reads `true` and a `password= # fill in`
 # reads empty (and fails the adopt-time key check) instead of passing as a value.
 confval()   { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | sed -E 's/#.*$//; s/[[:space:]]+$//' | tail -1; }
+# confvals <file> <key> — EVERY value of a key the parser adds up instead of overwriting
+# (sip_source_allow, nameserver: each line adds to its list), top to bottom, one a line,
+# each read as confval reads one. Nothing when the file cannot be read.
+confvals()  { sed -nE "s/^[[:space:]]*$2[[:space:]]*=[[:space:]]*//p" "$1" 2>/dev/null | sed -E 's/#.*$//; s/[[:space:]]+$//' || true; }
 
 fetch() {  # fetch <url-or-path> <dest>
   case "$1" in
@@ -224,6 +228,17 @@ cmd_doctor() {
   elif sip_enabled; then
     [ -x "$SIP_GATEWAY" ] && ok "SIP gateway binary" || failc "SIP gateway binary missing ($SIP_GATEWAY)"
     [ -f "$SIP_CONF" ] || failc "SIP units enabled but $SIP_CONF is missing — the units will not start (teaport sip configure)"
+    # Which addresses may send the gateway SIP requests (teaport-sip#33): what the running
+    # gateway reports, a ✓ only when it confirms the conf (sip_filter_state).
+    local sf sfrc=0
+    if [ -f "$SIP_CONF" ]; then
+      sf="$(sip_filter_state "$SIP_CONF")" || sfrc=$?
+      case "$sfrc" in
+        0) ok "SIP source filter: $sf" ;;
+        1) failc "SIP source filter in $SIP_CONF: $sf" ;;
+        *) warnc "SIP source filter: $sf" ;;
+      esac
+    fi
     local sipdown=0 brainsip=0
     st="$(active teaport-sip)"
     if [ "$st" = active ]; then ok "teaport-sip active"; else failc "teaport-sip is $st"; sipdown=1; fi
@@ -324,13 +339,57 @@ cmd_logs() {
 # decoded 0 chars, live 2026-09-03). So there is deliberately no "restart the brain
 # only" here.
 
-# sip_emit_conf <sip_port> <uds> <host> <domain> <user> <pass>
-# A full teaport-sip gateway .conf (key=value) on stdout. It holds the SIP password: both
-# places it goes are 0600 before a byte is written (the probe's mktemp; the wizard's
-# sip_conf_install, which applies its 600 before the fill).
-sip_emit_conf() {
+# The keys `sip configure` sets, from its answers and from what the units need; every
+# other key in an installed conf is the operator's, and a re-run keeps it (issue #155: a
+# box switched to sip_source_filter = enforce went back to log, its sip_source_allow list
+# gone, with no error, at the next password rotation).
+#   id_uri registrar_uri username password realm — the trunk, from the answers (realm `*`
+#     answers whatever realm the registrar challenges with, so one left from the old
+#     trunk cannot fail the new one);
+#   sip_port uds_path register auto_answer — the units' four, as the adopt path forces
+#     them (sip_adopt_conf_keys): :5060, the socket the brain looks for, a trunk that
+#     registers, and the brain answering.
+# Not owned, so kept: bind_addr, reg_timeout, aec and aec_tail_ms (`teaport sip aec off`
+# was undone by the next configure the same way), log_level and app_log_level — the
+# template's values are what a NEW conf starts with — and every key the template does not
+# write: sip_source_filter, sip_source_allow, nameserver, reg_failover,
+# aec_aggressiveness, capture_dir, and the keys of gateways to come. Everything else is
+# kept rather than a list of keys to keep: such a list goes out of date at the next key
+# the gateway adds, which is how these two were lost. What is kept goes through the
+# gateway's own --check-config and the test registration with the rest (a value the
+# gateway refuses stops the configure, nothing installed), and `configure --fresh` keeps
+# nothing: the template, as a first configure writes it. A key is owned only by its exact
+# name, as the parser reads it (sip_conf_key): `username password = x` is a key of its
+# own, which the gateway warns about and skips, and is kept like any other.
+SIP_WIZARD_KEYS="id_uri registrar_uri username password realm sip_port uds_path register auto_answer"
+declare -A SIP_OWNED=()
+for _k in $SIP_WIZARD_KEYS; do SIP_OWNED[$_k]=1; done; unset _k
+
+# sip_conf_key <line> — the key a conf line sets, read as the gateway's parser reads it
+# (config.h loadConfig): cut at the first `#`, trimmed of space, tab, CR and LF, not blank
+# and not a [section], split at the first `=`, the key trimmed. In SIP_KEY, and its value
+# (trimmed the same way) in SIP_VAL; 1 for a line that sets none (a comment, a blank, a
+# [section], no `=`, an empty key). sip_owned <key> — whether the wizard owns it.
+SIP_KEY=""; SIP_VAL=""
+sip_conf_key() {
+  local l="${1%%#*}" ws=$' \t\r\n' k
+  l="${l#"${l%%[!"$ws"]*}"}"
+  [[ -n $l && $l != "["* && $l == *=* ]] || return 1
+  k="${l%%=*}"; k="${k%"${k##*[!"$ws"]}"}"
+  [ -n "$k" ] || return 1
+  l="${l#*=}"; l="${l#"${l%%[!"$ws"]*}"}"; l="${l%"${l##*[!"$ws"]}"}"
+  SIP_KEY="$k"; SIP_VAL="$l"
+}
+sip_owned() { [ -n "${SIP_OWNED[$1]:-}" ]; }
+
+# sip_conf_template <sip_port> <uds> <host> <domain> <user> <pass> — the wizard's conf,
+# a line an element, into SIP_TPL: a here-document mapfile reads, so the password is in
+# no command's arguments. What a first configure (and --fresh) writes, and what a
+# re-configure sets the owned keys from and compares the kept ones with.
+SIP_TPL=()
+sip_conf_template() {
   local port="$1" uds="$2" h="$3" d="$4" u="$5" p="$6"
-  cat <<EOF
+  mapfile -t SIP_TPL <<EOF
 # teaport-sip gateway config — written by 'teaport sip configure'. Keep mode 600.
 bind_addr=0.0.0.0
 sip_port=$port
@@ -349,6 +408,203 @@ aec_tail_ms=256
 log_level=3
 app_log_level=3
 EOF
+}
+
+# sip_keep_read <conf> — the conf a re-configure replaces, copied into SIP_KEEP before the
+# prompts: its lines, with each line of an owned key (sip_owned) a placeholder ($'\n' and
+# the key's name: a line never holds a newline) where the new value goes, so the old
+# password is not held past the copy. The test registration and the install both fill
+# from this copy (sip_emit_conf), so what is tested is what is installed; SIP_KEEP_STAMP
+# is the conf's sha256, taken before the copy, which the install checks the conf against
+# (a conf changed in between is refused, not overwritten with the copy). None (and an
+# empty SIP_KEEP) when there is no conf. 1, with SIP_WHY, for one it cannot keep:
+# unreadable (installing without its settings is the silent loss #155 is about), or with
+# NUL bytes, which is no text config: the gateway refuses it, and `read` would drop the
+# NUL and keep the rest as if it were one. A first line's UTF-8 BOM is dropped, as the
+# parser drops it.
+SIP_KEEP=(); SIP_KEEP_STAMP=""; SIP_FAIL_HINT=""   # SIP_FAIL_HINT: added to a configure's refusals
+sip_keep_stamp() { local h; h="$({ sha256sum < "$1"; } 2>/dev/null)" || h=none; printf '%s' "${h%% *}"; }
+sip_keep_read() {
+  local f="$1" line n=0
+  SIP_KEEP=(); SIP_KEEP_STAMP="$(sip_keep_stamp "$f")"
+  [ -e "$f" ] || return 0
+  SIP_WHY="$(id -un) cannot read $f, and a re-configure keeps the gateway settings in it that it does not set itself — run this as root with sudo -E, or give its owner read access back (chmod u+r)"
+  [ -f "$f" ] && [ -r "$f" ] || return 1
+  if [ "$(tr -d '\000' < "$f" | wc -c)" != "$(wc -c < "$f")" ]; then
+    SIP_WHY="$f has NUL bytes: it is not a text config, and the gateway refuses it — fix it by hand, or replace it with the template, keeping nothing: teaport sip configure --fresh"
+    return 1
+  fi
+  while IFS= read -r line || [ -n "$line" ]; do
+    n=$((n + 1)); [ "$n" != 1 ] || line="${line#$'\xef\xbb\xbf'}"
+    if sip_conf_key "$line" && sip_owned "$SIP_KEY"; then line=$'\n'"$SIP_KEY"; fi
+    SIP_KEEP+=("$line")
+  done < "$f" || return 1
+}
+
+# sip_keep_names — the kept settings worth naming, in SIP_KEPT: by NAME, a repeated one
+# with its count, leaving out a template key whose value (the last line's, as the parser
+# takes it) is the template's own: bind_addr=0.0.0.0 is what the template writes anyway.
+# A name is listed only when it looks like one ([a-z_], up to 40: what the gateway's own
+# warnings show); the other lines are counted, never shown (one may be a secret pasted in
+# without its key).
+SIP_KEPT=""
+sip_keep_names() {
+  local line k other=0
+  local -a order=()
+  local -A count=() last=() tval=()
+  SIP_KEPT=""
+  sip_conf_template 5060 - - - - -
+  for line in "${SIP_TPL[@]}"; do sip_conf_key "$line" && tval[$SIP_KEY]="$SIP_VAL"; done
+  for line in "${SIP_KEEP[@]}"; do
+    [[ $line != $'\n'* ]] && sip_conf_key "$line" || continue
+    if [[ ${#SIP_KEY} -le 40 && $SIP_KEY =~ ^[a-z_]+$ ]]; then
+      [ -n "${count[$SIP_KEY]:-}" ] || order+=("$SIP_KEY")
+      count[$SIP_KEY]=$(( ${count[$SIP_KEY]:-0} + 1 )); last[$SIP_KEY]="$SIP_VAL"
+    else other=$((other + 1)); fi
+  done
+  for k in "${order[@]}"; do
+    [ -z "${tval[$k]+x}" ] || [ "${last[$k]}" != "${tval[$k]}" ] || continue
+    SIP_KEPT="$SIP_KEPT, $k"; [ "${count[$k]}" = 1 ] || SIP_KEPT="$SIP_KEPT (${count[$k]} lines)"
+  done
+  [ "$other" = 0 ] || SIP_KEPT="$SIP_KEPT, $other more line(s) whose key is not shown"
+  SIP_KEPT="${SIP_KEPT#, }"
+}
+
+# sip_keep_say <conf> <new registrar_uri> — what a re-configure keeps, said before its
+# test registration: the settings in SIP_KEPT (names; nothing at all when every kept line
+# is one the template writes the same), and the source filter (teaport-sip#33) when it is
+# enforce: kept, with its allowlist's size — and a note when the registrar changes under
+# it, since sip_source_allow lists the OLD trunk's call-delivery addresses and the new
+# trunk's may not be on it (teaport-sip#37), or when this gateway build ignores the key.
+# The only values printed are the filter's mode, the count and the two registrars.
+sip_keep_say() {
+  local f="$1" mode n old
+  [ "${#SIP_KEEP[@]}" != 0 ] || return 0
+  sip_keep_names
+  [ -z "$SIP_KEPT" ] || printf 'keeping the settings in %s that configure does not set: %s\n' "$f" "$SIP_KEPT"
+  mode="$(confval "$f" sip_source_filter)"
+  [ "${mode,,}" = enforce ] || return 0
+  n="$(sip_allow_count "$f")"
+  if [ "$n" = 0 ]; then
+    printf '%s sip_source_filter = enforce is kept: SIP requests are taken only from the registrar'"'"'s addresses (there is no sip_source_allow)\n' "$(c "$YEL" 'source filter:')"
+  else
+    printf '%s sip_source_filter = enforce is kept, with its allowlist: %s sip_source_allow entr%s besides the registrar'"'"'s addresses\n' \
+      "$(c "$YEL" 'source filter:')" "$n" "$([ "$n" = 1 ] && echo y || echo ies)"
+  fi
+  old="$(confval "$f" registrar_uri)"
+  [ -z "$old" ] || [ "$old" = "$2" ] || printf '  note: the registrar changes (%s -> %s): check that the new trunk delivers calls only from its registrar'"'"'s addresses or from sip_source_allow, or the filter drops them (teaport-sip#37)\n' "$old" "$2"
+  [ ! -x "$SIP_GATEWAY" ] || sip_gateway_knows sip_source_filter \
+    || printf '  note: %s does not know sip_source_filter (a build older than v0.6.6): the setting is kept, and has no effect until the gateway is updated\n' "$SIP_GATEWAY"
+}
+
+# sip_gateway_knows <word> — whether the gateway binary has <word> in it (an option or a
+# conf key it parses), read from its bytes and never by running it: a build older than
+# teaport-sip#10 took an unknown option for a missing config and STARTED on its built-in
+# defaults (:5060, answering every call).
+sip_gateway_knows() { [ -x "$SIP_GATEWAY" ] && LC_ALL=C grep -qaF -e "$1" -- "$SIP_GATEWAY" 2>/dev/null; }
+
+# sip_conf_check <conf> — the gateway's own verdict (--check-config: the checks a start
+# runs, exiting 78 where a start would refuse the conf). 0: it passes. 1: refused, the
+# gateway's reason in SIP_WHY (its parser names the key and may quote the value it
+# refuses; it never prints the password or a line it cannot parse). 2: nothing to ask —
+# no gateway binary, or one built before --check-config (SIP_WHY says which).
+sip_conf_check() {
+  local out rc=0 why
+  SIP_WHY=""
+  if [ ! -x "$SIP_GATEWAY" ]; then SIP_WHY="no gateway binary at $SIP_GATEWAY to check the conf with"; return 2; fi
+  if ! sip_gateway_knows --check-config; then SIP_WHY="$SIP_GATEWAY has no --check-config (a build older than v0.5), so the conf is not checked by it"; return 2; fi
+  out="$(timeout 20 "$SIP_GATEWAY" --check-config "$1" 2>&1 < /dev/null)" || rc=$?
+  [ "$rc" != 0 ] || return 0
+  why="$(printf '%s\n' "$out" | grep -aE '^\[main\] (config .* is not usable: |cannot read config )' | tail -1 || true)"
+  why="${why#\[main\] }"; why="${why#config "$1" is not usable: }"
+  [ -n "$why" ] || why="$(printf '%s\n' "$out" | tail -n 1)"
+  SIP_WHY="${why:-exit status $rc}"
+  return 1
+}
+
+# sip_allow_count <conf> — how many sip_source_allow entries it lists (a line may hold
+# several, comma- or space-separated).
+sip_allow_count() { confvals "$1" sip_source_allow | tr ',[:blank:]' '\n' | grep -c . || true; }
+# sip_acl_mode — the source filter the RUNNING gateway reported at its start (its
+# `[acl] source filter ENFORCE|LOG|OFF` line, this run only), lower-cased; nothing when
+# it has not logged one (not running, a build older than v0.6.6, a journal this user
+# cannot read).
+sip_acl_mode() {
+  local inv m; inv="$(sip_unit_prop InvocationID)"
+  [ -n "$inv" ] || return 0
+  m="$(journalctl -q "_SYSTEMD_INVOCATION_ID=$inv" -o cat --no-pager 2>/dev/null | grep -m1 -aoE '\[acl\] source filter [A-Z]+' || true)"
+  m="${m##* }"; printf '%s' "${m,,}"
+}
+# sip_filter_state <conf> — the source filter for `sip status` and doctor: what the
+# gateway runs, not only what the conf says. 0 when the running gateway confirms the
+# conf's mode (its [acl] line) and the conf passes its --check-config; 1 when the
+# gateway refuses the conf (or the mode is no mode at all); 2 when the conf's mode is not
+# confirmed — the gateway runs another (the conf changed since it started), has logged
+# none (not running, older than v0.6.6, which ignores the key, journal unreadable) — or
+# the conf cannot be read.
+sip_filter_state() {
+  local f="$1" mode n desc run chk=0 why
+  [ -r "$f" ] || { printf 'unknown (%s cannot read %s)' "$(id -un)" "$f"; return 2; }
+  mode="$(confval "$f" sip_source_filter)"; mode="${mode,,}"; n="$(sip_allow_count "$f")"
+  # Set but empty is no mode: the gateway refuses `sip_source_filter =`, it is not log.
+  [ -n "$mode" ] || [ "$(confvals "$f" sip_source_filter | wc -l)" = 0 ] || mode="(empty)"
+  case "${mode:-log}" in
+    enforce) desc="enforce: SIP requests only from the registrar's addresses and $n sip_source_allow entr$([ "$n" = 1 ] && echo y || echo ies)" ;;
+    log)     desc="${mode:-log (the default)}: requests from elsewhere are logged ([acl] lines), not dropped" ;;
+    off)     desc="off: no filter" ;;
+    *)       printf 'the conf'"'"'s sip_source_filter is not enforce, log or off: the gateway refuses to start on it'; return 1 ;;
+  esac
+  sip_conf_check "$f" || chk=$?
+  if [ "$chk" = 1 ]; then printf 'the gateway refuses %s (--check-config): %s' "$f" "$SIP_WHY"; return 1; fi
+  run="$(sip_acl_mode)"
+  if [ -n "$run" ] && [ "$run" = "${mode:-log}" ] && [ "$chk" = 0 ]; then printf '%s (the running gateway confirms it)' "$desc"; return 0; fi
+  if [ -n "$run" ] && [ "$run" != "${mode:-log}" ]; then
+    printf 'the conf says %s, but the running gateway reports %s (the conf changed since it started? teaport sip restart)' "${mode:-log}" "$run"; return 2
+  fi
+  if [ -n "$run" ]; then why="$SIP_WHY"
+  elif [ -x "$SIP_GATEWAY" ] && ! sip_gateway_knows sip_source_filter; then why="$SIP_GATEWAY does not know sip_source_filter (older than v0.6.6), so there is no filter at all"
+  elif [ "$(active teaport-sip)" != active ]; then why="the gateway is not running"
+  elif ! why="$(sip_journal_note)"; then :
+  else why="the gateway logged no [acl] line this run"; fi
+  printf 'the conf says %s; gateway not confirmed (%s)' "$desc" "$why"; return 2
+}
+
+# sip_emit_conf <sip_port> <uds> <host> <domain> <user> <pass>
+# A full teaport-sip gateway .conf (key=value) on stdout. It holds the SIP password: both
+# places it goes are 0600 before a byte is written (the probe's mktemp; the wizard's
+# sip_conf_install, which applies its 600 before the fill). No command is run with it in
+# its arguments: the template is a here-document mapfile reads, the merge is bash, and
+# the one printf is a builtin.
+# A new conf (and --fresh) is the template. A re-configure keeps what the operator set
+# (issue #155): the conf it replaces (SIP_KEEP, sip_keep_read) is the base, with each
+# owned key's LAST line set from the template (earlier duplicates dropped: the gateway's
+# parser takes the last, as sip_conf_set rewrites it) and every other line as it was:
+# comments, order, every line of a repeated key (sip_source_allow, nameserver), keys
+# this CLI has never heard of. A template key the old conf lacks is added at the end,
+# with the template's value. So a re-run over a wizard's conf nobody touched writes it
+# again byte for byte, and a new password changes one line.
+sip_emit_conf() {
+  local line i
+  local -a merged=()
+  local -A tline=() last=() seen=()
+  sip_conf_template "$@"
+  if [ "${#SIP_KEEP[@]}" = 0 ]; then printf '%s\n' "${SIP_TPL[@]}"; return; fi
+  for line in "${SIP_TPL[@]}"; do sip_conf_key "$line" && tline[$SIP_KEY]="$line"; done
+  for i in "${!SIP_KEEP[@]}"; do
+    line="${SIP_KEEP[$i]}"
+    if [[ $line == $'\n'* ]]; then last[${line:1}]="$i"
+    elif sip_conf_key "$line"; then seen[$SIP_KEY]=1; fi
+  done
+  for i in "${!SIP_KEEP[@]}"; do
+    line="${SIP_KEEP[$i]}"
+    if [[ $line != $'\n'* ]]; then merged+=("$line")
+    elif [ "${last[${line:1}]}" = "$i" ]; then merged+=("${tline[${line:1}]}"); fi
+  done
+  for line in "${SIP_TPL[@]}"; do
+    sip_conf_key "$line" || continue
+    [ -n "${last[$SIP_KEY]:-}" ] || [ -n "${seen[$SIP_KEY]:-}" ] || merged+=("$line")
+  done
+  printf '%s\n' "${merged[@]}"
 }
 
 # sip_conf_owner <dest> — the ONE answer to "can this invoker replace <dest>, and with
@@ -464,8 +720,10 @@ sip_conf_preflight() {
 # 0; 3 when sip_conf_owner or sip_conf_stage refused, with SIP_WHY saying why (the
 # caller's whole message: a note here and a "could not write" there said it twice);
 # <fill>'s 2 (a source it could not read, for the caller to name); else 1. On a failure
-# the temp is gone and the conf as it was. Each step is checked by hand: a caller's `||`
-# turns set -e off in here.
+# the temp is gone and the conf as it was. With SIP_INSTALL_CHECK set (sip_go_live), the
+# gateway's --check-config must pass the staged conf (sip_conf_check), or it is 4 and
+# nothing is renamed. Each step is checked by hand: a caller's `||` turns set -e off in
+# here.
 sip_conf_install() {
   local dest mode="$2" tmp="" rc=0 ro=""
   dest="$(sip_conf_target "$1")"; shift 2
@@ -477,6 +735,11 @@ sip_conf_install() {
   # A conf its owner keeps read-only (0400) is staged 0400 too: writable for the fill.
   [ "$rc" != 0 ] || [ -w "$tmp" ] || { ro=1; chmod u+w "$tmp"; } || rc=1
   [ "$rc" != 0 ] || "$@" > "$tmp" || { rc=$?; [ "$rc" = 2 ] || rc=1; }
+  # The configure paths (sip_go_live) have the gateway check the staged conf before it is
+  # renamed in: 4, its reason in SIP_WHY, for one it refuses.
+  if [ "$rc" = 0 ] && [ -n "${SIP_INSTALL_CHECK:-}" ]; then
+    local crc=0; sip_conf_check "$tmp" || crc=$?; [ "$crc" != 1 ] || rc=4
+  fi
   [ "$rc" != 0 ] || [ -z "$ro" ] || chmod u-w "$tmp" || rc=1
   if [ "$rc" = 0 ] && mv -f "$tmp" "$dest"; then sip_drop "$tmp"; return 0; fi
   rm -f "$tmp"; sip_drop "$tmp"
@@ -808,6 +1071,14 @@ sip_probe_with() {
     2:?*) die "could not read $src — no REGISTER attempted, nothing installed" ;;
     *) die "could not write a probe conf in ${TMPDIR:-/tmp} — no REGISTER attempted, nothing installed" ;;
   esac
+  # The gateway's own checks first (sip_conf_check): a conf it refuses is not a failed
+  # registration, and is said as what it is. The die leaves through the cleanup trap.
+  local crc=0
+  sip_conf_check "$testconf" || crc=$?
+  case "$crc" in
+    1) die "the gateway refuses the conf (--check-config): $SIP_WHY — no REGISTER attempted, nothing installed${SIP_FAIL_HINT:+. $SIP_FAIL_HINT}" ;;
+    2) printf 'note: %s\n' "$SIP_WHY" ;;
+  esac
   sip_probe_register "$testconf" "$testuds" "$label"
 }
 # The wizard's probe (the four answers) and the adopt path's (the SAME conf the operator
@@ -821,12 +1092,15 @@ sip_test_register_conf() {
 # sip_go_live <mode> <source> <fill> [args...] — both configure paths' last step, once the
 # probe passed: `<fill> 5060 $SIP_UDS [args...]` installed as $SIP_CONF (sip_conf_install,
 # <mode> as there), then the units enabled and (re)started and the registration read
-# back. <source> as in sip_probe_with: the file named, "" for none.
+# back. <source> as in sip_probe_with: the file named, "" for none. The staged conf goes
+# through the gateway's --check-config before it is renamed in (SIP_INSTALL_CHECK), so a
+# conf the gateway would refuse never replaces one it runs on.
 sip_go_live() {
-  local mode="$1" src="$2"; shift 2
+  local mode="$1" src="$2" SIP_INSTALL_CHECK=1; shift 2
   sip_conf_install "$SIP_CONF" "$mode" "$1" 5060 "$SIP_UDS" "${@:2}" || case "$?:$src" in
     2:?*) die "could not read $src (changed since the test registration?) — nothing installed, the installed conf, if any, is unchanged" ;;
     3:*) die "$SIP_WHY — nothing installed, the installed conf, if any, is unchanged" ;;
+    4:*) die "the gateway refuses the new conf (--check-config): $SIP_WHY — nothing installed, the installed conf, if any, is unchanged${SIP_FAIL_HINT:+. $SIP_FAIL_HINT}" ;;
     *) die "could not write $SIP_CONF — the installed conf, if any, is unchanged" ;;
   esac
   printf 'installed %s%s (%s)\n' "${src:+$src -> }" "$SIP_CONF" "$(stat -L -c '%U:%G mode %a' "$SIP_CONF")"
@@ -836,7 +1110,7 @@ sip_go_live() {
 }
 
 sip_configure() {
-  local host="" domain="" user="" pass="" yes=0 pass_set=0 conf=""
+  local host="" domain="" user="" pass="" yes=0 pass_set=0 conf="" fresh=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --host)     host="${2:-}"; shift 2 ;;
@@ -845,13 +1119,34 @@ sip_configure() {
       --password) pass="${2:-}"; pass_set=1; shift 2 ;;
       --conf)     conf="${2:-}"; shift 2 ;;
       --yes|-y)   yes=1; shift ;;
-      -h|--help)  echo "usage: teaport sip configure [--host H --domain D --user U --password P] [--yes]"
-                  echo "       teaport sip configure --conf FILE     adopt an existing gateway .conf"; return 0 ;;
+      --fresh)    fresh=1; shift ;;
+      -h|--help)  echo "usage: teaport sip configure [--host H --domain D --user U --password P] [--yes] [--fresh]"
+                  echo "       teaport sip configure --conf FILE     adopt an existing gateway .conf"
+                  echo "  a re-run keeps the installed conf's settings it does not set; --fresh keeps nothing"
+                  echo "  and writes the template, as a first configure does"; return 0 ;;
       *) die "unknown flag: $1 (see: teaport sip configure --help)" ;;
     esac
   done
-  if [ -n "$conf" ]; then sip_adopt_conf "$conf"; return; fi
+  if [ -n "$conf" ]; then
+    [ "$fresh" = 0 ] || die "--fresh is for the wizard: --conf installs the file it is given"
+    sip_adopt_conf "$conf"; return
+  fi
   sip_conf_preflight      # before the prompts, too: no password typed for a refusal
+  # The conf a re-run replaces, copied now (sip_keep_read): its settings are kept, and one
+  # that cannot be kept is refused before a password is typed, not dropped. --fresh keeps
+  # nothing (the way back to the template, which keeping every key took away), and says
+  # what that drops when it is a source filter set to enforce.
+  local target; target="$(sip_conf_target "$SIP_CONF")"
+  if [ "$fresh" = 1 ]; then
+    SIP_KEEP=(); SIP_KEEP_STAMP="$(sip_keep_stamp "$target")"
+    if [ -e "$target" ]; then
+      printf -- '--fresh: writing the template over %s, keeping none of its settings\n' "$SIP_CONF"
+      [ "$(confval "$target" sip_source_filter | tr '[:upper:]' '[:lower:]')" != enforce ] \
+        || printf '  note: that includes sip_source_filter = enforce and its sip_source_allow lines: the filter goes back to the default, log\n'
+    fi
+  else
+    sip_keep_read "$target" || die "$SIP_WHY — nothing tested, nothing installed"
+  fi
   # Prompt for anything still missing; --yes forbids prompting (headless/CI).
   if [ -z "$host" ]; then [ "$yes" = 1 ] && die "--host is required with --yes"; read -r -p 'SIP registrar / SBC host: ' host; fi
   if [ -z "$domain" ]; then
@@ -861,10 +1156,22 @@ sip_configure() {
   if [ "$pass_set" = 0 ]; then [ "$yes" = 1 ] && die "--password is required with --yes"; read -r -s -p 'SIP password: ' pass; echo; fi
   [ -n "$host" ] && [ -n "$user" ] && [ -n "$domain" ] || die "host, domain and user are all required"
   sip_refuse_hand_launched
+  sip_keep_say "$SIP_CONF" "sip:$host"
 
-  # Test-register FIRST: write nothing / leave the units disabled if it fails.
+  # Test-register FIRST: write nothing / leave the units disabled if it fails. A kept
+  # setting may be what failed it (the gateway's check or its output names it): every
+  # refusal from here on names the kept settings again and the way out, --fresh.
+  if [ "${#SIP_KEEP[@]}" != 0 ]; then
+    SIP_FAIL_HINT="The conf kept settings from $SIP_CONF${SIP_KEPT:+ ($SIP_KEPT)}: if one is at fault, fix it there, or start from the template, keeping nothing: teaport sip configure --fresh"
+  fi
   sip_test_register "$host" "$domain" "$user" "$pass" \
-    || die "SIP registration failed — config not written, units left disabled. Fix the credentials/registrar and retry."
+    || die "SIP registration failed — config not written, units left disabled. Fix the credentials/registrar and retry.${SIP_FAIL_HINT:+ $SIP_FAIL_HINT}"
+
+  # What was tested is what is installed: SIP_KEEP is the conf as it was copied, and one
+  # changed since (a `sip aec off` in another terminal during the ~8 s registration)
+  # would lose that change to the install. Refused, and left as the change made it.
+  [ "$(sip_keep_stamp "$(sip_conf_target "$SIP_CONF")")" = "$SIP_KEEP_STAMP" ] \
+    || die "$SIP_CONF changed during the test registration — nothing installed, it is as that change left it; run teaport sip configure again"
 
   # 0600 even over a conf left looser: the staged temp keeps an installed conf's mode,
   # and the wizard's conf never had another.
@@ -1005,6 +1312,8 @@ sip_status() {
     local reg user; reg="$(confval "$SIP_CONF" registrar_uri)"; user="$(confval "$SIP_CONF" username)"
     printf '  %-28s %s\n' "registrar" "${reg:-?}  (user ${user:-?})"
     printf '  %-28s %s\n' "aec" "$(confval "$SIP_CONF" aec)  (tail $(confval "$SIP_CONF" aec_tail_ms) ms)"
+    local sf; sf="$(sip_filter_state "$SIP_CONF")" || sf="$(c "$YEL" "$sf")"
+    printf '  %-28s %s\n' "source filter" "$sf"
     local aa; aa="$(confval "$SIP_CONF" auto_answer)"
     case "$(printf %s "${aa:-true}" | tr A-Z a-z)" in
       false|no|off|0) printf '  %-28s %s\n' "auto_answer" "$aa  (the brain answers, after a couple of rings)" ;;
@@ -1049,6 +1358,8 @@ teaport sip — opt-in SIP telephony (off by default)
 
   teaport sip configure    wizard: registrar/SBC host, domain, user, password; test-registers,
                            then writes ~/.config/teaport/teaport-sip.conf (600) and enables the gateway.
+                           a re-run keeps the conf's other settings (sip_source_filter, ...);
+                           --fresh keeps nothing and writes the template
                            headless: --host H --domain D --user U --password P --yes
                            --conf FILE: adopt an existing gateway .conf instead (test-registered too)
   teaport sip status       the gateway + the brain's SIP front-end + config + this run's registration

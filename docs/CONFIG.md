@@ -289,7 +289,7 @@ In `/etc/teaport/engine.env`.
 
 ## SIP gateway
 
-In `~/.config/teaport/teaport-sip.conf`. Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on.
+In `~/.config/teaport/teaport-sip.conf`. Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it; `teaport sip configure --fresh` keeps nothing and writes the template.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -308,6 +308,8 @@ In `~/.config/teaport/teaport-sip.conf`. Written by `teaport sip configure`; see
 | `aec_tail_ms` | **256** ms (≥ 0) | Echo canceller tail. |
 | `log_level` | **3** (0–6) | pjsua log level. |
 | `app_log_level` | **3** (0–6) | Gateway app log level. |
+| `sip_source_filter` | `log` | Which addresses may send the gateway SIP requests (teaport-sip#33; gateway v0.6.6 and later): its allowlist is every address registrar_uri resolves to, all its DNS SRV targets included, plus sip_source_allow. enforce drops a request from any other address, with no answer and no state (responses to our REGISTERs are never filtered); log accepts it as before and logs an `[acl] ... NOT on the allowlist` line for each new address and method; off is no filter and no lines. Any case; another value is a config error, and the gateway exits 78 rather than start. The gateway logs the mode it runs on at startup (`[acl] source filter ...`); `teaport sip status` and doctor show the conf's mode as confirmed only when that line (this run) agrees and the gateway's `--check-config` passes the conf; a gateway older than v0.6.6 ignores the key, and they say so. One of `enforce`, `log`, `off`. Switch to enforce only once the trunk's call-delivery addresses are confirmed to be its registrar's or on sip_source_allow (teaport-sip#37): run in log first and read the `[acl]` lines over a few real calls, since an address the filter does not know drops the call with nothing sent and nothing seen by the brain. It checks the packet's source address, which can be forged: it is not authentication. With register = false it needs at least one sip_source_allow entry. *Set by hand: `teaport sip configure` never writes it, and keeps it.* |
+| `sip_source_allow` | — | More addresses the gateway takes SIP requests from, besides its registrar's (sip_source_filter): IPv4 or IPv6 addresses or CIDR networks, comma- or space-separated, and the key may be repeated, each line adding to the list. No names (nothing resolves them), no /0 (that is sip_source_filter = off), no address bits beyond the prefix: each is a config error. Unset: the registrar's addresses alone. Repeated lines add up, where every other key's last line wins: the config page shows the last line only, `teaport sip status` counts them all. *Set by hand: `teaport sip configure` never writes it, and keeps it.* |
 
 ## Discord bridge
 
@@ -378,8 +380,27 @@ It test-registers against your trunk (briefly, on a throwaway port — never
 enables the gateway. On a failed register it writes nothing and leaves telephony
 off. Run it as the user the units run as; as root, use `sudo -E` (a plain `sudo`
 resets `HOME`, so it would write a conf the gateway never reads, and is refused): the
-conf, and its directory if it has to make one, are given to the gateway's user. `teaport sip status` shows the gateway, the brain's SIP front-end, the config,
-and this run's registration; `teaport sip disable [--purge]` turns it back off.
+conf, and its directory if it has to make one, are given to the gateway's user. `teaport sip status` shows the gateway, the brain's SIP front-end, the config
+(the source filter's mode included: marked confirmed only when the running gateway's `[acl] source filter` startup line
+agrees and its `--check-config` passes the conf), and this run's registration; `teaport sip disable [--purge]` turns it back off.
+
+Re-running it (a new password, a new registrar) rewrites only the keys it sets —
+the trunk's (`id_uri`, `registrar_uri`, `username`, `password`, `realm`) and the
+units' four (below) — and keeps every other line of the installed conf as it
+was: `sip_source_filter` and every `sip_source_allow` line, `nameserver`,
+`aec` as `teaport sip aec` left it, comments, keys it does not know. Before the
+test registration it lists the kept settings that differ from what it would
+write itself. It prints their names only: the one value it prints is
+`sip_source_filter`'s mode, with how many `sip_source_allow` entries there are
+when it is `enforce` (and the old and new registrar when that changes under
+`enforce`). The gateway checks the result with `--check-config` before the
+test registration and again before it is installed, and a conf it refuses is
+not installed. The gateway's own message, shown then (and in the test
+registration's output when that fails), names the setting and may quote the
+value it refuses; its parser never prints the password or a line it cannot
+parse. A conf `configure` cannot read is refused before any prompt, not
+replaced. `teaport sip configure --fresh` keeps nothing: it writes the
+template, as a first configure does.
 
 Already have a gateway `.conf` — from a box that ran `teaport-sip` by hand, or
 carried over from another one? Adopt it instead of retyping it:

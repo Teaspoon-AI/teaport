@@ -110,6 +110,8 @@ def _desc_cell(row: dict) -> str:
         parts.append(row["note"].strip())
     if row.get("tier") == "installer":
         parts.append("*Set by the installer.*")
+    if row.get("kept"):
+        parts.append("*Set by hand: `teaport sip configure` never writes it, and keeps it.*")
     return _md(" ".join(p for p in parts if p))
 
 
