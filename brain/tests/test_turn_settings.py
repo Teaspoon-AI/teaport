@@ -2,6 +2,8 @@
 # One brain process serves the phone and Talk (issue #58), and their turn-taking was
 # tuned apart in blind A/Bs: each front-end's sessions take their own SIP_*/TALK_*
 # override of the shared knob, read when the session is built (endpointing.turn_settings).
+# The box's own mic is a third front-end, "room", with ROOM_* of its own (issue #159):
+# a stop and a ceiling with schema defaults, and no TALK_* reaching it.
 #
 # Run: python test_turn_settings.py   (or via pytest test_suite.py)
 #
@@ -24,7 +26,7 @@ from pipecat.transports.websocket.fastapi import (  # noqa: E402
     FastAPIWebsocketTransport,
 )
 
-from teaport_brain import endpointing  # noqa: E402
+from teaport_brain import endpointing, settings  # noqa: E402
 from teaport_brain.agent_session import build_agent_session  # noqa: E402
 from teaport_brain.gateway_serializer import TeaportGatewaySerializer  # noqa: E402
 
@@ -60,6 +62,48 @@ def test_each_front_end_takes_its_own_override_else_the_shared_value():
     assert endpointing.turn_settings(None) == shared
 
 
+def test_the_room_has_its_own_values_and_not_talks():
+    # The box's brain.env sets TALK_* 0.2 / 0.6; a room session must not take them.
+    room = endpointing.turn_settings("room")
+    with _Env(OVERRIDES):
+        assert endpointing.turn_settings("room") == room
+    rows = settings.ROWS
+    assert (room.endpoint_stop_secs, room.smartturn_stop_secs) == (
+        rows["ROOM_ENDPOINT_STOP_SECS"]["default"], rows["ROOM_SMARTTURN_STOP_SECS"]["default"])
+    shared = endpointing.TurnSettings()
+    assert (room.smartturn_complete_threshold, room.interrupt_min_words) == (
+        shared.smartturn_complete_threshold, shared.interrupt_min_words)
+    with _Env({"ROOM_ENDPOINT_STOP_SECS": "0.3", "ROOM_INTERRUPT_MIN_WORDS": "3",
+               "ROOM_SMARTTURN_STOP_SECS": "soon"}):
+        r = endpointing.turn_settings("room")
+    assert (r.endpoint_stop_secs, r.interrupt_min_words) == (0.3, 3)
+    assert r.smartturn_stop_secs == room.smartturn_stop_secs   # a typo: the room's default
+
+
+def test_every_front_end_names_each_knob_once_in_field_order():
+    # The one table (FRONT_ENDS): a front-end that read its knobs in another order would
+    # put a stop into the ceiling with nothing to say so.
+    fields = ("ENDPOINT_STOP_SECS", "SMARTTURN_STOP_SECS", "SMARTTURN_COMPLETE_THRESHOLD",
+              "INTERRUPT_MIN_WORDS")
+    for name, read in endpointing.FRONT_ENDS.items():
+        seen = []
+        real = endpointing.setting
+        endpointing.setting = lambda n, **k: seen.append(n)
+        try:
+            read()
+        finally:
+            endpointing.setting = real
+        assert seen == [name.upper() + "_" + f for f in fields], (name, seen)
+
+
+def test_an_unknown_front_end_raises():
+    try:
+        endpointing.turn_settings("rooom")
+    except KeyError:
+        return
+    raise AssertionError("a misspelt front-end must not build on the shared values")
+
+
 def test_a_typo_falls_back_to_the_shared_value():
     with _Env({"SIP_ENDPOINT_STOP_SECS": "0,5", "TALK_INTERRUPT_MIN_WORDS": " "}):
         assert endpointing.turn_settings("sip").endpoint_stop_secs == endpointing.ENDPOINT_STOP_SECS
@@ -74,9 +118,13 @@ def test_a_call_and_a_talk_session_in_one_process_are_built_with_their_own_value
 
     async def run():
         with _Env(OVERRIDES):
-            return build("sip"), build("talk")
-    sip, talk = asyncio.run(run())
+            return build("sip"), build("talk"), build("room")
+    sip, talk, room = asyncio.run(run())
     assert talk.vad_analyzer.params.stop_secs == 0.2
+    expect = endpointing.turn_settings("room")
+    assert room.vad_analyzer.params.stop_secs == expect.endpoint_stop_secs
+    assert room.stt.smartturn_stop_secs == expect.smartturn_stop_secs
+    assert room.turns == expect
     assert sip.vad_analyzer.params.stop_secs == endpointing.ENDPOINT_STOP_SECS
     assert (talk.stt.smartturn_stop_secs, sip.stt.smartturn_stop_secs) == (0.6, endpointing.SMARTTURN_STOP_SECS)
     # The STT reads the session's own analyzer for the caller's voice (issue #140).

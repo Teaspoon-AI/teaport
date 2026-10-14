@@ -955,8 +955,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     - wake_gate: the mic path's wake words (wake_gate.WakeGate; /talk ?wake=, from the
       local audio bridge). The STT consults it before it pushes any transcript, and it
       gets this session's context, to continue the mic conversation in and greet into.
-    - front_end: "sip" or "talk" -- whose turn-taking knobs the session uses
-      (endpointing.turn_settings: SIP_*/TALK_* overrides of the shared values).
+    - front_end: "sip", "talk" or "room" (the box's own mic, a /talk client) -- whose
+      turn-taking knobs the session uses (endpointing.turn_settings: SIP_*/TALK_*/ROOM_*
+      over the shared values). Only the turn-taking tells "room" from "talk"; the
+      call prompt below is offered to both.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -986,6 +988,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     stt.vad_analyzer = vad_analyzer
     if wake_gate is not None:
         stt.wake_gate = wake_gate
+        # TEAPORT_ENDPOINT_DEBUG's census, asleep and awake apart (endpoint_debug.py).
+        if isinstance(vad_analyzer, endpoint_debug.InstrumentedSileroVAD):
+            vad_analyzer.census_phase = lambda: "asleep" if wake_gate.asleep else "awake"
     # The room mic hears the box's own speaker: the bot's words it transcribes are not
     # the user's (echo_guard.py). The tap that tells it what played joins the pipeline.
     guard = echo_guard.EchoGuard() if echo_guard.ENABLED and "local" in client_features else None
@@ -1001,7 +1006,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where
     # that tool is on. A call itself is never asked.
-    prompt = call_prompt.CallPrompt() if front_end == "talk" else None
+    prompt = call_prompt.CallPrompt() if front_end in ("talk", "room") else None
     # One tool set for the schema, the prompt and (below) the handlers: tools.active_tools.
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                            call_prompt=prompt)

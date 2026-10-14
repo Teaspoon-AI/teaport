@@ -71,10 +71,18 @@ class InstrumentedSileroVAD(SileroVADAnalyzer):
     that drove it — reveals whether real speech sits on top of the min_volume /
     confidence gates (the flicker that can delay endpointing)."""
 
+    # What the session is doing, for the census (build_agent_session sets it on a wake
+    # session: "asleep" / "awake", from its WakeGate). None: one phase, "session".
+    census_phase = None
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._dbg_prev = VADState.QUIET
         self._dbg_conf = 0.0
+        self._dbg_phase = None
+        self._dbg_reset()
+
+    def _dbg_reset(self) -> None:
         # Per-frame confidence census — see _dbg_sample. Two histograms of 20 x 0.05
         # buckets, split on the volume gate, plus a frame counter driving the dump.
         self._dbg_loud = [0] * _DIST_BUCKETS
@@ -96,15 +104,32 @@ class InstrumentedSileroVAD(SileroVADAnalyzer):
         A census of every frame is the only thing that shows the real distribution, and
         therefore the only thing that can set this gate once instead of iteratively.
 
-        Split on the volume gate because that is the population that matters: the flicker
-        is confidence dropping WHILE the audio is loud enough to be speech (216/216 and
-        138/138 of the SPEAKING->STOPPING transitions on 2026-09-09), so `loud` is the
-        distribution the confidence threshold is actually deciding on, and `quiet` is the
-        control showing what real silence looks like.
+        Split on the volume gate because that is the population the confidence gate
+        decides on: on the phone line the flicker was confidence dropping WHILE the audio
+        was over the volume gate (216/216 and 138/138 of the SPEAKING->STOPPING
+        transitions on 2026-09-09), and the frames under it are the control. That split
+        is not speech against silence everywhere, though. The room mic (XVF3800) reads
+        0.50-0.60 in a silent room, so most of its silence is over a 0.6 gate (issue
+        #159): there, conf under the gate on frames over it is the room, not speech
+        thrown away. The dump says what each population is, not what it means.
+
+        Per PHASE of the session: a wake session is asleep for hours (the room, the TV,
+        the engine decoding noise) and awake for minutes, and one census across both
+        described neither. When census_phase changes the census so far is dumped under
+        the phase it belongs to and starts again, so "awake" is the conversation alone.
 
         O(1) per frame: this runs in the VAD executor on the hot audio path, so it is one
         bucket increment, and the dump is amortised over _DIST_EVERY frames.
         """
+        try:
+            phase = self.census_phase() if self.census_phase is not None else "session"
+        except Exception:  # noqa: BLE001 -- a census must never break the audio path
+            phase = "?"
+        if phase != self._dbg_phase:
+            if self._dbg_frames or self._dbg_dropped:
+                self._dbg_dump(ended=True)
+            self._dbg_reset()
+            self._dbg_phase = phase
         buckets = self._dbg_loud if volume >= self._params.min_volume else self._dbg_quiet
         try:
             i = int(conf * _DIST_BUCKETS)
@@ -116,7 +141,7 @@ class InstrumentedSileroVAD(SileroVADAnalyzer):
         if self._dbg_frames % _DIST_EVERY == 0:
             self._dbg_dump()
 
-    def _dbg_dump(self) -> None:
+    def _dbg_dump(self, ended: bool = False) -> None:
         def pct(hist, q):
             n = sum(hist)
             if not n:
@@ -130,19 +155,24 @@ class InstrumentedSileroVAD(SileroVADAnalyzer):
         try:
             loud, quiet = self._dbg_loud, self._dbg_quiet
             nl, nq = sum(loud), sum(quiet)
-            # The gate's cost, stated directly: how much of LOUD audio — i.e. audio the
-            # volume gate already calls speech — this confidence threshold is rejecting.
-            below = sum(c for i, c in enumerate(loud)
-                        if (i + 0.5) / _DIST_BUCKETS < self._params.confidence)
+            n = nl + nq
+            gate, vol = self._params.confidence, self._params.min_volume
+            # Frames that pass BOTH gates: the ones the VAD counts as speech. Stated as a
+            # share of all frames, not of the frames over the volume gate -- "rejects 100%
+            # of loud frames" read as speech being thrown away, and on the room mic it was
+            # a silent room over a volume gate it never falls under.
+            both = sum(c for i, c in enumerate(loud) if (i + 0.5) / _DIST_BUCKETS >= gate)
+            tag = f"[VAD-DIST {self._dbg_phase or 'session'}]"
             logger.info(
-                f"[VAD-DIST] loud n={nl} p10={pct(loud, .10):.2f} p50={pct(loud, .50):.2f} "
-                f"p90={pct(loud, .90):.2f} | quiet n={nq} p50={pct(quiet, .50):.2f} "
-                f"p90={pct(quiet, .90):.2f} | conf gate={self._params.confidence} "
-                f"rejects {100 * below / nl if nl else 0:.0f}% of loud frames"
+                f"{tag} {n} frames ({n * 0.032:.0f}s){' at phase end' if ended else ''} | "
+                f"vol>={vol}: {100 * nl / n if n else 0:.0f}% of frames, conf "
+                f"p10={pct(loud, .10):.2f} p50={pct(loud, .50):.2f} p90={pct(loud, .90):.2f} | "
+                f"vol<{vol}: conf p50={pct(quiet, .50):.2f} p90={pct(quiet, .90):.2f} | "
+                f"speech (conf>={gate} and vol>={vol}): {100 * both / n if n else 0:.0f}% of frames"
                 + (f" | DROPPED {self._dbg_dropped} unplaceable frames"
                    if self._dbg_dropped else "")
             )
-            logger.info("[VAD-DIST] loud histogram " + " ".join(
+            logger.info(f"{tag} vol>={vol} conf histogram " + " ".join(
                 f"{(i / _DIST_BUCKETS):.2f}:{c}" for i, c in enumerate(loud) if c))
         except Exception:  # noqa: BLE001
             pass  # a census must never break the audio path

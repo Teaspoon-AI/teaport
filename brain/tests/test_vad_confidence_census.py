@@ -11,7 +11,9 @@
 # The census records EVERY frame instead, split on the volume gate: `loud` is the
 # population the confidence threshold actually decides on (100% of the flicker was
 # confidence dropping while volume stayed above its gate — 216/216 then 138/138), and
-# `quiet` is the control showing what real silence looks like.
+# `quiet` is the control. On the room mic a silent room reads over the volume gate
+# (issue #159), so the dump states shares of all frames rather than "rejects N% of loud
+# frames", and a wake session's asleep and awake hours are counted apart.
 #
 # Run: python test_vad_confidence_census.py   (or via the suite)
 #
@@ -34,12 +36,21 @@ def _vad():
     """An InstrumentedSileroVAD with the census state but no ONNX model."""
     v = ed.InstrumentedSileroVAD.__new__(ed.InstrumentedSileroVAD)
     v._dbg_conf = 0.0
-    v._dbg_loud = [0] * ed._DIST_BUCKETS
-    v._dbg_quiet = [0] * ed._DIST_BUCKETS
-    v._dbg_frames = 0
-    v._dbg_dropped = 0
+    v._dbg_phase = None
+    v._dbg_reset()
     v._params = _Params()
     return v
+
+
+def _dumped(fn):
+    lines = []
+    real = ed.logger.info
+    ed.logger.info = lambda m, *a, **k: lines.append(str(m))
+    try:
+        fn()
+    finally:
+        ed.logger.info = real
+    return lines
 
 
 def test_frames_are_split_on_the_volume_gate():
@@ -54,24 +65,51 @@ def test_frames_are_split_on_the_volume_gate():
     assert v._dbg_quiet[int(0.02 * ed._DIST_BUCKETS)] == 1
 
 
-def test_the_dump_reports_what_the_gate_rejects():
-    # The number the whole exercise needs: how much of the audio the VOLUME gate already
-    # calls speech is being thrown away by the CONFIDENCE gate.
+def test_the_dump_states_shares_of_all_frames_not_rejections():
+    # 30 frames over the volume gate under the conf gate, 70 over both, 100 quiet: the
+    # speech share is of ALL frames (35%), and nothing reads as "rejected" -- on the room
+    # mic the frames over the volume gate are mostly a silent room (issue #159).
     v = _vad()
     for _ in range(30):
-        v._dbg_sample(0.10, 0.8)   # loud but below a 0.35 conf gate
+        v._dbg_sample(0.10, 0.8)
     for _ in range(70):
-        v._dbg_sample(0.80, 0.8)   # loud and above it
-    lines = []
-    real = ed.logger.info
-    ed.logger.info = lambda m, *a, **k: lines.append(str(m))
-    try:
-        v._dbg_dump()
-    finally:
-        ed.logger.info = real
-    joined = " ".join(lines)
-    assert "rejects 30% of loud frames" in joined, joined
-    assert "loud n=100" in joined, joined
+        v._dbg_sample(0.80, 0.8)
+    for _ in range(100):
+        v._dbg_sample(0.02, 0.2)
+    joined = " ".join(_dumped(v._dbg_dump))
+    assert "200 frames" in joined and "vol>=0.6: 50% of frames" in joined, joined
+    assert "speech (conf>=0.35 and vol>=0.6): 35% of frames" in joined, joined
+    assert "reject" not in joined and "loud" not in joined, joined
+
+
+def test_a_phase_change_dumps_the_old_phase_and_starts_again():
+    # A wake session: hours asleep, minutes awake. The census of each is its own.
+    v = _vad()
+    phase = ["asleep"]
+    v.census_phase = lambda: phase[0]
+    for _ in range(40):
+        v._dbg_sample(0.02, 0.55)     # the silent room
+    phase[0] = "awake"
+    lines = _dumped(lambda: v._dbg_sample(0.9, 0.9))
+    assert lines and lines[0].startswith("[VAD-DIST asleep] 40 frames"), lines
+    assert "at phase end" in lines[0], lines
+    assert v._dbg_frames == 1 and sum(v._dbg_quiet) == 0, "the awake census starts empty"
+    assert _dumped(v._dbg_dump)[0].startswith("[VAD-DIST awake] 1 frames"), "and is labelled"
+
+
+def test_a_session_without_phases_is_one_census():
+    v = _vad()
+    for _ in range(5):
+        v._dbg_sample(0.5, 0.9)
+    assert v._dbg_frames == 5
+    assert _dumped(v._dbg_dump)[0].startswith("[VAD-DIST session] 5 frames")
+
+
+def test_a_failing_phase_never_breaks_the_audio_path():
+    v = _vad()
+    v.census_phase = lambda: 1 / 0
+    v._dbg_sample(0.5, 0.9)           # must not raise
+    assert v._dbg_frames == 1 and v._dbg_phase == "?"
 
 
 def test_percentiles_track_the_distribution():
@@ -80,14 +118,7 @@ def test_percentiles_track_the_distribution():
         v._dbg_sample(0.05, 0.8)
     for _ in range(10):
         v._dbg_sample(0.95, 0.8)
-    lines = []
-    real = ed.logger.info
-    ed.logger.info = lambda m, *a, **k: lines.append(str(m))
-    try:
-        v._dbg_dump()
-    finally:
-        ed.logger.info = real
-    head = lines[0]
+    head = _dumped(v._dbg_dump)[0]
     assert "p50=0.07" in head or "p50=0.05" in head, head   # bucket centre of [0.05,0.10)
     assert "p90=0.07" in head or "p90=0.05" in head, head
 
@@ -99,13 +130,7 @@ def test_a_bad_value_neither_records_nor_raises():
     v._dbg_sample("not a number", 0.8)
     assert sum(v._dbg_loud) + sum(v._dbg_quiet) == before, "unplaceable values must not bucket"
     assert v._dbg_dropped == 2, "...and must be COUNTED, not silently dropped"
-    lines = []
-    real = ed.logger.info
-    ed.logger.info = lambda m, *a, **k: lines.append(str(m))
-    try:
-        v._dbg_dump()
-    finally:
-        ed.logger.info = real
+    lines = _dumped(v._dbg_dump)
     assert "DROPPED 2 unplaceable frames" in " ".join(lines), (
         "a census with a hole in it must say so; that is how the last broken probe hid")
 
