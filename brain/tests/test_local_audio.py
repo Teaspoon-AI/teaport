@@ -1867,16 +1867,40 @@ def test_the_models_mood_reaches_only_an_avatar_that_lists_moods():
     face.mood("")
     old = la.FaceTap(send=sent.append, features=lambda: {"screen": 1})
     old.mood("sad")
-    assert [json.loads(d) for d in sent] == [{"mood": "sad"}]
+    face.assistant("Oh no", False, "u1")      # shown when its reply is heard
+    old.assistant("Oh no", False, "u1")
+    assert [e for e in map(json.loads, sent) if "mood" in e] == [{"mood": "sad"}]
 
 
-def test_a_reply_text_does_not_overwrite_the_models_mood():
+def test_the_models_mood_follows_its_own_reply():
     sent, clock = [], _Clock()
     face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
                       features=lambda: {"moods": ["sad"]})
-    face.mood("disgusted")
-    face.assistant("ugh, gross", True)
-    assert {"text": "ugh, gross"} not in sent and {"mood": "disgusted"} in sent
-    clock.t += la.MOOD_TEXT_QUIET_SECS + 1
-    face.assistant("lovely day", True)
-    assert {"text": "lovely day"} in sent
+    moods = lambda: [e["mood"] for e in sent if "mood" in e]
+    texts = lambda: [e["text"] for e in sent if "text" in e]
+    face.assistant("so", False, "u1")                  # reply 1 is captioning...
+    face.mood("disgusted")                            # ...when reply 2's mood arrives
+    assert moods() == []                              # ahead of its audio: not shown yet
+    face.assistant("so far", False, "u1")             # reply 1's tail: not this mood's
+    face.assistant("so far.", True, "u1")
+    assert moods() == [] and texts() == ["so far."]
+    face.assistant("ugh", False, "u2")                # reply 2's first words are heard
+    assert moods() == ["disgusted"]
+    clock.t += la.MOOD_RESEND_SECS + 0.1
+    face.assistant("ugh, gross", False, "u2")         # kept up while it speaks
+    assert moods() == ["disgusted", "disgusted"]
+    face.assistant("ugh, gross", True, "u2")          # its text must not replace the mood
+    assert texts() == ["so far."]
+    face.assistant("lovely", False, "u3")             # an untagged reply is scored again
+    face.assistant("lovely day", True, "u3")
+    assert texts() == ["so far.", "lovely day"] and len(moods()) == 2
+
+
+def test_a_mood_for_a_reply_the_user_talked_over_is_dropped():
+    sent = []
+    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=_Clock(),
+                      features=lambda: {"moods": ["sad"]})
+    face.mood("sad")
+    face.user("wait", False)
+    face.assistant("Sure", False, "u2")
+    assert not any("mood" in e for e in sent)

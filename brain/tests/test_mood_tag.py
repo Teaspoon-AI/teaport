@@ -52,7 +52,8 @@ def test_a_tag_split_across_deltas():
 
 
 def test_case_spaces_and_a_tag_with_nothing_after_it():
-    assert run(["  [Mood : CALM ]"]) == ("", ["calm"])
+    # (a reply of only a tag is apologised for, not left silent: see below)
+    assert run(["  [Mood : CALM ]"])[1] == ["calm"]
 
 
 def test_no_tag_passes_through_untouched():
@@ -121,3 +122,11 @@ def test_the_parser():
 
 def test_the_prompt_names_every_mood():
     assert all(m in mood_tag.PARAGRAPH for m in mood_tag.MOODS)
+
+
+def test_a_reply_of_only_a_tag_is_not_left_silent():
+    from teaport_brain.llm_text_guard import RECOVERY_TEXT
+    assert run(["[mood: sad]"]) == (RECOVERY_TEXT, ["sad"])
+    text, moods = run(["[mood: sad]", " \n"])
+    assert text.strip() == RECOVERY_TEXT.strip() and moods == ["sad"]
+    assert run(["[mood: sad] ok"]) == ("ok", ["sad"])

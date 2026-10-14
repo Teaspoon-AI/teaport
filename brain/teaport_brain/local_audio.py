@@ -271,10 +271,9 @@ FACE_STALE_SECS = 12.0
 FACE_ADVANCE_SECS = setting("LOCAL_AUDIO_FACE_ADVANCE_MS") / 1000
 # How often the avatar's features file is re-read for "phonemes" (FaceTap.draws_phonemes).
 PHONES_RECHECK_SECS = 5.0
-# After the model sets a mood, the reply's text is not scored for one (VADER would read the
-# words and replace the model's choice when the final caption arrives, after the speech):
-# this long, which covers a reply and the caption that trails it.
-MOOD_TEXT_QUIET_SECS = 30.0
+# A model mood is shown when its reply's first words are heard, and re-sent this often
+# while that reply speaks: the avatar relaxes a mood to neutral 4 s after the last one.
+MOOD_RESEND_SECS = 2.0
 # Chunk loudness -> mouth opening: closed at or below the floor, fully open SPAN dB above.
 MOUTH_FLOOR_DB = -45.0
 MOUTH_SPAN_DB = 25.0
@@ -344,7 +343,9 @@ class FaceTap:
         self._mouth = 0.0
         self._mouth_t = 0.0
         self._hiss = 0.0
-        self._mood_at = None     # when the model last set a mood
+        self._utt = None         # the utterance the last caption belonged to
+        self._mood_next = None   # (mood, last utterance) the model set, shown at the next reply
+        self._mood_now = None    # [mood, utterance, last sent] of the reply being heard
         self._drawn_at = {}      # feature -> when the avatar's features were last read for it
         self._drawn = {}         # feature -> whether it said it takes it
         self._active_t = clock()
@@ -388,14 +389,17 @@ class FaceTap:
 
     def user(self, text: str, final: bool) -> None:
         self._activity()
+        if text:
+            self._mood_next = None   # speech over a reply: its mood died unheard
         if final:
             if text.strip():
                 self.state("thinking")
         elif text:
             self.state("listening")
 
-    def assistant(self, text: str, final: bool) -> bool:
-        """A caption. True when it brought new words: the audio still queued is speech."""
+    def assistant(self, text: str, final: bool, utterance=None) -> bool:
+        """A caption. True when it brought new words: the audio still queued is speech.
+        `utterance` is the reply it belongs to (captions carry their TTS context id)."""
         self._activity()
         text = text or ""
         prev = self._caption
@@ -411,8 +415,15 @@ class FaceTap:
             self._voiced = False
         elif fresh:
             self._voiced = True
-        if final and text and not self._mood_is_the_models():
+        mine = self._mood_now is not None and self._mood_now[1] == utterance
+        if fresh:
+            self._show_mood(utterance)
+        if final and text and not mine:     # (VADER would replace the model's mood)
             self._emit({"text": text})
+        if final:
+            self._mood_now = None
+        if utterance is not None:
+            self._utt = utterance
         return fresh
 
     def audio(self) -> None:
@@ -439,18 +450,28 @@ class FaceTap:
     def draws_phonemes(self) -> bool:
         return self.takes("phonemes")
 
-    def _mood_is_the_models(self) -> bool:
-        return (self._mood_at is not None
-                and self._clock() - self._mood_at < MOOD_TEXT_QUIET_SECS)
+    def _show_mood(self, utterance) -> None:
+        """Words of `utterance` are heard: bring up the mood the model set for it, or keep
+        up the one it is showing."""
+        now = self._clock()
+        if self._mood_next and (self._mood_next[1] is None or utterance != self._mood_next[1]):
+            # (the reply before it may still be captioning its tail: not that one)
+            self._mood_now = [self._mood_next[0], utterance, now]
+            self._mood_next = None
+            self._emit({"mood": self._mood_now[0]})
+        elif (self._mood_now and utterance == self._mood_now[1]
+              and now - self._mood_now[2] >= MOOD_RESEND_SECS):
+            self._mood_now[2] = now
+            self._emit({"mood": self._mood_now[0]})
 
     def mood(self, name: str) -> None:
-        """The model's own mood for the reply it is giving (mood_tag.py): the avatar's
-        {"mood": name}, to one that lists moods in its features (an older one would not
-        know it). The avatar relaxes it to neutral by itself, so it is sent once."""
+        """The model's own mood for the reply it is giving (mood_tag.py). It arrives as the
+        reply starts, ahead of its audio, so it waits for the reply's first heard words
+        (assistant) and is kept up while they last. Only to an avatar that lists moods in its
+        features (an older one would not know it)."""
         if name and self.takes("moods"):
             self._activity()
-            self._mood_at = self._clock()
-            self._emit({"mood": name})
+            self._mood_next = (name, self._utt)
 
     def mouth(self, level: float, hiss: float | None = None) -> None:
         if self._state != "speaking":
@@ -1674,7 +1695,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                     restart.caption(m.get("utterance"))
                 if role == "user":
                     face.user(text, final)
-                elif role == "assistant" and face.assistant(text, final):
+                elif role == "assistant" and face.assistant(text, final, m.get("utterance")):
                     play.mark_voiced()
                 if final:
                     logger.info(f"{role}: {text}")

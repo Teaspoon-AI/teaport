@@ -23,11 +23,14 @@ from pipecat.frames.frames import (
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
+    FunctionCallsStartedFrame,
     LLMTextFrame,
     OutputTransportMessageUrgentFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.llm_text_guard import RECOVERY_TEXT
+from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.settings import setting
 
 ENABLED = setting("TEAPORT_MOODS")
@@ -76,6 +79,9 @@ class MoodTag(FrameProcessor):
     def _reset(self):
         self._deciding = True      # still looking at the first deltas of this completion
         self._held = []            # (frame, its text) held while deciding
+        # A tag took the whole reply, and nothing since (a tool call, a word) has answered:
+        # at the End that is dead air, so it is apologised for as the guard does.
+        self._bare = False
 
     async def _release(self, direction):
         held, self._held, self._deciding = self._held, [], False
@@ -88,7 +94,7 @@ class MoodTag(FrameProcessor):
         if isinstance(frame, LLMFullResponseStartFrame):
             self._reset()
         elif isinstance(frame, InterruptionFrame):
-            self._held, self._deciding = [], False
+            self._held, self._deciding, self._bare = [], False, False
         elif isinstance(frame, LLMTextFrame) and self._deciding:
             if frame.text:
                 self._held.append((frame, frame.text))
@@ -106,10 +112,20 @@ class MoodTag(FrameProcessor):
                     message={"type": "mood", "mood": name}), direction)
             else:
                 logger.info("mood tag with an unknown name, stripped")
-            if rest:       # the rest rides the delta that closed the tag
+            if rest.strip():       # the rest rides the delta that closed the tag
                 frame.text = rest
                 await self.push_frame(frame, direction)
+            else:
+                self._bare = True
             return
+        elif isinstance(frame, LLMTextFrame) and frame.text.strip():
+            self._bare = False
+        elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallsDispatchedFrame)):
+            self._bare = False     # the call is the answer
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self._release(direction)
+            if self._bare:
+                self._bare = False
+                logger.warning("mood: a reply of only a tag; speaking the recovery line")
+                await self.push_frame(LLMTextFrame(text=RECOVERY_TEXT), direction)
         await self.push_frame(frame, direction)
