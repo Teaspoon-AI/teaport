@@ -21,7 +21,8 @@
 # the report fall back to the window, as does an engine without it. The final-triggered paths that the verdict
 # hold still produces (the over-the-bot flush, the engine's own close before the stop,
 # a final under the wait) keep asking, a final that confirms the interim keeps its
-# stream, and the final that opens the turn over the bot does not ask.
+# stream, and the final that opens the turn over the bot asks too (the Speculator waits
+# for the reply it cut: test_barge_commit_order).
 #
 # Then the whole path over a real pipeline -- the real aggregator, the real strategy,
 # the real Speculator -- to the commit: the ceiling's final equal to the interim (modulo
@@ -909,12 +910,12 @@ async def _barge_in(rig, interim, final_text):
     await rig.final(final_text)
 
 
-async def test_the_final_that_opens_the_turn_over_the_bot_speculates_nothing():
+async def test_the_final_that_opens_the_turn_over_the_bot_speculates():
     """'Okay, stop.' spoken over the bot: the interim is one word, under the guard, so
     the FINAL opens the turn -- and broadcasts the interruption -- in the same
-    controller call that would speculate on it. The cut reply is not in the context
-    yet, so the snapshot would be missing the truncation the commit makes: a
-    guaranteed ctx-changed miss, one billed request per such barge-in."""
+    controller call that speculates on it. The cut reply is not in the context yet;
+    the Speculator's snapshot waits for it (CutReplyFence, test_barge_commit_order),
+    so this is asked like any final under the wait, and so is the next one."""
     rig = Rig(Incomplete)
     async with running_controller(rig.controller):
         await rig.controller.process_frame(BotStartedSpeakingFrame())
@@ -922,8 +923,12 @@ async def test_the_final_that_opens_the_turn_over_the_bot_speculates_nothing():
         await _barge_in(rig, "Okay", "Okay, stop.")
         assert rig.controller._user_turn, "the final opened the turn"
         assert rig.inferences == 0, "INCOMPLETE was kept across the late start"
-        await rig.wait(SETTLE + 0.1)
-        assert rig.speculator.calls == []
+        assert rig.speculator.calls == [("start", "verdict INCOMPLETE, ceiling running",
+                                         "Okay, stop.")]
+        await rig.final("And tell me a story.")
+        assert rig.speculator.calls[1:] == [
+            ("cancel", "superseded"),
+            ("start", "verdict INCOMPLETE, ceiling running", "Okay, stop. And tell me a story.")]
 
 
 async def test_a_final_that_opens_the_turn_with_the_bot_quiet_speculates():
@@ -935,20 +940,6 @@ async def test_a_final_that_opens_the_turn_with_the_bot_quiet_speculates():
         assert rig.controller._user_turn
         assert rig.speculator.calls == [("start", "verdict INCOMPLETE, ceiling running",
                                          "Okay, stop.")]
-
-
-async def test_the_next_final_after_the_opening_one_speculates():
-    """The skip is for the one frame that opened the turn; a second final on the same
-    turn (the caller went on) is the ordinary case again."""
-    rig = Rig(Incomplete)
-    async with running_controller(rig.controller):
-        c = rig.controller
-        await c.process_frame(BotStartedSpeakingFrame())
-        await _barge_in(rig, "Okay", "Okay, stop.")
-        assert rig.speculator.calls == []
-        await rig.final("And tell me a story.")
-        assert rig.speculator.calls == [("start", "verdict INCOMPLETE, ceiling running",
-                                         "Okay, stop. And tell me a story.")]
 
 
 # -- with the real STT on the other side: the verdict hold still delivers these finals

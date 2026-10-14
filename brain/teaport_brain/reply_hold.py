@@ -406,6 +406,8 @@ class ReplyHoldGate(FrameProcessor):
         await self.push_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
 
     async def _on_interruption(self):
+        # Armed: the last commit's reply never played. Sound because a turn's own
+        # interruption gets here before its commit arms the gate (endpointing.CutReplyFence).
         was_armed, self._armed = self._armed, False
         self._shift.clear()
         self._arrivals.clear()

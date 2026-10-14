@@ -6,7 +6,8 @@
 # the ceiling on honouring Smart Turn's "not done", the Smart Turn threshold the
 # semantic eagerness, INTERRUPT_MIN_WORDS how much speech counts as a barge-in — and
 # keep_barge_in_reachable at the bottom, which is what stops an open user turn from
-# swallowing every barge-in there is.
+# swallowing every barge-in there is, and CutReplyFence below it, which keeps a barge-in's
+# turn from being committed ahead of the reply it cut.
 #
 import asyncio
 import time
@@ -20,6 +21,7 @@ from pipecat.frames.frames import (
     BotStoppedSpeakingFrame,
     DataFrame,
     InterimTranscriptionFrame,
+    InterruptionFrame,
     SystemFrame,
     UninterruptibleFrame,
 )
@@ -374,11 +376,12 @@ class NoSpeechReportFrame(DataFrame, UninterruptibleFrame):
 
 class SegmentDoneSink(FrameProcessor):
     """Drops the STT's frames for the stop strategy -- SegmentDoneFrame,
-    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame, NoSpeechReportFrame. Sits right after the user
-    aggregator, whose stock process_frame forwards every data frame it does not itself
-    consume: the frames are for the stop strategy (which the aggregator hands them to)
-    and would otherwise ride the queue of every processor down to the transport, one
-    per wordless close."""
+    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame, NoSpeechReportFrame. Sits
+    right after the user aggregator (behind only CutReplyFence's head, which passes
+    every frame on inline), whose stock process_frame forwards every data frame it does
+    not itself consume: the frames are for the stop strategy (which the aggregator hands
+    them to) and would otherwise ride the queue of every processor down to the
+    transport, one per wordless close."""
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
@@ -460,15 +463,12 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     (Speculator.start). A final the stop DID fire on is followed by the real request
     within the same call, so nothing is speculated.
 
-    One final is left alone: the one that OPENS the turn over the bot (the "Okay, stop."
-    barge-in under the 2-word guard). The interruption it caused was broadcast in this
-    same controller call and has not reached the pipeline, so neither the ledger's cut
-    nor the assistant aggregator's commit of the cut reply is in the context yet; a
-    snapshot taken now is the context minus the truncation the corrector will make at
-    the commit, i.e. a guaranteed ctx-changed miss and a billed request for nothing. The
-    settled-interim trigger keeps the same rule as a timer can: it does not fire while
-    the bot is still speaking (the interruption has not reached the transport), and the
-    barge-in's own final, which the over-the-bot commit always brings, asks instead.
+    A barge-in's final asks like any other, the one that OPENS the turn over the bot
+    included: its interruption has not crossed the pipeline yet, so the cut reply is not
+    in the context, and Speculator.start waits for it (CutReplyFence) before taking the
+    snapshot. The settled-interim trigger does not fire while the bot is still speaking:
+    that is the over-the-bot stop, which the STT commits at once, and the barge-in's own
+    final, on its way, asks instead.
 
     It also reports every end-of-turn verdict UPSTREAM as a TurnVerdictFrame, for the
     STT service: this is the only object that sees the model's answer at the VAD stop
@@ -532,10 +532,6 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self.speculator = speculator
         self._inferences = 0
         self._bot_speaking = False
-        # Set by handle_user_turn_started, cleared when the frame that caused it has
-        # been fully processed: the controller notifies the strategies of the turn start
-        # BEFORE it hands them the frame, within the same process_frame call.
-        self._turn_opened_by_frame = False
         # VADUserStoppedSpeakingFrames seen: the count the STT stamps its finals with
         # (see the class note), and the latest of them whose close has not landed --
         # None once it has. NOT per turn: see the class note. The debt is only
@@ -589,13 +585,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         elif isinstance(frame, NoSpeechReportFrame):
             self._unreported_n = frame.stop_n
             await self._arm_settle_for_unreported()
-        try:
-            result = await super().process_frame(frame)
-            if isinstance(frame, InterimTranscriptionFrame):
-                await self._handle_interim(frame)
-            return result
-        finally:
-            self._turn_opened_by_frame = False
+        result = await super().process_frame(frame)
+        if isinstance(frame, InterimTranscriptionFrame):
+            await self._handle_interim(frame)
+        return result
 
     def _note_close(self, stop_n: int) -> bool:
         """The STT closed a segment stamped as answering VAD stop `stop_n`. If that is
@@ -654,10 +647,6 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             return
         if not self._transcript_finalized or self._vad_user_speaking:
             return
-        if self._turn_opened_by_frame and self._bot_speaking:
-            logger.debug(f"{self}: no speculation on the final that opened the turn over "
-                         "the bot -- its interruption has not reached the context yet")
-            return
         # A finalized transcript in hand means no interim since (the stock strategy
         # clears the flag on one): the candidate is the aggregation alone.
         await self.speculator.start(self.speculator.candidate(self._interim), why)
@@ -670,7 +659,9 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
 
     async def _handle_interim(self, frame):
         """The open segment's words, as the STT has them so far. A change cancels a
-        speculation asked on other words and, under the ceiling, re-arms the window."""
+        speculation asked on other words -- live, or a start still waiting at the cut
+        fence, which has nothing live to compare -- and, under the ceiling, re-arms the
+        window."""
         text = (frame.text or "").strip()
         if text == self._interim:
             return
@@ -678,8 +669,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._interim_at = time.monotonic()
         if self.speculator is None:
             return
-        live = self.speculator.text
-        if live is not None and live != self.speculator.candidate(text):
+        if self.speculator.text != self.speculator.candidate(text):
             await self.speculator.cancel("superseded")
         # With the engine's report, words still on their way are its to announce
         # (_speculate_when_decoded); words after it are not, and the window decides them.
@@ -733,15 +723,14 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     async def _handle_segment_reset(self):
         """The STT's open segment is gone without a close (SegmentResetFrame): its
         interim is no one's words now. Forget it, stop its window, and drop a
-        speculation asked on it."""
+        speculation asked on it (or still waiting at the cut fence to be)."""
         if not self._interim:
             return
         self._interim = ""
         await self._cancel_settle()
-        if self.speculator is not None:
-            live = self.speculator.text
-            if live is not None and live != self.speculator.candidate(""):
-                await self.speculator.cancel("segment-reset")
+        if (self.speculator is not None
+                and self.speculator.text != self.speculator.candidate("")):
+            await self.speculator.cancel("segment-reset")
 
     async def _arm_settle(self, delay: float):
         await self._cancel_settle()
@@ -764,9 +753,8 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         if not self._interim or not self._incomplete_and_quiet():
             return
         if self._bot_speaking:
-            # The over-the-bot shape (see the class note): the interruption has not
-            # reached the transport, so the cut reply is not in the context yet. The
-            # STT committed at that stop; its final is on the way and asks then.
+            # The over-the-bot shape (see the class note): the STT committed at that
+            # stop; its final is on the way and asks then.
             logger.debug(f"{self}: interim settled with the bot still speaking -- "
                          "leaving the speculation to the barge-in's final")
             return
@@ -868,7 +856,6 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         await super().cleanup()
 
     async def handle_user_turn_started(self):
-        self._turn_opened_by_frame = True
         await self._cancel_settle()
         if self.speculator is not None:
             await self.speculator.cancel("new-turn")
@@ -1049,6 +1036,162 @@ def keep_barge_in_reachable(controller) -> None:
     controller._trigger_user_turn_inference_triggered = _inference
     controller._trigger_user_turn_stop = _stop
     controller.process_frame = _process_frame
+
+
+# --- The cut reply is committed before the turn that cut it --------------------------
+# A barge-in puts two messages into the context from two ends of the pipeline: the reply
+# it cut, committed by the ASSISTANT aggregator (last) when the InterruptionFrame reaches
+# it, and the caller's turn, committed by the USER aggregator. HeardContextCorrector
+# finds the cut reply by position, just before the turn, so the reply has to land first.
+# pipecat 1.8.1's broadcast_interruption() only queues the frame, and a turn that opens
+# on its final after its own VAD stop (LateStartTurnStopStrategy, d78396d) broadcasts
+# and commits in one controller call. Live 2026-10-13 the commit beat the interruption
+# by ~60 ms: the corrector found nothing to correct, the count the caller had stopped
+# was committed after the stop at full length, and the model counted again. The same
+# order armed the reply hold (reply_hold.py) ahead of the turn's own interruption, which
+# it then read as a dropped reply: a false TurnMerge for the next turn.
+#
+# CutReplyFence restores the order. A commit (push_aggregation) and a speculative reply's
+# snapshot (Speculator.start, whose corrector pass consumes the ledger's cut) wait until
+# every InterruptionFrame sent down ahead of them has passed the assistant aggregator.
+# Only an interruption in flight is waited on: ~70 ms over a playing reply, a few ms
+# with the bot silent, nothing otherwise. The wait is bounded (CUT_COMMIT_WAIT_SECS);
+# a timeout is logged, the frames are forgotten so they tax nothing later, the commit
+# goes ahead in the old order and the speculation is not started.
+#
+# No deadlock: what the wait needs is the frame crossing the processors below the user
+# aggregator, each on its own input task, and none of them waits on it. The wait blocks
+# the task it runs on. For a final's commit that is the aggregator's frame task, and its
+# system frames run on meanwhile. A commit or snapshot at a VAD stop or the silence
+# ceiling runs on the INPUT task, so its audio, VAD and CancelFrame queue behind the
+# wait -- only when an interim opened the turn less than ~70 ms before, and never past
+# the bound. A VAD start handled inside a wait is the refused-finalize shape
+# keep_barge_in_reachable re-applies. Not defensive about what it wraps, as
+# keep_barge_in_reachable is not: a pipecat that renames push_aggregation raises at
+# session build, one that renames _aggregation at the first commit.
+
+# The longest a commit (or a snapshot) waits. ~70 ms is the live crossing; this is a
+# ceiling for a loop under load, well short of the 0.45 s every such turn paid before
+# d78396d.
+CUT_COMMIT_WAIT_SECS = 0.5
+
+# InterruptionFrames remembered at most: each is forgotten when it lands, so only frames
+# something swallowed accumulate, and a timed-out wait forgets those too.
+_MAX_IN_FLIGHT = 64
+
+
+class CutReplyFence:
+    """Holds the user turn's commit, and the speculative reply's snapshot, until the
+    reply an interruption cut is in the context. See the note above. Three parts, built
+    and placed by agent_session:
+
+      * `head`: DIRECTLY below the user aggregator. It is called inside the aggregator's
+        own push of the InterruptionFrame, so the frame is on record before the
+        controller call that broadcast it can reach the commit. Any processor between
+        them would take the frame on its own task, later.
+      * `tail`: directly below the assistant aggregator, the last processor. A frame
+        reaching it has been handled there: the cut reply is in the context.
+      * wait_for_cuts(): the wait. hold_commits() puts it in front of a commit.
+
+    Both processors run in direct mode (as pipecat's own pipeline source and sink do):
+    they pass every frame on inline, adding no task and no queue to the path."""
+
+    def __init__(self, *, timeout: float = CUT_COMMIT_WAIT_SECS):
+        self._timeout = timeout
+        # InterruptionFrame id -> a future resolved when it reaches the tail: True, or
+        # False when it is forgotten (a wait timed out on it, or evicted) -- so a
+        # concurrent wait holding it gives up too, and says so.
+        self._in_flight: dict = {}
+        self.head = _CutFenceHead(self)
+        self.tail = _CutFenceTail(self)
+        # Tallies, for the tests.
+        self.waits = 0
+        self.timeouts = 0
+
+    def hold_commits(self, aggregator) -> None:
+        """Wrap ONE user aggregator's push_aggregation -- every path that commits the
+        caller's words passes there: the stop strategy's inference, the turn's stop,
+        the controller's watchdog, the session's end. An empty aggregation commits
+        nothing (pipecat returns at once), so it does not wait: a hangup's CancelFrame
+        is not held for a commit that will not happen."""
+        push_aggregation = aggregator.push_aggregation
+
+        async def _push_aggregation():
+            if aggregator._aggregation:
+                await self.wait_for_cuts()
+            return await push_aggregation()
+
+        aggregator.push_aggregation = _push_aggregation
+
+    def _sent(self, frame) -> None:
+        self._in_flight[frame.id] = asyncio.get_running_loop().create_future()
+        while len(self._in_flight) > _MAX_IN_FLIGHT:
+            self._forget(next(iter(self._in_flight)))
+
+    def _landed(self, frame) -> None:
+        fut = self._in_flight.pop(frame.id, None)
+        if fut is not None and not fut.done():
+            fut.set_result(True)
+
+    def _forget(self, key) -> None:
+        fut = self._in_flight.pop(key)
+        if not fut.done():
+            fut.set_result(False)
+
+    async def wait_for_cuts(self) -> bool:
+        """Wait until every interruption sent down so far has passed the assistant
+        aggregator. False if the bound ran out first (or another wait's did): the cut
+        reply may still land later."""
+        ahead = list(self._in_flight.values())
+        if not ahead:
+            return True
+        self.waits += 1
+        loop = asyncio.get_running_loop()
+        t0 = loop.time()
+        landed, late = await asyncio.wait(ahead, timeout=self._timeout)
+        waited = loop.time() - t0
+        lost = len(late) + sum(1 for f in landed if f.result() is False)
+        if lost:
+            # Forgotten, not waited on again: a frame something swallowed must not tax
+            # every commit after this one.
+            self.timeouts += 1
+            for key in [k for k, f in self._in_flight.items() if f in late]:
+                self._forget(key)
+            logger.warning(f"CUT-FENCE: {lost} interruption(s) had not reached the "
+                           f"assistant aggregator after {waited:.2f}s -- going ahead; a "
+                           "reply they cut may land after the caller's turn")
+            return False
+        logger.debug(f"CUT-FENCE: waited {waited * 1000:.0f} ms for the interruption "
+                     "ahead to commit the reply it cut")
+        return True
+
+
+class _CutFenceHead(FrameProcessor):
+    """CutReplyFence's record of the interruptions going down. See CutReplyFence."""
+
+    def __init__(self, fence: CutReplyFence):
+        super().__init__(enable_direct_mode=True)
+        self._fence = fence
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._fence._sent(frame)
+        await self.push_frame(frame, direction)
+
+
+class _CutFenceTail(FrameProcessor):
+    """CutReplyFence's record of the interruptions the assistant aggregator has handled."""
+
+    def __init__(self, fence: CutReplyFence):
+        super().__init__(enable_direct_mode=True)
+        self._fence = fence
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, InterruptionFrame) and direction == FrameDirection.DOWNSTREAM:
+            self._fence._landed(frame)
+        await self.push_frame(frame, direction)
 
 
 # --- Silero's inference rate -----------------------------------------------------

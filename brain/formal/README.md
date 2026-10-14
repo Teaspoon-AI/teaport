@@ -821,6 +821,16 @@ resumed speech turned out to be wordless (`Wordless`, then `Release`), the drop 
 session's `EndFrame` reaching the gate's queue. `BotStart` now also plays the last
 commit's reply (`reply`), not only the refused-finalize one, and waits while `paused`.
 
+"The drop inside `Interject`'s interruption" is a premise, not a step: the model has the
+interruption reach the gate in the same step as the turn start, ahead of that turn's
+commit. The code did not guarantee it until 2026-10-13. A turn that opens on its final
+after its own VAD stop (the late-start barge-in) commits in the same controller call,
+and pipecat's `broadcast_interruption()` only queues the frame, so the commit armed the
+gate before the turn's own interruption reached it (a false `TurnMerge`), and the cut
+reply was committed after the turn instead of before it. `endpointing.CutReplyFence`
+now holds the commit until the interruption has reached the assistant aggregator, which
+is the order `StartTurn` assumes.
+
 | HOLD | | `NoStaleReply` | `NoSplitTurn` | `NoSilencedBot` | `NoEndBehindHold` |
 |---|---|---|---|---|---|
 | `none` | before #85 | ✗ | ✗ | ✓ | ✓ |

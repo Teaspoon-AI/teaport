@@ -310,6 +310,12 @@ VadStop ==
 \* A user turn starts, and with it the interruption: the bot is cut. One definition
 \* for every transcript that starts a turn (Interject, and the pause's one-word answer
 \* and stop word below).
+\* One step: the interruption has reached the gate (and the assistant aggregator) before
+\* this turn's commit can run. In the code that is endpointing.CutReplyFence's doing --
+\* pipecat only queues the frame, and a turn that opens on its final after its own VAD
+\* stop commits inside the same controller call. Until 2026-10-13 that commit overtook
+\* the interruption: the cut reply landed after the turn, and the gate, armed by the
+\* commit, read the interruption as a dropped reply (a false TurnMerge).
 StartTurn ==
     /\ userTurn' = TRUE
     /\ botSpeaking' = FALSE

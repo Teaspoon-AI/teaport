@@ -109,7 +109,8 @@ class HeardContextCorrector(FrameProcessor):
     def reconcile_for_snapshot(self):
         """The speculative reply's before_snapshot hook (speculate.py): the cut replies
         reconciled, as at a commit -- but this is not a commit, so a pending turn merge
-        is left for the commit it belongs to (taking it here lost it)."""
+        is left for the commit it belongs to (taking it here lost it). Called once
+        CutReplyFence has let the cut reply into the context."""
         self._reconcile(commit=False)
 
     def _reconcile(self, commit: bool = True):
@@ -191,6 +192,9 @@ class HeardContextCorrector(FrameProcessor):
         So we locate the cut turn by POSITION (it is the bot's most recent turn)
         and overwrite its spoken message with the accurate heard prefix from the
         ledger — or insert one if pipecat committed none. Tool results are kept.
+
+        Position also means order: the cut reply must be committed first, which
+        endpointing.CutReplyFence ensures.
 
         Positional anchoring is sound only while every spoken assistant message
         in the context is one the LEDGER also charted. Filler lines (the consult
