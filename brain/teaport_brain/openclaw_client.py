@@ -245,6 +245,18 @@ async def web_fetch(url: str, *, max_chars: int = 1600, timeout: float = 10.0) -
     return _clean(det.get("text", ""))[:max_chars]
 
 
+def _not_voice(pid: int):
+    """The brain's unit puts the voice path last in line for the OOM killer
+    (OOMScoreAdjust in teaport-brain.service), and a child inherits that. The cold CLI is
+    a whole OpenClaw, not voice: it goes back to the default, so memory pressure takes it
+    before the call."""
+    try:
+        with open(f"/proc/{pid}/oom_score_adj", "w") as f:
+            f.write("0")
+    except OSError:
+        pass  # not Linux, or the child has already exited
+
+
 async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tuple[int, bytes, bytes]:
     """Run the `openclaw` CLI as a subprocess, returning (returncode, stdout, stderr).
     Adds the CLI's dir to PATH (it needs its sibling node). Cancellable — kills the child
@@ -257,6 +269,7 @@ async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tu
         stderr=asyncio.subprocess.PIPE,
         env=env,
     )
+    _not_voice(proc.pid)
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout=timeout)
     except (asyncio.TimeoutError, asyncio.CancelledError):

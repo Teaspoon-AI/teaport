@@ -50,6 +50,7 @@
 #   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800;
 #                                 set, it overrides the device already in local-audio.env)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
+#   TEAPORT_OPENCLAW_HEAP_MIB     the host OpenClaw gateway's JS heap limit (default 1536)
 #
 set -euo pipefail
 
@@ -1128,6 +1129,30 @@ phase_agent() {
 }
 
 # --- host OpenClaw -----------------------------------------------------------
+# OpenClaw sizes the gateway's JS heap at half the RAM it sees (3773 MiB on an 8 GB Orin),
+# and on this box the speech engine holds ~4.3 GB of that RAM in GPU buffers that never
+# swap: a gateway allowed to grow that far would crowd out the voice path. The flag lives
+# in the --max-old-space-size of the unit OpenClaw generates, and OpenClaw keeps a heap
+# flag it finds there whenever it rewrites the unit (an update, `gateway install
+# --force`), so setting it there is enough. 1536 MiB is about 4x the heap the gateway
+# used on the appliance (380 MB, 2026-10-14); past it the gateway restarts, as it does on
+# any crash. Returns 0 when it changed the unit, so the caller knows a restart is due.
+cap_openclaw_heap() {
+  local unit; unit="$(systemctl --user show -p FragmentPath --value openclaw-gateway.service 2>/dev/null || true)"
+  [ -n "$unit" ] && [ -f "$unit" ] || { warn "no openclaw-gateway unit file: its heap limit stays OpenClaw's"; return 1; }
+  local want="--max-old-space-size=$OPENCLAW_HEAP_MIB"
+  if grep -qE -- "^ExecStart=.* $want( |$)" "$unit"; then return 1; fi
+  if grep -qE -- '^ExecStart=.*--max-old-space-size=[0-9]+' "$unit"; then
+    sed -i -E "/^ExecStart=/s/--max-old-space-size=[0-9]+/$want/" "$unit"
+  else
+    # No flag of its own (OpenClaw found no capacity, or NODE_OPTIONS carried one): node is
+    # the first word, and a flag ahead of the script is a node option.
+    sed -i -E "s#^(ExecStart=[^ ]+) #\1 $want #" "$unit"
+  fi
+  systemctl --user daemon-reload
+  log "OpenClaw gateway heap limit -> ${OPENCLAW_HEAP_MIB} MiB ($unit)"
+}
+
 agent_openclaw() {
   resolve_gateway_token
   log "host OpenClaw — installing the plugin + wiring talk.realtime"
@@ -1184,10 +1209,14 @@ JSON
   # until the lease expires. So: install when the unit is absent, restart when it is there.
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw gateway install (unit absent) or gateway restart (unit present)\n'
+    printf '  [dry-run] gateway unit: --max-old-space-size=%s (cap_openclaw_heap)\n' "$OPENCLAW_HEAP_MIB"
   elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then
+    cap_openclaw_heap || true
     "$OPENCLAW" gateway restart
   else
     "$OPENCLAW" gateway install
+    # Not restarted for it: see above. The limit takes effect at its next start.
+    cap_openclaw_heap && log "  ... from the gateway's next start (a reboot or the next install)" || true
   fi
 
   # The brain calls back into OpenClaw for memory recall and tools, authenticating with the
@@ -1317,6 +1346,7 @@ phase_credentials() {
 BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 GATEWAY_PORT="${TEAPORT_GATEWAY_PORT:-18789}"     # OpenClaw gateway (sandbox -> host forward)
+OPENCLAW_HEAP_MIB="${TEAPORT_OPENCLAW_HEAP_MIB:-1536}"   # its JS heap limit (cap_openclaw_heap)
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS
 # Where 'tls internal' keeps its CA. The Debian caddy package runs the daemon with
 # HOME=/var/lib/caddy, so its data dir is the XDG default underneath that.

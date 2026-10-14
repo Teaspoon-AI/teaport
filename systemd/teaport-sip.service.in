@@ -47,6 +47,8 @@ Restart=always
 RestartSec=15
 RestartSteps=6
 RestartMaxDelaySec=120
+# The voice path goes last when memory runs out (see teaport-engine.service).
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target
