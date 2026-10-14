@@ -1947,6 +1947,14 @@ def test_a_short_caption_prefix_does_not_take_a_stale_moods_place():
     assert _moods(sent) == ["happy"]
 
 
+def test_a_short_reply_gets_its_own_mood_not_a_stale_ones():
+    face, sent, _ = _mood_face()
+    face.mood("sad", ["sure", "thing", "i", "can"])     # its reply was never heard
+    face.mood("happy", ["sure"])                         # the reply "Sure." (one word)
+    face.assistant("Sure", True, "u1")
+    assert _moods(sent) == ["happy"]
+
+
 def test_the_face_mood_setting_picks_the_source():
     text, sent, _ = _mood_face("text")
     text.mood("sad", ["this", "is"])                    # (the brain sends none, but if one came)

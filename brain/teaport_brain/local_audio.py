@@ -431,7 +431,7 @@ class FaceTap:
         if utterance is not None:
             self._utt = utterance
         if fresh:
-            self._show_mood(new, utterance, text)
+            self._show_mood(new, utterance, text, final)
         if final and text and not (self._mood_now and self._mood_now[1] == utterance):
             self._score(text)       # (a reply with a mood of the model's is not scored)
         if final:
@@ -470,7 +470,7 @@ class FaceTap:
             self._warmed = True      # (the lexicon is read off the loop, before a reply needs it)
             threading.Thread(target=self._vader.mood, args=("ok",), daemon=True).start()
 
-    def _show_mood(self, new: bool, utterance, text: str) -> None:
+    def _show_mood(self, new: bool, utterance, text: str, final: bool = False) -> None:
         """Words of `utterance` are heard: bring up the mood the model set for the reply that
         starts with them (the replies before it had none), or keep up the one it is showing."""
         now = self._clock()
@@ -484,11 +484,13 @@ class FaceTap:
             for i, (_, starts, _) in enumerate(self._moods):
                 k = min(len(words), len(starts))
                 if not starts or (k and words[:k] == starts[:k]):
-                    hits.append((-k, i))
+                    hits.append((len(starts) != len(words), -k, i))
             # One or two words fit a stale entry as well as the right one: wait for more of
-            # the reply to tell them apart; with them all, the longest agreement (oldest first).
-            if hits and (len(hits) == 1 or len(words) >= LEAD_WORDS):
-                i = min(hits)[1]
+            # the reply to tell them apart. With all four, or when the reply is over (it was
+            # shorter than four): the entry of just those words, else the longest agreement
+            # (oldest first).
+            if hits and (len(hits) == 1 or len(words) >= LEAD_WORDS or final):
+                i = min(hits)[2]
                 mood = self._moods[i][0]
                 del self._moods[i]       # (the others wait for their own, or expire)
                 self._mood_now = [mood, utterance, now]
@@ -548,6 +550,7 @@ class FaceTap:
     def interrupted(self) -> None:
         self._activity()
         self._moods.clear()
+        self._matching = self._mood_now = None
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self.state("listening")
