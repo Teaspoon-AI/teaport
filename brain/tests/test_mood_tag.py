@@ -42,6 +42,8 @@ def run(deltas, end=True):
     asyncio.run(go())
     text = "".join(f.text for f in out if isinstance(f, LLMTextFrame))
     moods = [f.message["mood"] for f in out if isinstance(f, OutputTransportMessageUrgentFrame)]
+    run.starts = [f.message["starts"] for f in out
+                  if isinstance(f, OutputTransportMessageUrgentFrame)]
     return text, moods
 
 
@@ -49,13 +51,25 @@ def test_a_leading_tag_is_stripped_and_sent():
     assert run(["[mood: sad] I'm sorry to hear that."]) == ("I'm sorry to hear that.", ["sad"])
 
 
+def test_the_mood_carries_the_first_words_of_its_reply():
+    run(["[mood: sad] I'm so sorry to hear that, truly."])
+    assert run.starts == [["i'm", "so", "sorry", "to"]]
+    run(["[mood: sad]", " Oh", " no,", " that", " is", " hard."])     # words over several deltas
+    assert run.starts == [["oh", "no", "that", "is"]]
+    run(["[mood: sad] Oh dear."])                                      # a short reply: what it had
+    assert run.starts == [["oh", "dear"]]
+    run(["[mood: sad]"])
+    assert run.starts == []                                            # nothing to match: none
+
+
 def test_a_tag_split_across_deltas():
     assert run(["[", "mo", "od: ha", "ppy", "] Gla", "d to."]) == ("Glad to.", ["happy"])
 
 
 def test_case_spaces_and_a_tag_with_nothing_after_it():
-    # (a reply of only a tag is apologised for, not left silent: see below)
-    assert run(["  [Mood : CALM ]"])[1] == ["calm"]
+    # (a reply of only a tag is apologised for, not left silent: see below; with no
+    # words of its own there is nothing to match its mood to, so none is sent)
+    assert run(["  [Mood : CALM ]"])[1] == []
 
 
 def test_no_tag_passes_through_untouched():
@@ -128,9 +142,9 @@ def test_the_prompt_names_every_mood():
 
 def test_a_reply_of_only_a_tag_is_not_left_silent():
     from teaport_brain.llm_text_guard import RECOVERY_TEXT
-    assert run(["[mood: sad]"]) == (RECOVERY_TEXT, ["sad"])
+    assert run(["[mood: sad]"]) == (RECOVERY_TEXT, [])
     text, moods = run(["[mood: sad]", " \n"])
-    assert text.strip() == RECOVERY_TEXT.strip() and moods == ["sad"]
+    assert text.strip() == RECOVERY_TEXT.strip() and moods == []
     assert run(["[mood: sad] ok"]) == ("ok", ["sad"])
 
 

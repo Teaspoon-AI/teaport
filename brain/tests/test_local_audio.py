@@ -1870,23 +1870,23 @@ def _moods(sent):
 
 def test_the_models_mood_reaches_only_an_avatar_that_lists_moods():
     face, sent, _ = _mood_face()
-    face.mood("sad")
-    face.mood("")
+    face.mood("sad", ["oh", "no"])
+    face.mood("", ["x"])
     face.assistant("Oh no", False, "u1")      # shown when its reply is heard
     old, old_sent, _ = _mood_face(features={"screen": 1})
-    old.mood("sad")
+    old.mood("sad", ["oh", "no"])
     old.assistant("Oh no", False, "u1")
     assert _moods(sent) == ["sad"] and _moods(old_sent) == []
 
 
-def test_the_models_mood_follows_its_own_reply():
+def test_the_models_mood_follows_the_reply_it_was_tagged_for():
     face, sent, clock = _mood_face()
     face.assistant("so", False, "u1")                  # reply 1 is captioning...
-    face.mood("disgusted")                            # ...when reply 2's mood arrives
+    face.mood("disgusted", ["ugh", "gross"])          # ...when reply 2's mood arrives
     face.assistant("so far", False, "u1")             # reply 1's tail: not this mood's
     face.assistant("so far.", True, "u1")
     assert _moods(sent) == ["neutral"]                # (reply 1 untagged: scored: "neutral")
-    face.assistant("ugh", False, "u2")                # reply 2's first words are heard
+    face.assistant("ugh", False, "u2")                # reply 2's first word is heard
     assert _moods(sent) == ["neutral", "disgusted"]
     clock.t += la.MOOD_RESEND_SECS + 0.1
     face.assistant("ugh, gross", False, "u2")         # kept up while it speaks
@@ -1898,40 +1898,52 @@ def test_the_models_mood_follows_its_own_reply():
 
 def test_a_one_shot_reply_keeps_its_mood():
     face, sent, _ = _mood_face()
-    face.mood("sad")
+    face.mood("sad", ["oh", "no"])
     face.assistant("Oh no.", True, "u1")               # first caption is also the final
     assert _moods(sent) == ["sad"]
 
 
-def test_two_moods_before_either_reply_is_heard_stay_in_order():
+def test_a_mood_is_matched_by_words_not_by_order():
     face, sent, _ = _mood_face()
-    face.mood("sad")
-    face.mood("angry")
-    face.assistant("one", True, "u1")
-    face.assistant("two", True, "u2")
-    assert _moods(sent) == ["sad", "angry"]
+    face.mood("sad", ["i", "am", "sorry"])
+    face.mood("angry", ["that", "is", "wrong"])
+    face.assistant("Let me check on that.", True, "u0")   # a filler: no mood of its own
+    face.assistant("That is wrong, and", False, "u1")      # the SECOND tagged reply first
+    face.assistant("That is wrong, and I", True, "u1")
+    assert _moods(sent) == ["neutral", "angry"]            # the filler was scored; no steal
+    face.assistant("I am sorry", True, "u2")               # the older mood is still its own
+    assert _moods(sent) == ["neutral", "angry", "sad"]
 
 
-def test_a_mood_for_a_reply_never_heard_does_not_colour_a_later_one():
+def test_a_stale_mood_does_not_colour_an_untagged_reply():
     face, sent, clock = _mood_face()
-    face.mood("sad")                                   # a reply the tool call replaced
-    clock.t += la.MOOD_PENDING_SECS + 1
+    face.mood("sad", ["i", "am", "sorry"])             # its reply was never heard
     face.assistant("Done.", True, "u9")
     assert _moods(sent) == ["neutral"]
-    face.mood("angry")
-    face.user("wait", False)                           # talked over
-    face.interrupted()
-    face.assistant("Sure", True, "u10")
-    assert "angry" not in _moods(sent)
+    clock.t += la.MOOD_PENDING_SECS + 1
+    face.assistant("I am sorry", True, "u10")           # same words, long after: expired
+    assert _moods(sent) == ["neutral", "neutral"]
+
+
+def test_a_mood_is_matched_as_the_words_arrive():
+    face, sent, _ = _mood_face()
+    face.mood("calm", ["well", "now", "then", "here"])
+    face.assistant("Well", False, "u1")                # one word: it could be this reply
+    assert _moods(sent) == ["calm"]
+    face2, sent2, _ = _mood_face()
+    face2.mood("calm", ["well", "now", "then", "here"])
+    face2.assistant("Oh", False, "u1")                  # it is not
+    face2.assistant("Oh dear me", True, "u1")
+    assert _moods(sent2) == ["neutral"]
 
 
 def test_the_face_mood_setting_picks_the_source():
     text, sent, _ = _mood_face("text")
-    text.mood("sad")                                   # (the brain sends none, but if one came)
+    text.mood("sad", ["this", "is"])                    # (the brain sends none, but if one came)
     text.assistant("This is terrible.", True, "u1")
     assert _moods(sent) == ["angry"]
     off, sent, _ = _mood_face("off")
-    off.mood("sad")
+    off.mood("sad", ["this", "is"])
     off.assistant("This is terrible.", True, "u1")
     assert _moods(sent) == [] and not any("text" in e for e in sent)
 
@@ -1945,9 +1957,9 @@ def test_an_avatar_without_moods_still_scores_the_text_itself():
 def test_the_hello_says_where_the_mood_comes_from():
     face, _, _ = _mood_face()
     face.set_mood_source("off")
-    face.set_mood_source(None)                         # an older brain says nothing
-    face.set_mood_source("bogus")
     assert face._mood_source == "off"
+    face.set_mood_source(None)                         # an older brain says nothing: the default
+    assert face._mood_source == "tag"
 
 
 if __name__ == "__main__":

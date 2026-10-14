@@ -8,6 +8,7 @@
 # avatar's (oled_face.py score_to_mood / LazyVader), so a face looks the same either way.
 #
 import os
+import re
 
 
 def score_to_mood(c, text=""):
@@ -17,6 +18,21 @@ def score_to_mood(c, text=""):
     if c <= -0.4:
         return "angry"
     return "curious" if text.strip().endswith("?") else "neutral"
+
+
+LEAD_WORDS = 4
+_WORD = re.compile(r"[a-z0-9]+(?:'[a-z]+)?")
+# The typographic marks a model writes, as the plain ones VADER's lexicon knows
+# ("don’t" would otherwise miss its negation list, and load the emoji table).
+_PLAIN = str.maketrans({"\u2018": "'", "\u2019": "'", "\u201c": '"', "\u201d": '"',
+                        "\u2013": "-", "\u2014": "-", "\u2026": "..."})
+
+
+def lead_words(text: str, n: int = LEAD_WORDS) -> list:
+    """The first `n` words of a reply, lowercase and without punctuation: how a mood the
+    brain tagged is matched to the reply it was meant for (the face hears that reply's
+    words, with no reply id to go by)."""
+    return _WORD.findall(text.translate(_PLAIN).lower())[:n]
 
 
 class LazyVader:
@@ -57,4 +73,5 @@ class LazyVader:
 
     def mood(self, text):
         """The mood the words of `text` show."""
+        text = text.translate(_PLAIN)
         return score_to_mood(self.polarity_scores(text)["compound"], text)

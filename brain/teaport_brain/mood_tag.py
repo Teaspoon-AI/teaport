@@ -29,6 +29,7 @@ from pipecat.frames.frames import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.face_mood import LEAD_WORDS, lead_words
 from teaport_brain.llm_text_guard import RECOVERY_TEXT
 from teaport_brain.services import FunctionCallsDispatchedFrame
 from teaport_brain.settings import setting
@@ -86,6 +87,19 @@ class MoodTag(FrameProcessor):
         # A tag took the whole reply, and nothing since (a tool call, a word) has answered:
         # at the End that is dead air, so it is apologised for as the guard does.
         self._bare = False
+        # A tag was read and its mood waits for the reply's first words: the face matches
+        # a mood to the reply it hears by them. (mood, the text that followed the tag)
+        self._mood = None
+
+    async def _send_mood(self, direction):
+        """The tagged mood, with the first words of the reply it is for."""
+        name, text = self._mood
+        self._mood = None
+        words = lead_words(text)
+        if words:
+            logger.info(f"mood: {name}")
+            await self.push_frame(OutputTransportMessageUrgentFrame(
+                message={"type": "mood", "mood": name, "starts": words}), direction)
 
     async def _release(self, direction):
         held, self._held, self._deciding = self._held, [], False
@@ -98,7 +112,7 @@ class MoodTag(FrameProcessor):
         if isinstance(frame, LLMFullResponseStartFrame):
             self._reset()
         elif isinstance(frame, InterruptionFrame):
-            self._held, self._deciding, self._bare = [], False, False
+            self._held, self._deciding, self._bare, self._mood = [], False, False, None
         elif isinstance(frame, LLMTextFrame) and self._deciding:
             if frame.text:
                 self._held.append((frame, frame.text))
@@ -111,23 +125,31 @@ class MoodTag(FrameProcessor):
             _, name, rest = verdict
             self._held, self._deciding = [], False
             if name:
-                logger.info(f"mood: {name}")
-                await self.push_frame(OutputTransportMessageUrgentFrame(
-                    message={"type": "mood", "mood": name}), direction)
+                self._mood = (name, rest)
             else:
                 logger.info("mood tag with an unknown name, stripped")
             if rest.strip():       # the rest rides the delta that closed the tag
                 frame.text = rest
                 await self.push_frame(frame, direction)
+                if self._mood and len(lead_words(rest)) >= LEAD_WORDS:
+                    await self._send_mood(direction)
             else:
                 self._bare = True
             return
         elif isinstance(frame, LLMTextFrame) and frame.text.strip():
             self._bare = False
+            if self._mood:
+                self._mood = (self._mood[0], self._mood[1] + frame.text)
+                if len(lead_words(self._mood[1])) >= LEAD_WORDS:
+                    await self.push_frame(frame, direction)
+                    await self._send_mood(direction)
+                    return
         elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallsDispatchedFrame)):
             self._bare = False     # the call is the answer
         elif isinstance(frame, LLMFullResponseEndFrame):
             await self._release(direction)
+            if self._mood:       # a short reply: the words it had
+                await self._send_mood(direction)
             if self._bare:
                 self._bare = False
                 logger.warning("mood: a reply of only a tag; speaking the recovery line")
