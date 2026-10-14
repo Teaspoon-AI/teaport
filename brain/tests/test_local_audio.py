@@ -1955,6 +1955,26 @@ def test_a_short_reply_gets_its_own_mood_not_a_stale_ones():
     assert _moods(sent) == ["happy"]
 
 
+def test_a_final_that_repeats_the_last_partial_still_picks_the_mood():
+    face, sent, _ = _mood_face()
+    face.mood("sad", ["sure", "thing", "i", "can"])
+    face.mood("happy", ["sure", "thing"])
+    face.assistant("Sure", False, "u1")
+    face.assistant("Sure thing", False, "u1")
+    assert _moods(sent) == []
+    face.assistant("Sure thing", True, "u1")             # no new words: it is over
+    assert _moods(sent) == ["happy"]
+
+
+def test_a_late_caption_of_a_cut_off_reply_shows_nothing():
+    face, sent, _ = _mood_face()
+    face.mood("sad", ["oh", "no"])
+    face.assistant("Oh no", False, "u1")
+    face.interrupted()
+    face.assistant("Oh no and more", True, "u1")
+    assert _moods(sent) == ["sad"]                       # not scored (neutral) after the cut
+
+
 def test_the_face_mood_setting_picks_the_source():
     text, sent, _ = _mood_face("text")
     text.mood("sad", ["this", "is"])                    # (the brain sends none, but if one came)

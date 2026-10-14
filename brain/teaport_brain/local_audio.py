@@ -359,6 +359,7 @@ class FaceTap:
         # utterance still being matched to one (until it has LEAD_WORDS of them)
         self._moods = deque(maxlen=4)
         self._matching = None
+        self._cut = None         # the utterance a barge-in cut off
         self._mood_now = None    # [mood, utterance, last sent] of the reply being heard
         self._drawn_at = {}      # feature -> when the avatar's features were last read for it
         self._drawn = {}         # feature -> whether it said it takes it
@@ -430,9 +431,12 @@ class FaceTap:
         new = utterance is not None and utterance != self._utt
         if utterance is not None:
             self._utt = utterance
-        if fresh:
-            self._show_mood(new, utterance, text, final)
-        if final and text and not (self._mood_now and self._mood_now[1] == utterance):
+        cut = utterance is not None and utterance == self._cut     # (a reply the user cut off)
+        if not cut and (fresh or (final and text and self._matching is not None
+                                  and self._matching == utterance)):
+            self._show_mood(new, utterance, text, final)    # (a final that adds no words
+        #                                                     still decides a held pick)
+        if final and text and not cut and not (self._mood_now and self._mood_now[1] == utterance):
             self._score(text)       # (a reply with a mood of the model's is not scored)
         if final:
             self._mood_now = None
@@ -551,6 +555,7 @@ class FaceTap:
         self._activity()
         self._moods.clear()
         self._matching = self._mood_now = None
+        self._cut = self._utt
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self.state("listening")
