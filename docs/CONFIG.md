@@ -58,6 +58,7 @@ In `/etc/teaport/brain.env`.
 | `LLM_TIMEOUT_SECS` | **20** s (≥ 1) | How long one completion attempt may take before it is abandoned. One retry follows, so the worst case before the failure is spoken is roughly twice this. Raise it for a slow local llama.cpp box. Without it the OpenAI SDK waits 600 s with no error, no log line and no audio. |
 | `LLM_EXTRA_BODY` | — | Optional JSON object merged into the request extra_body. OpenRouter routing example: {"provider":{"order":["Groq"],"allow_fallbacks":true}}. |
 | `TEAPORT_LLM_TEXT_GUARD` | **on** | Fold degenerate unicode out of the model's replies and cut a runaway ellipsis collapse. |
+| `TEAPORT_MOODS` | **on** | Let the model begin a reply with a mood tag ([mood: sad]) for the face of a client that shows moods (the OLED avatar). The tag is never spoken. |
 | `TEAPORT_LLM_GUARD_RECOVERY` | `""` | The one line spoken when that guard trips. Empty = the built-in English line; override it for a non-English deployment. |
 | `TEAPORT_LLM_ERROR_SPEECH` | **on** | Say a short line out loud when the model call fails, instead of leaving the room silent. |
 | `TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE` | **30** s (≥ 0) | Seconds between spoken failure notices, so a failing endpoint is reported once per window rather than once per turn. |

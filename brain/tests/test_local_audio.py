@@ -331,7 +331,7 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == ("ws://h/talk?features=volume,restart,local,phonemes&client=local-audio"
+    assert la._url() == ("ws://h/talk?features=volume,restart,local,phonemes,mood&client=local-audio"
                          f"&keepalive={la.KEEPALIVE_SECS:g}&token=a%2Bb%26c%3Dd%20%25")
 
 
@@ -1102,7 +1102,7 @@ def test_no_wake_words_is_the_bridge_as_before(monkeypatch):
     monkeypatch.setattr(la, "URL", "ws://h/talk")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     assert not la.wake_mode()
-    assert la._url() == f"ws://h/talk?features=volume,restart,local,phonemes&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
+    assert la._url() == f"ws://h/talk?features=volume,restart,local,phonemes,mood&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
 
 
 def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
@@ -1111,7 +1111,7 @@ def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     import urllib.parse
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url()).query)
-    assert q["features"] == ["volume,restart,local,phonemes,sleep"]
+    assert q["features"] == ["volume,restart,local,phonemes,mood,sleep"]
     assert q["wake"] == ["hey teaport, привет чайник"] and "awake" not in q
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url(awake=True)).query)
     assert q["awake"] == ["1"]
@@ -1858,3 +1858,13 @@ def test_without_wake_words_a_session_is_a_conversation(monkeypatch):
 if __name__ == "__main__":
     # test_suite.py runs this file as a script: without this it would pass having run nothing.
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
+
+
+def test_the_models_mood_reaches_only_an_avatar_that_lists_moods():
+    sent = []
+    face = la.FaceTap(send=sent.append, features=lambda: {"moods": ["happy", "sad"]})
+    face.mood("sad")
+    face.mood("")
+    old = la.FaceTap(send=sent.append, features=lambda: {"screen": 1})
+    old.mood("sad")
+    assert [json.loads(d) for d in sent] == [{"mood": "sad"}]

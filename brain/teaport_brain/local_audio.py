@@ -222,8 +222,10 @@ DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audi
 # restart_session); local says someone is at the box itself, which Wi-Fi setup needs
 # (the brain runs that one). Each is offered only where its TEAPORT_TOOL_* switch is on.
 # phonemes asks for the words' timed phonemes with the audio, for the avatar's mouth
-# (FaceTap passes them on only to an avatar that draws them).
-FEATURES = ("volume", "restart", "local", "phonemes")
+# (FaceTap passes them on only to an avatar that draws them). mood asks the brain to let
+# the model tag a reply's mood (mood_tag.py), which FaceTap passes on to an avatar that
+# takes moods.
+FEATURES = ("volume", "restart", "local", "phonemes", "mood")
 # ...and with wake words, end_conversation (back to sleep): with none there is no sleep.
 WAKE_FEATURES = ("sleep",)
 # set_volume: a percent kept across sessions and reboots. 100 is the card's own level
@@ -321,7 +323,7 @@ class FaceTap:
     """Conversation events -> the OLED avatar's datagram protocol.
 
     {"state": idle|listening|thinking|speaking}, {"mouth": 0..1} (jaw opening, from
-    the played audio), {"text": t} (VADER mood). States are sent only on change, mouth
+    the played audio), {"text": t} (VADER mood), {"mood": m} (the model's own). States are sent only on change, mouth
     levels when they move (and every MOUTH_KEEPALIVE_SECS while open), and only while
     speaking: leaving "speaking" shuts the mouth.
     """
@@ -338,8 +340,8 @@ class FaceTap:
         self._mouth = 0.0
         self._mouth_t = 0.0
         self._hiss = 0.0
-        self._phones_at = None   # when the avatar's features were last read, for phonemes
-        self._phones = False
+        self._drawn_at = {}      # feature -> when the avatar's features were last read for it
+        self._drawn = {}         # feature -> whether it said it takes it
         self._active_t = clock()
         self._bed_since = None
         self._audio_t = None
@@ -418,15 +420,27 @@ class FaceTap:
             self._bed_since = now
         self._audio_t = now
 
-    @property
-    def draws_phonemes(self) -> bool:
-        """The avatar says it draws phonemes ("phonemes" in its features file), read at
+    def takes(self, feature: str) -> bool:
+        """The avatar says it takes `feature` (its key in the features file), read at
         most every PHONES_RECHECK_SECS: it may start, stop or be updated meanwhile."""
         now = self._clock()
-        if self._phones_at is None or now - self._phones_at >= PHONES_RECHECK_SECS:
-            self._phones_at = now
-            self._phones = bool(self._features().get("phonemes"))
-        return self._phones
+        at = self._drawn_at.get(feature)
+        if at is None or now - at >= PHONES_RECHECK_SECS:
+            self._drawn_at[feature] = now
+            self._drawn[feature] = bool(self._features().get(feature))
+        return self._drawn[feature]
+
+    @property
+    def draws_phonemes(self) -> bool:
+        return self.takes("phonemes")
+
+    def mood(self, name: str) -> None:
+        """The model's own mood for the reply it is giving (mood_tag.py): the avatar's
+        {"mood": name}, to one that lists moods in its features (an older one would not
+        know it). The avatar relaxes it to neutral by itself, so it is sent once."""
+        if name and self.takes("moods"):
+            self._activity()
+            self._emit({"mood": name})
 
     def mouth(self, level: float, hiss: float | None = None) -> None:
         if self._state != "speaking":
@@ -1638,6 +1652,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 result = client_tool(card, m, restart)
                 await ws.send(json.dumps({"type": "tool_result", "call_id": m.get("call_id"),
                                           "result": result}))
+            elif kind == "mood":
+                face.mood(str(m.get("mood") or ""))
             elif kind == "transcript":
                 role, text, final = m.get("role"), m.get("text") or "", bool(m.get("final"))
                 if role == "assistant" and text.startswith(DEBUG_CHIP_PREFIXES):
