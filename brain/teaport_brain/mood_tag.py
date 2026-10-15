@@ -43,7 +43,7 @@ ENABLED = MODE == "tag"
 # What the model may name: the avatar's eight emotions, and its two plain faces. (The
 # avatar knows aliases too; the model is shown, and held to, these.)
 MOODS = ("happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised",
-         "calm", "curious", "neutral")
+         "calm", "concerned", "curious", "neutral")
 
 PARAGRAPH = (
     "You have a small face that shows a mood. When your reply carries a clear feeling, "
