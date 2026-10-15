@@ -3,13 +3,15 @@
 #
 # Everything here exists because the brain shares one small memory pool with the
 # engine: glibc arena trimming and torch CUDA-cache reclaim. The division
-# of labor (per-turn vs session-end) is deliberate — see MemoryReclaim's docstring
-# for the deadlock that shaped it. (the TTS prewarm helper left with the onnx backend.)
+# of labor (in-session at a quiet moment vs session-end) is deliberate — see
+# MemoryReclaim's docstring for the stall and the deadlock that shaped it. (the TTS
+# prewarm helper left with the onnx backend.)
 #
 import asyncio
 import ctypes
 import gc
 import resource
+import time
 
 from loguru import logger
 
@@ -26,13 +28,34 @@ _PAGE_SIZE = resource.getpagesize()
 
 try:
     _LIBC = ctypes.CDLL("libc.so.6")
-
-    def release_heap():
-        gc.collect()
-        _LIBC.malloc_trim(0)
+    _malloc_trim = _LIBC.malloc_trim
 except OSError:
-    def release_heap():
-        gc.collect()
+    def _malloc_trim(_pad):
+        pass
+
+
+def release_heap() -> tuple[float, float]:
+    """gc.collect() then malloc_trim(0); returns how long each took, in ms.
+
+    Both stop the event loop even when run on a worker thread: the collect holds the
+    GIL, and the trim holds glibc's arena locks, which the loop's own mallocs wait on.
+    On the box the pair took 180-245 ms (2026-10-15)."""
+    t0 = time.monotonic()
+    gc.collect()
+    t1 = time.monotonic()
+    _malloc_trim(0)
+    t2 = time.monotonic()
+    return (t1 - t0) * 1000, (t2 - t1) * 1000
+
+
+def freeze_startup_objects() -> None:
+    """Move everything alive at startup (the imported modules, the brain's own
+    singletons) into gc's permanent generation, so no later collect walks it. Called
+    once, when the server is up and before the first session: a session's objects must
+    stay collectable, or the cycles a torn-down pipeline leaves would never be freed."""
+    gc.collect()
+    gc.freeze()
+    logger.info(f"gc: {gc.get_freeze_count()} startup objects frozen")
 
 
 def empty_cuda_cache():
@@ -61,30 +84,54 @@ def _rss_mb() -> float | None:
 def turn_reclaim():
     """Full reclaim (heap + CUDA) — session-end only; see MemoryReclaim for why.
 
-    Logs the RSS it handed back. This is the ONLY reclaim a session ever gets, and
-    what it defends against — ~35 MB/session of glibc arena ratchet on an 8 GB
+    Logs the RSS it handed back. The only CUDA reclaim a session gets, and the only
+    heap reclaim for one too short to reach a MemoryReclaim quiet moment; what it
+    defends against — ~35 MB/session of glibc arena ratchet on an 8 GB
     unified pool — is invisible until the box OOMs days later. It used to log
     nothing at all, so on the appliance there was no way to answer "did it run?"
     except by watching RSS from outside; a run on 2026-08-28 could confirm the call
     tore down but not that anything was reclaimed. One line per session is cheap
     (two /proc reads) and turns a silent invariant into a checkable one.
     """
+    _reclaim("session-end", cuda=True)
+
+
+def _reclaim(what: str, *, cuda: bool = False) -> None:
     before = _rss_mb()
-    release_heap()
-    empty_cuda_cache()
+    collect_ms, trim_ms = release_heap()
+    if cuda:
+        empty_cuda_cache()
     after = _rss_mb()
+    took = f"gc {collect_ms:.0f} ms + trim {trim_ms:.0f} ms"
     if before is None or after is None:
-        logger.info("session-end reclaim done (RSS unavailable)")
+        logger.info(f"{what} reclaim done ({took}; RSS unavailable)")
     else:
-        logger.info(f"session-end reclaim: RSS {before:.0f} -> {after:.0f} MiB "
-                    f"({before - after:+.0f})")
+        logger.info(f"{what} reclaim: RSS {before:.0f} -> {after:.0f} MiB "
+                    f"({before - after:+.0f}; {took})")
+
+
+# An in-session reclaim waits for the conversation to have been quiet this long: not the
+# gap after a reply, when the user is most likely to speak, and not a pause mid-thought.
+RECLAIM_QUIET_SECS = 5.0
+# And runs at most this often: memory comes back a minute late at worst, and a chatty
+# conversation pays one stall a minute at most instead of one per reply.
+RECLAIM_EVERY_SECS = 60.0
+_POLL_SECS = 1.0
 
 
 class MemoryReclaim(FrameProcessor):
-    """Hand freed glibc arena pages back to the OS at every bot-turn boundary. The
-    per-turn pipeline churns native buffers (onnxruntime/numpy/resampled audio);
-    Python frees them but glibc keeps the arena pages, so RSS ratchets. malloc_trim
-    hands them back. Runs OFF the event loop, single-flight, best-effort.
+    """Hand freed glibc arena pages back to the OS during a session, at a quiet moment.
+    The per-turn pipeline churns native buffers (onnxruntime/numpy/resampled audio);
+    Python frees them but glibc keeps the arena pages. A room conversation is one
+    session that lasts all day, so the session-end reclaim alone would never run there.
+
+    NOT at every reply's end, as it used to be. gc.collect() and malloc_trim(0) stop
+    the event loop wherever they run (release_heap): on the box every reply was
+    followed by a ~220 ms freeze, just when the user starts to speak, and a barge-in
+    landing in it waited that long to stop the reply (2026-10-15). Now a reply only
+    marks the heap worth trimming; the trim runs once the conversation has been clear
+    (FollowupGate: nobody speaking, no turn in flight) for RECLAIM_QUIET_SECS, at most
+    once per RECLAIM_EVERY_SECS. Off the loop, single-flight, best-effort.
 
     Deliberately does NOT call torch.cuda.empty_cache() here: empty_cache locks the
     CUDA caching allocator, and if it overlaps the next turn's TTS synth (e.g. the
@@ -93,14 +140,37 @@ class MemoryReclaim(FrameProcessor):
     for task to cancel'). The CUDA cache is reclaimed at session end instead
     (turn_reclaim in the talk() finally), where nothing is mid-synthesis."""
 
-    def __init__(self):
+    def __init__(self, gate, *, quiet_secs: float = RECLAIM_QUIET_SECS,
+                 every_secs: float = RECLAIM_EVERY_SECS, poll_secs: float = _POLL_SECS):
         super().__init__()
-        self._busy = False
+        self._gate = gate
+        self._quiet = quiet_secs
+        self._every = every_secs
+        self._poll = poll_secs
+        self._last = float("-inf")   # time.monotonic() of the last reclaim's end
+        self._task = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
-        if isinstance(frame, BotStoppedSpeakingFrame) and not self._busy:
-            self._busy = True
-            fut = asyncio.get_running_loop().run_in_executor(None, release_heap)
-            fut.add_done_callback(lambda _f: setattr(self, "_busy", False))
+        if isinstance(frame, BotStoppedSpeakingFrame) and self._task is None:
+            self._task = self.create_task(self._reclaim_when_quiet(), "MemoryReclaim")
+
+    async def _reclaim_when_quiet(self):
+        try:
+            while True:
+                await asyncio.sleep(self._poll)
+                now = time.monotonic()
+                if (now - self._last >= self._every and self._gate.is_clear()
+                        and now - self._gate.last_active >= self._quiet):
+                    break
+            await asyncio.get_running_loop().run_in_executor(None, _reclaim, "idle")
+            self._last = time.monotonic()
+        finally:
+            self._task = None
+
+    async def cleanup(self):
+        if self._task is not None:
+            await self.cancel_task(self._task)
+            self._task = None
+        await super().cleanup()

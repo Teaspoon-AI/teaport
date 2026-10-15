@@ -44,7 +44,7 @@
 #      only adds to the SessionOptions pipecat built.
 #
 # Measured 2026-10-13 on the desktop (same pins; three runs each, load average 5-8 on 6
-# cores), anonymous memory after the per-turn malloc_trim MemoryReclaim does: one live
+# cores), anonymous memory after a malloc_trim (MemoryReclaim then ran one per reply): one live
 # session 90-96 -> 61-62 MB, two concurrent sessions 142-143 -> 62 MB. Smart Turn's
 # median inference and Silero's per-frame time did not move beyond the desktop's noise
 # (~140-150 ms and ~0.25 ms, both ways). Before the trim the arena-off peak is barely
