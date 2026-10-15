@@ -19,6 +19,7 @@ package (authoritative list lives in `brain/pyproject.toml`):
 | numpy | audio buffers (TTS + thinking-sound) | BSD-3-Clause |
 | websockets | client to the engine's realtime interface | BSD-3-Clause |
 | audioop-lts | `audioop.ratecv` shim, Python ≥ 3.13 only (PEP 594) | PSF-2.0 |
+| vaderSentiment | scores a reply's words for the face's mood (`face_mood.py`); brings `requests` (Apache-2.0), `urllib3` (MIT), `charset-normalizer` (MIT) | MIT |
 
 Notable transitive dependencies of `pipecat-ai`:
 

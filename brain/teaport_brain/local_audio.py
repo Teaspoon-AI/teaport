@@ -105,6 +105,7 @@ import re
 import signal
 import socket
 import sys
+import threading
 import time
 import urllib.parse
 import urllib.request
@@ -115,6 +116,7 @@ import soxr
 from loguru import logger
 
 from teaport_brain import display, xvf_echo
+from teaport_brain.face_mood import LEAD_WORDS, LazyVader, lead_words
 from teaport_brain.wake_words import parse_phrases as wake_phrases
 from teaport_brain.settings import setting
 
@@ -222,8 +224,10 @@ DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audi
 # restart_session); local says someone is at the box itself, which Wi-Fi setup needs
 # (the brain runs that one). Each is offered only where its TEAPORT_TOOL_* switch is on.
 # phonemes asks for the words' timed phonemes with the audio, for the avatar's mouth
-# (FaceTap passes them on only to an avatar that draws them).
-FEATURES = ("volume", "restart", "local", "phonemes")
+# (FaceTap passes them on only to an avatar that draws them). mood asks the brain to let
+# the model tag a reply's mood (mood_tag.py), which FaceTap passes on to an avatar that
+# takes moods.
+FEATURES = ("volume", "restart", "local", "phonemes", "mood")
 # ...and with wake words, end_conversation (back to sleep): with none there is no sleep.
 WAKE_FEATURES = ("sleep",)
 # set_volume: a percent kept across sessions and reboots. 100 is the card's own level
@@ -269,6 +273,12 @@ FACE_STALE_SECS = 12.0
 FACE_ADVANCE_SECS = setting("LOCAL_AUDIO_FACE_ADVANCE_MS") / 1000
 # How often the avatar's features file is re-read for "phonemes" (FaceTap.draws_phonemes).
 PHONES_RECHECK_SECS = 5.0
+# A model mood is shown when its reply's first words are heard, and re-sent this often
+# while that reply speaks: the avatar relaxes a mood to neutral 4 s after the last one.
+MOOD_RESEND_SECS = 2.0
+# A mood the model set waits this long for its reply to be heard (a reply cut off or
+# answered by a tool never is), so it cannot colour a later one.
+MOOD_PENDING_SECS = 20.0
 # Chunk loudness -> mouth opening: closed at or below the floor, fully open SPAN dB above.
 MOUTH_FLOOR_DB = -45.0
 MOUTH_SPAN_DB = 25.0
@@ -321,7 +331,7 @@ class FaceTap:
     """Conversation events -> the OLED avatar's datagram protocol.
 
     {"state": idle|listening|thinking|speaking}, {"mouth": 0..1} (jaw opening, from
-    the played audio), {"text": t} (VADER mood). States are sent only on change, mouth
+    the played audio), {"text": t} (VADER mood), {"mood": m} (the model's own). States are sent only on change, mouth
     levels when they move (and every MOUTH_KEEPALIVE_SECS while open), and only while
     speaking: leaving "speaking" shuts the mouth.
     """
@@ -338,8 +348,21 @@ class FaceTap:
         self._mouth = 0.0
         self._mouth_t = 0.0
         self._hiss = 0.0
-        self._phones_at = None   # when the avatar's features were last read, for phonemes
-        self._phones = False
+        # Where the face's mood comes from (TEAPORT_FACE_MOOD, said in the brain's hello):
+        # "tag" the model's, and the reply's words (VADER) when it gave none; "text" the
+        # words only; "off" neither.
+        self._mood_source = "tag"
+        self._vader = LazyVader()
+        self._warmed = False
+        self._utt = None         # the utterance the last caption belonged to
+        # (mood, the first words of its reply, when) the model set, not yet heard; and the
+        # utterance still being matched to one (until it has LEAD_WORDS of them)
+        self._moods = deque(maxlen=4)
+        self._matching = None
+        self._cut = None         # the utterance a barge-in cut off
+        self._mood_now = None    # [mood, utterance, last sent] of the reply being heard
+        self._drawn_at = {}      # feature -> when the avatar's features were last read for it
+        self._drawn = {}         # feature -> whether it said it takes it
         self._active_t = clock()
         self._bed_since = None
         self._audio_t = None
@@ -387,9 +410,12 @@ class FaceTap:
         elif text:
             self.state("listening")
 
-    def assistant(self, text: str, final: bool) -> bool:
-        """A caption. True when it brought new words: the audio still queued is speech."""
+    def assistant(self, text: str, final: bool, utterance=None) -> bool:
+        """A caption. True when it brought new words: the audio still queued is speech.
+        `utterance` is the reply it belongs to (captions carry their TTS context id)."""
         self._activity()
+        if utterance is not None and utterance == self._cut:
+            return False                # (a reply the user cut off: its late words show nothing)
         text = text or ""
         prev = self._caption
         new = text[len(prev):] if text.startswith(prev) else text
@@ -404,8 +430,17 @@ class FaceTap:
             self._voiced = False
         elif fresh:
             self._voiced = True
-        if final and text:
-            self._emit({"text": text})
+        new = utterance is not None and utterance != self._utt
+        if utterance is not None:
+            self._utt = utterance
+        if fresh or (final and text and self._matching is not None
+                     and self._matching == utterance):
+            self._show_mood(new, utterance, text, final)    # (a final that adds no words
+        #                                                     still decides a held pick)
+        if final and text and not (self._mood_now and self._mood_now[1] == utterance):
+            self._score(text)       # (a reply with a mood of the model's is not scored)
+        if final:
+            self._mood_now = None
         return fresh
 
     def audio(self) -> None:
@@ -418,15 +453,82 @@ class FaceTap:
             self._bed_since = now
         self._audio_t = now
 
-    @property
-    def draws_phonemes(self) -> bool:
-        """The avatar says it draws phonemes ("phonemes" in its features file), read at
+    def takes(self, feature: str) -> bool:
+        """The avatar says it takes `feature` (its key in the features file), read at
         most every PHONES_RECHECK_SECS: it may start, stop or be updated meanwhile."""
         now = self._clock()
-        if self._phones_at is None or now - self._phones_at >= PHONES_RECHECK_SECS:
-            self._phones_at = now
-            self._phones = bool(self._features().get("phonemes"))
-        return self._phones
+        at = self._drawn_at.get(feature)
+        if at is None or now - at >= PHONES_RECHECK_SECS:
+            self._drawn_at[feature] = now
+            self._drawn[feature] = bool(self._features().get(feature))
+        return self._drawn[feature]
+
+    @property
+    def draws_phonemes(self) -> bool:
+        return self.takes("phonemes")
+
+    def set_mood_source(self, source) -> None:
+        """TEAPORT_FACE_MOOD, as the brain's hello says it (an older brain says nothing,
+        which is "tag": it sends no tags, and the words are scored)."""
+        self._mood_source = source if source in ("tag", "text", "off") else "tag"
+        if self._mood_source != "off" and not self._warmed:
+            self._warmed = True      # (the lexicon is read off the loop, before a reply needs it)
+            threading.Thread(target=self._vader.mood, args=("ok",), daemon=True).start()
+
+    def _show_mood(self, new: bool, utterance, text: str, final: bool = False) -> None:
+        """Words of `utterance` are heard: bring up the mood the model set for the reply that
+        starts with them (the replies before it had none), or keep up the one it is showing."""
+        now = self._clock()
+        while self._moods and now - self._moods[0][2] > MOOD_PENDING_SECS:
+            self._moods.popleft()
+        if new:
+            self._matching = utterance
+        words = lead_words(text)
+        if self._matching is not None and self._matching == utterance and self._moods:
+            hits = []
+            for i, (_, starts, _) in enumerate(self._moods):
+                k = min(len(words), len(starts))
+                if not starts or (k and words[:k] == starts[:k]):
+                    hits.append((len(starts) != len(words), -k, i))
+            # One or two words fit a stale entry as well as the right one: wait for more of
+            # the reply to tell them apart. With all four, or when the reply is over (it was
+            # shorter than four): the entry of just those words, else the longest agreement
+            # (oldest first).
+            if hits and (len(hits) == 1 or len(words) >= LEAD_WORDS or final):
+                i = min(hits)[2]
+                mood = self._moods[i][0]
+                del self._moods[i]       # (the others wait for their own, or expire)
+                self._mood_now = [mood, utterance, now]
+                self._matching = None
+                self._emit({"mood": mood})
+                return
+        if len(words) >= LEAD_WORDS:
+            self._matching = None       # its first words are all in: it had no tag
+        if (self._mood_now and utterance == self._mood_now[1]
+                and now - self._mood_now[2] >= MOOD_RESEND_SECS):
+            self._mood_now[2] = now
+            self._emit({"mood": self._mood_now[0]})
+
+    def _score(self, text: str) -> None:
+        """The mood the words of a reply show, to the avatar: as {"mood"}, or as {"text"}
+        (which it scores itself) when it does not list moods yet."""
+        if self._mood_source == "off":
+            return
+        if self.takes("moods"):
+            self._emit({"mood": self._vader.mood(text)})
+        else:
+            self._emit({"text": text})
+
+    def mood(self, name: str, starts=None) -> None:
+        """The model's own mood for the reply it is giving (mood_tag.py), with that reply's
+        first words. It arrives as the reply starts, ahead of its audio, so it waits until
+        a reply that starts with those words is heard (assistant), and is kept up while it
+        speaks. Only to an avatar that lists moods in its features (an older one would not
+        know it)."""
+        if name and self._mood_source == "tag" and self.takes("moods"):
+            self._activity()
+            words = [w for w in (starts or []) if isinstance(w, str)][:LEAD_WORDS]
+            self._moods.append((name, words, self._clock()))
 
     def mouth(self, level: float, hiss: float | None = None) -> None:
         if self._state != "speaking":
@@ -452,6 +554,9 @@ class FaceTap:
 
     def interrupted(self) -> None:
         self._activity()
+        self._moods.clear()
+        self._matching = self._mood_now = None
+        self._cut = self._utt
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self.state("listening")
@@ -1602,10 +1707,12 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                     # Our asleep session has the engine, so nothing else is live: the face
                     # may sleep now (not at the dial, which the brain may refuse).
                     face.sleep()
-            elif kind == "hello" and wake:
-                if m.get("wake") not in ("asleep", "awake"):
-                    raise Ungated("the brain's hello does not say it gates the room")
-                gated.set()
+            elif kind == "hello":
+                face.set_mood_source(m.get("face_mood"))
+                if wake:
+                    if m.get("wake") not in ("asleep", "awake"):
+                        raise Ungated("the brain's hello does not say it gates the room")
+                    gated.set()
             elif kind == "hold":
                 hold["on"] = bool(m.get("on"))
                 logger.info("on hold: a phone call has the box — the conversation waits"
@@ -1638,6 +1745,8 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 result = client_tool(card, m, restart)
                 await ws.send(json.dumps({"type": "tool_result", "call_id": m.get("call_id"),
                                           "result": result}))
+            elif kind == "mood":
+                face.mood(str(m.get("mood") or ""), m.get("starts"))
             elif kind == "transcript":
                 role, text, final = m.get("role"), m.get("text") or "", bool(m.get("final"))
                 if role == "assistant" and text.startswith(DEBUG_CHIP_PREFIXES):
@@ -1648,7 +1757,7 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                     restart.caption(m.get("utterance"))
                 if role == "user":
                     face.user(text, final)
-                elif role == "assistant" and face.assistant(text, final):
+                elif role == "assistant" and face.assistant(text, final, m.get("utterance")):
                     play.mark_voiced()
                 if final:
                     logger.info(f"{role}: {text}")

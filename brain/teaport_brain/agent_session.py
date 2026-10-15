@@ -70,7 +70,7 @@ from teaport_brain.endpointing import (
 from teaport_brain import echo_guard
 from teaport_brain import endpoint_debug
 from teaport_brain import llm_error_speaker
-from teaport_brain import llm_text_guard
+from teaport_brain import llm_text_guard, mood_tag
 from teaport_brain import onnx_sessions
 from teaport_brain import agent_backend
 from teaport_brain import barge_pause
@@ -88,6 +88,7 @@ from teaport_brain.followup_gate import (
 from teaport_brain.heard_context import HeardContextCorrector
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
+from teaport_brain.mood_tag import MoodTag
 from teaport_brain.memory_hygiene import MemoryReclaim
 from teaport_brain.memory_recall import MemoryRecall
 from teaport_brain.persona import build_system_prompt, load_persona
@@ -1029,6 +1030,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     # otherwise the stop strategy waits on words that never come, barge-in dead).
     wifi_closer = SetupTurnCloser() if wifi is not None else None
     system_prompt = build_system_prompt(persona, tools=session_tools)
+    moods = mood_tag.ENABLED and "mood" in client_features
+    if moods:
+        system_prompt += " " + mood_tag.PARAGRAPH
     # If a non-English voice/language was selected, tell the LLM to reply in it too
     # (the voice only changes pronunciation; the words still come from the LLM).
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
@@ -1258,6 +1262,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # fold no-break/zero-width unicode out of the deltas and cut a runaway
         # ellipsis collapse — the TTS and the committed context both read what
         # this forwards, so it cleans speech and history in one place.
+        # the reply's leading [mood: x] tag, off before the guard or the TTS see it
+        MoodTag() if moods else None,
         LLMTextGuard() if llm_text_guard.ENABLED else None,
         tts,
         # DIRECTLY below the TTS: the first processor to handle the TTS's frames is

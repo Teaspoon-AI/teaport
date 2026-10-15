@@ -693,7 +693,7 @@ async def test_wifi_setup_tells_the_model_through_the_sessions_notes():
     assert wifi.notes is session.client_notes is not None
 
 
-async def _run_talk(should_end=False):
+async def _run_talk(should_end=False, query=None):
     """run_relay_bot with fakes around it. Returns the order of what the plugin would
     see (the socket writes and the frames queued to the pipeline) and the session
     kwargs."""
@@ -764,7 +764,7 @@ async def _run_talk(should_end=False):
     gs.arb.ARBITER = _Arbiter()
     gs.PipelineRunner = _Runner
     try:
-        await gs.run_relay_bot(SimpleNamespace(query_params={}, send_text=send_text))
+        await gs.run_relay_bot(SimpleNamespace(query_params=query or {}, send_text=send_text))
     finally:
         for k, v in saved.items():
             setattr(gs, k, v)
@@ -785,6 +785,14 @@ async def test_talk_says_hello_at_once_and_ready_after_the_greeting():
     assert isinstance(ready, OutputTransportMessageUrgentFrame), order
     assert ready.message == {"type": "ready"}
     assert len(order) == 4, order
+
+
+async def test_the_hello_says_where_a_face_client_takes_its_mood_from():
+    """A client that announced ?features=mood is told TEAPORT_FACE_MOOD; any other is not
+    (its hello is unchanged)."""
+    order, _ = await _run_talk(query={"features": "mood"})
+    assert order[0] == {"type": "hello", "features": {"context": {"max_chars": 7}},
+                        "face_mood": "tag"}, order
 
 
 async def test_talk_never_says_ready_when_the_session_ends():

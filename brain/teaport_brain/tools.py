@@ -1049,9 +1049,10 @@ if AGENT_FIRST and not TOOLS_BY_NAME["ask_openclaw"].enabled:
     AGENT_FIRST = False
 # The client features a /talk client may announce (?features=): one per client tool,
 # and "phonemes": the client draws a mouth from what is said (local_audio.py, for the
-# OLED face), so the session's TTS sends each word's timed phonemes with the audio.
+# OLED face), so the session's TTS sends each word's timed phonemes with the audio; and
+# "mood": the client shows a mood, so the model may tag its replies with one (mood_tag.py).
 CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
-                            if n.startswith("client:")) | {"phonemes"}
+                            if n.startswith("client:")) | {"phonemes", "mood"}
 
 
 def parse_client_features(raw: str | None) -> frozenset:

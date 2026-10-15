@@ -61,6 +61,7 @@ from teaport_brain.gateway_serializer import (
 )
 from teaport_brain.captions import sends_every_final
 from teaport_brain.engine_tts import pacing_status
+from teaport_brain import mood_tag
 from teaport_brain.tools import parse_client_features
 from teaport_brain.memory_hygiene import turn_reclaim
 from teaport_brain.services import make_tts
@@ -345,6 +346,8 @@ async def run_relay_bot(websocket: WebSocket):
     hello = {"type": "hello", "features": {"context": session.client_notes.limits()}}
     if gate is not None:
         hello["wake"] = "asleep" if gate.asleep else "awake"
+    if "mood" in features:
+        hello["face_mood"] = mood_tag.MODE   # where the client's face takes its mood from
     await websocket.send_text(json.dumps(hello))
 
     @transport.event_handler("on_client_connected")

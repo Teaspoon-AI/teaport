@@ -20,7 +20,10 @@
 #
 #   us -> plugin (serialize):
 #       OutputAudioRawFrame       -> binary raw PCM16 24 kHz  (bot speech)
-#       {"type":"hello","features":{"context":{limits}}}  (on accept, written straight
+#       {"type":"hello","features":{"context":{limits}}[,"face_mood":tag|text|off]}
+#                                                           (face_mood: only to a client that
+#                                                           announced ?features=mood)
+#                                                           (on accept, written straight
 #                                                           to the socket by gateway_server)
 #       {"type":"response","state":"start"|"done"}  (frames an utterance said outside
 #                                                     the pipeline: the busy line to a
@@ -34,6 +37,11 @@
 #             text is always the FULL text so far, never a delta; the plugin
 #             adapts it to how the OpenClaw version merges transcripts.
 #             Assistant captions carry "utterance" (their TTS context id).
+#           {"type":"mood","mood":name,"starts":[w1..w4]}  (the model tagged this reply
+#                                                           with a mood, mood_tag.py; starts =
+#                                                           its first words, to tell which reply; sent
+#                                                           only to a client that announced
+#                                                           ?features=mood)
 #           {"type":"context_result","id":...,"ok":bool,...}  (answers a context note)
 #           {"type":"client_tool","call_id":...,"name":...,"args":{...}}
 #                                                         (a tool the client performs —
