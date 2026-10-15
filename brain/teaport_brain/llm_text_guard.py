@@ -388,6 +388,7 @@ class LLMTextGuard(FrameProcessor):
         self._swallowed = 0
         self._pending = ""
         self._pending_frame = None
+        self._pending_shared = False
         # UNGLUE state: the tail of the folded STREAM so far (not of the last delta,
         # which can be one character), so a terminator that ended one delta and the
         # capital that opens the next still get their space, and an initial's dot is
@@ -600,6 +601,8 @@ class LLMTextGuard(FrameProcessor):
             # eventual flush rides the same frame (pass-through text keeps its frame --
             # see _emit) rather than a fresh one.
             self._pending_frame = frame if self._pending else None
+            # ...and whether that frame carries text of its own as well (see the End).
+            self._pending_shared = bool(self._pending and emitted)
             if emitted:
                 # Hold until the sentence closes — the repeat cut can only DROP a
                 # duplicate that has not been pushed yet, and the TTS aggregator
@@ -642,11 +645,26 @@ class LLMTextGuard(FrameProcessor):
                 if self._pending:
                     tail, self._pending = self._pending, ""
                     held, self._pending_frame = self._pending_frame, None
+                    shared, self._pending_shared = self._pending_shared, False
                     # A special-token opener still open at the End was never going
                     # to close: junk, not speech.
                     folded = fold_degenerate_chars(_TOKEN_HOLDBACK.sub("", tail))
                     if folded:
-                        self._held.append((held, folded))
+                        if held is not None and self._held and self._held[-1][0] is held:
+                            # The tail's frame also carried the text before it
+                            # ("Okay..." -> "Okay", "..." held back), still held:
+                            # rejoin them -- one frame, one push. Appended as an entry
+                            # of its own, _emit re-texted and re-pushed the SAME
+                            # object, overwriting "Okay" before anything downstream
+                            # read it: the word was lost from speech and history.
+                            f0, txt0 = self._held[-1]
+                            self._held[-1] = (f0, txt0 + folded)
+                        else:
+                            # Only a frame that carried nothing else may carry the
+                            # tail; one already pushed with its own text (its
+                            # sentence closed and flushed) would be overwritten the
+                            # same way, so the tail takes a fresh frame.
+                            self._held.append((None if shared else held, folded))
                         self._open_sent += folded
                 # …then close the final sentence, which may end without punctuation.
                 # It is dup-checked too: a duplicate the token cap cut short is
