@@ -333,23 +333,41 @@ checked by the code's construction, not by TLC.
 
 ## `SttSlot.tla` — arbitration of the engine's single STT slot
 
-The engine serves one STT session. Two front-ends contend for it through **separate
-arbiters with no shared lock**: the OpenClaw path tracks `_active_session`
-(`agent_session.py`), the SIP path tracks `active["call"]` (`sip_server.py`). Each
-evicts only its own predecessor; neither can see the other's session.
+The engine serves one STT session. Who may hold it is the brain's decision; whether the
+engine has *let go* of it when the brain thinks so is this model's question. `ARBITER`
+selects how the brain decided:
 
-Both then hand the gap over to `await asyncio.sleep(0.3)` — a timing assumption
-standing in for synchronization. Nothing anywhere observes that the engine has
-actually freed the slot.
+- **`split`** (until #58 step 2, 8ef333f) — two front-ends contended through **separate
+  arbiters with no shared lock**: the OpenClaw path tracked `_active_session`, the SIP
+  path `active["call"]`. Each evicted only its own predecessor and neither could see
+  the other's session.
+- **`one`** (as shipped) — one `SessionArbiter` for every front-end of the process
+  (Talk, the room mic, and since #58 step 3 the in-process SIP front-end). A newcomer
+  asks under one lock; a holder that has to go is ended and waited out (its `release()`,
+  bounded by `END_WAIT_SECS`) or, for a call against a conversation, put on hold (its
+  STT disconnects); then `SETTLE_SECS`, then the grant. A session that ends on its own
+  releases after its pipeline has stopped — a /talk session at once, a call after its
+  teardown's own 0.3 s sleep — and a conversation held for that call gets the slot back
+  at once and reconnects. Who may take the slot from whom (the ask, the hold, the
+  resume) is `SessionArbiter.tla`'s; this model keeps only what touches the engine,
+  and lets a newcomer end any holder but a call (the SIP front-end's contract).
 
-| MODE | | `NoFalseBusy` |
-|---|---|---|
-| `fixedSettle` | as written: settle, connect once, a refusal is final | ✗ |
-| `retryWhileBusy` | retry a rejection instead of trusting the sleep | ✓ |
+In both, nothing observes that the engine has freed the slot: every wait is a sleep or
+a release, and a release says the brain's socket closed, not that the engine has
+processed the close. `closing` is that window.
+
+| row | `ARBITER` | `MODE` | `ENDWAIT` | `NoFalseBusy` | `NoGrantedBusy` |
+|---|---|---|---|---|---|
+| `stt_fixedSettle` | `split` | settle, connect once, a refusal is final | | ✗ | |
+| `stt_retryWhileBusy` | `split` | retry a rejection instead of trusting the sleep | | ✓ | |
+| `stt_one_fixedSettle` | `one` | connect once | untimed | ✗ | |
+| `stt_one` | `one` | retry — as shipped | untimed (the timing fact) | ✓ | ✓ |
+| `stt_one_endTimeout` | `one` | retry — as shipped | timeout | | ✗ |
 
 `NoFalseBusy` is the user-visible failure: someone is told *"Sorry, the voice
 assistant is busy with another session right now"* — and on SIP hung up on — when no
-session held the slot at all. It fails with one OpenClaw session and one SIP call:
+session held the slot at all. Under `split` it fails with one OpenClaw session and one
+SIP call:
 
 ```
 Arbitrate/Settle    both sessions run their own arbiter; neither sees the other's
@@ -360,10 +378,29 @@ ConnectRefused(p1)  the caller's 0.3s settle already elapsed: 503, holder = none
                     -> "busy", hang up. Nothing was using it.
 ```
 
-Note what makes this fail *permanently* rather than momentarily: `stt.py`'s
-`_connect_websocket` makes a **single** attempt and sets `_stt_available = False`, and
-`greet()` polls only until the tri-state *resolves* — so a 503 resolves to False in
-milliseconds and the 12 s poll window buys nothing against it.
+Note what made this fail *permanently* rather than momentarily: `stt.py`'s
+`_connect_websocket` made a **single** attempt and set `_stt_available = False`, and
+`greet()` polls only until the tri-state *resolves* — so a 503 resolved to False in
+milliseconds and the 12 s poll window bought nothing against it.
+
+The one arbiter did not make the retry redundant (`stt_one_fixedSettle`, seven
+states): a Talk session whose client leaves releases the arbiter's slot as soon as its
+pipeline has stopped, with no settle, so the next newcomer is granted and connects
+inside the close; and a conversation held for a call reconnects the moment the call
+releases, its settle being the call's own 0.3 s. The settle in `_ending`/`_holding`
+covers only the holders the arbiter itself ends.
+
+`NoGrantedBusy` is the same line when the arbiter *had* granted the slot: the session
+it gave way to still holds the engine, so both lose — the one the arbiter told it was
+ending (a Talk user hears that a call is coming in), and the one it let in (the caller
+hears "busy" and is hung up on). It holds as shipped under one stated timing fact,
+that an ended holder's pipeline lets go within `END_WAIT_SECS` (5 s). `_ending` does
+not wait past that: it logs "did not let the speech engine go", clears the holder,
+settles and grants, and `stt_one_endTimeout` is the counterexample in seven states (a
+Talk session told to end whose teardown is still running when the wait gives up; the
+newcomer's retry window of 1.2 s is spent against a socket that is still open). That
+is accepted rather than fixed: the bound is what keeps a wedged pipeline from wedging
+the arbiter, and a teardown that slow is already a fault of its own.
 
 ### What was changed
 
@@ -376,6 +413,11 @@ hearing the warning. `_is_slot_busy` duck-types the status off the exception bec
 ≥14, `.status_code` before); an unrecognised exception is treated as not retryable, so
 the worst case is the previous behaviour.
 
+On 2026-10-14 the model was brought to the one arbiter (#58): it still had the two
+arbiters and both front-ends' 0.3 s sleeps, and so said nothing about the code it
+named. `ARBITER = "split"` keeps the first finding reproducible; the `one` rows are the
+code as it is.
+
 ### Known limits of this model
 
 - `retryWhileBusy` retries *while the refusal is transient*, but the brain cannot
@@ -386,8 +428,14 @@ the worst case is the previous behaviour.
   proves; see the limits note above.
 - `MutualExclusion` is enforced by the engine, not by the brain, so it is a sanity
   check on the model rather than a claim about our code.
-- The model says nothing about *which* session should win. Eviction policy is a
-  product decision, not a safety property.
+- The model says nothing about *which* session should win, nor about the ask: policy
+  is `SessionArbiter.tla`'s, which in turn does not model the close window or the
+  retry (its `NoEngineRefusal` reads a refusal as one the retry would have to absorb).
+  The one policy fact kept here is that the arbiter never ends a call; a call's claim
+  ended while a conversation is held for it is `SessionArbiter.tla`'s `sa_overlap_*`.
+- A hold that outlasts `HOLD_WAIT_SECS` is cancelled mid-`hold()`; if that lands
+  inside the STT's `_disconnect`, the close it was awaiting is abandoned with the
+  socket reference dropped. Not modelled.
 
 ## `SipCall.tla` — the SIP per-call lifecycle
 
@@ -1378,9 +1426,9 @@ pipecat turn stayed open, as the verdict said it should; the segment under it wa
 The fix has the stop strategy answer every VAD stop with a `TurnVerdictFrame` pushed
 *upstream* — the model's verdict, and the silence ceiling's when an INCOMPLETE one falls
 through — and the STT commit on a complete one, holding the segment open on an incomplete
-one. That is a new concurrent protocol: two processors, two FIFO queues in opposite
-directions (a verdict can arrive after the VAD *start* that followed its stop), and two
-timer tasks — the hold's expiry, and the stranded backstop that now has to stand down while
+one. That is a new concurrent protocol: two processors, three FIFO queues (the VAD's
+edges to the strategy, the edges and the verdicts up to the STT, the STT's transcripts
+down — see THE ORDER below for why three), and two timer tasks — the hold's expiry, and the stranded backstop that now has to stand down while
 a segment is held and stand back up when it is released. This module is that protocol,
 with two faults in the environment: a verdict lost in flight (`LoseVerdict`) and a VAD stop
 the VAD never reports (`VadStopMissed`, the fault the backstop exists for). A third
@@ -1392,13 +1440,16 @@ watchdog); what the strategy does then is `TURNSTOP`.
 |---|---|---|---|---|---|---|
 | `vadStop` | commit at the raw VAD stop (until #43; since, only the no-verdict fallback) | ✗ | ✓ | ✓ | ✓ | — |
 | `verdict`, `TURNSTOP = "silent"` | the first cut: nothing reported when the turn is closed under the ceiling | ✓ | ✓ | ✓ | ✓ | ✗ |
-| `verdict`, `TURNSTOP = "verdict"` | the verdict commit, as shipped | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `verdict`, `TURNSTOP = "verdict"` | the verdict commit, as shipped, the VAD one edge ahead of either side (`sc_verdict`) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| the same | the strategy three edges behind the VAD (`sc_verdict_stale`, THE ORDER) | ✗ | | | | |
+| the same, `NUMBERED` | proposed: the verdict names its stop (`sc_verdict_numbered`) | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-`NoSplitOnIncomplete` is the bug, and `vadStop` fails it in five steps with nothing exotic:
+`NoSplitOnIncomplete` is the bug, and `vadStop` fails it with nothing exotic:
 
 ```
 VadStart     the caller speaks
-VadStop      they pause; the STT commits -- the segment is closed, unjudged
+VadStop      they pause
+SttStop      the STT commits -- the segment is closed, unjudged
 StratStart
 StratStop    the model says INCOMPLETE; the ceiling starts
 VadStart     they resume inside it: the model was right, the sentence is two decodes
@@ -1432,7 +1483,7 @@ code could not: a stop is held, the segment's words lag in from the engine (the 
 stands down, correctly), the caller resumes (the hold is released), and their next stop is
 *missed*. Nothing owns the words — the old code had already banked them at the first stop.
 `stt.py` now puts the backstop back on duty at the resume when the held segment has words
-(`VadStart`'s `backstop' = backstop \/ (pending /\ segSpeech)`); drop that conjunct and the
+(`SttStart`'s `backstop' = backstop \/ (pending /\ segSpeech)`); drop that conjunct and the
 row falls in ten states. Every other load-bearing piece was checked the same way, by
 mutation: the expiry's timing fact (dropping it fells `NoSplitOnIncomplete`), the expiry
 itself (`NoStrandedSegment`), the flag a resume clears (`NoStaleClose`), and the backstop's
@@ -1449,9 +1500,10 @@ stop right after the strategies handled the VAD stop. In every case the STT held
 segment to its expiry and logged a lost frame. The model had `HoldExpire` enabled only once
 no verdict could still be coming — the timing fact, *stated* — so it could not represent a
 hold that nothing would ever answer, and every row passed. `TurnStop` and `NoOrphanedHold`
-are what was missing: with `TURNSTOP = "silent"` the row falls in seven states
-(`VadStart`, `VadStop`, `StratStart`, `StratStop` incomplete, `TurnStop`, the INCOMPLETE
-delivered — pending, nothing in flight, no ceiling, nothing lost), and with the strategy
+are what was missing: with `TURNSTOP = "silent"` the row falls in eleven states (the
+caller speaks, an interim opens the turn, the stop's verdict is INCOMPLETE, `TurnStop`,
+the STT holds at its stop and the INCOMPLETE is delivered — pending, nothing in flight,
+no ceiling, nothing lost), and with the strategy
 reporting the close it holds. The two inline cases are the same hole entered from the
 strategy's own handlers; the code closes it by reading what the turn did (the inference
 count) rather than the flag, and the model does not distinguish them from `TurnStop`.
@@ -1487,8 +1539,13 @@ the design and the wire:
 |---|---|---|---|---|---|
 | `clock` | `unmarked` | PR #49 as opened: a final placed by clock (`sc_final_clock`) | ✗ | | |
 | `clock` | `marked` | the same on a wire that says which dones answer commits (`sc_final_clock_marked`) | ✗ | | |
-| `stop` | `unmarked` | as shipped, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`, `sc_final_stop_residual`) | ✗ | ✓ | ✓ |
-| `stop` | `marked` | as shipped, against the engine that marks its dones — teagram-engine#36, what .234 runs (`sc_final_stop_marked`) | ✓ | | ✓ |
+| `stop` | `unmarked` | as shipped, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`) | ✗ | ✗ | |
+| `stop` | `marked` | as shipped, against the engine that marks its dones — teagram-engine#36, what the box runs (`sc_final_stop_marked`, `sc_final_stop_stranded`) | ✗ | | ✗ |
+| `receipts` | `unmarked` | proposed (THE ORDER), on the old engine (`sc_final_stop_residual`) | | ✓ | ✓ |
+| `receipts` | `marked` | proposed (THE ORDER), on the engine the box runs (`sc_final_receipts`, `_backstop`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
+
+The `stop` rows held on the marked engine until 2026-10-14, when THE ORDER (below) put
+the VAD where pipecat runs it; the `receipts` rows are the repair.
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a
@@ -1533,17 +1590,17 @@ without a decode), and its stamp is the next stop's if it carries words, the las
 commit's if it does not. `tests/test_earlier_final_does_not_end_the_turn.py` pins each
 shape.
 
-**The `stop` row on the unmarked wire falls in ten states, on one cause.** The engine
+**The `stop` row on the unmarked wire fell in ten states, on one cause** — before THE
+ORDER, which adds a second that TLC now reaches first (finding A below). The engine
 cuts a breath; the VAD stop holds; the verdict commits *before* the engine's done for the
 first half has landed; the STT, pairing dones with commits by order because the wire does
 not say which is which, hands the commit's stamp to the engine's done; the strategy takes
 the half as the stop's close and ends the turn while the commit's real answer — the rest
-of the sentence — is still on its way. `sc_final_stop_residual` is the statement that this
-is the *only* way the shipped design ends a turn stale: `StaleOnlyByMispairing` holds,
-with the turn never stranding and the five commit properties intact, over the same
-environment. `sc_final_stop_marked` is the statement that a done which says whether it
-answers a client commit (`voxtral_websocket.c`'s `worker_send_done` sends the same message
-for its VAD close and for a commit) closes it entirely. Live, the mispairing needs the
+of the sentence — is still on its way. `sc_final_stop_residual` was the statement that
+this was the *only* way the shipped design ended a turn stale, and `sc_final_stop_marked`
+that a done which says whether it answers a client commit (`voxtral_websocket.c`'s
+`worker_send_done` sends the same message for its VAD close and for a commit) closed it
+entirely; both now say it of the `receipts` design, the shipped one having two more. Live, the mispairing needs the
 engine's finish for the first half to outlast the rest of the sentence plus the VAD's
 floor and the model's verdict — the GPU-contended finish — and its cost is one cut reply,
 the shape the fix is for, at a small fraction of its old rate.
@@ -1571,9 +1628,12 @@ by design, and each has its own row to keep that visible rather than a property 
 holds by construction. The cap (`PauseCap`, `capCut`, `sc_voice_cap`) can fire at any
 point of the wait. The catch-up bound (`catchupCut`, `sc_voice_catchup`) is a verdict
 that commits on what the analyzer has heard because it has not heard the rest in time.
-`sc_voice_final` runs the final's protocol under the wait on the marked engine: no stale
-turn end, no stranded turn. Every existing row runs with `MaxVoice = 0`, where nothing
-changes.
+`sc_voice_final` runs the final's protocol (its `receipts` repair) under the wait on the
+marked engine: no stale turn end, no stranded turn. `MaxVoice` bounds only the voice
+the VAD has not started on; since THE ORDER, a VAD start sets `voice` too (the
+analyzer's own finding), so a verdict that reaches the STT after the caller has
+resumed but before the STT has seen the start meets the voice and waits, as the code
+does on the marks.
 
 ### The carry (#154)
 
@@ -1601,30 +1661,88 @@ an interim without a carry (`NoWordlessInterim` holds) and does with one (it fal
 rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_blind`, the
 two clock rows) run without it.
 
-**The default run and `--full`.** The carry multiplies the three largest rows' state
-spaces, so `check.sh` runs those three without it and `check.sh --full` adds a copy of
-each with it on. Nothing runs `--full` automatically -- CI runs the default run on push
-and pull request -- so it is a manual gate: run it before merging any change to
-`SttCommit.tla` or to the commit paths it models (`stt.py`'s commits, the hold, the
-backstop, the carry), about 18 min on the desktop.
+**The default run and `--full`.** See THE ORDER's scale note below: since 2026-10-14
+`--full` holds the five rows too large for the default run, the carry's three among
+them.
 
-| row | default run | `--full` copy, with the carry |
-|---|---|---|
-| `sc_vadStop_sound` | `CARRY = FALSE` | `sc_vadStop_sound_carry` |
-| `sc_voice` | `CARRY = FALSE` | `sc_voice_carry` |
-| `sc_voice_final` | `CARRY = FALSE` | `sc_voice_final_carry` |
+### THE ORDER (2026-10-14): where the VAD runs
 
-Every other row that describes the STT as shipped runs with the carry in the default run:
-`sc_verdict` (the commit protocol with both faults), the three `sc_final_stop` rows (the
-final's protocol), the voice witnesses, and the carry pair. What the default run does not
-check with the carry is the wait for the caller's pause under both faults and two voices
-(`sc_voice`), the final's protocol under that wait (`sc_voice_final`), and the no-verdict
-fallback (`sc_vadStop_sound`); those are `--full`'s.
+Until 2026-10-14 this model had the STT see every VAD edge first and atomically — "the
+first processor after the transport" — with the strategy's copy queued behind the STT's
+own frames. That was pipecat before 1.0. In 1.8.1 the VAD runs in the user aggregator,
+*downstream* of the STT, on the aggregator's input task, where the stop strategy runs
+too, and an edge it detects is queued twice (`_queued_broadcast_frame`): onto the
+aggregator's own input queue, behind whatever audio is already waiting there, for the
+strategy; and *upstream* through four processors' queues to the STT. Neither copy is
+first by construction. The verdict the strategy pushes when it gets to a stop travels the
+same upstream path, so it reaches the STT after that stop, and after any edge the VAD
+found in the backlog before the strategy got there. The STT's interims and finals come
+down on the aggregator's other task (the process queue, data frames), in no order with
+the edges. So the model now has three FIFOs — `vadQ`, `toStt`, `toStrategy` — the STT
+handles its copies in `SttStart`/`SttStop`, and the two sides count stops separately
+(`sttStops`, `stratStops`). `MaxLag` bounds how many edges either side may be behind; one
+already lets either side see a stop first. Every row was re-run; three findings, all
+against the code as it is:
 
-Last `--full` run of the three carry rows: 2026-10-12, at the `CARRY` encoding (this
-branch, 9fdda09's model): all three hold -- `sc_vadStop_sound_carry` 24.4 million
-distinct states (5 min 53 s), `sc_voice_carry` 19.9 million (4 min 35 s),
-`sc_voice_final_carry` 29.8 million (7 min 27 s).
+**A — a stale turn end on the marked engine** (`sc_final_stop_marked`, ten states):
+
+```
+VadStart      the caller speaks
+EngineClose   the engine's endpointer cuts a breath inside the sentence
+VadStop       they finish; the VAD queues the stop for the strategy and pushes it up
+Done          the engine's done for the first half reaches the STT before the stop
+              does: nothing asked for it and it has words, so it is stamped as the
+              NEXT stop's -- stop 1, the one the VAD has just found
+StratStop     the strategy counts stop 1 (owed) and the model says COMPLETE
+StratFinal    the first half, stamped 1, pays stop 1's debt
+EndTurn       the turn ends on half the sentence; the rest is in the open segment
+```
+
+The STT then sees stop 1, finds the segment closed unasked with nothing streamed since,
+and commits the tail at once; its final, the rest of the sentence, opens a new turn, and
+its interruption cuts the reply to the first half: PR #49's shape, a reply cut at 0% and
+the LLM asked again. The stamp rule ("the next stop's") was right when the STT counted
+first; the window now is the stop's trip up four queues, so it needs an engine cut whose
+finish ends inside a few milliseconds (more under load) — rare, and not seen in a
+journal yet.
+
+**B — a turn stranded until the watchdog** (`sc_final_stop_stranded`, fourteen states),
+the order the other way round: the engine cuts mid-sentence and its first half lands; the
+STT sees the stop, finds the segment closed unasked and commits the tail at once; the
+tail's close, stamped with that stop, reaches the strategy *before* the strategy has
+counted the stop (its input queue backed up behind audio), so it pays nothing; then the
+strategy counts the stop, and owes a close that has already gone by. The transcript is
+complete and finalized, the verdict COMPLETE, and nothing can end the turn until the next
+VAD stop or the aggregator's 5 s watchdog: the caller waits five seconds for the answer.
+It needs the tail commit's round trip through the engine to beat the strategy to its own
+queued stop; it is quickest in the appliance's common case, an engine cut at the end of
+the speech, where the tail is silence and its close an empty done.
+
+**C — a verdict for the stop before** (`sc_verdict_stale`, fifteen states, `MaxLag = 3`):
+the strategy's queue holds a whole utterance — stop 1, the caller's next start and stop
+2 — when it answers stop 1 COMPLETE, so that verdict goes up behind stop 2.
+`TurnVerdictFrame` names no stop, the STT takes it for stop 2's and commits the held
+segment; the model then calls stop 2 INCOMPLETE and the caller resumes inside the
+ceiling: the #43 split. It needs the aggregator's input task stalled for a whole
+utterance (≥ ~0.5 s with Talk's 0.2 s stop), which Smart Turn's inference on the
+appliance's cores under load could do but has not been seen to.
+
+**The repairs, modelled, not in the code:**
+
+- `NUMBERED` — the strategy stamps each `TurnVerdictFrame` with the stop it answers (its
+  own count; the ceiling's and the turn-stop's with the stop they override) and
+  `_handle_verdict` ignores one that is not for `_vad_stops`. `sc_verdict_numbered`
+  holds every commit property at `MaxLag = 3` (1.1 million states).
+- `DESIGN = "receipts"` — `LateStartTurnStopStrategy` keeps the stamps of closes for
+  stops it has not counted yet (`stop_n > _stops`) and, at the count, finds that stop's
+  debt paid; and `_handle_message` stamps a done nothing asked for that carries words
+  with no stop at all (a sentinel `_note_close` treats as paying nothing — not `None`,
+  which pays as stock): the stop it lands near is always answered by its own commit, the
+  tail's included. `sc_final_receipts`, `_backstop` and `sc_voice_final` hold every
+  property in the default run, `sc_final_receipts_full` (the backstop, a lost verdict,
+  the engine's cut and the carry together: 26.6 million states) and
+  `sc_voice_final_carry` under `--full`; `sc_final_stop_residual` says that on an engine
+  without the reason field the mispairing is again the only stale end left.
 
 ### Known limits of this model
 
@@ -1673,16 +1791,36 @@ distinct states (5 min 53 s), `sc_voice_carry` 19.9 million (4 min 35 s),
   answers a commit and a done from the engine's own close are the same message, so the
   STT pairs by order and the engine's close can take a commit's place (`mispaired`).
   `sc_final_stop` keeps the counterexample and `sc_final_stop_residual` proves it is the
-  only one; the engine-side marker is the fix, and `DONES = "marked"` is that engine:
+  only one left under the `receipts` repair; the engine-side marker is the fix, and `DONES = "marked"` is that engine:
   teagram-engine's `transcription.done` carries `"reason": "commit" | "vad"` since the
   trailing-silence credit (its PR for issue #29), and `stt.py` places a done marked
   `vad` as the engine's own close whatever the queue holds. On that engine the marked
   rows are the shipped configuration; against an older one the field is absent and the
   queue pairs as before, so the unmarked rows still describe it.
+- **THE ORDER is bounded** (`MaxLag`): the VAD finds a new edge only while neither side
+  is `MaxLag` edges behind. One edge either way is every row's but `sc_verdict_stale`
+  and `sc_verdict_numbered`'s three. The strategy's stop is one step here (count, model,
+  verdict); in the code the inference is an await inside it, and a final the process
+  task hands the strategy meanwhile sees the stop counted and no verdict yet — the same
+  as landing just after the step, since the turn's end needs both.
+- **Disconnects are not modelled** — the hold for a phone call (`stt.hold()`), a
+  reconnect. `_disconnect_websocket` drops the segment, the queued stamps and the hold
+  and pushes `SegmentResetFrame`, but the strategy's `_handle_segment_reset` leaves its
+  owed close standing: a stop counted before the disconnect is owed a close that will
+  never come, and a turn that needs it (one open at the hold, or a final with no stop in
+  sight after the resume) waits for the next stop or the watchdog. A suspicion from
+  reading, not a counterexample: the turn at a hold has usually just ended on the
+  caller's answer.
 - **One interim per segment.** `Delta` fires once per open segment: further deltas change
   nothing this model reads, and the engine streams none for a new segment until the
   previous finish is done (one worker per session), which is when the STT's buffer
-  empties. Without it the queue to the strategy is unbounded.
+  empties. Without it the queue to the strategy is unbounded. It also leaves out the
+  committed segment's own last deltas: the engine's finish drains them before its done
+  (`worker_drain_tokens`, then `worker_send_done`), and `stt.py` keeps the old buffer
+  until the done, so such a delta re-arms the backstop once the commit has cleared
+  `_commit_pending`. Harmless unless the done trails that delta by the backstop's 1.5 s
+  — the GPU-stall edge `stt.py` already documents for interims — when the backstop would
+  commit the *next* segment, the caller's next words with it.
 - **The backstop is bounded** (`MaxBackstops`) because every firing opens a segment the
   caller can refill; `WayOut` reads its guard rather than the bounded action so the bound
   cannot fake a stranding.
@@ -1699,29 +1837,24 @@ distinct states (5 min 53 s), `sc_voice_carry` 19.9 million (4 min 35 s),
 - **A commit whose send fails is not modelled.** `stt.py` queues no stamp for it (the first
   cut left its stamp for the next done to inherit); the turn it strands ends on the
   watchdog, and the receive task owns the reconnect.
-- **Scale.** The four commit rows: about 70,000 distinct states each with the engine's
-  close off, a few seconds. The five final rows: 2.8 million states and about half a
-  minute each for the two that hold (`MaxStops = 2`, `MaxLost = 1`, `MaxCloses = 1`,
-  `MaxBackstops = 1`, `MaxMissed = 0` — with the missed stop on as well the space passes
-  30 million and the row is not worth its minutes); the three that fall find their trace in
-  under ten states. `check.sh` passes `-deadlock`: the bounds make terminal states ordinary.
-  The #140 rows, measured 2026-10-11 on TLC 2.19: `sc_voice` (two stretches of voice,
-  both faults on) is 10.9 million distinct states (36.1 million generated) and
-  `sc_voice_final` 13.6 million (44.2 million generated). The six that fall
-  (`sc_voice_blind`, `sc_voice_reach`, `sc_voice_reach_pause`, `sc_voice_reach_resume`,
-  `sc_voice_cap`, `sc_voice_catchup`) each find a trace of under ten states.
-  The carry (#154), measured 2026-10-12 on the same TLC and desktop. In the default run:
-  `sc_verdict` 1.6 million distinct states with it (16 s), `sc_final_stop_residual`
-  and `_marked` 6.2 and 5.7 million (about a minute each, against 43 s without), and
-  the carry pair a few seconds (`sc_carry_off` 54,000 states; the pair runs without
-  the faults, its point being reachability). Under `--full`: `sc_vadStop_sound_carry`
-  24.4 million (5 min 53 s; 5.9 million without the carry), `sc_voice_carry` 19.9
-  million (4 min 35 s), `sc_voice_final_carry` 29.8 million (7 min 27 s). The whole
-  default run took 526 s here before #154 (`sc_voice_final` 143 s, `sc_voice` 108 s,
-  `sc_vadStop_sound` 67 s of it) and about 665 s with it; `--full` adds about 18 min.
-  The first encoding (a counted, nondeterministic carry, `MaxCarries = 1`) cost more
-  for less: `sc_voice` 29.8 million and `sc_voice_final` 40.7 million with one carry,
-  where `CARRY` covers every commit's.
+- **Scale.** Measured 2026-10-14 on TLC 2.19, THE ORDER's model, two workers on a
+  desktop shared with other checks (so slower than the figures from before it, which
+  had the machine). Default run: `sc_verdict` 7.0 million distinct states (4 min 11 s),
+  `sc_voice` 4.3 million (1 min 45 s; the missed stop moved to `sc_voice_missed`),
+  `sc_vadStop_sound` 3.7 million (1 min 24 s), `sc_voice_final` 1.3 million (30 s),
+  `sc_verdict_numbered` 1.1 million (47 s), the three `receipts` final rows 260,000 to
+  480,000 each (under 20 s), `sc_carry_off` 260,000 (8 s); every row that falls finds its
+  trace in 8 to 15 states, in a second or a few. `--full`: `sc_final_receipts_full`
+  26.6 million (14 min), `sc_voice_missed` 27.9 million (12 min 30 s),
+  `sc_vadStop_sound_carry` 5.6 million (3 min 36 s), `sc_voice_carry` 5.7 million
+  (2 min 41 s), `sc_voice_final_carry` 4.1 million (1 min 28 s) -- about half an hour
+  in all. The three queues cost most where the engine's own close and the backstop are
+  both on (the final rows: 0.4 million with either, 8 million with both, at the same
+  other bounds), which is why the default final rows take them one at a time.
+  `check.sh` passes `-deadlock`: the bounds make terminal states ordinary. Before THE
+  ORDER (2026-10-11/12, the whole desktop): `sc_verdict` 1.6 million, `sc_voice` 10.9
+  million, `sc_voice_final` 13.6 million, `sc_final_stop_residual`/`_marked` 6.2 and
+  5.7 million, the `--full` carry rows 20 to 30 million each.
 
 ## Worth modeling next
 
