@@ -520,6 +520,64 @@ class _Aggregator:
         self.pushed += 1
         self._aggregation = []
 
+    async def _maybe_emit_user_turn_stopped(self, strategy=None, on_session_end=False):
+        await self.push_aggregation()
+
+
+async def test_the_session_end_commit_never_drops_the_reply_ahead_of_the_end():
+    # pipecat pushes the EndFrame on and THEN commits an open turn's leftover words
+    # (_maybe_emit_user_turn_stopped(on_session_end=True)), through the fenced
+    # push_aggregation. With the gate still armed the fence used to take that commit for
+    # a continuation and send its interruption, which overtook the End and dropped the
+    # reply queued ahead of it -- a goodbye -- for words nothing would answer
+    # (formal/UserTurn.tla, ut_retryMergesAtEnd_nolostgoodbye).
+    from pipecat.frames.frames import EndFrame
+
+    class Tap(FrameProcessor):
+        def __init__(self):
+            super().__init__()
+            self.seen = []
+
+        async def process_frame(self, frame, direction):
+            await super().process_frame(frame, direction)
+            if direction == FrameDirection.DOWNSTREAM:
+                self.seen.append(type(frame).__name__)
+            await self.push_frame(frame, direction)
+
+    from pipecat.turns.user_stop.base_user_turn_stop_strategy import (
+        BaseUserTurnStopStrategy,
+    )
+
+    class NoStopYet(BaseUserTurnStopStrategy):
+        """The turn is still open when the session ends."""
+
+    context = LLMContext([{"role": "system", "content": "sys"}])
+    pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(
+        user_mute_strategies=[],
+        user_turn_strategies=UserTurnStrategies(
+            start=[PauseAwareMinWordsStrategy(min_words=2)], stop=[NoStopYet()])))
+    user = pair.user()
+    fence = CutReplyFence()
+    fence.hold_commits(user)
+    asked = []
+    fence.unplayed_reply = lambda: asked.append(1) or True     # the gate, still armed
+    tap = Tap()
+    task = PipelineTask(Pipeline([user, fence.head, tap, fence.tail]),
+                        cancel_on_idle_timeout=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.sleep(STARTUP_S)
+    final = FinalTranscriptionFrame("and one more thing", "caller", "t", stop_n=1)
+    final.finalized = True
+    await task.queue_frame(final)                  # opens a turn; no stop yet
+    await asyncio.sleep(0.1)
+    assert tap.seen.count("InterruptionFrame") == 1, tap.seen     # the turn start's
+    await task.queue_frame(EndFrame())
+    await asyncio.wait_for(run, timeout=5)
+    assert tap.seen.count("InterruptionFrame") == 1, (
+        f"the session-end commit sent an interruption past the End: {tap.seen}")
+    assert any(m.get("content") == "and one more thing" for m in context.get_messages()), (
+        "the leftover words were not committed")
+
 
 async def test_a_commit_with_nothing_in_flight_does_not_wait():
     # The request above opened its turn the same way, with the bot silent: its

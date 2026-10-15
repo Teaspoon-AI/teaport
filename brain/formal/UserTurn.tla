@@ -56,6 +56,9 @@
 (*                          still armed -- that second commit -- first      *)
 (*                          drops the unplayed reply and merges into the    *)
 (*                          unanswered message.                             *)
+(* MODE = "retryMergesAtEnd" -- its first cut (e62e67a): the session-end    *)
+(*                          commit of leftover words did it too, dropping   *)
+(*                          the queued reply the End was behind.            *)
 (*                                                                          *)
 (* The speculative reply (speculate.py, TEAPORT_SPECULATIVE_REPLY). When   *)
 (* the caller's words have settled on a turn the stop strategy has not      *)
@@ -115,6 +118,13 @@
 (*                           queued behind the held reply.                  *)
 (* HOLD = "gateNoEnding"  -- a hold may start after the End reached the     *)
 (*                           gate (no _ending flag).                        *)
+(* HOLD = "gateKeepsTool" -- the gate until 2026-10-15: a dropped hold left  *)
+(*                           the reply's function-call frames (pipecat's    *)
+(*                           UninterruptibleFrames) in its queue, to land   *)
+(*                           in the context after the turn that dropped it. *)
+(* HOLD = "gateNoFoldCancelled" -- the corrector until 2026-10-15: no merge *)
+(*                           across the tool round an interruption          *)
+(*                           cancelled (only system messages between).      *)
 (*                                                                          *)
 (* The release is a TIMER (TEAPORT_REPLY_HOLD_RELEASE_S after the caller    *)
 (* goes quiet; a cap while they may still talk). WORDS_IN_TIME = TRUE       *)
@@ -248,6 +258,19 @@ VARIABLES
                      \* a speculation's snapshot, which spends the ledger's cut) before
                      \* the reply that turn cut was in it
 fenceVars == <<cut, overtaken, cutAfterCommit>>
+VARIABLES
+    \* --- the reply's tool round (the LLM called a function for the last commit) ---
+    tool,            \* where that round is: "none"; "held" (its FunctionCallInProgress /
+                     \* Result frames wait in the gate's paused queue); "ctxRunning" (the
+                     \* call and its IN_PROGRESS result are in the context); "ctxDone" (a
+                     \* result is: a sync tool's, or the async consult's placeholder, the
+                     \* consult running on); "ctxCancelled" (an interruption cancelled it:
+                     \* the result reads CANCELLED)
+    lateTool,        \* monitor: a dropped reply's tool round was left to land in the
+                     \* context after the turn that dropped it
+    goodbyeLost      \* monitor: the session-end commit dropped a reply the End was
+                     \* queued behind (it would have played out first)
+toolVars == <<tool, lateTool, goodbyeLost>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
@@ -259,9 +282,23 @@ CommitMayOvertake == FENCE \in {"none", "timed"}
 SnapshotMayOvertake == FENCE \in {"none", "commitOnly"}
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
           stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply,
-          holdVars, pauseVars, fenceVars>>
+          holdVars, pauseVars, fenceVars, toolVars>>
 
 Gated == HOLD /= "none"
+
+\* What a drop (an interruption reaching the gate) does to the reply's tool round. A
+\* call still running in the context is cancelled (pipecat's cancel_on_interruption, the
+\* default every tool here is registered with: CANCELLED is written over IN_PROGRESS).
+\* One still behind the hold is dropped with the held reply as shipped (reply_hold.py
+\* discards the held function-call frames); until 2026-10-15 pipecat's queue reset kept
+\* them, UninterruptibleFrames, and they landed after the commit that dropped them --
+\* a cancelled call as an IN_PROGRESS nothing ever settles (the cancel reached the
+\* assistant aggregator first and found no call to settle), a finished one with its
+\* result and, for a sync tool, a second inference.
+Dropped(t) == CASE t = "ctxRunning" -> "ctxCancelled"
+                [] t = "held"       -> "none"
+                [] OTHER            -> t
+LateOnDrop == tool = "held" /\ HOLD = "gateKeepsTool"
 
 Init ==
     /\ userTurn = FALSE
@@ -284,6 +321,7 @@ Init ==
     /\ pausedP = FALSE /\ left = "long" /\ synthDone = FALSE /\ tailKnown = FALSE
     /\ wouldEnd = FALSE /\ stopHeard = FALSE /\ answerLost = FALSE
     /\ cut = "none" /\ overtaken = FALSE /\ cutAfterCommit = FALSE
+    /\ tool = "none" /\ lateTool = FALSE /\ goodbyeLost = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -333,6 +371,7 @@ VadStart ==
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
                    splitTurn>>
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* The user falls quiet: `VadStop`, below the commit it may re-apply.
 
@@ -400,6 +439,8 @@ CutLands ==
     \* Armed: none of the last commit's reply was played: the next commit finishes it.
     /\ mergePending' = (mergePending \/ (armed /\ HOLD \notin {"none", "gateNoMerge"}))
     /\ UNCHANGED <<unanswered, endQueued, splitTurn, replyOverResume>>
+    /\ tool' = Dropped(tool) /\ lateTool' = (lateTool \/ LateOnDrop)
+    /\ UNCHANGED goodbyeLost
     \* The interruption reaches the transport: the queued audio is dropped and, with
     \* it, the pause -- except in a transport that keeps it.
     /\ pausedP' = (PAUSE = "keepOnInterrupt" /\ pausedP)
@@ -435,6 +476,7 @@ Interject ==
               /\ UNCHANGED missedBargeIn
     /\ watchdog' = FALSE
     /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, specWords, gen, staleReply>>
+    /\ UNCHANGED toolVars
 
 (***************************************************************************)
 (* The barge-in pause.                                                     *)
@@ -450,6 +492,7 @@ Progress ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, synthDone, tailKnown, wouldEnd, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* The reply's synthesis completes (its TTSStoppedFrame reaches the transport). During
 \* a pause, as shipped, the transport re-announces the pause with the tail it now
@@ -464,6 +507,7 @@ SynthDone ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, left, wouldEnd, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* Ground truth: paused with the whole reply synthesized and less than a final's
 \* latency of it left, the held-back rest would have played out by now. (With a long
@@ -477,6 +521,7 @@ TailElapsed ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* No words: the line is quiet and playout resumes from where it stopped. A bot that
 \* resumes after the caller said stop to it has not been stopped: that OUTCOME is
@@ -491,6 +536,7 @@ ResumeP ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<left, synthDone, answerLost>>
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* A one-word final (not a stop word) lands after the caller's VAD stop -- "Yes.".
 \* What the strategy does with it (`Starts`) is the design; what it SHOULD have done
@@ -512,6 +558,7 @@ OneWord ==
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard>>
               /\ UNCHANGED fenceVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
+    /\ UNCHANGED toolVars
 
 \* A transcript made only of stop words ("Stop.") over the speaking bot. Under the
 \* 2-word guard; as shipped, a stop utterance to a PAUSED bot starts the turn. If it
@@ -530,6 +577,7 @@ StopWord ==
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
               /\ UNCHANGED fenceVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
+    /\ UNCHANGED toolVars
 
 (***************************************************************************)
 (* The speculative reply.                                                  *)
@@ -560,6 +608,7 @@ SpecStart ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED <<cut, overtaken>>
+    /\ UNCHANGED toolVars
 
 \* The words the commit will carry move after the snapshot, with the caller quiet:
 \* the decoder's lagging tail past the settle window, or the final's re-decode
@@ -575,6 +624,7 @@ Retext ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* Something else writes the context while a speculation is live. A free action,
 \* deliberately: HeardContextCorrector._reconcile on the very LLMContextFrame that
@@ -590,6 +640,7 @@ CtxChange ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* trigger_user_turn_stopped(), first await: the stop strategy has decided, the
 \* aggregation is pushed and the LLM is asked. The controller gates this on the turn
@@ -636,14 +687,36 @@ Stale == Adopt /\ (specGen /= gen \/ ~specWords)
 \* at the commit"); here the commit runs after the cut lands and `Resume` takes that
 \* start -- the same states.
 CommitReady == cut = "none" \/ CommitMayOvertake
-Commit ==
+
+\* The user message the commit appends, against the one before it. It is folded into
+\* that one when a merge is pending and the corrector can (_merge_tail): nothing but
+\* system messages between -- or, as shipped, a tool round an interruption cancelled,
+\* which it removes. A finished tool round between them (a sync result, the async
+\* consult's placeholder) means the turn was acted on: the new message is a turn of its
+\* own, which is no split (the model sees the round, and the consult goes on). One
+\* still in the context unsettled is the same. Anything else after an unanswered
+\* message is the split: two user messages with neither a reply nor a round between.
+Folds(mp, t) == mp /\ unanswered >= 1
+                /\ (t \in {"none", "held"}
+                    \/ (t = "ctxCancelled" /\ HOLD /= "gateNoFoldCancelled"))
+Acted(t) == t \in {"ctxRunning", "ctxDone"}
+Appended(mp, t) ==
+    /\ unanswered' = IF Folds(mp, t) THEN unanswered
+                     ELSE IF Acted(t) THEN 1
+                     ELSE (IF unanswered < 2 THEN unanswered + 1 ELSE 2)
+    /\ splitTurn' = (splitTurn \/ (~Folds(mp, t) /\ unanswered >= 1 /\ ~Acted(t)))
+    /\ tool' = "none"
+    /\ UNCHANGED goodbyeLost
+
+CommitCore ==
     /\ spec' = FALSE
     /\ staleReply' = (staleReply \/ Stale)
     /\ reply' = TRUE /\ armed' = Gated
-    /\ unanswered' = IF mergePending /\ unanswered >= 1 THEN unanswered
-                     ELSE (IF unanswered < 2 THEN unanswered + 1 ELSE 2)
+    /\ Appended(mergePending, tool)
     /\ mergePending' = FALSE
-    /\ splitTurn' = (splitTurn \/ (~mergePending /\ unanswered >= 1))
+    /\ UNCHANGED lateTool
+Commit ==
+    /\ CommitCore
     /\ overtaken' = (cut /= "none")
     /\ cutAfterCommit' = (cutAfterCommit \/ cut = "reply")
     /\ UNCHANGED cut
@@ -655,23 +728,37 @@ Commit ==
 \* unplayed reply: an InterruptionFrame pushed down from the aggregator (no turn start,
 \* nothing upstream), which the gate reads as a dropped reply (it ends any hold and asks
 \* for the merge) and the fence waits for, so the commit's words are folded into the
-\* unanswered message (TurnMerge). One step here: the commit's wait is atomic with it, as
-\* for every commit. Only the refused finalize's second commit reaches it (`VadStop`):
-\* every other commit runs on a turn whose start's interruption disarmed the gate, and
-\* past the fence's bound (cut /= "none") the code does not look. ForceStop's and
-\* Inference's commits take the same step anyway, as the code's one wrapper does.
-Continues == MODE = "retryMerges" /\ armed /\ cut = "none"
+\* unanswered message (TurnMerge) -- across a tool round the drop cancelled, not across
+\* one that finished (`Appended`). One step here: the commit's wait is atomic with it,
+\* as for every commit -- under FENCE = "inTime". Only the refused finalize's second
+\* commit reaches it (`VadStop`): every other commit runs on a turn whose start's
+\* interruption disarmed the gate, and past the fence's bound (cut /= "none") the code
+\* does not look. ForceStop's and Inference's commits take the same step anyway, as the
+\* code's one wrapper does. Not the session-end commit: see Hangup.
+Continues == MODE \in {"retryMerges", "retryMergesAtEnd"} /\ armed /\ cut = "none"
 ContinueCommit ==
     /\ spec' = FALSE
     /\ staleReply' = (staleReply \/ Stale)
     /\ reply' = TRUE /\ armed' = Gated
     /\ held' = FALSE /\ paused' = FALSE /\ resumed' = FALSE
+    /\ Appended(HOLD /= "gateNoMerge", Dropped(tool))
+    /\ lateTool' = (lateTool \/ LateOnDrop)
     /\ mergePending' = FALSE
-    /\ UNCHANGED <<unanswered, splitTurn, endQueued, replyOverResume>>
+    /\ UNCHANGED <<endQueued, replyOverResume>>
     /\ UNCHANGED fenceVars
+\* FENCE = "timed": the fence's second wait, for the continuation's own interruption,
+\* runs out (CUT_COMMIT_WAIT_SECS) and the commit goes ahead with the frame still on its
+\* way: no merge has been asked for yet (the gate has not seen it), the commit arms the
+\* gate, and the frame then lands as `CutLands` does for any overtaken cut -- it drops
+\* the held reply and asks for a merge for the NEXT commit (the false TurnMerge). The
+\* same accepted residual as every commit past the bound.
+ContinueLate ==
+    /\ CommitCore
+    /\ cut' = "empty" /\ overtaken' = TRUE
+    /\ UNCHANGED <<cutAfterCommit, held, paused, resumed, endQueued, replyOverResume>>
 CommitStep ==
     IF Continues
-      THEN ContinueCommit
+      THEN IF FENCE = "timed" THEN ContinueCommit \/ ContinueLate ELSE ContinueCommit
       ELSE /\ Commit
            /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
 
@@ -708,7 +795,7 @@ Inference ==
 \* As shipped (retryMerges) a second commit on a turn whose first reply has not played
 \* (the gate still armed) is a continuation of it: `CommitStep` drops the unplayed reply
 \* and folds the words into the unanswered message.
-Retry == MODE \in {"retryOnQuiet", "retryMerges"}
+Retry == MODE \in {"retryOnQuiet", "retryMerges", "retryMergesAtEnd"}
 VadStop ==
     /\ ~endQueued                             \* the session has not ended
     /\ userSpeaking
@@ -721,11 +808,13 @@ VadStop ==
               /\ \/ /\ UNCHANGED <<spec, staleReply>>     \* nothing new: commits nothing
                     /\ UNCHANGED holdVars
                     /\ UNCHANGED fenceVars
+                    /\ UNCHANGED toolVars
                  \/ /\ EARLY_FINAL /\ CommitReady        \* `early`: a second commit
                     /\ CommitStep
          ELSE /\ UNCHANGED <<userTurn, owed, inference, spec, staleReply>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED fenceVars
+              /\ UNCHANGED toolVars
     /\ UNCHANGED <<botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
@@ -745,6 +834,7 @@ Resume ==
                    splitTurn>>
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* trigger_user_turn_stopped(), second await.
 Finalize ==
@@ -764,6 +854,7 @@ Finalize ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* The reply the inference produced reaches the transport. It cannot overtake the
 \* finalize in practice -- an LLM round trip plus synthesis against two awaits --
@@ -794,6 +885,7 @@ BotStart ==
          /\ tailKnown' = (pausedP' /\ synthDone')
     /\ UNCHANGED <<wouldEnd, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 (***************************************************************************)
 (* The reply hold.                                                         *)
@@ -810,6 +902,7 @@ Wordless ==
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* The release timer: TEAPORT_REPLY_HOLD_RELEASE_S after the caller goes quiet, the
 \* held reply plays. A timer knows nothing of the words: under WORDS_IN_TIME they have
@@ -824,6 +917,9 @@ Release ==
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    \* A tool round queued behind the hold reaches the context: still running, or done.
+    /\ \E t \in (IF tool = "held" THEN {"ctxRunning", "ctxDone"} ELSE {tool}) : tool' = t
+    /\ UNCHANGED <<lateTool, goodbyeLost>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
 Cap ==
@@ -836,21 +932,63 @@ Cap ==
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    \* A tool round queued behind the hold reaches the context: still running, or done.
+    /\ \E t \in (IF tool = "held" THEN {"ctxRunning", "ctxDone"} ELSE {tool}) : tool' = t
+    /\ UNCHANGED <<lateTool, goodbyeLost>>
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
 \* Every other action but the caller's speech is guarded by ~endQueued: what TLC
 \* checks after it is whether a paused queue holds the End back.
 \* As shipped, queue_frame drops the held reply and lifts the pause in the same step;
 \* as first written the End waited behind the hold.
+\*
+\* The user aggregator pushes the End on and then commits whatever words an open turn
+\* still holds (pipecat's _maybe_emit_user_turn_stopped(on_session_end=True)), through
+\* the same push_aggregation. That commit's context is never read -- nothing answers
+\* after the End -- so only what it may do to the reply ahead of the End is modelled:
+\* as first cut (retryMergesAtEnd) the gate still armed made it a continuation, whose
+\* interruption overtook the End and dropped an unheld reply -- the goodbye, say -- that
+\* would have played out before it. As shipped the session-end commit never continues.
 Hangup ==
     /\ ~endQueued
     /\ endQueued' = TRUE
     /\ IF Gated /\ HOLD /= "gateEndWaits" /\ held
          THEN held' = FALSE /\ paused' = FALSE /\ reply' = FALSE
          ELSE UNCHANGED <<held, paused, reply>>
+    /\ \E words \in (IF userTurn THEN BOOLEAN ELSE {FALSE}) :
+         goodbyeLost' = (goodbyeLost \/ (words /\ MODE = "retryMergesAtEnd" /\ armed
+                                          /\ cut = "none" /\ reply /\ ~held))
+    /\ UNCHANGED <<tool, lateTool>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+
+\* The reply to the last commit calls a function (unconditionally here: the model
+\* decides). Its FunctionCallInProgressFrame reaches the context through the gate --
+\* or waits in its queue while it holds.
+ToolCall ==
+    /\ ~endQueued
+    /\ Gated /\ reply /\ armed /\ tool = "none" /\ cut = "none"
+    /\ tool' = IF paused THEN "held" ELSE "ctxRunning"
+    /\ UNCHANGED <<lateTool, goodbyeLost>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+
+\* Its result lands: a sync tool's (the LLM then answers from it -- the reply goes on),
+\* or the async consult's placeholder (run_llm=False; the consult runs on).
+ToolDone ==
+    /\ ~endQueued
+    /\ tool = "ctxRunning"
+    /\ tool' = "ctxDone"
+    /\ UNCHANGED <<lateTool, goodbyeLost>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
 
@@ -863,6 +1001,7 @@ BotStop ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)
@@ -879,6 +1018,7 @@ Arm ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
 
 \* The watchdog's stop is a commit too: _trigger_user_turn_stop pushes the
 \* aggregation, which reaches get_chat_completions and Speculator.take, so a live
@@ -898,6 +1038,7 @@ ForceStop ==
               /\ UNCHANGED <<staleReply, reply, armed, unanswered, mergePending, splitTurn>>
               /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
               /\ UNCHANGED fenceVars
+              /\ UNCHANGED toolVars
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
@@ -909,6 +1050,7 @@ Next ==
     \/ Arm \/ ForceStop
     \/ SpecStart \/ CtxChange \/ Retext
     \/ Wordless \/ Release \/ Cap \/ Hangup
+    \/ ToolCall \/ ToolDone
     \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP \/ OneWord \/ StopWord
 
 Spec == Init /\ [][Next]_vars
@@ -963,6 +1105,13 @@ NoStuckPause == ~(pausedP /\ ~botSpeaking)
 \* 2026-10-13: "Okay, stop there." over a count, and the model counted again.
 NoCutAfterCommit == ~cutAfterCommit
 
+\* Nothing of a reply dropped before it played reaches the context after the turn that
+\* dropped it: not its tool round either.
+NoLateToolRound == ~lateTool
+
+\* The session-end commit never drops a reply the End was queued behind.
+NoLostGoodbye == ~goodbyeLost
+
 \* Reachability witnesses: rows that expect these to FAIL prove the window the
 \* answer-loss fix is about is reachable in the design they run -- a pause with the
 \* rest of the reply in the 0.5-1 s band, and a tail that elapses during it.
@@ -979,7 +1128,7 @@ TypeOK ==
     /\ SPEC \in {"off", "byText", "byHistory", "byContext"}
     /\ (SPEC = "off" => ~spec)
     /\ HOLD \in {"none", "gate", "gateNoMerge", "gateNoResume", "gateEndWaits",
-                 "gateNoEnding"}
+                 "gateNoEnding", "gateKeepsTool", "gateNoFoldCancelled"}
     /\ WORDS_IN_TIME \in BOOLEAN
     /\ reply \in BOOLEAN /\ armed \in BOOLEAN /\ held \in BOOLEAN /\ paused \in BOOLEAN
     /\ resumed \in BOOLEAN /\ mergePending \in BOOLEAN /\ unanswered \in 0..2
@@ -991,9 +1140,12 @@ TypeOK ==
     /\ tailKnown \in BOOLEAN /\ wouldEnd \in BOOLEAN /\ stopHeard \in BOOLEAN
     /\ answerLost \in BOOLEAN
     /\ (PAUSE = "off" => ~pausedP)
-    /\ MODE \in {"asWritten", "retryOnQuiet", "retryMerges"} /\ EARLY_FINAL \in BOOLEAN
+    /\ MODE \in {"asWritten", "retryOnQuiet", "retryMerges", "retryMergesAtEnd"}
+    /\ EARLY_FINAL \in BOOLEAN
     /\ FENCE \in {"none", "commitOnly", "inTime", "timed"}
     /\ cut \in {"none", "empty", "reply"} /\ overtaken \in BOOLEAN
     /\ cutAfterCommit \in BOOLEAN
     /\ (overtaken => cut /= "none")
+    /\ tool \in {"none", "held", "ctxRunning", "ctxDone", "ctxCancelled"}
+    /\ lateTool \in BOOLEAN /\ goodbyeLost \in BOOLEAN
 =============================================================================

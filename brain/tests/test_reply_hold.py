@@ -38,6 +38,7 @@ from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
     FunctionCallsStartedFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
@@ -477,6 +478,65 @@ def test_merge_only_folds_adjacent_words_of_the_caller():
     assert [m["content"] for m in msgs] == ["s", "so I was thinking we could go"], msgs
 
 
+def test_merge_folds_across_a_tool_round_the_drop_cancelled():
+    # The dropped reply had a sync tool call in the context, and the interruption that
+    # dropped it cancelled the call (pipecat writes CANCELLED over IN_PROGRESS). The
+    # round did nothing: it goes with the merge, and the model decides again on the
+    # whole turn. Kept, it left the fragment and its continuation apart around it
+    # (formal/UserTurn.tla, ut_hold_gateNoFoldCancelled_nosplitturn). A FINISHED round
+    # -- a result, the async consult's placeholder -- is the turn acted on: it stays,
+    # and so do the two turns.
+    from types import SimpleNamespace
+
+    class Ctx:
+        def __init__(self, m):
+            self.m = m
+
+        def get_messages(self, *a, **k):
+            return self.m
+
+        def set_messages(self, m):
+            self.m[:] = m
+
+    def call(tid, *more):
+        return {"role": "assistant", "content": None,
+                "tool_calls": [{"id": i, "type": "function",
+                                "function": {"name": "web_search", "arguments": "{}"}}
+                               for i in (tid, *more)]}
+
+    def corrector(msgs):
+        merge = TurnMerge()
+        c = HeardContextCorrector(SimpleNamespace(events=[]), Ctx(msgs), merge=merge)
+        c._reconcile()
+        return c, merge
+
+    a = {"role": "user", "content": "look up the trains"}
+    note = {"role": "system", "content": "You remember these things"}
+    msgs = [{"role": "system", "content": "s"}, a]
+    c, merge = corrector(msgs)
+    msgs += [call("t1", "t2"), {"role": "tool", "tool_call_id": "t1", "content": "CANCELLED"},
+             {"role": "tool", "tool_call_id": "t2", "content": "CANCELLED"}, note,
+             {"role": "user", "content": "to Leeds tomorrow"}]
+    merge.request()
+    c._reconcile()
+    assert [m["content"] for m in msgs] == ["s", note["content"],
+                                            "look up the trains to Leeds tomorrow"], msgs
+    assert c._mark == len(msgs)
+
+    # A finished round between them (here: one call of two settled) keeps them apart.
+    for settled in ('{"status": "working_in_background"}', "IN_PROGRESS"):
+        a = {"role": "user", "content": "look up the trains"}
+        msgs = [{"role": "system", "content": "s"}, a]
+        c, merge = corrector(msgs)
+        msgs += [call("t1", "t2"),
+                 {"role": "tool", "tool_call_id": "t1", "content": "CANCELLED"},
+                 {"role": "tool", "tool_call_id": "t2", "content": settled},
+                 {"role": "user", "content": "to Leeds tomorrow"}]
+        merge.request()
+        c._reconcile()
+        assert len(msgs) == 6 and msgs[1]["content"] == "look up the trains", (settled, msgs)
+
+
 def test_the_tts_playout_model_stands_still_through_a_hold():
     from teaport_brain.engine_tts import EngineTTSService
 
@@ -586,6 +646,56 @@ async def test_a_drop_with_an_uninterruptible_frame_in_hand_does_not_silence_the
         await asyncio.sleep(0.4)
         got = [f.context_id for _, f in rig.bottom.audio()]
         assert got.count("c2") == 3 and "c1" not in got, got
+
+
+def _call_frames(rig):
+    return [(f.tool_call_id, type(f).__name__) for _, f in rig.bottom.down
+            if isinstance(f, (FunctionCallInProgressFrame, FunctionCallResultFrame))]
+
+
+async def test_a_dropped_hold_drops_its_tool_round_too():
+    # The held reply called a tool: its IN_PROGRESS and its result (the async consult's
+    # placeholder) waited in the paused queue with the rest. Both are pipecat
+    # UninterruptibleFrames, which the interruption's reset keeps: let through, they
+    # would put the dropped reply's tool round in the context after the turn that
+    # dropped it -- a cancelled sync call as an IN_PROGRESS nothing settles.
+    # (formal/UserTurn.tla, ut_hold_gateKeepsTool_nolatetool.)
+    async with GateRig() as rig:
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        await rig.send(
+            FunctionCallInProgressFrame(function_name="web_search", tool_call_id="t1",
+                                        arguments={}),
+            FunctionCallInProgressFrame(function_name="ask_openclaw", tool_call_id="t2",
+                                        arguments={}),
+            FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="t2",
+                                    arguments={}, result={"status": "working"}),
+            *reply("c1", rig))
+        await asyncio.sleep(0.3)
+        assert rig.gate.holding and not _call_frames(rig)
+        await rig.send(InterruptionFrame(), VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(0.3)
+        assert not _call_frames(rig), f"the dropped reply's tool round passed: {_call_frames(rig)}"
+        assert not rig.bottom.audio()
+        # The next reply's tool round passes, held or not, and so does a released one's.
+        await rig.gate.arm()
+        await rig.send(FunctionCallInProgressFrame(function_name="web_search",
+                                                   tool_call_id="t3", arguments={}),
+                       *reply("c2", rig))
+        await asyncio.sleep(0.3)
+        assert _call_frames(rig) == [("t3", "FunctionCallInProgressFrame")], _call_frames(rig)
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        await rig.send(FunctionCallInProgressFrame(function_name="web_search",
+                                                   tool_call_id="t4", arguments={}),
+                       *reply("c3", rig))
+        await asyncio.sleep(0.1)
+        await rig.send(VADUserStoppedSpeakingFrame())          # a cough: released
+        await asyncio.sleep(RELEASE_S + 0.3)
+        assert ("t4", "FunctionCallInProgressFrame") in _call_frames(rig), _call_frames(rig)
+        assert rig.gate.released == 1 and rig.gate.dropped == 1
 
 
 async def test_words_placed_after_the_release_move_with_the_held_ones():

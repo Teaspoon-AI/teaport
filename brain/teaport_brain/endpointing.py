@@ -1139,13 +1139,28 @@ class CutReplyFence:
         held reply and asks for the TurnMerge; the LLM cancels a reply still being
         written. Once it has landed (waited for like any other), the commit's words are
         folded into the unanswered message. Past the bound, nothing is asked: the commit
-        goes ahead in the old order, as for any cut."""
+        goes ahead in the old order, as for any cut. If the wait for the continuation's
+        own frame runs out, the commit goes ahead unmerged and the frame, landing late,
+        asks the gate for a merge the next commit then gets: the fence's accepted
+        residual, for this commit as for any (formal/UserTurn.tla, ContinueLate).
+
+        Never at the session's end: pipecat commits an open turn's leftover words after
+        pushing the EndFrame on (_maybe_emit_user_turn_stopped(on_session_end=True)), and
+        an interruption there would overtake the End and drop the reply queued ahead of
+        it -- a goodbye -- for a commit nothing will answer (UserTurn.tla, NoLostGoodbye)."""
         push_aggregation = aggregator.push_aggregation
+        emit_stopped = aggregator._maybe_emit_user_turn_stopped
+        ending = False
+
+        async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False):
+            nonlocal ending
+            ending = ending or on_session_end
+            return await emit_stopped(strategy, on_session_end=on_session_end)
 
         async def _push_aggregation():
             if aggregator._aggregation:
-                if (await self.wait_for_cuts() and self.unplayed_reply is not None
-                        and self.unplayed_reply()):
+                if (await self.wait_for_cuts() and not ending
+                        and self.unplayed_reply is not None and self.unplayed_reply()):
                     logger.info("CUT-FENCE: words committed while the reply to the turn "
                                 "they continue has not played -- dropping that reply; "
                                 "the model gets the turn as one message")
@@ -1154,6 +1169,7 @@ class CutReplyFence:
             return await push_aggregation()
 
         aggregator.push_aggregation = _push_aggregation
+        aggregator._maybe_emit_user_turn_stopped = _maybe_emit_user_turn_stopped
 
     def _sent(self, frame) -> None:
         self._in_flight[frame.id] = asyncio.get_running_loop().create_future()
