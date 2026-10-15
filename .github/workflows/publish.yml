@@ -1,0 +1,86 @@
+name: publish
+
+# What get.teaspoon.tech serves from this repo: the release manifests (install.sh and
+# `teaport update` read manifest/stable.json from there, not from a checkout) and the
+# one-liner's bootstrap (install-bootstrap.sh, served as /teaport). Until this workflow
+# they were uploaded by hand, and that step was missed: from 2026-07-24 to 2026-10-15
+# the served stable.json stayed at engine 1.3 with no G2P dict while main moved to 1.6,
+# so a fresh install fetched engine 1.3 and then died at the dict check.
+#
+# On a PR that touches them: check that every artifact the manifests name is published
+# with the sha256 they give (manifest/check.py). On main: the same check, then upload,
+# then read each file back from the public URL. A manifest therefore goes up only when
+# its artifacts are already in the bucket; upload the artifacts first, then merge.
+#
+# Secrets (repository, read by the publish job only, never on pull_request):
+#   R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY  an R2 API token with write access to the
+#                                           teaport-get bucket
+#   R2_ENDPOINT                             https://<account id>.r2.cloudflarestorage.com
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - manifest/**
+      - install-bootstrap.sh
+      - .github/workflows/publish.yml
+  pull_request:
+    paths:
+      - manifest/**
+      - install-bootstrap.sh
+      - .github/workflows/publish.yml
+  workflow_dispatch:
+
+# Never two uploads at once, and never cancel one halfway.
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  artifacts:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Every artifact the manifests name is published as named
+        # Downloads every artifact (~4.6 GB, mostly the Voxtral model): a few minutes.
+        run: |
+          python3 manifest/check.py manifest/stable.json
+          python3 manifest/check.py --placeholders-ok manifest/beta.json
+
+  publish:
+    needs: artifacts
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+      AWS_DEFAULT_REGION: auto
+      R2_ENDPOINT: ${{ secrets.R2_ENDPOINT }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Upload to the download bucket
+        run: |
+          if [ -z "$AWS_ACCESS_KEY_ID" ] || [ -z "$AWS_SECRET_ACCESS_KEY" ] || [ -z "$R2_ENDPOINT" ]; then
+            echo "::error::R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT are not set: nothing was published"
+            exit 1
+          fi
+          put() {  # put <file> <key> <content type>: the types the bucket already serves
+            aws s3 cp "$1" "s3://teaport-get/$2" --endpoint-url "$R2_ENDPOINT" \
+              --content-type "$3" --only-show-errors
+            echo "uploaded $1 -> https://get.teaspoon.tech/$2"
+          }
+          put manifest/stable.json manifest/stable.json application/json
+          put manifest/beta.json manifest/beta.json application/json
+          put install-bootstrap.sh teaport text/x-shellscript
+      - name: Read each file back from get.teaspoon.tech
+        run: |
+          for pair in manifest/stable.json:manifest/stable.json manifest/beta.json:manifest/beta.json \
+                      install-bootstrap.sh:teaport; do
+            file="${pair%%:*}"; key="${pair#*:}"
+            curl -fsS -H 'Cache-Control: no-cache' "https://get.teaspoon.tech/$key" | cmp - "$file" \
+              || { echo "::error::https://get.teaspoon.tech/$key does not serve $file"; exit 1; }
+            echo "ok https://get.teaspoon.tech/$key == $file"
+          done
