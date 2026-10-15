@@ -284,6 +284,9 @@ phase_sysdeps() {
   ensure_uv
 }
 
+# Every manifest entry read here (and eula_gate's) is listed in manifest/check.py's
+# REQUIRED, which the publish workflow checks before a manifest goes up: add one there
+# when adding one here.
 phase_engine() {
   log "engine + models -> $PREFIX"
   SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
