@@ -79,6 +79,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     SMARTTURN_STOP_SECS,
     LateStartTurnStopStrategy,
     SegmentDoneFrame,
+    SegmentResetFrame,
     TurnVerdictFrame,
 )
 from teaport_brain.stt import (  # noqa: E402
@@ -704,7 +705,8 @@ async def _forward(s, rig):
     """What the service has pushed for the strategy since the last call, in order."""
     frames, s.pushed = s.pushed, []
     for f in frames:
-        if isinstance(f, (InterimTranscriptionFrame, TranscriptionFrame, SegmentDoneFrame)):
+        if isinstance(f, (InterimTranscriptionFrame, TranscriptionFrame, SegmentDoneFrame,
+                          SegmentResetFrame)):
             await rig.controller.process_frame(f)
 
 
@@ -775,6 +777,49 @@ async def test_a_stops_close_landing_before_the_strategy_counts_it_is_a_receipt(
             "stop, and the count owed it again (sc_final_stop_stranded)")
         assert rig.stops[0] - t < PROMPT_SECS, (
             f"turn ended {rig.stops[0] - t:.2f}s after the stop, not at it")
+        assert len(rig.starts) == 1
+
+
+async def test_a_reset_with_a_stops_commit_out_is_that_stops_close():
+    """sc_reset_owed (SttCommit.tla): the live burst -- A committed, the caller starts B
+    before A's final lands, B's stop COMPLETE and its commit out -- and then the engine
+    session goes (a reconnect, or hold() for a phone call) with B's done still on the
+    wire. The reset dropped the commit's stamp, so nothing would ever close stop 2; the
+    strategy still owed it, and a turn with A's final in hand and the verdict COMPLETE
+    waited for the aggregator's 5 s watchdog. The reset is the close of every stop the
+    STT had seen now: the turn ends on what it holds."""
+    s = Recorder()
+    rig = Rig(LateStartTurnStopStrategy)
+    async with running_controller(rig.controller):
+        await s.vad_start()
+        await rig.vad_start()
+        await s.delta(A_TEXT)
+        await _forward(s, rig)                         # the interim opens the turn
+        await rig.audio(400)
+        await s.vad_stop()                             # stop 1
+        await s.verdict(True)                          # commit 1
+        await rig.vad_stop()                           # COMPLETE; owed 1
+        await rig.audio(int(RESUME_SECS * 1000))
+        await s.vad_start()                            # B
+        await rig.vad_start()
+        await s.done(A_TEXT, reason="commit")          # A's final, inside B: pays stop 1
+        await _forward(s, rig)
+        await rig.audio(300)
+        await s.vad_stop()                             # stop 2
+        await s.verdict(True)                          # commit 2 out
+        assert len(s._websocket.commits()) == 2
+        t = time.monotonic()
+        await rig.vad_stop()                           # COMPLETE; owed 2
+        assert not rig.stops, "the turn ended before stop 2's close"
+        s._websocket = None          # the recorder has no close handshake to run
+        await s._disconnect_websocket()                # the session goes, commit 2's done too
+        await _forward(s, rig)
+        await rig.settle(SAFETY_NET_SECS + 0.3)
+        assert rig.stops, (
+            "the turn never ended: the reset took stop 2's close with it and the strategy "
+            "still owed it (sc_reset_owed)")
+        assert rig.stops[0] - t < SAFETY_NET_SECS + PROMPT_SECS, (
+            f"turn ended {rig.stops[0] - t:.2f}s after the stop")
         assert len(rig.starts) == 1
 
 

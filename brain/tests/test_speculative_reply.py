@@ -1089,7 +1089,7 @@ async def test_a_reset_cancels_a_speculation_asked_on_the_dropped_words():
         await rig.speech()
         await rig.wait(SETTLE + 0.1)
         assert rig.speculator.live == UTTERANCE
-        await rig.controller.process_frame(SegmentResetFrame())
+        await rig.controller.process_frame(SegmentResetFrame(stop_n=rig.strategy._stops))
         assert rig.speculator.calls[-1] == ("cancel", "segment-reset")
 
 

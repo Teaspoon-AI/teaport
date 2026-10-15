@@ -352,7 +352,16 @@ class SegmentResetFrame(DataFrame, UninterruptibleFrame):
     segment's interim and, at the next INCOMPLETE stop, find it "settled" long ago and
     speculate on words the turn will never carry. Data and uninterruptible for the
     reasons SegmentDoneFrame is: it must arrive after the interims it voids, and a turn
-    start must not flush it. Dropped by SegmentDoneSink."""
+    start must not flush it. Dropped by SegmentDoneSink.
+
+    `stop_n` is the count of VAD stops the STT had seen at the reset (counted as the
+    final's stamp is). No close will come for any of them -- the held one, the ones
+    whose commits were out -- so the strategy takes the reset as their close: without
+    it, a stop owed its close stayed owed, and a turn with its transcript in hand and
+    the verdict COMPLETE waited for the aggregator's 5 s watchdog (SttCommit.tla,
+    sc_reset_owed)."""
+
+    stop_n: int
 
 
 @dataclass
@@ -608,7 +617,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             self._interim = ""
             await self._handle_segment_done(frame)
         elif isinstance(frame, SegmentResetFrame):
-            await self._handle_segment_reset()
+            await self._handle_segment_reset(frame)
         elif isinstance(frame, SttProgressFrame):
             self._decode_reported = frame.reported
         elif isinstance(frame, SpeechDecodedFrame):
@@ -651,14 +660,29 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                      "words are kept, the turn waits for that close")
         return False
 
+    def _note_reset(self, stop_n: int) -> bool:
+        """The STT's segment is gone (SegmentResetFrame), and with it the close of every
+        VAD stop it had seen, `stop_n` of them: none will come now. So the reset is
+        their close -- it pays the owed one if it is among them, and keeps a receipt
+        for each the count here has not reached. Returns whether it paid."""
+        self._receipts.update(range(self._stops + 1, stop_n + 1))
+        if self._owed is not None and self._owed <= stop_n:
+            logger.debug(f"{self}: the STT's segment was reset -- VAD stop {self._owed}'s "
+                         "close will not come; taking the reset as it")
+            self._owed = None
+            return True
+        return False
+
     async def _handle_segment_done(self, frame: SegmentDoneFrame):
         """The segment closed with no words. If it is the owed close, whatever `_text`
         holds -- the previous utterance's late final, or nothing -- is all the turn
         will get: finalize it and let the verdict (or the ceiling) end the turn."""
-        if not self._note_close(frame.stop_n):
-            return
+        if self._note_close(frame.stop_n):
+            await self._finalize_on_wordless_close("closed with no words")
+
+    async def _finalize_on_wordless_close(self, how: str):
         if self._text:
-            logger.debug(f"{self}: the utterance's segment closed with no words -- "
+            logger.debug(f"{self}: the utterance's segment {how} -- "
                          f"{self._text[:40]!r} is the turn's transcript")
         self._transcript_finalized = True
         await self._maybe_trigger_user_turn_stopped()
@@ -759,17 +783,20 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                                     "interim transcribed through, verdict INCOMPLETE",
                                     trigger=self._trigger("report"))
 
-    async def _handle_segment_reset(self):
+    async def _handle_segment_reset(self, frame: SegmentResetFrame):
         """The STT's open segment is gone without a close (SegmentResetFrame): its
         interim is no one's words now. Forget it, stop its window, and drop a
-        speculation asked on it (or still waiting at the cut fence to be)."""
-        if not self._interim:
-            return
-        self._interim = ""
-        await self._cancel_settle()
-        if (self.speculator is not None
-                and self.speculator.text != self.speculator.candidate("")):
-            await self.speculator.cancel("segment-reset")
+        speculation asked on it (or still waiting at the cut fence to be). And the
+        stops it was to answer get no other close: if one was owed, whatever `_text`
+        holds is all the turn will get, as at a wordless close."""
+        if self._interim:
+            self._interim = ""
+            await self._cancel_settle()
+            if (self.speculator is not None
+                    and self.speculator.text != self.speculator.candidate("")):
+                await self.speculator.cancel("segment-reset")
+        if self._note_reset(frame.stop_n):
+            await self._finalize_on_wordless_close("was reset")
 
     async def _arm_settle(self, delay: float):
         await self._cancel_settle()

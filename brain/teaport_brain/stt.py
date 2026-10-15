@@ -1937,7 +1937,7 @@ class TeaportSTTService(WebsocketSTTService):
             # session's end, and never at the cost of the teardown below.
             if not self._ending:
                 try:
-                    await self.push_frame(SegmentResetFrame())
+                    await self.push_frame(SegmentResetFrame(stop_n=self._vad_stops))
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"{self}: could not push the segment reset ({e})")
             self._interim_buffer = ""

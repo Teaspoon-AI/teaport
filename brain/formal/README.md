@@ -1981,7 +1981,7 @@ rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_bli
 two clock rows) run without it.
 
 **The default run and `--full`.** See THE ORDER's scale note below: since 2026-10-14
-`--full` holds the five rows too large for the default run, the carry's three among
+`--full` holds the six rows too large for the default run, the carry's three among
 them.
 
 ### THE ORDER (2026-10-14): where the VAD runs
@@ -2078,6 +2078,54 @@ The model's repair, `NUMBERED = TRUE`, is the code.
   model's INCOMPLETE for stop 2 holds, and the resumed words join the one segment. The
   tests that hand the STT a verdict directly stamp it with the stop the STT is on.
 
+### THE RESET (2026-10-15): a lost session pays the stops it takes
+
+`_disconnect_websocket` — a reconnect after the receive task fails, or `hold()` for a
+phone call — drops the open segment, the stamps of the commits still out and the hold,
+and pushes `SegmentResetFrame` for the strategy. Until this change the strategy only
+dropped its interim there, and the owed close stayed owed. The model had no disconnect;
+`SttReset` is one now (bounded by `MaxResets`, the next session up at once), with
+`RESET` for what the strategy does at the frame.
+
+**D — a turn stranded by a reset** (`sc_reset_owed`, `RESET = "keep"`, twenty states):
+
+```
+VadStart, VadStop    stop 1, COMPLETE; the STT commits
+VadStart             the caller starts again before stop 1's final lands (the burst)
+VadStop              stop 2, COMPLETE; its commit goes out; the strategy owes stop 2
+Done -> StratFinal   stop 1's final: the turn's transcript, finalized; it pays stop 1
+SttReset             the session goes, and stop 2's done with it
+StratReset           the strategy drops its interim; stop 2 is still owed
+```
+
+A turn with its transcript in hand and the verdict COMPLETE, and nothing that will ever
+pay stop 2: it waits for the caller's next stop or the aggregator's 5 s watchdog
+(`NoStrandedTurn`). Not seen live; it needs the session to go inside a turn's last
+second.
+
+**The repair, `RESET = "pays"`, is the code.** `SegmentResetFrame` carries `stop_n`,
+the STT's `_vad_stops` at the reset, and `LateStartTurnStopStrategy._note_reset` takes
+the reset as the close of every stop up to it, since none of them will get another:
+it pays the owed close if it is among them, keeps a receipt for each the strategy has
+not counted yet (the STT saw it first), and, having paid, finalizes whatever `_text`
+holds, as a wordless close does (`_finalize_on_wordless_close`, shared with
+`_handle_segment_done`). That is `StratReset`. `sc_reset_pays` holds every property
+with one reset anywhere in the run (134,569 states); `sc_reset_pays_closes`
+(`--full`) adds the engine's own close (3,139,486 states, 1 min 35 s). By hand, the
+same design also held with `MaxLag = 2` (278,747) and with a lost verdict, the
+backstop and the unmarked wire (6,465,751, without `NoStaleTurnEnd`, the mispairing
+residual's). The next turn is not mis-closed under either design: the strategy's next
+count replaces the debt.
+
+`NoStrandedTurn` now leaves out a turn a reset has left with no text (Known limits, the
+disconnect); with resets off it reads as before. Every other row runs `MaxResets = 0`, and
+the receipts rows `RESET = "pays"`, the code.
+
+**Test.** `tests/test_earlier_final_does_not_end_the_turn.py`,
+`test_a_reset_with_a_stops_commit_out_is_that_stops_close`, drives the real service and
+the real strategy through the trace above and disconnects the service; on the code
+before, the turn never ends.
+
 ### What was changed (2026-10-15): receipts, for A and B
 
 The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
@@ -2173,14 +2221,14 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
   verdict); in the code the inference is an await inside it, and a final the process
   task hands the strategy meanwhile sees the stop counted and no verdict yet — the same
   as landing just after the step, since the turn's end needs both.
-- **Disconnects are not modelled** — the hold for a phone call (`stt.hold()`), a
-  reconnect. `_disconnect_websocket` drops the segment, the queued stamps and the hold
-  and pushes `SegmentResetFrame`, but the strategy's `_handle_segment_reset` leaves its
-  owed close standing: a stop counted before the disconnect is owed a close that will
-  never come, and a turn that needs it (one open at the hold, or a final with no stop in
-  sight after the resume) waits for the next stop or the watchdog. A suspicion from
-  reading, not a counterexample: the turn at a hold has usually just ended on the
-  caller's answer.
+- **A disconnect is one step, and the next session is up at once** (`SttReset`, THE
+  RESET below). A VAD stop that reaches the STT while there is no session — during a
+  `hold()`, before `resume()` — holds and then commits into no socket: that is a commit
+  whose send fails (below), and the turn it strands ends on the watchdog. The words a
+  reset takes are lost, not outstanding, so no stale-end is charged for them; and a turn
+  that a reset leaves with no words at all (an interim opened it, and the segment it
+  streamed from is gone) is left out of `NoStrandedTurn`: the watchdog closes it, and
+  there is nothing to answer.
 - **One interim per segment.** `Delta` fires once per open segment: further deltas change
   nothing this model reads, and the engine streams none for a new segment until the
   previous finish is done (one worker per session), which is when the STT's buffer
