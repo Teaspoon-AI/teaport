@@ -81,9 +81,15 @@
 #   * A commit whose finalization the turn controller REFUSED (the caller was audibly
 #     speaking when it landed; endpointing.keep_barge_in_reachable re-applies it later)
 #     arms the gate at its push, and the caller's further words then join the turn
-#     that is still open instead of starting a new one, so no interruption drops the
-#     held reply: it plays after the release window, followed by the answer to the rest.
-#     That is no worse than without the gate. 0 of 27 commits on the 2026-10-05 call.
+#     that is still open instead of starting a new one, so no turn start's interruption
+#     drops the held reply. Until 2026-10-15 a final of those words in hand by their VAD
+#     stop was then committed as a second message, and the held reply played after the
+#     release window, followed by the answer to the rest (formal/UserTurn.tla,
+#     ut_retryOnQuiet_early_nosplitturn). Now that commit finds the gate still armed,
+#     and CutReplyFence.hold_commits drops the reply with an interruption of its own
+#     before committing: the gate asks for the merge as for a turn start's. Only on the
+#     front-ends with the gate (SIP): elsewhere nothing knows the reply has not played,
+#     and the two messages stay apart.
 #   * Only a reply to a USER commit is checked. The greeting, a consult follow-up and
 #     a client-note reaction are not armed: they already wait for a quiet moment
 #     (FollowupGate) or open the call.
@@ -407,12 +413,13 @@ class ReplyHoldGate(FrameProcessor):
 
     async def _on_interruption(self):
         # Armed: the last commit's reply never played. Sound because a turn's own
-        # interruption gets here before its commit arms the gate (endpointing.CutReplyFence).
+        # interruption gets here before its commit arms the gate (endpointing.CutReplyFence);
+        # so does the one the fence sends ahead of a commit that continues the turn.
         was_armed, self._armed = self._armed, False
         self._shift.clear()
         self._arrivals.clear()
         if self._holding:
-            await self._end_hold(released=False, why="the caller's new words start a turn")
+            await self._end_hold(released=False, why="the caller's words went on")
         if was_armed and self._merge is not None:
             # None of the reply to the last commit reached the caller: what they say now
             # finishes that turn rather than answering a reply they never heard.

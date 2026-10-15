@@ -1116,6 +1116,7 @@ the other, for the context and the hold: `CutLands`, below).
 |---|---|---|---|
 | `asWritten` | stock pipecat — identical on 1.5.0, 1.7.0 and 1.8.1 | ✗ | ✗ |
 | `retryOnQuiet` | `keep_barge_in_reachable`: a finalization refused **after its inference ran** is re-applied at the user's next quiet moment | ✓ | ✓ |
+| `retryMerges` | the same, and the commit that re-applied stop can make continues the unplayed turn (shipped 2026-10-15; see [the refused finalize's second commit](#the-refused-finalizes-second-commit-early_final)) | ✓ | ✓ |
 
 `NoStrandedTurn` is the state itself — a turn whose inference has already run, still open
 once the user has fallen quiet. `NoMissedBargeIn` is what the user experiences, and its
@@ -1505,7 +1506,8 @@ silence than the VAD's floor — is pushed as a second user message, by the stra
 second stop or by the re-applied one, with no turn start and so no interruption.
 `EARLY_FINAL = TRUE` lets that happen (`VadStop`); every row above runs with `FALSE`.
 
-As shipped (`ut_shipped_nosplitturn`) it **fails `NoSplitTurn`**, 7 states:
+Until 2026-10-15 (`retryOnQuiet`, `ut_retryOnQuiet_early_nosplitturn`) it **failed
+`NoSplitTurn`**, 7 states:
 
 ```
 Interject CutLands Inference   a turn commits; its reply is on its way (the gate armed)
@@ -1515,24 +1517,45 @@ VadStop                        they stop: a final of what they added is already 
                                and the retry commits it as a second message
 ```
 
-No interruption drops the held reply, so it is released after `RELEASE_S` and the bot
-answers the fragment, then answers again with both messages in the context.
-`reply_hold.py` lists this among its known limits ("no worse than without the gate",
+No interruption dropped the held reply, so it was released after `RELEASE_S` and the bot
+answered the fragment, then answered again with both messages in the context.
+`reply_hold.py` listed this among its known limits ("no worse than without the gate",
 0 of 27 commits on 2026-10-05), but the formal rows had it hold. `CutReplyFence` widens
 the entry: the commit's wait (~70 ms over a playing reply) is inside the inference's
-await, the `Resume` gap. `MODE = "retryMerges"` is a proposed fix, not code: a second
-commit on a turn whose first reply has not played (the gate still armed) interrupts
-first — the unplayed reply is dropped and the words are folded into the unanswered
-message — and with it everything holds (`ut_retryMerges_all`, 18k states; a probe
-confirmed the drop-and-merge branch is reached with a held reply).
+await, the `Resume` gap. The row is kept as the regression row for the old code, and
+`tests/test_reply_hold.py::test_without_the_continuation_the_refused_finalize_splits_the_turn`
+replays that trace through the real aggregator, controller, fence, gate and corrector.
 
-`ut_shipped_all` is the SIP front-end as shipped with everything on — `retryOnQuiet`,
-`byContext`, `gate`, `shipped`, `inTime`, `EARLY_FINAL` — and holds every property but
-`NoSplitTurn` (32k states, a few seconds). Talk and the room mic run the same turn
-machine and fence, without the hold (`TEAPORT_REPLY_HOLD_TALK` defaults off) or the
-pause (their transport cannot pause): `HOLD = "none"`, `PAUSE = "off"`, whose
-`NoStaleReply` and `NoSplitTurn` fail as before #85. The room's own turn timing
-(`ROOM_*`, #159) and `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
+As shipped (`MODE = "retryMerges"`, `CommitStep`) a commit that finds the gate still
+armed once the fence has let it through continues the turn whose reply has not played:
+`CutReplyFence.hold_commits` asks the gate (`unplayed_reply`, the gate's `armed`, set by
+`agent_session` where there is a gate) and, if so, pushes an `InterruptionFrame` down
+from the aggregator — no turn start, nothing upstream — and waits for it like any cut.
+The gate reads it as a turn start's: it drops the held reply (ending the hold) and asks
+for the `TurnMerge`; the LLM cancels a reply still being written; the corrector folds
+the commit into the unanswered message. Armed after the fence's wait means no turn
+start's interruption has reached the gate since the last commit, so only the refused
+finalize's second commit takes the branch; the model applies `CommitStep` at every commit
+as the code's one wrapper does, and `ut_shipped_all` has the same 18k states the
+proposed-fix row (`ut_retryMerges_all`, now folded into it) had with the branch at
+`VadStop` alone. Past the fence's bound the code does not ask, as the model's
+`Continues` requires `cut = "none"`.
+
+`ut_shipped_all` is the SIP front-end as shipped with everything on — `retryMerges`,
+`byContext`, `gate`, `shipped`, `inTime`, `EARLY_FINAL` — and holds every property
+(18k states, a few seconds). `ut_shipped_timed` is the same with the hold's timers as
+they are (`WORDS_IN_TIME = FALSE`: `Release` and `Cap` end holds whatever the caller
+does next) and holds every property but the accepted `NoStaleReply` residual (67k
+states): the timeout paths leave no queue paused (`NoSilencedBot`), and a reply released
+by a timer but not yet started is still the one a continuation drops. With
+`EARLY_FINAL = FALSE` (every row above) no commit finds the gate armed, so
+`retryOnQuiet` and `retryMerges` are one machine and those rows keep `retryOnQuiet`.
+Talk and the room mic run the same turn machine and fence, without the hold
+(`TEAPORT_REPLY_HOLD_TALK` defaults off) or the pause (their transport cannot pause):
+`HOLD = "none"`, `PAUSE = "off"`, whose `NoStaleReply` and `NoSplitTurn` fail as before
+#85 — and without a gate nothing knows the first reply has not played, so the second
+commit stays a second message there. The room's own turn timing (`ROOM_*`, #159) and
+`SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 
 ### Known limits of this model
 
@@ -1576,7 +1599,7 @@ pause (their transport cannot pause): `HOLD = "none"`, `PAUSE = "off"`, whose
   miss will come from — `[SPEC] miss reason=ctx-changed` or `reason=text-differs` in the
   journal does — nor how often the interim and the final disagree; it checks the design
   that stays right whenever they do.
-- **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each, 32k for `ut_shipped_all`; a few seconds each.
+- **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each, 18k for `ut_shipped_all` (32k with the second commit unmerged, `retryOnQuiet`) and 67k for `ut_shipped_timed`; a few seconds each.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 

@@ -275,6 +275,11 @@ class Call:
         self.ledger = TranscriptLedger(tts=self.tts)
         self.merge = TurnMerge()
         self.gate = ReplyHoldGate(merge=self.merge)
+        if self.fence is not None:
+            # As agent_session wires it: a commit with the gate still armed continues
+            # the turn. None of these turns does -- each opens with an interruption --
+            # so this must never fire here (the merge and wait counts below say so).
+            self.fence.unplayed_reply = lambda: self.gate.armed
         self.requested = 0
         self.committed_at = []
         self.started_at = []

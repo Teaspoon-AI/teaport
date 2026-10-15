@@ -49,10 +49,13 @@
 (* MODE = "retryOnQuiet" -- keep_barge_in_reachable: a finalization refused *)
 (*                          after its inference ran is re-applied at the    *)
 (*                          user's next quiet moment -- and, words aggregated *)
-(*                          since, committed there as a second message.     *)
-(* MODE = "retryMerges"  -- a PROPOSED fix (not code): that second commit,  *)
-(*                          on a turn whose reply has not played, drops the *)
-(*                          reply and merges into the unanswered message.   *)
+(*                          since, committed there as a second message      *)
+(*                          (the code until 2026-10-15).                    *)
+(* MODE = "retryMerges"  -- as shipped (CutReplyFence.hold_commits'         *)
+(*                          unplayed_reply): a commit while the gate is     *)
+(*                          still armed -- that second commit -- first      *)
+(*                          drops the unplayed reply and merges into the    *)
+(*                          unanswered message.                             *)
 (*                                                                          *)
 (* The speculative reply (speculate.py, TEAPORT_SPECULATIVE_REPLY). When   *)
 (* the caller's words have settled on a turn the stop strategy has not      *)
@@ -645,6 +648,33 @@ Commit ==
     /\ cutAfterCommit' = (cutAfterCommit \/ cut = "reply")
     /\ UNCHANGED cut
 
+\* MODE = "retryMerges", as shipped since 2026-10-15 (CutReplyFence.hold_commits, its
+\* `unplayed_reply`): a commit that finds the gate still ARMED once the fence has let it
+\* through -- the reply to the last commit has not started playing, and no turn start's
+\* interruption has reached the gate since -- continues that turn. It first drops the
+\* unplayed reply: an InterruptionFrame pushed down from the aggregator (no turn start,
+\* nothing upstream), which the gate reads as a dropped reply (it ends any hold and asks
+\* for the merge) and the fence waits for, so the commit's words are folded into the
+\* unanswered message (TurnMerge). One step here: the commit's wait is atomic with it, as
+\* for every commit. Only the refused finalize's second commit reaches it (`VadStop`):
+\* every other commit runs on a turn whose start's interruption disarmed the gate, and
+\* past the fence's bound (cut /= "none") the code does not look. ForceStop's and
+\* Inference's commits take the same step anyway, as the code's one wrapper does.
+Continues == MODE = "retryMerges" /\ armed /\ cut = "none"
+ContinueCommit ==
+    /\ spec' = FALSE
+    /\ staleReply' = (staleReply \/ Stale)
+    /\ reply' = TRUE /\ armed' = Gated
+    /\ held' = FALSE /\ paused' = FALSE /\ resumed' = FALSE
+    /\ mergePending' = FALSE
+    /\ UNCHANGED <<unanswered, splitTurn, endQueued, replyOverResume>>
+    /\ UNCHANGED fenceVars
+CommitStep ==
+    IF Continues
+      THEN ContinueCommit
+      ELSE /\ Commit
+           /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
+
 Inference ==
     /\ ~endQueued                             \* the session has not ended
     /\ userTurn /\ ~stopInFlight /\ ~inference /\ ~userSpeaking
@@ -652,10 +682,9 @@ Inference ==
     /\ inference' = TRUE
     /\ stopInFlight' = TRUE
     /\ watchdog' = FALSE                       \* _trigger_user_turn_inference_triggered
-    /\ Commit
+    /\ CommitStep
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
                    missedBargeIn>>
-    /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
     /\ UNCHANGED pauseVars
 
 \* The user falls quiet. In retryOnQuiet the owed finalization is applied HERE,
@@ -668,26 +697,18 @@ Inference ==
 \* of them was finalized by this VAD stop (the engine's own segmenter closes a segment
 \* on a shorter silence than the VAD's floor) is committed here -- by the strategy's own
 \* second stop on a COMPLETE verdict, or by the re-applied stop: either way in this
-\* frame, as a second user message, with no turn start and so no interruption: the
-\* first commit's reply, held by the gate, is released and plays, then the answer to
-\* the rest (reply_hold.py's known limits). `early` is that final, possible only with
-\* EARLY_FINAL. Until 2026-10-14 the model had the retry commit nothing, which is
-\* EARLY_FINAL = FALSE: the premise the reply hold's and the pause's rows are checked
-\* under, so that each still tells its own designs apart.
+\* frame, as a second user message, with no turn start and so no interruption. Until
+\* 2026-10-15 (retryOnQuiet) the first commit's reply, held by the gate, was then
+\* released and played, then the answer to the rest. `early` is that final, possible
+\* only with EARLY_FINAL. Until 2026-10-14 the model had the retry commit nothing, which
+\* is EARLY_FINAL = FALSE: the premise the reply hold's and the pause's rows are checked
+\* under, so that each still tells its own designs apart -- and under which retryOnQuiet
+\* and retryMerges are one machine (no commit ever finds the gate armed).
 \*
-\* MODE = "retryMerges" is a proposed fix, not code: a second commit on a turn whose
-\* first reply has not played (the gate still armed) is a continuation of it -- the
-\* unplayed reply is dropped (an interruption, which the fence orders ahead of the
-\* commit) and the words are folded into the unanswered message (TurnMerge).
+\* As shipped (retryMerges) a second commit on a turn whose first reply has not played
+\* (the gate still armed) is a continuation of it: `CommitStep` drops the unplayed reply
+\* and folds the words into the unanswered message.
 Retry == MODE \in {"retryOnQuiet", "retryMerges"}
-ContinueCommit ==
-    /\ spec' = FALSE
-    /\ staleReply' = (staleReply \/ Stale)
-    /\ reply' = TRUE /\ armed' = Gated
-    /\ held' = FALSE /\ paused' = FALSE /\ resumed' = FALSE
-    /\ mergePending' = FALSE
-    /\ UNCHANGED <<unanswered, splitTurn, endQueued, replyOverResume>>
-    /\ UNCHANGED fenceVars
 VadStop ==
     /\ ~endQueued                             \* the session has not ended
     /\ userSpeaking
@@ -701,11 +722,7 @@ VadStop ==
                     /\ UNCHANGED holdVars
                     /\ UNCHANGED fenceVars
                  \/ /\ EARLY_FINAL /\ CommitReady        \* `early`: a second commit
-                    /\ IF MODE = "retryMerges" /\ armed
-                         THEN ContinueCommit
-                         ELSE /\ Commit
-                              /\ UNCHANGED <<held, paused, resumed, endQueued,
-                                             replyOverResume>>
+                    /\ CommitStep
          ELSE /\ UNCHANGED <<userTurn, owed, inference, spec, staleReply>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED fenceVars
@@ -876,13 +893,13 @@ ForceStop ==
     \* A commit, unless this turn's words were committed already (a stranded turn: the
     \* aggregation is empty, and pipecat pushes nothing).
     /\ IF ~inference
-         THEN CommitReady /\ Commit
+         THEN CommitReady /\ CommitStep
          ELSE /\ spec' = FALSE
               /\ UNCHANGED <<staleReply, reply, armed, unanswered, mergePending, splitTurn>>
+              /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
               /\ UNCHANGED fenceVars
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
-    /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
     /\ UNCHANGED pauseVars
 
 Next ==

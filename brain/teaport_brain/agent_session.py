@@ -1169,6 +1169,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     turn_merge = reply_hold.TurnMerge() if reply_hold_enabled else None
     reply_gate = reply_hold.ReplyHoldGate(merge=turn_merge) if reply_hold_enabled else None
     heard_corrector = HeardContextCorrector(ledger, context, merge=turn_merge)
+    if reply_gate is not None:
+        # A commit that finds the gate still armed continues the turn whose reply it
+        # holds (the refused finalize's second commit): the fence drops that reply
+        # first, and the corrector merges the two (CutReplyFence.hold_commits).
+        cut_fence.unplayed_reply = lambda: reply_gate.armed
     # Fires memory_search on the interim and injects the hit before the LLM (placed in
     # the pipeline below). Only with a gateway: without one every search returns None
     # after its full timeout, for nothing.

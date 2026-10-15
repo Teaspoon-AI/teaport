@@ -156,9 +156,9 @@ run UserTurn.tla ut_fence_none_nostalereply           "(expected: FAILS NoStaleR
 run UserTurn.tla ut_fence_none_nosplitturn            "(expected: FAILS NoSplitTurn — before 2026-10-13: the merge for an unplayed reply lands on the turn after)"
 run UserTurn.tla ut_fence_commitOnly_nocutaftercommit "(expected: FAILS NoCutAfterCommit — 228298e: the speculation's snapshot spends the cut before the reply lands)"
 run UserTurn.tla ut_fence_timed_nocutaftercommit      "(expected: FAILS NoCutAfterCommit — the fence's 0.5 s bound as it is: the ACCEPTED RESIDUAL)"
-run UserTurn.tla ut_shipped_all                       "(expected: holds — SIP as shipped, speculation on, early finals: every property but NoSplitTurn)"
-run UserTurn.tla ut_shipped_nosplitturn               "(expected: FAILS NoSplitTurn — as shipped: words finalized before the retry's VAD stop are a second commit, the held reply still plays)"
-run UserTurn.tla ut_retryMerges_all                   "(expected: holds — PROPOSED fix, not code: that second commit drops the unplayed reply and merges)"
+run UserTurn.tla ut_retryOnQuiet_early_nosplitturn    "(expected: FAILS NoSplitTurn — before 2026-10-15: words finalized before the retry's VAD stop are a second commit, the held reply still plays)"
+run UserTurn.tla ut_shipped_all                       "(expected: holds — SIP as shipped, speculation on, early finals: every property; a commit with the gate armed drops the unplayed reply and merges)"
+run UserTurn.tla ut_shipped_timed                     "(expected: holds — the same with the hold's timers as they are (release, cap): everything but the accepted NoStaleReply residual)"
 echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
