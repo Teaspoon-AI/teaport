@@ -437,32 +437,109 @@ code as it is.
   inside the STT's `_disconnect`, the close it was awaiting is abandoned with the
   socket reference dropped. Not modelled.
 
-## `SipCall.tla` — the SIP per-call lifecycle
+## `SipCall.tla` — the SIP per-call lifecycle, and the call's claim
 
 One AF_UNIX SEQPACKET connection carries call control *and* caller audio, and
 `SipConnection._receive_messages` is its only reader. Call-control handlers are
 registered `sync=True` so they run inline there, in wire order — which is load-bearing,
-because a `confirmed` builds a pipeline and a following `disconnected` tears it down.
+because what one event starts the next may have to undo.
 
-Two findings from the PR review meet here, and they compound:
+Since #111 the brain answers the call: `call.incoming` starts a bring-up **task**
+(`start_call`) that asks the session arbiter for the engine (`CallClaim.start` →
+`ARBITER.acquire`), builds and *publishes* the pipeline (`active["call"]`), sends
+`call.answer`, and greets once `confirmed` arrives. Teardown (`cancel_active_call`) stays
+inline when a handler runs it and ends with `presence.end()`. A pipeline that ends on its
+own (`on_pipeline_finished`) tears itself down from a separate task, concurrent with the
+reader. The 2026-08 modes keep the 2026-08 gateway (it confirms by itself, and may
+confirm a second call before the first's `disconnected`); the shipped modes run behind
+teaport-sip ≥ 0.6.0: one call ringing or up at a time (a second INVITE gets 486), except
+that an INVITE may land while a call the *brain* hung up is still on its way out
+(teaport-sip `call.cpp` `onIncomingCall`), and `auto_answer=false` unless `AUTO`.
 
-| MODE | | `NoWrongTeardown` | `NoBlockedWithPendingControl` |
-|---|---|---|---|
-| `asWritten` | teardown ignores `call_id`; handler blocks | ✗ | ✗ |
-| `callIdChecked` | teardown matches `call_id` | ✓ | ✗ |
-| `asyncSetup` | + the slow bring-up moved off the loop | ✓ | ✓ |
+| MODE | | `NoWrongTeardown` | `NoBringUpBlocksReader` | `NoBlockedWithPendingControl` | `NoUnclaimedCall` | `NoReplacedCall` |
+|---|---|---|---|---|---|---|
+| `asWritten` | 2026-08: teardown ignores `call_id`; bring-up inline | ✗ | ✗ | ✗ | | |
+| `callIdChecked` | 2026-08: teardown matches `call_id` | ✓ | ✗ | ✗ | | |
+| `shipped` | `sip_server.py` today | ✓ | ✓ | ✗ (accepted) | **✗** | **✗** |
+| `claimByCall` | proposed: claims released by call | ✓ | ✓ | ✗ | ✓ | ✓ |
 
-`NoWrongTeardown` fails in 9 steps — confirm A, confirm B, disconnect A; the stale
-`disc(A)` is dispatched after B has replaced A and **tears down B**. B's caller is left
-connected to a gateway with no brain: no audio, no hangup, and no further `confirmed`
-ever coming. `active["call"]` never recorded which call it belonged to.
+`shipped` also holds `NoDeadLine` (an answered call is never let go without a hangup)
+and `NoStrandedRing` (a ringing call the brain heard is being brought up or hung up),
+with and without `AUTO`. Both lean on the 0.6.0 gateway: `start_call` supersedes a call
+without hanging it up, which the 2026-08 gateway turned into a dead line (both 2026-08
+modes fail `NoDeadLine`).
 
-`NoBlockedWithPendingControl` is a *structural* statement, not a discovery: `asyncSetup`
-satisfies it by construction, because not blocking is what the fix does. It is here to
-pin why the two compound — the backlog a blocked reader permits is what lets a stale
-`disconnected` be dispatched after a newer call exists.
+`NoWrongTeardown` (2026-08) — confirm A, confirm B, disconnect A; the stale `disc(A)`,
+queued behind the blocked reader, is dispatched after B has replaced A and **tears down
+B**. Fixed by the `call_id` guard; the bring-up task is why the backlog no longer forms.
 
-### What was changed
+`NoBlockedWithPendingControl` is the strict structural statement (any inline wait with
+control queued). The 2026-08 fix removed the long pole (`NoBringUpBlocksReader`: the
+arbiter's question, up to ~30 s, and greet()'s 12 s poll); the inline teardown still
+blocks, bounded by `cancel_active_call`'s 5 s wait + 0.3 s settle (+ the reclaim).
+`sip_shipped_teardown` keeps that as the accepted residual.
+
+### The 2026-10-14 audit: what the model had drifted from
+
+The model still described the 2026-08 code. Against `sip_server.py` today:
+
+1. Only `confirmed`/`disconnected` existed. Now `call.incoming` starts the bring-up
+   (`sip_server.py:609-638`, `start_call` `:928-949`), a `confirmed` for a ringing call
+   only marks it answered (`:886-904`), and the brain sends `call.answer` (`:698-712`).
+2. "A new confirmed supersedes any running call" — now `start_call` from `incoming`,
+   unless a call is up and answered (`:624-636`), or from a `confirmed` with no ring.
+3. `SetupDone` published the call at the end of the bring-up; the code publishes
+   *before* greeting (`:840-842`), so a `disconnected` can find it mid-bring-up.
+4. Teardown was atomic. It is inline and awaits (`:532-591`, run from `:917-918` and
+   `:945`), and the reader is blocked meanwhile.
+5. No claim. `CallClaim` (`:330-382`) takes the arbiter in the bring-up (`:751`) and is
+   released by `presence.end()` at the end of every teardown (`:573`) and on a
+   `disconnected` that leaves nothing behind (`:919-920`).
+6. No `on_pipeline_finished` teardown task (`:798-835`).
+7. The bring-up's own failures ("never confirmed", "STT unavailable") tear down inside
+   the task (`:847-849`, `:857-868`); what `cancel_setup` does to it depends on where it
+   is — in `wait_for(runner_task)` the cancel is *swallowed* (`:566`) and the teardown
+   completes; in the 0.3 s settle it propagates and `presence.end()` never runs.
+
+### The new finding: the next call's claim released by the last call's teardown
+
+`CallClaim.end()` (`sip_server.py:379`) releases **whatever claim it holds now**, and
+`cancel_active_call` calls it *after* its awaits. The teardown task of a pipeline that
+ended on its own runs concurrently with the reader, so by the time it gets there the
+next call's bring-up may have replaced `_claim`:
+
+```
+c2 rings; its bring-up gets the engine, publishes, sends call.answer
+PipelineEnds(c2)     the pipeline dies (STT written off, a timeout): call.hangup,
+                     teardown TASK T starts (active = None), awaits the runner + 0.3 s
+gateway              c2 on its way out -> c1's INVITE is accepted, call.incoming(c1)
+start_call(c1)       cancel_setup(c2's bring-up); active is None -> nothing to tear down
+c1's bring-up        presence._claim = c1; acquire: holder is still c2 -> REPLACED,
+                     c2 released; 0.3 s settle
+T: presence.end()    releases c1's claim
+c1's acquire         `if new.released: return None` -- "granted", with NO holder
+c1's pipeline        built, STT on the engine; ARBITER.holder is None
+```
+
+From then on the arbiter reads the box as free while a call is live: `call_live()` is
+false (the busy lamp is off), `status()["call"]` is false (a room mic that yielded
+reconnects), and the next Talk client or room session is *granted* — its STT then
+collides with the call's on the engine, and whichever connects second says it cannot
+hear and ends. The window is the teardown's runner wait + 0.3 s settle after a pipeline
+dies, so it takes a second caller within about half a second: rare, but nothing
+recovers it until the call ends. The same window (and the bring-up's own teardown
+cancelled in its settle) lets the next call's acquire find the last call's claim still
+held — `NoReplacedCall` — which the arbiter handles badly when a conversation is on hold
+for that call (`SessionArbiter.tla`, `sa_overlap_refused`).
+
+**Proposed** (`claimByCall`, not code): each teardown releases its *own* call's claim —
+keep the `Claim` in the `active` tuple (or have `CallClaim.end(call_id)` check the id) —
+and in a `finally`, so a teardown cancelled in its settle still lets go; and `start_call`
+awaits the `teardowns` still in flight before the new bring-up. Checked by hand on
+variants: the identity check alone fixes `NoUnclaimedCall` but not `NoReplacedCall`; the
+`finally` plus the wait fixes both, which makes the identity check belt and braces.
+
+### What was changed (2026-08)
 
 `active["call"]` now carries the `call_id`, and both `cancel_active_call` and the new
 `cancel_setup` take it as a guard. The bring-up (`bring_up_call`) runs as a task rather
@@ -479,16 +556,103 @@ directly against a socketpair and fixed with a send lock; the reproduction is
 
 ### Known limits of this model
 
-- **The magnitude is out of scope.** The ~17 s figure (greet()'s 12 s poll plus
-  `wait_until_delivered`'s 10 s) is a timing fact; no amount of model checking
-  establishes it. Measure it, don't prove it.
-- Teardown still blocks the reader, bounded by `cancel_active_call`'s 5 s wait plus its
-  0.3 s settle. The model treats teardown as fast, so `asyncSetup` passing does **not**
-  mean the reader never stalls — only that the long pole is gone.
-- The gateway is modelled as free to emit `confirmed(B)` before `disconnected(A)`.
-  That is the case the code's own comments anticipate; if the gateway in fact
-  guarantees ordering, the wrong-teardown trace needs the blocking to arise, but the
-  `call_id` guard is cheap either way.
+- **Magnitudes are out of scope** (the reader's teardown stall, the window above).
+  Measure them, don't prove them.
+- The arbiter is reduced to what calls see: the holder is a call or nobody. A refusal
+  (busy, declined — the call left ringing) and the conversation put on hold are
+  `SessionArbiter.tla`'s.
+- Not modelled: the reconnect replay (`replay: true`), the connection's EOF `finally`,
+  the declined call answered anyway (`answer_busy`), DTMF and audio routing.
+- The over-approximation: each handler's steps (cancel the bring-up, start the
+  teardown, the rest) are separate steps even where the code does not yield between
+  them. Every counterexample above was checked against the code by hand.
+
+## `SessionArbiter.tla` — one conversation at a time: the ask, the hold, the resume
+
+`session_arbiter.py` (#58, #111) decides who holds the engine's one STT slot: a Talk
+session, the room mic (asleep or awake), or a phone call. A call during a live
+conversation **asks** it (PROMPT); a yes puts the conversation **on hold** (its STT let
+go, context kept) and **resumes** it when the call releases the slot. `acquire()` runs
+under one `asyncio.Lock` and awaits the lock, any end/hold/resume of the holder in
+flight, the question, the hold and the end; `release()` is synchronous and runs from any
+session outside the lock; the hold, the end and the resume are shielded tasks of their
+own, so a caller hanging up mid-way cancels the acquire and they run on. That is the
+concurrency risk worth a model: a resume can be started by a `release()` while some
+acquire is between its decision and its `_set_holder(new)`.
+
+The model has the Talk and room claims, two call claims (the same `"sip"` client), the
+room's asleep flag flipping freely, the gateway answering a call mid-question (`AUTO`),
+the holder leaving mid-question, a hold that fails, and an engine that refuses a second
+STT connect. Time is not: every bounded wait is a step that may happen.
+
+| row | | holds / fails |
+|---|---|---|
+| `sa_shipped` | as shipped, SIP's contract (a call lets its claim go before the next asks) | all ✓ |
+| `sa_unaskable` | `answer_phone_call` off (CALL_IN ends Talk; an awake room refuses) | all ✓ |
+| `sa_overlap_refused` | as shipped, with the overlap `SipCall.tla` finds | `NoEngineRefusal` ✗ |
+| `sa_overlap_redecide` | proposed: decide again after the end | all ✓ |
+| `sa_roomWakes` | witness | `NoSilentLiveEnd` ✗ (accepted) |
+
+"All": `SttOnlyHolder` (only the holder's STT is connected), `OneConversation` (never two
+sessions live and not on hold), `NoEngineRefusal` (no session the arbiter let in is
+refused by the engine), `NoClobber` (`_set_holder(new)` never overwrites another holder),
+`NoStrandedHold` (a conversation on hold is the arbiter's held one or being resumed),
+`NoOrphanHold` (a hold lasts only while its call's claim does), `NoStuckAcquire` (where
+nothing more can happen, every acquire, end, hold and resume has finished — a ringing
+call is never stranded inside `acquire()`).
+
+Under the SIP front-end's contract the protocol holds, including a caller hanging up
+mid-question or mid-hold, the conversation leaving mid-question, a hold that fails, and
+a call answered by the gateway while it is asked (~300k states).
+
+### What the model found
+
+`_acquire` assumes the slot is empty once `_end(holder, why)` returns, and calls
+`_set_holder(new)`. It is not, when the holder being ended is a **call with a
+conversation on hold for it**: the call's `end` is `CallClaim._release` →
+`release()` → `_resume_held()`, which gives the slot back to the held conversation and
+starts its resume. Then:
+
+```
+c1 asks Talk; yes -> Talk on hold; c1 holds the slot (held = Talk, held_for = c1)
+c1's pipeline stops; its claim is not released yet (SipCall: a teardown task in flight,
+                     or a bring-up cancelled in its own teardown's settle)
+c2 acquires          decide(c1, c2) = REPLACED -> _end(c1): release(c1) -> _resume_held:
+                     holder = Talk, Talk's resume starts ("Sorry about that -- where were we?")
+_end returns         _set_holder(c2): Talk is overwritten
+both connect         Talk's resumed STT and c2's pipeline STT: the engine refuses the second
+```
+
+User-visible: the Talk user hears "where were we?" while the box picks up the second
+call, and either the caller hears "I can't hear you right now" and is hung up, or the
+Talk session says it cannot hear and ends. Afterwards the arbiter's holder is c2 (or
+nobody) while Talk runs, so a third call is taken without asking. It needs the
+`NoReplacedCall` overlap from `SipCall.tla` — narrow windows, so low likelihood.
+
+**Proposed** (`MODE = "redecide"`, not code): after `_end` returns, if the slot was taken
+back meanwhile, loop and decide again (the newcomer waits out the resume, then asks the
+conversation about itself). The SIP fix (`claimByCall`) removes the overlap instead;
+either closes this trace, and both are cheap.
+
+`sa_roomWakes` is the accepted residual: a sleeping room is ended for a call (CALL_IN)
+or a Talk session (TAKEN) by a decision taken while it was asleep; `_end_for` closes a
+room silently for both whatever `asleep()` says by then, so a room that wakes in between
+— one event-loop tick, decide to the ending task's first step — is cut off without a
+word instead of being asked.
+
+### Known limits of this model
+
+- `Claim.gone` (REAPED), a client replacing its own Talk session (REPLACED), and
+  `would_refuse`'s pre-check are left out.
+- A failed hold has no partial effect here. `AgentSession.hold` can be cut part-way by
+  `HOLD_WAIT_SECS` (muted, the gate held, possibly the STT let go); `_acquire` then ends
+  the conversation — but if the call's acquire was cancelled meanwhile (the caller hung
+  up), nothing does, and the conversation stays the holder, muted. Not modelled;
+  `session_arbiter.py:410-416` / `agent_session.py:772-786`.
+- Engine refusals are immediate: `stt.py`'s retry budget (`SttSlot.tla`) is what the
+  SETTLE sleeps lean on, and is not modelled here.
+- END_WAIT_SECS' timeout (a holder that never lets go) is not a step: past it the arbiter
+  grants the slot anyway, and `SttOnlyHolder` would fall by design.
 
 ## `Ledger.tla` — the transcript ledger's bot-turn state machine
 
