@@ -487,18 +487,36 @@ class BoundedOpenAILLMService(OpenAILLMService):
         )
 
 
-def warm_llm_imports() -> None:
-    """Load the OpenAI client's chat API now, not on the first reply.
+def warm_first_use_imports() -> None:
+    """Load now, at startup, what the first session and the first reply would otherwise
+    import on the event loop.
 
-    openai builds `client.chat` lazily: a cached_property that runs
-    `from .resources.chat import AsyncChat` on first use (openai/_client.py, 2.54). That
-    one import pulls in ~540 modules, most of them openai.types pydantic models, and it
-    ran ON the event loop inside the process's first chat request. On the box that froze
-    the loop 1297 ms right after a wake word (2026-10-15 14:06, after 10 h idle), and
-    ~700 ms with the files in the page cache. It is paid once per process, so it fell on
-    the first reply after every restart. The server calls this at startup, before
-    freeze_startup_objects, so the modules are loaded once and frozen with the rest."""
+    - openai builds `client.chat` lazily: a cached_property that runs
+      `from .resources.chat import AsyncChat` on first use (openai/_client.py, 2.54).
+      That one import loads ~500 modules, most of them openai.types pydantic models,
+      and it ran inside the process's first chat request. On the box that froze the
+      loop 1297 ms right after a wake word (2026-10-15 14:06, after 10 h idle), ~700 ms
+      with the files in the page cache. anyio's asyncio backend loads at the first
+      connection.
+    - httpcore (+ h11) loads when make_llm builds the first session's client, and
+      certifi's CA bundle path is looked up (through importlib.resources) then.
+    - pipecat's own deferred import (NLTK's sentence tokenizer,
+      pipecat.utils.prewarm): pipecat warms it in a thread while each pipeline
+      connects, and the first session waits for it. Splitting one sentence here loads
+      it, and the one module its first split adds (nltk.tabdata).
+
+    Each is paid once per process, so it fell on the first session after every restart.
+    The server calls this before freeze_startup_objects, so the modules are loaded once
+    and frozen with the rest, and selfcheck calls it, so a broken extension among them
+    (jiter, under openai's chat API) fails the check, not the brain's start."""
+    import anyio._backends._asyncio  # noqa: F401
+    import certifi
+    import httpcore  # noqa: F401
     import openai.resources.chat  # noqa: F401
+    from pipecat.utils.string import match_endofsentence
+
+    certifi.where()
+    match_endofsentence("Warm up. Done.")
 
 
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local

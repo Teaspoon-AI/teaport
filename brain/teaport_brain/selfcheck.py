@@ -31,6 +31,10 @@ def _check_imports():
     # module, so a missing or ABI-broken dependency anywhere in the tree fails here.
     for mod in ("teaport_brain.gateway_server", "teaport_brain.sip_server"):
         importlib.import_module(mod)
+    # And what the server loads at startup beyond its imports (jiter, a compiled
+    # extension, comes in only with openai's chat API).
+    from teaport_brain.services import warm_first_use_imports
+    warm_first_use_imports()
 
 
 def _install_onnx_sessions():

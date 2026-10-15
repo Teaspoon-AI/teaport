@@ -167,8 +167,9 @@ def _child(code: str) -> str:
 def test_the_server_freezes_its_startup_objects_before_any_session():
     # The real start-up path (main's TTS priming, then _ReadyServer.startup): a pipeline
     # alive at the freeze would be frozen with its cycles and never collected. The LLM
-    # client's chat API is loaded by then (services.warm_llm_imports), so its ~540
-    # modules are frozen too and the first reply does not import them on the event loop.
+    # client's chat API is loaded by then (services.warm_first_use_imports), so its
+    # ~500 modules are frozen too and the first reply does not import them on the event
+    # loop.
     out = _child(
         "import asyncio, gc, sys, uvicorn\n"
         "from pipecat.processors.frame_processor import FrameProcessor\n"
