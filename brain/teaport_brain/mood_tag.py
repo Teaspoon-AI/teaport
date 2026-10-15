@@ -63,35 +63,41 @@ PARAGRAPH = (
     "A reply with no clear feeling gets no emoji."
 )
 
-# The invisible marks that can follow an emoji: a variation selector, a skin tone. (A
-# joiner makes it another emoji, a sequence: not one of ours.)
-_MODS = "\ufe0f\U0001F3FB-\U0001F3FF"
-_LEAD_MODS = re.compile("^[" + _MODS + "]+")
+# What may sit between an emoji tag and the words: spaces, and the invisible marks that
+# follow an emoji (a variation selector, a skin tone). A joiner makes it another emoji, a
+# sequence, which is not one of ours.
+_SKIP = re.compile("^[\\s\ufe0f\U0001F3FB-\U0001F3FF]+")
 
 _TAG = re.compile(r"\s*\[\s*mood\s*:\s*([A-Za-z ]{1,24}?)\s*\]\s*", re.IGNORECASE)
 _OPENER = "[mood"
 _MAX_TAG_CHARS = 40       # an opener still unclosed this far in is not a tag
 
 
-def parse_leading_tag(text: str):
+def parse_leading_tag(text: str, final: bool = False):
     """text -> ("tag", name or None, rest) for a leading tag, ("plain",) when it plainly
-    is not one, ("more",) when it could still become one."""
+    is not one, ("more",) when it could still become one. `final`: the reply is over, so
+    nothing more is coming (an emoji alone, or an unfinished second tag, is decided now)."""
     head = text.lstrip()
     if not head:
         return ("more",)
     if head[0] in EMOJI:         # an emoji tag: the mood, and the words after it
-        rest = _LEAD_MODS.sub("", head[1:])
-        if rest.startswith("\u200d"):
-            return ("plain",)    # a sequence (😮‍💨): another emoji, not this one
-        name = EMOJI[head[0]]
+        name, rest = EMOJI[head[0]], head[1:]
         while True:              # a second tag, of either kind, is dropped: the first wins
-            rest = rest.lstrip()
-            if rest[:1] in EMOJI and rest:
-                rest = _LEAD_MODS.sub("", rest[1:])
+            rest = _SKIP.sub("", rest)
+            if rest.startswith("\u200d"):
+                return ("plain",)    # a sequence (😮‍💨): another emoji, not this one
+            if rest and rest[0] in EMOJI:
+                rest = rest[1:]
             elif (m := _TAG.match(rest)):
                 rest = rest[m.end():]
             else:
-                return ("tag", name, rest)
+                break
+        # The words have not come yet, or a second tag is half in: what follows the emoji
+        # (a modifier, a joiner, "[mood") is decided by the next delta, not this one.
+        if not final and (not rest or (rest.startswith("[") and "]" not in rest
+                                       and len(rest) <= _MAX_TAG_CHARS)):
+            return ("more",)
+        return ("tag", name, rest)
     # ("[ mood: angry ]" is read as a tag too: a model spaces its brackets now and then)
     opener = "[" + head[1:].lstrip() if head.startswith("[") else head
     cut = opener[:len(_OPENER)].lower()
@@ -120,9 +126,6 @@ class MoodTag(FrameProcessor):
         # A tag was read and its mood waits for the reply's first words: the face matches
         # a mood to the reply it hears by them. (mood, the text that followed the tag)
         self._mood = None
-        # An emoji tag was just taken: a modifier that arrives as a delta of its own is
-        # not speech either.
-        self._fresh = False
 
     async def _send_mood(self, direction):
         """The tagged mood, with the first words of the reply it is for."""
@@ -133,6 +136,23 @@ class MoodTag(FrameProcessor):
             logger.info(f"mood: {name}")
             await self.push_frame(OutputTransportMessageUrgentFrame(
                 message={"type": "mood", "mood": name, "starts": words}), direction)
+
+    async def _settle(self, direction):
+        """The reply stops here (its end, or a tool call): an emoji tag still waiting for
+        words has none coming, and is a tag of its own."""
+        if not (self._deciding and self._held):
+            return
+        verdict = parse_leading_tag("".join(t for _, t in self._held), final=True)
+        if verdict[0] != "tag":
+            return
+        _, name, rest = verdict
+        self._held, self._deciding = [], False
+        if name:
+            self._mood = (name, rest)
+        if rest.strip():
+            await self.push_frame(LLMTextFrame(text=rest), direction)
+        else:
+            self._bare = True
 
     async def _release(self, direction):
         held, self._held, self._deciding = self._held, [], False
@@ -157,7 +177,6 @@ class MoodTag(FrameProcessor):
                 return
             _, name, rest = verdict
             self._held, self._deciding = [], False
-            self._fresh = True
             if name:
                 self._mood = (name, rest)
             else:
@@ -171,11 +190,6 @@ class MoodTag(FrameProcessor):
                 self._bare = True
             return
         elif isinstance(frame, LLMTextFrame) and frame.text.strip():
-            if self._fresh:
-                frame.text = _LEAD_MODS.sub("", frame.text)
-                if not frame.text.strip():
-                    return          # (only a modifier)
-                self._fresh = False
             self._bare = False
             if self._mood:
                 self._mood = (self._mood[0], self._mood[1] + frame.text)
@@ -184,8 +198,10 @@ class MoodTag(FrameProcessor):
                     await self._send_mood(direction)
                     return
         elif isinstance(frame, (FunctionCallsStartedFrame, FunctionCallsDispatchedFrame)):
+            await self._settle(direction)
             self._bare = False     # the call is the answer
         elif isinstance(frame, LLMFullResponseEndFrame):
+            await self._settle(direction)
             await self._release(direction)
             if self._mood:       # a short reply: the words it had
                 await self._send_mood(direction)

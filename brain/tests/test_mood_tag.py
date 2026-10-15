@@ -91,6 +91,19 @@ def test_an_emoji_tags_modifiers_and_extras_are_not_spoken():
     assert text == "😮\u200d💨 Phew, that was close." and moods == []
 
 
+def test_an_emoji_tag_waits_for_the_words_after_it():
+    # (the decision waits for what follows, so a split modifier, joiner or second tag
+    # cannot slip past it)
+    assert run(["😮", "\ufe0f", "\u200d💨 Phew."]) == ("😮\ufe0f\u200d💨 Phew.", [])
+    assert run(["😊", " ", "😠", " Hi there my friend."]) == ("Hi there my friend.", ["happy"])
+    assert run(["😊", " [mo", "od: sad] Hi there my friend."]) == ("Hi there my friend.", ["happy"])
+    assert run(["😊😮\u200d💨 hi"])[1] == []
+    assert run(["😊 \ufe0f hi there my friend"]) == ("hi there my friend", ["happy"])
+    # a reply of only the emoji still ends: nothing to say, so the recovery line is spoken
+    text, moods = run(["😊"])
+    assert moods == [] and text.strip() and "😊" not in text
+
+
 def test_every_emoji_names_a_mood_the_avatar_knows():
     assert set(mood_tag.EMOJI.values()) == set(mood_tag.MOODS)
     assert all(m in mood_tag.MOODS for m in mood_tag.EMOJI.values())
@@ -182,6 +195,23 @@ def test_a_reply_of_only_a_tag_is_not_left_silent():
     text, moods = run(["[mood: sad]", " \n"])
     assert text.strip() == RECOVERY_TEXT.strip() and moods == []
     assert run(["[mood: sad] ok"]) == ("ok", ["sad"])
+
+
+def test_an_emoji_alone_before_a_tool_call_is_not_apologised_for():
+    from pipecat.frames.frames import FunctionCallsStartedFrame
+    tag = MoodTag()
+    out = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        out.append(frame)
+    tag.push_frame = push
+
+    async def go():
+        for f in [LLMFullResponseStartFrame(), LLMTextFrame(text="😟"),
+                  FunctionCallsStartedFrame(function_calls=[]), LLMFullResponseEndFrame()]:
+            await tag.process_frame(f, FrameDirection.DOWNSTREAM)
+    asyncio.run(go())
+    assert not any(isinstance(f, LLMTextFrame) for f in out)       # nothing spoken
 
 
 def test_sympathy_in_an_untagged_reply_shows_concerned_not_angry():
