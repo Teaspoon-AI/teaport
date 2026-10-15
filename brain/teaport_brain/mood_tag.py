@@ -74,7 +74,7 @@ def parse_leading_tag(text: str):
     if m:
         name = m.group(1).strip().lower()
         return ("tag", name if name in MOODS else None, text[m.end():])
-    if len(opener) < len(_OPENER) or (len(head) <= _MAX_TAG_CHARS and "]" not in head):
+    if len(head) <= _MAX_TAG_CHARS and (len(opener) < len(_OPENER) or "]" not in head):
         return ("more",)
     return ("plain",)
 

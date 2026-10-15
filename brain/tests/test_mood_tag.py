@@ -143,6 +143,7 @@ def test_the_parser():
     assert parse_leading_tag("[ mood: angry ] It irritates me") == ("tag", "angry", "It irritates me")
     assert parse_leading_tag("[ ") == ("more",) and parse_leading_tag("[ mo") == ("more",)
     assert parse_leading_tag("[ note: hi]")[0] == "plain"
+    assert parse_leading_tag("[ " + " " * 500)[0] == "plain"          # not held for ever
 
 
 def test_the_prompt_names_every_mood():
