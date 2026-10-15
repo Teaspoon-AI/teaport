@@ -40,7 +40,7 @@ from teaport_brain.settings import setting
 MODE = setting("TEAPORT_FACE_MOOD")
 ENABLED = MODE == "tag"
 
-# What the model may name: the avatar's eight emotions, and its two plain faces. (The
+# What the model may name: the avatar's nine emotions, and its two plain faces. (The
 # avatar knows aliases too; the model is shown, and held to, these.)
 MOODS = ("happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised",
          "calm", "concerned", "curious", "neutral")
