@@ -415,6 +415,33 @@ def test_a_moved_pipecat_hook_fails_the_session_build():
           "failed, without sources)")
 
 
+def test_a_moved_baseline_clock_read_fails_the_session_build():
+    # The frozen-schedule anchor pins ONE get_clock() read, pipecat's baseline's. A
+    # pipecat that reads the clock elsewhere first, or not at all, must fail the build
+    # rather than anchor on the real clock (formal/README, pc_second_realClock).
+    from pipecat.services.tts_service import TTSService
+    engine_tts._require_baseline_clock_read()        # today's pipecat: fine
+
+    class _ReadsFirst(TTSService):
+        async def start_word_timestamps(self):
+            self.get_clock().get_time()               # e.g. a metric, before the baseline
+            await super().start_word_timestamps()
+
+    class _NoClock(TTSService):
+        async def start_word_timestamps(self):
+            if self._initial_word_timestamp == -1:
+                self._initial_word_timestamp = 0
+
+    for cls in (_ReadsFirst, _NoClock):
+        try:
+            engine_tts._require_baseline_clock_read(cls)
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError(f"{cls.__name__}: a moved clock read went unnoticed")
+    print("  PASS the baseline's clock read is checked at session build")
+
+
 class _FakeWS:
     """The engine's speech stream, scripted: records what the brain sends, replays
     `messages` (dicts become JSON text frames)."""
@@ -602,6 +629,7 @@ def test_tts_streaming():
     test_seam_trim_ignores_a_quiet_first_block()
     test_seam_trim_holds_only_trailing_quiet()
     test_a_moved_pipecat_hook_fails_the_session_build()
+    test_a_moved_baseline_clock_read_fails_the_session_build()
 
     async def main():
         await test_first_block_plays_before_the_sentence_ends()

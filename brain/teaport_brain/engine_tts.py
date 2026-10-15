@@ -413,6 +413,51 @@ def _require_close_at_end_flag():
                              "close-at-End needs a new hook")
 
 
+@functools.cache
+def _require_baseline_clock_read(cls=TTSService):
+    """EngineTTSService anchors a context that starts during a playout freeze on the
+    frozen schedule by pinning ONE get_clock() read (_clock_pin): pipecat 1.8.1's
+    start_word_timestamps reads the clock once, before anything else, and takes the
+    baseline from it. A pipecat bump that reads the clock somewhere first, or stops
+    reading it there, would spend the pin elsewhere and anchor on the real clock --
+    the words of the answer queued behind a held reply would run late, silently
+    (formal/README, PlayoutClock pc_second_realClock). So, like
+    _require_context_end_hook, fail loudly at session build.
+
+    Asked of the installed pipecat by behaviour, not by its source (there is none in a
+    stripped install): a bare probe (`cls`: TTSService but for tests) whose clock reads
+    a small instant first and a far later one after, its baseline started with no
+    words cached -- which awaits nothing, so it runs to its end on one send(). The
+    baseline must be the first read. Once per process: the answer is pipecat's."""
+    pinned, later = 1_000, 10**18
+    reads = []
+
+    def get_clock(self):
+        reads.append(1)
+        return _PinnedClock(pinned if len(reads) == 1 else later)
+
+    got, why = None, None
+    try:
+        stubs = dict.fromkeys(getattr(cls, "__abstractmethods__", ()))
+        probe = type("_BaselineProbe", (cls,), {**stubs, "get_clock": get_clock})()
+        reads.clear()                       # the constructor's reads, if any, are not it
+        step = probe.start_word_timestamps()
+        try:
+            step.send(None)
+        except StopIteration:
+            got = probe._initial_word_timestamp
+        else:
+            step.close()
+            why = "it awaited with no words cached"
+    except Exception as e:  # noqa: BLE001 - whatever it is, the pin cannot rely on it
+        why = repr(e)
+    if got != pinned:
+        raise AttributeError(
+            "pipecat's TTSService.start_word_timestamps no longer takes its baseline from "
+            "its first get_clock() read (" + (why or f"got {got}, not the first read") +
+            "): EngineTTSService's frozen-schedule anchor (_clock_pin) needs a new hook")
+
+
 # The timeout _missing_pacing_hooks hands its probe and looks for again. Any positive
 # number would do; an odd one cannot pass as a default the constructor fell back to.
 _PROBE_TIMEOUT_S = 7.25
@@ -543,6 +588,7 @@ class EngineTTSService(TTSService):
                  **kwargs):
         _require_context_end_hook()
         _require_close_at_end_flag()
+        _require_baseline_clock_read()
         self._voice = voice
         self._speed = speed
         # The client draws a mouth from what is said (?features=phonemes, the OLED face
@@ -709,7 +755,8 @@ class EngineTTSService(TTSService):
             return None
 
     def get_clock(self):
-        # One read of a pinned instant, for pipecat's word baseline (start_word_timestamps).
+        # One read of a pinned instant, for pipecat's word baseline (start_word_timestamps;
+        # _require_baseline_clock_read checks that read is pipecat's first).
         pin, self._clock_pin = self._clock_pin, None
         return super().get_clock() if pin is None else _PinnedClock(pin)
 
