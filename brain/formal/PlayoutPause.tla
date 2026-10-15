@@ -32,10 +32,11 @@
 (* underrun: the LLM's next sentence is slow). The TTS places its words at  *)
 (* the context's audio so far plus the playout gap it saw (_note_playout,   *)
 (* on its own clock, which stands still while playout is stopped).          *)
-(* TTSGAP = "shipped" -- _freeze_playout moves its _play_end by the stop    *)
-(*                       only when that was still in the future at the stop.*)
-(* TTSGAP = "moved"   -- PROPOSED, not code: it always moves it, so a gap   *)
-(*                       never includes stop time.                          *)
+(* TTSGAP = "ahead" -- before the fix: _freeze_playout moved its _play_end *)
+(*                      by the stop only when that was still in the future *)
+(*                      at the stop.                                        *)
+(* TTSGAP = "moved" -- as shipped: it always moves it, so a gap never       *)
+(*                      includes stop time.                                 *)
 (*                                                                          *)
 (* Part 2, the TTS. A reply hold (reply_hold.py) and a playout pause each   *)
 (* stop playout; the two can overlap. engine_tts._freeze_playout freezes its *)
@@ -70,7 +71,7 @@ CONSTANTS PART,       \* 1: the ledger; 2: the TTS's freeze (checked separately)
           ANCHOR
 
 ASSUME /\ LEDGER \in {"unaware", "noShift", "shipped"} /\ SLOT \in {"single", "set"}
-       /\ TTSGAP \in {"shipped", "moved"} /\ LATE \in 0..(A - 1)
+       /\ TTSGAP \in {"ahead", "moved"} /\ LATE \in 0..(A - 1)
        /\ FIRSTAUDIO \in {"before", "any"} /\ ANCHOR \in {"stop", "audio"}
 
 A1 == A - LATE                      \* the first clause: emitted at 0

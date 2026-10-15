@@ -722,9 +722,14 @@ class EngineTTSService(TTSService):
         self._freezes.discard(source)
         if self._freezes or self._frozen_at is None:
             return  # still stopped by another source
-        held_for = time.monotonic() - self._frozen_at
-        if self._play_end > self._frozen_at:
-            self._play_end += held_for
+        # _play_end moves by the whole stop even when playout had already run dry
+        # before it (a pause in an underrun): the next clause's playout gap must not
+        # hold stop time, which whoever stopped playout accounts for -- the ledger
+        # moves the whole reply's cut by a pause, the gate a held context's every pts
+        # -- or its words carry the stop twice (formal/README: pp_late_ahead_heard).
+        # A model already in the past stays in the past, so pacing is unchanged.
+        if self._play_end:
+            self._play_end += time.monotonic() - self._frozen_at
         now, then = self._clock_ns(), self._frozen_clock
         if now is not None and then is not None:
             if self._prev_audio_end_ns > then:

@@ -173,8 +173,8 @@ run PlayoutPause.tla pp_noShift_heard "(expected: FAILS HeardIsPlayed — layout
 run PlayoutPause.tla pp_shipped_heard "(expected: holds — frozen, re-anchored, pts cut moved; two pauses in one reply)"
 run PlayoutPause.tla pp_single_anchor "(expected: FAILS AnchorMovesByStop — one freeze slot shared by the hold and the pause)"
 run PlayoutPause.tla pp_set_anchor    "(expected: holds — one freeze per source: frozen while stopped, the anchor moved by exactly the stop)"
-run PlayoutPause.tla pp_late_shipped_heard "(expected: FAILS HeardIsPlayed — AS SHIPPED: a pause in an underrun, the next clause after it: its words carry the pause twice)"
-run PlayoutPause.tla pp_late_moved_heard   "(expected: holds — PROPOSED, not code: _freeze_playout always moves _play_end by the stop)"
+run PlayoutPause.tla pp_late_ahead_heard   "(expected: FAILS HeardIsPlayed — BEFORE THIS FIX: a pause in an underrun, the next clause after it: its words carry the pause twice)"
+run PlayoutPause.tla pp_late_moved_heard   "(expected: holds — AS SHIPPED: _freeze_playout always moves _play_end by the stop)"
 run PlayoutPause.tla pp_hold_anchor        "(expected: FAILS AnchorMovesByStop — AS SHIPPED: a hold from before the reply's first audio moves its end by the whole hold)"
 run PlayoutPause.tla pp_hold_anchor_fixed  "(expected: holds — PROPOSED, not code: move it by the hold since its first audio, as _ctx_held_ns does)"
 echo

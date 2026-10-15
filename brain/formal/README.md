@@ -1907,14 +1907,14 @@ word scheduled before any pause. The TTS synthesizes clause by clause, and a cla
 comes after playout ran dry is placed after the gap `_note_playout` saw — on the TTS's
 clock, which stands still while playout is stopped. A pause in that underrun (the pauser
 needs bot-speaking and reply audio, not audio queued: `barge_pause._may_pause`) that ends
-before the next clause is synthesized is then in the gap, and so in the clause's pts —
-`_freeze_playout` moves `_play_end` by the stop only when it was still ahead of the stop
+before the next clause is synthesized was then in the gap, and so in the clause's pts —
+`_freeze_playout` moved `_play_end` by the stop only when it was still ahead of the stop
 — and the ledger adds it again (`_resume`: every turn with audio pushed).
 
 | `LATE = 2`, ledger `shipped` | | `HeardIsPlayed` |
 |---|---|---|
-| `pp_late_shipped_heard` | `TTSGAP = "shipped"`, as shipped | ✗ (9 states) |
-| `pp_late_moved_heard` | `TTSGAP = "moved"` — **proposed, not code**: `_freeze_playout` always moves `_play_end` by the stop, so a gap never holds stop time and the ledger's shift is the only move | ✓ (20k states) |
+| `pp_late_ahead_heard` | `TTSGAP = "ahead"`, before the fix | ✗ (9 states) |
+| `pp_late_moved_heard` | `TTSGAP = "moved"`, **as shipped** (2026-10-15): `_freeze_playout` always moves `_play_end` by the stop, so a gap never holds stop time and the ledger's shift is the only move | ✓ (20k states) |
 
 ```
 Tick Tick      the first clause's two units play out; nothing more is synthesized yet
@@ -1924,12 +1924,14 @@ Emit2          the next clause: the TTS sees a 1-unit gap (the pause) and places
 Tick Cut       unit 3 played (pts 4); the ledger reads the cut at 4 - 1 and drops it
 ```
 
-The pause did not delay the clause, and its words carry it twice. The seconds are right
-(the layout lays a chunk out no earlier than its push), and `_finish` never reports fewer
-words than the played fraction implies, so the chart falls back to that estimate — off by
-a word or so — instead of the exact cut. The same arithmetic on the real TTS:
-`_note_playout` after a 1.0 s pause in an underrun puts the next clause at 3.0 s, where
-it plays, and the ledger's cut is 1.0 s short of it.
+The pause did not delay the clause, and its words carried it twice. The seconds were
+right (the layout lays a chunk out no earlier than its push), and `_finish` never reports
+fewer words than the played fraction implies, so the chart fell back to that estimate —
+off by a word or so — instead of the exact cut. The fix moves `_play_end` by every stop,
+even one that began after playout ran dry (a model already in the past stays in the past,
+so the pacing is unchanged). `test_barge_pause.py::
+test_a_pause_in_an_underrun_is_not_a_playout_gap_as_well` is the trace on the real TTS:
+before the fix, the next clause after a 0.3 s pause started 0.3 s late.
 
 **Part 2, the TTS.** A reply hold and a playout pause each stop playout; the two can
 overlap. `engine_tts._freeze_playout` freezes the TTS's playout model through them and,
