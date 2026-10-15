@@ -575,16 +575,18 @@ async def run_connection(sock, on_ready=None):
         if reclaim and not arb.ARBITER.held():
             # A CALL is a session, so this is the session end — the SIP twin of the
             # turn_reclaim in gateway_server's talk() finally, and the only place the
-            # per-call pipeline's memory ever comes back: MemoryReclaim deliberately
-            # omits empty_cache per turn (it can lock the CUDA allocator against an
-            # in-flight synth and deadlock a barge-in), and glibc keeps the freed
-            # smart-turn/VAD/resampler arena pages (~35 MB a session) until something
-            # calls malloc_trim. Without this, RSS and VRAM ratchet call over call on
-            # the 8 GB unified pool — and on the phone-dedicated box docs/CONFIG.md
-            # recommends (`systemctl disable --now teaport-brain`) NO other process is
-            # running sessions to reclaim on our behalf, so it ends at an OOM.
+            # per-call pipeline's CUDA cache ever comes back: MemoryReclaim deliberately
+            # omits empty_cache (it can lock the CUDA allocator against an in-flight
+            # synth and deadlock a barge-in), and trims the heap only at a quiet moment
+            # of the call, which a short call never reaches, so glibc keeps the freed
+            # smart-turn/VAD/resampler arena pages (~35 MB a session), and whatever a
+            # long call freed after its last quiet moment, until this. Without this, RSS
+            # and VRAM ratchet call over call on the 8 GB unified pool — and on the
+            # phone-dedicated box docs/CONFIG.md recommends (`systemctl disable --now
+            # teaport-brain`) NO other process is running sessions to reclaim on our
+            # behalf, so it ends at an OOM.
             #
-            # Off the loop, like MemoryReclaim's per-turn trim, but AWAITED: this
+            # Off the loop, like MemoryReclaim's in-session trim, but AWAITED: this
             # usually runs inline in the connection's single receive loop, so awaiting
             # it is also what guarantees no bring-up starts mid-reclaim — nothing is
             # dispatched while the loop is not reading.

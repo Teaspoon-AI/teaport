@@ -63,7 +63,7 @@ from teaport_brain.captions import sends_every_final
 from teaport_brain.engine_tts import pacing_status
 from teaport_brain import mood_tag
 from teaport_brain.tools import parse_client_features
-from teaport_brain.memory_hygiene import turn_reclaim
+from teaport_brain.memory_hygiene import freeze_startup_objects, turn_reclaim
 from teaport_brain.services import make_tts
 from teaport_brain.settings import setting
 
@@ -542,6 +542,8 @@ class _ReadyServer(uvicorn.Server):
     async def startup(self, sockets=None):
         await super().startup(sockets=sockets)
         if self.started:
+            # Before any session: what is alive now lives as long as the process.
+            freeze_startup_objects()
             # The phone line's front-end, in this same event loop (sip_server.serve): it
             # waits for the gateway's socket, and its calls go through the same session
             # arbiter as /talk. A failure in it is contained there; Talk goes on.

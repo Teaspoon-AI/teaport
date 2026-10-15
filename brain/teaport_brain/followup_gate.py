@@ -280,7 +280,8 @@ class FollowupGate(FrameProcessor):
     def is_clear(self) -> bool:
         """Idle, no turn in flight and no window claimed, right now -- undebounced, so a
         snapshot for reporting, not a moment to act in (wait_until_idle(turn_free=True)
-        is that)."""
+        is that). MemoryReclaim acts on it, with its own debounce (last_active): it must
+        not claim a window, which would hold off a follow-up waiting for one."""
         return self._clear.is_set()
 
     def _claim(self) -> None:
