@@ -289,6 +289,7 @@ run LedgerPlayout.tla lp_failed_charted                "(expected: FAILS NoUnhea
 run LedgerPlayout.tla lp_failed_position               "(expected: FAILS NoPlayedReplyDeleted — BEFORE THIS FIX (positional corrector): the failed reply's cut deletes the reply the caller heard)"
 run LedgerPlayout.tla lp_position                      "(expected: FAILS NoPlayedReplyDeleted — BEFORE THIS FIX, no failure: a barge-in before a queued reply's first audio deletes the reply that played before it)"
 run LedgerPlayout.tla lp_guarded                       "(expected: FAILS HeardPrefixOnOwn — the first fix (guarded, still the newest message, cut by cut): a reply cut partway with a queued reply committed after it keeps its full text)"
+run LedgerPlayout.tla lp_unspeakable_tail              "(expected: FAILS HeardPrefixOnOwn — BEFORE THE EMOJI FIX (seqTail): an emoji reply, charted nothing but committed, after a reply cut partway takes its heard prefix)"
 run LedgerPlayout.tla lp_failed                        "(expected: holds — AS SHIPPED (seq corrector: each cut on its own message), every property but NoUnheardAheadOfPlayed)"
 run LedgerPlayout.tla lph_phantom      "(expected: holds — hermetic wiring)"
 run LedgerPlayout.tla lph_once         "(expected: holds — hermetic wiring, two replies)"

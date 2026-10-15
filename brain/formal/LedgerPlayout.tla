@@ -76,6 +76,8 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           Corrector,     \* how HeardContextCorrector finds a cut reply's message:
                          \*   "seq" -- as shipped: its own, by its rank among the window's
                          \*     committed replies (Utterance.turn_seq, .committed; Target);
+                         \*   "seqTail" -- the same, but with no newer reply the newest
+                         \*     message, speech or not (before the emoji fix);
                          \*   "guarded" -- the newest message, a cut heard nothing let be
                          \*     when that cannot be its own (the first fix);
                          \*   "position" -- the newest message, always (before either)
@@ -103,7 +105,7 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
 
 ASSUME SpeakCheck \in {"chart", "queue", "none"}
 ASSUME TrailingMute \cap Unspeakable = {} /\ Failed \cap (Unspeakable \cup TrailingMute) = {}
-ASSUME Corrector \in {"seq", "guarded", "position"}
+ASSUME Corrector \in {"seq", "seqTail", "guarded", "position"}
 
 NONE == "none"
 OWN  == "own"            \* audio_start: the turn's own chunk's place in the playout layout
@@ -126,6 +128,8 @@ VARIABLES
     window,      \* the transport's bot-speaking window is open
     interrupts,
     swept,       \* contexts the stop-frame timeout closed after their End reached the TTS
+    stopEpoch,   \* [Ctxs -> Nat]: the barge-ins before a context's stop -- the window its
+                 \*   force-completed text is committed in (ghost, for the corrector)
     \* --- the ledger: transcript_ledger.py ---
     genAcc,      \* _gen          : NONE or the reply streaming now
     ended,       \* replies whose End the TTS sighted with text (entry["ended"])
@@ -138,9 +142,9 @@ VARIABLES
     closedCtxs,  \* _closed_ctxs
     charted      \* self.events, assistant utterances only
 
-envVars    == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
+envVars    == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 ledgerVars == <<genAcc, ended, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
-vars       == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept,
+vars       == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch,
                 genAcc, ended, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
 
 Init ==
@@ -149,6 +153,7 @@ Init ==
     /\ drainPending = [r \in Replies |-> FALSE]
     /\ chunks = [c \in Ctxs |-> 0] /\ playedN = [c \in Ctxs |-> 0]
     /\ pq = <<>> /\ window = FALSE /\ interrupts = 0 /\ swept = {}
+    /\ stopEpoch = [c \in Ctxs |-> 0]
     /\ genAcc = NONE /\ ended = {} /\ claimed = {} /\ queue = <<>> /\ turns = <<>>
     /\ fifo = <<>> /\ winOpen = FALSE /\ fillerCtxs = <<>> /\ closedCtxs = {}
     /\ charted = <<>>
@@ -383,13 +388,13 @@ LlmStart(r) ==
     /\ llm' = [llm EXCEPT ![r] = "streaming"]
     /\ order' = Append(order, r)
     /\ Ledger([type |-> "LLMStart", gen |-> r])
-    /\ UNCHANGED <<synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
+    /\ UNCHANGED <<synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 LlmEnd(r) ==
     /\ llm[r] = "streaming"
     /\ llm' = [llm EXCEPT ![r] = "done"]
     /\ Ledger([type |-> "LLMEnd", gen |-> r])
-    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
+    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 \* An interrupted completion still ends: pipecat pushes its End from a finally,
 \* after the InterruptionFrame. The ledger finds no stream and ignores it.
@@ -397,7 +402,7 @@ LlmCancelEnd(r) ==
     /\ llm[r] = "aborted"
     /\ llm' = [llm EXCEPT ![r] = "cancelled"]
     /\ Ledger([type |-> "LLMEnd", gen |-> r])
-    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
+    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 \* Synthesis is sequential per the TTS service, and in the order responses
 \* reached it: a reply's context cannot start while an earlier live reply's has
@@ -421,7 +426,7 @@ TtsStart(c) ==
     /\ CanStart(c)
     /\ synth' = [synth EXCEPT ![c] = "started"]
     /\ Ledger([type |-> "TTSStarted", ctx |-> c, filler |-> c \in Fillers])
-    /\ UNCHANGED <<llm, order, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 TtsAudio(c) ==
     /\ synth[c] \in {"started", "audio"} /\ chunks[c] < MaxChunks /\ c \notin Silenced
@@ -429,7 +434,7 @@ TtsAudio(c) ==
     /\ chunks' = [chunks EXCEPT ![c] = @ + 1]
     /\ pq' = Append(pq, [k |-> "audio", c |-> c])
     /\ Ledger([type |-> "TTSAudio", ctx |-> c])
-    /\ UNCHANGED <<llm, order, timedOut, drainPending, playedN, window, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, timedOut, drainPending, playedN, window, interrupts, swept, stopEpoch>>
 
 \* The context ends: its TTSStoppedFrame, queued at the transport behind its audio.
 \* One with audio, after its last chunk; a Silenced one with none. A reply's
@@ -456,6 +461,7 @@ TtsStop(c) ==
                        THEN [drainPending EXCEPT ![c] = TRUE] ELSE drainPending
     /\ swept' = IF c \in MutedAtEnd /\ llm[c] = "done" /\ ~CloseAtEnd
                  THEN swept \cup {c} ELSE swept
+    /\ stopEpoch' = [stopEpoch EXCEPT ![c] = interrupts]
     /\ Ledger([type |-> "TTSStopped", ctx |-> c])
     /\ UNCHANGED <<llm, order, chunks, playedN, window, interrupts>>
 
@@ -465,7 +471,7 @@ TtsDrain(r) ==
     /\ drainPending[r]
     /\ drainPending' = [drainPending EXCEPT ![r] = FALSE]
     /\ Ledger([type |-> "Drained", gen |-> r])
-    /\ UNCHANGED <<llm, order, synth, timedOut, chunks, playedN, pq, window, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 \* Resume: the LLM's next sentence reaches the TTS after its context ended on the
 \* timeout, and pipecat re-creates the context under the SAME id (_push_tts_frames:
@@ -477,7 +483,7 @@ TtsRestart(c) ==
     /\ synth' = [synth EXCEPT ![c] = "started"]
     /\ timedOut' = [timedOut EXCEPT ![c] = FALSE]
     /\ Ledger([type |-> "TTSStarted", ctx |-> c, filler |-> FALSE])
-    /\ UNCHANGED <<llm, order, drainPending, chunks, playedN, pq, window, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 HeadIs(kind) == pq # <<>> /\ Head(pq).k = kind
 
@@ -485,14 +491,14 @@ PlayStart ==                                       \* BotStartedSpeaking: the wi
     /\ ~window /\ HeadIs("audio")
     /\ window' = TRUE
     /\ Ledger([type |-> "PlayStart"])
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts, swept, stopEpoch>>
 
 PlayChunk ==                                       \* a chunk plays; the transport re-pushes it UNTAGGED
     /\ window /\ HeadIs("audio")
     /\ pq' = Tail(pq)
     /\ playedN' = [playedN EXCEPT ![Head(pq).c] = @ + 1]
     /\ Ledger([type |-> "PlayChunk"])
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, window, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, window, interrupts, swept, stopEpoch>>
 
 \* A context's stop frame reaches the head of the transport's queue: bot-speaking
 \* ends if audio played since it last did (base_output: _tts_audio_received) --
@@ -503,13 +509,13 @@ PlayMark ==
     /\ IF window
          THEN window' = FALSE /\ Ledger([type |-> "PlayStop"])
          ELSE UNCHANGED window /\ UNCHANGED ledgerVars
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, interrupts, swept, stopEpoch>>
 
 PlayIdle ==                                        \* BOT_VAD_STOP_FALLBACK_SECS: the queue ran dry
     /\ window /\ pq = <<>>
     /\ window' = FALSE
     /\ Ledger([type |-> "PlayStop"])
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts, swept>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts, swept, stopEpoch>>
 
 Interrupt ==                                       \* the user barges in
     /\ interrupts < MaxInterrupts
@@ -526,7 +532,7 @@ Interrupt ==                                       \* the user barges in
                                  ELSE IF llm[r] = "done" /\ synth[r] = "idle" THEN "cancelled"
                                  ELSE llm[r]]
     /\ Ledger([type |-> "Interruption"])
-    /\ UNCHANGED <<order, chunks, playedN, swept>>
+    /\ UNCHANGED <<order, chunks, playedN, swept, stopEpoch>>
 
 Next ==
     \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r) \/ TtsRestart(r) \/ TtsDrain(r)
@@ -579,15 +585,19 @@ NoUnheardAheadOfPlayed ==
 \* the order the replies reached the TTS (Pos: each commits at its End's re-push, or
 \* at the cut). That is the ledger's response seq, which each utterance carries; the
 \* order of the CHARTS can differ (a failed reply is charted at its stop, while the
-\* reply ahead of it still plays).
+\* reply ahead of it still plays). Messages are named by their reply.
 SameWindow(i, j) == charted[i].epoch = charted[j].epoch
 Newer(j, i) == Pos(charted[j].gen) > Pos(charted[i].gen)
-\* The committed messages of a cut i's window. (Uncharted commits -- an unspeakable
-\* reply's force-completed text -- are left out; heard_context skips messages with
-\* no speech.)
+\* The committed messages of a cut i's window that some chart accounts for...
 Said(i) == {j \in DOMAIN charted : SameWindow(i, j) /\ charted[j].said}
-Newest(js) == IF js = {} THEN 0 ELSE CHOOSE j \in js : \A k \in js : ~Newer(k, j)
-Anchor(i) == Newest(Said(i))
+SaidGens(i) == {charted[j].gen : j \in Said(i)}
+\* ...and those none does: an unspeakable reply charted nothing (Silent), whose
+\* context ended -- the TTS force-completed its text (an emoji), and pipecat committed
+\* it, in the window of its stop.
+Muted(i) == {r \in Unspeakable :
+                /\ synth[r] = "stopped" /\ stopEpoch[r] = charted[i].epoch
+                /\ ~\E j \in DOMAIN charted : charted[j].gen = r}
+NewestOf(rs) == IF rs = {} THEN NONE ELSE CHOOSE r \in rs : \A q \in rs : Pos(q) <= Pos(r)
 \* Which cuts the corrector reconciles. "seq": every one that committed a message (one
 \* that did not has nothing to correct). "guarded": a cut heard nothing is let be when
 \* its message cannot be the newest -- a reply newer than it in its window played, or
@@ -596,41 +606,48 @@ PlayedIn(i, newer) == \E j \in DOMAIN charted :
     /\ j # i /\ SameWindow(i, j) /\ charted[j].anyPlayed /\ Newer(j, i) = newer
 Acts(i) ==
     /\ charted[i].intr
-    /\ CASE Corrector = "seq"      -> charted[i].said
+    /\ CASE Corrector \in {"seq", "seqTail"} -> charted[i].said
          [] Corrector = "position" -> TRUE
          [] OTHER -> \/ charted[i].anyPlayed     \* heard something: its own words are newest
                     \/ /\ ~PlayedIn(i, TRUE)
                        /\ charted[i].said \/ ~PlayedIn(i, FALSE)
 
-\* The message the corrector rewrites for cut i (0: none). "seq"
-\* (heard_context._resolve): every cut's found before any is rewritten -- the one as
-\* many committed messages back from the newest as the batch shows committed replies
-\* newer than the cut. The positional correctors take the newest message still in
-\* the context, cut by cut in the batch's (chart) order: a cut heard nothing before
-\* this one removed its target.
+\* The reply whose message the corrector rewrites for cut i (NONE: none). "seq"
+\* (heard_context._resolve): every cut's found before any is rewritten -- the spoken
+\* message as many back from the newest as the batch shows committed replies newer
+\* than the cut; a message with no speech is never counted. "seqTail": the same, but
+\* with no newer reply the newest message of all, speech or not (the first cut of
+\* _resolve). The positional correctors take the newest message still in the
+\* context, cut by cut in the batch's (chart) order: a cut heard nothing before this
+\* one removed its target.
 NewerSaid(i) == Cardinality({j \in Said(i) : Newer(j, i)})
 RECURSIVE Target(_)
 Target(i) ==
-    IF Corrector = "seq"
+    IF Corrector = "seqTail" /\ NewerSaid(i) = 0
+    THEN NewestOf(SaidGens(i) \cup Muted(i))
+    ELSE IF Corrector \in {"seq", "seqTail"}
     THEN LET js == {j \in Said(i) : NewerSaid(j) = NewerSaid(i)}
-         IN IF js = {} THEN 0 ELSE CHOOSE j \in js : TRUE
-    ELSE Newest(Said(i) \ {Target(k) : k \in {k \in 1..(i - 1) :
+         IN IF js = {} THEN NONE ELSE charted[CHOOSE j \in js : TRUE].gen
+    ELSE NewestOf((SaidGens(i) \cup Muted(i))
+                    \ {Target(k) : k \in {k \in 1..(i - 1) :
                                          /\ SameWindow(i, k) /\ Acts(k)
                                          /\ ~charted[k].anyPlayed}})
 
 \* The corrector never rewrites or deletes the message of ANOTHER reply that played.
 NoPlayedReplyDeleted ==
     \A i \in DOMAIN charted :
-        (Acts(i) /\ Target(i) \notin {0, i}) => ~charted[Target(i)].anyPlayed
+        (Acts(i) /\ Target(i) \notin {NONE, charted[i].gen}) => playedN[Target(i)] = 0
 
 \* A cut that heard something has its heard prefix written on its OWN message: on
 \* another, its own keeps the full text and the context says all of it was heard.
 HeardPrefixOnOwn ==
-    \A i \in DOMAIN charted : (Acts(i) /\ charted[i].anyPlayed) => Target(i) = i
+    \A i \in DOMAIN charted :
+        (Acts(i) /\ charted[i].anyPlayed) => Target(i) = charted[i].gen
 
 \* ...and every cut it reconciles is reconciled on its own message.
 CutAnchorsOwn ==
-    \A i \in DOMAIN charted : (Acts(i) /\ charted[i].said) => Target(i) = i
+    \A i \in DOMAIN charted :
+        (Acts(i) /\ charted[i].said) => Target(i) = charted[i].gen
 
 \* ...and every cut heard nothing that committed a message is reconciled (removed:
 \* none of it was heard).
@@ -666,6 +683,7 @@ TypeOK ==
     /\ timedOut \in [Ctxs -> BOOLEAN] /\ drainPending \in [Replies -> BOOLEAN]
     /\ pq \in Seq([k : {"audio", "stop"}, c : Ctxs]) /\ window \in BOOLEAN
     /\ swept \subseteq Replies
+    /\ stopEpoch \in [Ctxs -> 0..MaxInterrupts]
     /\ genAcc \in {NONE} \cup Replies /\ ended \subseteq Replies
     /\ claimed \subseteq Replies /\ queue \in Seq(Replies)
     /\ fifo \in Seq(Ctxs) /\ winOpen \in BOOLEAN

@@ -71,6 +71,14 @@ def _clean_prefix(heard: str) -> str:
     return " ".join(words).rstrip(" ,;:.").strip()
 
 
+def _unspoken(m) -> bool:
+    """An assistant message with text but nothing synthesizable in it (an emoji reply):
+    the ledger charts no such reply, so the corrector never counts it as one."""
+    text = _msg_text(m)
+    return (m.get("role") == "assistant" and not m.get("tool_calls")
+            and bool(text.strip()) and not has_speech(text))
+
+
 def drop_from_context(context, doomed) -> None:
     """Remove `doomed` from `context`, matched by identity (the dicts are live, and two
     messages can read the same). Anything that removes messages the corrector may have
@@ -237,8 +245,15 @@ class HeardContextCorrector(FrameProcessor):
         # barged over at 0% heard, and reconciling THAT cut removed the delivery. With
         # its own answer gone from the context the model recited the whole shop list
         # again, which the user saw as the reply repeating twice.
+        #
+        # Messages with nothing synthesizable are skipped too: an emoji reply is charted
+        # nothing but committed (the TTS force-completes its text when its context ends,
+        # at its End), so it can sit after the cut reply's message -- and the cut's heard
+        # prefix overwrote it while the cut reply kept its full text (LedgerPlayout.tla,
+        # HeardPrefixOnOwn, lp_unspeakable_tail).
         end = len(msgs)
-        while end > start and msgs[end - 1].get("role") in ("user", "system"):
+        while end > start and (msgs[end - 1].get("role") in ("user", "system")
+                               or _unspoken(msgs[end - 1])):
             end -= 1
         if newer == 0:
             # The newest: a tool result there means pipecat dropped the reply's text

@@ -758,6 +758,37 @@ async def test_m_a_cut_reply_is_reconciled_on_its_own_message_not_a_newer_one():
             f"unheard one go: {left}")
 
 
+async def test_n_an_emoji_reply_after_a_cut_one_is_not_its_message():
+    """An emoji reply is charted nothing, but pipecat commits it: its context closes at
+    its End (since lp_endings' fix, promptly) and the TTS force-completes its text. So
+    it can be the newest message when the caller barges into the reply ahead of it --
+    and the corrector, finding no committed reply newer than the cut one, took the
+    newest message: the emoji's, overwritten with the cut reply's heard prefix, while
+    the cut reply kept its full text (LedgerPlayout.tla, HeardPrefixOnOwn,
+    lp_unspeakable_tail; reproduced by review on the real ledger and corrector). A
+    message with nothing synthesizable is never counted as a reply's."""
+    f0, end0 = response(ANSWER, 0.0)
+    f1, end1 = response("\U0001F44D", 0.1)
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.2, BELOW),
+        at(audio(2.0, "A"), 0.2),
+        (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+        drained(end0, 0.2),
+        *siblings(BotStartedSpeakingFrame, 0.25),
+    ] + f1 + [
+        (started("B"), 0.4, BELOW),
+        (TTSStoppedFrame(context_id="B"), 0.4, BELOW),    # closed at its End
+        drained(end1, 0.4),
+        (InterruptionFrame(), 1.25),                       # a second into ANSWER
+    ])
+    assert [u.text for u in bot(L)] == [ANSWER], [u.text[:20] for u in bot(L)]
+    left = said(L, ANSWER, "\U0001F44D")
+    assert len(left) == 2 and left[1] == "\U0001F44D", (
+        f"the emoji's message was taken for the cut reply's: {left}")
+    assert left[0] != ANSWER and ANSWER.startswith(left[0]), (
+        f"the cut reply must keep only what was heard: {left}")
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
