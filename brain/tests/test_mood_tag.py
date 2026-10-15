@@ -82,6 +82,15 @@ def test_a_leading_emoji_is_a_tag_too():
     assert text == "Nice 😊 work." and moods == []
 
 
+def test_an_emoji_tags_modifiers_and_extras_are_not_spoken():
+    assert run(["😊", "\ufe0f", " Glad to help you today."])[0].strip() == "Glad to help you today."
+    assert run(["😊\U0001F3FD Glad to help."]) == ("Glad to help.", ["happy"])
+    assert run(["😊😊 Hi there my friend."]) == ("Hi there my friend.", ["happy"])
+    assert run(["😊 [mood: sad] Hi there my friend."]) == ("Hi there my friend.", ["happy"])
+    text, moods = run(["😮\u200d💨 Phew, that was close."])   # a sequence: not ours, left whole
+    assert text == "😮\u200d💨 Phew, that was close." and moods == []
+
+
 def test_every_emoji_names_a_mood_the_avatar_knows():
     assert set(mood_tag.EMOJI.values()) == set(mood_tag.MOODS)
     assert all(m in mood_tag.MOODS for m in mood_tag.EMOJI.values())

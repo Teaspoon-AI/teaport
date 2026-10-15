@@ -60,9 +60,13 @@ PARAGRAPH = (
     "The emojis: " + ", ".join(f"{e} {m}" for e, m in EMOJI.items())
     + ". Use 😟 when someone shares bad news or you sympathise. The emoji is never "
     "spoken and is not part of your words; write nothing else around it, and only one. "
-    "A reply with no clear feeling gets no emoji. "
-    "(A tag like [mood: sad] works too, but prefer the emoji.)"
+    "A reply with no clear feeling gets no emoji."
 )
+
+# The invisible marks that can follow an emoji: a variation selector, a skin tone. (A
+# joiner makes it another emoji, a sequence: not one of ours.)
+_MODS = "\ufe0f\U0001F3FB-\U0001F3FF"
+_LEAD_MODS = re.compile("^[" + _MODS + "]+")
 
 _TAG = re.compile(r"\s*\[\s*mood\s*:\s*([A-Za-z ]{1,24}?)\s*\]\s*", re.IGNORECASE)
 _OPENER = "[mood"
@@ -76,8 +80,18 @@ def parse_leading_tag(text: str):
     if not head:
         return ("more",)
     if head[0] in EMOJI:         # an emoji tag: the mood, and the words after it
-        rest = head[1:]
-        return ("tag", EMOJI[head[0]], (rest[1:] if rest.startswith("\ufe0f") else rest).lstrip())
+        rest = _LEAD_MODS.sub("", head[1:])
+        if rest.startswith("\u200d"):
+            return ("plain",)    # a sequence (😮‍💨): another emoji, not this one
+        name = EMOJI[head[0]]
+        while True:              # a second tag, of either kind, is dropped: the first wins
+            rest = rest.lstrip()
+            if rest[:1] in EMOJI and rest:
+                rest = _LEAD_MODS.sub("", rest[1:])
+            elif (m := _TAG.match(rest)):
+                rest = rest[m.end():]
+            else:
+                return ("tag", name, rest)
     # ("[ mood: angry ]" is read as a tag too: a model spaces its brackets now and then)
     opener = "[" + head[1:].lstrip() if head.startswith("[") else head
     cut = opener[:len(_OPENER)].lower()
@@ -106,6 +120,9 @@ class MoodTag(FrameProcessor):
         # A tag was read and its mood waits for the reply's first words: the face matches
         # a mood to the reply it hears by them. (mood, the text that followed the tag)
         self._mood = None
+        # An emoji tag was just taken: a modifier that arrives as a delta of its own is
+        # not speech either.
+        self._fresh = False
 
     async def _send_mood(self, direction):
         """The tagged mood, with the first words of the reply it is for."""
@@ -140,6 +157,7 @@ class MoodTag(FrameProcessor):
                 return
             _, name, rest = verdict
             self._held, self._deciding = [], False
+            self._fresh = True
             if name:
                 self._mood = (name, rest)
             else:
@@ -153,6 +171,11 @@ class MoodTag(FrameProcessor):
                 self._bare = True
             return
         elif isinstance(frame, LLMTextFrame) and frame.text.strip():
+            if self._fresh:
+                frame.text = _LEAD_MODS.sub("", frame.text)
+                if not frame.text.strip():
+                    return          # (only a modifier)
+                self._fresh = False
             self._bare = False
             if self._mood:
                 self._mood = (self._mood[0], self._mood[1] + frame.text)
