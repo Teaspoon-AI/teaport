@@ -350,8 +350,11 @@ GrantPublish(s) ==
        ELSE /\ bpc' = "ring"  /\ ansSent' = ansSent \cup {s}
 
 \* Shipped: the bring-up first waits out the teardown TASKS still in flight (the
-\* `teardowns` set, sip_server.py:773), so the last call's claim is gone before this
-\* one asks. In the task, not the reader: the reader reads on meanwhile.
+\* `teardowns` set, sip_server.py:789), so the last call's claim is gone before this
+\* one asks. In the task, not the reader: the reader reads on meanwhile. Only these:
+\* a declined call's busy line (answer_busy, `busy_lines`) holds no claim -- the
+\* arbiter refused it -- so it is nothing SequentialClaims needs waited for, and the
+\* code does not (it once sat in `teardowns`, and the next greeting waited it out).
 DrainWait == ClaimFix /\ \E t \in td : t[2] = "task"
 
 \* The task's run up to its ask: presence.start() (the call's claim), then

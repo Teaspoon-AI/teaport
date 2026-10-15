@@ -507,6 +507,47 @@ def _replaced(found):
     return [h.label for h in found if h is not None and h.kind == arb.CALL]
 
 
+class _SettleGate:
+    """Holds cancel_active_call's settle -- the 0.3 s sleep before its claim is let go --
+    until the test releases it, so the next call lands inside it every run instead of
+    racing a timer (`entered` is set when a teardown reaches it). `parked` is set when a
+    bring-up waits out the teardown tasks in flight (_bring_up's asyncio.wait).
+
+    Both through sip_server's own `asyncio` name, told apart by the calling function:
+    nothing in sip_server is shaped for the test, so the gate holds the code from before
+    the claim fix the same way, which is how these tests were shown to fail on it."""
+
+    def __init__(self):
+        from teaport_brain import sip_server
+        self.sip, self.saved = sip_server, sip_server.asyncio
+        self.entered, self.released, self.parked = (asyncio.Event(), asyncio.Event(),
+                                                    asyncio.Event())
+        gate = self
+
+        class _Asyncio:
+            def __getattr__(self, name):
+                return getattr(asyncio, name)
+
+            def sleep(self, delay, *a):
+                if sys._getframe(1).f_code.co_name == "cancel_active_call":
+                    return gate._settle()
+                return asyncio.sleep(delay, *a)
+
+            def wait(self, fs, *a, **kw):
+                if sys._getframe(1).f_code.co_name == "_bring_up":
+                    gate.parked.set()
+                return asyncio.wait(fs, *a, **kw)
+        sip_server.asyncio = _Asyncio()
+
+    async def _settle(self):
+        self.entered.set()
+        await self.released.wait()
+
+    def restore(self):
+        self.released.set()
+        self.sip.asyncio = self.saved
+
+
 async def test_a_call_that_rings_in_as_the_last_one_is_torn_down_keeps_its_claim():
     """SipCall.tla, sip_heldClaim_unclaimed (before the fix): B's pipeline ends on its
     own, and its teardown TASK waits out the runner and the 0.3 s settle; A rings in
@@ -518,13 +559,18 @@ async def test_a_call_that_rings_in_as_the_last_one_is_torn_down_keeps_its_claim
     found = _found_by_calls()
     rig = _SipRig()
     lc = rig.lc
+    gate = _SettleGate()
     try:
         await rig.h.start()
         await rig.h.call_state("B", "confirmed")
         assert await lc.wait_until(lambda: "B" in lc._FakeSession.greeted, 5)
         await lc._FakeSession.by_id["B"].task.finish()           # B's pipeline dies
-        assert await lc.wait_until(lambda: lc.torn_down("B"))    # its teardown task runs
-        await rig.h.call_state("A", "confirmed")                 # inside its settle
+        await asyncio.wait_for(gate.entered.wait(), 5)           # its teardown task settles
+        await rig.h.call_state("A", "confirmed")                 # A rings in meanwhile
+        # As far as A gets while B's teardown is held: waiting it out (the fix), or
+        # asking the arbiter (before it). Only then does the settle end.
+        assert await lc.wait_until(lambda: gate.parked.is_set() or len(found) > 1, 5)
+        gate.released.set()
         assert await lc.wait_until(lambda: "A" in lc._FakeSession.greeted, 5)
         assert await lc.wait_until(lambda: len(rig.h.reclaims) == 1)   # B's teardown is over
         holder = arb.ARBITER.holder
@@ -533,6 +579,7 @@ async def test_a_call_that_rings_in_as_the_last_one_is_torn_down_keeps_its_claim
             "of A's claim")
         assert not _replaced(found), f"A asked while {_replaced(found)} still held the box"
     finally:
+        gate.restore()
         await rig.h.stop()
         _fresh()
 
@@ -562,23 +609,84 @@ async def test_a_call_abandoned_in_its_own_teardown_lets_go_before_the_next_asks
     found = _found_by_calls()
     rig = _SipRig()
     lc = rig.lc
+    gate = _SettleGate()
     try:
         await rig.h.start()
         lc._FakeSession.cannot_hear = {"B"}
         await rig.h.call_state("B", "confirmed")
-        assert await lc.wait_until(
-            lambda: "B" in lc._FakeSession.by_id and lc.torn_down("B"), 5)
-        await asyncio.sleep(0.05)                                # into the 0.3 s settle
-        await rig.h.call_state("A", "confirmed")
+        await asyncio.wait_for(gate.entered.wait(), 5)           # B's own teardown settles
+        await rig.h.call_state("A", "confirmed")                 # and is abandoned there
         assert await lc.wait_until(lambda: "A" in lc._FakeSession.greeted, 5)
-        await asyncio.sleep(0.4)                                 # anything left settles
         assert not _replaced(found), f"A asked while {_replaced(found)} still held the box"
+        assert await lc.wait_until(lambda: len(holds) == 2 and resumes == [1], 5), (
+            holds, resumes)
         holder = arb.ARBITER.holder
         assert holder is not None and holder.label == "phone call A", holder
         assert arb.ARBITER.held_claim is talk, (
             "the Talk session was resumed for B's end and is live beside call A")
-        assert len(holds) == 2 and resumes == [1], (holds, resumes)
     finally:
+        gate.restore()
+        await rig.h.stop()
+        _fresh()
+
+
+async def test_a_busy_line_does_not_keep_the_next_caller_from_their_greeting():
+    """D rings during a Talk conversation that says not to pick up: left ringing. The
+    gateway answers it anyway (auto_answer=true), so D hears the busy line -- and hangs
+    up partway, and the conversation ends, and A rings in. The busy line holds no claim
+    (the arbiter refused D), so A's bring-up has nothing to wait for (SipCall.tla's
+    DrainWait is the teardown tasks only); it used to sit in the same set as the
+    teardowns and A's greeting waited out the whole of it. And D's hangup stops it,
+    rather than its audio going on under A's call."""
+    from teaport_brain import sip_server
+    _fresh()
+
+    async def ask(_call):
+        return False                                             # "don't pick up"
+
+    async def nothing():
+        pass
+    talk = arb.Claim(arb.TALK, client="t", label="talk", ask=ask, hold=nothing,
+                     resume=nothing)
+    assert await arb.ARBITER.acquire(talk) is None
+    busy, refusals = {"playing": [], "stopped": []}, []
+
+    async def answer_busy(_connection, _holder, call_id):
+        busy["playing"].append(call_id)
+        try:
+            await asyncio.Event().wait()                         # a line still playing
+        except asyncio.CancelledError:
+            busy["stopped"].append(call_id)
+            raise
+    start = sip_server.CallClaim.start
+
+    async def starting(self, call_id, **kw):
+        refusal = await start(self, call_id, **kw)
+        refusals.append((call_id, refusal))
+        return refusal
+    saved = (sip_server.answer_busy, sip_server.CallClaim.start)
+    sip_server.answer_busy, sip_server.CallClaim.start = answer_busy, starting
+    rig = _SipRig()
+    lc = rig.lc
+    try:
+        await rig.h.start()
+        await rig.h.send_raw({"type": "call.incoming", "call_id": "D",
+                              "from": "sip:+13462348500@example.invalid"})
+        assert await lc.wait_until(lambda: refusals, 5)
+        assert refusals[0][0] == "D" and refusals[0][1].declined, refusals
+        rig.h._pending.remove("D")                               # never built: refused
+        await rig.h.call_state("D", "confirmed")                 # answered anyway
+        assert await lc.wait_until(lambda: busy["playing"] == ["D"], 5)
+        arb.ARBITER.release(talk)                                # the conversation ends
+        await rig.h.call_state("D", "disconnected")              # D hangs up mid-line
+        await rig.h.call_state("A", "confirmed")
+        assert await lc.wait_until(lambda: "A" in lc._FakeSession.greeted, 5), (
+            "call A's greeting waited on call D's busy line")
+        assert busy["stopped"] == ["D"], "D's busy line played on after D hung up"
+        holder = arb.ARBITER.holder
+        assert holder is not None and holder.label == "phone call A", holder
+    finally:
+        sip_server.answer_busy, sip_server.CallClaim.start = saved
         await rig.h.stop()
         _fresh()
 

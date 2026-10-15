@@ -562,7 +562,13 @@ as `heldClaim` (`sip_heldClaim_unclaimed`, `sip_heldClaim_replaced`).
   pipeline that ended on its own has let its claim go before the next call asks. The
   audit put this wait in `start_call`; it is in the bring-up task instead, so the reader
   is not blocked by it (`NoBlockedWithPendingControl` gains no new case) and a
-  `disconnected` for the new call cancels the wait like any bring-up.
+  `disconnected` for the new call cancels the wait like any bring-up. It waits for the
+  teardown tasks only — what `DrainWait` waits for. A declined call's busy line
+  (`answer_busy`, for a call the gateway answered anyway) holds no claim and is kept in
+  `busy_lines`, apart: it first sat in `teardowns`, and the next caller's greeting waited
+  out the whole busy line (~3 s, review of #175). Its caller's `disconnected` now stops it
+  (`stop_busy_line`), as `answer_busy`'s docstring always said, rather than its audio
+  going on under the next call.
 
 `sip_ownClaim_replaced` keeps the identity check alone as a rejected design: it fixes
 `NoUnclaimedCall` but a teardown cancelled in its settle never lets go and a teardown
@@ -575,7 +581,10 @@ The tests are `test_session_arbiter.py`'s
 task; fails without the wait) and
 `test_a_call_abandoned_in_its_own_teardown_lets_go_before_the_next_asks` (a Talk session
 on hold for the abandoned call; fails without the `finally`), through the real
-`sip_server` connection loop, `CallClaim` and `SessionArbiter`.
+`sip_server` connection loop, `CallClaim` and `SessionArbiter`. Both hold the teardown's
+0.3 s settle on an event (`_SettleGate`) until the next call has got as far as it can, so
+the interleaving is forced, not raced: each fails on the code before the fix on every run.
+`test_a_busy_line_does_not_keep_the_next_caller_from_their_greeting` is the busy line's.
 
 ### What was changed (2026-08)
 
@@ -600,8 +609,9 @@ directly against a socketpair and fixed with a send lock; the reproduction is
   (busy, declined — the call left ringing) and the conversation put on hold are
   `SessionArbiter.tla`'s.
 - Not modelled: the reconnect replay (`replay: true`), the connection's EOF `finally`,
-  the declined call answered anyway (`answer_busy` — a task in `teardowns`, so the next
-  bring-up waits out its busy line too), DTMF and audio routing.
+  the declined call answered anyway (`answer_busy` — a task of its own that holds no
+  claim, which no bring-up waits for; its caller's `disconnected` stops it), DTMF and
+  audio routing.
 - The over-approximation: each handler's steps (cancel the bring-up, start the
   teardown, the rest) are separate steps even where the code does not yield between
   them. Every counterexample above was checked against the code by hand.

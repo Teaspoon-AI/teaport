@@ -524,10 +524,14 @@ async def run_connection(sock, on_ready=None):
     # is about the pipeline we are actually running (see on_call_state).
     active = {"call": None}
     # Teardowns started from inside the pipeline's own finish (see _bring_up's
-    # on_pipeline_finished), and a declined call's busy line. Held so the event loop
-    # keeps a strong reference until they run — a bare create_task() result may be
-    # collected mid-flight — and so the next call's bring-up can wait them out.
+    # on_pipeline_finished). Held so the event loop keeps a strong reference until they
+    # run — a bare create_task() result may be collected mid-flight — and so the next
+    # call's bring-up can wait them out: each ends by letting go of its call's claim.
     teardowns: set = set()
+    # A declined call the gateway answered anyway hears the busy line from a task, by
+    # call id (the same strong reference). It holds no claim -- the arbiter refused it --
+    # so no bring-up waits for it; its caller hanging up stops it (stop_busy_line).
+    busy_lines: dict = {}
     # The in-flight bring-up, if any: {"task", "call_id"}. Building the pipeline and
     # greeting is SLOW (model construction plus greet()'s STT poll), so it runs as a
     # task rather than inline in the receive loop — see on_call_state.
@@ -681,6 +685,16 @@ async def run_connection(sock, on_ready=None):
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"bring-up task ended with: {e!r}")
 
+    async def stop_busy_line(call_id=None):
+        """Stop the busy line playing to call `call_id` (None: to any): its caller hung
+        up, or the line is gone. Left to play, it went on sending the busy line's audio
+        on the one connection after the call had ended -- under the next call's."""
+        for cid in [call_id] if call_id is not None else list(busy_lines):
+            task = busy_lines.pop(cid, None)
+            if task is not None and not task.done():
+                task.cancel()
+                await asyncio.gather(task, return_exceptions=True)
+
     async def bring_up_call(call_id, resumed: bool = False):
         """Build the per-call pipeline and greet. Runs as a TASK, never inline in the
         receive loop — see on_call_state. `resumed`: the call was already up when this
@@ -769,7 +783,9 @@ async def run_connection(sock, on_ready=None):
         # concurrent with the reader: the last call may still be in its runner wait and
         # settle, its claim still holding the box. Wait it out, so this call asks an
         # arbiter the last one has left -- here, not in start_call, so the reader keeps
-        # reading meanwhile (a `disconnected` for this call cancels the wait).
+        # reading meanwhile (a `disconnected` for this call cancels the wait). Only the
+        # teardowns: a busy line holds no claim, and waiting it out kept this caller
+        # from their greeting for the whole of it.
         if teardowns:
             await asyncio.wait(set(teardowns))
         # Before anything takes the engine: the session arbiter makes way for the call
@@ -924,9 +940,9 @@ async def run_connection(sock, on_ready=None):
                 ring.answered.set()
                 if ring.declined:
                     # Left ringing, and answered anyway: it cannot ring on any more.
-                    t = asyncio.create_task(answer_busy(connection, arb.ROOM, call_id))
-                    teardowns.add(t)
-                    t.add_done_callback(teardowns.discard)
+                    t = busy_lines[call_id] = asyncio.create_task(
+                        answer_busy(connection, arb.ROOM, call_id))
+                    t.add_done_callback(lambda _t: busy_lines.pop(call_id, None))
                 return
             # A call with no ring before it: answered by the gateway (a replayed call,
             # or one whose call.incoming this brain missed). Built and greeted now.
@@ -942,6 +958,7 @@ async def run_connection(sock, on_ready=None):
             # has already been superseded, in which case it must touch nothing.
             await cancel_setup("call disconnected during bring-up", call_id=call_id)
             await cancel_active_call("call disconnected", call_id=call_id)
+            await stop_busy_line(call_id)
             if active["call"] is None and setup["task"] is None:
                 presence.end(call_id)  # a call that never got its pipeline
             CALL_FACE.end(call_id)  # hung up while ringing, or refused and gone
@@ -996,6 +1013,7 @@ async def run_connection(sock, on_ready=None):
         # publish a new active call after we tore the old one down.
         await cancel_setup("connection closed")
         await cancel_active_call("connection closed")
+        await stop_busy_line()
         presence.end()
         CALL_FACE.end()  # the line itself is gone (or this brain is stopping)
         connection.close()
