@@ -66,6 +66,11 @@ def test_a_tag_split_across_deltas():
     assert run(["[", "mo", "od: ha", "ppy", "] Gla", "d to."]) == ("Glad to.", ["happy"])
 
 
+def test_a_spaced_bracket_is_a_tag_and_is_not_spoken():
+    assert run(["[ mood: angry ] It irritates me."]) == ("It irritates me.", ["angry"])
+    assert run(["[ ", "mood", ": angry ", "] It irritates", " me."]) == ("It irritates me.", ["angry"])
+
+
 def test_case_spaces_and_a_tag_with_nothing_after_it():
     # (a reply of only a tag is apologised for, not left silent: see below; with no
     # words of its own there is nothing to match its mood to, so none is sent)
@@ -134,6 +139,10 @@ def test_the_parser():
     assert parse_leading_tag("[mo") == ("more",)
     assert parse_leading_tag("hi")[0] == "plain"
     assert parse_leading_tag("[mood: sad] x") == ("tag", "sad", "x")
+    # a model spaces its brackets now and then ("[ mood: angry ]" was spoken aloud live)
+    assert parse_leading_tag("[ mood: angry ] It irritates me") == ("tag", "angry", "It irritates me")
+    assert parse_leading_tag("[ ") == ("more",) and parse_leading_tag("[ mo") == ("more",)
+    assert parse_leading_tag("[ note: hi]")[0] == "plain"
 
 
 def test_the_prompt_names_every_mood():

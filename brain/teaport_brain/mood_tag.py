@@ -50,10 +50,11 @@ PARAGRAPH = (
     "begin it with a tag naming that mood, like [mood: happy]: one of "
     + ", ".join(MOODS) + ". It is never spoken. Most replies have no clear feeling, "
     "and then you write no tag at all; use one only when it would be honest, and "
-    "never more than one, always at the very start."
+    "never more than one, always at the very start. When asked to show or act out a "
+    "feeling, tag it."
 )
 
-_TAG = re.compile(r"\s*\[mood\s*:\s*([A-Za-z ]{1,24}?)\s*\]\s*", re.IGNORECASE)
+_TAG = re.compile(r"\s*\[\s*mood\s*:\s*([A-Za-z ]{1,24}?)\s*\]\s*", re.IGNORECASE)
 _OPENER = "[mood"
 _MAX_TAG_CHARS = 40       # an opener still unclosed this far in is not a tag
 
@@ -64,14 +65,16 @@ def parse_leading_tag(text: str):
     head = text.lstrip()
     if not head:
         return ("more",)
-    cut = head[:len(_OPENER)].lower()
+    # ("[ mood: angry ]" is read as a tag too: a model spaces its brackets now and then)
+    opener = "[" + head[1:].lstrip() if head.startswith("[") else head
+    cut = opener[:len(_OPENER)].lower()
     if not _OPENER.startswith(cut):
         return ("plain",)
     m = _TAG.match(text)
     if m:
         name = m.group(1).strip().lower()
         return ("tag", name if name in MOODS else None, text[m.end():])
-    if len(head) < len(_OPENER) or (len(head) <= _MAX_TAG_CHARS and "]" not in head):
+    if len(opener) < len(_OPENER) or (len(head) <= _MAX_TAG_CHARS and "]" not in head):
         return ("more",)
     return ("plain",)
 
