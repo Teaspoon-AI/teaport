@@ -19,6 +19,9 @@
 (*     has nothing synthesizable ("Great!!" ends in a lone "!") is left to  *)
 (*     the stop-frame timeout, and so is an unspeakable reply -- unless the *)
 (*     service says it yields synchronously (CloseAtEnd: engine_tts).       *)
+(*     A reply the engine fails on every clause (Failed) has speech, opens  *)
+(*     a context, yields no audio -- and pipecat commits its text anyway:   *)
+(*     the TTS force-completes a context's text at its stop.                *)
 (*   - Every context that opened ends with a TTSStoppedFrame naming it      *)
 (*     (push_stop_frames=True since PR #13's merge): appended behind its    *)
 (*     last chunk, or pushed on the stop-frame timeout -- mid-reply too,    *)
@@ -66,8 +69,14 @@ EXTENDS Naturals, Sequences, FiniteSets
 CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           Fillers,       \* filler context ids -- narrator / tool-ack TTSSpeakFrames
           Unspeakable,   \* replies with text but nothing synthesizable (no audio, ever)
+          Failed,        \* replies with speech the engine fails on every clause (no audio,
+                         \*   ever: CUDA OOM, an engine restart); has_speech says yes
           TrailingMute,  \* replies with audio whose LAST piece run_tts gets alone has
                          \*   nothing synthesizable: "Great!!" -> "Great!", "!"
+          Corrector,     \* HeardContextCorrector's rule for a cut heard nothing:
+                         \*   "guarded" -- as shipped: reconciled only when its message can
+                         \*     be the newest of its window (see Acts);
+                         \*   "position" -- before this fix: always, on the newest message
           CloseAtEnd,    \* BOOLEAN: the TTS closes a context at its End whatever its last
                          \*   run_tts yielded (engine_tts.tts_process_generator, shipped);
                          \*   FALSE is pipecat's default: only if it yielded audio
@@ -91,11 +100,13 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           MaxFillerCtxs  \* the 512 in the TTSStarted branch, shrunk to make overflow reachable
 
 ASSUME SpeakCheck \in {"chart", "queue", "none"}
-ASSUME TrailingMute \cap Unspeakable = {}
+ASSUME TrailingMute \cap Unspeakable = {} /\ Failed \cap (Unspeakable \cup TrailingMute) = {}
+ASSUME Corrector \in {"guarded", "position"}
 
 NONE == "none"
 OWN  == "own"            \* audio_start: the turn's own chunk's place in the playout layout
 Ctxs == Replies \cup Fillers
+Silenced == Unspeakable \cup Failed     \* a context opens, no audio ever comes
 Range(s) == {s[i] : i \in DOMAIN s}
 Remove(s, x) == SelectSeq(s, LAMBDA y: y # x)
 Drop(s, k) == SubSeq(s, 1, k - 1) \o SubSeq(s, k + 1, Len(s))
@@ -152,10 +163,16 @@ AllPlayed(g) == chunks[g] > 0 /\ playedN[g] = chunks[g]
 GenComplete(g, stopping) ==
     /\ synth[g] = "stopped" \/ g = stopping
     /\ ~(Resume /\ timedOut[g] /\ llm[g] = "streaming")
-Chart(t, intr, stopping) ==
+\* `said`: pipecat committed a message for it -- words of it played, or its context
+\* ended and the TTS force-completed its text (tts_service._apply_force_complete
+\* pushes the remaining text as a word frame, which the assistant aggregator
+\* commits: a failed reply's text too, and an emoji). Only a reply a barge-in cut
+\* before its context ended, with nothing played, committed none.
+Chart(t, intr, stopping, said) ==
     [gen |-> t.gen, ctx |-> t.ctx, audioStart |-> t.audioStart, intr |-> intr,
      anyPlayed |-> AnyPlayed(t.gen), allPlayed |-> AllPlayed(t.gen),
      complete |-> GenComplete(t.gen, stopping),
+     said |-> said,
      epoch |-> interrupts]                      \* the user turns (barge-ins) before it
 \* _finish charts nothing for a turn that holds no text (an anonymous turn) -- nor,
 \* as shipped, for one with no audio and nothing synthesizable in its text
@@ -165,12 +182,13 @@ Silent(t, cut) == /\ SpeakCheck = "chart" /\ t.gen \in Unspeakable /\ ~t.qa
                   /\ cut => t.gen \in ended
 Named(ts, cut) == SelectSeq(ts, LAMBDA t: t.gen # NONE /\ ~Silent(t, cut))
 ChartsAs(ts, intr, stopping) ==
-    [i \in DOMAIN Named(ts, FALSE) |-> Chart(Named(ts, FALSE)[i], intr, stopping)]
+    [i \in DOMAIN Named(ts, FALSE) |-> Chart(Named(ts, FALSE)[i], intr, stopping, TRUE)]
 \* At a cut, a turn whose synthesis is over and whose every chunk had played by the
 \* cut (the layout's portion up to now, _interrupt) is charted complete, not cut.
 CutComplete(t) == t.synthDone /\ t.qa /\ playedN[t.ctx] = chunks[t.ctx]
 ChartsCut(ts) == [i \in DOMAIN Named(ts, TRUE) |->
-                    Chart(Named(ts, TRUE)[i], ~CutComplete(Named(ts, TRUE)[i]), NONE)]
+                    LET t == Named(ts, TRUE)[i]
+                    IN Chart(t, ~CutComplete(t), NONE, AnyPlayed(t.gen) \/ t.synthDone)]
 CtxsOf(ts) == {t.ctx : t \in Range(ts)}
 StopOf(c) == IF c \in Replies THEN c ELSE NONE
 
@@ -404,7 +422,7 @@ TtsStart(c) ==
     /\ UNCHANGED <<llm, order, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
 
 TtsAudio(c) ==
-    /\ synth[c] \in {"started", "audio"} /\ chunks[c] < MaxChunks /\ c \notin Unspeakable
+    /\ synth[c] \in {"started", "audio"} /\ chunks[c] < MaxChunks /\ c \notin Silenced
     /\ synth' = [synth EXCEPT ![c] = "audio"]
     /\ chunks' = [chunks EXCEPT ![c] = @ + 1]
     /\ pq' = Append(pq, [k |-> "audio", c |-> c])
@@ -412,7 +430,7 @@ TtsAudio(c) ==
     /\ UNCHANGED <<llm, order, timedOut, drainPending, playedN, window, interrupts, swept>>
 
 \* The context ends: its TTSStoppedFrame, queued at the transport behind its audio.
-\* One with audio, after its last chunk; an Unspeakable one with none. A reply's
+\* One with audio, after its last chunk; a Silenced one with none. A reply's
 \* whose End reached the TTS then re-pushes that End (TtsDrain, the ledger's drain
 \* signal); one whose LLM still streams hit the stop-frame timeout instead and gets
 \* no re-push of its own.
@@ -423,10 +441,10 @@ TtsAudio(c) ==
 \* (tts_process_generator's flag) -- else nothing ends it but the stop-frame
 \* timeout, 15 s on, with the TTS's queue held behind it. MutedAtEnd: the
 \* replies whose last run_tts yields none.
-MutedAtEnd == Unspeakable \cup TrailingMute
+MutedAtEnd == Silenced \cup TrailingMute
 TtsStop(c) ==
     /\ \/ synth[c] = "audio"
-       \/ synth[c] = "started" /\ c \in Unspeakable
+       \/ synth[c] = "started" /\ c \in Silenced
     /\ c \in Replies => llm[c] \in {"streaming", "done"}
     /\ synth' = [synth EXCEPT ![c] = "stopped"]
     /\ pq' = Append(pq, [k |-> "stop", c |-> c])
@@ -451,7 +469,7 @@ TtsDrain(r) ==
 \* timeout, and pipecat re-creates the context under the SAME id (_push_tts_frames:
 \* a second TTSStartedFrame naming the old context).
 TtsRestart(c) ==
-    /\ Resume /\ c \in Replies /\ c \notin Unspeakable
+    /\ Resume /\ c \in Replies /\ c \notin Silenced
     /\ synth[c] = "stopped" /\ timedOut[c] /\ llm[c] = "streaming"
     /\ ~Synthesizing /\ ~Draining
     /\ synth' = [synth EXCEPT ![c] = "started"]
@@ -543,15 +561,54 @@ ChartedAtMostOnce ==
 
 \* HeardContextCorrector finds a cut reply's message by POSITION: the newest
 \* assistant message since its last reconcile, at a user turn. A reply charted
-\* heard-nothing committed no message (no word frame reached the aggregator);
-\* charted ahead of a reply that played, with no user turn between them (the
-\* model's user turns are its barge-ins), its cut lands on the played reply's
-\* message, and the corrector deletes an answer the caller heard.
+\* heard-nothing ahead of a reply that played, with no user turn between them (the
+\* model's user turns are its barge-ins), has its cut land on the played reply's
+\* message, and the positional corrector deletes an answer the caller heard. The
+\* premise the corrector had, as a property of the charts; NoPlayedReplyDeleted,
+\* below, is the requirement itself, with the corrector's rule.
 NoUnheardAheadOfPlayed ==
     \A i, j \in DOMAIN charted :
         (/\ i < j /\ charted[i].intr /\ charted[i].audioStart = NONE
          /\ charted[j].anyPlayed)
             => charted[i].epoch < charted[j].epoch
+
+\* ---- HeardContextCorrector, at a user turn now: every chart of the current window
+\* (epoch) is in its batch, and every message committed in it is in its context, in
+\* the order the replies reached the TTS (Pos: each commits at its End's re-push, or
+\* at the cut). That is the ledger's response seq, which each utterance carries; the
+\* order of the CHARTS can differ (a failed reply is charted at its stop, while the
+\* reply ahead of it still plays).
+SameWindow(i, j) == charted[i].epoch = charted[j].epoch
+Newer(j, i) == Pos(charted[j].gen) > Pos(charted[i].gen)
+\* The message a cut i is anchored on: the newest committed one of its window (0: none).
+\* (Uncharted commits -- an unspeakable reply's force-completed text -- are left out;
+\* newer than a played reply's, they could only shield it.)
+Anchor(i) ==
+    LET js == {j \in DOMAIN charted : SameWindow(i, j) /\ charted[j].said}
+    IN IF js = {} THEN 0 ELSE CHOOSE j \in js : \A k \in js : ~Newer(k, j)
+\* Which cuts the corrector reconciles. "guarded" (heard_context._anchor_elsewhere): a
+\* cut heard nothing is let be when its message cannot be the newest -- a reply
+\* newer than it in its window played, or one older did and it committed nothing.
+PlayedIn(i, newer) == \E j \in DOMAIN charted :
+    /\ j # i /\ SameWindow(i, j) /\ charted[j].anyPlayed /\ Newer(j, i) = newer
+Acts(i) ==
+    /\ charted[i].intr
+    /\ \/ Corrector = "position"
+       \/ charted[i].anyPlayed             \* heard something: its own words are newest
+       \/ /\ ~PlayedIn(i, TRUE)
+          /\ charted[i].said \/ ~PlayedIn(i, FALSE)
+
+\* The corrector never rewrites or deletes the message of ANOTHER reply that played.
+NoPlayedReplyDeleted ==
+    \A i \in DOMAIN charted :
+        (Acts(i) /\ Anchor(i) \notin {0, i}) => ~charted[Anchor(i)].anyPlayed
+
+\* ...and the guard costs nothing it need not: a cut heard nothing whose own committed
+\* message is the newest of its window is still reconciled (removed: none of it was
+\* heard).
+UnheardOwnIsCorrected ==
+    \A i \in DOMAIN charted :
+        (charted[i].intr /\ ~charted[i].anyPlayed /\ Anchor(i) = i) => Acts(i)
 
 \* A turn charted under a reply's context carries THAT reply's text.
 ChartedTextMatchesContext ==

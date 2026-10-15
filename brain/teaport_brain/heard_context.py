@@ -115,11 +115,16 @@ class HeardContextCorrector(FrameProcessor):
 
     def _reconcile(self, commit: bool = True):
         start = self._mark
-        for u in self._ledger.events[self._done:]:
+        batch = [u for u in self._ledger.events[self._done:] if u.speaker == "assistant"]
+        for u in batch:
             if not (u.interrupted and u.cut_short):
                 continue
             if self._mode == "note":
                 self._add_note(u)
+            elif self._anchor_elsewhere(u, batch):
+                logger.info(f"HeardCorrector[truncate]: unheard reply {u.text[:40]!r} "
+                            "is not the newest message (a reply heard after it is); "
+                            "left unchanged")
             else:
                 self._truncate(u, start)
         self._done = len(self._ledger.events)
@@ -181,6 +186,29 @@ class HeardContextCorrector(FrameProcessor):
         below = sum(1 for m in self._context.get_messages()[:self._mark] if id(m) in ids)
         drop_from_context(self._context, doomed)
         self._mark -= below
+
+    @staticmethod
+    def _anchor_elsewhere(u, batch) -> bool:
+        """Would _truncate's anchor -- the newest assistant message of the window -- be
+        ANOTHER reply's that the caller heard? Then a cut heard nothing must be let be:
+        removing "its" message deletes an answer they heard.
+
+        Two ways there (brain/formal/LedgerPlayout.tla, NoPlayedReplyDeleted): a reply
+        newer than this one played (lp_failed_position: the engine failed on every clause
+        of one reply -- charted heard-0, its text committed all the same -- and the next
+        one played); or an older one played and this one committed nothing (lp_position:
+        a barge-in before any of it played, before its context ended). Newer is the order
+        the contexts opened (turn_seq), the order pipecat committed them in. Left alone,
+        a failed reply's unheard text stays in the context; that is the lesser loss.
+        A cut that heard something anchors on its own words, newest by playout order."""
+        if _clean_prefix(u.heard_text):
+            return False
+        seqs = [e.turn_seq for e in batch]
+        order = seqs if None not in seqs else list(range(len(batch)))
+        mine = next(order[i] for i, e in enumerate(batch) if e is u)
+        return any(order[i] > mine or not u.committed
+                   for i, e in enumerate(batch)
+                   if e is not u and e.heard_fraction > 0)
 
     def _truncate(self, u, start=0):
         """Reconcile the cut turn's spoken message to the heard prefix.

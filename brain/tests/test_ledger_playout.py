@@ -578,10 +578,9 @@ async def test_k_a_response_with_nothing_synthesizable_claims_its_own_context():
     is the real EngineTTSService's, probe 2026-10-14).
 
     Every response with text is expected now, and its context claims its own entry.
-    Nothing of it could be heard and pipecat commits nothing for it, so its turn closes
-    charting nothing -- a heard-0 chart there would hand the corrector a cut with no
-    message of its own, and it anchors by position: it would delete the reply that
-    played after it (lp_unspeakable_charted)."""
+    Nothing of it could be heard, so its turn closes charting nothing -- a heard-0 chart
+    there would hand the corrector a cut, and it anchors by position: it would delete the
+    reply that played after it (lp_unspeakable_charted)."""
     assert not has_speech("\U0001F44D") and not has_speech("...") and not has_speech("\u2026 \u2014")
     assert has_speech("Ok.") and has_speech("\u65e5\u672c\u8a9e\u3067\u3059") and has_speech("7")
     f0, end0 = response("Great!!", 0.0)
@@ -614,24 +613,111 @@ async def test_k_a_response_with_nothing_synthesizable_claims_its_own_context():
         utts[1].heard_fraction, utts[1].t_start)
     assert not L._turns and not L._queue, (L._turns, list(L._queue))
 
-    # The caller's next turn: the context as pipecat committed it (the emoji yielded no
-    # word frames, so nothing of it). The corrector must leave the answer in place.
-    class Ctx:
-        def __init__(self, m):
-            self.m = m
-
-        def get_messages(self, *a, **k):
-            return self.m
-
-        def set_messages(self, m):
-            self.m = list(m)
-
+    # The caller's next turn. (pipecat commits the emoji too -- the TTS force-completes
+    # its text at the stop -- but it is charted nothing, so no cut anchors anywhere.)
+    # The corrector must leave the answer in place.
     ctx = Ctx([{"role": "user", "content": "How are you?"},
                {"role": "assistant", "content": "Great!!"},
                {"role": "assistant", "content": R2},
                {"role": "user", "content": "And you?"}])
     HeardContextCorrector(L, ctx, mode="truncate")._reconcile()
     assert [m["content"] for m in ctx.m if m["role"] == "assistant"] == ["Great!!", R2], ctx.m
+
+
+class Ctx:
+    """The LLM context as HeardContextCorrector reads and writes it."""
+
+    def __init__(self, m):
+        self.m = m
+
+    def get_messages(self, *a, **k):
+        return self.m
+
+    def set_messages(self, m):
+        self.m = list(m)
+
+
+def said(L, *replies, user=("How are you?", "And you?")):
+    """Reconcile at the caller's next turn, the context holding `replies` as pipecat
+    committed them; what is left of them."""
+    ctx = Ctx([{"role": "user", "content": user[0]}]
+              + [{"role": "assistant", "content": r} for r in replies]
+              + [{"role": "user", "content": user[1]}])
+    HeardContextCorrector(L, ctx, mode="truncate")._reconcile()
+    return [m["content"] for m in ctx.m if m["role"] == "assistant"]
+
+
+async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
+    """A reply the engine fails on every clause opens a context, yields no audio, and is
+    charted heard 0 by design (case c) -- but pipecat commits its text all the same: the
+    TTS force-completes it at the stop. HeardContextCorrector anchors a cut by POSITION,
+    on the newest assistant message of the window, so with a reply that played after it
+    and no user turn between, the failed reply's cut deleted THAT one: the answer the
+    caller heard (LedgerPlayout.tla, lp_failed_position). A barge-in before a queued
+    reply's first audio does the same to the reply that played before it (lp_position:
+    nothing of the cut one was committed, so the newest message is the played one's).
+
+    The corrector now lets a cut that heard nothing be when its message cannot be the
+    newest -- a newer reply in its window was heard, or an older one was and it
+    committed nothing (Utterance.turn_seq, .committed; lp_failed). A failed reply that
+    IS the newest is still removed, whichever order the ledger charted them in."""
+    # 1. Failed, then a reply that plays: the played one stays.
+    f1, end1 = response(R1, 0.0)
+    f2, end2 = response(R2, 0.3)
+    L = await feed(ledger(), f1 + [
+        (started("A"), 0.2, BELOW),
+        (TTSStoppedFrame(context_id="A"), 0.25, BELOW),   # every clause failed
+        drained(end1, 0.25),
+    ] + f2 + [
+        (started("B"), 0.5, BELOW),
+        at(audio(1.0, "B"), 0.5),
+        (TTSStoppedFrame(context_id="B"), 0.5, BELOW),
+        drained(end2, 0.5),
+        *siblings(BotStartedSpeakingFrame, 0.55),
+        (copy(1.0), 1.55, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 1.55),
+    ])
+    assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(R1, False), (R2, True)]
+    assert said(L, R1, R2) == [R1, R2], "the reply the caller heard was deleted"
+
+    # 2. A reply that played, then a failed one charted FIRST (at its stop, while the
+    #    first still plays): the failed one is the newest message, and is removed.
+    f0, end0 = response(ANSWER, 0.0)
+    f1, end1 = response(R1, 0.1)
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.2, BELOW),
+        at(audio(2.0, "A"), 0.2),
+        (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+        drained(end0, 0.2),
+        *siblings(BotStartedSpeakingFrame, 0.25),
+    ] + f1 + [
+        (started("B"), 0.4, BELOW),
+        (TTSStoppedFrame(context_id="B"), 0.45, BELOW),   # every clause failed
+        drained(end1, 0.45),
+        (copy(2.0), 2.25, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.25),
+    ])
+    assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(R1, False), (ANSWER, True)]
+    assert said(L, ANSWER, R1) == [ANSWER], "the failed reply's unheard text was kept"
+
+    # 3. A reply that played, then a barge-in before the next one's first audio: the
+    #    cut one committed nothing, and the one the caller heard stays.
+    f0, end0 = response(ANSWER, 0.0)
+    f1, end1 = response(R2, 2.5)
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.2, BELOW),
+        at(audio(2.0, "A"), 0.2),
+        (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+        drained(end0, 0.2),
+        *siblings(BotStartedSpeakingFrame, 0.25),
+        (copy(2.0), 2.25, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.25),
+    ] + f1 + [
+        (started("B"), 2.7, BELOW),
+        (InterruptionFrame(), 2.8),
+    ])
+    assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(ANSWER, True), (R2, False)]
+    assert said(L, ANSWER) == [ANSWER], "the reply the caller heard was deleted"
 
 
 def main():
