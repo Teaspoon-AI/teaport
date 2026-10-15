@@ -453,6 +453,19 @@ class FaceTap:
             self._bed_since = now
         self._audio_t = now
 
+    def _mood_name(self, name: str) -> str:
+        """The face to send for a mood: "concerned" is new to the avatar, so an avatar that
+        does not list it (features "moods") is sent sad, the nearest it has."""
+        if name != "concerned":
+            return name
+        now = self._clock()
+        at = self._drawn_at.get(name)
+        if at is None or now - at >= PHONES_RECHECK_SECS:
+            self._drawn_at[name] = now
+            moods = self._features().get("moods")
+            self._drawn[name] = isinstance(moods, (list, tuple)) and name in moods
+        return name if self._drawn[name] else "sad"
+
     def takes(self, feature: str) -> bool:
         """The avatar says it takes `feature` (its key in the features file), read at
         most every PHONES_RECHECK_SECS: it may start, stop or be updated meanwhile."""
@@ -500,14 +513,14 @@ class FaceTap:
                 del self._moods[i]       # (the others wait for their own, or expire)
                 self._mood_now = [mood, utterance, now]
                 self._matching = None
-                self._emit({"mood": mood})
+                self._emit({"mood": self._mood_name(mood)})
                 return
         if len(words) >= LEAD_WORDS:
             self._matching = None       # its first words are all in: it had no tag
         if (self._mood_now and utterance == self._mood_now[1]
                 and now - self._mood_now[2] >= MOOD_RESEND_SECS):
             self._mood_now[2] = now
-            self._emit({"mood": self._mood_now[0]})
+            self._emit({"mood": self._mood_name(self._mood_now[0])})
 
     def _score(self, text: str) -> None:
         """The mood the words of a reply show, to the avatar: as {"mood"}, or as {"text"}
@@ -515,7 +528,7 @@ class FaceTap:
         if self._mood_source == "off":
             return
         if self.takes("moods"):
-            self._emit({"mood": self._vader.mood(text)})
+            self._emit({"mood": self._mood_name(self._vader.mood(text))})
         else:
             self._emit({"text": text})
 

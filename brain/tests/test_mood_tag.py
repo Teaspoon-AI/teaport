@@ -148,5 +148,12 @@ def test_a_reply_of_only_a_tag_is_not_left_silent():
     assert run(["[mood: sad] ok"]) == ("ok", ["sad"])
 
 
+def test_sympathy_in_an_untagged_reply_shows_concerned_not_angry():
+    from teaport_brain.face_mood import LazyVader, score_to_mood
+    assert score_to_mood(-0.8) == "concerned" and score_to_mood(0.8) == "happy"
+    text = "I'm really sorry for your loss. If you need to talk or just a moment of quiet, I'm here."
+    assert LazyVader().mood(text) == "concerned"
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))
