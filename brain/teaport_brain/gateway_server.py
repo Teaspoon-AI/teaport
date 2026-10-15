@@ -543,8 +543,8 @@ class _ReadyServer(uvicorn.Server):
         await super().startup(sockets=sockets)
         if self.started:
             # Before any session: load what the first session and reply would otherwise
-            # import on the event loop, then freeze what is alive now (it lives as long as
-            # the process).
+            # load at first use, then freeze what is alive now (it lives as long as the
+            # process).
             warm_first_use_imports()
             freeze_startup_objects()
             # The phone line's front-end, in this same event loop (sip_server.serve): it

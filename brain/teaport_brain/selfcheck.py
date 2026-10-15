@@ -85,7 +85,7 @@ def _check_smart_turn():
 
 def main() -> int:
     checks = [
-        ("import both front-ends", _check_imports),
+        ("import both front-ends + the first-use warm-up", _check_imports),
         ("shared ONNX sessions (onnx_sessions)", _install_onnx_sessions),
         ("Silero VAD (onnxruntime) + loudness", _check_vad),
         ("Smart Turn v3 (onnxruntime)", _check_smart_turn),

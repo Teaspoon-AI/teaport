@@ -489,7 +489,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
 
 def warm_first_use_imports() -> None:
     """Load now, at startup, what the first session and the first reply would otherwise
-    import on the event loop.
+    load at their first use.
 
     - openai builds `client.chat` lazily: a cached_property that runs
       `from .resources.chat import AsyncChat` on first use (openai/_client.py, 2.54).
@@ -503,7 +503,10 @@ def warm_first_use_imports() -> None:
     - pipecat's own deferred import (NLTK's sentence tokenizer,
       pipecat.utils.prewarm): pipecat warms it in a thread while each pipeline
       connects, and the first session waits for it. Splitting one sentence here loads
-      it, and the one module its first split adds (nltk.tabdata).
+      it, and the one module its first split adds (nltk.tabdata). Only when NLTK's
+      punkt_tab data is already on disk: without it, pipecat's loader downloads it,
+      which must not run here (no network at a first offline boot, where the brain
+      still has to start for the spoken Wi-Fi setup) and stays in pipecat's thread.
 
     Each is paid once per process, so it fell on the first session after every restart.
     The server calls this before freeze_startup_objects, so the modules are loaded once
@@ -512,11 +515,17 @@ def warm_first_use_imports() -> None:
     import anyio._backends._asyncio  # noqa: F401
     import certifi
     import httpcore  # noqa: F401
+    import nltk
     import openai.resources.chat  # noqa: F401
     from pipecat.utils.string import match_endofsentence
 
     certifi.where()
-    match_endofsentence("Warm up. Done.")
+    try:
+        nltk.data.find("tokenizers/punkt_tab")
+    except LookupError:
+        logger.info("NLTK punkt_tab is not downloaded yet: the first session fetches it")
+    else:
+        match_endofsentence("Warm up. Done.")
 
 
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
