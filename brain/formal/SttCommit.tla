@@ -134,9 +134,11 @@
 (* bounded by MaxCloses.                                                    *)
 (*                                                                          *)
 (* NUMBERED says whether a verdict names the stop it answers and the STT    *)
-(* ignores one for another stop. TurnVerdictFrame carries no stop (FALSE,   *)
-(* as shipped); under THE ORDER a stop's verdict can reach the STT after    *)
-(* the next stop has (the VAD found that stop in the strategy's backlog).   *)
+(* ignores one for another stop: under THE ORDER a stop's verdict can reach *)
+(* the STT after the next stop has (the VAD found that stop in the          *)
+(* strategy's backlog). TRUE as shipped since 2026-10-15                   *)
+(* (TurnVerdictFrame's stop_n); FALSE is the code before, which took        *)
+(* either (sc_verdict_stale).                                               *)
 (*                                                                          *)
 (* NoStaleTurnEnd is the property: the turn never ends on VAD stop k while  *)
 (* words of an utterance up to k are still in the engine's open segment, in *)
@@ -742,9 +744,10 @@ SttStop ==
 \* _handle_verdict. With no commit pending the verdict answers a stop this segment
 \* is not waiting on -- vadStop mode, or a caller who resumed before it landed -- and
 \* is ignored. A complete verdict (the model's or the ceiling's) commits; an
-\* incomplete one keeps the hold. TurnVerdictFrame names no stop, so the STT cannot
-\* tell a verdict for its pending stop from one for the stop before it that the VAD
-\* overtook (THE ORDER): unless NUMBERED, it takes either. A commit on another stop's
+\* incomplete one keeps the hold. NUMBERED, as shipped: the verdict names its stop
+\* (TurnVerdictFrame.stop_n) and one for any stop but the STT's is ignored. Without
+\* it the STT cannot tell a verdict for its pending stop from one for the stop before
+\* it that the VAD overtook (THE ORDER), and takes either; a commit on another stop's
 \* verdict closes the segment under a stop nobody has judged (closedUnjudged).
 Verdict ==
     /\ toStt /= <<>> /\ Head(toStt).kind = "verdict"

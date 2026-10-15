@@ -277,6 +277,13 @@ class EagerSmartTurnAnalyzer(LocalSmartTurnAnalyzerV3):
         return result
 
 
+# The stamp of a close that answers no VAD stop: the engine's own close of words no
+# stop has claimed yet (stt.py, _handle_message). Stops count from 1, so it pays no
+# debt and is no receipt. Not None, which is another STT's unstamped final, taken as
+# stock.
+NO_STOP = 0
+
+
 @dataclass
 class TurnVerdictFrame(SystemFrame):
     """Smart Turn's answer to a VAD stop, pushed UPSTREAM by the stop strategy so the
@@ -296,10 +303,22 @@ class TurnVerdictFrame(SystemFrame):
 
     A SystemFrame like the VAD frames it answers: it rides the input task ahead of the
     queued audio, so the commit it triggers is not held behind a burst of frames.
+
+    `stop_n` names the VAD stop the verdict answers, as the strategy's count of
+    VADUserStoppedSpeakingFrames -- the count the STT stamps its finals with, and keeps
+    of the same frames (stt.py, `_vad_stops`). The STT acts only on a verdict for the
+    stop it is on. The VAD's edges reach the two by different queues (the class note
+    of LateStartTurnStopStrategy), and the verdict goes up behind every edge the VAD
+    found while the strategy was getting to the stop: with the strategy's queue a
+    whole utterance behind, stop 1's COMPLETE reached the STT after stop 2 and, naming
+    no stop, closed stop 2's held segment -- which the model then called INCOMPLETE,
+    and the caller's resumption split the sentence (SttCommit.tla, sc_verdict_stale).
+    The default, NO_STOP, answers no stop and is never acted on.
     """
 
     complete: bool = False
     source: str = ""
+    stop_n: int = NO_STOP
 
 
 @dataclass
@@ -322,13 +341,6 @@ class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
     """
 
     stop_n: int
-
-
-# The stamp of a close that answers no VAD stop: the engine's own close of words no
-# stop has claimed yet (stt.py, _handle_message). Stops count from 1, so it pays no
-# debt and is no receipt. Not None, which is another STT's unstamped final, taken as
-# stock.
-NO_STOP = 0
 
 
 @dataclass
@@ -477,8 +489,8 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     that is the over-the-bot stop, which the STT commits at once, and the barge-in's own
     final, on its way, asks instead.
 
-    It also reports every end-of-turn verdict UPSTREAM as a TurnVerdictFrame, for the
-    STT service: this is the only object that sees the model's answer at the VAD stop
+    It also reports every end-of-turn verdict UPSTREAM as a TurnVerdictFrame, numbered
+    with the VAD stop it answers, for the STT service: this is the only object that sees the model's answer at the VAD stop
     and the analyzer's silence ceiling when an INCOMPLETE answer falls through to it,
     and the STT's commit -- the thing that closes the engine's segment -- wants to
     follow those rather than the raw VAD stop (issue #43; see stt.py's process_frame).
@@ -863,7 +875,11 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
             await self._push_verdict(True, "ceiling")
 
     async def _push_verdict(self, complete: bool, source: str):
-        await self.push_frame(TurnVerdictFrame(complete=complete, source=source),
+        # Every verdict answers the latest stop counted here: the model's at that stop,
+        # the ceiling's and the turn-stop's under it (a VAD start since would have
+        # stopped the ceiling and released the STT's hold). See TurnVerdictFrame.
+        await self.push_frame(TurnVerdictFrame(complete=complete, source=source,
+                                               stop_n=self._stops),
                               FrameDirection.UPSTREAM)
 
     async def _handle_vad_user_started_speaking(self, frame):

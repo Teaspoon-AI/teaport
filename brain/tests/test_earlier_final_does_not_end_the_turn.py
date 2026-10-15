@@ -479,7 +479,8 @@ class Recorder(TeaportSTTService):
                                  FrameDirection.DOWNSTREAM)
 
     async def verdict(self, complete, source="verdict"):
-        await self.process_frame(TurnVerdictFrame(complete=complete, source=source),
+        await self.process_frame(TurnVerdictFrame(complete=complete, source=source,
+                                                  stop_n=self._vad_stops),
                                  FrameDirection.UPSTREAM)
 
     async def delta(self, text):

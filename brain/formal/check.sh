@@ -183,8 +183,8 @@ run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the
 run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did right, and what the fallback keeps)"
 run SttCommit.tla sc_verdict_silentStop "(expected: FAILS NoOrphanedHold — the first cut: nothing reported when the turn is closed under the ceiling)"
 run SttCommit.tla sc_verdict       "(expected: holds — as shipped: a lost verdict, a missed stop and a turn closed under the ceiling, the VAD one edge ahead)"
-run SttCommit.tla sc_verdict_stale "(expected: FAILS NoSplitOnIncomplete — AS SHIPPED, the strategy three edges behind: a verdict for the stop before closes the held one)"
-run SttCommit.tla sc_verdict_numbered "(expected: holds — PROPOSED, not code: the verdict names its stop and the STT ignores another's)"
+run SttCommit.tla sc_verdict_stale "(expected: FAILS NoSplitOnIncomplete — BEFORE NUMBERING (shipped until 2026-10-15), the strategy three edges behind: a verdict for the stop before closes the held one)"
+run SttCommit.tla sc_verdict_numbered "(expected: holds — AS SHIPPED, the strategy three edges behind: the verdict names its stop and the STT ignores another's)"
 echo
 echo "SttCommit.tla — the caller's voice (#140): no commit drawn over words the VAD has not started on"
 run SttCommit.tla sc_voice_blind "(expected: FAILS NoCutVoice — before #140: the verdict commits over the resumed voice)"

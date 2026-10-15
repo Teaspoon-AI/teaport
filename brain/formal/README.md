@@ -1756,8 +1756,8 @@ watchdog); what the strategy does then is `TURNSTOP`.
 | `vadStop` | commit at the raw VAD stop (until #43; since, only the no-verdict fallback) | ✗ | ✓ | ✓ | ✓ | — |
 | `verdict`, `TURNSTOP = "silent"` | the first cut: nothing reported when the turn is closed under the ceiling | ✓ | ✓ | ✓ | ✓ | ✗ |
 | `verdict`, `TURNSTOP = "verdict"` | the verdict commit, as shipped, the VAD one edge ahead of either side (`sc_verdict`) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| the same | the strategy three edges behind the VAD (`sc_verdict_stale`, THE ORDER) | ✗ | | | | |
-| the same, `NUMBERED` | proposed: the verdict names its stop (`sc_verdict_numbered`) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| the same, before `NUMBERED` | the strategy three edges behind the VAD, a verdict naming no stop (`sc_verdict_stale`, THE ORDER; until 2026-10-15) | ✗ | | | | |
+| the same, `NUMBERED` | as shipped: the verdict names its stop, three edges behind (`sc_verdict_numbered`) | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 `NoSplitOnIncomplete` is the bug, and `vadStop` fails it with nothing exotic:
 
@@ -2001,8 +2001,7 @@ the edges. So the model now has three FIFOs — `vadQ`, `toStt`, `toStrategy` �
 handles its copies in `SttStart`/`SttStop`, and the two sides count stops separately
 (`sttStops`, `stratStops`). `MaxLag` bounds how many edges either side may be behind; one
 already lets either side see a stop first. Every row was re-run; three findings, all
-against the code as it then was. A and B are fixed (What was changed, below); C is
-open.
+against the code as it then was. All three are fixed (What was changed, below).
 
 **A — a stale turn end on the marked engine** (`sc_final_stop_marked`, ten states):
 
@@ -2041,16 +2040,43 @@ the speech, where the tail is silence and its close an empty done.
 **C — a verdict for the stop before** (`sc_verdict_stale`, fifteen states, `MaxLag = 3`):
 the strategy's queue holds a whole utterance — stop 1, the caller's next start and stop
 2 — when it answers stop 1 COMPLETE, so that verdict goes up behind stop 2.
-`TurnVerdictFrame` names no stop, the STT takes it for stop 2's and commits the held
-segment; the model then calls stop 2 INCOMPLETE and the caller resumes inside the
+`TurnVerdictFrame` named no stop, so the STT took it for stop 2's and committed the
+held segment; the model then calls stop 2 INCOMPLETE and the caller resumes inside the
 ceiling: the #43 split. It needs the aggregator's input task stalled for a whole
 utterance (≥ ~0.5 s with Talk's 0.2 s stop), which Smart Turn's inference on the
-appliance's cores under load could do but has not been seen to.
+appliance's cores under load could do but has not been seen to. Its repair, `NUMBERED`,
+is the code (What was changed, below); `sc_verdict_stale` stays as the row for the code
+before it.
 
-**C's repair, modelled, not in the code:** `NUMBERED` — the strategy stamps each
-`TurnVerdictFrame` with the stop it answers (its own count; the ceiling's and the
-turn-stop's with the stop they override) and `_handle_verdict` ignores one that is not
-for `_vad_stops`. `sc_verdict_numbered` holds every commit property at `MaxLag = 3`.
+### What was changed (2026-10-15): numbered verdicts, for C
+
+The model's repair, `NUMBERED = TRUE`, is the code.
+
+- **The verdict names its stop** (`endpointing.py`). `TurnVerdictFrame` carries
+  `stop_n`, and `LateStartTurnStopStrategy._push_verdict` stamps it with `_stops`, the
+  strategy's count of VAD stops — the count #173's receipts already keep, of the same
+  frames the STT counts in `_vad_stops`, so no second counter. Every verdict answers
+  the latest stop counted: the model's at that stop, the ceiling's and the turn-stop's
+  under it (a VAD start since stops the ceiling and releases the hold). That is
+  `StratStop`'s `Up("verdict", v, stratStops + 1)` and `Ceiling`'s and `TurnStop`'s
+  `stratStops`. The default, `NO_STOP`, answers no stop.
+- **The STT acts only on its own stop's verdict** (`stt.py`, `_handle_verdict`). One
+  whose `stop_n` is not `_vad_stops` is ignored before anything else reads it — the
+  hold, the late-after-expiry note — and the stop's own verdict, still on its way
+  behind it, decides. That is `Verdict`'s `NUMBERED /\ other`. A stale verdict still
+  counts as a verdict for the session-wide fallback: it proves the wiring answers.
+- **The rows follow the code.** Every row that runs `DESIGN = "receipts"` now runs
+  `NUMBERED = TRUE`, the code, except `sc_verdict_stale`, which stays as the row for
+  the code before (`NoSplitOnIncomplete` falls, fifteen states);
+  `sc_verdict_numbered` is the shipped design at `MaxLag = 3` (1.1 million states,
+  every commit property). The rows of an older design keep `FALSE`.
+- **Test.** `tests/test_stt_commit_on_verdict.py`,
+  `test_a_verdict_for_the_stop_before_does_not_close_the_held_segment`, drives the real
+  strategy and the real service through `sc_verdict_stale`'s trace: the STT sees stop
+  1, the resume and stop 2 before the strategy answers stop 1 COMPLETE. On the old
+  `_handle_verdict` that verdict commits stop 2's held segment; now it is ignored, the
+  model's INCOMPLETE for stop 2 holds, and the resumed words join the one segment. The
+  tests that hand the STT a verdict directly stamp it with the stop the STT is on.
 
 ### What was changed (2026-10-15): receipts, for A and B
 
@@ -2072,8 +2098,9 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
 - **The rows follow the code.** Every row that describes the code as shipped now runs
   `DESIGN = "receipts"`: the commit rows (`sc_verdict`, `_stale`, `_numbered`), the
   voice rows and their witnesses, the carry pair, and the fallback's `sc_vadStop_*`.
-  The `receipts` final rows run with `NUMBERED = FALSE`, the code, where they first
-  held with `TRUE`. At `MaxLag = 1` the verdict's stop never mattered: C needs three.
+  The `receipts` final rows ran with `NUMBERED = FALSE`, the code at the time, where
+  they first held with `TRUE`; since the numbered verdicts (above) they run `TRUE`
+  again. At `MaxLag = 1` the verdict's stop never mattered: C needs three.
   The `stop` rows stay as the design before receipts, each a FAILS row named for its
   finding: `sc_final_stop_marked` (A), `sc_final_stop_stranded` (B), and
   `sc_final_stop` (the old engine). The design rows of their own time,
@@ -2191,7 +2218,9 @@ The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
   (14 min), `sc_vadStop_sound_carry` 5.6 million (3 min 16 s), `sc_voice_carry` 5.7
   million (3 min 7 s), `sc_voice_final_carry` 4.1 million (2 min 12 s) -- about 40
   minutes in all. Switching the shipped rows from `stop` to `receipts` (and the final
-  rows' `NUMBERED` to FALSE) left every count above where it was, to the figures given. The three queues
+  rows' `NUMBERED` to FALSE) left every count above where it was, to the figures given,
+  and so did setting `NUMBERED` back to TRUE on every shipped row (the numbered
+  verdicts, re-measured the same day: `sc_verdict` 6,953,899, `sc_voice` 4,318,220). The three queues
   cost most where the engine's own close and the backstop are
   both on (the final rows: 0.4 million with either, 8 million with both, at the same
   other bounds), which is why the default final rows take them one at a time.
