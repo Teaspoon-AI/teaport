@@ -104,8 +104,8 @@ downloads. You bring your own Jetson and your own LLM.
   header, and Teaspoon AI installs it with `TEAPORT_ENABLE_OLED_AVATAR=1`. That
   fetches teaport-oled-avatar, a private repository (or takes a local checkout of it
   from `TEAPORT_OLED_SRC`); on a box without access to it the installer skips the
-  face and installs everything else. It runs the avatar's
-  installer, which finds the panel (`0x3c`/`0x3d` on any I2C bus;
+  face and installs everything else. It runs the avatar's installer, which finds
+  the panel (`0x3c`/`0x3d` on any I2C bus;
   `TEAPORT_OLED_PORT`/`TEAPORT_OLED_ADDR` to name it) and enables
   `teaport-oled-avatar`. With the local mic bridge (Step 6) running, the eyes
   follow the conversation and the mouth moves with the voice. During Wi-Fi setup
