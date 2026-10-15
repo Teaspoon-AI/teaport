@@ -54,11 +54,11 @@
 #   UNGLUE  put the space back between a sentence's terminator and the capital that
 #         opens the next one. gpt-oss routinely streams "rain.Sounds", "jacket.Third",
 #         "need?Just" (15 of 198 texts handed to the TTS on 2026-09-04; "Burnet.If" on
-#         2026-08-26). Nothing downstream can split that: pipecat's sentence aggregator
-#         waits for the next non-space character and asks NLTK, and Punkt needs the
-#         space (match_endofsentence("rain.Sounds") == 0), so the WHOLE reply reaches
-#         run_tts as one sentence; split_clauses_ramp splits on `[.!?]\s+` and sees
-#         one clause too. The cost is first-audio: every word of the reply waited for
+#         2026-08-26). split_clauses_ramp splits on `[.!?]\s+` and sees one clause,
+#         so the WHOLE reply reached run_tts as one sentence. (pipecat's sentence
+#         aggregator needed the space too while it asked NLTK's Punkt, up to 1.11;
+#         sentencex, since 1.12, splits "rain.Sounds" itself -- and "Node.JS" as
+#         well, a cut this guard cannot undo, since the aggregator runs after it.) The cost is first-audio: every word of the reply waited for
 #         the last word's synthesis (a 15 s forecast began 4.1 s after the LLM's End,
 #         a 13.7 s list 3.7 s), and the glued text was what history and the heard
 #         ledger recorded. Done here, across delta boundaries, because this is the

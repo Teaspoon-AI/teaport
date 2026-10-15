@@ -144,7 +144,7 @@ class Rig:
         async def on_stopped(_c, _s, _p):
             self.stops.append(True)
 
-        async def on_inference(_c, _s):
+        async def on_inference(_c, _s, _speculation):
             self.inferences.append(True)
             if self.resume_in_the_gap:
                 self.resume_in_the_gap = False

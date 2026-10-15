@@ -642,7 +642,7 @@ class Rig:
                       "on_user_turn_started", "on_user_turn_stop_timeout"):
             self.controller.add_event_handler(event, ignore)
 
-        async def on_inference(_c, _s):
+        async def on_inference(_c, _s, _speculation):
             # The aggregator's push_aggregation: the pending finals are spent.
             self.inferences += 1
             self.speculator.finals.clear()

@@ -1062,33 +1062,36 @@ def keep_barge_in_reachable(controller) -> None:
     process_frame = controller.process_frame
 
     # inference: this turn's words have already been pushed to the context and the LLM
-    # asked. owed: (strategy, params) of a finalization the controller refused after
+    # asked. owed: the arguments of a finalization the controller refused after
     # that, to be re-applied at the next quiet moment.
     turn = {"inference": False, "owed": None}
 
-    async def _start(strategy, params):
+    # Each wrapper passes its arguments through as given: they are pipecat's private
+    # signatures, and 1.9 grew _trigger_user_turn_inference_triggered a `speculation`
+    # argument that a fixed (strategy) wrapper turned into a TypeError on every turn.
+    async def _start(strategy, *args, **kwargs):
         was_open = controller._user_turn
-        await trigger_start(strategy, params)
+        await trigger_start(strategy, *args, **kwargs)
         # Only on a turn that actually STARTED. The controller drops a start while one
         # is open, and clearing here on that no-op would forget the owed finalization
         # of the very turn that is stuck.
         if not was_open and controller._user_turn:
             turn["inference"], turn["owed"] = False, None
 
-    async def _inference(strategy):
+    async def _inference(strategy, *args, **kwargs):
         was_open = controller._user_turn
-        await trigger_inference(strategy)
+        await trigger_inference(strategy, *args, **kwargs)
         if was_open:
             turn["inference"] = True
 
-    async def _stop(strategy, params):
+    async def _stop(strategy, *args, **kwargs):
         was_open = controller._user_turn
-        await trigger_stop(strategy, params)
+        await trigger_stop(strategy, *args, **kwargs)
         # Still open after a stop that had a turn to close = refused. `_user_speaking`
         # is the only reason the controller has for that.
         refused = was_open and controller._user_turn
         if refused and turn["inference"]:
-            turn["owed"] = (strategy, params)
+            turn["owed"] = (strategy, args, kwargs)
         elif not controller._user_turn:
             turn["owed"] = None
 
@@ -1116,7 +1119,8 @@ def keep_barge_in_reachable(controller) -> None:
             turn["owed"] = None
             logger.debug(f"{controller}: re-applying the turn finalization refused "
                          "while the user was speaking — an open turn takes no barge-in")
-            await trigger_stop(*owed)
+            strategy, args, kwargs = owed
+            await trigger_stop(strategy, *args, **kwargs)
 
     controller._trigger_user_turn_start = _start
     controller._trigger_user_turn_inference_triggered = _inference

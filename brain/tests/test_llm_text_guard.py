@@ -881,13 +881,14 @@ async def test_an_initialism_split_across_deltas_stays_whole():
 
 
 def test_unglued_text_is_what_the_tts_can_split():
-    # Why this matters: pipecat's aggregator (NLTK behind a lookahead) and the clause
-    # ramp both need the space. Glued, the reply is one sentence to both — first
-    # audio waits for the last word's synthesis. Unglued, both find the boundary.
+    # Why this matters: the clause ramp needs the space. Glued, the reply is one
+    # sentence to it — first audio waits for the last word's synthesis. Unglued, it
+    # finds the boundary, and so does pipecat's aggregator. (pipecat's matcher used to
+    # need the space too: NLTK's Punkt, up to 1.11. sentencex, since 1.12, splits
+    # "rain.Sounds" by itself — and also "Node.JS", which the guard leaves glued.)
     from pipecat.utils.string import match_endofsentence
     glued = ("Tomorrow in Austin should be warm, with a low chance of rain."
              "Sounds like a pleasant day with only a slight chance of rain.")
-    assert match_endofsentence(glued.split("Sounds")[0] + "S") == 0
     # soft_max=0: the sentence-boundary split alone (the long-sentence clause split
     # is a separate remedy, tested in test_clause_ramp.py).
     assert len(split_clauses_ramp(glued, soft_max=0)) == 1
