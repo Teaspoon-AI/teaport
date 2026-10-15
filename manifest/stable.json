@@ -59,7 +59,7 @@
     "tested_tag": "TODO"
   },
   "oled_avatar": {
-    "_note": "teaport-oled-avatar (MIT, separate repo): install.sh clones this and runs its own install.sh when TEAPORT_ENABLE_OLED_AVATAR=1. Pinned to a release tag, like brain.tag; bump it when a new release is cut. Private, for Teaspoon AI appliances: install.sh clones it only where the box has access to it (a deploy key), or takes a local checkout from TEAPORT_OLED_SRC; elsewhere it skips the face. manifest/check.py does not test an anonymous clone of it.",
+    "_note": "teaport-oled-avatar (MIT, separate repo): install.sh clones this and runs its own install.sh when TEAPORT_ENABLE_OLED_AVATAR=1. Pinned to a release tag, like brain.tag; bump it when a new release is cut. Private, for Teaspoon AI appliances: install.sh clones it over HTTPS only where the box has access to it (a stored git credential, e.g. a read-only fine-grained token; an SSH deploy key needs a url.insteadOf rewrite scoped to this repo), or takes a local checkout from TEAPORT_OLED_SRC; elsewhere it skips the face. manifest/check.py does not test an anonymous clone of it.",
     "private": true,
     "repo": "Teaspoon-AI/teaport-oled-avatar",
     "tag": "v0.2.0"
