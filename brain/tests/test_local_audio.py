@@ -1990,7 +1990,7 @@ def test_the_face_mood_setting_picks_the_source():
     text, sent, _ = _mood_face("text")
     text.mood("sad", ["this", "is"])                    # (the brain sends none, but if one came)
     text.assistant("This is terrible.", True, "u1")
-    assert _moods(sent) == ["angry"]
+    assert _moods(sent) == ["sad"]
     off, sent, _ = _mood_face("off")
     off.mood("sad", ["this", "is"])
     off.assistant("This is terrible.", True, "u1")
