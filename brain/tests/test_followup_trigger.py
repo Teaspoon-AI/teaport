@@ -32,6 +32,7 @@ import pinned_pipecat  # noqa: F401,E402  — refuse to pass against the wrong p
 
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
+    InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
@@ -51,6 +52,10 @@ def _harness():
     async def fake_push(frame, direction=FrameDirection.DOWNSTREAM):
         forwarded.append(frame)
     trigger.push_frame = fake_push
+
+    async def no_task_manager():
+        pass  # an unstarted processor has no TaskManager to cancel its input task with
+    trigger._start_interruption = no_task_manager
     return trigger, forwarded
 
 
@@ -135,6 +140,37 @@ async def test_every_frame_is_forwarded():
     assert [type(f) for f in forwarded] == [type(f) for f in frames], (
         "the tap dropped or reordered frames")
 
+
+async def test_an_interruption_voids_a_shot_that_asked_for_it():
+    """brain/formal/Followup.tla, FIX "void": the caller cut in before anything answered,
+    so the next completion's text comes from one that read the trigger buried. It must
+    not count as ours."""
+    trigger, _ = _harness()
+    fired, voided = [], []
+    shot = trigger.arm(lambda: fired.append(1), on_void=lambda: voided.append(1))
+    await _feed(trigger, LLMFullResponseStartFrame(), InterruptionFrame(),
+                LLMFullResponseStartFrame(), LLMTextFrame("Four."))
+    assert voided == [1] and shot.voided.is_set(), "the interruption did not void it"
+    assert fired == [] and not shot.fired.is_set(), (
+        "the caller's reply fired a shot voided by their barge-in")
+
+
+async def test_an_interruption_leaves_a_plain_shot_armed():
+    """ClientNotes' reaction, armed without on_void, is meant to be read by the caller's
+    barge-in turn and folded into that reply."""
+    trigger, _ = _harness()
+    fired = []
+    trigger.arm(lambda: fired.append(1))
+    await _feed(trigger, InterruptionFrame(), LLMTextFrame("Sure"))
+    assert fired == [1], "a shot without on_void was dropped by the interruption"
+
+
+async def test_text_before_the_interruption_fires_not_voids():
+    trigger, _ = _harness()
+    fired, voided = [], []
+    trigger.arm(lambda: fired.append(1), on_void=lambda: voided.append(1))
+    await _feed(trigger, LLMTextFrame("About that forecast"), InterruptionFrame())
+    assert fired == [1] and voided == [], (fired, voided)
 
 def main():
     tests = [v for k, v in sorted(globals().items())

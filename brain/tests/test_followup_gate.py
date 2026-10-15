@@ -34,6 +34,7 @@ require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
+    TTSStartedFrame,
     BotStoppedSpeakingFrame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
@@ -202,7 +203,7 @@ async def test_a_pause_shorter_than_the_quiet_window_is_not_a_window():
 async def test_a_delivery_that_finishes_settles_as_not_interrupted():
     gate = _gate()
     d = gate.watch_delivery()
-    await _feed(gate, BotStartedSpeakingFrame())
+    await _feed(gate, TTSStartedFrame(), BotStartedSpeakingFrame())
     assert not d.done.is_set(), "settled while the bot was still speaking"
     await _feed(gate, BotStoppedSpeakingFrame())
     assert d.done.is_set(), (
@@ -214,8 +215,34 @@ async def test_a_delivery_that_finishes_settles_as_not_interrupted():
 async def test_a_delivery_that_is_cut_settles_as_interrupted():
     gate = _gate()
     d = gate.watch_delivery()
-    await _feed(gate, BotStartedSpeakingFrame(), InterruptionFrame())
+    await _feed(gate, TTSStartedFrame(), BotStartedSpeakingFrame(), InterruptionFrame())
     assert d.done.is_set() and d.interrupted, "a barged-over reply must read as cut"
+    assert d.spoke, "our reply's audio had started"
+
+
+async def test_a_filler_line_does_not_speak_for_the_reply():
+    """brain/formal/Followup.tla, fu_heard_no_ownAudio_loss. The follow-up's completion
+    calls a tool first: the tool-ack line plays (append_to_context=False) and the
+    transport reports it like any audio. That must neither mark our reply spoken nor
+    settle it as played -- the answer has not made a sound yet."""
+    gate = _gate()
+    d = gate.watch_delivery(replies_only=True)
+    await _feed(gate, TTSStartedFrame(append_to_context=False), BotStartedSpeakingFrame(),
+                BotStoppedSpeakingFrame())
+    assert not d.spoke and not d.done.is_set(), (
+        "a filler line settled the follow-up as played before the answer had any audio")
+    await _feed(gate, TTSStartedFrame(), BotStartedSpeakingFrame(), BotStoppedSpeakingFrame())
+    assert d.spoke and d.done.is_set() and not d.interrupted
+
+
+async def test_a_watcher_of_its_own_line_counts_any_audio():
+    """say_last_line and the call prompt watch a line they speak themselves, often with
+    append_to_context=False: for them any audio is the line."""
+    gate = _gate()
+    d = gate.watch_delivery()
+    await _feed(gate, TTSStartedFrame(append_to_context=False), BotStartedSpeakingFrame(),
+                BotStoppedSpeakingFrame())
+    assert d.spoke and d.done.is_set() and not d.interrupted
 
 
 async def test_a_delivery_cut_before_it_speaks_still_settles():

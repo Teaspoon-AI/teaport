@@ -169,6 +169,140 @@ sees the result frame. `test_followup_gate.py` covers the synchronous shape (nar
 idle, injector held until the answering completion ends), the no-inference result, and
 the interruption.
 
+### The delivery loop (#30): delivered means heard
+
+The table above stops at "a completion read it". #33 moved the bar: the trigger is read
+the moment the model starts answering, before a sample reaches the caller, so a delivery
+barged over at 0% heard was retired as delivered (live 2026-09-10 17:13). The loop in
+`speak_followup` now asks whether the caller **heard** it, and below `_MIN_HEARD` (0.3,
+`TEAPORT_FOLLOWUP_MIN_HEARD`) posts it again, up to `_DELIVERY_ATTEMPTS`. `MODE = "heard"`
+models that loop, and the two read-count properties mean what the loop needs:
+
+| | `MODE = "heard"` |
+|---|---|
+| `NoSilentLoss` | the loop never ends *delivered*, and no copy left in the context says "already given", unless a recital was heard to the end or cut at ≥ `_MIN_HEARD`. Running out of attempts is not a loss: the note left behind (`_UNTOLD`) says it never arrived |
+| `NoRepeatRecital` | no recital begins after the caller has heard one — the loop retries on purpose, so "read twice" is no longer the line |
+| `NoStandingOrder` | the loop never ends with a live trigger (the budget retires it regardless) |
+| `LiveIsArmed` | a live trigger always has a shot armed: whatever completion reads it next takes it out |
+
+What the model adds to reach those: the read point at the completion's **first text**
+(`FollowupTrigger`, which fires *every* armed shot on *any* completion's first text);
+the heard outcome `HEARD | CUT_ABOVE | CUT_BELOW` from **two signals** — the transport's
+`Delivery` (settled by `BotStoppedSpeaking` once it spoke, or by any interruption) and the
+ledger's `next_assistant()` (which charts a cut at the interruption, a finished reply only
+later, and **no turn at all for a reply whose TTS never opened**); the window's claim and
+`TurnCommitMark`; whether the trigger is still the **tail** of the context; and the attempt
+budget. A trigger at the tail is the turn the model answers. One buried under the
+caller's words may be answered or not, and both happened live: 08:17 recited a buried one,
+17:36 answered the caller instead. So the model lets it go either way.
+
+The environment includes what the code can actually see happen:
+- a caller's turn that commits nothing (an empty final: no completion queued);
+- a completion whose text never becomes audio (emptied by the guard, #70; no speech; the
+  LLM failing after its first token);
+- a filler line (tool-ack, narrator: `append_to_context=False`) playing during a tool call;
+- `FollowupTrigger` firing on *any* token while a shot is armed, not only on a
+  completion's first.
+
+One timing assumption is explicit: a queued completion claims the window (at
+`TurnCommitMark`) and starts within milliseconds, long before a 0.7 s debounce could
+end. The gate's claim is a single flag, released by the first completion to start, so
+with two queued the second runs unclaimed. Untimed, no window opens while one is queued.
+
+`REPOST` picks where a retry puts the trigger, `FIX` (a set, `{}` = the code before
+this change) the parts of the fix, and `TIMED` the exits only a timer takes:
+`max_wait` and `wait_out_claim`'s give-up, a 20 s start timeout that overtakes a slow
+completion, and the 45 s heard timeout while audio is still playing. Untimed, every wait
+ends on the event it waits for, or on its timer once that event can no longer come.
+
+**17:36, found by TLC this time** (`fu_heard_inPlace_loss`). The first retry restored the
+trigger *in place*. By then the caller's barge-in is the tail and the trigger is buried
+above it. The retry's completion answers the caller, its first text fires our shot, the
+ledger charts *that* reply cut at ≥ 30%, and the loop returns delivered. The live
+incident was exactly this. `42d0a2b` re-posts at the tail (`REPOST = "tail"`).
+
+**Before this change, the loop still lost answers and still repeated them.** Each
+counterexample below was confirmed against the code and pipecat 1.8.1 by an independent
+review:
+
+1. **Cut before the TTS opened** (`fu_heard_shipped_loss`, 7 steps). Our completion
+   answers from the trigger, and its first text retires it. (With mood tags on, that
+   first text is the `[mood: …]` tag itself.) The caller barges in while the TTS is still
+   aggregating the first sentence. `TranscriptLedger._interrupt` charts only the turns a
+   `TTSStartedFrame` opened and drops the streaming entry, so nothing is charted.
+   `Delivery` is cut with `spoke == False`. The loop waits `_DELIVERY_CHART_TIMEOUT` for
+   a chart that never comes and logs "cut, but the ledger charted no reply to measure —
+   leaving it as delivered". The caller heard 0%. 17:13 was this, 84 ms on the safe side
+   of `TTSStartedFrame`. If the caller's own reply opens and is charted within those
+   5 s, the waiter measures *that* reply instead, with the same result.
+2. **The caller's reply fires our shot** (`fu_heard_no_void_repeat`). A barge-in right
+   after the post, before anything answered: the caller's words are committed below the
+   trigger, and their reply's first text fires our still-armed shot. That reply read the
+   trigger buried. It may have answered the caller and not the trigger, and its audio is
+   what the heard check then measures.
+3. **A live trigger with no shot** (`fu_heard_shipped_repeat`). An attempt abandoned on
+   the start timeout ("turn was flushed before the model read it") leaves the copy *live*
+   and disarmed while it waits for the next window. The easy way in is a barge-in that
+   commits nothing (a 0-char final). Every turn the caller takes meanwhile reads it
+   buried, with nothing to retire it: the 08:17 standing order, back inside the retry
+   loop. A recital the caller hears there is followed by the re-post's recital.
+4. **A filler line counts as the answer playing** (`fu_heard_no_ownAudio_loss`). The
+   gate marked a watched `Delivery` spoke on *any* `BotStartedSpeaking`, and settled it
+   as played on the next `BotStoppedSpeaking`. When the follow-up's completion calls a
+   tool first, the tool-ack line plays, the watch settles as played, and the answering
+   completion's first text fires the shot. The loop logs "delivered and played to the
+   end" before the answer has made a sound.
+5. **Every re-post says "already given"** (`fu_heard_no_supersede_loss`). `_post_trigger`
+   retired the earlier copy with `_retire()`'s default, `_SPENT` ("already given to the
+   user"). A re-post only happens because the caller did *not* get it. After the last
+   attempt fails, only the newest copy says so, and every earlier one still says the
+   opposite: the #80 lie, once per attempt.
+6. **Text that never becomes audio** settles nothing. No `BotStarted`, no `BotStopped`,
+   no interruption. The 45 s heard timeout then "left it as delivered". That timer is
+   not standing in for a slow event here, since the event never comes.
+
+**What was changed.** The fix is `FIX = {"void", "retireUnarmed", "unspoken",
+"ownAudio", "supersede"}`, and `fu_heard_fixed_all` holds. It lives in
+`followup_gate.py` (`OneShot.void`, `FollowupTrigger` on `InterruptionFrame`, `Delivery`
+marked spoke by the reply's own `TTSStartedFrame`) and in `speak_followup`. Each
+counterexample is a test in `brain/tests/test_followup_heard.py` /
+`test_followup_trigger.py` / `test_followup_gate.py`, failing against the loop before it:
+
+- `void`: an `InterruptionFrame` voids every armed shot that asked for it (armed with
+  `on_void`) instead of leaving it for the next completion's text. The consult's copy is
+  retired as `_UNTOLD` at that moment, and the loop treats the attempt as flushed.
+  Closes 2.
+- `retireUnarmed`: an attempt abandoned unanswered retires its copy as `_UNTOLD` *before*
+  waiting for the window. Closes 3. `LiveIsArmed` is the invariant this buys.
+- `unspoken`: a reply with `Delivery.spoke == False` is heard 0%, whether it was cut or
+  hit the heard timeout, without asking the ledger. Closes 1 and 6.
+- `ownAudio`: for the consult's watch (`watch_delivery(replies_only=True)`),
+  `Delivery.spoke` is set by a reply's own `TTSStartedFrame` (not a filler's,
+  `append_to_context=False`) as it passes the gate in playout order, not by
+  `BotStartedSpeaking`. Watchers of a line they speak themselves (`say_last_line`, the
+  call prompt) keep "any audio", since their line may be a filler itself. Closes 4.
+- `supersede`: the earlier copy is left saying only that a later notice supersedes it.
+  Closes 5.
+
+Each part is necessary: the `fu_heard_no_*` rows drop one each and fail. `no_void` is
+the instructive one. With `unspoken` but no `void`, the barge-in's own reply can recite
+the buried trigger and be heard while our watch, settled by the barge-in, says nothing
+spoke. The loop retries, and the caller hears the answer twice.
+
+**Timers** (`fu_heard_fixed_timed_*`). With the timer exits on, both properties fall
+even with the fix. `NoSilentLoss` falls to a reply still playing at the 45 s heard
+timeout ("never finished nor was cut within the window — leaving it as delivered").
+`NoRepeatRecital` falls to a start timeout that overtakes a completion slower than 20 s,
+which then recites a copy the loop has already retired and re-posted. Both need a real
+wait longer than its timer: these are the accepted residuals, in the sense of UserTurn's
+timed rows. `NoInterjectMidTurn` falls to the give-up by design ("speak anyway"). The
+budget, the one live trigger and the narrator still hold.
+
+**Exactly one live trigger.** `_post_trigger` retires the earlier copy before appending,
+synchronously. The model has one slot for the current copy plus the strongest claim any
+earlier copy makes (`stale`), so "two live copies" is not expressible in it. It is
+checked by the code's construction, not by TLC.
+
 ### Known limits of this model
 
 - **Liveness is not established.** `EventuallyDelivered` (`live.cfg`) fails only
@@ -176,13 +310,26 @@ the interruption.
   with `started = MaxRuns` and a turn still queued. Raising the bound doesn't settle
   it; a proper liveness argument needs fairness assumptions about the user, which the
   model doesn't currently state.
-- **Durations are out of scope.** `_QUIET_SECS`, `_DELIVERY_START_TIMEOUT` and the
-  0.3 s STT settle are timing assumptions TLA+ cannot judge. It can say *whether* a
-  wait is needed, never *how long*.
-- **The residual risk it makes explicit:** a completion that reads the trigger and is
-  then barged away before speaking retires it having delivered nothing. The ledger
-  already computes `heard_fraction` for exactly that turn, so re-arming at
-  `heard_fraction == 0` would close it. Not built.
+- **Durations are out of scope.** `_QUIET_SECS`, the delivery timeouts and the 0.3 s
+  STT settle are timing assumptions TLA+ cannot judge. `TIMED` only says which
+  properties a timer's exit can break, never how likely the wait is to outlast it.
+- **One injector.** `ClientNotes` arms its reaction orders on the same
+  `FollowupTrigger` and competes for the same claimed windows. The model has the consult
+  follow-up alone. The claim keeps the two apart except on a give-up (`TIMED`). `void`
+  is opt-in (a shot armed with `on_void`), and a reaction is armed without one. Its
+  order stays through a barge-in on purpose, so the caller's turn folds the reaction
+  into its reply. Nothing checks or retries a reaction, so none of the properties above
+  are at stake for it.
+- **The session ending** (`_session_over`, the copy retired untold) is not modelled. It
+  only exits the loop.
+- **What the model says** is reduced to "recites the answer or not". A buried trigger
+  may be answered either way, as the live record shows. A reply that answers both
+  the caller and the trigger counts as a recital.
+- The 0%-heard residual this section used to list (a completion that reads the trigger
+  and is barged away before speaking) was built in `cbe2795` (#33), with the
+  `TEAPORT_FOLLOWUP_MIN_HEARD` threshold. The delivery loop above models it, and its
+  first counterexample shows `heard_fraction` alone does not close it: the ledger never
+  charts a reply whose TTS never opened.
 
 ## `SttSlot.tla` — arbitration of the engine's single STT slot
 

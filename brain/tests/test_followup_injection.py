@@ -64,8 +64,8 @@ class _Retirer:
     def __init__(self):
         self.armed = []
 
-    def arm(self, retire):
-        shot = OneShot(retire)
+    def arm(self, retire, on_void=None):
+        shot = OneShot(retire, on_void)
         self.armed.append(shot)
         return shot
 
@@ -78,6 +78,14 @@ class _Retirer:
         armed, self.armed = self.armed, []
         for shot in armed:
             shot.fire()
+
+    def interrupt(self):
+        """An InterruptionFrame reached FollowupTrigger: shots armed with an on_void
+        are voided, the rest stay armed (FollowupTrigger.process_frame)."""
+        voided = [s for s in self.armed if s.voidable]
+        self.armed = [s for s in self.armed if not s.voidable]
+        for shot in voided:
+            shot.void()
 
 
 class _Task:
@@ -108,9 +116,10 @@ class _Gate:
     sit on its timeout and call every delivery unverified, which is the bug the real
     watch exists to fix."""
 
-    def __init__(self, cut=False):
+    def __init__(self, cut=False, spoke=True):
         self.idle_waits = 0
         self._cut = cut if isinstance(cut, list) else [cut]
+        self._spoke = spoke if isinstance(spoke, list) else [spoke]
         self.watched = 0
         self.dropped = 0
 
@@ -118,11 +127,11 @@ class _Gate:
         self.idle_waits += 1
         return True
 
-    def watch_delivery(self):
+    def watch_delivery(self, *, replies_only=False):
         d = fg.Delivery()
         cut = self._cut[min(self.watched, len(self._cut) - 1)]
+        d.spoke = self._spoke[min(self.watched, len(self._spoke) - 1)]
         self.watched += 1
-        d.spoke = True
         if cut is not None:                 # None == neither finishes nor is cut
             asyncio.get_running_loop().call_soon(d._settle, bool(cut))
         return d
@@ -162,11 +171,11 @@ class _Ledger:
         return fut
 
 
-async def _deliver(text, read_on_attempt=1, heard=1.0, cut=False, **outcome):
+async def _deliver(text, read_on_attempt=1, heard=1.0, cut=False, spoke=True, **outcome):
     ctx = _Context()
     retirer = _Retirer()
     task = _Task(ctx, retirer, read_on_attempt)
-    gate = _Gate(cut=cut)
+    gate = _Gate(cut=cut, spoke=spoke)
     ledger = _Ledger(heard)
     await _make_consult_followup(task, ctx, gate, retirer, ledger)(
         REQUEST, text, CALL_ID, **outcome)
