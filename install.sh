@@ -44,7 +44,8 @@
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
 #   TEAPORT_BRIDGE_SRC     install the bridge from this local dir instead of cloning
 #   TEAPORT_ENABLE_LOCAL_AUDIO=1  enable the opt-in local mic+speaker bridge (USB mic array)
-#   TEAPORT_ENABLE_OLED_AVATAR=1  install + enable the OLED face (teaport-oled-avatar, SSD1306 on I2C)
+#   TEAPORT_ENABLE_OLED_AVATAR=1  install + enable the OLED face (teaport-oled-avatar, SSD1306 on I2C;
+#                                 a private repo: Teaspoon AI appliances only, skipped elsewhere)
 #   TEAPORT_OLED_PORT / TEAPORT_OLED_ADDR  its I2C bus/address (default: probe for 0x3c/0x3d)
 #   TEAPORT_OLED_SRC       install the avatar from this local checkout instead of cloning
 #   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800;
@@ -284,6 +285,9 @@ phase_sysdeps() {
   ensure_uv
 }
 
+# Every url + sha256 entry read here (and eula_gate's) is listed in manifest/check.py's
+# REQUIRED, which the publish workflow checks before a manifest goes up: add one there
+# when adding one here. models.voxtral.aux is optional (a missing aux file is skipped).
 phase_engine() {
   log "engine + models -> $PREFIX"
   SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
@@ -2180,7 +2184,12 @@ phase_oled_avatar() {
     src="$STATE/oled-avatar-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
     # Pure staging, like the bridge clone: install.sh copies what it runs into its prefix.
     if [ -e "$src" ]; then run rm -rf "$src"; fi
-    run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$src"
+    # The repo is private (manifest oled_avatar.private): a box without access to it
+    # skips the face instead of stopping the install at a credentials prompt.
+    if ! run env GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$src"; then
+      warn "oled avatar: cannot fetch github.com/$repo at $tag (no access from this box — it is installed on Teaspoon AI appliances only — or see git's error above); the face is skipped, the rest of the box is unaffected"
+      return 0
+    fi
   fi
   local args=(--user "$RUN_USER")
   if [ -n "${TEAPORT_OLED_PORT:-}" ]; then args+=(--port "$TEAPORT_OLED_PORT"); fi

@@ -38,7 +38,11 @@ an installation and does not duplicate it. See
 
 - `brain/` — the voice brain, an installable Python package (`teaport_brain`)
 - `plugin/` — the OpenClaw realtime-voice provider (npm `@teaspoon-ai/openclaw-teaport-realtime`)
-- `manifest/` — the release manifest for the installer and `teaport update`
+- `manifest/` — the release manifest for the installer and `teaport update`.
+  Merging a change to it, or to `install-bootstrap.sh` (the one-liner), publishes it to
+  get.teaspoon.tech (`.github/workflows/publish.yml`), after checking that every
+  artifact the manifest names is already uploaded with that sha256. Upload a release's
+  artifacts first, then merge its manifest.
 - `install.sh` · `cli/teaport` · `systemd/` — install and operate the product
 - `docs/` — INSTALL, ARCHITECTURE, CONFIG, FAQ
 
