@@ -235,11 +235,11 @@ def has_speech(text: str) -> bool:
     """Whether the engine TTS will synthesize anything for `text`: after the same
     normalization run_tts applies, at least one letter or digit in any script.
     This is THE predicate for "nothing synthesizable": split_clauses_ramp drops
-    every chunk failing it and run_tts then yields no audio and no context. The
-    ledger applies it to a response's text before queuing the response as an
-    expected TTS context -- one that will never open must not sit at the queue's
-    head for the next context to claim (brain/formal/LedgerPlayout.tla,
-    lp_wrongText_unspeakable). One regex, so the two cannot drift."""
+    every chunk failing it and run_tts then yields no audio (the context is open
+    already: pipecat queues its TTSStartedFrame first). The ledger applies it when
+    such a response's turn closes with no audio: nothing of it can have been heard,
+    so it charts nothing (brain/formal/LedgerPlayout.tla, lp_unspeakable). One
+    regex, so the two cannot drift."""
     return bool(_SPEECH.search(_normalize_for_tts(text or "")))
 
 

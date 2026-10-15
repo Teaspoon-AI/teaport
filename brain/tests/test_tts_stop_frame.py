@@ -50,6 +50,7 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMTextFrame,
     OutputAudioRawFrame,
     TTSAudioRawFrame,
+    TTSStartedFrame,
     TTSStoppedFrame,
     TTSTextFrame,
 )
@@ -64,6 +65,7 @@ from pipecat.transports.base_output import (  # noqa: E402
 from pipecat.transports.base_transport import TransportParams  # noqa: E402
 
 from teaport_brain.engine_tts import EngineTTSService, _SAMPLE_RATE  # noqa: E402
+from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 
 REPLY = "Lima's population is about twelve million people."
 AUDIO_SECS = 0.6            # the stubbed clip; short, so the run is quick
@@ -315,6 +317,56 @@ async def test_back_to_back_replies_place_words_from_their_own_audio():
           f"(clip {AUDIO_SECS}s)")
 
 
+async def test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text():
+    """Text with nothing synthesizable still opens a context: pipecat queues the
+    TTSStartedFrame before run_tts, which yields no audio, and the context ends on the
+    stop-frame timeout. The ledger rests on that (transcript_ledger._llm_side expects
+    every response with text). Before it did, an emoji reply's context opening behind
+    "Great!!" -- whose trailing "!" holds its own context to the timeout -- claimed the
+    next reply's text and charted it heard 0% while it played in full
+    (LedgerPlayout.tla, lp_unheard_unspeakable_opens; probe 2026-10-14)."""
+    tts = EngineTTSService(voice="af_heart")
+    tts._synth_text = _fake_segments
+    tts._stop_frame_timeout_s = 0.5          # the 15 s sweep, shortened
+    ledger_side = Probe()
+    out = StubOutput()
+    ledger = TranscriptLedger(tts=tts, output=out)
+    task = PipelineTask(Pipeline([tts, ledger_side, out]), observers=[ledger])
+    runner = PipelineRunner(handle_sigint=False)
+    running = asyncio.create_task(runner.run(task))
+    await asyncio.sleep(0.5)
+    answer = "Hello there my friend."
+    try:
+        for text in ("Great!!", "\U0001F44D", answer):
+            await task.queue_frames([LLMFullResponseStartFrame(), LLMTextFrame(text),
+                                     LLMFullResponseEndFrame()])
+            await asyncio.sleep(0.1)
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline and (
+                sum(isinstance(f, TTSStoppedFrame) for _, f in ledger_side.seen) < 3):
+            await asyncio.sleep(0.05)
+        await asyncio.sleep(0.2)
+    finally:
+        await task.cancel()
+        await running
+    ctxs = [f.context_id for _, f in ledger_side.seen if isinstance(f, TTSStartedFrame)]
+    assert len(ctxs) == 3, f"three contexts expected, one per reply: {ctxs}"
+    with_audio = {f.context_id for _, f in ledger_side.seen if isinstance(f, TTSAudioRawFrame)}
+    assert ctxs[1] not in with_audio and ctxs[2] in with_audio, (
+        "the premise: the emoji's context opens and yields no audio")
+    charted = {u.text: u for u in ledger.events if u.speaker == "assistant"}
+    assert "\U0001F44D" not in charted, "nothing of the emoji was heard: nothing to chart"
+    if answer in charted:
+        assert not charted[answer].interrupted, (
+            f"the answer charted cut at heard {charted[answer].heard_fraction:.2f}")
+    else:
+        held = [t for t in ledger._turns if t["ctx"] == ctxs[2]]
+        assert held and held[0]["entry"] is not None and held[0]["entry"]["text"] == answer, (
+            f"the answer's own context must hold its text: "
+            f"{[(t['ctx'], t['entry'] and t['entry']['text']) for t in ledger._turns]}")
+    print("  PASS an unspeakable reply opens a context of its own; the next keeps its text")
+
+
 def test_tts_stop_frame():
     require_pinned()
 
@@ -323,6 +375,7 @@ def test_tts_stop_frame():
         await test_without_stop_frame_transport_waits_out_the_fallback()
         await test_a_reply_queued_behind_audio_is_scheduled_from_that_audios_end()
         await test_back_to_back_replies_place_words_from_their_own_audio()
+        await test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text()
     asyncio.run(main())
 
 

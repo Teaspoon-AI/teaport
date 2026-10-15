@@ -39,14 +39,16 @@
 (*                                                                          *)
 (* The ledger: turns open only on the TTS's own frames, never on the        *)
 (* anonymous BotStartedSpeaking; a turn claims the oldest expected context  *)
-(* (the queue of ended responses), else the one streaming; several turns    *)
-(* may be open at once; a turn's audio_start is its own chunk's place in    *)
-(* the transport's queue; a window closing credits the queued chunks that   *)
-(* have played by then and charts, oldest first, the turns whose audio has  *)
-(* all played and whose synthesis is over; a context starting proves every  *)
-(* OTHER open context ended; a context's stop frame says its synthesis is   *)
-(* over; the drain re-push confirms or corrects a turn's response; an       *)
-(* interruption charts every open turn.                                     *)
+(* (the queue of ended responses: every one with text, synthesizable or     *)
+(* not), else the one streaming; several turns may be open at once; a       *)
+(* turn's audio_start is its own chunk's place in the transport's queue; a  *)
+(* window closing credits the queued chunks that have played by then and    *)
+(* charts, oldest first, the turns whose audio has all played and whose     *)
+(* synthesis is over; a context starting proves every OTHER open context    *)
+(* ended; a context's stop frame says its synthesis is over; the drain      *)
+(* re-push confirms or corrects a turn's response; an interruption charts   *)
+(* every open turn. A whole response with nothing synthesizable closes      *)
+(* charting nothing: none of it could be heard.                             *)
 (*                                                                          *)
 (* Everything numeric is abstracted away, as in Ledger.tla: what is kept    *)
 (* is which turn a chunk is attributed to, whether a turn's playout start   *)
@@ -64,9 +66,14 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           UnspeakableOpens, \* BOOLEAN: pipecat opens a context for an Unspeakable reply
                          \*   (TRUE: 1.8.1 as it is); FALSE is the premise the model was
                          \*   first written with -- no context at all
-          LedgerSpeakCheck, \* BOOLEAN: the ledger applies the engine's has_speech
-                         \*   before queuing a response (transcript_ledger._llm_side,
-                         \*   as shipped); FALSE: it queues every response with text
+          SpeakCheck,    \* where the ledger applies the engine's has_speech:
+                         \*   "chart" -- as shipped: every response with text is queued,
+                         \*     and a turn with no audio and nothing synthesizable is
+                         \*     charted nothing (_finish; see Silent);
+                         \*   "queue" -- before this fix: such a response is not queued
+                         \*     (_llm_side), on the first cut's premise that no context
+                         \*     opens for it;
+                         \*   "none" -- every response with text queued AND charted
           Drain,         \* BOOLEAN: the live wiring (tts given: the End re-push is seen);
                          \*   FALSE is the hermetic tests' -- no drain signal, a turn is
                          \*   taken as synthesized once its response has ended
@@ -74,6 +81,8 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           MaxChunks,     \* audio pushes per context (2 makes a stall mid-reply reachable)
           MaxInterrupts,
           MaxFillerCtxs  \* the 512 in the TTSStarted branch, shrunk to make overflow reachable
+
+ASSUME SpeakCheck \in {"chart", "queue", "none"}
 
 NONE == "none"
 OWN  == "own"            \* audio_start: the turn's own chunk's place in the playout layout
@@ -136,15 +145,22 @@ GenComplete(g, stopping) ==
 Chart(t, intr, stopping) ==
     [gen |-> t.gen, ctx |-> t.ctx, audioStart |-> t.audioStart, intr |-> intr,
      anyPlayed |-> AnyPlayed(t.gen), allPlayed |-> AllPlayed(t.gen),
-     complete |-> GenComplete(t.gen, stopping)]
-\* _finish charts nothing for a turn that holds no text (an anonymous turn).
-Named(ts) == SelectSeq(ts, LAMBDA t: t.gen # NONE)
-ChartsAs(ts, intr, stopping) == [i \in DOMAIN Named(ts) |-> Chart(Named(ts)[i], intr, stopping)]
+     complete |-> GenComplete(t.gen, stopping),
+     epoch |-> interrupts]                      \* the user turns (barge-ins) before it
+\* _finish charts nothing for a turn that holds no text (an anonymous turn) -- nor,
+\* as shipped, for one with no audio and nothing synthesizable in its text
+\* (has_speech, at the chart), unless a barge-in cut its response while it still
+\* streamed (`cut`): the rest of it may have had words.
+Silent(t, cut) == /\ SpeakCheck = "chart" /\ t.gen \in Unspeakable /\ ~t.qa
+                  /\ cut => t.gen \in ended
+Named(ts, cut) == SelectSeq(ts, LAMBDA t: t.gen # NONE /\ ~Silent(t, cut))
+ChartsAs(ts, intr, stopping) ==
+    [i \in DOMAIN Named(ts, FALSE) |-> Chart(Named(ts, FALSE)[i], intr, stopping)]
 \* At a cut, a turn whose synthesis is over and whose every chunk had played by the
 \* cut (the layout's portion up to now, _interrupt) is charted complete, not cut.
 CutComplete(t) == t.synthDone /\ t.qa /\ playedN[t.ctx] = chunks[t.ctx]
-ChartsCut(ts) == [i \in DOMAIN Named(ts) |->
-                    Chart(Named(ts)[i], ~CutComplete(Named(ts)[i]), NONE)]
+ChartsCut(ts) == [i \in DOMAIN Named(ts, TRUE) |->
+                    Chart(Named(ts, TRUE)[i], ~CutComplete(Named(ts, TRUE)[i]), NONE)]
 CtxsOf(ts) == {t.ctx : t \in Range(ts)}
 StopOf(c) == IF c \in Replies THEN c ELSE NONE
 
@@ -207,9 +223,9 @@ Ledger(f) ==
          \* stream begins, see LlmStart.
          IF genAcc = NONE THEN UNCHANGED ledgerVars
          ELSE /\ ended' = ended \cup {genAcc}
-              \* LedgerSpeakCheck: text the engine will not synthesize is not an
-              \* expected context (tts_text.has_speech is the engine's predicate).
-              /\ queue' = IF genAcc \in claimed \/ (LedgerSpeakCheck /\ genAcc \in Unspeakable)
+              \* SpeakCheck = "queue" (before this fix): text the engine will not
+              \* synthesize is not an expected context (tts_text.has_speech).
+              /\ queue' = IF genAcc \in claimed \/ (SpeakCheck = "queue" /\ genAcc \in Unspeakable)
                             THEN queue ELSE Append(queue, genAcc)
               /\ genAcc' = NONE
               /\ UNCHANGED <<claimed, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
@@ -287,7 +303,7 @@ Ledger(f) ==
             /\ fifo' = PqAudio /\ winOpen' = (PqAudio # <<>>)
             /\ UNCHANGED <<genAcc, ended, claimed, queue, fillerCtxs>>
     [] f.type = "Drained" ->                     \* the response's End, sighted again below the TTS
-         IF \/ LedgerSpeakCheck /\ f.gen \in Unspeakable   \* never in _end_ids
+         IF \/ SpeakCheck = "queue" /\ f.gen \in Unspeakable   \* never in _end_ids
             \/ f.gen \in claimed /\ ~(\E i \in DOMAIN turns : turns[i].gen = f.gen)
          THEN UNCHANGED ledgerVars               \* its turn is charted already
          ELSE IF turns = <<>> THEN
@@ -306,7 +322,7 @@ Ledger(f) ==
             IN /\ queue' = Remove(queue, f.gen)
                /\ claimed' = (IF own THEN claimed ELSE claimed \ {old}) \cup {f.gen}
                /\ IF ~tsB[k].qa THEN            \* drained with no audio: never played
-                     /\ charted' = charted \o <<Chart(tsB[k], TRUE, f.gen)>>
+                     /\ charted' = charted \o ChartsAs(<<tsB[k]>>, TRUE, f.gen)
                      /\ turns' = Drop(tsB, k)
                      /\ closedCtxs' = closedCtxs \cup {tsB[k].ctx}
                   ELSE                          \* its window may have closed already
@@ -504,6 +520,18 @@ NoPrematureFullChart ==
 \* No response is charted twice.
 ChartedAtMostOnce ==
     \A i, j \in DOMAIN charted : i # j => charted[i].gen # charted[j].gen
+
+\* HeardContextCorrector finds a cut reply's message by POSITION: the newest
+\* assistant message since its last reconcile, at a user turn. A reply charted
+\* heard-nothing committed no message (no word frame reached the aggregator);
+\* charted ahead of a reply that played, with no user turn between them (the
+\* model's user turns are its barge-ins), its cut lands on the played reply's
+\* message, and the corrector deletes an answer the caller heard.
+NoUnheardAheadOfPlayed ==
+    \A i, j \in DOMAIN charted :
+        (/\ i < j /\ charted[i].intr /\ charted[i].audioStart = NONE
+         /\ charted[j].anyPlayed)
+            => charted[i].epoch < charted[j].epoch
 
 \* A turn charted under a reply's context carries THAT reply's text.
 ChartedTextMatchesContext ==

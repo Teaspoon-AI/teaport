@@ -43,10 +43,12 @@ from pipecat.frames.frames import (  # noqa: E402
     TTSAudioRawFrame,
     TTSSpeakFrame,
     TTSStartedFrame,
+    TTSStoppedFrame,
     TTSTextFrame,
 )
 from pipecat.utils.text.base_text_aggregator import AggregationType  # noqa: E402
 
+from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
 from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
 from teaport_brain.tts_text import has_speech  # noqa: E402
 
@@ -563,30 +565,73 @@ async def test_k_the_intended_text_is_what_the_tts_receives_not_the_raw_deltas()
     assert [u.text for u in bot(L)] == ["Sorry, let me try that again."], [u.text for u in bot(L)]
 
 
-async def test_k_a_response_with_nothing_synthesizable_is_not_expected_and_the_next_keeps_its_text():
-    """The engine opens no context for text it cannot synthesize (run_tts: "nothing
-    synthesizable" -- a bare ellipsis, punctuation, a symbol). Queued as an expected
-    context anyway, it sat at the queue's head and the NEXT reply's context claimed it;
-    a barge-in before that reply's End had drained then charted the wrong text, and no
-    drain could have corrected it in time (LedgerPlayout.tla, lp_wrongText_unspeakable).
-    The ledger now applies the engine's own predicate, tts_text.has_speech, before
-    queuing -- one regex shared with split_clauses_ramp, so the two cannot drift."""
-    assert not has_speech("...") and not has_speech("\u2026 \u2014") and not has_speech("  ")
+async def test_k_a_response_with_nothing_synthesizable_claims_its_own_context():
+    """Text the engine cannot synthesize ("\U0001F44D", a bare "...") still opens a
+    context: pipecat queues the TTSStartedFrame before run_tts, which then yields no
+    audio, and the context ends on the stop-frame timeout. The ledger used to leave such
+    a response out of its queue (tts_text.has_speech), on the premise that no context
+    opens for it -- so when that context opened late, behind one still open ("Great!!"
+    holds its context for the timeout), it claimed the NEXT reply's text, charted it
+    heard 0% when it ended with no audio, and the next reply then played in full under
+    an anonymous turn. HeardContextCorrector deleted the answer the caller had just
+    heard (LedgerPlayout.tla, lp_wrongText/unheard_unspeakable_opens; the frame order
+    is the real EngineTTSService's, probe 2026-10-14).
+
+    Every response with text is expected now, and its context claims its own entry.
+    Nothing of it could be heard and pipecat commits nothing for it, so its turn closes
+    charting nothing -- a heard-0 chart there would hand the corrector a cut with no
+    message of its own, and it anchors by position: it would delete the reply that
+    played after it (lp_unspeakable_charted)."""
+    assert not has_speech("\U0001F44D") and not has_speech("...") and not has_speech("\u2026 \u2014")
     assert has_speech("Ok.") and has_speech("\u65e5\u672c\u8a9e\u3067\u3059") and has_speech("7")
-    L = ledger()
-    silent, _ = response("...", 0.0)                   # the model emitted only an ellipsis
-    answer, _end2 = response(R2, 1.0)
-    await feed(L, silent + answer + [
-        (started("R2"), 1.2, BELOW),
-        at(audio(2.0, "R2"), 1.2),
-        *siblings(BotStartedSpeakingFrame, 1.3),
-        (InterruptionFrame(), 2.3),                    # before R2's End has drained
+    f0, end0 = response("Great!!", 0.0)
+    f1, end1 = response("\U0001F44D", 0.15)
+    f2, end2 = response(R2, 0.30)
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.06, BELOW),
+        at(audio(1.0, "A"), 0.08),                  # "Great!" -- the trailing "!" yields none
+        *siblings(BotStartedSpeakingFrame, 0.1),
+    ] + f1 + f2 + [                                 # both reach the TTS while A is open
+        (copy(1.0), 1.08, AFTER),
+        (TTSStoppedFrame(context_id="A"), 1.08, BELOW),   # A's stop-frame timeout
+        drained(end0, 1.08),
+        *siblings(BotStoppedSpeakingFrame, 1.1),
+        (started("B"), 1.1, BELOW),                 # the emoji's context, late
+        (TTSStoppedFrame(context_id="B"), 2.1, BELOW),    # no audio: the timeout again
+        drained(end1, 2.1),
+        (started("C"), 2.1, BELOW),                 # R2's own context
+        at(audio(1.5, "C"), 2.1),
+        (TTSStoppedFrame(context_id="C"), 2.1, BELOW),
+        drained(end2, 2.1),
+        *siblings(BotStartedSpeakingFrame, 2.15),
+        (copy(1.5), 3.65, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 3.65),
     ])
     utts = bot(L)
-    assert [u.text for u in utts] == [R2], (
-        f"{[u.text[:24] for u in utts]} -- the unsynthesizable response was expected, "
-        "and R2's context claimed it")
-    assert utts[0].interrupted and 0.3 < utts[0].heard_fraction < 0.7, utts[0].heard_fraction
+    assert [(u.text, u.interrupted) for u in utts] == [("Great!!", False), (R2, False)], (
+        [(u.text[:24], u.interrupted, round(u.heard_fraction, 2)) for u in utts])
+    assert utts[1].heard_fraction >= 0.99 and abs(utts[1].t_start - 2.15) < 0.01, (
+        utts[1].heard_fraction, utts[1].t_start)
+    assert not L._turns and not L._queue, (L._turns, list(L._queue))
+
+    # The caller's next turn: the context as pipecat committed it (the emoji yielded no
+    # word frames, so nothing of it). The corrector must leave the answer in place.
+    class Ctx:
+        def __init__(self, m):
+            self.m = m
+
+        def get_messages(self, *a, **k):
+            return self.m
+
+        def set_messages(self, m):
+            self.m = list(m)
+
+    ctx = Ctx([{"role": "user", "content": "How are you?"},
+               {"role": "assistant", "content": "Great!!"},
+               {"role": "assistant", "content": R2},
+               {"role": "user", "content": "And you?"}])
+    HeardContextCorrector(L, ctx, mode="truncate")._reconcile()
+    assert [m["content"] for m in ctx.m if m["role"] == "assistant"] == ["Great!!", R2], ctx.m
 
 
 def main():
