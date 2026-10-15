@@ -71,12 +71,12 @@ def _clean_prefix(heard: str) -> str:
     return " ".join(words).rstrip(" ,;:.").strip()
 
 
-def _unspoken(m) -> bool:
-    """An assistant message with text but nothing synthesizable in it (an emoji reply):
-    the ledger charts no such reply, so the corrector never counts it as one."""
-    text = _msg_text(m)
-    return (m.get("role") == "assistant" and not m.get("tool_calls")
-            and bool(text.strip()) and not has_speech(text))
+def _is_reply(m) -> bool:
+    """Whether a message can be a reply the ledger charted: an assistant message with
+    something synthesizable in its text (tts_text.has_speech, the ledger's own test).
+    An emoji reply -- a tool call riding on it or not -- is charted nothing, so the
+    corrector neither counts it as a reply nor takes it for one."""
+    return m.get("role") == "assistant" and has_speech(_msg_text(m))
 
 
 def drop_from_context(context, doomed) -> None:
@@ -252,15 +252,19 @@ class HeardContextCorrector(FrameProcessor):
         # prefix overwrote it while the cut reply kept its full text (LedgerPlayout.tla,
         # HeardPrefixOnOwn, lp_unspeakable_tail).
         end = len(msgs)
-        while end > start and (msgs[end - 1].get("role") in ("user", "system")
-                               or _unspoken(msgs[end - 1])):
+        # (An assistant message with no text at all -- a bare tool call -- is not
+        # skipped: the insert path below needs it.)
+        def skipped(m):
+            return (m.get("role") in ("user", "system")
+                    or (m.get("role") == "assistant" and _msg_text(m).strip()
+                        and not _is_reply(m)))
+        while end > start and skipped(msgs[end - 1]):
             end -= 1
         if newer == 0:
             # The newest: a tool result there means pipecat dropped the reply's text
             # (_truncate inserts the heard prefix after it).
             return msgs[end - 1] if end > start else None
-        spoken = [m for m in msgs[start:end]
-                  if m.get("role") == "assistant" and has_speech(_msg_text(m))]
+        spoken = [m for m in msgs[start:end] if _is_reply(m)]
         if len(spoken) <= newer:
             logger.warning(f"HeardCorrector[truncate]: {newer} newer replies but only "
                            f"{len(spoken)} spoken messages; cut turn left unchanged")

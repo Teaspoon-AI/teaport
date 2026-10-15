@@ -788,6 +788,21 @@ async def test_n_an_emoji_reply_after_a_cut_one_is_not_its_message():
     assert left[0] != ANSWER and ANSWER.startswith(left[0]), (
         f"the cut reply must keep only what was heard: {left}")
 
+    # The same emoji with a tool call riding on it (a second completion in the window):
+    # neither a reply nor the cut one's message. The walk back from the newest used to
+    # stop at it -- one predicate excluded tool-call messages, the count of newer
+    # replies did not -- and its text took the cut reply's heard prefix.
+    call = {"role": "assistant", "content": "\U0001F44D",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"}}]}
+    ctx = Ctx([{"role": "user", "content": "How are you?"},
+               {"role": "assistant", "content": ANSWER}, call,
+               {"role": "user", "content": "And you?"}])
+    HeardContextCorrector(L, ctx, mode="truncate")._reconcile()
+    left = [m["content"] for m in ctx.m if m["role"] == "assistant"]
+    assert left[1] == "\U0001F44D" and left[0] != ANSWER and ANSWER.startswith(left[0]), (
+        f"the tool call's emoji was taken for the cut reply's message: {left}")
+
 
 def main():
     tests = [v for k, v in sorted(globals().items())

@@ -1240,11 +1240,17 @@ LlmStart(r1) TtsStart(r1) TtsStop(r1)   r1 ("👍"): charted nothing, committed 
 PlayStart PlayChunk Interrupt           r2 cut partway: its prefix lands on r1's message
 ```
 
-The walk back from the newest now skips a message with text and nothing synthesizable
-(`_unspoken`; one carrying a tool call is kept, and so is the tool-result insert path), as
-the count of newer replies already did. `lp_unspeakable` (`"seq"`) holds with the
-corrector's three; regression: `test_ledger_playout.py` case n, which fails on the code
-before it with the review's output.
+The walk back from the newest now skips an assistant message with text and nothing
+synthesizable, as the count of newer replies already did — one predicate for both,
+`_is_reply` (the ledger's own `has_speech`). A tool call riding on the emoji does not make
+it a reply: the first cut of this fix kept such a message as a stop while the count skipped
+it, so with emoji text on a follow-up's tool call the walk stopped there and its text took
+the cut reply's prefix (review of the integrated stack). A message with no text at all — a
+bare tool call — still stops the walk, for the tool-result insert path. Tool calls are not
+in the model: to it both are `Muted` messages, which the corrector never counts or takes.
+`lp_unspeakable` (`"seq"`) holds with the corrector's three; regression:
+`test_ledger_playout.py` case n (an emoji reply, and the same with a tool call), which
+fails on the code before each fix with the review's output.
 
 ### What the model found
 
