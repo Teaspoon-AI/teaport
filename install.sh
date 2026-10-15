@@ -2187,7 +2187,7 @@ phase_oled_avatar() {
     # The repo is private (manifest oled_avatar.private): a box without access to it
     # skips the face instead of stopping the install at a credentials prompt.
     if ! run env GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$src"; then
-      warn "oled avatar: cannot fetch github.com/$repo — it is installed on Teaspoon AI appliances only; skipped, the rest of the box is unaffected"
+      warn "oled avatar: cannot fetch github.com/$repo at $tag (no access from this box — it is installed on Teaspoon AI appliances only — or see git's error above); the face is skipped, the rest of the box is unaffected"
       return 0
     fi
   fi

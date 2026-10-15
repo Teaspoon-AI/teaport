@@ -99,11 +99,13 @@ downloads. You bring your own Jetson and your own LLM.
   optionally `WIFI_SETUP_SSID=<name>`. The setup network then always uses that
   password, so it can be printed. Without that file, each setup uses fresh random
   digits. The installer never writes or overwrites this file.
-- **Step 7 (Teaspoon AI appliances) — Give it a face.** Wire a 128x64 SSD1306 OLED
-  to the Jetson's I2C header and re-run the installer with
-  `TEAPORT_ENABLE_OLED_AVATAR=1`. It fetches teaport-oled-avatar, a private
-  repository: Teaspoon AI installs it on its appliances, and on a box without access
-  the installer skips it and installs everything else. It runs the avatar's installer, which finds the panel (`0x3c`/`0x3d` on any I2C bus;
+- **Step 7 (Teaspoon AI appliances only; on your own Jetson, skip this step) — The
+  face.** Teaspoon AI appliances have a 128x64 SSD1306 OLED on the Jetson's I2C
+  header, and Teaspoon AI installs it with `TEAPORT_ENABLE_OLED_AVATAR=1`. That
+  fetches teaport-oled-avatar, a private repository (or takes a local checkout of it
+  from `TEAPORT_OLED_SRC`); on a box without access to it the installer skips the
+  face and installs everything else. It runs the avatar's
+  installer, which finds the panel (`0x3c`/`0x3d` on any I2C bus;
   `TEAPORT_OLED_PORT`/`TEAPORT_OLED_ADDR` to name it) and enables
   `teaport-oled-avatar`. With the local mic bridge (Step 6) running, the eyes
   follow the conversation and the mouth moves with the voice. During Wi-Fi setup
