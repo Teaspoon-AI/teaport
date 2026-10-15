@@ -392,6 +392,27 @@ def _require_context_end_hook():
                              "needs a new hook")
 
 
+def _require_close_at_end_flag():
+    """EngineTTSService closes each context at its End whatever the last run_tts
+    yielded (tts_process_generator below) by setting pipecat's PRIVATE
+    TTSService._is_yielding_frames_synchronously, which on_turn_context_completed reads
+    to decide whether the End closes the context. If a pipecat bump renames it or stops
+    reading it there, the override would silently do nothing and a reply ending in "!!"
+    would hold the TTS for TTS_STOP_FRAME_TIMEOUT_S again. Fail loudly at session build,
+    as _require_context_end_hook does."""
+    import inspect
+    try:
+        source = inspect.getsource(TTSService.on_turn_context_completed)
+    except (OSError, TypeError):
+        logger.warning("pipecat source unavailable: cannot confirm on_turn_context_completed "
+                       "still closes a context on _is_yielding_frames_synchronously")
+        return
+    if "_is_yielding_frames_synchronously" not in source:
+        raise AttributeError("pipecat's on_turn_context_completed no longer reads "
+                             "_is_yielding_frames_synchronously: EngineTTSService's "
+                             "close-at-End needs a new hook")
+
+
 # The timeout _missing_pacing_hooks hands its probe and looks for again. Any positive
 # number would do; an odd one cannot pass as a default the constructor fell back to.
 _PROBE_TIMEOUT_S = 7.25
@@ -511,6 +532,7 @@ class EngineTTSService(TTSService):
                  lang_code: str = None, speed: float = 1.0, phonemes: bool = False,
                  **kwargs):
         _require_context_end_hook()
+        _require_close_at_end_flag()
         self._voice = voice
         self._speed = speed
         # The client draws a mouth from what is said (?features=phonemes, the OLED face
@@ -600,10 +622,10 @@ class EngineTTSService(TTSService):
             # the post-tool-call completion (3 s of dead air after every tool
             # filler), what keeps the 2-word barge-in guard armed past the audio,
             # and what the follow-up gate reads as "still talking".
-            # stop_frame_timeout_s below remains the sweep
-            # for a context that never yielded audio (nothing synthesizable): pipecat
-            # appends no stop frame for it, so only the timeout reclaims it, and the
-            # transport ignores a stop frame that follows no audio.
+            # stop_frame_timeout_s below remains the sweep for a context the LLM leaves
+            # open mid-reply; one whose End has arrived closes at that End, audio or not
+            # (tts_process_generator below), and the transport ignores a stop frame that
+            # follows no audio.
             push_stop_frames=True,
             stop_frame_timeout_s=_STOP_FRAME_TIMEOUT_S,
             # Do NOT let a run of silent contexts write this service off. pipecat
@@ -831,14 +853,11 @@ class EngineTTSService(TTSService):
                                      hard_max=_CLAUSE_HARD_MAX,
                                      soft_max=_SENTENCE_SOFT_MAX)
         if not clauses:
-            # ErrorFrame, not a bare return. Returning here yielded neither audio nor a
-            # signal, and by this point _push_tts_frames has already created the audio
-            # context and pushed TTSStartedFrame — so tts_process_generator saw no
-            # TTSAudioRawFrame, left _is_yielding_frames_synchronously False, and
-            # on_turn_context_completed skipped closing the context. It was then only
-            # reclaimed by the TTS_STOP_FRAME_TIMEOUT_S sweep: fifteen seconds of dead air
-            # per occurrence, with the silent-turn watchdog firing in the middle of it and
-            # nothing upstream told anything was wrong.
+            # ErrorFrame, not a bare return: a reply with nothing synthesizable must
+            # say so upstream. (By this point _push_tts_frames has already created the
+            # audio context and pushed TTSStartedFrame. That the context still closes
+            # at the End is tts_process_generator's doing below -- an ErrorFrame is not
+            # audio, and pipecat 1.8.1 closes only after a run_tts that yielded some.)
             logger.warning(f"{self}: nothing synthesizable in {text[:60]!r} — no audio")
             yield ErrorFrame(error=f"tts: nothing synthesizable in {text[:60]!r}")
             return
@@ -906,6 +925,22 @@ class EngineTTSService(TTSService):
             # dead air with no signal is the worst outcome — surface it so the
             # pipeline/user knows the voice is down.
             yield ErrorFrame(error=f"tts: all {failed_clauses} clause(s) failed to synthesize")
+
+    async def tts_process_generator(self, context_id, generator):
+        """pipecat's, then: this service yields every frame of a run_tts synchronously,
+        so the End closes the context (on_turn_context_completed appends its stop frame)
+        whatever the LAST run_tts yielded. pipecat sets the flag from that call alone --
+        "yielded audio" -- since a service that yields none may be streaming its audio
+        on a socket of its own. Ours never does: a run_tts with no audio is one that has
+        none to give. The sentence aggregator hands a reply's trailing "!" of "Great!!"
+        ("Really?!", "Bye! 👋") to run_tts alone; it has nothing synthesizable, the
+        flag fell to False, and the context -- and the TTS's queue behind it, the answer
+        after a tool call, a narrator line -- waited out TTS_STOP_FRAME_TIMEOUT_S (15 s)
+        while bot-speaking ended on the transport's 3 s idle fallback. The same for a
+        reply with nothing synthesizable at all, and one whose every clause failed
+        (brain/formal/LedgerPlayout.tla, lp_endings)."""
+        await super().tts_process_generator(context_id, generator)
+        self._is_yielding_frames_synchronously = True
 
     async def _speak_clause(self, clause: str, context_id: str, eager: bool | None = None):
         """One clause's audio frames, each yielded as the engine streams it (seam-trimmed),

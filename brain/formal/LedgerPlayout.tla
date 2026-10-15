@@ -14,8 +14,11 @@
 (*     and queues the started frame BEFORE run_tts, so text with nothing    *)
 (*     synthesizable ("...", an emoji) opens a context that never yields    *)
 (*     audio (UnspeakableOpens; the model's first cut assumed it opened     *)
-(*     none). Such a context, and any whose LAST run_tts yielded no audio,  *)
-(*     is not closed at the End: it ends on the stop-frame timeout.         *)
+(*     none). pipecat closes a context at its End only if its LAST run_tts  *)
+(*     yielded audio (on_turn_context_completed); a reply whose last piece  *)
+(*     has nothing synthesizable ("Great!!" ends in a lone "!") is left to  *)
+(*     the stop-frame timeout, and so is an unspeakable reply -- unless the *)
+(*     service says it yields synchronously (CloseAtEnd: engine_tts).       *)
 (*   - Every context that opened ends with a TTSStoppedFrame naming it      *)
 (*     (push_stop_frames=True since PR #13's merge): appended behind its    *)
 (*     last chunk, or pushed on the stop-frame timeout -- mid-reply too,    *)
@@ -63,6 +66,11 @@ EXTENDS Naturals, Sequences, FiniteSets
 CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           Fillers,       \* filler context ids -- narrator / tool-ack TTSSpeakFrames
           Unspeakable,   \* replies with text but nothing synthesizable (no audio, ever)
+          TrailingMute,  \* replies with audio whose LAST piece run_tts gets alone has
+                         \*   nothing synthesizable: "Great!!" -> "Great!", "!"
+          CloseAtEnd,    \* BOOLEAN: the TTS closes a context at its End whatever its last
+                         \*   run_tts yielded (engine_tts.tts_process_generator, shipped);
+                         \*   FALSE is pipecat's default: only if it yielded audio
           UnspeakableOpens, \* BOOLEAN: pipecat opens a context for an Unspeakable reply
                          \*   (TRUE: 1.8.1 as it is); FALSE is the premise the model was
                          \*   first written with -- no context at all
@@ -83,6 +91,7 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
           MaxFillerCtxs  \* the 512 in the TTSStarted branch, shrunk to make overflow reachable
 
 ASSUME SpeakCheck \in {"chart", "queue", "none"}
+ASSUME TrailingMute \cap Unspeakable = {}
 
 NONE == "none"
 OWN  == "own"            \* audio_start: the turn's own chunk's place in the playout layout
@@ -103,6 +112,7 @@ VARIABLES
     pq,          \* the transport's queue, push order: [k |-> "audio"|"stop", c |-> ctx]
     window,      \* the transport's bot-speaking window is open
     interrupts,
+    swept,       \* contexts the stop-frame timeout closed after their End reached the TTS
     \* --- the ledger: transcript_ledger.py ---
     genAcc,      \* _gen          : NONE or the reply streaming now
     ended,       \* replies whose End the TTS sighted with text (entry["ended"])
@@ -115,9 +125,9 @@ VARIABLES
     closedCtxs,  \* _closed_ctxs
     charted      \* self.events, assistant utterances only
 
-envVars    == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts>>
+envVars    == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
 ledgerVars == <<genAcc, ended, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
-vars       == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts,
+vars       == <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept,
                 genAcc, ended, claimed, queue, turns, fifo, winOpen, fillerCtxs, closedCtxs, charted>>
 
 Init ==
@@ -125,7 +135,7 @@ Init ==
     /\ synth = [c \in Ctxs |-> "idle"] /\ timedOut = [c \in Ctxs |-> FALSE]
     /\ drainPending = [r \in Replies |-> FALSE]
     /\ chunks = [c \in Ctxs |-> 0] /\ playedN = [c \in Ctxs |-> 0]
-    /\ pq = <<>> /\ window = FALSE /\ interrupts = 0
+    /\ pq = <<>> /\ window = FALSE /\ interrupts = 0 /\ swept = {}
     /\ genAcc = NONE /\ ended = {} /\ claimed = {} /\ queue = <<>> /\ turns = <<>>
     /\ fifo = <<>> /\ winOpen = FALSE /\ fillerCtxs = <<>> /\ closedCtxs = {}
     /\ charted = <<>>
@@ -353,13 +363,13 @@ LlmStart(r) ==
     /\ llm' = [llm EXCEPT ![r] = "streaming"]
     /\ order' = Append(order, r)
     /\ Ledger([type |-> "LLMStart", gen |-> r])
-    /\ UNCHANGED <<synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts>>
+    /\ UNCHANGED <<synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
 
 LlmEnd(r) ==
     /\ llm[r] = "streaming"
     /\ llm' = [llm EXCEPT ![r] = "done"]
     /\ Ledger([type |-> "LLMEnd", gen |-> r])
-    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts>>
+    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
 
 \* An interrupted completion still ends: pipecat pushes its End from a finally,
 \* after the InterruptionFrame. The ledger finds no stream and ignores it.
@@ -367,7 +377,7 @@ LlmCancelEnd(r) ==
     /\ llm[r] = "aborted"
     /\ llm' = [llm EXCEPT ![r] = "cancelled"]
     /\ Ledger([type |-> "LLMEnd", gen |-> r])
-    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts>>
+    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
 
 \* Synthesis is sequential per the TTS service, and in the order responses
 \* reached it: a reply's context cannot start while an earlier live reply's has
@@ -391,7 +401,7 @@ TtsStart(c) ==
     /\ CanStart(c)
     /\ synth' = [synth EXCEPT ![c] = "started"]
     /\ Ledger([type |-> "TTSStarted", ctx |-> c, filler |-> c \in Fillers])
-    /\ UNCHANGED <<llm, order, timedOut, drainPending, chunks, playedN, pq, window, interrupts>>
+    /\ UNCHANGED <<llm, order, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept>>
 
 TtsAudio(c) ==
     /\ synth[c] \in {"started", "audio"} /\ chunks[c] < MaxChunks /\ c \notin Unspeakable
@@ -399,13 +409,21 @@ TtsAudio(c) ==
     /\ chunks' = [chunks EXCEPT ![c] = @ + 1]
     /\ pq' = Append(pq, [k |-> "audio", c |-> c])
     /\ Ledger([type |-> "TTSAudio", ctx |-> c])
-    /\ UNCHANGED <<llm, order, timedOut, drainPending, playedN, window, interrupts>>
+    /\ UNCHANGED <<llm, order, timedOut, drainPending, playedN, window, interrupts, swept>>
 
 \* The context ends: its TTSStoppedFrame, queued at the transport behind its audio.
-\* One with audio, after its last chunk; an Unspeakable one with none, on the
-\* stop-frame timeout. A reply's whose End reached the TTS then re-pushes that End
-\* (TtsDrain, the ledger's drain signal); one whose LLM still streams hit the
-\* stop-frame timeout instead and gets no re-push of its own.
+\* One with audio, after its last chunk; an Unspeakable one with none. A reply's
+\* whose End reached the TTS then re-pushes that End (TtsDrain, the ledger's drain
+\* signal); one whose LLM still streams hit the stop-frame timeout instead and gets
+\* no re-push of its own.
+\*
+\* Which of the two closes it once its End has reached the TTS: the End itself
+\* (on_turn_context_completed appends the stop frame and ends the context), but
+\* in pipecat 1.8.1 only if the LAST run_tts yielded audio
+\* (tts_process_generator's flag) -- else nothing ends it but the stop-frame
+\* timeout, 15 s on, with the TTS's queue held behind it. MutedAtEnd: the
+\* replies whose last run_tts yields none.
+MutedAtEnd == Unspeakable \cup TrailingMute
 TtsStop(c) ==
     /\ \/ synth[c] = "audio"
        \/ synth[c] = "started" /\ c \in Unspeakable
@@ -416,6 +434,8 @@ TtsStop(c) ==
                    THEN [timedOut EXCEPT ![c] = TRUE] ELSE timedOut
     /\ drainPending' = IF c \in Replies /\ llm[c] = "done" /\ Drain
                        THEN [drainPending EXCEPT ![c] = TRUE] ELSE drainPending
+    /\ swept' = IF c \in MutedAtEnd /\ llm[c] = "done" /\ ~CloseAtEnd
+                 THEN swept \cup {c} ELSE swept
     /\ Ledger([type |-> "TTSStopped", ctx |-> c])
     /\ UNCHANGED <<llm, order, chunks, playedN, window, interrupts>>
 
@@ -425,7 +445,7 @@ TtsDrain(r) ==
     /\ drainPending[r]
     /\ drainPending' = [drainPending EXCEPT ![r] = FALSE]
     /\ Ledger([type |-> "Drained", gen |-> r])
-    /\ UNCHANGED <<llm, order, synth, timedOut, chunks, playedN, pq, window, interrupts>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, chunks, playedN, pq, window, interrupts, swept>>
 
 \* Resume: the LLM's next sentence reaches the TTS after its context ended on the
 \* timeout, and pipecat re-creates the context under the SAME id (_push_tts_frames:
@@ -437,7 +457,7 @@ TtsRestart(c) ==
     /\ synth' = [synth EXCEPT ![c] = "started"]
     /\ timedOut' = [timedOut EXCEPT ![c] = FALSE]
     /\ Ledger([type |-> "TTSStarted", ctx |-> c, filler |-> FALSE])
-    /\ UNCHANGED <<llm, order, drainPending, chunks, playedN, pq, window, interrupts>>
+    /\ UNCHANGED <<llm, order, drainPending, chunks, playedN, pq, window, interrupts, swept>>
 
 HeadIs(kind) == pq # <<>> /\ Head(pq).k = kind
 
@@ -445,14 +465,14 @@ PlayStart ==                                       \* BotStartedSpeaking: the wi
     /\ ~window /\ HeadIs("audio")
     /\ window' = TRUE
     /\ Ledger([type |-> "PlayStart"])
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts, swept>>
 
 PlayChunk ==                                       \* a chunk plays; the transport re-pushes it UNTAGGED
     /\ window /\ HeadIs("audio")
     /\ pq' = Tail(pq)
     /\ playedN' = [playedN EXCEPT ![Head(pq).c] = @ + 1]
     /\ Ledger([type |-> "PlayChunk"])
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, window, interrupts>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, window, interrupts, swept>>
 
 \* A context's stop frame reaches the head of the transport's queue: bot-speaking
 \* ends if audio played since it last did (base_output: _tts_audio_received) --
@@ -463,13 +483,13 @@ PlayMark ==
     /\ IF window
          THEN window' = FALSE /\ Ledger([type |-> "PlayStop"])
          ELSE UNCHANGED window /\ UNCHANGED ledgerVars
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, interrupts>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, interrupts, swept>>
 
 PlayIdle ==                                        \* BOT_VAD_STOP_FALLBACK_SECS: the queue ran dry
     /\ window /\ pq = <<>>
     /\ window' = FALSE
     /\ Ledger([type |-> "PlayStop"])
-    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts>>
+    /\ UNCHANGED <<llm, order, synth, timedOut, drainPending, chunks, playedN, pq, interrupts, swept>>
 
 Interrupt ==                                       \* the user barges in
     /\ interrupts < MaxInterrupts
@@ -486,7 +506,7 @@ Interrupt ==                                       \* the user barges in
                                  ELSE IF llm[r] = "done" /\ synth[r] = "idle" THEN "cancelled"
                                  ELSE llm[r]]
     /\ Ledger([type |-> "Interruption"])
-    /\ UNCHANGED <<order, chunks, playedN>>
+    /\ UNCHANGED <<order, chunks, playedN, swept>>
 
 Next ==
     \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r) \/ TtsRestart(r) \/ TtsDrain(r)
@@ -544,6 +564,12 @@ PlayedIsCharted ==
         (playedN[r] > 0 /\ ~(\E i \in DOMAIN turns : turns[i].gen = r))
             => \E i \in DOMAIN charted : charted[i].gen = r
 
+\* A context whose End has reached the TTS is closed by that End, not by the
+\* stop-frame timeout: nothing the TTS says next (the answer after a tool call, a
+\* narrator line) waits out the 15 s behind it, and bot-speaking ends on the stop
+\* frame rather than the transport's 3 s idle fallback.
+NoSweepAfterEnd == swept = {}
+
 \* While a filler context is live, the ledger remembers it is a filler.
 FillerCtxRemembered ==
     \A c \in Fillers : synth[c] \in {"started", "audio"} => c \in Range(fillerCtxs)
@@ -554,6 +580,7 @@ TypeOK ==
     /\ synth \in [Ctxs -> {"idle", "started", "audio", "stopped", "aborted"}]
     /\ timedOut \in [Ctxs -> BOOLEAN] /\ drainPending \in [Replies -> BOOLEAN]
     /\ pq \in Seq([k : {"audio", "stop"}, c : Ctxs]) /\ window \in BOOLEAN
+    /\ swept \subseteq Replies
     /\ genAcc \in {NONE} \cup Replies /\ ended \subseteq Replies
     /\ claimed \subseteq Replies /\ queue \in Seq(Replies)
     /\ fifo \in Seq(Ctxs) /\ winOpen \in BOOLEAN

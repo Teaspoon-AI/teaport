@@ -872,9 +872,11 @@ this module has the same environment with the facts the design rests on spelled 
 - A context opens (`TTSStartedFrame`) for any text with a non-blank character:
   `tts_service._push_tts_frames` creates the audio context and queues the started frame
   *before* `run_tts`, so text with nothing synthesizable — `"..."`, an emoji — opens a
-  context that never yields audio (`UnspeakableOpens`). Such a context, and any whose
-  last `run_tts` yielded no audio, is not closed at the End: it ends on the stop-frame
-  timeout (`TTS_STOP_FRAME_TIMEOUT_S`, 15 s).
+  context that never yields audio (`UnspeakableOpens`). pipecat closes a context at its
+  End only if its last `run_tts` yielded audio (`on_turn_context_completed`, on
+  `tts_process_generator`'s flag); `EngineTTSService` closes every one at its End
+  (`CloseAtEnd`, below), so only a context the LLM leaves open mid-reply ends on the
+  stop-frame timeout (`TTS_STOP_FRAME_TIMEOUT_S`, 15 s).
 - Every context that opened ends with a `TTSStoppedFrame` naming it
   (`push_stop_frames=True`, `engine_tts.py:607`): appended behind its last chunk, or
   pushed on the stop-frame timeout — mid-reply too, when the LLM is silent that long. The
@@ -928,6 +930,8 @@ the rest on the real ledger.
 | `lp_unheard_unspeakable_opens` | `NoUnheardWhenPlayed`, the same | ✗ (12) — below |
 | `lp_unspeakable_charted` | every property, the first proposal: queued and charted (`"none"`) | ✗ (12) `NoUnheardAheadOfPlayed` — below |
 | `lp_unspeakable_noOpen` | `ChartedTextMatchesContext`, the shipped ledger on the first cut's premise: the fix rests on pipecat opening the context | ✗ (7) |
+| `lp_endings` | `NoSweepAfterEnd`, `TrailingMute = {r1}` ("Great!!"), pipecat's default close (`CloseAtEnd = FALSE`): **before this fix** | ✗ (6) — below |
+| `lp_endings_closed` | every property and `NoSweepAfterEnd`, a trailing-mute reply and an unspeakable one, **as shipped** (`CloseAtEnd`) | ✓ (72k, ~7 s) |
 | `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ (381k, ~15 s) |
 | `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
 
@@ -1060,7 +1064,50 @@ opening the context fails a test rather than the transcript. Regressions:
 `test_ledger_playout.py` case k (the probe's frame order, through the ledger and the
 corrector) and that test; both fail on the code before this change.
 
-The trailing-`"!!"` hold below is unchanged: `"Great!!"` has speech and was always queued.
+The trailing-`"!!"` hold is not the ledger's: `"Great!!"` has speech and was always
+queued. It is the next section.
+
+### A reply ending in `"!!"` held the TTS for 15 s (2026-10-15)
+
+pipecat closes a context at its End only if the *last* `run_tts` yielded audio
+(`on_turn_context_completed` reads the flag `tts_process_generator` sets from that one
+call: a service that yields none may be streaming on a socket of its own). The sentence
+aggregator hands a reply's trailing piece to `run_tts` on its own — `"Great!!"` reaches it
+as `"Great!"` and `"!"`, `"Really?!"` as `"Really?"` and `"!"`, `"Bye! 👋"` as `"Bye!"`
+and `"👋"` — and the engine has nothing to synthesize in it. So the context, and the TTS's
+queue behind it, stayed open for the full `TTS_STOP_FRAME_TIMEOUT_S`: bot-speaking ended
+on the transport's 3 s idle fallback instead of the stop frame, and whatever the TTS said
+next — the answer after a tool call, a narrator line — waited up to 15 s. A reply with
+nothing synthesizable at all (`"👍"`), and one whose every clause the engine fails, the
+same. Measured on the real TTS with the timeout at 1 s: the stop frame 1.00 s after the
+last audio for those endings, 0.00 s for `"That is all."`.
+
+Modelled as a property of the environment the ledger reads, not of the ledger:
+`TrailingMute` (replies with audio whose last piece has none), `MutedAtEnd` (those and
+`Unspeakable`), and `swept` — contexts the timeout closed after their End reached the TTS.
+`NoSweepAfterEnd` says none is. `lp_endings`, 6 states:
+
+```
+LlmStart(r1) TtsStart(r1)  "Great!!" streams; its context opens
+LlmEnd(r1)                 the End reaches the TTS: the last piece, "!", yielded no audio,
+                           so the End does not close the context
+TtsAudio(r1) TtsStop(r1)   "Great!" plays; the stop frame comes on the timeout, 15 s on
+```
+
+**What was changed.** `EngineTTSService.tts_process_generator` runs pipecat's and then
+sets the flag: this service yields every frame of a `run_tts` synchronously, so a call with
+no audio is one with none to give, and the End closes the context whatever the last piece
+was (`CloseAtEnd = TRUE`). `_require_close_at_end_flag` fails the session build if a
+pipecat bump stops reading that flag in `on_turn_context_completed`. Dropping the
+unspeakable piece before `run_tts` (a text filter) was the other way in, and is wrong
+here: a reply with nothing synthesizable at all would then open no context, which is the
+premise `lp_unspeakable_noOpen` shows the ledger cannot take. `lp_endings_closed` holds
+with every property — the ledger's charts do not depend on when the stop comes, only that
+it does. Regression: `test_tts_stop_frame.py`'s
+`test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end` (real
+`EngineTTSService`, timeout 2 s: `"Great!!"`, `"Really?!"`, `"Bye! 👋"`, `"👍"`, each
+followed by a reply), which fails before it (`'Great!!': its context closed 2.00s after
+its last audio`).
 
 ### What the model found
 
@@ -1081,15 +1128,6 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   and plays under an anonymous turn, charted nowhere. The first cut needed a narrator
   line in the gap; the stop frame does it alone. Still a 15 s LLM stall mid-reply
   (`TTS_STOP_FRAME_TIMEOUT_S`); "lead" pacing keeps the context alive through its waits.
-- **The context left open on the timeout** (not a ledger property, so not here as a row):
-  pipecat closes a context at its End only if the last `run_tts` yielded audio. A reply
-  whose last piece the sentence splitter hands over alone and the engine cannot speak —
-  `"Great!!"` (`"!"`), `"Really?!"`, `"Bye! 👋"` — keeps its context, and the TTS's
-  queue, open for the full `TTS_STOP_FRAME_TIMEOUT_S`: bot-speaking ends on the 3 s idle
-  fallback instead of the stop frame, and whatever the TTS says next (the answer after a
-  tool call, a narrator line) waits up to 15 s. Measured on the real TTS with the timeout
-  at 1 s: the stop frame 1.00 s after the last audio for those endings, 0.00 s for
-  `"That is all."`.
 - **Numbers are out of scope**, as in `Ledger.tla`: the layout's seconds, `heard_fraction`,
   the pts cut. The layout is taken to credit exactly what played.
 - **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its

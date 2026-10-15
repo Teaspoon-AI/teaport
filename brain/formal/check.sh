@@ -283,6 +283,8 @@ run LedgerPlayout.tla lp_wrongText_unspeakable_opens   "(expected: FAILS Charted
 run LedgerPlayout.tla lp_unheard_unspeakable_opens     "(expected: FAILS NoUnheardWhenPlayed — BEFORE THIS FIX, the same: the next reply charted never-played, then heard in full)"
 run LedgerPlayout.tla lp_unspeakable_charted           "(expected: FAILS NoUnheardAheadOfPlayed — the first proposal: queued AND charted heard-nothing, ahead of a reply that played; the corrector deletes that one)"
 run LedgerPlayout.tla lp_unspeakable_noOpen            "(expected: FAILS ChartedTextMatchesContext — the fix rests on pipecat opening the context (test_tts_stop_frame.py pins it); without that, the first cut's bug returns)"
+run LedgerPlayout.tla lp_endings                       "(expected: FAILS NoSweepAfterEnd — BEFORE THIS FIX, pipecat's close: a reply ending in \"!!\" (a last piece with no audio) holds its context, and the TTS, to the 15 s stop-frame timeout)"
+run LedgerPlayout.tla lp_endings_closed                "(expected: holds — AS SHIPPED, every property: EngineTTSService closes each context at its End whatever its last run_tts yielded)"
 run LedgerPlayout.tla lph_phantom      "(expected: holds — hermetic wiring)"
 run LedgerPlayout.tla lph_once         "(expected: holds — hermetic wiring, two replies)"
 run LedgerPlayout.tla lph_wrongText    "(expected: holds — hermetic wiring, two replies)"

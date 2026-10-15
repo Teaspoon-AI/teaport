@@ -319,8 +319,8 @@ async def test_back_to_back_replies_place_words_from_their_own_audio():
 
 async def test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text():
     """Text with nothing synthesizable still opens a context: pipecat queues the
-    TTSStartedFrame before run_tts, which yields no audio, and the context ends on the
-    stop-frame timeout. The ledger rests on that (transcript_ledger._llm_side expects
+    TTSStartedFrame before run_tts, which yields no audio, and the context ends at its
+    End (on the stop-frame timeout before lp_endings' fix). The ledger rests on that (transcript_ledger._llm_side expects
     every response with text). Before it did, an emoji reply's context opening behind
     "Great!!" -- whose trailing "!" holds its own context to the timeout -- claimed the
     next reply's text and charted it heard 0% while it played in full
@@ -367,6 +367,55 @@ async def test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its
     print("  PASS an unspeakable reply opens a context of its own; the next keeps its text")
 
 
+async def test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end():
+    """pipecat closes a context at its End only if the LAST run_tts yielded audio. The
+    sentence aggregator hands a reply's trailing "!" of "Great!!" ("Really?!", "Bye!
+    \U0001F44B") to run_tts on its own; nothing synthesizable, no audio, and the
+    context -- with the TTS's queue behind it -- waited out the stop-frame timeout (15 s
+    live): the next reply (an answer after a tool call, a narrator line) started that
+    late, and bot-speaking ended on the 3 s idle fallback. The same for a reply with
+    nothing synthesizable at all. EngineTTSService closes every context at its End
+    (tts_process_generator; LedgerPlayout.tla, lp_endings). Probe 2026-10-14: the stop
+    frame 1.00 s after the last audio with the timeout at 1 s, 0.00 s for "That is
+    all."."""
+    timeout = 2.0
+    for text in ("Great!!", "Really?!", "Bye! \U0001F44B", "\U0001F44D"):
+        tts = EngineTTSService(voice="af_heart")
+        tts._synth_text = _fake_segments
+        tts._stop_frame_timeout_s = timeout      # the 15 s sweep, shortened
+        side = Probe()
+        task = PipelineTask(Pipeline([tts, side, StubOutput()]), observers=[])
+        running = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+        await asyncio.sleep(0.3)
+        try:
+            await task.queue_frames([LLMFullResponseStartFrame(), LLMTextFrame(text),
+                                     LLMFullResponseEndFrame(),
+                                     LLMFullResponseStartFrame(), LLMTextFrame(REPLY),
+                                     LLMFullResponseEndFrame()])
+            deadline = time.monotonic() + timeout + 3.0
+            while time.monotonic() < deadline and (
+                    sum(isinstance(f, TTSStoppedFrame) for _, f in side.seen) < 2):
+                await asyncio.sleep(0.05)
+        finally:
+            await task.cancel()
+            await running
+        starts = [(ts, f.context_id) for ts, f in side.seen if isinstance(f, TTSStartedFrame)]
+        assert len(starts) == 2, f"{text!r}: two contexts expected, got {starts}"
+        (t_open, first), (t_next, _) = starts
+        stop = [ts for ts, f in side.seen
+                if isinstance(f, TTSStoppedFrame) and f.context_id == first]
+        assert stop, f"{text!r}: no stop frame for its context"
+        audio = [ts for ts, f in side.seen
+                 if isinstance(f, TTSAudioRawFrame) and f.context_id == first]
+        held = stop[0] - (audio[-1] if audio else t_open)
+        assert held < timeout / 2, (
+            f"{text!r}: its context closed {held:.2f}s after its last audio -- the "
+            f"stop-frame timeout ({timeout}s), not the End")
+        assert t_next - stop[0] < timeout / 2, (
+            f"{text!r}: the next reply started {t_next - stop[0]:.2f}s after the stop")
+    print("  PASS a reply ending in an unspeakable piece closes at its End")
+
+
 def test_tts_stop_frame():
     require_pinned()
 
@@ -376,6 +425,7 @@ def test_tts_stop_frame():
         await test_a_reply_queued_behind_audio_is_scheduled_from_that_audios_end()
         await test_back_to_back_replies_place_words_from_their_own_audio()
         await test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text()
+        await test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end()
     asyncio.run(main())
 
 
