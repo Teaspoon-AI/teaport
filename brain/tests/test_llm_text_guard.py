@@ -512,6 +512,22 @@ async def test_a_trailing_ellipsis_keeps_the_word_before_it():
         assert h.spoken() == want, (deltas, h.spoken())
 
 
+async def test_a_leading_emoticon_is_kept_whole():
+    """The leading-punct strip took the colon off ":)" and forwarded ")" -- a stray
+    bracket in history where the model had smiled, and nothing to say either way
+    (probe_guard.py, 2026-10-14). An emoticon is kept whole, as an emoji is; punctuation
+    before it, and a colon that opens no emoticon, still go."""
+    for deltas, want in (([":)"], ":)"), ([";-) sure."], ";-) sure."), (["... :D"], ":D"),
+                         ([": hello there."], "hello there."), (["!! Okay."], "Okay."),
+                         (["... it was the worst of times"], "it was the worst of times")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in deltas:
+            await h.text(d)
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == want, (deltas, h.spoken())
+
+
 async def test_the_recovery_line_is_allowed_a_new_frame():
     """It is genuinely new text, so it SHOULD be charted — unlike pass-through deltas."""
     h = Guard()

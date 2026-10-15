@@ -178,7 +178,12 @@ _MAX_HOLDBACK = 4
 #
 # Only at the START of a response, where there is nothing for the punctuation to attach
 # to. Mid-reply a "." delta is the end of a sentence and dropping it would merge two.
-_LEADING_PUNCT = re.compile(r"^[\s.,;:!?\u2026]+")
+#
+# Not into an emoticon: a reply of ":)" lost its colon and went out as ")" -- to the
+# speaker (nothing) and to history, which then held a stray bracket where the model had
+# smiled (probe 2026-10-14). An emoticon is kept whole, as an emoji is: the TTS has
+# nothing to say for either, and history keeps what the model wrote.
+_LEADING_PUNCT = re.compile(r"^(?:(?![:;=]['-]?[()\[\]DPpOo3/\\|*])[\s.,;:!?\u2026])+")
 
 # Where the repeat cut closes a sentence in the folded stream. A run of terminators
 # is one boundary; no following whitespace is required, because the live 08:32
