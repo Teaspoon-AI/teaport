@@ -73,10 +73,12 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
                          \*   ever: CUDA OOM, an engine restart); has_speech says yes
           TrailingMute,  \* replies with audio whose LAST piece run_tts gets alone has
                          \*   nothing synthesizable: "Great!!" -> "Great!", "!"
-          Corrector,     \* HeardContextCorrector's rule for a cut heard nothing:
-                         \*   "guarded" -- as shipped: reconciled only when its message can
-                         \*     be the newest of its window (see Acts);
-                         \*   "position" -- before this fix: always, on the newest message
+          Corrector,     \* how HeardContextCorrector finds a cut reply's message:
+                         \*   "seq" -- as shipped: its own, by its rank among the window's
+                         \*     committed replies (Utterance.turn_seq, .committed; Target);
+                         \*   "guarded" -- the newest message, a cut heard nothing let be
+                         \*     when that cannot be its own (the first fix);
+                         \*   "position" -- the newest message, always (before either)
           CloseAtEnd,    \* BOOLEAN: the TTS closes a context at its End whatever its last
                          \*   run_tts yielded (engine_tts.tts_process_generator, shipped);
                          \*   FALSE is pipecat's default: only if it yielded audio
@@ -101,7 +103,7 @@ CONSTANTS Replies,       \* reply ids; each is also its TTS context id
 
 ASSUME SpeakCheck \in {"chart", "queue", "none"}
 ASSUME TrailingMute \cap Unspeakable = {} /\ Failed \cap (Unspeakable \cup TrailingMute) = {}
-ASSUME Corrector \in {"guarded", "position"}
+ASSUME Corrector \in {"seq", "guarded", "position"}
 
 NONE == "none"
 OWN  == "own"            \* audio_start: the turn's own chunk's place in the playout layout
@@ -580,35 +582,61 @@ NoUnheardAheadOfPlayed ==
 \* reply ahead of it still plays).
 SameWindow(i, j) == charted[i].epoch = charted[j].epoch
 Newer(j, i) == Pos(charted[j].gen) > Pos(charted[i].gen)
-\* The message a cut i is anchored on: the newest committed one of its window (0: none).
-\* (Uncharted commits -- an unspeakable reply's force-completed text -- are left out;
-\* newer than a played reply's, they could only shield it.)
-Anchor(i) ==
-    LET js == {j \in DOMAIN charted : SameWindow(i, j) /\ charted[j].said}
-    IN IF js = {} THEN 0 ELSE CHOOSE j \in js : \A k \in js : ~Newer(k, j)
-\* Which cuts the corrector reconciles. "guarded" (heard_context._anchor_elsewhere): a
-\* cut heard nothing is let be when its message cannot be the newest -- a reply
-\* newer than it in its window played, or one older did and it committed nothing.
+\* The committed messages of a cut i's window. (Uncharted commits -- an unspeakable
+\* reply's force-completed text -- are left out; heard_context skips messages with
+\* no speech.)
+Said(i) == {j \in DOMAIN charted : SameWindow(i, j) /\ charted[j].said}
+Newest(js) == IF js = {} THEN 0 ELSE CHOOSE j \in js : \A k \in js : ~Newer(k, j)
+Anchor(i) == Newest(Said(i))
+\* Which cuts the corrector reconciles. "seq": every one that committed a message (one
+\* that did not has nothing to correct). "guarded": a cut heard nothing is let be when
+\* its message cannot be the newest -- a reply newer than it in its window played, or
+\* one older did and it committed nothing.
 PlayedIn(i, newer) == \E j \in DOMAIN charted :
     /\ j # i /\ SameWindow(i, j) /\ charted[j].anyPlayed /\ Newer(j, i) = newer
 Acts(i) ==
     /\ charted[i].intr
-    /\ \/ Corrector = "position"
-       \/ charted[i].anyPlayed             \* heard something: its own words are newest
-       \/ /\ ~PlayedIn(i, TRUE)
-          /\ charted[i].said \/ ~PlayedIn(i, FALSE)
+    /\ CASE Corrector = "seq"      -> charted[i].said
+         [] Corrector = "position" -> TRUE
+         [] OTHER -> \/ charted[i].anyPlayed     \* heard something: its own words are newest
+                    \/ /\ ~PlayedIn(i, TRUE)
+                       /\ charted[i].said \/ ~PlayedIn(i, FALSE)
+
+\* The message the corrector rewrites for cut i (0: none). "seq"
+\* (heard_context._resolve): every cut's found before any is rewritten -- the one as
+\* many committed messages back from the newest as the batch shows committed replies
+\* newer than the cut. The positional correctors take the newest message still in
+\* the context, cut by cut in the batch's (chart) order: a cut heard nothing before
+\* this one removed its target.
+NewerSaid(i) == Cardinality({j \in Said(i) : Newer(j, i)})
+RECURSIVE Target(_)
+Target(i) ==
+    IF Corrector = "seq"
+    THEN LET js == {j \in Said(i) : NewerSaid(j) = NewerSaid(i)}
+         IN IF js = {} THEN 0 ELSE CHOOSE j \in js : TRUE
+    ELSE Newest(Said(i) \ {Target(k) : k \in {k \in 1..(i - 1) :
+                                         /\ SameWindow(i, k) /\ Acts(k)
+                                         /\ ~charted[k].anyPlayed}})
 
 \* The corrector never rewrites or deletes the message of ANOTHER reply that played.
 NoPlayedReplyDeleted ==
     \A i \in DOMAIN charted :
-        (Acts(i) /\ Anchor(i) \notin {0, i}) => ~charted[Anchor(i)].anyPlayed
+        (Acts(i) /\ Target(i) \notin {0, i}) => ~charted[Target(i)].anyPlayed
 
-\* ...and the guard costs nothing it need not: a cut heard nothing whose own committed
-\* message is the newest of its window is still reconciled (removed: none of it was
-\* heard).
-UnheardOwnIsCorrected ==
+\* A cut that heard something has its heard prefix written on its OWN message: on
+\* another, its own keeps the full text and the context says all of it was heard.
+HeardPrefixOnOwn ==
+    \A i \in DOMAIN charted : (Acts(i) /\ charted[i].anyPlayed) => Target(i) = i
+
+\* ...and every cut it reconciles is reconciled on its own message.
+CutAnchorsOwn ==
+    \A i \in DOMAIN charted : (Acts(i) /\ charted[i].said) => Target(i) = i
+
+\* ...and every cut heard nothing that committed a message is reconciled (removed:
+\* none of it was heard).
+UnheardSaidIsCorrected ==
     \A i \in DOMAIN charted :
-        (charted[i].intr /\ ~charted[i].anyPlayed /\ Anchor(i) = i) => Acts(i)
+        (charted[i].intr /\ ~charted[i].anyPlayed /\ charted[i].said) => Acts(i)
 
 \* A turn charted under a reply's context carries THAT reply's text.
 ChartedTextMatchesContext ==

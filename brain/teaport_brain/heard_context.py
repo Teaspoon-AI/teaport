@@ -28,6 +28,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 from teaport_brain.settings import setting
+from teaport_brain.tts_text import has_speech
 
 HEARD_MODE = setting("HEARD_MODE")  # truncate | note
 
@@ -116,17 +117,15 @@ class HeardContextCorrector(FrameProcessor):
     def _reconcile(self, commit: bool = True):
         start = self._mark
         batch = [u for u in self._ledger.events[self._done:] if u.speaker == "assistant"]
-        for u in batch:
-            if not (u.interrupted and u.cut_short):
-                continue
-            if self._mode == "note":
+        cuts = [u for u in batch if u.interrupted and u.cut_short]
+        if self._mode == "note":
+            for u in cuts:
                 self._add_note(u)
-            elif self._anchor_elsewhere(u, batch):
-                logger.info(f"HeardCorrector[truncate]: unheard reply {u.text[:40]!r} "
-                            "is not the newest message (a reply heard after it is); "
-                            "left unchanged")
-            else:
-                self._truncate(u, start)
+        else:
+            # Every cut's message is found before any is rewritten: removing one moves
+            # what "the newest" is for the next.
+            for u, anchor in [(u, self._resolve(u, batch, start)) for u in cuts]:
+                self._truncate(u, anchor)
         self._done = len(self._ledger.events)
         msgs = self._context.get_messages()
         if commit:
@@ -187,64 +186,52 @@ class HeardContextCorrector(FrameProcessor):
         drop_from_context(self._context, doomed)
         self._mark -= below
 
-    @staticmethod
-    def _anchor_elsewhere(u, batch) -> bool:
-        """Would _truncate's anchor -- the newest assistant message of the window -- be
-        ANOTHER reply's that the caller heard? Then a cut heard nothing must be let be:
-        removing "its" message deletes an answer they heard.
-
-        Two ways there (brain/formal/LedgerPlayout.tla, NoPlayedReplyDeleted): a reply
-        newer than this one played (lp_failed_position: the engine failed on every clause
-        of one reply -- charted heard-0, its text committed all the same -- and the next
-        one played); or an older one played and this one committed nothing (lp_position:
-        a barge-in before any of it played, before its context ended). Newer is the order
-        the contexts opened (turn_seq), the order pipecat committed them in. Left alone,
-        a failed reply's unheard text stays in the context; that is the lesser loss.
-        A cut that heard something anchors on its own words, newest by playout order."""
-        if _clean_prefix(u.heard_text):
-            return False
-        seqs = [e.turn_seq for e in batch]
-        order = seqs if None not in seqs else list(range(len(batch)))
-        mine = next(order[i] for i, e in enumerate(batch) if e is u)
-        return any(order[i] > mine or not u.committed
-                   for i, e in enumerate(batch)
-                   if e is not u and e.heard_fraction > 0)
-
-    def _truncate(self, u, start=0):
-        """Reconcile the cut turn's spoken message to the heard prefix.
+    def _resolve(self, u, batch, start):
+        """The cut reply's own message in the context, or None: what _truncate rewrites.
 
         We CANNOT match by text: pipecat commits the TTS-spoken text (it sets the
         LLMTextFrame's append_to_context=False, so only the TTSTextFrame is
         appended), which differs from the ledger's raw-LLM `u.text` — and on an
         early barge-in the TTS text may be partial or never committed at all.
-        So we locate the cut turn by POSITION (it is the bot's most recent turn)
-        and overwrite its spoken message with the accurate heard prefix from the
-        ledger — or insert one if pipecat committed none. Tool results are kept.
-
-        Position also means order: the cut reply must be committed first, which
+        So we locate it by POSITION: pipecat commits the replies' messages in the
+        order their TTS contexts opened (Utterance.turn_seq), each one that
+        `committed`, so the cut reply's message is as many spoken messages back from
+        the newest as its batch has committed replies newer than it. Position also
+        means order: the cut reply must be committed first, which
         endpointing.CutReplyFence ensures.
 
-        Positional anchoring is sound only while every spoken assistant message
-        in the context is one the LEDGER also charted. Filler lines (the consult
-        narrator, the tool acks, the pipeline's own notices) are charted by
-        nothing, so they must never be committed either — which is why tools.py,
-        llm_error_speaker.py and agent_session.py push every such line with
-        append_to_context=False. A filler committed as the tail assistant message
-        would BE the anchor here, and the cut reply's heard prefix would delete
-        or overwrite the filler line instead of the reply.
+        The newest message alone, the first rule, deleted or rewrote another reply's
+        (brain/formal/LedgerPlayout.tla, CutAnchorsOwn, NoPlayedReplyDeleted): a reply
+        the engine failed on every clause is charted heard 0 but committed all the same
+        (the TTS force-completes its text), so a reply played after it took its cut
+        (lp_failed_position); a barge-in before a queued reply's first audio commits
+        nothing of it, so the reply that played before took the cut (lp_position); and
+        a reply cut partway with one committed after it (synthesized whole, queued
+        behind it) had its heard prefix written over that one's text and kept its own
+        full text (lp_guarded). A reply that committed nothing has nothing to correct.
+
+        Positional anchoring is sound only while every spoken assistant message in the
+        context is one the LEDGER also charted. Filler lines (the consult narrator, the
+        tool acks, the pipeline's own notices) are charted by nothing, so they must
+        never be committed either — which is why tools.py, llm_error_speaker.py and
+        agent_session.py push every such line with append_to_context=False. Messages
+        with nothing synthesizable (an emoji reply, charted nothing) are not counted.
         """
-        heard = _clean_prefix(u.heard_text)
+        if not u.committed:
+            return None
+        seqs = [e.turn_seq for e in batch]
+        order = seqs if None not in seqs else list(range(len(batch)))
+        mine = next(order[i] for i, e in enumerate(batch) if e is u)
+        newer = sum(1 for i, e in enumerate(batch)
+                    if e is not u and e.committed and order[i] > mine)
         msgs = self._context.get_messages()
         # Skip the triggering user turn (trailing user/system messages); whatever
-        # remains at the tail is the cut bot turn.
+        # remains at the tail is the newest bot turn.
         #
         # The walk stops at `start` — the context length at the previous reconcile —
-        # because anything older belongs to an exchange that is already settled. When
-        # NOTHING was heard, pipecat commits no spoken text for the cut turn at all
-        # (it appends the TTSTextFrame, and none was ever pushed), so without that
-        # bound the walk crosses the intervening user turn and lands on the PREVIOUS
-        # assistant message — a reply the user did hear — and deletes it.
-        #
+        # because anything older belongs to an exchange that is already settled.
+        # Without that bound, a cut that left no message lands on the PREVIOUS
+        # exchange's assistant message — a reply the user did hear — and deletes it.
         # Live 2026-08-26 08:17: a background consult's answer was delivered and heard
         # in full, the user said "Thanks, Kettlebot.", the one-line reply to that was
         # barged over at 0% heard, and reconciling THAT cut removed the delivery. With
@@ -253,13 +240,34 @@ class HeardContextCorrector(FrameProcessor):
         end = len(msgs)
         while end > start and msgs[end - 1].get("role") in ("user", "system"):
             end -= 1
-        anchor = msgs[end - 1] if end > start else None
+        if newer == 0:
+            # The newest: a tool result there means pipecat dropped the reply's text
+            # (_truncate inserts the heard prefix after it).
+            return msgs[end - 1] if end > start else None
+        spoken = [m for m in msgs[start:end]
+                  if m.get("role") == "assistant" and has_speech(_msg_text(m))]
+        if len(spoken) <= newer:
+            logger.warning(f"HeardCorrector[truncate]: {newer} newer replies but only "
+                           f"{len(spoken)} spoken messages; cut turn left unchanged")
+            return None
+        return spoken[-1 - newer]
 
+    def _truncate(self, u, anchor):
+        """Reconcile the cut turn's message (`anchor`, from _resolve) to the heard
+        prefix: overwrite it, remove it if nothing was heard, or insert the prefix
+        after a tool result if pipecat committed none. Tool results are kept."""
+        heard = _clean_prefix(u.heard_text)
+        msgs = self._context.get_messages()
         if anchor is not None and anchor.get("role") == "assistant" and _msg_text(anchor).strip():
             # A spoken message was committed (possibly partial TTS text).
             if heard:
                 _set_msg_text(anchor, heard)  # in-place; dict ref is shared
                 logger.info(f"HeardCorrector[truncate]: spoken reply -> heard …{heard[-40:]!r}")
+            elif anchor.get("tool_calls"):
+                # Not the newest any more, it can be the call a tool result answers:
+                # removing it would orphan the result.
+                _set_msg_text(anchor, "")
+                logger.info("HeardCorrector[truncate]: unheard reply's text cleared")
             else:
                 self._context.set_messages([m for m in msgs if m is not anchor])
                 logger.info("HeardCorrector[truncate]: removed unheard reply")
@@ -267,6 +275,7 @@ class HeardContextCorrector(FrameProcessor):
             # Tool result / bare tool-call with no committed spoken text: pipecat
             # dropped the reply, so insert the heard prefix where it belongs.
             if heard:
+                end = next(i for i, m in enumerate(msgs) if m is anchor) + 1
                 self._context.set_messages(
                     msgs[:end] + [{"role": "assistant", "content": heard}] + msgs[end:])
                 logger.info(f"HeardCorrector[truncate]: inserted heard reply …{heard[-40:]!r}")

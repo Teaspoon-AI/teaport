@@ -678,7 +678,9 @@ async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
         *siblings(BotStoppedSpeakingFrame, 1.55),
     ])
     assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(R1, False), (R2, True)]
-    assert said(L, R1, R2) == [R1, R2], "the reply the caller heard was deleted"
+    left = said(L, R1, R2)
+    assert R2 in left, "the reply the caller heard was deleted"
+    assert left == [R2], f"the failed reply's unheard text was kept: {left}"
 
     # 2. A reply that played, then a failed one charted FIRST (at its stop, while the
     #    first still plays): the failed one is the newest message, and is removed.
@@ -718,6 +720,42 @@ async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
     ])
     assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(ANSWER, True), (R2, False)]
     assert said(L, ANSWER) == [ANSWER], "the reply the caller heard was deleted"
+
+
+async def test_m_a_cut_reply_is_reconciled_on_its_own_message_not_a_newer_one():
+    """A reply plays; the next is synthesized whole behind it (its context ended, so the
+    TTS force-completed its text and pipecat committed it) but not a chunk of it has
+    played when the caller barges in. The newest message is the queued reply's, and the
+    corrector anchored every cut on the newest it could see: the first reply's heard
+    prefix overwrote the queued reply's text, the queued reply's own cut then removed
+    that, and the first reply kept its FULL text -- the context said the caller heard
+    all of it (LedgerPlayout.tla, HeardPrefixOnOwn, lp_guarded). Each cut now finds its
+    own message before any is rewritten: as many spoken messages back from the newest as
+    its batch has committed replies newer than it (Utterance.turn_seq, .committed).
+    The same with a failed reply in place of the queued one, charted at its stop."""
+    for failed in (False, True):
+        f0, end0 = response(ANSWER, 0.0)
+        f1, end1 = response(R1, 0.1)
+        L = await feed(ledger(), f0 + [
+            (started("A"), 0.2, BELOW),
+            at(audio(2.0, "A"), 0.2),
+            (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+            drained(end0, 0.2),
+            *siblings(BotStartedSpeakingFrame, 0.25),
+        ] + f1 + [
+            (started("B"), 0.4, BELOW),
+            *([] if failed else [at(audio(3.0, "B"), 0.45)]),   # queued behind A's
+            (TTSStoppedFrame(context_id="B"), 0.45, BELOW),
+            drained(end1, 0.45),
+            (InterruptionFrame(), 1.25),                       # a second into ANSWER
+        ])
+        utts = {u.text: u for u in bot(L)}
+        assert utts[R1].heard_fraction == 0 and 0 < utts[ANSWER].heard_fraction < 0.99, (
+            failed, [(u.text[:20], round(u.heard_fraction, 2)) for u in bot(L)])
+        left = said(L, ANSWER, R1)
+        assert len(left) == 1 and left[0] != ANSWER and ANSWER.startswith(left[0]), (
+            f"failed={failed}: the cut reply must keep only what was heard, and the "
+            f"unheard one go: {left}")
 
 
 def main():

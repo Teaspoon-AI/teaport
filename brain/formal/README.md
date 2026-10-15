@@ -921,7 +921,7 @@ the rest on the real ledger.
 | `lp_premature` | `NoPrematureFullChart`, with stalls and timeouts | ✓ |
 | `lp_playedCharted` | `PlayedIsCharted` — audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
 | `lp_fillerSet` | `FillerCtxRemembered` | ✓ |
-| `lp_all` | every property above, `NoUnheardAheadOfPlayed`, `NoPlayedReplyDeleted`, `UnheardOwnIsCorrected` and `NoSweepAfterEnd`, two replies and a filler | ✓ (375k, ~25 s) |
+| `lp_all` | every property above, `NoUnheardAheadOfPlayed`, `NoPlayedReplyDeleted`, `UnheardSaidIsCorrected`, `CutAnchorsOwn`, `HeardPrefixOnOwn` and `NoSweepAfterEnd`, two replies and a filler | ✓ (375k, ~25 s) |
 | `lp_resume` | `NoPrematureFullChart` under `Resume` | ✗ (8) — below |
 | `lp_unspeakable` | every property, `Unspeakable = {r1}`, **as shipped** (`SpeakCheck = "chart"`): every response with text queued; one with no audio and nothing synthesizable charted nothing | ✓ (72k) |
 | `lp_wrongText_unspeakable` | `ChartedTextMatchesContext`, the first cut's premise (`UnspeakableOpens = FALSE`) without `has_speech` (`SpeakCheck = "none"`) | ✗ (6) — below |
@@ -935,7 +935,8 @@ the rest on the real ledger.
 | `lp_failed_charted` | `NoUnheardAheadOfPlayed`, `Failed = {r1}`: a reply the engine fails on every clause | ✗ (12) — below |
 | `lp_failed_position` | `NoPlayedReplyDeleted`, `Failed = {r1}`, no barge-in, the corrector **before this fix** (`Corrector = "position"`) | ✗ (13) — below |
 | `lp_position` | `NoPlayedReplyDeleted`, no failure, the corrector **before this fix**: a barge-in before a queued reply's first audio | ✗ (11) — below |
-| `lp_failed` | every property but `NoUnheardAheadOfPlayed`, and `UnheardOwnIsCorrected`, `Failed = {r1}`, **as shipped** (`"guarded"`) | ✓ (79k, ~10 s) |
+| `lp_guarded` | `HeardPrefixOnOwn`, the corrector of the first fix (`"guarded"`: still the newest message, cut by cut) | ✗ (14) — below |
+| `lp_failed` | every property but `NoUnheardAheadOfPlayed`, with the corrector's three, `Failed = {r1}`, **as shipped** (`Corrector = "seq"`) | ✓ (79k, ~10 s) |
 | `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ (381k, ~15 s) |
 | `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
 
@@ -1150,22 +1151,51 @@ and a barge-in lands before its first audio. That reply committed nothing (its c
 not ended), so the newest message is the one the caller heard, and the corrector deleted
 it. A tool message between the two stops the walk, which may be why it has not been seen.
 
-**What was changed.** `HeardContextCorrector._anchor_elsewhere` lets a cut that heard
-nothing be when its message cannot be the newest: a reply newer than it in its window was
-heard, or an older one was and it committed nothing. The ledger gives it what it needs on
-each `Utterance`: `turn_seq` (the order its context opened) and `committed`
-(`not interrupted or never or synth_done or heard > 0`). `Acts` is that rule
-(`Corrector = "guarded"`). `lp_failed` holds with every property but
-`NoUnheardAheadOfPlayed` — the charts are unchanged; the corrector no longer takes them by
-position alone — and with `UnheardOwnIsCorrected`: a cut heard nothing whose own message
-IS the newest is still removed, so the guard gives up only the case it must (a failed
-reply followed by one that played keeps its unheard text in the context — the lesser
-loss). Charting a failed reply nothing, as `Silent` does an unspeakable one, was the other
-fix, and is worse: its text is in the context, and alone in its window (the common case)
-the corrector removes it today. Regression: `test_ledger_playout.py` case l (a failed
-reply then a played one; a played one then a failed one charted first; a played one then a
-barge-in before the next one's audio), through the real ledger and corrector; the first
-and the third fail before this change (`the reply the caller heard was deleted`).
+**The first fix, and what it left.** `_anchor_elsewhere` let a cut that heard nothing
+be when its message could not be the newest (`Corrector = "guarded"`): a reply newer than
+it in its window was heard, or an older one was and it committed nothing. It held
+`NoPlayedReplyDeleted`, but every cut it did reconcile was still anchored on the newest
+message left, cut by cut in the batch's order — and a reply cut partway with a reply
+committed after it lost its correction. `HeardPrefixOnOwn` (a cut that heard something
+has its heard prefix written on its OWN message) is that; `lp_guarded`, 14 states:
+
+```
+LlmStart(r1) TtsStart(r1) TtsAudio(r1) TtsAudio(r1) TtsStop(r1) LlmEnd(r1)
+LlmStart(r2) TtsStart(r2) TtsAudio(r2) TtsStop(r2)
+                          r2 synthesized whole behind r1: committed (force-completed)
+PlayStart PlayChunk       r1's first chunk plays
+Interrupt                 r1 cut partway, r2 heard nothing: r1's prefix lands on r2's
+                          message (the newest), r2's cut then removes it, and r1 keeps
+                          its FULL text -- the context says the caller heard all of it
+```
+
+The model's first run of this (with anchors taken all at once rather than cut by cut)
+showed the same with a failed reply in r2's place; the real corrector, cut by cut, gets
+that one right — the failed reply is charted first, at its stop, and its removal leaves
+r1's message the newest. The queued reply is charted after r1, at the same barge-in.
+
+**What was changed.** `HeardContextCorrector._resolve` finds each cut's OWN message,
+all of them before any is rewritten: pipecat commits the replies' messages in the order
+their contexts opened, so the cut's is as many spoken messages back from the newest as
+its batch has committed replies newer than it. The ledger puts what that needs on each
+`Utterance`: `turn_seq` (the order its context opened) and `committed`
+(`not interrupted or never or synth_done or heard > 0`). A cut that committed nothing has
+nothing to correct. Messages with nothing synthesizable (an emoji reply, charted nothing)
+are not counted; a message carrying a tool call is cleared rather than removed, so the
+tool result keeps its call. `Target` is that rule (`Corrector = "seq"`). `lp_failed`
+holds with every property but `NoUnheardAheadOfPlayed` — the charts are unchanged; the
+corrector no longer reads them by position alone — and with the corrector's three:
+`NoPlayedReplyDeleted`, `CutAnchorsOwn` (every cut it reconciles, on its own message) and
+`UnheardSaidIsCorrected` (every cut heard nothing that committed a message is removed: the
+failed reply ahead of one that played too, which the first fix had to leave). Charting a
+failed reply nothing, as `Silent` does an unspeakable one, was another way, and is worse:
+its text is in the context, and the corrector removes it. Regression:
+`test_ledger_playout.py` cases l (a failed reply then a played one; a played one then a
+failed one charted first; a played one then a barge-in before the next one's audio) and m
+(a reply cut partway with a queued reply, and with a failed one, after it), through the
+real ledger and corrector. Before the first fix, l's first and third fail (`the reply the
+caller heard was deleted`); before this one, l's first (the failed reply's text kept) and
+m (`['The bakery opens at eight and closes at six.']`: the cut reply's full text).
 
 ### What the model found
 
@@ -1201,14 +1231,11 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   sighting of the `InterruptionFrame`, and a TTS frame in flight between two of them
   opens an anonymous turn on a closed context, which the next sighting ends; the model's
   interruption is one step.
-- **The corrector's anchor is still positional.** `NoPlayedReplyDeleted` is about
-  deleting a reply that played. A cut that heard something anchors on the newest
-  committed message, and a failed reply committed after it (charted heard 0, its text
-  force-completed) is that message: the cut's heard prefix overwrites the failed reply's
-  text, the failed reply's own cut then removes it, and the cut reply keeps its full text.
-  Nothing heard is lost, but the context says more of it was. Uncharted commits (an
-  unspeakable reply's text) are not modelled; newer than a played reply's, they can only
-  shield it. A tool message between two replies stops the corrector's walk.
+- **The corrector's messages are the charts'.** The model's context is the committed
+  charts of the window in the order their contexts opened; the code counts spoken
+  messages back from the newest. Uncharted commits with speech, or a reply pipecat
+  dropped (the tool-result insert path), would put the count off by one: the code then
+  finds too few messages and leaves the cut alone, or lands one message off.
 - **Scale.** One reply and one filler is 3.5k states; two replies 300k, about 20 s with
   two workers.
 
