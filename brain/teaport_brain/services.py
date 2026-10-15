@@ -487,6 +487,20 @@ class BoundedOpenAILLMService(OpenAILLMService):
         )
 
 
+def warm_llm_imports() -> None:
+    """Load the OpenAI client's chat API now, not on the first reply.
+
+    openai builds `client.chat` lazily: a cached_property that runs
+    `from .resources.chat import AsyncChat` on first use (openai/_client.py, 2.54). That
+    one import pulls in ~540 modules, most of them openai.types pydantic models, and it
+    ran ON the event loop inside the process's first chat request. On the box that froze
+    the loop 1297 ms right after a wake word (2026-10-15 14:06, after 10 h idle), and
+    ~700 ms with the files in the page cache. It is paid once per process, so it fell on
+    the first reply after every restart. The server calls this at startup, before
+    freeze_startup_objects, so the modules are loaded once and frozen with the rest."""
+    import openai.resources.chat  # noqa: F401
+
+
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
 # llama.cpp server, etc. Point LLM_BASE_URL at the endpoint, LLM_API_KEY at its
 # key, LLM_MODEL at the served model. gpt-oss-120b is the reference model (clean
