@@ -136,6 +136,7 @@ run UserTurn.tla ut_hold_gateNoResume_nosilencedbot  "(expected: FAILS NoSilence
 run UserTurn.tla ut_hold_gateEndWaits_noendbehindhold "(expected: FAILS NoEndBehindHold — first cut: the End waited behind the hold)"
 run UserTurn.tla ut_hold_gateNoEnding_noendbehindhold "(expected: FAILS NoEndBehindHold — no _ending: a hold started behind the End)"
 run UserTurn.tla ut_hold_gateKeepsTool_nolatetool    "(expected: FAILS NoLateToolRound — before 2026-10-15: a dropped hold's tool-call frames (Uninterruptible) land after the turn that dropped it)"
+run UserTurn.tla ut_hold_gateDropsResult_noorphancall "(expected: FAILS NoOrphanCall — c1c329f: a drop dropped a held result whose IN_PROGRESS had passed: the call never settled)"
 run UserTurn.tla ut_hold_gateNoFoldCancelled_nosplitturn "(expected: FAILS NoSplitTurn — before 2026-10-15: the merge refused across the tool round the drop cancelled)"
 run UserTurn.tla ut_hold_gate_all                    "(expected: holds — as shipped, ASSUMING the words arrive before the release timer / cap)"
 run UserTurn.tla ut_hold_gate_timed_nostalereply     "(expected: FAILS NoStaleReply — the timers as they are: the ACCEPTED RESIDUAL, words later than the release)"

@@ -1365,7 +1365,9 @@ commit (`ToolCall`), its `FunctionCallInProgressFrame` puts the call and an
 the LLM answering from it, or the async consult's placeholder (`run_llm=False`, the
 consult running on in the background). Both frames are pipecat `UninterruptibleFrame`s
 and reach the context through the gate, so a round started while the gate holds waits
-in its queue (`tool = "held"`) and lands when the hold is released. What a drop does
+in its queue (`tool = "held"`) and lands when the hold is released — and so does a
+result alone, when a sync tool's seconds of work straddle the hold's start: the call
+passed before it and is in the context, the result waits (`tool = "resultHeld"`). What a drop does
 to it (`Dropped`): a round in the context still running is cancelled (pipecat writes
 `CANCELLED` over `IN_PROGRESS`; every tool here is registered `cancel_on_interruption`),
 one finished stays. `NoSplitTurn` now reads "neither a played reply **nor a tool round
@@ -1377,7 +1379,8 @@ next message is a turn of its own; a cancelled round did nothing.
 |---|---|---|---|
 | `gateNoFoldCancelled` | the corrector until 2026-10-15: `_merge_tail` folded across system messages only | ✗ | ✓ |
 | `gateKeepsTool` | the gate until 2026-10-15: a dropped hold left the reply's function-call frames to pipecat's reset, which keeps them | ✓ | ✗ |
-| `gate` | as shipped: the corrector drops a cancelled round with the merge; the gate drops a dropped hold's function-call frames | ✓ | ✓ |
+| `gateDropsResult` | c1c329f: the gate dropped every function-call frame held past a drop, a result whose call had passed included | (✗) | ✓ |
+| `gate` | as shipped: the corrector drops a cancelled round with the merge; the gate drops a dropped hold's held calls with their results, and lets through, settling its call without an answer, a held result whose call had passed | ✓ | ✓ |
 
 `ut_hold_gateNoFoldCancelled_nosplitturn`, 9 states: a turn commits, its reply calls a
 tool (in the context, unheld), the caller's words start a turn whose interruption drops
@@ -1395,6 +1398,22 @@ inference. `reply_hold.py` now drops the function-call frames queued before a dr
 (`tests/test_reply_hold.py::test_a_dropped_hold_drops_its_tool_round_too`), and
 `HeardContextCorrector._merge_tail` folds across a round whose every call reads
 `CANCELLED`, removing it (`test_merge_folds_across_a_tool_round_the_drop_cancelled`).
+
+The first cut of that gate fix (c1c329f) dropped every function-call frame held past a
+drop, without asking whether its call had already passed. A sync tool's result held
+while its call sat in the context was then the only thing that could ever settle that
+call — a finished call is not cancelled by the interruption, and pipecat's aggregator
+writes nothing for one it was not told about — so the call stayed `IN_PROGRESS` for
+good: the merge could not fold across it (a split again), and strict OpenAI-compatible
+servers refuse a context with an unanswered tool call. `NoOrphanCall`: **every tool call
+in the context gets a result.** `ut_hold_gateDropsResult_noorphancall` fails it, 11 states: a turn
+commits, its reply calls a tool (unheld), the caller resumes (held), the result lands
+behind the hold, their words drop it. As shipped the gate drops a held call and, by its
+`tool_call_id`, that call's result; a held result whose call passed goes through with
+`run_llm=False` — it settles the call, the round is the turn acted on, and the inference
+it would have asked for is the dropped reply's, the commit that follows asking instead
+(`test_a_held_result_whose_call_passed_settles_it_without_an_answer`, on the gate and
+pipecat's assistant aggregator).
 
 ### The barge-in pause (`PAUSE`, #86)
 
@@ -1629,10 +1648,10 @@ narrower than the code:
 
 `ut_shipped_all` is the SIP front-end as shipped with everything on — `retryMerges`,
 `byContext`, `gate`, `shipped`, `inTime`, `EARLY_FINAL`, tool rounds — and holds every
-property (59k states, a few seconds). `ut_shipped_timed` is the same with the hold's
+property (63k states, a few seconds). `ut_shipped_timed` is the same with the hold's
 timers as they are (`WORDS_IN_TIME = FALSE`: `Release` and `Cap` end holds whatever the
 caller does next) and holds every property but the accepted `NoStaleReply` residual
-(220k states, ~20 s): the timeout paths leave no queue paused (`NoSilencedBot`), a held
+(237k states, ~20 s): the timeout paths leave no queue paused (`NoSilencedBot`), a held
 tool round lands when they release it, and a reply released by a timer but not yet
 started is still the one a continuation drops. With
 `EARLY_FINAL = FALSE` (every row above) no commit finds the gate armed, so
@@ -1692,7 +1711,7 @@ commit stays a second message there. The room's own turn timing (`ROOM_*`, #159)
   miss will come from — `[SPEC] miss reason=ctx-changed` or `reason=text-differs` in the
   journal does — nor how often the interim and the final disagree; it checks the design
   that stays right whenever they do.
-- **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each; with tool rounds (2026-10-15) 1.1k and 2.1k for `HOLD = "gate"` with words in time and without, 4.8k and 11k for the shipped pause, 59k for `ut_shipped_all` and 220k for `ut_shipped_timed`; seconds each.
+- **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each; with tool rounds (2026-10-15) 1.2k and 2.2k for `HOLD = "gate"` with words in time and without, 5.1k and 12k for the shipped pause, 63k for `ut_shipped_all` and 237k for `ut_shipped_timed`; seconds each.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 

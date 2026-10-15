@@ -698,6 +698,54 @@ async def test_a_dropped_hold_drops_its_tool_round_too():
         assert rig.gate.released == 1 and rig.gate.dropped == 1
 
 
+async def test_a_held_result_whose_call_passed_settles_it_without_an_answer():
+    # A sync tool (web_search) takes seconds: its IN_PROGRESS passed the gate before the
+    # caller resumed, so the call is in the context, and its result came during the
+    # hold. A drop that took the result with the rest of the held reply left the call
+    # unsettled for good (nothing cancels a call that has finished): the merge could not
+    # fold across it, and strict OpenAI-compatible servers refuse a context with an
+    # unanswered tool call (formal/UserTurn.tla, ut_hold_gateDropsResult_noorphancall).
+    # The result goes through and settles the call -- without the inference it would
+    # ask for, whose reply is the one just dropped.
+    from pipecat.frames.frames import FunctionCallFromLLM, LLMContextFrame
+
+    context = LLMContext([{"role": "system", "content": "sys"},
+                          {"role": "user", "content": "look up the trains"}])
+    pair = LLMContextAggregatorPair(context)
+    gate = ReplyHoldGate(merge=TurnMerge(), release_secs=RELEASE_S, max_secs=MAX_S)
+    top = Tap()
+    task = PipelineTask(Pipeline([top, gate, pair.assistant()]), cancel_on_idle_timeout=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.sleep(STARTUP_S)
+    try:
+        await gate.arm()
+        await task.queue_frames([
+            FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+                function_name="web_search", tool_call_id="t1", arguments={}, context=None)]),
+            FunctionCallInProgressFrame(function_name="web_search", tool_call_id="t1",
+                                        arguments={}, cancel_on_interruption=True)])
+        await asyncio.sleep(0.1)
+        assert context.get_messages()[-1].get("content") == "IN_PROGRESS", context.get_messages()
+        await task.queue_frame(VADUserStartedSpeakingFrame())      # the caller resumes
+        await asyncio.sleep(0.05)
+        assert gate.holding
+        await task.queue_frame(FunctionCallResultFrame(
+            function_name="web_search", tool_call_id="t1", arguments={},
+            result={"hits": ["the 9:14 to Leeds"]}))
+        await asyncio.sleep(0.2)
+        await task.queue_frames([InterruptionFrame(), VADUserStoppedSpeakingFrame()])
+        await asyncio.sleep(0.3)
+        tool = [m for m in context.get_messages() if m.get("role") == "tool"]
+        assert len(tool) == 1 and "9:14" in str(tool[0]["content"]), (
+            f"the call was left unsettled: {context.get_messages()}")
+        asked = [f for _, f in top.up if isinstance(f, LLMContextFrame)]
+        assert not asked, "the dropped reply's result asked the model for an answer"
+        assert gate.dropped == 1
+    finally:
+        await task.cancel()
+        await run
+
+
 async def test_words_placed_after_the_release_move_with_the_held_ones():
     # The TTS keeps placing the held context's words on its pre-hold baseline after the
     # release: they move by the same wait, or they would run ahead of their audio.

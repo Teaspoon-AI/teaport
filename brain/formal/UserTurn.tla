@@ -122,6 +122,9 @@
 (*                           the reply's function-call frames (pipecat's    *)
 (*                           UninterruptibleFrames) in its queue, to land   *)
 (*                           in the context after the turn that dropped it. *)
+(* HOLD = "gateDropsResult" -- c1c329f: a drop also dropped a held result  *)
+(*                           whose IN_PROGRESS had already passed: the call *)
+(*                           stayed in the context unsettled.               *)
 (* HOLD = "gateNoFoldCancelled" -- the corrector until 2026-10-15: no merge *)
 (*                           across the tool round an interruption          *)
 (*                           cancelled (only system messages between).      *)
@@ -264,13 +267,19 @@ VARIABLES
                      \* Result frames wait in the gate's paused queue); "ctxRunning" (the
                      \* call and its IN_PROGRESS result are in the context); "ctxDone" (a
                      \* result is: a sync tool's, or the async consult's placeholder, the
-                     \* consult running on); "ctxCancelled" (an interruption cancelled it:
-                     \* the result reads CANCELLED)
+                     \* consult running on); "resultHeld" (the call is in the context, its
+                     \* result -- a DataFrame -- waits in the paused queue: a sync tool's
+                     \* seconds of work straddle the hold's start); "ctxCancelled" (an
+                     \* interruption cancelled it: the result reads CANCELLED);
+                     \* "ctxOrphan" (the call is in the context and nothing will ever
+                     \* settle it)
     lateTool,        \* monitor: a dropped reply's tool round was left to land in the
                      \* context after the turn that dropped it
-    goodbyeLost      \* monitor: the session-end commit dropped a reply the End was
+    goodbyeLost,     \* monitor: the session-end commit dropped a reply the End was
                      \* queued behind (it would have played out first)
-toolVars == <<tool, lateTool, goodbyeLost>>
+    orphanCall       \* monitor: a tool call was left in the context with no result,
+                     \* ever (strict OpenAI-compatible servers refuse such a context)
+toolVars == <<tool, lateTool, goodbyeLost, orphanCall>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
@@ -297,8 +306,16 @@ Gated == HOLD /= "none"
 \* result and, for a sync tool, a second inference.
 Dropped(t) == CASE t = "ctxRunning" -> "ctxCancelled"
                 [] t = "held"       -> "none"
+                [] t = "resultHeld" -> IF HOLD = "gateDropsResult" THEN "ctxOrphan"
+                                       ELSE "ctxDone"
                 [] OTHER            -> t
-LateOnDrop == tool = "held" /\ HOLD = "gateKeepsTool"
+LateOnDrop == tool \in {"held", "resultHeld"} /\ HOLD = "gateKeepsTool"
+\* A call whose IN_PROGRESS passed before the hold and whose result waited behind it
+\* (`resultHeld`): the call has finished, so the interruption cancels nothing, and the
+\* result is all that can settle it. As shipped the gate lets it through without the
+\* inference it would ask for (the commit that follows asks); c1c329f's gate
+\* (`gateDropsResult`) dropped it with the held reply and left the call unsettled.
+OrphanOnDrop == tool = "resultHeld" /\ HOLD = "gateDropsResult"
 
 Init ==
     /\ userTurn = FALSE
@@ -321,7 +338,7 @@ Init ==
     /\ pausedP = FALSE /\ left = "long" /\ synthDone = FALSE /\ tailKnown = FALSE
     /\ wouldEnd = FALSE /\ stopHeard = FALSE /\ answerLost = FALSE
     /\ cut = "none" /\ overtaken = FALSE /\ cutAfterCommit = FALSE
-    /\ tool = "none" /\ lateTool = FALSE /\ goodbyeLost = FALSE
+    /\ tool = "none" /\ lateTool = FALSE /\ goodbyeLost = FALSE /\ orphanCall = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -440,6 +457,7 @@ CutLands ==
     /\ mergePending' = (mergePending \/ (armed /\ HOLD \notin {"none", "gateNoMerge"}))
     /\ UNCHANGED <<unanswered, endQueued, splitTurn, replyOverResume>>
     /\ tool' = Dropped(tool) /\ lateTool' = (lateTool \/ LateOnDrop)
+    /\ orphanCall' = (orphanCall \/ OrphanOnDrop)
     /\ UNCHANGED goodbyeLost
     \* The interruption reaches the transport: the queued audio is dropped and, with
     \* it, the pause -- except in a transport that keeps it.
@@ -699,7 +717,7 @@ CommitReady == cut = "none" \/ CommitMayOvertake
 Folds(mp, t) == mp /\ unanswered >= 1
                 /\ (t \in {"none", "held"}
                     \/ (t = "ctxCancelled" /\ HOLD /= "gateNoFoldCancelled"))
-Acted(t) == t \in {"ctxRunning", "ctxDone"}
+Acted(t) == t \in {"ctxRunning", "resultHeld", "ctxDone"}
 Appended(mp, t) ==
     /\ unanswered' = IF Folds(mp, t) THEN unanswered
                      ELSE IF Acted(t) THEN 1
@@ -714,7 +732,7 @@ CommitCore ==
     /\ reply' = TRUE /\ armed' = Gated
     /\ Appended(mergePending, tool)
     /\ mergePending' = FALSE
-    /\ UNCHANGED lateTool
+    /\ UNCHANGED <<lateTool, orphanCall>>
 Commit ==
     /\ CommitCore
     /\ overtaken' = (cut /= "none")
@@ -743,6 +761,7 @@ ContinueCommit ==
     /\ held' = FALSE /\ paused' = FALSE /\ resumed' = FALSE
     /\ Appended(HOLD /= "gateNoMerge", Dropped(tool))
     /\ lateTool' = (lateTool \/ LateOnDrop)
+    /\ orphanCall' = (orphanCall \/ OrphanOnDrop)
     /\ mergePending' = FALSE
     /\ UNCHANGED <<endQueued, replyOverResume>>
     /\ UNCHANGED fenceVars
@@ -918,8 +937,10 @@ Release ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     \* A tool round queued behind the hold reaches the context: still running, or done.
-    /\ \E t \in (IF tool = "held" THEN {"ctxRunning", "ctxDone"} ELSE {tool}) : tool' = t
-    /\ UNCHANGED <<lateTool, goodbyeLost>>
+    /\ \E t \in (CASE tool = "held" -> {"ctxRunning", "ctxDone"}
+                   [] tool = "resultHeld" -> {"ctxDone"}
+                   [] OTHER -> {tool}) : tool' = t
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
 Cap ==
@@ -933,8 +954,10 @@ Cap ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     \* A tool round queued behind the hold reaches the context: still running, or done.
-    /\ \E t \in (IF tool = "held" THEN {"ctxRunning", "ctxDone"} ELSE {tool}) : tool' = t
-    /\ UNCHANGED <<lateTool, goodbyeLost>>
+    /\ \E t \in (CASE tool = "held" -> {"ctxRunning", "ctxDone"}
+                   [] tool = "resultHeld" -> {"ctxDone"}
+                   [] OTHER -> {tool}) : tool' = t
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
 \* Every other action but the caller's speech is guarded by ~endQueued: what TLC
@@ -958,7 +981,7 @@ Hangup ==
     /\ \E words \in (IF userTurn THEN BOOLEAN ELSE {FALSE}) :
          goodbyeLost' = (goodbyeLost \/ (words /\ MODE = "retryMergesAtEnd" /\ armed
                                           /\ cut = "none" /\ reply /\ ~held))
-    /\ UNCHANGED <<tool, lateTool>>
+    /\ UNCHANGED <<tool, lateTool, orphanCall>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
@@ -972,7 +995,7 @@ ToolCall ==
     /\ ~endQueued
     /\ Gated /\ reply /\ armed /\ tool = "none" /\ cut = "none"
     /\ tool' = IF paused THEN "held" ELSE "ctxRunning"
-    /\ UNCHANGED <<lateTool, goodbyeLost>>
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -980,12 +1003,13 @@ ToolCall ==
     /\ UNCHANGED fenceVars
 
 \* Its result lands: a sync tool's (the LLM then answers from it -- the reply goes on),
-\* or the async consult's placeholder (run_llm=False; the consult runs on).
+\* or the async consult's placeholder (run_llm=False; the consult runs on). Through the
+\* gate: while it holds, the result waits in its queue.
 ToolDone ==
     /\ ~endQueued
     /\ tool = "ctxRunning"
-    /\ tool' = "ctxDone"
-    /\ UNCHANGED <<lateTool, goodbyeLost>>
+    /\ tool' = IF paused THEN "resultHeld" ELSE "ctxDone"
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -1112,6 +1136,9 @@ NoLateToolRound == ~lateTool
 \* The session-end commit never drops a reply the End was queued behind.
 NoLostGoodbye == ~goodbyeLost
 
+\* Every tool call in the context gets a result: none is left unsettled for good.
+NoOrphanCall == ~orphanCall
+
 \* Reachability witnesses: rows that expect these to FAIL prove the window the
 \* answer-loss fix is about is reachable in the design they run -- a pause with the
 \* rest of the reply in the 0.5-1 s band, and a tail that elapses during it.
@@ -1128,7 +1155,8 @@ TypeOK ==
     /\ SPEC \in {"off", "byText", "byHistory", "byContext"}
     /\ (SPEC = "off" => ~spec)
     /\ HOLD \in {"none", "gate", "gateNoMerge", "gateNoResume", "gateEndWaits",
-                 "gateNoEnding", "gateKeepsTool", "gateNoFoldCancelled"}
+                 "gateNoEnding", "gateKeepsTool", "gateNoFoldCancelled",
+                 "gateDropsResult"}
     /\ WORDS_IN_TIME \in BOOLEAN
     /\ reply \in BOOLEAN /\ armed \in BOOLEAN /\ held \in BOOLEAN /\ paused \in BOOLEAN
     /\ resumed \in BOOLEAN /\ mergePending \in BOOLEAN /\ unanswered \in 0..2
@@ -1146,6 +1174,7 @@ TypeOK ==
     /\ cut \in {"none", "empty", "reply"} /\ overtaken \in BOOLEAN
     /\ cutAfterCommit \in BOOLEAN
     /\ (overtaken => cut /= "none")
-    /\ tool \in {"none", "held", "ctxRunning", "ctxDone", "ctxCancelled"}
-    /\ lateTool \in BOOLEAN /\ goodbyeLost \in BOOLEAN
+    /\ tool \in {"none", "held", "ctxRunning", "resultHeld", "ctxDone", "ctxCancelled",
+                 "ctxOrphan"}
+    /\ lateTool \in BOOLEAN /\ goodbyeLost \in BOOLEAN /\ orphanCall \in BOOLEAN
 =============================================================================

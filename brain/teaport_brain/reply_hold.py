@@ -54,8 +54,10 @@
 # can be committed to the context. And an interruption's queue reset is pipecat's,
 # with its Uninterruptible rules, rather than a copy of them -- with one exception: the
 # reply's function-call frames (its tool call's IN_PROGRESS and result) are
-# Uninterruptible, and the gate drops those of a dropped reply itself, so its tool
-# round does not land in the context after the turn that dropped it.
+# Uninterruptible, and the gate settles those of a dropped reply itself: a call held
+# here goes, with its result, so its tool round does not land in the context after the
+# turn that dropped it; a result held here for a call that passed before the hold goes
+# through without asking for an answer, since nothing else will ever settle that call.
 #
 # Playout times. The TTS stamps its frames with their playout time (pts) as it
 # synthesizes them: every word (TTSTextFrame), and also the response's End when it is
@@ -107,7 +109,7 @@
 #
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from loguru import logger
 
@@ -117,6 +119,7 @@ from pipecat.frames.frames import (
     Frame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
+    FunctionCallResultProperties,
     FunctionCallsStartedFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
@@ -234,6 +237,8 @@ class ReplyHoldGate(FrameProcessor):
         # before a drop belongs to the reply that drop dropped (see process_frame).
         self._drops = 0
         self._call_frames: dict = {}
+        # tool_call_ids whose IN_PROGRESS a drop dropped: their results go too.
+        self._dropped_calls: set = set()
         # Tallies, for the log and the tests.
         self.holds = 0
         self.onset_only_holds = 0
@@ -338,19 +343,43 @@ class ReplyHoldGate(FrameProcessor):
             frame.pts += self._shift[ctx]
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
-        if self._call_frames.pop(frame.id, self._drops) < self._drops:
-            # The tool round of a reply dropped while held: its call (IN_PROGRESS) and
-            # its result waited here with the rest of it, and pipecat's reset keeps
-            # them. Let through, they would reach the context after the turn that
-            # dropped the reply -- a cancelled call as an IN_PROGRESS nothing settles
-            # (its cancel reached the assistant aggregator first, before the call
-            # had), a finished one with its result and, for a sync tool, a second
-            # inference. The async consult itself runs on: its answer arrives as its
-            # own follow-up. (formal/UserTurn.tla, NoLateToolRound.)
+        held_past_a_drop = self._call_frames.pop(frame.id, self._drops) < self._drops
+        if isinstance(frame, FunctionCallInProgressFrame) and held_past_a_drop:
+            # The tool round of a reply dropped while held: its call (IN_PROGRESS) waited
+            # here with the rest of it, and pipecat's reset keeps it. Let through, it
+            # would reach the context after the turn that dropped the reply -- a
+            # cancelled call as an IN_PROGRESS nothing settles (its cancel reached the
+            # assistant aggregator first, before the call had). Its result, whenever it
+            # comes, goes with it. The async consult itself runs on: its answer arrives
+            # as its own follow-up. (formal/UserTurn.tla, NoLateToolRound.)
+            self._dropped_calls.add(frame.tool_call_id)
             self._arrivals.pop(frame.id, None)
-            logger.info(f"REPLY-HOLD: dropped the held reply's {type(frame).__name__} "
-                        f"({getattr(frame, 'function_name', '?')})")
+            logger.info(f"REPLY-HOLD: dropped the held reply's tool call "
+                        f"({frame.function_name})")
             return
+        if isinstance(frame, FunctionCallResultFrame):
+            if frame.tool_call_id in self._dropped_calls:
+                if not frame.properties or frame.properties.is_final:
+                    self._dropped_calls.discard(frame.tool_call_id)
+                self._arrivals.pop(frame.id, None)
+                logger.info(f"REPLY-HOLD: dropped the result of the held reply's tool call "
+                            f"({frame.function_name})")
+                return
+            if held_past_a_drop:
+                # Its call passed before the hold began (a sync tool's seconds of work
+                # straddled the hold's start), so the call is in the context and has
+                # finished: nothing cancels it, and this result is all that will ever
+                # settle it -- dropped, the call stays IN_PROGRESS for good, and the
+                # merge cannot fold across it (formal/UserTurn.tla, NoOrphanCall). It
+                # goes through, settling the call, but asks for no inference: the reply
+                # that inference would have been is the one just dropped, and the
+                # commit that follows asks the model with the round in view.
+                frame.properties = (replace(frame.properties, run_llm=False)
+                                    if frame.properties is not None
+                                    else FunctionCallResultProperties(run_llm=False))
+                frame.run_llm = False
+                logger.info(f"REPLY-HOLD: the dropped reply's {frame.function_name} result "
+                            "settles its call, with no answer from it")
         if self._discard_to_end and not isinstance(frame, SystemFrame):
             if isinstance(frame, (EndFrame, StopFrame)):
                 self._discard_to_end = False
