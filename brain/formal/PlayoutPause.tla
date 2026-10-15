@@ -53,10 +53,10 @@
 (*                    stop began (a pause mid-reply).                       *)
 (* FIRSTAUDIO = "any"    -- it may come during the stop (a hold armed at the *)
 (*                    commit, before the reply's first audio).              *)
-(* ANCHOR = "stop"  -- as shipped: an ended context's anchor moves by the   *)
-(*                    whole stop (`now - then`).                            *)
-(* ANCHOR = "audio" -- PROPOSED, not code: by the stop since its first      *)
-(*                    audio, as the in-progress path (_ctx_held_ns) does.   *)
+(* ANCHOR = "stop"  -- before the fix: an ended context's anchor moved by   *)
+(*                    the whole stop (`now - then`).                        *)
+(* ANCHOR = "audio" -- as shipped: by the stop since its first audio        *)
+(*                    (_frozen_from), as the in-progress path does.         *)
 (***************************************************************************)
 EXTENDS Integers, Sequences
 
@@ -101,7 +101,7 @@ VARIABLES
     clk,               \* part 2's own clock
     holdOn, pauseOn,   \* the two sources currently stopping playout
     sources,           \* engine_tts._freezes (set design)
-    frozenAt,          \* -1, or _frozen_clock: when the freeze began
+    frozenAt,          \* -1, or when the freeze began (_frozen_from is Max(it, audioAt))
     audioAt,           \* -1, or when the stopped reply's first audio was queued
     ctxEnded,          \* that reply's context has ended (its anchor is _prev_audio_end_ns)
     stopped,           \* ground truth: ticks playout was stopped with its audio waiting
@@ -235,10 +235,11 @@ Stop(src) ==
     /\ UNCHANGED <<clk, audioAt, ctxEnded, stopped, moved>>
 
 \* _freeze_playout(src, False): when nothing else freezes (set), or on any end
-\* (single), the anchor moves: an ended context's _prev_audio_end_ns by the time
-\* since the freeze began (`now - then`); one still in progress by the time since
-\* max(then, its baseline) (_ctx_held_ns, added at its end). No audio yet: nothing
-\* of it is anchored, nothing moves.
+\* (single), the anchor moves by the time since max(then, its first audio)
+\* (_frozen_from): an ended context's _prev_audio_end_ns now, one still in progress
+\* at its end (_ctx_held_ns). Before the fix (ANCHOR = "stop") an ended one moved by
+\* the time since the freeze began (`now - then`). No audio yet: nothing of it is
+\* anchored, nothing moves.
 Delta == IF audioAt < 0 THEN 0
          ELSE IF ANCHOR = "stop" /\ ctxEnded THEN clk - frozenAt
          ELSE clk - Max(frozenAt, audioAt)

@@ -164,8 +164,9 @@ echo "PlayoutClock.tla — a held reply's playout times at the transport's clock
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
 run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"
 run PlayoutClock.tla pc_release_all        "(expected: holds — every pts moved by the first held audio's wait)"
-run PlayoutClock.tla pc_second_shipped     "(expected: FAILS SecondOnTime — AS SHIPPED: a context queued behind the held reply is anchored off its real start)"
-run PlayoutClock.tla pc_second_fix2        "(expected: holds — PROPOSED, not code: anchor on the frozen clock, move by the hold since the first audio, one shift for the held queue)"
+run PlayoutClock.tla pc_second_asWritten   "(expected: FAILS SecondOnTime — BEFORE THIS FIX: a context queued behind the held reply is anchored off its real start)"
+run PlayoutClock.tla pc_second_realClock   "(expected: FAILS SecondOnTime — the fix but anchored on the real clock: a context that starts after the held reply's pre-hold end is late)"
+run PlayoutClock.tla pc_second_fix2        "(expected: holds — AS SHIPPED: anchor on the frozen schedule, move by the hold since the first audio, one shift for the held queue)"
 echo
 echo "PlayoutPause.tla — heard accounting across playout pauses, and the TTS's freeze (#86)"
 run PlayoutPause.tla pp_unaware_heard "(expected: FAILS HeardIsPlayed — the ledger before #86: its layout runs on through a pause)"
@@ -175,8 +176,8 @@ run PlayoutPause.tla pp_single_anchor "(expected: FAILS AnchorMovesByStop — on
 run PlayoutPause.tla pp_set_anchor    "(expected: holds — one freeze per source: frozen while stopped, the anchor moved by exactly the stop)"
 run PlayoutPause.tla pp_late_ahead_heard   "(expected: FAILS HeardIsPlayed — BEFORE THIS FIX: a pause in an underrun, the next clause after it: its words carry the pause twice)"
 run PlayoutPause.tla pp_late_moved_heard   "(expected: holds — AS SHIPPED: _freeze_playout always moves _play_end by the stop)"
-run PlayoutPause.tla pp_hold_anchor        "(expected: FAILS AnchorMovesByStop — AS SHIPPED: a hold from before the reply's first audio moves its end by the whole hold)"
-run PlayoutPause.tla pp_hold_anchor_fixed  "(expected: holds — PROPOSED, not code: move it by the hold since its first audio, as _ctx_held_ns does)"
+run PlayoutPause.tla pp_hold_anchor        "(expected: FAILS AnchorMovesByStop — BEFORE THIS FIX: a hold from before the reply's first audio moved its end by the whole hold)"
+run PlayoutPause.tla pp_hold_anchor_fixed  "(expected: holds — AS SHIPPED: move it by the hold since its first audio, as _ctx_held_ns does)"
 echo
 echo "SttCommit.tla — when the STT closes the engine's transcript segment (#43)"
 run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the commit at the raw VAD stop: before #43, and the no-verdict fallback's cost)"

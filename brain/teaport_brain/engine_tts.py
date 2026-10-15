@@ -525,6 +525,16 @@ def pacing_status() -> dict:
             "invalid": invalid, "missing": missing, "pipecat": pipecat}
 
 
+class _PinnedClock:
+    """A clock that reads one instant (EngineTTSService.get_clock)."""
+
+    def __init__(self, ns: int):
+        self._ns = ns
+
+    def get_time(self) -> int:
+        return self._ns
+
+
 class EngineTTSService(TTSService):
     """Pipecat TTS service for the engine TTS (text-in) with per-word timestamps."""
 
@@ -562,13 +572,17 @@ class EngineTTSService(TTSService):
         # Set while playout is stopped downstream (reply_hold.PlayoutHoldFrame, and any
         # other source -- one freeze per source, so two overlapping ones neither end
         # each other early nor double-count): the time the first began, which stands in
-        # for "now" in the model above until the last ends, and the same instant on the
-        # pipeline clock. _ctx_held_ns is how much of that the context being spoken
-        # now spent stopped after its words were anchored, for _prev_audio_end_ns.
+        # for "now" in the model above until the last ends, and the instant on the
+        # pipeline clock from which the stop holds back anchored audio (_stop_holds_from;
+        # None while it holds back none). _ctx_held_ns is how much of that the context
+        # being spoken now spent stopped, for _prev_audio_end_ns.
         self._freezes: set = set()
         self._frozen_at = None
-        self._frozen_clock = None
+        self._frozen_from = None
         self._ctx_held_ns = 0
+        # The clock instant pipecat's word baseline reads next, instead of the clock's
+        # (start_word_timestamps: a context anchored on the frozen schedule).
+        self._clock_pin = None
         # Where the previous context's audio ENDS on the playout clock (its word
         # baseline + all the audio it emitted), so a reply queued behind it is
         # scheduled from there. pipecat anchors a new context at the previous one's
@@ -694,6 +708,25 @@ class EngineTTSService(TTSService):
         except Exception:  # noqa: BLE001 -- no clock before setup: nothing anchored yet
             return None
 
+    def get_clock(self):
+        # One read of a pinned instant, for pipecat's word baseline (start_word_timestamps).
+        pin, self._clock_pin = self._clock_pin, None
+        return super().get_clock() if pin is None else _PinnedClock(pin)
+
+    def _stop_holds_from(self, then):
+        """Where a stop that began at `then` (pipeline clock) starts holding back audio
+        whose words are anchored: at once if any is still to play -- the previous
+        context's end is ahead, or a context is in progress -- else not yet: the first
+        audio anchored during the stop sets it (start_word_timestamps). A stop with
+        nothing anchored waiting moves nothing anchored (formal/README, PlayoutPause
+        part 2: ground truth is the time stopped with the reply's audio waiting)."""
+        if then is None:
+            return None
+        if self._prev_audio_end_ns > then:
+            return then
+        base = self._initial_word_timestamp
+        return max(then, base) if base != -1 else None
+
     def _freeze_playout(self, source: str, held: bool):
         """Playout downstream stopped (`source` holds or pauses it) or started again.
 
@@ -705,16 +738,20 @@ class EngineTTSService(TTSService):
 
         A reply queued BEHIND the stopped one is anchored at _prev_audio_end_ns, which
         is on the pre-stop clock: it moves too, now if that context has ended, or when
-        the one in progress ends (_ctx_held_ns, counted from when its words were
-        anchored). The stopped context's own words are not touched here: the processor
-        that stopped them accounts for them (reply_hold.ReplyHoldGate re-stamps every pts
-        of a held context; for a playout pause the TranscriptLedger moves its cut by
-        the pause, barge_pause.py), and moving the baseline as well would count them
-        twice."""
+        the one in progress ends (_ctx_held_ns) -- by the stop since it began holding
+        back anchored audio (_frozen_from), not since the stop began: a reply hold is
+        armed at the commit and usually begins before the reply's first audio, and that
+        audio is anchored when it comes (formal/README: pp_hold_anchor). A context that
+        starts during the stop is anchored on the frozen schedule and moves by the same
+        amount (start_word_timestamps). The stopped context's own words are not touched
+        here: the processor that stopped them accounts for them (reply_hold.ReplyHoldGate
+        re-stamps every pts of a held context; for a playout pause the TranscriptLedger
+        moves its cut by the pause, barge_pause.py), and moving the baseline as well
+        would count them twice."""
         if held:
             if not self._freezes:
                 self._frozen_at = time.monotonic()
-                self._frozen_clock = self._clock_ns()
+                self._frozen_from = self._stop_holds_from(self._clock_ns())
             self._freezes.add(source)
             return
         if source not in self._freezes:
@@ -730,14 +767,13 @@ class EngineTTSService(TTSService):
         # A model already in the past stays in the past, so pacing is unchanged.
         if self._play_end:
             self._play_end += time.monotonic() - self._frozen_at
-        now, then = self._clock_ns(), self._frozen_clock
-        if now is not None and then is not None:
-            if self._prev_audio_end_ns > then:
-                self._prev_audio_end_ns += now - then
-            base = self._initial_word_timestamp
-            if base != -1:
-                self._ctx_held_ns += max(0, now - max(then, base))
-        self._frozen_at = self._frozen_clock = None
+        now, since = self._clock_ns(), self._frozen_from
+        if now is not None and since is not None:
+            if self._prev_audio_end_ns > since:
+                self._prev_audio_end_ns += now - since
+            if self._initial_word_timestamp != -1:
+                self._ctx_held_ns += max(0, now - since)
+        self._frozen_at = self._frozen_from = None
 
     async def _hold_for_user_speech(self):
         """Between clauses: wait out user speech (capped) so STT gets the GPU."""
@@ -1077,12 +1113,30 @@ class EngineTTSService(TTSService):
         # previous context's audio is still playing, this context plays when THAT
         # audio ends, later than its last word's start: hand the base that instant
         # through the hook it already reads, BEFORE it runs.
-        if self._initial_word_timestamp == -1 and self._word_last_pts < self._prev_audio_end_ns:
+        #
+        # While playout is stopped with anchored audio held back (_frozen_from), this
+        # context plays right behind that audio once the stop ends, and is moved with it
+        # -- the gate gives every context it held the first one's shift, the ledger every
+        # turn pushed before a resume the whole pause. So it is anchored on the frozen
+        # schedule: where that audio ends, or the instant the stop began holding it back,
+        # never the real clock, which ran on while nothing played (formal/README,
+        # PlayoutClock pc_second_fix2). Otherwise the first audio anchored during a stop
+        # sets where it begins holding back (_stop_holds_from).
+        fresh = self._initial_word_timestamp == -1
+        if fresh and self._word_last_pts < self._prev_audio_end_ns:
             if _TRACE:
                 logger.info(f"[WTS] baseline floor {self._word_last_pts / 1e9:.2f} -> "
                             f"{self._prev_audio_end_ns / 1e9:.2f} (queued behind audio)")
             self._word_last_pts = self._prev_audio_end_ns
-        await super().start_word_timestamps()
+        if fresh and self._frozen_at is not None and self._frozen_from is not None:
+            self._clock_pin = self._frozen_from
+        try:
+            await super().start_word_timestamps()
+        finally:
+            self._clock_pin = None
+        if (fresh and self._frozen_at is not None and self._frozen_from is None
+                and self._initial_word_timestamp != -1):
+            self._frozen_from = self._initial_word_timestamp
 
     async def reset_word_timestamps(self):
         # The base zeroes its per-reply word-timestamp baseline here. A context's normal
@@ -1126,7 +1180,7 @@ class EngineTTSService(TTSService):
         self._interrupted = True  # the base resets word timestamps below: no carry
         self._play_end = 0.0      # the flushed audio is not going to play
         self._freezes.clear()     # nor is anything held
-        self._frozen_at = self._frozen_clock = None
+        self._frozen_at = self._frozen_from = None
         self._ctx_held_ns = 0
         await super()._handle_interruption(frame, direction)
         self._prev_audio_end_ns = 0

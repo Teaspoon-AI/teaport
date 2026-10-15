@@ -1859,18 +1859,20 @@ committed `'Sure here'` and left seven words uncommitted.
 is that probe, kept. The End has no `context_id`; the gate gives it the context it saw
 last, which is the one whose audio it follows.
 
-**A second context behind the held reply** (`SECOND`, 2026-10-14 audit). The model had
-one context, and the gate's shift and the TTS's anchoring are per context: a context
-that starts while the held reply is still to play — a narrator line, the answer after a
-tool call — is anchored by the TTS at the held reply's end on ITS model
-(`_prev_audio_end_ns`, or its own first audio if later; `engine_tts.start_word_timestamps`),
-and the gate moves its pts by ITS OWN first held frame's wait (`reply_hold._restamp`),
-while it really plays right behind the held reply, which plays from the release.
+**A second context behind the held reply** (`SECOND`, 2026-10-14 audit; fixed
+2026-10-15). The model had one context, and the gate's shift and the TTS's anchoring are
+per context: a context that starts while the held reply is still to play — a narrator
+line, the answer after a tool call — was anchored by the TTS at the held reply's end on
+ITS model (`_prev_audio_end_ns`, or its own first audio if later;
+`engine_tts.start_word_timestamps`), and the gate moved its pts by ITS OWN first held
+frame's wait (`reply_hold._restamp`), while it really plays right behind the held reply,
+which plays from the release. `DESIGN2` says which anchoring.
 
-| | `SecondOnTime` |
-|---|---|
-| `pc_second_shipped` — as shipped | ✗ (5 states) |
-| `pc_second_fix2` — **proposed, not code**: anchor a context that starts during a freeze on the frozen clock, move an ended context's anchor by the hold since its first audio, give every context held behind the first the first's shift | ✓ (169 states, with `CommittedIsPlayed` and `WordsOnTime`) |
+| `DESIGN2` | | `SecondOnTime` | `SecondEndOnTime` |
+|---|---|---|---|
+| `asWritten` | `pc_second_asWritten`, the code until 2026-10-15 | ✗ (5 states) | |
+| `realClock` | `pc_second_realClock`: the fix below, but anchored on the real clock | ✗ (7 states) | |
+| `shipped` | `pc_second_fix2`, **as shipped**: a context that starts while the freeze holds anchored audio back is anchored on the frozen schedule (`_frozen_from`); an ended context's anchor and the second's own end move by the hold since that instant; every context held behind the first takes the first's shift | ✓ (183 states, with `CommittedIsPlayed` and `WordsOnTime`) | ✓ |
 
 Two ways, both from the code as written. Started *after* the release (TLC's shortest,
 `Wait Wait Release Arrive2`): `_freeze_playout` moved the held reply's end by the whole
@@ -1879,8 +1881,32 @@ context's words land `LAT` late (`pp_hold_anchor` is the same arithmetic). Start
 *during* the hold (`Wait Wait Wait Arrive2 Release`, held 3, first audio at 3): anchored
 at `max(LAT + N, 3) = 4` on the pre-hold schedule, moved by its own wait, 0 — its words
 2 units EARLY, so a cut credits words not yet heard, which no estimate corrects.
-Found by the model from the code; not reproduced on the real gate. Rare: the hold is
-about a second, and needs a second context to start inside it.
+
+The fix, three parts that only hold together. The TTS records where the freeze began
+holding anchored audio back, `_frozen_from`: the freeze's start if anything anchored was
+still to play, else the first audio anchored during it (`_stop_holds_from`). An ended
+context's `_prev_audio_end_ns` and the in-progress context's `_ctx_held_ns` both move by
+the hold since that instant. A context whose first audio comes while the freeze holds
+audio back is anchored on the frozen schedule — `max(_prev_audio_end_ns, _frozen_from)`,
+pipecat's baseline reading `_frozen_from` instead of the clock (`EngineTTSService.get_clock`
+pins one read) — and the gate gives every context it held the shift the first one fixed
+(`_release_shift`). Both halves are needed: with the gate's shared shift but the real
+clock (`pc_second_realClock`, `Wait`×4 `Arrive2 Release`, `N = 2`: the second context's
+first audio at 4, after the held reply's pre-hold end at 3) its words land a unit late.
+`SecondEndOnTime` checks the second context's own end — where a third would be
+anchored — and it needs the hold since `_frozen_from` too, not since its own anchor.
+`pc_second_fix2` runs at `N = 2`, `MaxHold = 4` so a second context can start after
+the held reply's pre-hold end. The tests, each failing before the fix:
+`test_reply_hold.py::test_a_reply_queued_behind_a_held_one_is_anchored_on_the_frozen_schedule`
+(the TTS), `::test_the_contexts_held_behind_the_first_move_with_it` (the gate: 0.45 s
+against the first's 0.75 s), `::test_a_reply_ending_inside_a_hold_moves_by_the_hold_since_its_first_audio`.
+Rare on a call: the hold is about a second, and needs a second context to start inside it.
+
+Not modelled, and accepted: the TTS hears of the release one upstream SystemFrame after
+the gate acts, so a context first anchored in that window is anchored frozen but not
+shifted (well under a millisecond, on the input task). And the freeze treats everything
+the TTS has anchored as held, though audio already past the gate when the hold began (a
+line still playing at the commit) plays on — as before the fix.
 
 ## `PlayoutPause.tla` — heard accounting across playout pauses, and the TTS's freeze (#86)
 
@@ -1951,17 +1977,19 @@ reply hold is armed at the commit and usually begins before the reply's first au
 and the reply's short context often ends inside it. Ground truth is now the time stopped
 *with the reply's audio waiting*; `_freeze_playout` moves an ended context's anchor
 (`_prev_audio_end_ns`) by `now - then`, the whole stop, while the in-progress path
-(`_ctx_held_ns`) already counts from `max(then, base)`.
+(`_ctx_held_ns`) already counted from `max(then, base)`.
 
 | `SLOT = "set"`, `FIRSTAUDIO = "any"` | `AnchorMovesByStop` |
 |---|---|
-| `pp_hold_anchor` — `ANCHOR = "stop"`, as shipped | ✗ (6 states: the hold, a tick, the first audio, the context ends, the release — moved 1, stopped with audio 0) |
-| `pp_hold_anchor_fixed` — `ANCHOR = "audio"`, **proposed, not code**: the ended context's anchor moves by the stop since its first audio | ✓ (1.1k states, with `FrozenWhileStopped`) |
+| `pp_hold_anchor` — `ANCHOR = "stop"`, before the fix | ✗ (6 states: the hold, a tick, the first audio, the context ends, the release — moved 1, stopped with audio 0) |
+| `pp_hold_anchor_fixed` — `ANCHOR = "audio"`, **as shipped** (2026-10-15): the ended context's anchor moves by the stop since its first audio (`_frozen_from`) | ✓ (1.1k states, with `FrozenWhileStopped`) |
 
-A reply queued behind such a held reply — the answer after a tool call — is anchored by
-however long the hold ran before the first audio, so its captions lag and its heard cut
-comes short (the estimate floor again). `PlayoutClock.tla`'s `pc_second_shipped` is the
-same, seen from the words.
+A reply queued behind such a held reply — the answer after a tool call — was anchored
+late by however long the hold ran before the first audio, so its captions lagged and its
+heard cut came short (the estimate floor again). `PlayoutClock.tla`'s
+`pc_second_asWritten` is the same, seen from the words, and its fix carries this one.
+`test_reply_hold.py::test_a_reply_ending_inside_a_hold_moves_by_the_hold_since_its_first_audio`
+is the trace: a reply anchored 0.3 s into a 0.7 s hold ended at 12.0 s instead of 11.7 s.
 
 The anchor's own value is tested on the real TTS in `test_reply_hold.py` and
 `test_barge_pause.py`.
