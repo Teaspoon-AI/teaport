@@ -816,7 +816,8 @@ The first awaits through `push_aggregation()` → `push_context_frame()` → `pu
 across the whole pipeline below the aggregator; when the trigger came from the stop
 strategy's own `_timeout_handler` **task**, the aggregator's input task is free to run a
 queued `VADUserStartedSpeakingFrame` in that gap. `Resume` is that gap, and it is the
-only interleaving the model needs.
+only interleaving the barge-in rows need (the commit overtaking its own interruption is
+the other, for the context and the hold: `CutLands`, below).
 
 | MODE | | `NoStrandedTurn` | `NoMissedBargeIn` |
 |---|---|---|---|
@@ -825,12 +826,11 @@ only interleaving the model needs.
 
 `NoStrandedTurn` is the state itself — a turn whose inference has already run, still open
 once the user has fallen quiet. `NoMissedBargeIn` is what the user experiences, and its
-counterexample is nine states with nothing exotic in it:
+counterexample is eight states with nothing exotic in it:
 
 ```
-VadStart     the user speaks
-Interject    >= INTERRUPT_MIN_WORDS: the turn opens, the bot is cut. Barge-in worked.
-VadStop      they pause
+Interject    >= INTERRUPT_MIN_WORDS (their final, after the VAD stop): the turn opens
+CutLands     the interruption reaches the transport: the bot is cut. Barge-in worked.
 Inference    the stop strategy concludes; the words go to the context, the LLM is asked
 Resume       they resume INSIDE that await
 Finalize     refused: "never finalize while the user is audibly speaking".
@@ -907,17 +907,16 @@ has an action for each:
 
 | SPEC | promotes when | `NoStrandedTurn` | `NoMissedBargeIn` | `NoStaleReply` |
 |---|---|---|---|---|
-| `off` | — (the four MODE rows above; 436 states since the reply hold added its variables, 47 before) | | | |
+| `off` | — (the four MODE rows above; 592 states since the cut became its own step, 436 before, 47 before the reply hold's variables) | | | |
 | `byText` | the committed words are what was asked | ✓ | ✓ | ✗ (`CtxChange`) |
 | `byHistory` | the context before the user message is what was asked | | | ✗ (`Retext`) |
 | `byContext` | the whole context, user message included, equals the snapshot — `Speculator.take` | ✓ | ✓ | ✓ |
 
-The `byText` counterexample is seven states and needs no barge-in at all:
+The `byText` counterexample is six states and needs no barge-in at all:
 
 ```
-VadStart     the user speaks
-Interject    the turn opens
-VadStop      they pause; Smart Turn says INCOMPLETE, the ceiling starts
+Interject    the turn opens (they have paused; Smart Turn says INCOMPLETE, the ceiling runs)
+CutLands     its interruption lands (nothing to cut)
 SpecStart    the interim settles, the stop does not fire: the LLM is asked now
 CtxChange    something writes the context (MemoryRecall's note on the final; the
              corrector's truncation of the cut reply, before it was moved ahead of the
@@ -927,7 +926,7 @@ Inference    the ceiling ends the turn; the words are what was asked, so byText
              the commit no longer has
 ```
 
-The `byHistory` counterexample is the same seven with `Retext` for `CtxChange`: the final
+The `byHistory` counterexample is the same six with `Retext` for `CtxChange`: the final
 the ceiling's commit brings is "Tell me a story." where the interim was "tell me a story",
 nothing else wrote the context, and the reply to the interim's words is adopted for the
 final's. It is the hazard the interim snapshot adds over the final one, and the reason
@@ -963,20 +962,18 @@ commit into the unanswered one; no words release it.
 
 The model's additions are one step each between awaits: the hold is taken inside the
 VAD start (or the `Resume` inside the commit's own await), the release after the
-resumed speech turned out to be wordless (`Wordless`, then `Release`), the drop inside
-`Interject`'s interruption, the merge at the commit (`Inference`), and `Hangup` — the
+resumed speech turned out to be wordless (`Wordless`, then `Release`), the drop where
+the turn's interruption reaches the gate (`CutLands`, below), the merge at the commit
+(`Commit`, shared by `Inference` and the watchdog's `ForceStop`), and `Hangup` — the
 session's `EndFrame` reaching the gate's queue. `BotStart` now also plays the last
 commit's reply (`reply`), not only the refused-finalize one, and waits while `paused`.
+The gate is armed by the aggregator's `on_user_turn_message_added` (a commit with words
+in it), which the model's `Commit` is.
 
-"The drop inside `Interject`'s interruption" is a premise, not a step: the model has the
-interruption reach the gate in the same step as the turn start, ahead of that turn's
-commit. The code did not guarantee it until 2026-10-13. A turn that opens on its final
-after its own VAD stop (the late-start barge-in) commits in the same controller call,
-and pipecat's `broadcast_interruption()` only queues the frame, so the commit armed the
-gate before the turn's own interruption reached it (a false `TurnMerge`), and the cut
-reply was committed after the turn instead of before it. `endpointing.CutReplyFence`
-now holds the commit until the interruption has reached the assistant aggregator, which
-is the order `StartTurn` assumes.
+These rows run with `FENCE = "inTime"` and `EARLY_FINAL = FALSE` — the cut lands before
+the commit, and a refused finalize's retry commits nothing — so that each tells its own
+designs apart. What the code does where those premises fail is in the two sections
+after the pause's.
 
 | HOLD | | `NoStaleReply` | `NoSplitTurn` | `NoSilencedBot` | `NoEndBehindHold` |
 |---|---|---|---|---|---|
@@ -996,10 +993,10 @@ constant: the caller's words — or the STT's close saying there were none (`Wor
 arrive before either timer. Under it (`ut_hold_gate_all`) `gate` holds all four together
 with `NoStrandedTurn` and `NoMissedBargeIn`. Without it (`ut_hold_gate_timed_*`) every
 property but `NoStaleReply` still holds, and `NoStaleReply` falls — the accepted
-residual, 10 states:
+residual, 9 states:
 
 ```
-VadStart Interject VadStop Inference Finalize   the ceiling commits mid-sentence
+Interject CutLands Inference Finalize           the ceiling commits mid-sentence
 VadStart                                        the caller resumes: held
 Cap                                             the cap ends the hold, the caller still talking
 BotStart Interject                              the reply plays; their late words cut it
@@ -1009,16 +1006,16 @@ That is the case the hold cannot fix without knowing the future (words slower th
 `RELEASE_S`, or a caller talking past the cap with no words transcribed); it is no worse
 than before #85.
 
-The speculation and mode rows run with `WORDS_IN_TIME = TRUE`; the speculation rows now run with `HOLD = "gate"`, the shipped
+The speculation and mode rows run with `WORDS_IN_TIME = TRUE` (and `FENCE = "inTime"`, `EARLY_FINAL = FALSE`, as every row predating them does); the speculation rows now run with `HOLD = "gate"`, the shipped
 gate, and the `MODE` rows with `HOLD = "none"` (their verdicts and the counterexamples
 above are unchanged; `NoStaleReply` grew a second cause, below, and `byText` still fails
 it on the speculation's).
 
 - `NoStaleReply` now also says: **a reply never starts over speech the caller began after
-  its commit and that turned out to be words.** `none`, 9 states:
+  its commit and that turned out to be words.** `none`, 8 states:
 
   ```
-  VadStart Interject VadStop    the turn
+  Interject CutLands            the turn
   Inference Finalize            the ceiling commits it; the reply is on its way
   VadStart                      the caller was only pausing
   BotStart                      the reply's first audio plays over them
@@ -1026,9 +1023,9 @@ it on the speculation's).
   ```
 
 - `NoSplitTurn`: **a commit never leaves two user messages with no reply between them.**
-  `none` and `gateNoMerge` fail it the same way, 10 states: the commit, the caller
-  resumes, their words cut the (unplayed or held) reply, they stop, the next commit
-  appends their continuation after the unanswered fragment.
+  `none` and `gateNoMerge` fail it the same way, 8 states: the commit, the caller's
+  words (after their VAD stop) start a turn whose interruption drops the (unplayed or
+  held) reply, the next commit appends their continuation after the unanswered fragment.
 - `NoSilencedBot`: **the queue is paused only while a hold is in force.** `gateNoResume`,
   8 states: commit, resume (held), words (`Interject`) — pipecat's interruption reset
   cancels and re-creates the process task, which lifts the pause, but when the frame the
@@ -1037,19 +1034,22 @@ it on the speculation's).
   the pause. The gate as first written did nothing more, and every later reply waited
   behind it forever. It now resumes the queue on every end of a hold.
 - `NoEndBehindHold`: **the session's End never waits behind a hold.** `gateEndWaits`,
-  7 states: commit, a resume inside the commit's await (held), hang-up — the `EndFrame`,
+  6 states: commit, a resume inside the commit's await (held), hang-up — the `EndFrame`,
   a ControlFrame, queues behind the held reply (Talk's close took 5.7 s, and the held
   reply then played into the closing session). `queue_frame` now drops the hold and lifts
   the pause in the same step the End arrives. And no hold may start BEHIND the End:
   the caller can still speak after it reached the gate (`VadStart` is the one step not
   guarded by `~endQueued`), and `gateNoEnding` — the gate without its `_ending` flag —
-  fails in 7 states: commit, hang-up, the caller's speech inside the commit's await holds
+  fails in 6 states: commit, hang-up, the caller's speech inside the commit's await holds
   a reply behind the End.
 
 What the model does not say: the speaking-at-commit hold (`arm()` with the onset test
-still hearing the caller) is out of reach, because `Inference` requires a quiet VAD (see
-below); the onset test and the VAD are one `userSpeaking`; how long the release window
-and the caps are (only that they are timers). `test_reply_hold.py` covers those on the real gate.
+still hearing the caller) is not a step of its own, because `Inference` requires a quiet
+VAD (see below) — but its states are reached: since the fence, the commit waits inside
+the inference's await, a VAD start can land in that wait and the arm then holds at
+once, which is `Inference` then `Resume` here; the onset test and the VAD are one
+`userSpeaking`; how long the release window and the caps are (only that they are
+timers). `test_reply_hold.py` covers those on the real gate.
 
 **Follow-ups (`Followup.tla`) are unchanged by the hold, and the module is not
 extended.** The gate is armed only by a user commit, never by the injector's
@@ -1101,19 +1101,20 @@ has it elapsed) against the ground truth (`wouldEnd`); a missed stop is the bot
 | `shipped` | near-end rule + would-have-ended rule + the tail re-announced during the pause | ✓ | ✓ | ✓ |
 
 `shipped` holds all three with `HOLD = "gate"` and every property above, under the
-hold's `WORDS_IN_TIME` assumption (`ut_pause_shipped_all`, 994 states) and with the
+hold's `WORDS_IN_TIME` assumption (`ut_pause_shipped_all`, 1.5k states) and with the
 timers as they are (`ut_pause_shipped_timed`, every property but the accepted
-`NoStaleReply` residual, 2.7k states). Two **witness** rows prove it is not vacuous:
+`NoStaleReply` residual, 3.5k states). Two **witness** rows prove it is not vacuous:
 `ut_pause_shipped_reach_band` FAILS `NoPauseInTailBand` (a pause with 0.5–1 s left is
 reachable) and `ut_pause_shipped_reach_elapsed` FAILS `NoTailElapsed` (a held-back tail
 that would have ended is reachable).
 
 - `NoLostAnswer`: **a one-word answer the caller would have had as a turn without the
   pause is one.** `aOnly` — the row that tells the shipped design from the near-end rule
-  alone — 9 states:
+  alone — 10 states:
 
   ```
-  OneWord Inference Finalize   a turn, committed
+  Interject CutLands
+  Inference Finalize           a turn, committed
   BotStart                     its reply plays, fully synthesized, 0.5-1 s left
   VadStart                     "Yes" over it: past the near-end rule, so it pauses
   VadStop TailElapsed          the held-back rest would have played out by now
@@ -1121,16 +1122,16 @@ that would have ended is reachable).
                                speaking: under the 2-word guard, dropped
   ```
 
-  `asWritten` is the same with 0.5 s or less left. `tailAtPause`, 10 states: the pause
+  `asWritten` is the same with 0.5 s or less left. `tailAtPause`, 11 states: the pause
   comes before the reply's synthesis is over (`SynthDone` lands during it), so no tail
   was ever announced, and the same final is dropped. Shipped: the pause frame carries
   the tail, and the transport announces it again when the `TTSStoppedFrame` arrives
   during the pause; the strategy anchors it at the pause's start.
 - `NoMissedBargeIn` (extended): **told stop while paused, the bot does not resume.**
-  `noStopWord`, 9 states: a reply plays, the caller starts (paused), says "Stop." — one
+  `noStopWord`, 10 states: a reply plays, the caller starts (paused), says "Stop." — one
   word, under the guard, dropped — and the pause resumes the reply.
 - `NoStuckPause`: **playout is paused only in the middle of a reply.**
-  `keepOnInterrupt`, 7 states: paused, then the caller's words cancel the reply — and a
+  `keepOnInterrupt`, 9 states: paused, then the caller's words cancel the reply — and a
   transport that kept its pause would block the next reply's first write until its 8 s
   guard.
 
@@ -1138,6 +1139,107 @@ The thinking-sound bed is not paused (`BargeInPauser` pauses only reply audio, w
 a TTS context; the bed has none): pausing it only delayed the consult answer queued
 behind it. `Followup.tla` has no bed, and the fix removes the interaction instead of
 modelling it.
+
+### The cut and the commit (`FENCE`, `CutReplyFence`)
+
+A barge-in puts two messages into the context from two ends of the pipeline: the reply
+it cut, committed by the assistant aggregator (last) when the `InterruptionFrame`
+reaches it, and the caller's turn, committed by the user aggregator.
+`HeardContextCorrector` finds the cut reply by position, so it has to land first. Until
+2026-10-14 the model took the turn start and its interruption as one step, ahead of the
+commit — a premise the code did not keep until `endpointing.CutReplyFence` (2026-10-13):
+pipecat's `broadcast_interruption()` only queues the frame, and a turn that opens on its
+final after its own VAD stop (the late-start barge-in, the commonest shape) commits in
+the same controller call. Now they are two steps: `StartTurn` (the controller: the turn
+opens, the frame is queued — `cut`) and `CutLands` (the frame reaches the gate, the
+transport and the assistant aggregator). `Interject` no longer requires the caller to be
+speaking: the transcript that opens a barge-in usually lands after their VAD stop.
+
+The property is `NoCutAfterCommit`: **nothing reads the context for a turn — its commit,
+or a speculation's snapshot — before the reply that turn cut is in it.** The snapshot
+counts because it runs the corrector first (`reconcile_for_snapshot`), which spends the
+ledger's cut on a context without the reply, and the reply then lands whole.
+
+| FENCE | | `NoCutAfterCommit` | `NoStaleReply` | `NoSplitTurn` |
+|---|---|---|---|---|
+| `none` | before 2026-10-13 | ✗ | ✗ | ✗ |
+| `commitOnly` | 228298e: the commit waits, the snapshot does not | ✗ | | |
+| `inTime` | `CutReplyFence` as shipped, the cut landing within its bound | ✓ | ✓ under the hold's premises | ✓ under the hold's premises |
+| `timed` | the same with `CUT_COMMIT_WAIT_SECS` (0.5 s) as it is | ✗ (accepted residual) | | |
+
+`none`, 8 states — the live 2026-10-13 call ("Okay, stop there." over a count):
+
+```
+Interject CutLands Inference Finalize   a turn, committed
+BotStart                                its reply plays
+Interject                               the caller's words open a turn (quiet: after their VAD stop)
+Inference                               ... and commit in the same call, ahead of the interruption:
+                                        the LLM is asked without the cut reply, which then lands
+                                        whole after the caller's turn -- and the model counts again
+```
+
+A cut reply that had not started playing commits nothing, so it is not this property's;
+it is the reply hold's, twice over. `NoSplitTurn` (`ut_fence_none_nosplitturn`, 7
+states: the same with no `BotStart`): the first reply never played, but the merge the
+gate asks for when the interruption reaches it comes after the commit it was for, so
+the fragment and its continuation stay two messages and the merge lands on the turn
+after. `NoStaleReply`
+(`ut_fence_none_nostalereply`, 8 states, the reply hold's words-in-time premise and all):
+
+```
+Interject Inference                     a late-start turn commits; the commit arms the gate
+CutLands                                its own interruption arrives: the gate reads it as the
+                                        armed reply dropped -- disarms, asks for a false merge
+Finalize VadStart                       the caller resumes before the reply plays: nothing holds it
+BotStart Interject                      the reply starts over them and their words cut it
+```
+
+`commitOnly`, 8 states: the same, but the late-start barge-in's final, under an INCOMPLETE verdict,
+asks a speculation (`SpecStart`) before the cut lands — `ecb4dcd` (live 2026-10-13: a
+snapshot 15 ms after the interruption). `timed` is `none`'s trace with the commit's
+wait running out: logged as a `CUT-FENCE` warning, and accepted, as the hold's release
+timer is. As shipped the speculation is not started past the bound, so only the commit
+can overtake.
+
+### The refused finalize's second commit (`EARLY_FINAL`)
+
+`retryOnQuiet` re-applies a refused finalize at the caller's next quiet moment, and the
+model had that close the turn and nothing more. In the code it can commit: the refused
+turn stays open with its stop strategy un-reset (pipecat keeps it open "so the next
+inference re-evaluates"), the caller's resumed words join it, and whatever of them was
+finalized by that VAD stop — the engine's own segmenter closes a segment on a shorter
+silence than the VAD's floor — is pushed as a second user message, by the strategy's own
+second stop or by the re-applied one, with no turn start and so no interruption.
+`EARLY_FINAL = TRUE` lets that happen (`VadStop`); every row above runs with `FALSE`.
+
+As shipped (`ut_shipped_nosplitturn`) it **fails `NoSplitTurn`**, 7 states:
+
+```
+Interject CutLands Inference   a turn commits; its reply is on its way (the gate armed)
+Resume                         the caller resumes inside the commit's await: held
+Finalize                       refused -- the caller is speaking; owed
+VadStop                        they stop: a final of what they added is already aggregated,
+                               and the retry commits it as a second message
+```
+
+No interruption drops the held reply, so it is released after `RELEASE_S` and the bot
+answers the fragment, then answers again with both messages in the context.
+`reply_hold.py` lists this among its known limits ("no worse than without the gate",
+0 of 27 commits on 2026-10-05), but the formal rows had it hold. `CutReplyFence` widens
+the entry: the commit's wait (~70 ms over a playing reply) is inside the inference's
+await, the `Resume` gap. `MODE = "retryMerges"` is a proposed fix, not code: a second
+commit on a turn whose first reply has not played (the gate still armed) interrupts
+first — the unplayed reply is dropped and the words are folded into the unanswered
+message — and with it everything holds (`ut_retryMerges_all`, 18k states; a probe
+confirmed the drop-and-merge branch is reached with a held reply).
+
+`ut_shipped_all` is the SIP front-end as shipped with everything on — `retryOnQuiet`,
+`byContext`, `gate`, `shipped`, `inTime`, `EARLY_FINAL` — and holds every property but
+`NoSplitTurn` (32k states, a few seconds). Talk and the room mic run the same turn
+machine and fence, without the hold (`TEAPORT_REPLY_HOLD_TALK` defaults off) or the
+pause (their transport cannot pause): `HOLD = "none"`, `PAUSE = "off"`, whose
+`NoStaleReply` and `NoSplitTurn` fail as before #85. The room's own turn timing
+(`ROOM_*`, #159) and `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 
 ### Known limits of this model
 
@@ -1148,9 +1250,21 @@ modelling it.
   The cost is one excluded entry: `_timeout_handler` already running when the resume's
   `_discard_pending_end_of_turn()` tries to cancel it, which reaches the same state one
   step earlier.
-- **`BotStart` waits for `~stopInFlight`.** An LLM round trip plus synthesis against two
-  awaits — an ordering fact, stated rather than modelled, as with `LlmStart` in
-  `LedgerPlayout.tla`.
+- **`BotStart` waits for `~stopInFlight`** and for no cut in flight. An LLM round trip
+  plus synthesis against two awaits, and an `InterruptionFrame` (a SystemFrame) that
+  overtakes every reply frame queued behind it — ordering facts, stated rather than
+  modelled, as with `LlmStart` in `LedgerPlayout.tla`.
+- **One cut in flight at a time.** `StartTurn` waits for the last turn's interruption to
+  land: a turn opens on a transcript, hundreds of ms after the last one, and the frame
+  crosses in ~70 ms. Only `FENCE = "none"`/`"timed"` could otherwise put two in flight.
+- **The commit's wait is atomic with the commit.** In the code a VAD start can land
+  inside the fence's wait and the commit then goes ahead with the caller speaking; here
+  the commit runs after the cut lands and `Resume` takes that start — the same states.
+- **`ForceStop` commits only when the turn's words were not committed already** (a
+  stranded turn's aggregation is empty). Words aggregated since are `EARLY_FINAL`'s on
+  the retry path and not modelled on the watchdog's, which nothing reaches in 5 s.
+- **Other producers of interruptions** (none in this brain but the turn start) and
+  interruptions entering below the fence's head are not modelled.
 - **A VAD frozen in SPEAKING is out of scope, and out of the fix's scope too.**
   `SIP_HALF_DUPLEX` left on, or a desynced gateway AEC feeding the bot's own audio back
   in, pins `userSpeaking` forever: no `VadStop` ever arrives, so nothing re-applies the
@@ -1169,7 +1283,7 @@ modelling it.
   miss will come from — `[SPEC] miss reason=ctx-changed` or `reason=text-differs` in the
   journal does — nor how often the interim and the final disagree; it checks the design
   that stays right whenever they do.
-- **Scale.** 436 distinct states with `SPEC = "off"` (47 before the reply hold's variables), 2622 with it on (1314 before `Retext`), 212 for `HOLD = "gate"` with words in time and 450 with the timers as they are, 994 and 2.7k for the shipped pause with each; a few seconds at most.
+- **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each, 32k for `ut_shipped_all`; a few seconds each.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 

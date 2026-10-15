@@ -148,6 +148,16 @@ run UserTurn.tla ut_pause_keepOnInterrupt_nostuckpause "(expected: FAILS NoStuck
 run UserTurn.tla ut_pause_shipped_all                 "(expected: holds — barge_pause.py as shipped, with the reply hold and every other property)"
 run UserTurn.tla ut_pause_shipped_timed               "(expected: holds — the shipped pause with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
 echo
+echo "UserTurn.tla — the cut and the commit (FENCE, CutReplyFence) and the refused finalize's second commit (EARLY_FINAL)"
+run UserTurn.tla ut_fence_none_nocutaftercommit       "(expected: FAILS NoCutAfterCommit — before 2026-10-13: the late-start barge-in's commit overtakes its cut)"
+run UserTurn.tla ut_fence_none_nostalereply           "(expected: FAILS NoStaleReply — before 2026-10-13: the false TurnMerge disarms the gate under the turn's own reply)"
+run UserTurn.tla ut_fence_none_nosplitturn            "(expected: FAILS NoSplitTurn — before 2026-10-13: the merge for an unplayed reply lands on the turn after)"
+run UserTurn.tla ut_fence_commitOnly_nocutaftercommit "(expected: FAILS NoCutAfterCommit — 228298e: the speculation's snapshot spends the cut before the reply lands)"
+run UserTurn.tla ut_fence_timed_nocutaftercommit      "(expected: FAILS NoCutAfterCommit — the fence's 0.5 s bound as it is: the ACCEPTED RESIDUAL)"
+run UserTurn.tla ut_shipped_all                       "(expected: holds — SIP as shipped, speculation on, early finals: every property but NoSplitTurn)"
+run UserTurn.tla ut_shipped_nosplitturn               "(expected: FAILS NoSplitTurn — as shipped: words finalized before the retry's VAD stop are a second commit, the held reply still plays)"
+run UserTurn.tla ut_retryMerges_all                   "(expected: holds — PROPOSED fix, not code: that second commit drops the unplayed reply and merges)"
+echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"
 run PlayoutClock.tla pc_release_words      "(expected: FAILS CommittedIsPlayed — first cut: only the words' pts moved, the End overtook them)"
 run PlayoutClock.tla pc_release_firstFrame "(expected: FAILS WordsOnTime — round 1: the shift fixed on the TTSStartedFrame, LAT too far)"
