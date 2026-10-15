@@ -329,15 +329,20 @@ async def answer_busy(connection, holder_kind: str, call_id) -> None:
 
 class CallClaim:
     """A call's claim on the session arbiter (session_arbiter.py), the same one every
-    front-end of this process goes through: start() before the call's STT connects, end()
-    when the call is over (twice is harmless). A sleeping room mic yields to the call; a
-    live conversation is asked first (and put on hold if it says yes) or, one that cannot
-    be asked, told and ended (Talk) or left the box (an awake room) -- all before start()
-    returns, so the call's STT finds the engine free. One call at a time, so one claim at
-    a time."""
+    front-end of this process goes through: start() before the call's STT connects,
+    end(call_id) when that call is over (twice is harmless). A sleeping room mic yields to
+    the call; a live conversation is asked first (and put on hold if it says yes) or, one
+    that cannot be asked, told and ended (Talk) or left the box (an awake room) -- all
+    before start() returns, so the call's STT finds the engine free.
+
+    Kept by call: a call's end lets go of THAT call's claim, never a newer call's. It used
+    to release whatever claim it held at the moment, and a teardown that finishes after
+    the next call has started (on_pipeline_finished's task) let go of the next call's
+    claim, which then ran with nobody holding the box (brain/formal/SipCall.tla,
+    NoUnclaimedCall)."""
 
     def __init__(self):
-        self._claim = None
+        self._claims: dict = {}  # call id -> its arb.Claim, until let go
 
     async def start(self, call_id, caller: str | None = None,
                     answered: asyncio.Event | None = None) -> "arb.Refusal | None":
@@ -346,40 +351,45 @@ class CallClaim:
         is busy (the caller gets the busy line). `caller` is for the question; a set
         `answered` (the caller is connected) means no question: the call is taken."""
         claim = arb.Claim(arb.CALL, client="sip", label=f"phone call {call_id}",
-                          end=lambda _why: self._release(claim), caller=caller,
+                          end=lambda _why: self._release(call_id, claim), caller=caller,
                           answered=answered)
         # Held from before the ask: an end() while it waits (a Talk user is being told
         # about the call) releases it there, and the arbiter then installs nothing.
-        self._claim = claim
+        self._claims[call_id] = claim
         try:
             refusal = await arb.ARBITER.acquire(claim)
         except BaseException:
             # Abandoned (a hangup, a newer call): let it go here, since nothing else
             # will -- a conversation put on hold for it would otherwise stay held.
-            if self._claim is claim:
-                self._claim = None
+            self._forget(call_id, claim)
             arb.ARBITER.release(claim)
             raise
         if refusal is not None:
-            if self._claim is claim:
-                self._claim = None
+            self._forget(call_id, claim)
             logger.info(f"the session arbiter refused call {call_id}: a {refusal.holder} "
                         "conversation has the box"
                         + (" and said not to pick up" if refusal.declined else ""))
             return refusal
         return None
 
-    async def _release(self, claim) -> None:
-        # The arbiter gives the engine to the same client's next call: the SIP front-end
-        # tears the old call down itself before it asks (on_call_state), so let go.
-        arb.ARBITER.release(claim)
-        if self._claim is claim:
-            self._claim = None
+    def _forget(self, call_id, claim) -> None:
+        if self._claims.get(call_id) is claim:
+            del self._claims[call_id]
 
-    def end(self) -> None:
-        if self._claim is not None:
-            claim, self._claim = self._claim, None
-            arb.ARBITER.release(claim)
+    async def _release(self, call_id, claim) -> None:
+        # The arbiter ends a call's claim only to give the engine to the same client's
+        # next call (REPLACED), which the SIP front-end does not let happen: a call's
+        # claim is let go before the next call asks (cancel_active_call's finally, and
+        # _bring_up waiting out the teardown tasks). If it ever does, let go.
+        arb.ARBITER.release(claim)
+        self._forget(call_id, claim)
+
+    def end(self, call_id=None) -> None:
+        """Let go of call `call_id`'s claim; None (the connection is gone): of every one."""
+        for cid in [call_id] if call_id is not None else list(self._claims):
+            claim = self._claims.pop(cid, None)
+            if claim is not None:
+                arb.ARBITER.release(claim)
 
 
 class _Ring:
@@ -514,8 +524,9 @@ async def run_connection(sock, on_ready=None):
     # is about the pipeline we are actually running (see on_call_state).
     active = {"call": None}
     # Teardowns started from inside the pipeline's own finish (see _bring_up's
-    # on_pipeline_finished). Held only so the event loop keeps a strong reference until
-    # they run — a bare create_task() result may be collected mid-flight.
+    # on_pipeline_finished), and a declined call's busy line. Held so the event loop
+    # keeps a strong reference until they run — a bare create_task() result may be
+    # collected mid-flight — and so the next call's bring-up can wait them out.
     teardowns: set = set()
     # The in-flight bring-up, if any: {"task", "call_id"}. Building the pipeline and
     # greeting is SLOW (model construction plus greet()'s STT poll), so it runs as a
@@ -556,21 +567,29 @@ async def run_connection(sock, on_ready=None):
         _call_id, session, runner_task, _transport = call
         logger.info(f"tearing down the per-call pipeline ({reason})")
         try:
-            await session.task.cancel()
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"error cancelling per-call pipeline task: {e!r}")
-        try:
-            await asyncio.wait_for(runner_task, timeout=5.0)
-        except asyncio.TimeoutError:
-            logger.warning("per-call pipeline runner did not finish within 5s of cancel")
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:  # noqa: BLE001
-            logger.warning(f"per-call pipeline runner ended with: {e!r}")
-        # Let the engine process the STT close and free the single slot before the
-        # next call's STT connects (mirrors session_arbiter.SETTLE_SECS).
-        await asyncio.sleep(0.3)
-        presence.end()
+            try:
+                await session.task.cancel()
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"error cancelling per-call pipeline task: {e!r}")
+            try:
+                await asyncio.wait_for(runner_task, timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning("per-call pipeline runner did not finish within 5s of cancel")
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"per-call pipeline runner ended with: {e!r}")
+            # Let the engine process the STT close and free the single slot before the
+            # next call's STT connects (mirrors session_arbiter.SETTLE_SECS).
+            await asyncio.sleep(0.3)
+        finally:
+            # This call's claim, and also when the teardown is abandoned in its settle:
+            # the bring-up's own teardown ("never confirmed", "STT unavailable") is
+            # cancelled there by the next call's cancel_setup, and its claim, still
+            # holding the box, used to meet that call's ask -- the arbiter REPLACED it,
+            # and a conversation on hold for it came back under the new call
+            # (brain/formal/SipCall.tla, NoReplacedCall; SessionArbiter.tla).
+            presence.end(_call_id)
         CALL_FACE.end(_call_id)
         if reclaim and not arb.ARBITER.held():
             # A CALL is a session, so this is the session end — the SIP twin of the
@@ -746,6 +765,13 @@ async def run_connection(sock, on_ready=None):
         ring = rings.get(call_id)
         if ring is None:  # not through start_call (a test driving this directly)
             ring = rings[call_id] = _Ring(call_id, None, answered=True)
+        # A pipeline that ended on its own is torn down by a task (on_pipeline_finished),
+        # concurrent with the reader: the last call may still be in its runner wait and
+        # settle, its claim still holding the box. Wait it out, so this call asks an
+        # arbiter the last one has left -- here, not in start_call, so the reader keeps
+        # reading meanwhile (a `disconnected` for this call cancels the wait).
+        if teardowns:
+            await asyncio.wait(set(teardowns))
         # Before anything takes the engine: the session arbiter makes way for the call
         # (asking a live conversation first), or refuses it.
         refusal = await presence.start(call_id, caller=ring.caller, answered=ring.answered)
@@ -917,7 +943,7 @@ async def run_connection(sock, on_ready=None):
             await cancel_setup("call disconnected during bring-up", call_id=call_id)
             await cancel_active_call("call disconnected", call_id=call_id)
             if active["call"] is None and setup["task"] is None:
-                presence.end()  # a call that never got its pipeline
+                presence.end(call_id)  # a call that never got its pipeline
             CALL_FACE.end(call_id)  # hung up while ringing, or refused and gone
             ring = rings.get(call_id)
             if ring is not None and ring.declined:

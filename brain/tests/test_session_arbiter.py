@@ -485,6 +485,104 @@ async def test_the_gateway_going_away_mid_call_gives_the_engine_back():
         _fresh()
 
 
+# ------------------------------------------- a call's claim is its own (SipCall.tla)
+
+def _found_by_calls():
+    """The holder each call finds as it asks the arbiter, in order (patched on the
+    arbiter instance: _fresh() puts the real acquire back)."""
+    found, acquire = [], arb.ARBITER.acquire
+
+    async def asking(claim):
+        if claim.kind == arb.CALL:
+            found.append(arb.ARBITER.holder)
+        return await acquire(claim)
+    arb.ARBITER.acquire = asking
+    return found
+
+
+def _replaced(found):
+    """A call asked while another call's claim still held the box: the arbiter REPLACES
+    it, which the SIP front-end's contract says never happens (SipCall.tla,
+    NoReplacedCall; SessionArbiter.tla's SIP = "sequential")."""
+    return [h.label for h in found if h is not None and h.kind == arb.CALL]
+
+
+async def test_a_call_that_rings_in_as_the_last_one_is_torn_down_keeps_its_claim():
+    """SipCall.tla, sip_heldClaim_unclaimed (before the fix): B's pipeline ends on its
+    own, and its teardown TASK waits out the runner and the 0.3 s settle; A rings in
+    meanwhile. That teardown's presence.end() released whatever claim CallClaim held by
+    then -- A's -- so A ran with nobody holding the box (the busy lamp off, a room mic or
+    a Talk client let in under the call). Now a teardown lets go of its own call's claim
+    only, and A's bring-up waits for it: A asks an arbiter B has left, and holds it."""
+    _fresh()
+    found = _found_by_calls()
+    rig = _SipRig()
+    lc = rig.lc
+    try:
+        await rig.h.start()
+        await rig.h.call_state("B", "confirmed")
+        assert await lc.wait_until(lambda: "B" in lc._FakeSession.greeted, 5)
+        await lc._FakeSession.by_id["B"].task.finish()           # B's pipeline dies
+        assert await lc.wait_until(lambda: lc.torn_down("B"))    # its teardown task runs
+        await rig.h.call_state("A", "confirmed")                 # inside its settle
+        assert await lc.wait_until(lambda: "A" in lc._FakeSession.greeted, 5)
+        assert await lc.wait_until(lambda: len(rig.h.reclaims) == 1)   # B's teardown is over
+        holder = arb.ARBITER.holder
+        assert holder is not None and holder.label == "phone call A", (
+            f"call A is live and the arbiter's holder is {holder!r}: B's teardown let go "
+            "of A's claim")
+        assert not _replaced(found), f"A asked while {_replaced(found)} still held the box"
+    finally:
+        await rig.h.stop()
+        _fresh()
+
+
+async def test_a_call_abandoned_in_its_own_teardown_lets_go_before_the_next_asks():
+    """SipCall.tla, sip_heldClaim_replaced, and SessionArbiter.tla, sa_overlap_refused
+    (before the fix): a Talk session is on hold for call B; B cannot hear (STT
+    unavailable) and its bring-up tears it down, and A rings in during that teardown's
+    0.3 s settle. cancel_setup abandoned the teardown there, before presence.end(), so B's
+    claim still held the box when A asked: REPLACED -- B's release brought Talk back
+    and A's grant then overwrote it, two conversations live on one engine. Now the
+    abandoned teardown still lets go (a finally): Talk comes back, A is put through
+    like any call during a conversation (on hold again), and A holds the slot."""
+    _fresh()
+    holds, resumes = [], []
+
+    async def ask(_call):
+        return True
+
+    async def hold():
+        holds.append(1)
+
+    async def resume():
+        resumes.append(1)
+    talk = arb.Claim(arb.TALK, client="t", label="talk", ask=ask, hold=hold, resume=resume)
+    assert await arb.ARBITER.acquire(talk) is None
+    found = _found_by_calls()
+    rig = _SipRig()
+    lc = rig.lc
+    try:
+        await rig.h.start()
+        lc._FakeSession.cannot_hear = {"B"}
+        await rig.h.call_state("B", "confirmed")
+        assert await lc.wait_until(
+            lambda: "B" in lc._FakeSession.by_id and lc.torn_down("B"), 5)
+        await asyncio.sleep(0.05)                                # into the 0.3 s settle
+        await rig.h.call_state("A", "confirmed")
+        assert await lc.wait_until(lambda: "A" in lc._FakeSession.greeted, 5)
+        await asyncio.sleep(0.4)                                 # anything left settles
+        assert not _replaced(found), f"A asked while {_replaced(found)} still held the box"
+        holder = arb.ARBITER.holder
+        assert holder is not None and holder.label == "phone call A", holder
+        assert arb.ARBITER.held_claim is talk, (
+            "the Talk session was resumed for B's end and is live beside call A")
+        assert len(holds) == 2 and resumes == [1], (holds, resumes)
+    finally:
+        await rig.h.stop()
+        _fresh()
+
+
 # ---------------------------------------------------------------- review fixes (#106)
 
 async def test_the_call_line_is_heard_in_full_even_over_a_user_mid_sentence():

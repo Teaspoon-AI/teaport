@@ -160,6 +160,7 @@ class _FakeSession:
     by_id = {}          # call id -> the session built for it
     resumed = {}        # call id -> the `resumed` greet() was called with
     prepared = {}       # call id -> the greeting greet() was handed ready-made, if any
+    cannot_hear = set()  # call ids whose greet() finds the STT unavailable (should_end)
     PREPARED = "Hello there."
 
     def __init__(self, call_id):
@@ -177,6 +178,7 @@ class _FakeSession:
         _FakeSession.resumed[self.call_id] = resumed
         _FakeSession.prepared[self.call_id] = prepared
         await asyncio.sleep(self.greet_delay)
+        self.should_end = self.call_id in _FakeSession.cannot_hear
         _FakeSession.greeted.append(self.call_id)
 
 
@@ -205,6 +207,7 @@ class _Harness:
         _FakeSession.by_id = {}
         _FakeSession.resumed = {}
         _FakeSession.prepared = {}
+        _FakeSession.cannot_hear = set()
         self.reclaims = []
         self.controls = []
         self._patch()
