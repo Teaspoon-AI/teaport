@@ -166,13 +166,19 @@ def _child(code: str) -> str:
 
 def test_the_server_freezes_its_startup_objects_before_any_session():
     # The real start-up path (main's TTS priming, then _ReadyServer.startup): a pipeline
-    # alive at the freeze would be frozen with its cycles and never collected.
+    # alive at the freeze would be frozen with its cycles and never collected. The LLM
+    # client's chat API is loaded by then (services.warm_first_use_imports), so its
+    # ~500 modules are frozen too and the first reply does not import them on the event
+    # loop.
     out = _child(
-        "import asyncio, gc, uvicorn\n"
+        "import asyncio, gc, sys, uvicorn\n"
         "from pipecat.processors.frame_processor import FrameProcessor\n"
         "from teaport_brain import gateway_server, memory_hygiene\n"
         "seen = {}\n"
         "def freeze():\n"
+        # Read before the isinstance scan below: it touches openai's lazy module proxies
+        # (openai.chat, ...), and loading one imports the chat API.
+        "    seen['chat_api'] = int('openai.resources.chat' in sys.modules)\n"
         "    gc.collect()\n"
         "    seen['processors'] = sum(isinstance(o, FrameProcessor) for o in gc.get_objects())\n"
         "    memory_hygiene.freeze_startup_objects()\n"
@@ -189,12 +195,13 @@ def test_the_server_freezes_its_startup_objects_before_any_session():
         "    await asyncio.gather(server.sip, return_exceptions=True)\n"
         "    await server.shutdown()\n"
         "asyncio.run(main())\n"
-        "print(seen.get('processors'), seen.get('frozen', 0))\n"
+        "print(seen.get('processors'), seen.get('frozen', 0), seen.get('chat_api'))\n"
     )
-    processors, frozen = (int(x) if x != "None" else None for x in out.split())
+    processors, frozen, chat_api = (int(x) if x != "None" else None for x in out.split())
     assert processors is not None, "the server came up without freezing its startup objects"
     assert processors == 0, f"{processors} pipeline processors were alive at the freeze"
     assert frozen > 1000, frozen
+    assert chat_api == 1, "the LLM client's chat API was not loaded before the freeze"
 
 
 def _sync(fn):
