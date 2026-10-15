@@ -71,6 +71,23 @@ def test_a_spaced_bracket_is_a_tag_and_is_not_spoken():
     assert run(["[ ", "mood", ": angry ", "] It irritates", " me."]) == ("It irritates me.", ["angry"])
 
 
+def test_a_leading_emoji_is_a_tag_too():
+    assert run(["😟 I'm so sorry to hear that."]) == ("I'm so sorry to hear that.", ["concerned"])
+    text, moods = run(["😠", " That is", " infuriating, truly."])      # (the delta's own space stays)
+    assert text.strip() == "That is infuriating, truly." and moods == ["angry"]
+    assert run(["  😊\ufe0f Glad to help."]) == ("Glad to help.", ["happy"])
+    text, moods = run(["🎉 Congratulations!"])       # an emoji that is no mood: left alone
+    assert text == "🎉 Congratulations!" and moods == []
+    text, moods = run(["Nice 😊 work."])             # not at the start: left alone
+    assert text == "Nice 😊 work." and moods == []
+
+
+def test_every_emoji_names_a_mood_the_avatar_knows():
+    assert set(mood_tag.EMOJI.values()) == set(mood_tag.MOODS)
+    assert all(m in mood_tag.MOODS for m in mood_tag.EMOJI.values())
+    assert all(e in mood_tag.PARAGRAPH for e in mood_tag.EMOJI)
+
+
 def test_case_spaces_and_a_tag_with_nothing_after_it():
     # (a reply of only a tag is apologised for, not left silent: see below; with no
     # words of its own there is nothing to match its mood to, so none is sent)

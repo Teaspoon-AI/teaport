@@ -45,13 +45,23 @@ ENABLED = MODE == "tag"
 MOODS = ("happy", "angry", "sad", "afraid", "disgusted", "melancholic", "surprised",
          "calm", "concerned", "curious", "neutral")
 
+# The face a leading emoji names. Each is one code point that needs no variation selector,
+# so it cannot arrive split across deltas; a model is steadier with an emoji than with
+# brackets, and one that fails to parse is silent where a bracketed tag would be spoken.
+EMOJI = {"😊": "happy", "😠": "angry", "😢": "sad", "😨": "afraid", "🤢": "disgusted",
+         "😔": "melancholic", "😮": "surprised", "😌": "calm", "😟": "concerned",
+         "🤔": "curious", "😐": "neutral"}
+
 PARAGRAPH = (
-    "You have a small face that shows a mood. When your reply carries a clear feeling, "
-    "begin it with a tag naming that mood, like [mood: happy]: one of "
-    + ", ".join(MOODS) + ". It is never spoken. Most replies have no clear feeling, "
-    "and then you write no tag at all; use one only when it would be honest, and "
-    "never more than one, always at the very start. When asked to show or act out a "
-    "feeling, tag it."
+    "You have a small face that shows a mood. When your reply carries a feeling, or you "
+    "are asked to show or act one out, begin the reply with exactly one emoji naming it, "
+    "as its very first character. This is the one exception to the rule against emojis: "
+    "the face reads it and the voice never does. "
+    "The emojis: " + ", ".join(f"{e} {m}" for e, m in EMOJI.items())
+    + ". Use 😟 when someone shares bad news or you sympathise. The emoji is never "
+    "spoken and is not part of your words; write nothing else around it, and only one. "
+    "A reply with no clear feeling gets no emoji. "
+    "(A tag like [mood: sad] works too, but prefer the emoji.)"
 )
 
 _TAG = re.compile(r"\s*\[\s*mood\s*:\s*([A-Za-z ]{1,24}?)\s*\]\s*", re.IGNORECASE)
@@ -65,6 +75,9 @@ def parse_leading_tag(text: str):
     head = text.lstrip()
     if not head:
         return ("more",)
+    if head[0] in EMOJI:         # an emoji tag: the mood, and the words after it
+        rest = head[1:]
+        return ("tag", EMOJI[head[0]], (rest[1:] if rest.startswith("\ufe0f") else rest).lstrip())
     # ("[ mood: angry ]" is read as a tag too: a model spaces its brackets now and then)
     opener = "[" + head[1:].lstrip() if head.startswith("[") else head
     cut = opener[:len(_OPENER)].lower()
