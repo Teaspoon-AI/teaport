@@ -533,7 +533,9 @@ def warm_first_use_imports() -> None:
         # Data on disk but broken (an unzip cut short, an empty or corrupt zip, which
         # the find above already opens): a warm-up must not stop the start. The session
         # meets it as pipecat's own warm-up leaves it.
-        logger.warning(f"NLTK's sentence tokenizer did not load: {e}")
+        # NLTK's LookupError text is a multi-line box of asterisks: keep its first line.
+        first = next((ln.strip() for ln in str(e).splitlines() if ln.strip(" *")), "")
+        logger.warning(f"NLTK's sentence tokenizer did not load: {type(e).__name__}: {first}")
 
 
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
