@@ -18,8 +18,9 @@
 # had nothing to push. SILENT TURN reached=['nothing'] — the model was never asked.
 #
 # The fix: stt.py pushes finals as FinalTranscriptionFrame, a TranscriptionFrame
-# with pipecat's UninterruptibleFrame mixin — the designed escape hatch that
-# FrameQueue.reset() preserves. Interims stay interruptible on purpose.
+# with pipecat's Frame.interruptible False (the UninterruptibleFrame mixin before 1.11) —
+# the designed escape hatch that FrameQueue.reset() preserves. Interims stay
+# interruptible on purpose.
 #
 # The second test is the one that matters: real Pipeline, real PipelineTask, real
 # LLMUserAggregator with the gateway's strategies, and the real TeaportSTTService
@@ -46,7 +47,6 @@ from pipecat.frames.frames import (  # noqa: E402
     InterimTranscriptionFrame,
     LLMContextFrame,
     TranscriptionFrame,
-    UninterruptibleFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
@@ -98,20 +98,20 @@ async def test_the_finals_the_stt_pushes_are_uninterruptible():
 
     finals = [f for f in stt.pushed if isinstance(f, TranscriptionFrame)]
     assert len(finals) == 1, f"expected one final, got {len(finals)}"
-    assert isinstance(finals[0], UninterruptibleFrame), (
+    assert not finals[0].interruptible, (
         "the final is a plain TranscriptionFrame: any InterruptionFrame flushes "
         "it from the queues between the STT and the aggregator, and a turn "
         "started from the matching interim broadcasts exactly that interruption"
     )
     # Still a TranscriptionFrame with finalized=True for every consumer downstream
-    # (aggregator, MinWords, TurnAnalyzer, ledger) — the mixin must change nothing.
+    # (aggregator, MinWords, TurnAnalyzer, ledger) — the flag must change nothing.
     assert finals[0].finalized is True
     assert finals[0].text == HAMLET
 
     # Interims stay interruptible: they are disposable hypotheses by design.
     interims = [f for f in stt.pushed if isinstance(f, InterimTranscriptionFrame)]
     assert interims, "expected the delta to be pushed as an interim"
-    assert not any(isinstance(f, UninterruptibleFrame) for f in interims), (
+    assert all(f.interruptible for f in interims), (
         "interims must stay flushable — only the final carries the words the turn commits"
     )
 

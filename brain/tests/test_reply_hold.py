@@ -629,7 +629,7 @@ async def test_an_onset_only_hold_has_the_shorter_cap():
 
 
 async def test_a_drop_with_an_uninterruptible_frame_in_hand_does_not_silence_the_bot():
-    # The paused queue had already dequeued an UninterruptibleFrame when the words came:
+    # The paused queue had already dequeued an uninterruptible frame when the words came:
     # pipecat then only resets the queue and leaves its task waiting on the pause. The
     # gate must lift the pause itself, or no reply ever plays again.
     async with GateRig() as rig:

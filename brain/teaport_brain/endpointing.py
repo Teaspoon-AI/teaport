@@ -11,7 +11,7 @@
 #
 import asyncio
 import time
-from dataclasses import astuple, dataclass
+from dataclasses import astuple, dataclass, field
 
 from loguru import logger
 
@@ -23,7 +23,6 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     InterruptionFrame,
     SystemFrame,
-    UninterruptibleFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
@@ -322,7 +321,7 @@ class TurnVerdictFrame(SystemFrame):
 
 
 @dataclass
-class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
+class SegmentDoneFrame(DataFrame):
     """The STT's segment closed with NO words in it: pushed DOWNSTREAM by the STT
     service in place of the FinalTranscriptionFrame a done with words produces (a
     final is its own segment's close).
@@ -340,11 +339,13 @@ class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
     below the aggregator; nothing downstream of the turn strategies reads it.
     """
 
+    interruptible: bool = field(default=False, init=False)
+
     stop_n: int
 
 
 @dataclass
-class SegmentResetFrame(DataFrame, UninterruptibleFrame):
+class SegmentResetFrame(DataFrame):
     """The STT dropped its open segment without closing it -- the engine session went
     (a reconnect, a hold) and the words streamed so far with it: no final and no
     SegmentDoneFrame will ever come for them. Pushed DOWNSTREAM by the STT service for
@@ -363,9 +364,11 @@ class SegmentResetFrame(DataFrame, UninterruptibleFrame):
 
     stop_n: int
 
+    interruptible: bool = field(default=False, init=False)
+
 
 @dataclass
-class SttProgressFrame(DataFrame, UninterruptibleFrame):
+class SttProgressFrame(DataFrame):
     """Whether the STT's engine session reports how far it has transcribed
     (teagram-engine's transcription.progress, offered in its session.created): pushed
     DOWNSTREAM by the STT service at the start of every engine session, for the stop
@@ -373,11 +376,13 @@ class SttProgressFrame(DataFrame, UninterruptibleFrame):
     settle timer (or, `reported` False, on the timer). Data and uninterruptible like
     the frames below, and dropped by SegmentDoneSink."""
 
+    interruptible: bool = field(default=False, init=False)
+
     reported: bool
 
 
 @dataclass
-class SpeechDecodedFrame(DataFrame, UninterruptibleFrame):
+class SpeechDecodedFrame(DataFrame):
     """The engine has transcribed past the caller's end of speech for VAD stop
     `stop_n` (counted as the final's stamp is, FinalTranscriptionFrame in stt.py):
     every word it will ever return for that speech is in the interims already pushed.
@@ -387,17 +392,21 @@ class SpeechDecodedFrame(DataFrame, UninterruptibleFrame):
     (LateStartTurnStopStrategy). A data frame so that it arrives after those interims,
     uninterruptible so a turn start cannot flush it; dropped by SegmentDoneSink."""
 
+    interruptible: bool = field(default=False, init=False)
+
     stop_n: int
 
 
 @dataclass
-class NoSpeechReportFrame(DataFrame, UninterruptibleFrame):
+class NoSpeechReportFrame(DataFrame):
     """No SpeechDecodedFrame will come for VAD stop `stop_n`, though the engine
     session gives its report: the STT could not place that stop's speech end on the
     engine's clock (audio passed it unsent -- a reconnect's buffer, a dropped send).
     The stop strategy decides that stop with the settle window instead. Pushed
     DOWNSTREAM by the STT at the stop; data, uninterruptible and dropped by
     SegmentDoneSink like the frames above."""
+
+    interruptible: bool = field(default=False, init=False)
 
     stop_n: int
 
@@ -602,11 +611,13 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # When the latest VAD stop reached this strategy, for the [SPEC] start line.
         self._stop_at = 0.0
 
-    async def trigger_user_turn_inference_triggered(self):
+    async def trigger_user_turn_inference_triggered(self, *, speculation=None):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
         # inference + finalize), so a count taken around a final says whether it fired.
+        # `speculation` is pipecat's own speculative inference (1.9+, its eager stop
+        # strategy); nothing here asks for one, so it passes through as given.
         self._inferences += 1
-        await super().trigger_user_turn_inference_triggered()
+        await super().trigger_user_turn_inference_triggered(speculation=speculation)
 
     async def process_frame(self, frame):
         if isinstance(frame, BotStartedSpeakingFrame):

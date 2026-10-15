@@ -30,7 +30,6 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMContextFrame,
     TranscriptionFrame,
     TTSSpeakFrame,
-    UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -573,7 +572,7 @@ def test_a_flash_time_password_is_one_the_voice_can_spell():
 def test_a_taken_transcript_keeps_its_kind_and_its_stamp():
     final = _final("set up wifi", 3)
     out = wv.taken(final)
-    assert type(out) is FinalTranscriptionFrame and isinstance(out, UninterruptibleFrame)
+    assert type(out) is FinalTranscriptionFrame and not out.interruptible
     assert out.text == "" and out.stop_n == 3 and out.finalized and wv.is_taken(out)
     assert out.id != final.id and not wv.is_taken(final) and final.text == "set up wifi"
 

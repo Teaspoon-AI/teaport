@@ -50,7 +50,7 @@ import json
 import os
 import time
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import AsyncGenerator, Optional
 
 import numpy as np
@@ -66,7 +66,6 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     StartFrame,
     TranscriptionFrame,
-    UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -594,7 +593,7 @@ def _is_slot_busy(exc: Exception) -> bool:
 
 
 @dataclass
-class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
+class FinalTranscriptionFrame(TranscriptionFrame):
     """A final transcript that an interruption cannot flush, stamped with the VAD stop
     it answers.
 
@@ -612,9 +611,10 @@ class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
     recite Hamlet's soliloquy for me?" — charted by the ledger at the STT's push,
     never seen by the model (SILENT TURN reached=['nothing']).
 
-    UninterruptibleFrame is pipecat's designed escape hatch for exactly this:
+    Frame.interruptible False is pipecat's designed escape hatch for exactly this:
     FrameQueue.reset() keeps such frames, and a task processing one is not
-    cancelled (same pattern as pipecat's own FunctionCallResultFrame). Interims
+    cancelled (same pattern as pipecat's own FunctionCallResultFrame; pipecat 1.11
+    moved it from the UninterruptibleFrame mixin to this per-class field). Interims
     stay interruptible on purpose — they are disposable hypotheses.
 
     `stop_n` names the VAD stop this final answers, as a COUNT of
@@ -637,6 +637,7 @@ class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
     None (another producer's final) is taken as the stock strategy would.
     """
 
+    interruptible: bool = field(default=False, init=False)
     stop_n: Optional[int] = None
 
 

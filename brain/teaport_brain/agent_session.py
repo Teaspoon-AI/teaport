@@ -17,6 +17,7 @@
 # GAINS the full stack by adopting the factory.
 #
 import asyncio
+import inspect
 import json
 import re
 from typing import NamedTuple
@@ -27,7 +28,6 @@ from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
-    BotSpeakingFrame,
     InputAudioRawFrame,
     InterimTranscriptionFrame,
     InterruptionWorkerFrame,
@@ -36,7 +36,6 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
     LLMRunFrame,
     TTSSpeakFrame,
-    UserSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask
@@ -176,6 +175,12 @@ _PIPELINE_PHASE_TIMEOUT_S = _STT_CONNECT_BUDGET_S + 20.0
 # Derived from the single voice-inventory source (engine_tts.LANG_NAMES); English
 # needs no directive — the shared persona is already English.
 _TTS_LANG_NAMES = {k: v for k, v in LANG_NAMES.items() if not k.startswith("en-")}
+
+# The frames pipecat's own idle timeout counts as activity, read from PipelineTask rather
+# than restated: the list grew in 1.9 (transcripts and turn starts joined the speaking
+# frames) and a copy here would have kept the old one silently.
+_PIPECAT_IDLE_FRAMES = inspect.signature(PipelineTask.__init__).parameters[
+    "idle_timeout_frames"].default
 
 
 # Who may hold the engine's single STT slot is not decided here: every front-end asks
@@ -1138,6 +1143,12 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # speculate on the turn's earlier words; that one still sees the frame.
                 stop=[s for s in (wifi_closer, stop_strategy) if s is not None],
             ),
+            # pipecat 1.12 answers a user turn that ends with no words by default: when
+            # it cut the bot off, it adds an "ask them to repeat" developer message and
+            # runs the LLM. Here a wordless turn is often deliberate -- Wi-Fi setup's
+            # closer ends the turn its taken words opened, emptied (wifi_voice.py) -- and
+            # a noise barge-in is the pauser's to resume (barge_pause.py), so off.
+            empty_user_turn=None,
         ),
     )
     # Barge-in is a user turn START, and pipecat will not start one while a turn is
@@ -1338,8 +1349,7 @@ def build_agent_session(transport, *, voice: str | None = None,
 
     # The idle timeout counts what pipecat counts, and a held conversation's keep-alive.
     task_kwargs = {"observers": [ledger],
-                   "idle_timeout_frames": (BotSpeakingFrame, UserSpeakingFrame,
-                                           HoldKeepAliveFrame)}
+                   "idle_timeout_frames": _PIPECAT_IDLE_FRAMES + (HoldKeepAliveFrame,)}
     if endpoint_debug.ENABLED:
         # What the STT's trailing-silence hint leaves on the table, per VAD stop.
         task_kwargs["observers"].append(endpoint_debug.VadStopSkew(stt))
