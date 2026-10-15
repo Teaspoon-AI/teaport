@@ -38,9 +38,10 @@ on:
   workflow_dispatch:
 
 # Never two uploads at once, and never cancel one halfway; a PR's newer push replaces
-# its older check.
+# its older check. The weekly check has its own group: queued behind a merge's run it
+# would otherwise displace that run while it waits, and the merge would go unpublished.
 concurrency:
-  group: publish-${{ github.ref }}
+  group: publish-${{ github.event_name == 'schedule' && 'weekly' || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
@@ -73,16 +74,19 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Only main's tip is published
+      - name: Only what main serves now is published
         # A re-run of an older run checks out that run's commit: uploading it would put
-        # an older manifest over a newer one.
+        # an older manifest over a newer one. So compare this commit's files with main's
+        # tip: the same, and this run checked them, so publish (main may have moved on
+        # with other changes, which start no run of their own). Different, and a later
+        # commit changed them, so that commit's own run publishes. A failed fetch fails.
         id: tip
         run: |
-          tip="$(git ls-remote "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main | cut -f1)"
-          if [ "$tip" = "$GITHUB_SHA" ]; then
+          git fetch --no-tags --depth=1 "https://github.com/${GITHUB_REPOSITORY}.git" refs/heads/main
+          if git diff --quiet "$GITHUB_SHA" FETCH_HEAD -- manifest/stable.json manifest/beta.json install-bootstrap.sh; then
             echo "publish=1" >> "$GITHUB_OUTPUT"
           else
-            echo "::notice::main is at ${tip}, not ${GITHUB_SHA}: not publishing an older commit (main's own run publishes)"
+            echo "::notice::main's tip $(git rev-parse FETCH_HEAD) has other manifests or bootstrap than ${GITHUB_SHA}: not publishing an older commit (the later commit's own run publishes)"
           fi
       - name: Upload to the download bucket
         if: steps.tip.outputs.publish == '1'

@@ -12,7 +12,10 @@
 #   - every entry in REQUIRED is present with a url and a sha256;
 #   - every url + sha256 entry is fetched and the body's sha256 compared;
 #   - a url with no sha256 (models.voxtral.aux) must answer;
-#   - every {repo, tag} node must resolve with an anonymous `git ls-remote`.
+#   - every {repo, tag} node must resolve with an anonymous `git ls-remote`, as a
+#     branch or tag (what `git clone --branch` takes), unless it is marked
+#     "private": true (oled_avatar: Teaspoon AI installs it with access; install.sh
+#     skips it on a box without).
 # The publish workflow runs it on every PR that changes a manifest, before every upload,
 # and weekly, which catches an artifact re-uploaded under an unchanged URL.
 #
@@ -27,6 +30,7 @@
 #
 import argparse
 import hashlib
+import http.client
 import json
 import os
 import subprocess
@@ -95,10 +99,10 @@ def entries(node, path=""):
 
 
 def repos(node, path=""):
-    """(dotted path, repo, tag) for every {repo, tag} node."""
+    """(dotted path, repo, tag, private) for every {repo, tag} node."""
     if isinstance(node, dict):
         if "repo" in node and "tag" in node:
-            yield path, node["repo"], node["tag"]
+            yield path, node["repo"], node["tag"], node.get("private") is True
         for key, value in node.items():
             if not key.startswith("_"):
                 yield from repos(value, f"{path}.{key}" if path else key)
@@ -118,7 +122,8 @@ def fetch(url, digest):
         except urllib.error.HTTPError as e:
             if e.code < 500 or attempt == ATTEMPTS:
                 raise
-        except (urllib.error.URLError, OSError):
+        except (urllib.error.URLError, OSError, http.client.HTTPException):
+            # HTTPException: IncompleteRead, a transfer cut off mid-body.
             if attempt == ATTEMPTS:
                 raise
         time.sleep(5 * attempt)
@@ -127,11 +132,15 @@ def fetch(url, digest):
 def resolves(repo, tag):
     """Whether an anonymous clone of github.com/<repo> at <tag> would work, as
     install.sh's `git clone --branch <tag>` does it. None if so, else why not."""
+    # Exact refs: ls-remote matches a pattern's tail, so a bare "main" would also
+    # accept refs/heads/heads/main or refs/tags/release/main, which clone rejects.
     p = subprocess.run(
-        ["git", "ls-remote", "--exit-code", f"https://github.com/{repo}.git", tag],
-        capture_output=True, text=True, timeout=60,
+        ["git", "ls-remote", "--exit-code", f"https://github.com/{repo}.git",
+         f"refs/heads/{tag}", f"refs/tags/{tag}"],
+        capture_output=True, text=True, timeout=60, cwd="/",
         # Anonymous, as on a fresh box: no credential helper or token from this
-        # machine's git config, and no prompt.
+        # machine's git config (cwd "/" keeps a repository's own config out too), and
+        # no prompt.
         env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_ASKPASS": "true",
              "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"})
     if p.returncode == 0:
@@ -161,6 +170,8 @@ def check(manifest_path, placeholders_ok):
         if not isinstance(node, dict) or not node.get("repo") or not node.get("tag"):
             problems.append(f"{where}: missing, or without a repo and a tag (install.sh "
                             "clones it)")
+        elif node.get("private") is True:
+            problems.append(f"{where}: marked private, but every install clones it")
 
     for where, url, sha in entries(manifest):
         if url is None:
@@ -184,9 +195,12 @@ def check(manifest_path, placeholders_ok):
         else:
             print(f"ok {where}" + ("" if sha else " (no sha256 to check; it answers)"))
 
-    for where, repo, tag in repos(manifest):
+    for where, repo, tag, private in repos(manifest):
         if "TODO" in f"{repo}{tag}":
             placeholder(where, f"{repo}@{tag}")
+            continue
+        if private:
+            print(f"-- {where} (github.com/{repo} @ {tag}): private, not checked anonymously")
             continue
         why = resolves(repo, tag)
         if why:
