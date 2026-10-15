@@ -64,16 +64,15 @@ print(" ".join(asyncio.run(first_reply())) or "-")
 """
 
 
-_PROXY_VARS = {"http_proxy", "https_proxy", "all_proxy", "no_proxy"}
-
-
 def _child(code: str, **env) -> str:
-    """Run code in a fresh interpreter, with no proxy settings of this machine's (the
-    client would send its 127.0.0.1 request through one) unless given; its last line."""
+    """Run code in a fresh interpreter; its last line. This machine's proxy settings are
+    kept (the child may download punkt_tab through them) but bypassed for the local
+    server the first reply goes to."""
     brain = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    base = {k: v for k, v in os.environ.items() if k.lower() not in _PROXY_VARS}
+    local = "127.0.0.1,localhost"
     p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
-                       env={**base, "PYTHONPATH": brain, **env}, timeout=120)
+                       env={**os.environ, "PYTHONPATH": brain, "no_proxy": local,
+                            "NO_PROXY": local, **env}, timeout=120)
     assert p.returncode == 0, p.stderr[-3000:]
     return p.stdout.strip().splitlines()[-1]
 
@@ -97,22 +96,41 @@ def test_without_the_warm_up_the_first_reply_imports_the_chat_api():
 
 def test_offline_without_nltk_data_the_warm_up_neither_downloads_nor_fails():
     # A first boot with no network (the spoken Wi-Fi setup is why the brain must start
-    # then) and punkt_tab never downloaded: pipecat's loader would try the download and
-    # leave the tokenizer broken. The warm-up must skip the split and return; the first
-    # session's own warm-up fetches the data later, in its thread.
+    # then) and punkt_tab never downloaded: pipecat's loader would try the download (on
+    # a blackholed network, with no timeout) and leave the tokenizer broken. The warm-up
+    # must not try it, and must return; the first session's own warm-up fetches the
+    # data later, in its thread.
     import tempfile
     with tempfile.TemporaryDirectory() as home:
+        out = _child(
+            "import os, sys, nltk\n"
+            "nltk.data.path[:] = [os.path.join(os.environ['HOME'], 'nltk_data')]\n"
+            "nltk.download = lambda *a, **k: sys.exit(f'the warm-up tried to download {a}')\n"
+            "from teaport_brain.services import warm_first_use_imports\n"
+            "warm_first_use_imports()\n"
+            "print('returned')\n",
+            HOME=home)
+    assert out == "returned", out
+
+
+def test_broken_nltk_data_on_disk_does_not_stop_the_start():
+    # punkt_tab there but cut short (an unzip interrupted): the split raises. The
+    # warm-up is an optimisation; the brain must still start.
+    import tempfile
+    with tempfile.TemporaryDirectory() as home:
+        os.makedirs(os.path.join(home, "nltk_data", "tokenizers", "punkt_tab"))
         out = _child(
             "import os, nltk\n"
             "nltk.data.path[:] = [os.path.join(os.environ['HOME'], 'nltk_data')]\n"
             "from teaport_brain.services import warm_first_use_imports\n"
             "warm_first_use_imports()\n"
-            "print(sorted(os.listdir(os.environ['HOME'])) or '-')\n",
-            HOME=home, https_proxy="http://127.0.0.1:9", http_proxy="http://127.0.0.1:9")
-    assert out == "-", f"the warm-up wrote to HOME (a download attempt?): {out}"
+            "print('returned')\n",
+            HOME=home)
+    assert out == "returned", out
 
 
 if __name__ == "__main__":
     appliance.run_tests([test_after_the_warm_up_a_first_reply_imports_nothing,
                          test_without_the_warm_up_the_first_reply_imports_the_chat_api,
-                         test_offline_without_nltk_data_the_warm_up_neither_downloads_nor_fails])
+                         test_offline_without_nltk_data_the_warm_up_neither_downloads_nor_fails,
+                         test_broken_nltk_data_on_disk_does_not_stop_the_start])

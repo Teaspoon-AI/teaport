@@ -507,6 +507,7 @@ def warm_first_use_imports() -> None:
       punkt_tab data is already on disk: without it, pipecat's loader downloads it,
       which must not run here (no network at a first offline boot, where the brain
       still has to start for the spoken Wi-Fi setup) and stays in pipecat's thread.
+      Nothing here may stop the start: broken data is logged and left to the session.
 
     Each is paid once per process, so it fell on the first session after every restart.
     The server calls this before freeze_startup_objects, so the modules are loaded once
@@ -523,9 +524,15 @@ def warm_first_use_imports() -> None:
     try:
         nltk.data.find("tokenizers/punkt_tab")
     except LookupError:
-        logger.info("NLTK punkt_tab is not downloaded yet: the first session fetches it")
-    else:
+        logger.info("NLTK punkt_tab is not on disk yet; the first session downloads it "
+                    "(needs the internet)")
+        return
+    try:
         match_endofsentence("Warm up. Done.")
+    except Exception as e:
+        # Data on disk but broken (an unzip cut short): a warm-up must not stop the
+        # start. The session meets it as pipecat's own warm-up leaves it.
+        logger.warning(f"NLTK's sentence tokenizer did not load: {e}")
 
 
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
