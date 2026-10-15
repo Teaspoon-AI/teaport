@@ -522,16 +522,17 @@ def warm_first_use_imports() -> None:
 
     certifi.where()
     try:
-        nltk.data.find("tokenizers/punkt_tab")
-    except LookupError:
-        logger.info("NLTK punkt_tab is not on disk yet; the first session downloads it "
-                    "(needs the internet)")
-        return
-    try:
+        try:
+            nltk.data.find("tokenizers/punkt_tab")
+        except LookupError:
+            logger.info("NLTK punkt_tab is not on disk yet; the first session downloads "
+                        "it (needs the internet)")
+            return
         match_endofsentence("Warm up. Done.")
     except Exception as e:
-        # Data on disk but broken (an unzip cut short): a warm-up must not stop the
-        # start. The session meets it as pipecat's own warm-up leaves it.
+        # Data on disk but broken (an unzip cut short, an empty or corrupt zip, which
+        # the find above already opens): a warm-up must not stop the start. The session
+        # meets it as pipecat's own warm-up leaves it.
         logger.warning(f"NLTK's sentence tokenizer did not load: {e}")
 
 

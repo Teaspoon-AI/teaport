@@ -114,19 +114,26 @@ def test_offline_without_nltk_data_the_warm_up_neither_downloads_nor_fails():
 
 
 def test_broken_nltk_data_on_disk_does_not_stop_the_start():
-    # punkt_tab there but cut short (an unzip interrupted): the split raises. The
-    # warm-up is an optimisation; the brain must still start.
+    # punkt_tab there but broken: a directory cut short (an interrupted unzip; the split
+    # raises), or an empty zip (the find itself raises). The warm-up is an
+    # optimisation; the brain must still start.
     import tempfile
-    with tempfile.TemporaryDirectory() as home:
-        os.makedirs(os.path.join(home, "nltk_data", "tokenizers", "punkt_tab"))
-        out = _child(
-            "import os, nltk\n"
-            "nltk.data.path[:] = [os.path.join(os.environ['HOME'], 'nltk_data')]\n"
-            "from teaport_brain.services import warm_first_use_imports\n"
-            "warm_first_use_imports()\n"
-            "print('returned')\n",
-            HOME=home)
-    assert out == "returned", out
+    for broken in ("partial directory", "empty zip"):
+        with tempfile.TemporaryDirectory() as home:
+            tokenizers = os.path.join(home, "nltk_data", "tokenizers")
+            if broken == "partial directory":
+                os.makedirs(os.path.join(tokenizers, "punkt_tab"))
+            else:
+                os.makedirs(tokenizers)
+                open(os.path.join(tokenizers, "punkt_tab.zip"), "wb").close()
+            out = _child(
+                "import os, nltk\n"
+                "nltk.data.path[:] = [os.path.join(os.environ['HOME'], 'nltk_data')]\n"
+                "from teaport_brain.services import warm_first_use_imports\n"
+                "warm_first_use_imports()\n"
+                "print('returned')\n",
+                HOME=home)
+        assert out == "returned", f"{broken}: {out}"
 
 
 if __name__ == "__main__":
