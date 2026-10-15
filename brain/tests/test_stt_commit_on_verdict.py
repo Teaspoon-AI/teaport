@@ -149,10 +149,12 @@ async def vad_start(s):
 
 
 async def verdict(s, complete, source="verdict", stop_n=None):
-    """A verdict for the stop the STT is on, unless `stop_n` names another."""
-    stop_n = s._vad_stops if stop_n is None else stop_n
-    await s.process_frame(TurnVerdictFrame(complete=complete, source=source,
-                                           stop_n=stop_n), UP)
+    """A verdict for the stop the STT is on, unless `stop_n` names another. The stop is
+    set after construction, so the rig also runs on a TurnVerdictFrame from before it
+    carried one (the regression tests' check on the old code)."""
+    frame = TurnVerdictFrame(complete=complete, source=source)
+    frame.stop_n = s._vad_stops if stop_n is None else stop_n
+    await s.process_frame(frame, UP)
 
 
 async def delta(s, text):
@@ -579,7 +581,8 @@ class Rig:
             if isinstance(frame, TurnVerdictFrame):
                 assert direction == UP, "the verdict must travel upstream to the STT"
                 self.verdicts.append((frame.complete, frame.source))
-                self.verdict_stops.append(frame.stop_n)
+                # getattr: the rig runs on the frame from before it named its stop too.
+                self.verdict_stops.append(getattr(frame, "stop_n", None))
                 await self.stt.process_frame(frame, direction)
 
         self.controller.add_event_handler("on_push_frame", on_push)
@@ -733,9 +736,9 @@ async def test_a_verdict_for_the_stop_before_does_not_close_the_held_segment():
         await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
         await rig.audio(300)
         await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS))
-        assert rig.verdicts == [(True, "verdict")] and rig.verdict_stops == [1]
         assert rig.stt._websocket.commits() == [], (
             "stop 1's verdict closed the segment held for stop 2")
+        assert rig.verdicts == [(True, "verdict")] and rig.verdict_stops == [1]
         await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
         await rig.audio(300)
         await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS))

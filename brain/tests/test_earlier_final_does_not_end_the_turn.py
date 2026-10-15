@@ -480,9 +480,11 @@ class Recorder(TeaportSTTService):
                                  FrameDirection.DOWNSTREAM)
 
     async def verdict(self, complete, source="verdict"):
-        await self.process_frame(TurnVerdictFrame(complete=complete, source=source,
-                                                  stop_n=self._vad_stops),
-                                 FrameDirection.UPSTREAM)
+        # The stop set after construction, so the rig also runs on a TurnVerdictFrame
+        # from before it carried one (the regression tests' check on the old code).
+        frame = TurnVerdictFrame(complete=complete, source=source)
+        frame.stop_n = self._vad_stops
+        await self.process_frame(frame, FrameDirection.UPSTREAM)
 
     async def delta(self, text):
         await self._handle_message({"type": "transcription.delta", "delta": text})
