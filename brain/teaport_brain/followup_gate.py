@@ -33,7 +33,9 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    OutputAudioRawFrame,
     TTSStartedFrame,
+    TTSStoppedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
@@ -206,8 +208,12 @@ class Delivery:
     line, the narrator, an error notice (all append_to_context=False) -- so a follow-up
     whose completion called a tool first had its watch settled as played by the ack, and
     was "delivered and played to the end" before a sample of the answer existed
-    (brain/formal/Followup.tla, fu_heard_no_ownAudio_loss). For it, `spoke` is set by a
-    reply's own TTSStartedFrame, which reaches the gate in playout order. A watcher that
+    (brain/formal/Followup.tla, fu_heard_no_ownAudio_loss). For it, `spoke` is set by
+    audio that follows a reply's own TTSStartedFrame -- frames reach the gate in playout
+    order, so audio between a reply's TTSStartedFrame and its TTSStoppedFrame is that
+    reply's. Not by the TTSStartedFrame alone: pipecat opens a context for any non-blank
+    text, so an emoji-only reply, or one whose every clause the engine failed, opens one
+    and never plays (fu_heard_ownStart_loss). A watcher that
     speaks its own line (say_last_line, the call prompt) keeps "any audio": that line
     may well be append_to_context=False itself.
     """
@@ -285,6 +291,9 @@ class FollowupGate(FrameProcessor):
         self._settled = asyncio.Event()
         self._settled.set()
         # Replies being watched to completion — see Delivery and watch_delivery.
+        # A reply's own TTS context is the one playing (its TTSStartedFrame has passed and
+        # its TTSStoppedFrame has not), so audio here is that reply's.
+        self._reply_playing = False
         self._deliveries: list = []
         # For the session arbiter's view of a room mic without wake words: whether the
         # user has taken a turn at all, and when anyone (user or bot) last spoke or the
@@ -423,7 +432,11 @@ class FollowupGate(FrameProcessor):
         elif isinstance(frame, TTSStartedFrame):
             # A reply's audio is next in the transport's queue -- unless it is a filler
             # (see Delivery). The thinking bed opens no TTS context at all.
-            if getattr(frame, "append_to_context", True) is not False:
+            self._reply_playing = getattr(frame, "append_to_context", True) is not False
+        elif isinstance(frame, TTSStoppedFrame):
+            self._reply_playing = False
+        elif isinstance(frame, OutputAudioRawFrame):
+            if self._reply_playing:
                 for d in self._deliveries:
                     if d.replies_only:
                         d.spoke = True
@@ -463,6 +476,7 @@ class FollowupGate(FrameProcessor):
             # discards any end frame the TTS service was holding.
             self._llm = False
             self._turn = False
+            self._reply_playing = False  # the transport flushed what was queued
             # Every watched reply is cut — including one queued but not yet speaking,
             # which the caller heard none of. A claimant's queued completion is flushed
             # with it, so its claim goes too.

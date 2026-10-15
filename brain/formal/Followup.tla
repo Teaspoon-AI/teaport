@@ -49,8 +49,11 @@
 (*                      TTS opened, or text that never became audio) is     *)
 (*                      heard~0% (Delivery.spoke), not a question for the   *)
 (*                      ledger, which charts no turn its TTS never opened.  *)
-(*   "ownAudio"      -- Delivery.spoke is our reply's audio (its own        *)
-(*                      TTSStartedFrame), not a filler line's.              *)
+(*   "ownAudio"      -- Delivery.spoke is our reply's AUDIO -- audio after  *)
+(*                      its own TTSStartedFrame -- not a filler line's.     *)
+(*   "ownStart"      -- (rejected) spoke at the reply's TTSStartedFrame     *)
+(*                      alone: a context that opens and never plays (an     *)
+(*                      emoji-only reply, every clause failing) "spoke".    *)
 (*   "supersede"     -- a re-post leaves the earlier copy saying only that  *)
 (*                      it was superseded, not "already given".             *)
 (*                                                                          *)
@@ -76,7 +79,7 @@ EXTENDS Naturals
 CONSTANTS MaxTurns, MaxRuns, MODE, LATCH, Attempts, TIMED, REPOST, FIX
 
 Heard == MODE = "heard"
-Fixes == {"void", "retireUnarmed", "unspoken", "ownAudio", "supersede"}
+Fixes == {"void", "retireUnarmed", "unspoken", "ownAudio", "ownStart", "supersede"}
 
 VARIABLES
     user, bot, llm, tool,      \* the gate's view: _user, _bot, _llm (+ a tool call in flight)
@@ -420,9 +423,11 @@ TtsOpen ==                                     \* the TTS opens its context: a l
     /\ run = "text"
     /\ run' = "tts"
     /\ IF lw = "waiting" THEN lw' = "open" /\ lrec' = recite ELSE UNCHANGED <<lw, lrec>>
+    \* FIX "ownStart": the reply's TTSStartedFrame passing the gate marks it spoke.
+    /\ wspoke' = (wspoke \/ (watch = "armed" /\ "ownStart" \in FIX))
     /\ UNCHANGED <<user,bot,llm,tool,q,started,turns,fpc,trigger,buried,sawLive,sawTail,
                    recite,reads,interjected,claimed,heardOK,repeat,attempts,armed,fired,
-                   voided,watch,wspoke,wcut,lheard,outcome,filler,stale>>
+                   voided,watch,wcut,lheard,outcome,filler,stale>>
 
 ToolCall ==                        \* FunctionCallInProgressFrame: a bare tool call
     /\ run = "read" /\ llm /\ ~tool
@@ -496,6 +501,20 @@ RunQuiet ==
                    claimed,heardOK,repeat>>
     /\ UNCHANGED loopVars
 
+\* The TTS opened a context for the reply and no audio ever came of it: the text was
+\* emoji or punctuation only (pipecat opens a context for any non-blank text), or the
+\* engine failed every clause. The ledger charts it heard nothing, or not at all.
+TtsQuiet ==
+    /\ Heard /\ run = "tts" /\ llm /\ ~tool
+    /\ run' = "none" /\ llm' = FALSE /\ recite' = FALSE
+    /\ sawLive' = FALSE /\ sawTail' = FALSE
+    /\ IF lw = "open" THEN \/ lw' = "resolved" /\ lheard' = "below"
+                           \/ UNCHANGED <<lw, lheard>>
+                      ELSE UNCHANGED <<lw, lheard>>
+    /\ UNCHANGED <<user,bot,tool,q,started,turns,fpc,trigger,buried,reads,interjected,
+                   claimed,heardOK,repeat,attempts,armed,fired,voided,watch,wspoke,wcut,
+                   lrec,outcome,filler,stale>>
+
 \* FollowupTrigger fires on ANY alnum LLMTextFrame while a shot is armed, not only a
 \* completion's first. A shot armed while a completion is mid-stream (only a give-up
 \* posts then) is fired by that completion's next token, which never read it.
@@ -516,7 +535,7 @@ MoreText ==
 FillerStart ==
     /\ Heard /\ tool /\ ~bot /\ ~filler
     /\ bot' = TRUE /\ filler' = TRUE
-    /\ wspoke' = (wspoke \/ (watch = "armed" /\ "ownAudio" \notin FIX))
+    /\ wspoke' = (wspoke \/ (watch = "armed" /\ "ownAudio" \notin FIX /\ "ownStart" \notin FIX))
     /\ UNCHANGED <<user,llm,tool,run,q,started,turns,fpc,trigger,buried,sawLive,sawTail,
                    recite,reads,interjected,claimed,heardOK,repeat,attempts,armed,fired,
                    voided,watch,wcut,lw,lheard,lrec,outcome,stale>>
@@ -531,7 +550,7 @@ FillerStop ==
                    voided,wspoke,lw,lheard,lrec,outcome,stale>>
 
 Next ==
-    \/ RunQuiet \/ MoreText \/ FillerStart \/ FillerStop
+    \/ RunQuiet \/ TtsQuiet \/ MoreText \/ FillerStart \/ FillerStop
     \/ FWaitIdle \/ FQueue \/ FWaitBusy \/ FWaitIdle2 \/ FNeutralize \/ FRequeue
     \/ FWindow \/ FGiveUp \/ FQueueRun \/ FFired \/ FStartTimeout \/ FVoided
     \/ FPlayed \/ FCut \/ FChartTimeout \/ FHeardTimeout

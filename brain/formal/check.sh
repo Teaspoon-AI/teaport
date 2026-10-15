@@ -107,6 +107,7 @@ run Followup.tla fu_heard_no_void_repeat    "(expected: FAILS NoRepeatRecital �
 run Followup.tla fu_heard_no_retireUnarmed_repeat "(expected: FAILS NoRepeatRecital — the fix without retireUnarmed)"
 run Followup.tla fu_heard_no_unspoken_loss  "(expected: FAILS NoSilentLoss — the fix without unspoken)"
 run Followup.tla fu_heard_no_ownAudio_loss  "(expected: FAILS NoSilentLoss — the fix without ownAudio: a tool-ack line settles the watch as played)"
+run Followup.tla fu_heard_ownStart_loss     "(expected: FAILS NoSilentLoss — ownAudio by the reply's TTSStartedFrame alone: a context that never plays)"
 run Followup.tla fu_heard_no_supersede_loss "(expected: FAILS NoSilentLoss — the fix without supersede: earlier copies say already given)"
 run Followup.tla fu_heard_fixed_all         "(expected: holds — void, retireUnarmed, unspoken, ownAudio, supersede)"
 run Followup.tla fu_heard_fixed_timed_loss  "(expected: FAILS NoSilentLoss — the fix with the timers: the ACCEPTED RESIDUAL, a reply still playing at 45 s)"

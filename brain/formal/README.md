@@ -260,6 +260,11 @@ review:
 6. **Text that never becomes audio** settles nothing. No `BotStarted`, no `BotStopped`,
    no interruption. The 45 s heard timeout then "left it as delivered". That timer is
    not standing in for a slow event here, since the event never comes.
+7. **A context that opens and never plays** (`fu_heard_ownStart_loss`), found after the
+   first version of this fix by the ledger's own audit: pipecat opens a TTS context for
+   any non-blank text, so an emoji-only reply, or one whose every clause the engine
+   failed, passes its `TTSStartedFrame` and then nothing. A watch that counted that frame
+   as the reply speaking rode the heard timeout to "delivered".
 
 **What was changed.** The fix is `FIX = {"void", "retireUnarmed", "unspoken",
 "ownAudio", "supersede"}`, and `fu_heard_fixed_all` holds. It lives in
@@ -277,10 +282,12 @@ counterexample is a test in `brain/tests/test_followup_heard.py` /
 - `unspoken`: a reply with `Delivery.spoke == False` is heard 0%, whether it was cut or
   hit the heard timeout, without asking the ledger. Closes 1 and 6.
 - `ownAudio`: for the consult's watch (`watch_delivery(replies_only=True)`),
-  `Delivery.spoke` is set by a reply's own `TTSStartedFrame` (not a filler's,
-  `append_to_context=False`) as it passes the gate in playout order, not by
-  `BotStartedSpeaking`. Watchers of a line they speak themselves (`say_last_line`, the
-  call prompt) keep "any audio", since their line may be a filler itself. Closes 4.
+  `Delivery.spoke` is set by audio that follows a reply's own `TTSStartedFrame` (not a
+  filler's, `append_to_context=False`), not by `BotStartedSpeaking`. Frames reach the gate
+  in playout order, so audio between a reply's `TTSStartedFrame` and `TTSStoppedFrame` is
+  that reply's. The `TTSStartedFrame` alone is not enough (`ownStart`, closes 4 but not
+  7). Watchers of a line they speak themselves (`say_last_line`, the call prompt) keep
+  "any audio", since their line may be a filler itself. Closes 4 and 7.
 - `supersede`: the earlier copy is left saying only that a later notice supersedes it.
   Closes 5.
 
