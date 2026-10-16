@@ -472,6 +472,10 @@ async def test_a_commit_made_while_the_caller_still_talks_does_not_take_their_re
     (its VAD START was older), and the answer played before the words."""
     for front_end in ("talk", "sip"):
         async with Rig(front_end, tool="get_current_time") as rig:
+            # A cough first: live, the gate always has a VAD stop in its history.
+            await rig.send(VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame())
+            await _until(lambda: rig.gate._speech_stop is not None
+                         and not rig.gate._speech_pending)
             started = time.monotonic()
             await rig.send(VADUserStartedSpeakingFrame())
             await rig.say(QUESTION)

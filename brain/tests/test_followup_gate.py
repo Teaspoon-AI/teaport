@@ -628,12 +628,56 @@ async def test_speech_still_going_at_the_commit_stays_pending():
     # while they still talk does not have the words they are saying (the gate as it was
     # in 0db54f6 let go of them here: the answer played before the words).
     async with _GateRun(release=5.0) as r:
+        # A turn before it: live, the gate has a VAD stop in its history.
+        await r.down(VADUserStartedSpeakingFrame(), UserStartedSpeakingFrame(),
+                     VADUserStoppedSpeakingFrame())
+        r.gate.words_committed(obj_id())
+        await r.down(UserStoppedSpeakingFrame())
+        assert not r.gate._speech_pending
         await r.down(VADUserStartedSpeakingFrame(), UserStartedSpeakingFrame())
         r.gate.words_committed(obj_id())       # the commit, the VAD still speaking
         await r.down(VADUserStoppedSpeakingFrame(), UserStoppedSpeakingFrame())
         frame = await r.answer()
         assert await r.until(lambda: r.gate.answers_held == 1), (
             "sent on while the words of speech the commit did not take are on their way")
+        assert frame not in r.top.up
+
+
+async def test_the_re_applied_stops_commit_leaves_its_flush_pending():
+    # A turn left open by a refused finalize; the caller's resumed span. The engine
+    # closed a segment mid-span (final B1 is in the aggregation), the caller went on,
+    # and at their VAD stop keep_barge_in_reachable re-applies the stop at once -- in
+    # that stop's own handling, before the engine's flush of it (B2) lands. That
+    # commit, through the real fence, carries B1 only: the stop strategy still owes the
+    # stop its close, so the gate is told nothing and keeps waiting for B2. ff033c9
+    # told it, and an answer landing before B2 played ahead of it.
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from test_barge_commit_order import IN_SR, Scripted, _Aggregator
+
+    from teaport_brain.endpointing import CutReplyFence, LateStartTurnStopStrategy
+    strategy = LateStartTurnStopStrategy(
+        turn_analyzer=Scripted(sample_rate=IN_SR, params=SmartTurnParams(stop_secs=1.0)))
+    async with _GateRun(release=5.0) as r:
+        fence = CutReplyFence()
+        agg = _Aggregator(words=["B1"])
+        fence.hold_commits(agg)
+        fence.on_words_committed = r.gate.words_committed
+        fence.close_owed = strategy.close_owed
+        await r.down(VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame())
+        # The strategy counted the stop (it stamps its closes): its close is owed.
+        strategy._stamped, strategy._stops, strategy._owed = True, 1, 1
+        assert strategy.close_owed()
+        await agg.push_aggregation()           # the re-applied stop's commit of B1
+        assert agg.pushed == 1
+        assert r.gate._speech_pending, "the gate let go of speech whose flush is owed"
+        frame = await r.answer()
+        assert await r.until(lambda: r.gate.answers_held == 1), "the answer was not held"
+        # B2 lands (the close is paid) and is committed: now the speech is done.
+        strategy._note_close(1)
+        assert not strategy.close_owed()
+        agg._aggregation = ["B2"]
+        await agg.push_aggregation()
+        assert not r.gate._speech_pending, "a commit with the close paid did not clear it"
         assert frame not in r.top.up
 
 

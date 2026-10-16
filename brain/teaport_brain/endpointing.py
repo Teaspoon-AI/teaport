@@ -713,9 +713,18 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # thereby never fires on a VAD-stop path: this STT always closes the segment
         # (a commit for every stop, the backstop for a missed one, the hold's expiry
         # for a lost verdict), and the net exists for STTs that do not.
-        if self._wait_for_transcript and self._stamped and self._owed is not None:
+        if self.close_owed():
             return
         await super()._maybe_trigger_user_turn_stopped()
+
+    def close_owed(self) -> bool:
+        """The latest VAD stop counted here is still owed its close: the words that
+        stop flushed are on their way from the engine, not in the turn yet. What this
+        strategy's own trigger waits on (above). A commit made meanwhile by something
+        that does not ask -- keep_barge_in_reachable's re-applied stop, in that very
+        stop's handling; the watchdog's -- carries none of them (CutReplyFence tells
+        FollowupGate nothing of it: see hold_commits)."""
+        return self._wait_for_transcript and self._stamped and self._owed is not None
 
     async def _maybe_speculate(self, before: int, why: str):
         """Ask for a speculation if the frame just handled left a finalized transcript
@@ -1234,6 +1243,9 @@ class CutReplyFence:
         # just before the commit's frame is made: a frame numbered below it was made
         # before the commit. FollowupGate.words_committed; see hold_commits.
         self.on_words_committed = None
+        # () -> bool: the latest VAD stop's close is still owed (the stop strategy's
+        # receipts, LateStartTurnStopStrategy.close_owed). Set by agent_session.
+        self.close_owed = None
         # Tallies, for the tests.
         self.waits = 0
         self.timeouts = 0
@@ -1292,7 +1304,8 @@ class CutReplyFence:
 
         `self.on_words_committed`, where set (agent_session: FollowupGate.words_committed),
         is told of every commit of words, after the waits, with a marker taken off pipecat's
-        frame counter just before the commit's frame is made."""
+        frame counter just before the commit's frame is made -- except while the latest VAD
+        stop's close is owed (`self.close_owed`): those words are not in the commit."""
         push_aggregation = aggregator._push_aggregation
         emit_stopped = aggregator._maybe_emit_user_turn_stopped
         params = [(p.name, p.kind) for p in inspect.signature(emit_stopped).parameters.values()]
@@ -1329,8 +1342,12 @@ class CutReplyFence:
                                 "the model gets the turn as one message")
                     await aggregator.push_frame(InterruptionFrame())
                     await self.wait_for_cuts()
-            if aggregator._aggregation and self.on_words_committed is not None:
-                # After every wait: a VAD frame made during one is newer than this.
+            if (aggregator._aggregation and self.on_words_committed is not None
+                    and not (self.close_owed is not None and self.close_owed())):
+                # After every wait: a VAD frame made during one is newer than this. Not
+                # while the latest stop's close is owed: this commit (the re-applied
+                # stop, in that stop's own handling) has what was final before it, not
+                # what that stop flushed (formal/UserTurn.tla, gateOwedBlind).
                 self.on_words_committed(obj_id())
             return await push_aggregation(*args, **kwargs)
 

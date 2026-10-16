@@ -26,10 +26,11 @@
 # context without what they are saying; the TTS holds it to their VAD stop, it plays
 # there, their words then cut it, and their turn asks the model again. The gate sits
 # directly above that aggregator's push, so it HOLDS the frame while caller speech is
-# pending -- from its VAD start until a turn starts (then it is DROPPED: that turn's
-# commit reads the result, already in the context), until a commit of the caller's words
-# has taken that speech's (its VAD stop made before the commit), or until RELEASE_SECS after the VAD stop with no turn
-# (a cough: it goes on). Nothing is held on speech whose words are in: with nobody
+# pending -- from its VAD start until a turn starts with the caller quiet (then it is
+# DROPPED: that turn's commit reads the result, already in the context), until a commit
+# of the caller's words has taken that speech's (its VAD stop made before the commit, and
+# that stop's close no longer owed), or until RELEASE_SECS after the VAD stop with no
+# turn (a cough: it goes on). Nothing is held on speech whose words are in: with nobody
 # talking, the answer is asked at once. A blip costs a release window too: see
 # formal/README.md, "A blip costs a release window".
 # brain/formal/UserTurn.tla, POSTTOOL = "gate"; the rejected designs are rows there too.
