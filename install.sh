@@ -316,6 +316,8 @@ JOURNAL_CONF=/etc/systemd/journald.conf
 JOURNAL_CONF_D=/etc/systemd/journald.conf.d
 JOURNAL_DROPIN=$JOURNAL_CONF_D/teaport.conf
 LOGROTATE_BIN=/usr/sbin/logrotate
+# journald's machine directory: there once journald is writing to /var/log/journal
+JOURNAL_MACHINE_DIR="/var/log/journal/$(cat /etc/machine-id 2>/dev/null || echo unknown)"
 JOURNAL_MAX_USE=2G
 install_lines() {  # install_lines <dest> <mode> <line>...: root-owned, written whole
   local dest="$1" mode="$2" tmp rc=0; shift 2
@@ -325,36 +327,70 @@ install_lines() {  # install_lines <dest> <mode> <line>...: root-owned, written 
   return "$rc"
 }
 # The journal settings an operator has set themselves: KEY names, one per line, from
-# $JOURNAL_CONF and every other drop-in in $JOURNAL_CONF_D (not ours, not the
-# distro's under /usr/lib, whose ForwardToSyslog=yes is the one this overrides).
+# $JOURNAL_CONF and every drop-in journald merges besides ours: /etc, /run and
+# /usr/local/lib (not the distro's /usr/lib, whose syslog.conf ForwardToSyslog=yes is the
+# one this overrides). A file the plain read can't open is read with sudo (read_env_file
+# --lenient): a root-only drop-in is still an operator's. Never fails: an unreadable file
+# counts as setting nothing, it doesn't end the install.
+JOURNAL_OPERATOR_DIRS=("$JOURNAL_CONF_D" /run/systemd/journald.conf.d /usr/local/lib/systemd/journald.conf.d)
 journal_operator_keys() {
-  local f
-  for f in "$JOURNAL_CONF" "$JOURNAL_CONF_D"/*.conf; do
+  local f d files=("$JOURNAL_CONF")
+  for d in "${JOURNAL_OPERATOR_DIRS[@]}"; do files+=("$d"/*.conf); done
+  for f in "${files[@]}"; do
     [ -f "$f" ] && [ "$f" != "$JOURNAL_DROPIN" ] || continue
-    sed -n 's/^[[:space:]]*\(Storage\|SystemMaxUse\|ForwardToSyslog\)[[:space:]]*=.*/\1/p' "$f"
-  done 2>/dev/null | sort -u
+    read_env_file "$f" --lenient
+  done 2>/dev/null \
+    | sed -n 's/^[[:space:]]*\(Storage\|SystemMaxUse\|ForwardToSyslog\)[[:space:]]*=.*/\1/p' \
+    | sort -u || true
 }
 setup_logs() {
-  log "logs: one journal, persistent, capped at $JOURNAL_MAX_USE (no copy to /var/log/syslog); logrotate for the rest of /var/log"
-  local ops k v lines=() want have timer
+  local ops k v lines=() want have timer apply=0 said=()
   ops=" $(journal_operator_keys | tr '\n' ' ')"
+  # Storage and forwarding go together: syslog stops getting the services' lines only when
+  # the journal they go to is ours, on disk. An operator's Storage (volatile, say) keeps
+  # their forwarding too, or nothing would be kept on disk at all.
   for k in Storage SystemMaxUse ForwardToSyslog; do
     case "$k" in Storage) v=persistent ;; SystemMaxUse) v="$JOURNAL_MAX_USE" ;; *) v=no ;; esac
-    if contains " $k " "$ops "; then log "logs: $k is the operator's (set in /etc/systemd) — left out"
-    else lines+=("$k=$v"); fi
+    if contains " $k " "$ops "; then
+      log "logs: $k is the operator's (set in their journald config) — left out"
+    elif [ "$k" = ForwardToSyslog ] && contains " Storage " "$ops "; then
+      log "logs: ForwardToSyslog left as it is — the operator sets Storage, so syslog may be their only disk copy"
+    else
+      lines+=("$k=$v")
+      case "$k" in
+        Storage) said+=("persistent") ;;
+        SystemMaxUse) said+=("capped at $v") ;;
+        *) said+=("no copy to /var/log/syslog") ;;
+      esac
+    fi
   done
+  if [ "${#said[@]}" -gt 0 ]; then
+    local joined; joined="$(printf '%s, ' "${said[@]}")"
+    log "logs: the journal is the one store: ${joined%, }; logrotate for the rest of /var/log"
+  else
+    log "logs: the journal is the operator's to set; logrotate for /var/log"
+  fi
   want="$(printf '%s\n' \
     "# teaport (install.sh setup_logs): the journal is the one log store. Rewritten on every" \
     "# install run: set your own values in /etc/systemd/journald.conf or a drop-in of your" \
     "# own (a key you set is left out of this file; a zz-*.conf of yours wins over it)." \
-    "[Journal]" "${lines[@]}")"
-  have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
-  if [ "$want" = "$have" ]; then
-    log "logs: $JOURNAL_DROPIN unchanged"
-  elif ! { SUDO install -d -m 0755 "$JOURNAL_CONF_D" &&   # readable by the check above, whatever sudo's umask
-           install_lines "$JOURNAL_DROPIN" 0644 "$want"; }; then
-    warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
+    "[Journal]" ${lines[@]+"${lines[@]}"})"
+  have="$(read_env_file "$JOURNAL_DROPIN" --lenient)"
+  if [ "$want" != "$have" ]; then
+    if { SUDO install -d -m 0755 "$JOURNAL_CONF_D" &&   # readable by the check above, whatever sudo's umask
+         install_lines "$JOURNAL_DROPIN" 0644 "$want"; }; then
+      apply=1
+    else
+      warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
+    fi
+  elif contains "Storage=persistent" "$want" && [ ! -d "$JOURNAL_MACHINE_DIR" ]; then
+    # written by an earlier run whose restart failed: journald is still not on disk
+    log "logs: $JOURNAL_DROPIN unchanged, but journald is not writing to /var/log/journal yet — applying it again"
+    apply=1
   else
+    log "logs: $JOURNAL_DROPIN unchanged"
+  fi
+  if [ "$apply" = 1 ]; then
     # /var/log/journal, made before journald needs it: setgid systemd-journal, then the ACLs
     # that let adm read it from systemd's tmpfiles rules (which only adjust a directory that
     # exists). Left to journald, the directory would be root's alone until the next boot,
@@ -364,7 +400,8 @@ setup_logs() {
       || warn "logs: could not set up /var/log/journal — it is set up at the next boot"
     # The restart applies the drop-in now (services' stdout streams survive it: journald keeps
     # them in systemd's fd store); the flush moves this boot's journal to /var/log/journal.
-    # Neither fails the install: both happen at the next boot anyway.
+    # Neither fails the install: both happen at the next boot anyway, and a repair run
+    # applies them again while journald is not on disk.
     if SUDO systemctl restart systemd-journald; then
       SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
     else
@@ -376,11 +413,13 @@ setup_logs() {
   # box mid-setup: said, with what would fix it, not overridden.
   timer="$(systemctl is-enabled logrotate.timer 2>/dev/null || true)"
   case "$timer" in
-    masked) warn "logs: logrotate.timer is masked — /var/log is not rotated (systemctl unmask logrotate.timer && systemctl enable --now logrotate.timer)" ;;
+    enabled|enabled-runtime|static|indirect|linked|linked-runtime|alias|generated|transient)
+      systemctl is-active --quiet logrotate.timer \
+        || warn "logs: logrotate.timer is not running — /var/log is not rotated until it is (systemctl start logrotate.timer)" ;;
+    masked|masked-runtime) warn "logs: logrotate.timer is $timer — /var/log is not rotated (systemctl unmask $([ "$timer" = masked-runtime ] && echo '--runtime ')logrotate.timer && systemctl enable --now logrotate.timer)" ;;
     disabled) warn "logs: logrotate.timer is disabled — /var/log is not rotated (systemctl enable --now logrotate.timer)" ;;
     ""|not-found) warn "logs: there is no logrotate.timer — /var/log is not rotated (apt-get install --reinstall logrotate)" ;;
-    *) systemctl is-active --quiet logrotate.timer \
-         || warn "logs: logrotate.timer is not running — /var/log is not rotated until it is (systemctl start logrotate.timer)" ;;
+    *) warn "logs: logrotate.timer is $timer — /var/log may not be rotated (systemctl status logrotate.timer)" ;;
   esac
 }
 
@@ -1089,7 +1128,7 @@ tools_link() {
 BUSY_LAMP_GROUP=teaport-hw
 install_busy_lamp() {
   local rule=/etc/udev/rules.d/60-teaport-xvf3800.rules src
-  local tmpfiles=/etc/tmpfiles.d/teaport-busy-lamp.conf tmp
+  local tmpfiles=/etc/tmpfiles.d/teaport-busy-lamp.conf
   src="$(dirname "$SRC_DIR")/packaging/xvf3800/60-teaport-xvf3800.rules"
   if [ ! -f "$src" ]; then src="$HERE/packaging/xvf3800/60-teaport-xvf3800.rules"; fi
   # The group first, and whatever else is skipped: the brain unit names it
@@ -1110,11 +1149,9 @@ install_busy_lamp() {
   SUDO udevadm trigger --action=change --subsystem-match=usb \
     --attr-match=idVendor=2886 --attr-match=idProduct=001a \
     || warn "busy lamp: udevadm trigger failed — replug the XVF3800 or reboot for the rule to apply"
-  tmp="$(mktemp)"
-  printf '%s\n' "# teaport busy lamp: the ring's look to restore after a brain crash (xvf_led.MARKER)" \
-    "d /run/teaport-busy-lamp 0700 $RUN_USER $RUN_USER -" > "$tmp"
-  SUDO install -D -m 0644 -o root -g root "$tmp" "$tmpfiles"
-  rm -f "$tmp"
+  install_lines "$tmpfiles" 0644 \
+    "# teaport busy lamp: the ring's look to restore after a brain crash (xvf_led.MARKER)" \
+    "d /run/teaport-busy-lamp 0700 $RUN_USER $RUN_USER -"
   SUDO systemd-tmpfiles --create "$tmpfiles" \
     || warn "busy lamp: systemd-tmpfiles failed — /run/teaport-busy-lamp appears at the next boot"
 }
@@ -2228,13 +2265,11 @@ phase_wifi_setup() {
   log "wifi setup: unit + polkit rule + captive DNS (runs only when asked)"
   have pkaction || warn "wifi setup: polkit not found — the run user cannot change NetworkManager's Wi-Fi without it"
   render_unit teaport-wifi-setup.service.in teaport-wifi-setup.service
-  local rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules pkg="$HERE/packaging/wifi-setup" tmp
+  local rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules pkg="$HERE/packaging/wifi-setup" body
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> %s\n' 50-teaport-wifi-setup.rules.in "$rules"
   else
-    tmp="$(mktemp)"
-    sed -e "s#@USER@#$RUN_USER#g" "$pkg/50-teaport-wifi-setup.rules.in" > "$tmp"
-    SUDO install -D -m 0644 -o root -g root "$tmp" "$rules"
-    rm -f "$tmp"
+    body="$(sed -e "s#@USER@#$RUN_USER#g" "$pkg/50-teaport-wifi-setup.rules.in")"
+    install_lines "$rules" 0644 "$body"
   fi
   SUDO install -D -m 0644 -o root -g root "$pkg/teaport-captive.conf" /usr/local/lib/teaport/teaport-captive.conf
   # The unit's root-side steps (port-80 rule, captive DNS, clean-up): sh, not the venv.
@@ -2425,9 +2460,10 @@ main_brain_only() {
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
   fi
   # --only brain installs no system packages and leaves the box's setup alone: a box no full
-  # run has set up since setup_logs (no logrotate) keeps its unrotated /var/log, so say so.
-  if [ ! -x "$LOGROTATE_BIN" ]; then
-    warn "logs are not rotated or capped on this box yet (no logrotate): run install.sh without --only once"
+  # run has set up since setup_logs (no logrotate, or no journal drop-in) keeps its
+  # unrotated, uncapped logs, so say so.
+  if [ ! -x "$LOGROTATE_BIN" ] || [ ! -e "$JOURNAL_DROPIN" ]; then
+    warn "logs are not rotated or capped on this box yet (no logrotate or no $JOURNAL_DROPIN): run install.sh without --only once"
   fi
   check_brain_source
   phase_brain

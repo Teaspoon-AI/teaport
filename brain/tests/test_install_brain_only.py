@@ -187,11 +187,13 @@ for f in check_brain_source phase_brain sip_brain_detach brain_swap sip_brain_re
 def _brain_only(tmp, venv=None, dry_run=False, logs_capped=True):
     prefix = pathlib.Path(tmp, "opt")
     prefix.mkdir()
-    # logrotate, under tmp: there (a box a full run has set up since setup_logs) or not
-    logrotate = pathlib.Path(tmp, "logrotate")
+    # logrotate and the journal drop-in, under tmp: there (a box a full run has set up since
+    # setup_logs) or not
+    logrotate, dropin = pathlib.Path(tmp, "logrotate"), pathlib.Path(tmp, "journald-teaport.conf")
     if logs_capped:
         logrotate.write_text("#!/bin/sh\n")
         logrotate.chmod(0o755)
+        dropin.write_text("[Journal]\n")
     if venv == "dir":
         (prefix / "venv").mkdir()
     elif venv == "link":
@@ -200,7 +202,8 @@ def _brain_only(tmp, venv=None, dry_run=False, logs_capped=True):
     elif venv == "dangling":
         (prefix / "venv").symlink_to(prefix / "venvs/gone")
     script = (f'{ONLY_BRAIN_STUBS}PREFIX="{prefix}"; BRAIN_LINK="$PREFIX/venv"; '
-              f'LOGROTATE_BIN="{logrotate}"; DRY_RUN={int(dry_run)}; main_brain_only')
+              f'LOGROTATE_BIN="{logrotate}"; JOURNAL_DROPIN="{dropin}"; DRY_RUN={int(dry_run)}; '
+              'main_brain_only')
     return _run(tmp, script, ["main_brain_only"])
 
 

@@ -18,6 +18,12 @@ DRY_RUN=0
 log()  { printf 'LOG %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*"; }
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+# read_env_file's privileged read of a file the plain read can't open (as root would)
+sudo() {
+  printf 'sudo %s\n' "$*" >> "$T/calls"
+  [ "$1" = cat ] && [ -e "$2" ] || return 1
+  chmod u+r "$2"; command cat "$2"; chmod 000 "$2"
+}
 SUDO() {
   printf '%s\n' "$*" >> "$T/calls"
   [ "$1" = install ] || return 0
@@ -37,15 +43,23 @@ systemctl() {
 
 
 def _setup_logs(tmp, max_use="2G", install_fails=False, timer="enabled", active=True,
-                operator=None):
+                operator=None, operator_name="50-local.conf", unreadable=False, on_disk=True):
     confd = pathlib.Path(tmp, "journald.conf.d")
     if operator:   # an operator's own drop-in
         confd.mkdir(exist_ok=True)
-        (confd / "50-local.conf").write_text(operator)
+        f = confd / operator_name
+        f.write_text(operator)
+        if unreadable:
+            f.chmod(0)
+    machine = pathlib.Path(tmp, "journal-machine")   # journald writing to /var/log/journal
+    if on_disk:
+        machine.mkdir(exist_ok=True)
     calls = pathlib.Path(tmp, "calls")
     calls.unlink(missing_ok=True)
-    script = (STUBS + _fn("install_lines") + _fn("journal_operator_keys") + _fn("setup_logs") +
+    script = (STUBS + _fn("read_env_file") + _fn("install_lines") + _fn("journal_operator_keys") +
+              _fn("setup_logs") +
               f'JOURNAL_CONF="{tmp}/journald.conf"; JOURNAL_CONF_D="{confd}"; '
+              f'JOURNAL_OPERATOR_DIRS=("{confd}"); JOURNAL_MACHINE_DIR="{machine}"; '
               f'JOURNAL_DROPIN="{confd}/teaport.conf"; JOURNAL_MAX_USE={max_use}; '
               'setup_logs; echo DONE')
     env = {"T": str(tmp), "PATH": "/usr/bin:/bin", "INSTALL_FAILS": str(int(install_fails)),
@@ -100,6 +114,36 @@ def test_a_key_the_operator_set_is_left_out():
     assert "SystemMaxUse is the operator's" in out, out
 
 
+def test_an_operator_drop_in_the_installer_cannot_read_is_read_with_sudo_and_the_install_goes_on():
+    # sorting last (zz-), 0000: the plain read fails; under set -euo pipefail that must
+    # neither end the install nor hide the operator's setting
+    rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"), operator="[Journal]\nSystemMaxUse=500M\n",
+                                         operator_name="zz-local.conf", unreadable=True)
+    assert rc == 0 and "DONE" in out, out
+    assert "SystemMaxUse" not in dropin.read_text(), dropin.read_text()
+    assert "SystemMaxUse is the operator's" in out, out
+
+
+def test_an_operators_storage_keeps_their_forwarding_too():
+    # Storage=volatile of theirs + ForwardToSyslog=no of ours would keep nothing on disk
+    rc, out, _, dropin = _setup_logs(tempdir("teaport-logs-"), operator="[Journal]\nStorage=volatile\n")
+    text = dropin.read_text()
+    assert rc == 0 and "Storage" not in text and "ForwardToSyslog" not in text, text
+    assert "SystemMaxUse=2G" in text, text
+    assert "persistent" not in out.split("left out")[0].split("logs: the journal")[-1], out   # no overclaim
+    assert "capped at 2G" in out and "no copy to /var/log/syslog" not in out, out
+
+
+def test_a_repair_applies_the_settings_again_while_journald_is_not_on_disk():
+    tmp = tempdir("teaport-logs-")
+    _setup_logs(tmp, on_disk=False)                        # written, restart "failed"
+    rc, out, calls, _ = _setup_logs(tmp, on_disk=False)    # the repair run
+    assert rc == 0 and "applying it again" in out, out
+    assert "systemctl restart systemd-journald" in calls, calls
+    rc, out, calls, _ = _setup_logs(tmp, on_disk=True)     # on disk now: nothing to do
+    assert "systemctl restart systemd-journald" not in calls, calls
+
+
 def test_a_drop_in_that_cannot_be_written_warns_and_the_install_goes_on():
     rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"), install_fails=True)
     assert rc == 0 and "DONE" in out and "WARN logs: could not write" in out, out
@@ -109,7 +153,8 @@ def test_a_drop_in_that_cannot_be_written_warns_and_the_install_goes_on():
 def test_each_logrotate_timer_state_gets_its_own_advice():
     cases = {("masked", True): "unmask", ("disabled", True): "is disabled",
              ("not-found", True): "--reinstall logrotate", ("", True): "--reinstall logrotate",
-             ("enabled", False): "systemctl start", ("indirect", False): "systemctl start"}
+             ("enabled", False): "systemctl start", ("indirect", False): "systemctl start",
+             ("masked-runtime", True): "unmask --runtime", ("bad", True): "systemctl status"}
     for (timer, active), advice in cases.items():
         rc, out, _, _ = _setup_logs(tempdir("teaport-logs-"), timer=timer, active=active)
         assert rc == 0 and advice in out, (timer, active, out)

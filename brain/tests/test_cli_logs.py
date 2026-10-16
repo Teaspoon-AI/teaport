@@ -35,11 +35,15 @@ def test_plain_viewing_shows_this_boot():
     assert _logs("-n", "50") == "journalctl -u teaport-brain.service -b -n 50"
     assert _logs("sip", "-p", "err", "-f") == "journalctl -u teaport-sip.service -b -p err -f"
     assert _logs("engine", "--lines=20") == "journalctl -u teaport-engine.service -b --lines=20"
+    assert _logs("-l") == "journalctl -u teaport-brain.service -b -l"
+    assert _logs("-n", "-f") == "journalctl -u teaport-brain.service -b -n -f"   # -n with no count
 
 
 def test_a_boot_time_pattern_or_match_of_the_callers_own_passes_through_as_given():
     for args in (["-b", "-1"], ["--since", "today"], ["-g", "-bus"], ["-xS", "yesterday"],
-                 ["_BOOT_ID=abc"], ["--list-boots"]):
+                 ["_BOOT_ID=abc"], ["--list-boots"],
+                 # -n's count is optional: what follows a bare -n is the caller's own
+                 ["-n", "--since=today"], ["-n", "_BOOT_ID=abc"]):
         assert _logs(*args) == "journalctl -u teaport-brain.service " + " ".join(args), args
 
 
