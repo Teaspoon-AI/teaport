@@ -455,9 +455,9 @@ Since #111 the brain answers the call: `call.incoming` starts a bring-up **task*
 (`start_call`) that asks the session arbiter for the engine (`CallClaim.start` →
 `ARBITER.acquire`), builds and *publishes* the pipeline (`active["call"]`), sends
 `call.answer`, and greets once `confirmed` arrives. Teardown (`cancel_active_call`) stays
-inline when a handler runs it and ends with `presence.end()`. A pipeline that ends on its
-own (`on_pipeline_finished`) tears itself down from a separate task, concurrent with the
-reader. The 2026-08 modes keep the 2026-08 gateway (it confirms by itself, and may
+inline when a handler runs it and ends with `presence.end(call_id)`. A pipeline that ends
+on its own (`on_pipeline_finished`) tears itself down from a separate task, concurrent
+with the reader. The 2026-08 modes keep the 2026-08 gateway (it confirms by itself, and may
 confirm a second call before the first's `disconnected`); the shipped modes run behind
 teaport-sip ≥ 0.6.0: one call ringing or up at a time (a second INVITE gets 486), except
 that an INVITE may land while a call the *brain* hung up is still on its way out
@@ -467,12 +467,16 @@ that an INVITE may land while a call the *brain* hung up is still on its way out
 |---|---|---|---|---|---|---|
 | `asWritten` | 2026-08: teardown ignores `call_id`; bring-up inline | ✗ | ✗ | ✗ | | |
 | `callIdChecked` | 2026-08: teardown matches `call_id` | ✓ | ✗ | ✗ | | |
-| `shipped` | `sip_server.py` today | ✓ | ✓ | ✗ (accepted) | **✗** | **✗** |
-| `claimByCall` | proposed: claims released by call | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `heldClaim` | 2026-10, before the claim fix: `presence.end()` releases the claim held *now* | ✓ | ✓ | ✗ | **✗** | **✗** |
+| `ownClaim` | the claim fix's identity check alone | ✓ | ✓ | ✗ | ✓ | **✗** |
+| `shipped` | `sip_server.py` today | ✓ | ✓ | ✗ (accepted) | ✓ | ✓ |
 
-`shipped` also holds `NoDeadLine` (an answered call is never let go without a hangup)
-and `NoStrandedRing` (a ringing call the brain heard is being brought up or hung up),
-with and without `AUTO`. Both lean on the 0.6.0 gateway: `start_call` supersedes a call
+`shipped` also holds `NoDeadLine` (an answered call is never let go without a hangup),
+`NoStrandedRing` (a ringing call the brain heard is being brought up or hung up),
+`SequentialClaims` (a call's claim is let go before the next call's is taken — the
+contract `SessionArbiter.tla`'s `SIP = "sequential"` assumes) and `NoClaimLeftBehind`
+(once every call is over, every claim has been let go), with and without `AUTO`.
+`NoDeadLine` and `NoStrandedRing` lean on the 0.6.0 gateway: `start_call` supersedes a call
 without hanging it up, which the 2026-08 gateway turned into a dead line (both 2026-08
 modes fail `NoDeadLine`).
 
@@ -488,7 +492,8 @@ blocks, bounded by `cancel_active_call`'s 5 s wait + 0.3 s settle (+ the reclaim
 
 ### The 2026-10-14 audit: what the model had drifted from
 
-The model still described the 2026-08 code. Against `sip_server.py` today:
+The model still described the 2026-08 code. Against `sip_server.py` then (the line
+numbers are the audit's, before the claim fix):
 
 1. Only `confirmed`/`disconnected` existed. Now `call.incoming` starts the bring-up
    (`sip_server.py:609-638`, `start_call` `:928-949`), a `confirmed` for a ringing call
@@ -508,7 +513,9 @@ The model still described the 2026-08 code. Against `sip_server.py` today:
    is — in `wait_for(runner_task)` the cancel is *swallowed* (`:566`) and the teardown
    completes; in the 0.3 s settle it propagates and `presence.end()` never runs.
 
-### The new finding: the next call's claim released by the last call's teardown
+### The finding: the next call's claim released by the last call's teardown
+
+As found (before the claim fix, now `MODE = "heldClaim"`):
 
 `CallClaim.end()` (`sip_server.py:379`) releases **whatever claim it holds now**, and
 `cancel_active_call` calls it *after* its awaits. The teardown task of a pipeline that
@@ -539,12 +546,45 @@ cancelled in its settle) lets the next call's acquire find the last call's claim
 held — `NoReplacedCall` — which the arbiter handles badly when a conversation is on hold
 for that call (`SessionArbiter.tla`, `sa_overlap_refused`).
 
-**Proposed** (`claimByCall`, not code): each teardown releases its *own* call's claim —
-keep the `Claim` in the `active` tuple (or have `CallClaim.end(call_id)` check the id) —
-and in a `finally`, so a teardown cancelled in its settle still lets go; and `start_call`
-awaits the `teardowns` still in flight before the new bring-up. Checked by hand on
-variants: the identity check alone fixes `NoUnclaimedCall` but not `NoReplacedCall`; the
-`finally` plus the wait fixes both, which makes the identity check belt and braces.
+### What was changed (2026-10-15, the claim fix)
+
+The model led: `shipped` is now the design it checked, and the design as found is kept
+as `heldClaim` (`sip_heldClaim_unclaimed`, `sip_heldClaim_replaced`).
+
+- `CallClaim` keeps its claims **by call id**, and `end(call_id)` lets go of that call's
+  claim only (`end()` with no id, for the connection going away, lets go of all). Every
+  teardown ends its own call's: `cancel_active_call` (`presence.end(_call_id)`) and the
+  `disconnected` that leaves nothing behind.
+- `cancel_active_call` lets go in a **`finally`**, so the bring-up's own teardown
+  ("never confirmed", "STT unavailable") abandoned in its 0.3 s settle by the next call's
+  `cancel_setup` still releases its claim before that call asks.
+- `_bring_up` **waits out the `teardowns` in flight** before `presence.start`, so a
+  pipeline that ended on its own has let its claim go before the next call asks. The
+  audit put this wait in `start_call`; it is in the bring-up task instead, so the reader
+  is not blocked by it (`NoBlockedWithPendingControl` gains no new case) and a
+  `disconnected` for the new call cancels the wait like any bring-up. It waits for the
+  teardown tasks only — what `DrainWait` waits for. A declined call's busy line
+  (`answer_busy`, for a call the gateway answered anyway) holds no claim and is kept in
+  `busy_lines`, apart: it first sat in `teardowns`, and the next caller's greeting waited
+  out the whole busy line (~3 s, review of #175). Its caller's `disconnected` now stops it
+  (`stop_busy_line`), as `answer_busy`'s docstring always said, rather than its audio
+  going on under the next call.
+
+`sip_ownClaim_replaced` keeps the identity check alone as a rejected design: it fixes
+`NoUnclaimedCall` but a teardown cancelled in its settle never lets go and a teardown
+task in flight still holds the slot when the next call asks — `NoReplacedCall` falls.
+The `finally` and the wait are what close that; with both, the identity check is what
+keeps a late `end` from touching a newer call should anything else ever reorder them.
+
+The tests are `test_session_arbiter.py`'s
+`test_a_call_that_rings_in_as_the_last_one_is_torn_down_keeps_its_claim` (the teardown
+task; fails without the wait) and
+`test_a_call_abandoned_in_its_own_teardown_lets_go_before_the_next_asks` (a Talk session
+on hold for the abandoned call; fails without the `finally`), through the real
+`sip_server` connection loop, `CallClaim` and `SessionArbiter`. Both hold the teardown's
+0.3 s settle on an event (`_SettleGate`) until the next call has got as far as it can, so
+the interleaving is forced, not raced: each fails on the code before the fix on every run.
+`test_a_busy_line_does_not_keep_the_next_caller_from_their_greeting` is the busy line's.
 
 ### What was changed (2026-08)
 
@@ -569,7 +609,9 @@ directly against a socketpair and fixed with a send lock; the reproduction is
   (busy, declined — the call left ringing) and the conversation put on hold are
   `SessionArbiter.tla`'s.
 - Not modelled: the reconnect replay (`replay: true`), the connection's EOF `finally`,
-  the declined call answered anyway (`answer_busy`), DTMF and audio routing.
+  the declined call answered anyway (`answer_busy` — a task of its own that holds no
+  claim, which no bring-up waits for; its caller's `disconnected` stops it), DTMF and
+  audio routing.
 - The over-approximation: each handler's steps (cancel the bring-up, start the
   teardown, the rest) are separate steps even where the code does not yield between
   them. Every counterexample above was checked against the code by hand.
@@ -594,10 +636,10 @@ STT connect. Time is not: every bounded wait is a step that may happen.
 
 | row | | holds / fails |
 |---|---|---|
-| `sa_shipped` | as shipped, SIP's contract (a call lets its claim go before the next asks) | all ✓ |
+| `sa_shipped` | as shipped, SIP's contract (a call lets its claim go before the next asks; `SipCall.tla`'s `SequentialClaims`, which `sip_shipped` holds) | all ✓ |
 | `sa_unaskable` | `answer_phone_call` off (CALL_IN ends Talk; an awake room refuses) | all ✓ |
-| `sa_overlap_refused` | as shipped, with the overlap `SipCall.tla` finds | `NoEngineRefusal` ✗ |
-| `sa_overlap_redecide` | proposed: decide again after the end | all ✓ |
+| `sa_overlap_refused` | before the SIP claim fix, with the overlap `SipCall.tla` found | `NoEngineRefusal` ✗ |
+| `sa_overlap_redecide` | an arbiter-side alternative, not taken: decide again after the end | all ✓ |
 | `sa_roomWakes` | witness | `NoSilentLiveEnd` ✗ (accepted) |
 
 "All": `SttOnlyHolder` (only the holder's STT is connected), `OneConversation` (never two
@@ -636,10 +678,15 @@ Talk session says it cannot hear and ends. Afterwards the arbiter's holder is c2
 nobody) while Talk runs, so a third call is taken without asking. It needs the
 `NoReplacedCall` overlap from `SipCall.tla` — narrow windows, so low likelihood.
 
-**Proposed** (`MODE = "redecide"`, not code): after `_end` returns, if the slot was taken
-back meanwhile, loop and decide again (the newcomer waits out the resume, then asks the
-conversation about itself). The SIP fix (`claimByCall`) removes the overlap instead;
-either closes this trace, and both are cheap.
+**Decided (2026-10-15): the SIP claim fix, and no arbiter change.** `MODE = "redecide"`
+(after `_end` returns, if the slot was taken back meanwhile, loop and decide again) closes
+this trace too and is kept as a row, but it is not code. The trace needs a call claim
+ended as REPLACED, and REPLACED is the only way the arbiter ends a call (`decide`: a call
+holder against a Talk or room newcomer is REFUSED, and a call claim has no `gone`), so it
+needs the next call to ask while the last one's claim is held — exactly what
+`SipCall.tla`'s `SequentialClaims` rules out, and `sip_shipped` holds it. Under that
+contract `sa_shipped` holds with the arbiter as written. Changing `_acquire`'s loop for a
+case that can no longer arise would be a second guard on one contract.
 
 `sa_roomWakes` is the accepted residual: a sleeping room is ended for a call (CALL_IN)
 or a Talk session (TAKEN) by a decision taken while it was asleep; `_end_for` closes a
