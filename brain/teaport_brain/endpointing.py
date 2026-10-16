@@ -1278,7 +1278,11 @@ class CutReplyFence:
 
         Nor when the commit asks for no answer (run_llm False: pipecat 1.12 confirming
         a speculative reply already generated for these words): the interruption would
-        drop that reply, and nothing would ask for another."""
+        drop that reply, and nothing would ask for another. The cost, logged when it is
+        paid: the continuation stays its own message, the split turn the merge exists to
+        prevent. Unreachable while the brain uses no speculating pipecat stop strategy,
+        and formal/UserTurn.tla has no such path -- model it before adopting one. Where
+        run_llm sits (keyword-only) is checked at session build with the stop hook."""
         push_aggregation = aggregator._push_aggregation
         emit_stopped = aggregator._maybe_emit_user_turn_stopped
         params = [(p.name, p.kind) for p in inspect.signature(emit_stopped).parameters.values()]
@@ -1288,6 +1292,11 @@ class CutReplyFence:
                 f"pipecat's LLMUserAggregator._maybe_emit_user_turn_stopped takes "
                 f"{[f'{n} ({k.name})' for n, k in params]}, not (strategy, on_session_end, "
                 f"...): CutReplyFence.hold_commits needs a new look")
+        run_llm = inspect.signature(push_aggregation).parameters.get("run_llm")
+        if run_llm is None or run_llm.kind is not inspect.Parameter.KEYWORD_ONLY:
+            raise RuntimeError(
+                "pipecat's LLMUserAggregator._push_aggregation no longer takes a "
+                "keyword-only run_llm: CutReplyFence.hold_commits reads it from kwargs")
         ending = False
 
         async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False,
@@ -1298,9 +1307,13 @@ class CutReplyFence:
 
         async def _push_aggregation(*args, **kwargs):
             if aggregator._aggregation:
-                if (await self.wait_for_cuts() and not ending
-                        and kwargs.get("run_llm", True)
-                        and self.unplayed_reply is not None and self.unplayed_reply()):
+                continues = (await self.wait_for_cuts() and not ending
+                             and self.unplayed_reply is not None and self.unplayed_reply())
+                if continues and not kwargs.get("run_llm", True):
+                    logger.info("CUT-FENCE: words committed while the reply to the turn "
+                                "they continue has not played, confirming a speculative "
+                                "reply -- not merged, so they stay their own message")
+                elif continues:
                     logger.info("CUT-FENCE: words committed while the reply to the turn "
                                 "they continue has not played -- dropping that reply; "
                                 "the model gets the turn as one message")

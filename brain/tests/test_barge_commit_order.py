@@ -664,6 +664,19 @@ async def test_a_moved_session_end_argument_fails_the_session_build():
         assert "hold_commits" in str(e), e
     else:
         raise AssertionError("a keyword-only on_session_end went unnoticed")
+    # ...and the commit's run_llm, which the fence reads from its keyword arguments:
+    # passed positionally, it would read as True and merge away a confirmed reply.
+    user = Call(with_fence=False).pair.user()
+
+    async def positional(run_llm=True):
+        pass
+    user._push_aggregation = positional
+    try:
+        CutReplyFence().hold_commits(user)
+    except RuntimeError as e:
+        assert "hold_commits" in str(e), e
+    else:
+        raise AssertionError("a positional run_llm went unnoticed")
 
 
 async def test_a_lost_interruption_costs_one_bounded_wait():
