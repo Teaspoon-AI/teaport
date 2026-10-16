@@ -60,8 +60,8 @@ from pipecat.pipeline.task import PipelineTask  # noqa: E402
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
     LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
 )
+from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
 from pipecat.turns.user_stop.base_user_turn_stop_strategy import (  # noqa: E402
@@ -966,8 +966,7 @@ async def test_an_empty_commit_does_not_arm_the_gate():
     stop = ScriptedStop()
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[stop])))
@@ -1238,8 +1237,7 @@ async def _the_call(with_gate: bool):
     stop = ScriptedStop()
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[stop],

@@ -896,6 +896,17 @@ def test_unglued_text_is_what_the_tts_can_split():
     first = spaced.split(" Sounds")[0]
     assert match_endofsentence(first + " S") == len(first)
     assert len(split_clauses_ramp(spaced, soft_max=0)) == 2
+    # What pipecat's aggregator does after the guard, pinned so a pipecat or sentencex
+    # bump that changes it fails here rather than silently re-wording the note above.
+    # Since 1.12 it splits the glued pair on its own...
+    glued_first = glued.split("Sounds")[0]
+    assert match_endofsentence(glued_first + "S") == len(glued_first)
+    # ...and also cuts a dotted name the guard leaves glued (accepted: rare in replies,
+    # and the guard cannot undo a cut made after it). Up to 1.11 (NLTK) both were 0.
+    for text, cut in (("I use Node.JS daily", len("I use Node.")),
+                      ("Use ASP.NET Core", len("Use ASP."))):
+        assert unglue_sentences(text) == text
+        assert match_endofsentence(text) == cut, (text, match_endofsentence(text))
 
 
 def main():

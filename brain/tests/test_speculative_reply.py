@@ -65,8 +65,8 @@ from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
     LLMContextAggregatorPair,
     LLMUserAggregator,
-    LLMUserAggregatorParams,
 )
+from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 from pipecat.services.openai.llm import OpenAILLMService  # noqa: E402
 from pipecat.utils.string import TextPartForConcatenation  # noqa: E402
@@ -1364,8 +1364,7 @@ async def _over_a_pipeline(final_text):
     context = LLMContext([{"role": "system", "content": "be brief"}])
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[strategy],

@@ -57,9 +57,10 @@
 #         2026-08-26). split_clauses_ramp splits on `[.!?]\s+` and sees one clause,
 #         so the WHOLE reply reached run_tts as one sentence. (pipecat's sentence
 #         aggregator needed the space too while it asked NLTK's Punkt, up to 1.11;
-#         sentencex, since 1.12, splits "rain.Sounds" itself -- and "Node.JS" as
-#         well, a cut this guard cannot undo, since the aggregator runs after it.) The cost is first-audio: every word of the reply waited for
-#         the last word's synthesis (a 15 s forecast began 4.1 s after the LLM's End,
+#         sentencex, since 1.12, splits "rain.Sounds" itself -- and "Node.JS" and
+#         "ASP.NET" as well, a cut this guard cannot undo, since the aggregator runs
+#         after it; test_unglued_text_is_what_the_tts_can_split pins both.) The cost
+#         is first-audio: every word of the reply waited for the last word's synthesis (a 15 s forecast began 4.1 s after the LLM's End,
 #         a 13.7 s list 3.7 s), and the glued text was what history and the heard
 #         ledger recorded. Done here, across delta boundaries, because this is the
 #         one place that already sees every delta before the aggregator does. Lower

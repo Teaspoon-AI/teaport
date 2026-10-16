@@ -321,7 +321,19 @@ class TurnVerdictFrame(SystemFrame):
 
 
 @dataclass
-class SegmentDoneFrame(DataFrame):
+class _UninterruptibleData(DataFrame):
+    """The STT's bookkeeping frames below: DATA frames, so each arrives after the
+    interims and finals it follows (a system frame would overtake the queue), and
+    uninterruptible, so the turn start a MinWords interim triggers does not flush them
+    with every interruptible frame queued behind it. Declared once here (pipecat 1.11
+    retired the UninterruptibleFrame mixin for this field) so a new one cannot be added
+    without it."""
+
+    interruptible: bool = field(default=False, init=False)
+
+
+@dataclass
+class SegmentDoneFrame(_UninterruptibleData):
     """The STT's segment closed with NO words in it: pushed DOWNSTREAM by the STT
     service in place of the FinalTranscriptionFrame a done with words produces (a
     final is its own segment's close).
@@ -339,13 +351,11 @@ class SegmentDoneFrame(DataFrame):
     below the aggregator; nothing downstream of the turn strategies reads it.
     """
 
-    interruptible: bool = field(default=False, init=False)
-
     stop_n: int
 
 
 @dataclass
-class SegmentResetFrame(DataFrame):
+class SegmentResetFrame(_UninterruptibleData):
     """The STT dropped its open segment without closing it -- the engine session went
     (a reconnect, a hold) and the words streamed so far with it: no final and no
     SegmentDoneFrame will ever come for them. Pushed DOWNSTREAM by the STT service for
@@ -364,11 +374,9 @@ class SegmentResetFrame(DataFrame):
 
     stop_n: int
 
-    interruptible: bool = field(default=False, init=False)
-
 
 @dataclass
-class SttProgressFrame(DataFrame):
+class SttProgressFrame(_UninterruptibleData):
     """Whether the STT's engine session reports how far it has transcribed
     (teagram-engine's transcription.progress, offered in its session.created): pushed
     DOWNSTREAM by the STT service at the start of every engine session, for the stop
@@ -376,13 +384,11 @@ class SttProgressFrame(DataFrame):
     settle timer (or, `reported` False, on the timer). Data and uninterruptible like
     the frames below, and dropped by SegmentDoneSink."""
 
-    interruptible: bool = field(default=False, init=False)
-
     reported: bool
 
 
 @dataclass
-class SpeechDecodedFrame(DataFrame):
+class SpeechDecodedFrame(_UninterruptibleData):
     """The engine has transcribed past the caller's end of speech for VAD stop
     `stop_n` (counted as the final's stamp is, FinalTranscriptionFrame in stt.py):
     every word it will ever return for that speech is in the interims already pushed.
@@ -392,21 +398,17 @@ class SpeechDecodedFrame(DataFrame):
     (LateStartTurnStopStrategy). A data frame so that it arrives after those interims,
     uninterruptible so a turn start cannot flush it; dropped by SegmentDoneSink."""
 
-    interruptible: bool = field(default=False, init=False)
-
     stop_n: int
 
 
 @dataclass
-class NoSpeechReportFrame(DataFrame):
+class NoSpeechReportFrame(_UninterruptibleData):
     """No SpeechDecodedFrame will come for VAD stop `stop_n`, though the engine
     session gives its report: the STT could not place that stop's speech end on the
     engine's clock (audio passed it unsent -- a reconnect's buffer, a dropped send).
     The stop strategy decides that stop with the settle window instead. Pushed
     DOWNSTREAM by the STT at the stop; data, uninterruptible and dropped by
     SegmentDoneSink like the frames above."""
-
-    interruptible: bool = field(default=False, init=False)
 
     stop_n: int
 
@@ -615,8 +617,10 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
         # inference + finalize), so a count taken around a final says whether it fired.
         # `speculation` is pipecat's own speculative inference (1.9+, its eager stop
-        # strategy); nothing here asks for one, so it passes through as given.
-        self._inferences += 1
+        # strategy): it runs on a provisional copy and commits nothing, so it is not
+        # counted. Nothing here asks for one; it passes through as given.
+        if speculation is None:
+            self._inferences += 1
         await super().trigger_user_turn_inference_triggered(speculation=speculation)
 
     async def process_frame(self, frame):
@@ -1078,10 +1082,12 @@ def keep_barge_in_reachable(controller) -> None:
         if not was_open and controller._user_turn:
             turn["inference"], turn["owed"] = False, None
 
-    async def _inference(strategy, *args, **kwargs):
+    async def _inference(strategy, speculation=None, *args, **kwargs):
         was_open = controller._user_turn
-        await trigger_inference(strategy, *args, **kwargs)
-        if was_open:
+        await trigger_inference(strategy, speculation, *args, **kwargs)
+        # A speculative inference (1.9+) runs on a provisional copy and commits none of
+        # the turn's words: a stop refused after one owes nothing.
+        if was_open and speculation is None:
             turn["inference"] = True
 
     async def _stop(strategy, *args, **kwargs):
@@ -1202,11 +1208,16 @@ class CutReplyFence:
         self.timeouts = 0
 
     def hold_commits(self, aggregator) -> None:
-        """Wrap ONE user aggregator's push_aggregation -- every path that commits the
+        """Wrap ONE user aggregator's _push_aggregation -- every path that commits the
         caller's words passes there: the stop strategy's inference, the turn's stop,
-        the controller's watchdog, the session's end. An empty aggregation commits
-        nothing (pipecat returns at once), so it does not wait: a hangup's CancelFrame
-        is not held for a commit that will not happen.
+        the controller's watchdog, the session's end. Private, because since pipecat
+        1.12 the public push_aggregation is only one of its callers: the turn's stop
+        (_maybe_emit_user_turn_stopped, behind the watchdog and the session's end too)
+        calls _push_aggregation(run_llm=...) itself, and a fence on push_aggregation
+        let those commits through unwaited. AttributeError at session build if it moves,
+        like keep_barge_in_reachable. An empty aggregation commits nothing (pipecat
+        returns at once), so it does not wait: a hangup's CancelFrame is not held for a
+        commit that will not happen.
 
         `self.unplayed_reply` (reply_hold.ReplyHoldGate's `armed`, where the session has
         the gate): True while none of the reply to the LAST commit has played. Asked once
@@ -1233,17 +1244,19 @@ class CutReplyFence:
         Never at the session's end: pipecat commits an open turn's leftover words after
         pushing the EndFrame on (_maybe_emit_user_turn_stopped(on_session_end=True)), and
         an interruption there would overtake the End and drop the reply queued ahead of
-        it -- a goodbye -- for a commit nothing will answer (UserTurn.tla, NoLostGoodbye)."""
-        push_aggregation = aggregator.push_aggregation
+        it -- a goodbye -- for a commit nothing will answer (UserTurn.tla, NoLostGoodbye).
+        That wrapper passes the rest of its arguments through: 1.12 added run_llm."""
+        push_aggregation = aggregator._push_aggregation
         emit_stopped = aggregator._maybe_emit_user_turn_stopped
         ending = False
 
-        async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False):
+        async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False,
+                                                *args, **kwargs):
             nonlocal ending
             ending = ending or on_session_end
-            return await emit_stopped(strategy, on_session_end=on_session_end)
+            return await emit_stopped(strategy, on_session_end, *args, **kwargs)
 
-        async def _push_aggregation():
+        async def _push_aggregation(*args, **kwargs):
             if aggregator._aggregation:
                 if (await self.wait_for_cuts() and not ending
                         and self.unplayed_reply is not None and self.unplayed_reply()):
@@ -1252,9 +1265,9 @@ class CutReplyFence:
                                 "the model gets the turn as one message")
                     await aggregator.push_frame(InterruptionFrame())
                     await self.wait_for_cuts()
-            return await push_aggregation()
+            return await push_aggregation(*args, **kwargs)
 
-        aggregator.push_aggregation = _push_aggregation
+        aggregator._push_aggregation = _push_aggregation
         aggregator._maybe_emit_user_turn_stopped = _maybe_emit_user_turn_stopped
 
     def _sent(self, frame) -> None:

@@ -69,8 +69,8 @@ from pipecat.pipeline.task import PipelineTask  # noqa: E402
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
     LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
 )
+from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 
@@ -259,8 +259,7 @@ class Call:
         self.stop = LateStartTurnStopStrategy(turn_analyzer=self.smart_turn)
         self.pair = LLMContextAggregatorPair(
             self.context,
-            user_params=LLMUserAggregatorParams(
-                user_mute_strategies=[],
+            user_params=user_aggregator_params(
                 user_turn_strategies=UserTurnStrategies(
                     start=[PauseAwareMinWordsStrategy(min_words=2)],
                     stop=[self.stop],
@@ -517,7 +516,12 @@ class _Aggregator:
         self._user_turn_controller = type("Ctl", (), {"_user_turn": True})()
         self.pushed = 0
 
+    # As pipecat 1.12 splits it: the public call delegates to the private one, and the
+    # turn's stop calls the private one itself. The fence wraps the private one.
     async def push_aggregation(self):
+        return await self._push_aggregation()
+
+    async def _push_aggregation(self, *, run_llm=True):
         self.pushed += 1
         self._aggregation = []
 
@@ -605,6 +609,23 @@ async def test_an_empty_commit_does_not_wait():
     assert fence.waits == 1 and fence.timeouts == 1 and agg.pushed == 2
 
 
+async def test_the_turns_stop_commit_waits_too():
+    # pipecat 1.12's turn stop (behind the stop strategy's finalize, the controller's
+    # watchdog and the session's end) writes the words through _push_aggregation itself,
+    # not through push_aggregation. A fence on the public call let it commit ahead of the
+    # reply the barge-in cut -- the d78396d order -- without waiting. On the REAL
+    # aggregator: words left after the last inference, an interruption in flight.
+    call = Call(with_fence=True)
+    user = call.pair.user()
+    call.fence.timeout = 0.2
+    from pipecat.utils.string import TextPartForConcatenation
+    user._aggregation = [TextPartForConcatenation("late words", includes_inter_part_spaces=False)]
+    call.fence._sent(InterruptionFrame())
+    await user._maybe_emit_user_turn_stopped(None)
+    assert call.fence.waits == 1, "the stop's commit did not wait for the cut"
+    assert call.context.get_messages()[-1] == {"role": "user", "content": "late words"}
+
+
 async def test_a_lost_interruption_costs_one_bounded_wait():
     fence = CutReplyFence(timeout=0.1)
     fence._sent(InterruptionFrame())          # swallowed somewhere: never lands
@@ -662,7 +683,8 @@ async def test_the_session_places_the_fence_around_the_aggregators():
         p = p.previous
     head = p.next
     assert isinstance(head, _CutFenceHead), f"below the user aggregator: {head!r}"
-    assert p.push_aggregation.__name__ == "_push_aggregation", "the commit is not fenced"
+    # By qualname: pipecat's own method is named _push_aggregation too.
+    assert "hold_commits" in p._push_aggregation.__qualname__, "the commit is not fenced"
     while not isinstance(p, LLMAssistantAggregator):
         p = p.next
     assert isinstance(p.next, _CutFenceTail), f"below the assistant aggregator: {p.next!r}"

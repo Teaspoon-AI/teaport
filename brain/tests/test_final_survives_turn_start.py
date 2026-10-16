@@ -54,8 +54,8 @@ from pipecat.pipeline.task import PipelineTask  # noqa: E402
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
     LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
 )
+from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from pipecat.processors.frame_processor import FrameProcessor  # noqa: E402
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (  # noqa: E402
@@ -147,10 +147,10 @@ async def test_a_turn_started_from_an_interim_keeps_its_in_flight_final():
     context = LLMContext([{"role": "system", "content": "s"}])
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
+        user_params=user_aggregator_params(
             # Mirrors gateway_server.py minus the VAD analyzer: turn B in the
             # incident had no VAD events — the VAD went quiet before it started.
-            user_mute_strategies=[],
+
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[
