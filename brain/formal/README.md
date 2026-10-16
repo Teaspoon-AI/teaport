@@ -1645,9 +1645,11 @@ can be a tool round instead, or start with one: the LLM calls a function for the
 commit (`ToolCall`), its `FunctionCallInProgressFrame` travels to the assistant
 aggregator (`tool = "transit"`) and puts the call and an `IN_PROGRESS` result in the
 context (`CallLands`), and the result lands (`ToolDone`) — a sync tool's,
-the LLM answering from it, or the async consult's placeholder (`run_llm=False`, the
-consult running on in the background). Both frames are pipecat `UninterruptibleFrame`s
-and reach the context through the gate, so a round started while the gate holds waits
+the LLM answering from it, or the consult's placeholder (`run_llm=False`, the consult
+running on in the brain's own background task: `ask_openclaw` is an ordinary pipecat
+call, registered with the default `cancel_on_interruption=True`). Both frames are
+uninterruptible (pipecat's `UninterruptibleFrame` on 1.8, `interruptible=False` since
+1.12) and reach the context through the gate, so a round started while the gate holds waits
 in its queue (`tool = "held"`) and lands when the hold is released — and so does a
 result alone, when a sync tool's seconds of work straddle the hold's start: the call
 passed before it and is in the context, the result waits (`tool = "resultHeld"`). What a drop does
@@ -1655,7 +1657,7 @@ to it (`Dropped`): a round in the context still running is cancelled (pipecat wr
 `CANCELLED` over `IN_PROGRESS`; every tool here is registered `cancel_on_interruption`),
 one finished stays. `NoSplitTurn` now reads "neither a played reply **nor a tool round
 that ran** between them" (`Appended`): a finished round is the turn acted on — the model
-sees it, and the async consult goes on and is delivered as its own follow-up — so the
+sees it, and the consult goes on and is delivered as its own follow-up — so the
 next message is a turn of its own; a cancelled round did nothing.
 
 | HOLD | | `NoSplitTurn` | `NoLateToolRound` |
@@ -1736,23 +1738,39 @@ the aggregator's queue, after the processor above it let the frame through — a
 processor anywhere above the aggregator, `followup_gate` included, has that window.
 `ut_calls_settleAtCommit_nounsettledread`, 12 states: the frame lands after the next
 commit (nothing orders the two), that commit's reply calls a tool, and the sync result
-asks the LLM before any commit has settled the stale call.
+asks the LLM before any commit has settled the stale call. The window is sub-second —
+the late frame has to land after the continuation's commit has read the context and
+before the sync result's inference reads it — but nothing closes it, which is why that
+design was rejected.
 
 The fix is `heard_context.drop_overtaken_tool_calls`, which `agent_session` applies to the
 one assistant aggregator every front-end (SIP, Talk, the room) builds: it wraps that
 instance's `process_frame`, which pipecat calls for every frame in the order the
-aggregator handles them, and drops the in-progress frame of a call whose cancel came
-first — exactly when pipecat's cancel handler found no in-progress frame on record (read
-from the aggregator's own map). A result already behind the dropped frame (the handler
-reported, then was cancelled while unwinding: cancel → in-progress → result) finds the
-call not in progress and pipecat drops it, as it drops a result behind a cancel in the
-ordinary order. A call no cancel overtook always passes, and a new call reusing the id
-clears the mark with its own `FunctionCallsStartedFrame`. Tests:
+aggregator handles them. A cancel that finds no in-progress frame on record (read from
+the aggregator's own map: exactly when pipecat's handler is about to return early) takes
+the call's empty `FunctionCallsStartedFrame` entry off that map, as the handler deletes a
+call it does have, and marks the call so that its in-progress frame is dropped if it ever
+comes. The aggregator then ends as an interruption's cancel leaves it in the ordinary
+order: the call off the map, and a result already behind the dropped frame (the handler
+reported, then was cancelled while unwinding: cancel → in-progress → result) dropped by
+pipecat as not running. Only the context differs: the call is absent, not `CANCELLED`.
+The same pop covers the reply gate's drop of a held call (its cancel passes the paused
+gate and finds nothing on record; the frame, dropped at the gate, never comes). That
+holds for interruption cancels, which carry `run_llm=False`; the tool timeout's cancel
+asks for an inference in the ordinary order and the drop never would, but it cannot
+overtake a frame in practice (only `ask_openclaw` has a timeout, at least 5 s, and its
+frame would have to wait that long behind the reply audio ahead of it). A call no cancel
+overtook always passes; a new call reusing the id clears the mark with its own
+`FunctionCallsStartedFrame`, and a dropped frame takes its mark with it. Tests: in
+`tests/test_pipecat_function_call_race.py`,
 `test_a_barge_in_that_overtakes_the_in_progress_frame_leaves_no_call_unsettled`,
 `test_a_call_that_was_not_cancelled_still_lands_and_settles`,
-`test_a_result_behind_the_overtaken_frame_does_not_bring_the_call_back`, and
+`test_a_result_behind_the_overtaken_frame_does_not_bring_the_call_back`,
+`test_a_new_call_after_the_race_lands_and_settles`,
+`test_an_overtaken_calls_id_reused_by_a_new_call_lands_and_settles`, and
 `test_pipecat_alone_still_leaves_the_overtaken_call_in_progress`, which fails the day
-pipecat fixes the race itself.
+pipecat fixes the race itself; in `tests/test_reply_hold.py`,
+`test_a_dropped_held_call_leaves_the_aggregator_with_no_call_running`.
 
 ### The barge-in pause (`PAUSE`, #86)
 

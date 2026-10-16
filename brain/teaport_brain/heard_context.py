@@ -146,15 +146,30 @@ def drop_overtaken_tool_calls(aggregator) -> None:
     this raises at session build, as keep_barge_in_reachable does.
 
     What is dropped is a call the LLM has already cancelled and settled on its side
-    (runner_item.settled: any result it still reports is rejected there). A result
-    already on its way behind the frame (the handler reported, then was cancelled while
-    still unwinding) finds the call not in progress and pipecat drops it -- as it drops a
-    result behind a cancel in the ordinary order, where the call reads CANCELLED. The
-    in-progress frame of a call that was not cancelled always passes, and so does any
-    frame of a new call reusing the id (its FunctionCallsStartedFrame, a SystemFrame
-    ahead of its own in-progress frame, clears the mark). The dropped call's empty entry
-    in the aggregator's map goes too, so has_function_calls_in_progress does not report a
-    call running for the rest of the session."""
+    (runner_item.settled: any result it still reports is rejected there). The call's
+    entry goes from the aggregator's map at the cancel, which is where pipecat's own
+    handler would have deleted it had the call been on record: whatever happens next,
+    the aggregator ends as an interruption's cancel leaves it in the ordinary order --
+    the call off the map, has_function_calls_in_progress False, and a result still on
+    its way behind the frame (the handler reported, then was cancelled while unwinding)
+    dropped by pipecat as "not running". The one difference is the context: the call
+    is absent rather than CANCELLED (the corrector's fold removes a cancelled round
+    anyway). The same pop covers the reply gate's drop of a held call: its cancel
+    passed the paused gate and found no in-progress frame here either, and the frame
+    itself, dropped at the gate, never comes (the mark is then forgotten after
+    _MAX_OVERTAKEN more).
+
+    Interruption cancels only. They carry run_llm=False, so the ordinary order runs no
+    inference on them either. The tool timeout's cancel carries run_llm=True and would,
+    and a drop never does; but it cannot overtake an in-progress frame in practice: the
+    only tool with a timeout is ask_openclaw (TEAPORT_ASK_OPENCLAW_TIMEOUT, at least
+    5 s, 55 by default), and its frame would have to wait that long behind the reply
+    audio queued ahead of it, with no barge-in cancelling the call first.
+
+    The in-progress frame of a call no cancel overtook always passes, and so does one of
+    a new call reusing an overtaken call's id: its FunctionCallsStartedFrame, a
+    SystemFrame ahead of its own in-progress frame, clears the mark, and a dropped frame
+    takes its mark with it."""
     aggregator._function_calls_in_progress  # noqa: B018 -- renamed: fail at build
     process_frame = aggregator.process_frame
     overtaken: dict = {}
@@ -162,21 +177,22 @@ def drop_overtaken_tool_calls(aggregator) -> None:
     async def _process_frame(frame, direction):
         if isinstance(frame, FunctionCallInProgressFrame):
             if overtaken.pop(frame.tool_call_id, None) is not None:
-                # pipecat's early-returning cancel left the call's empty entry behind
-                # (FunctionCallsStartedFrame's None); take it out, as a cancel in the
-                # ordinary order does, so the aggregator stops reporting the call running.
-                aggregator._function_calls_in_progress.pop(frame.tool_call_id, None)
                 logger.info(f"TOOL-CALL: dropped {frame.function_name}'s in-progress frame: "
                             "its cancel overtook it, nothing would ever settle it")
                 return
         elif isinstance(frame, FunctionCallsStartedFrame):
             for call in frame.function_calls:
                 overtaken.pop(call.tool_call_id, None)
-        elif (isinstance(frame, FunctionCallCancelFrame)
-              and not aggregator._function_calls_in_progress.get(frame.tool_call_id)):
-            overtaken[frame.tool_call_id] = frame.function_name
-            while len(overtaken) > _MAX_OVERTAKEN:
-                overtaken.pop(next(iter(overtaken)))
+        elif isinstance(frame, FunctionCallCancelFrame):
+            calls = aggregator._function_calls_in_progress
+            if not calls.get(frame.tool_call_id):
+                # pipecat's handler is about to return early, leaving the empty entry
+                # FunctionCallsStartedFrame put there: take it out, as the handler
+                # deletes a call it does have on record.
+                calls.pop(frame.tool_call_id, None)
+                overtaken[frame.tool_call_id] = frame.function_name
+                while len(overtaken) > _MAX_OVERTAKEN:
+                    overtaken.pop(next(iter(overtaken)))
         await process_frame(frame, direction)
 
     aggregator.process_frame = _process_frame

@@ -123,7 +123,8 @@ class Rig:
         self.seen: list[str] = []
         self.handled = {t: asyncio.Event() for t in
                         (InterruptionFrame, FunctionCallCancelFrame,
-                         FunctionCallInProgressFrame, FunctionCallResultFrame)}
+                         FunctionCallInProgressFrame, FunctionCallResultFrame,
+                         FunctionCallsStartedFrame)}
         process = self.assistant.process_frame
 
         async def recording(frame, direction):
@@ -132,8 +133,6 @@ class Rig:
                 if isinstance(frame, t):
                     self.seen.append(t.__name__)
                     ev.set()
-            if isinstance(frame, FunctionCallsStartedFrame):
-                self.seen.append("FunctionCallsStartedFrame")
         self.assistant.process_frame = recording
         self.task = PipelineTask(Pipeline([self.llm, self.out, self.assistant]),
                                  cancel_on_idle_timeout=False)
@@ -165,22 +164,31 @@ class Rig:
     async def wait(event):
         await asyncio.wait_for(event.wait(), STEP_TIMEOUT_S)
 
-    async def dispatch(self):
+    async def dispatch(self, call_id=CALL_ID):
+        self.handler_entered.clear()
         await self.llm.run_function_calls([FunctionCallFromLLM(
-            function_name="lookup", tool_call_id=CALL_ID, arguments={},
+            function_name="lookup", tool_call_id=call_id, arguments={},
             context=self.context)])
         await self.wait(self.handler_entered)
 
-    def tool_result(self):
-        """What the context says of CALL_ID: ABSENT (no tool_calls message for it at all),
+    async def send(self, frame):
+        """Queue a function-call frame at the top and wait until the aggregator has
+        handled it (the LLM and the transport pass it on as it is)."""
+        event = self.handled[type(frame)]
+        event.clear()
+        await self.task.queue_frame(frame)
+        await self.wait(event)
+
+    def tool_result(self, call_id=CALL_ID):
+        """What the context says of call_id: ABSENT (no tool_calls message for it at all),
         the content of its tool message, or None (a call with no tool message)."""
         messages = self.context.get_messages()
         if not any(m.get("role") == "assistant" and any(
-                c.get("id") == CALL_ID for c in m.get("tool_calls") or [])
+                c.get("id") == call_id for c in m.get("tool_calls") or [])
                 for m in messages):
             return ABSENT
         for m in messages:
-            if m.get("role") == "tool" and m.get("tool_call_id") == CALL_ID:
+            if m.get("role") == "tool" and m.get("tool_call_id") == call_id:
                 return m.get("content")
         return None
 
@@ -225,13 +233,13 @@ async def test_a_barge_in_that_overtakes_the_in_progress_frame_leaves_no_call_un
         result = rig.tool_result()
         running = rig.assistant.has_function_calls_in_progress
     order = " -> ".join(rig.seen)
-    assert not running, (
-        f"the overtaken call {CALL_ID} is still on the aggregator's in-progress map: "
-        f"has_function_calls_in_progress stays True for the rest of the session")
     assert result in (ABSENT, "CANCELLED"), (
         f"#185: the barge-in overtook FunctionCallInProgressFrame on its way to the "
         f"assistant aggregator, which committed tool call {CALL_ID} as {result!r} with "
         f"nothing left to settle it. Aggregator saw: {order}")
+    assert not running, (
+        f"the overtaken call {CALL_ID} is still on the aggregator's in-progress map: "
+        f"has_function_calls_in_progress stays True for the rest of the session")
     print(f"  PASS race: aggregator saw {order}; tool call: {result}")
 
 
@@ -277,11 +285,78 @@ async def test_a_result_behind_the_overtaken_frame_does_not_bring_the_call_back(
         await rig.race()
         await rig.wait(rig.handled[FunctionCallResultFrame])
         result = rig.tool_result()
+        running = rig.assistant.has_function_calls_in_progress
     order = " -> ".join(rig.seen)
-    assert result == ABSENT, (
-        f"cancel -> in-progress -> result left tool call {CALL_ID} as {result!r}; "
-        f"aggregator saw {order}")
+    assert result == ABSENT and not running, (
+        f"cancel -> in-progress -> result left tool call {CALL_ID} as {result!r} "
+        f"(still on the in-progress map: {running}); aggregator saw {order}")
     print(f"  PASS late result: aggregator saw {order}; tool call: {result}")
+
+
+async def test_a_new_call_after_the_race_lands_and_settles():
+    """Only the overtaken call's frame goes: the next call, with an id of its own, is
+    dispatched after the barge-in and lands IN_PROGRESS, then settles with its result."""
+    async with Rig(report="on_finish") as rig:
+        await rig.race()
+        overtaken = rig.tool_result()
+        rig.handled[FunctionCallInProgressFrame].clear()
+        await rig.dispatch("call_185_next")
+        await rig.wait(rig.handled[FunctionCallInProgressFrame])
+        running = rig.tool_result("call_185_next")
+        rig.finish.set()
+        await rig.wait(rig.handled[FunctionCallResultFrame])
+        result = rig.tool_result("call_185_next")
+    assert overtaken == ABSENT, (
+        f"#185 itself, before the next call: the overtaken call reads {overtaken!r}")
+    assert running == "IN_PROGRESS" and result == '{"answer": 42}', (
+        f"the call after the race: {running!r} while running, {result!r} after its "
+        f"result; aggregator saw {rig.seen}")
+    print(f"  PASS next call: {running!r}, then {result!r}")
+
+
+async def test_an_overtaken_calls_id_reused_by_a_new_call_lands_and_settles():
+    """Ids can repeat (some servers number calls per response). A cancel that found no
+    in-progress frame marks its call, and the frame may never come (the reply gate
+    dropped it): a new call reusing the id announces itself with its own
+    FunctionCallsStartedFrame, which clears the mark. And once a late frame has been
+    dropped, its mark is gone: a later in-progress frame under the same id with no
+    FunctionCallsStartedFrame of its own (pipecat leaves its internal cancel_<tool>
+    calls out of that frame) is not taken for it."""
+    def call(cls, call_id, **kw):
+        return cls(function_name="lookup", tool_call_id=call_id, arguments={}, **kw)
+
+    def started(call_id):
+        return FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+            function_name="lookup", tool_call_id=call_id, arguments={}, context=None)])
+
+    done = FunctionCallResultProperties(run_llm=False)
+    async with Rig() as rig:
+        rig.out.playing.set()
+        # A call overtaken by its cancel whose in-progress frame never comes, then a new
+        # call under the same id.
+        await rig.send(started("r1"))
+        await rig.send(FunctionCallCancelFrame(function_name="lookup", tool_call_id="r1"))
+        await rig.send(started("r1"))
+        await rig.send(call(FunctionCallInProgressFrame, "r1", cancel_on_interruption=True))
+        reused = rig.tool_result("r1")
+        await rig.send(call(FunctionCallResultFrame, "r1", result={"n": 1}, properties=done))
+        reused_done = rig.tool_result("r1")
+        # A late frame dropped, then the same id again without a started frame.
+        await rig.send(started("r2"))
+        await rig.send(FunctionCallCancelFrame(function_name="lookup", tool_call_id="r2"))
+        await rig.send(call(FunctionCallInProgressFrame, "r2", cancel_on_interruption=True))
+        late = rig.tool_result("r2")
+        await rig.send(call(FunctionCallInProgressFrame, "r2", cancel_on_interruption=True))
+        again = rig.tool_result("r2")
+        await rig.send(call(FunctionCallResultFrame, "r2", result={"n": 2}, properties=done))
+        again_done = rig.tool_result("r2")
+    assert (reused, reused_done) == ("IN_PROGRESS", '{"n": 1}'), (
+        f"a new call reusing an overtaken id: {reused!r}, then {reused_done!r}")
+    assert late == ABSENT, f"the late in-progress frame landed: {late!r}"
+    assert (again, again_done) == ("IN_PROGRESS", '{"n": 2}'), (
+        f"the id after its late frame was dropped: {again!r}, then {again_done!r}")
+    print(f"  PASS id reuse: {reused!r} -> {reused_done!r}; after a drop {again!r} -> "
+          f"{again_done!r}")
 
 
 async def main():

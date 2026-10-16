@@ -301,7 +301,7 @@ VARIABLES
                      \* aggregator: the transport parks it behind unplayed audio);
                      \* "ctxRunning" (the
                      \* call and its IN_PROGRESS result are in the context); "ctxDone" (a
-                     \* result is: a sync tool's, or the async consult's placeholder, the
+                     \* result is: a sync tool's, or the consult's placeholder, the
                      \* consult running on); "resultHeld" (the call is in the context, its
                      \* result -- a DataFrame -- waits in the paused queue: a sync tool's
                      \* seconds of work straddle the hold's start); "ctxCancelled" (an
@@ -1101,7 +1101,7 @@ LateLands ==
     /\ UNCHANGED fenceVars
 
 \* Its result lands: a sync tool's (the LLM then answers from it -- the reply goes on),
-\* or the async consult's placeholder (run_llm=False; the consult runs on). Through the
+\* or the consult's placeholder (run_llm=False; the consult runs on). Through the
 \* gate: while it holds, the result waits in its queue.
 ToolDone ==
     /\ ~endQueued
