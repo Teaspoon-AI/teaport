@@ -5,7 +5,7 @@
 #   teaport status                three services + ports + memory at a glance
 #   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
 #   teaport update [--check]      diff installed vs the release manifest; apply what changed
-#   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain; passes -f/-n through)
+#   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain and this boot; passes -f/-n/-b through)
 #   teaport sip <cmd>             opt-in SIP telephony: configure | status | aec | restart | disable
 #
 # Thin wrapper over systemd + the release manifest, reading the layout install.sh
@@ -319,7 +319,16 @@ cmd_logs() {
     # The SIP front-end runs in teaport-brain now; its lines are the brain's.
     sip-brain) unit=teaport-brain;     shift ;;
   esac
-  exec journalctl -u "$unit.service" "$@"
+  # This boot unless asked otherwise: the box's journal is persistent (install.sh setup_logs)
+  # and keeps every boot up to its cap, so a bare `teaport logs` would open at the oldest
+  # line kept, days back. A boot, time or cursor of the caller's own wins (-b -1, --since).
+  local a scope=(-b)
+  for a in "$@"; do
+    case "$a" in
+      -b*|--boot*|-S*|--since*|-U*|--until*|-c*|--cursor*|--after-cursor*|--list-boots) scope=() ;;
+    esac
+  done
+  exec journalctl -u "$unit.service" "${scope[@]}" "$@"
 }
 
 # ---- sip --------------------------------------------------------------------
@@ -885,9 +894,10 @@ sip_drop() {
 # lines in user-<uid>.journal whatever unit wrote them — a file --system never opens,
 # so every registered trunk read as "not registered yet", for root too. On a volatile
 # journal there is no split and the lines are in the system journal; the default scope
-# reads both. (The box's journal is persistent since install.sh's setup_logs.) Checked on a persistent host (systemd 255): a system unit
-# run as a regular uid logged a [reg] 200 that --system showed to nobody, root
-# included, and the default scope showed to root, to adm, and to that uid itself.
+# reads both. (The box's journal is persistent since install.sh's setup_logs.) Checked
+# on a persistent host (systemd 255): a system unit run as a regular uid logged a
+# [reg] 200 that --system showed to nobody, root included, and the default scope
+# showed to root, to adm, and to that uid itself.
 sip_last_reg() {
   local inv; inv="$(sip_unit_prop InvocationID)"
   [ -n "$inv" ] || return 0

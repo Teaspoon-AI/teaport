@@ -294,43 +294,77 @@ phase_sysdeps() {
 # component logging in a loop would have filled the disk.
 # teaport reads its logs through journalctl only (teaport logs, doctor, this installer), so
 # the journal becomes the one store: persistent, so the last boot's logs survive the next
-# one, and capped at JOURNAL_MAX_USE by journald itself (it also keeps 15% of the disk free,
-# its default), and no longer forwarded to rsyslog. /var/log/syslog then gets only what
-# rsyslog reads itself (the kernel's messages), and logrotate, installed with the system
-# packages, rotates that and the rest of /var/log with Ubuntu's own rules.
-# The drop-in is named to sort after Ubuntu's journald.conf.d/syslog.conf
-# (ForwardToSyslog=yes): journald reads the drop-ins in name order and the last one wins,
-# so a "99-teaport.conf" would lose to it (digits sort before letters).
+# one; capped at JOURNAL_MAX_USE by journald itself, which also keeps 15% of the disk free
+# (at most 4G: SystemKeepFree's default); and no longer forwarded to rsyslog. A journal
+# entry takes several times its text on disk, so 2G is days to a couple of weeks at the
+# box's rate, not a month: `journalctl --disk-usage` says how much it holds.
+# /var/log/syslog then gets only what rsyslog reads itself (the kernel's messages), and
+# logrotate, installed with the system packages, rotates that and the rest of /var/log with
+# Ubuntu's own rules. Anything that read /var/log/syslog or auth.log for the services' lines
+# (remote forwarding, fail2ban's file backend) reads the journal instead from here on.
+# The drop-in is a SEED, like write_env's ?KEY=: written when it is missing, never over an
+# operator's edits on a repair. It is named to sort after Ubuntu's journald.conf.d/
+# syslog.conf (ForwardToSyslog=yes): journald reads the drop-ins in name order and the last
+# one wins, so a "99-teaport.conf" would lose to it (digits sort before letters); an
+# operator's own "zz-*.conf" still wins over this one.
 # Not covered here: logs that skip both journald and rsyslog (a container runtime's own
 # files, say).
-JOURNAL_DROPIN=/etc/systemd/journald.conf.d/zz-teaport.conf
-JOURNAL_MAX_USE=1G
+JOURNAL_DROPIN=/etc/systemd/journald.conf.d/teaport.conf
+JOURNAL_MAX_USE=2G
+# A syslog this big when logrotate first sees it is rotated once, now: logrotate's first
+# run only records a file it has never seen, and the weekly rule would leave it for weeks.
+SYSLOG_ROTATE_NOW_MB=256
 install_lines() {  # install_lines <dest> <mode> <line>...: root-owned, written whole
   local dest="$1" mode="$2" tmp rc=0; shift 2
-  tmp="$(mktemp)"
-  printf '%s\n' "$@" > "$tmp"
-  SUDO install -D -m "$mode" -o root -g root "$tmp" "$dest" || rc=$?
+  tmp="$(mktemp)" || return 1
+  { printf '%s\n' "$@" > "$tmp" && SUDO install -D -m "$mode" -o root -g root "$tmp" "$dest"; } || rc=$?
   rm -f "$tmp"
   return "$rc"
 }
 setup_logs() {
   log "logs: one journal, persistent, capped at $JOURNAL_MAX_USE (no copy to /var/log/syslog); logrotate for the rest of /var/log"
-  install_lines "$JOURNAL_DROPIN" 0644 \
-    "# teaport (install.sh, setup_logs): the journal is the one log store. Named zz- to sort" \
-    "# after Ubuntu's journald.conf.d/syslog.conf, which sets ForwardToSyslog=yes." \
-    "[Journal]" "Storage=persistent" "SystemMaxUse=$JOURNAL_MAX_USE" "ForwardToSyslog=no"
-  # A restart applies it now (services' stdout streams survive it: journald keeps them in
-  # systemd's fd store), and the flush moves this boot's journal from /run to /var/log/journal.
-  # Neither is worth failing an install over: both happen at the next boot anyway.
-  SUDO systemctl restart systemd-journald \
-    || warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot"
-  SUDO journalctl --flush \
-    || warn "logs: journalctl --flush failed — this boot's journal moves to /var/log/journal at the next boot"
+  local changed=0 timer
+  if [ -e "$JOURNAL_DROPIN" ]; then
+    log "logs: $JOURNAL_DROPIN is there — left as it is (an operator's edits are theirs)"
+  elif install_lines "$JOURNAL_DROPIN" 0644 \
+      "# teaport (install.sh, setup_logs): the journal is the one log store. Written once:" \
+      "# edit freely, a repair run leaves this file be. Named to sort after Ubuntu's" \
+      "# journald.conf.d/syslog.conf, which sets ForwardToSyslog=yes." \
+      "[Journal]" "Storage=persistent" "SystemMaxUse=$JOURNAL_MAX_USE" "ForwardToSyslog=no"; then
+    changed=1
+  else
+    warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
+  fi
+  if [ "$changed" = 1 ]; then
+    # /var/log/journal from systemd's own tmpfiles rule first: setgid systemd-journal, and the
+    # ACLs that let adm read it. Created by journald itself it would be root's alone until the
+    # next boot, and `teaport logs` as the operator would lose lines.
+    SUDO systemd-tmpfiles --create --prefix /var/log/journal \
+      || warn "logs: systemd-tmpfiles could not set up /var/log/journal — it is set up at the next boot"
+    # The restart applies the drop-in now (services' stdout streams survive it: journald keeps
+    # them in systemd's fd store), and the flush moves this boot's journal to /var/log/journal.
+    # Neither fails the install: both happen at the next boot anyway.
+    if SUDO systemctl restart systemd-journald; then
+      SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
+    else
+      warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot"
+    fi
+  fi
   if [ "$DRY_RUN" != 1 ]; then
-    [ -x /usr/sbin/logrotate ] || warn "logs: logrotate is not installed — /var/log is not rotated"
-    # the package enables its timer; a masked or disabled one is an operator's choice: say so
-    case "$(systemctl is-enabled logrotate.timer 2>/dev/null || true)" in
-      enabled|static) ;;
+    local mb; mb="$(du -m /var/log/syslog 2>/dev/null | cut -f1 || true)"
+    if [ "${mb:-0}" -ge "$SYSLOG_ROTATE_NOW_MB" ]; then
+      log "logs: /var/log/syslog is ${mb} MB — rotating it now"
+      SUDO /usr/sbin/logrotate -f /etc/logrotate.d/rsyslog \
+        || warn "logs: logrotate could not rotate /var/log/syslog — it is rotated with the weekly rule"
+    fi
+    # The package enables and starts its timer. Masked, disabled or stopped is an operator's
+    # choice (or a box mid-setup): said, not overridden.
+    timer="$(systemctl is-enabled logrotate.timer 2>/dev/null || true)"
+    case "$timer" in
+      masked) warn "logs: logrotate.timer is masked — /var/log is not rotated (systemctl unmask logrotate.timer && systemctl enable --now logrotate.timer)" ;;
+      enabled|static)
+        systemctl is-active --quiet logrotate.timer \
+          || warn "logs: logrotate.timer is not running — /var/log is not rotated until it is (systemctl start logrotate.timer)" ;;
       *) warn "logs: logrotate.timer is not enabled — /var/log is not rotated (systemctl enable --now logrotate.timer)" ;;
     esac
   fi

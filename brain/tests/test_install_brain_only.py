@@ -184,9 +184,13 @@ for f in check_brain_source phase_brain sip_brain_detach brain_swap sip_brain_re
 '''
 
 
-def _brain_only(tmp, venv=None, dry_run=False):
+def _brain_only(tmp, venv=None, dry_run=False, logs_capped=True):
     prefix = pathlib.Path(tmp, "opt")
     prefix.mkdir()
+    # setup_logs' journald drop-in, under tmp: there (a box a full run has set up) or not
+    dropin = pathlib.Path(tmp, "journald-teaport.conf")
+    if logs_capped:
+        dropin.write_text("[Journal]\n")
     if venv == "dir":
         (prefix / "venv").mkdir()
     elif venv == "link":
@@ -195,7 +199,7 @@ def _brain_only(tmp, venv=None, dry_run=False):
     elif venv == "dangling":
         (prefix / "venv").symlink_to(prefix / "venvs/gone")
     script = (f'{ONLY_BRAIN_STUBS}PREFIX="{prefix}"; BRAIN_LINK="$PREFIX/venv"; '
-              f'DRY_RUN={int(dry_run)}; main_brain_only')
+              f'JOURNAL_DROPIN="{dropin}"; DRY_RUN={int(dry_run)}; main_brain_only')
     return _run(tmp, script, ["main_brain_only"])
 
 
@@ -208,6 +212,16 @@ def test_only_brain_refuses_a_box_with_no_brain_venv():
 def test_only_brain_dry_run_warns_and_shows_the_plan():
     rc, out = _brain_only(tempdir("teaport-only-"), dry_run=True)
     assert rc == 0 and "WARN no brain venv at" in out and "STEP brain_swap" in out, out
+
+
+def test_only_brain_says_when_the_box_has_no_capped_logs_yet():
+    # --only brain installs no system packages: a box from before setup_logs keeps its
+    # uncapped /var/log/syslog until a full run, and is told so; the update goes on.
+    rc, out = _brain_only(tempdir("teaport-only-"), venv="link", logs_capped=False)
+    assert rc == 0 and "WARN logs are not capped on this box yet" in out, out
+    assert "without --only once" in out and "STEP brain_swap" in out, out
+    rc, out = _brain_only(tempdir("teaport-only-"), venv="link")
+    assert rc == 0 and "not capped" not in out, out
 
 
 def test_only_brain_updates_a_live_venv_a_pre_uv_one_and_a_dangling_link():
