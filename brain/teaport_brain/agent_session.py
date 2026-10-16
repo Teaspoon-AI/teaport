@@ -1352,9 +1352,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # The idle timeout counts speech -- the bot's, and the user's as the local VAD hears
     # it -- and a held conversation's keep-alive. Not pipecat's default since 1.9, which
     # adds transcripts and turn starts for pipelines that take their turns from a
-    # provider instead of a local VAD: here the engine decodes room noise into interims
-    # (its auto-segment fires hundreds of times a day on the box), and a session next to
-    # a TV or on hold music would never idle out, keeping the engine's one STT slot.
+    # provider instead of a local VAD: here the engine decodes noise the VAD rejects
+    # into interims (its auto-segment fires hundreds of times a day on the box), and
+    # those would keep a session that nobody speaks in from idling out of the engine's
+    # one STT slot. (Speech the VAD hears -- a TV's included -- counts as before.)
     task_kwargs = {"observers": [ledger],
                    "idle_timeout_frames": (BotSpeakingFrame, UserSpeakingFrame,
                                            HoldKeepAliveFrame)}

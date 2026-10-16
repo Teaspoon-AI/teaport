@@ -1052,8 +1052,10 @@ def keep_barge_in_reachable(controller) -> None:
     renames _trigger_user_turn_start / _trigger_user_turn_inference_triggered /
     _trigger_user_turn_stop / _user_turn / _user_speaking, this raises AttributeError
     at session build — loudly, on the first call, in CI — which is the outcome to
-    want. Silently doing nothing would restore a bug whose whole signature is that
-    nothing is logged when it happens.
+    want; and it raises RuntimeError there if the inference hook's (strategy,
+    speculation) signature moved, the one argument it reads rather than passes on.
+    Silently doing nothing would restore a bug whose whole signature is that nothing
+    is logged when it happens.
 
     Known limit: the re-attempt rides the frame that reports the user quiet, so it
     needs VAD to report a stop at all. It does NOT rescue a VAD frozen in SPEAKING —
@@ -1067,12 +1069,15 @@ def keep_barge_in_reachable(controller) -> None:
     # here, at session build, rather than trusted: a pipecat that moved it would leave
     # `speculation is None` never true and every refused finalization unowed -- the
     # dead barge-in this function exists for, with nothing logged.
-    params = list(inspect.signature(trigger_inference).parameters)
-    if params != ["strategy", "speculation"]:
+    # Names AND kinds: _inference passes speculation positionally, so a pipecat that
+    # made it keyword-only would turn every inference into a swallowed TypeError.
+    params = [(p.name, p.kind) for p in inspect.signature(trigger_inference).parameters.values()]
+    positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+    if params != [("strategy", positional), ("speculation", positional)]:
         raise RuntimeError(
             f"pipecat's UserTurnController._trigger_user_turn_inference_triggered takes "
-            f"{params}, not (strategy, speculation): keep_barge_in_reachable needs a "
-            f"new look")
+            f"{[f'{n} ({k.name})' for n, k in params]}, not (strategy, speculation): "
+            f"keep_barge_in_reachable needs a new look")
     trigger_stop = controller._trigger_user_turn_stop
     process_frame = controller.process_frame
 
@@ -1177,8 +1182,8 @@ def keep_barge_in_reachable(controller) -> None:
 # end (EndFrame, a hangup's CancelFrame) commits whatever words are left: with an
 # interruption in flight those wait too, up to the same bound -- a hangup can end
 # 0.5 s later, never hang. A VAD start handled inside a wait is the refused-finalize
-# shape keep_barge_in_reachable re-applies. Not defensive about what it wraps, as
-# keep_barge_in_reachable is not: a pipecat that renames _push_aggregation raises at
+# shape keep_barge_in_reachable re-applies. Like keep_barge_in_reachable, it fails loud
+# rather than guards what it wraps: a pipecat that renames _push_aggregation raises at
 # session build, one that renames _aggregation at the first commit.
 
 # The longest a commit (or a snapshot) waits. ~70 ms is the live crossing; this is a

@@ -326,7 +326,9 @@ async def _refused_stop_after_an_inference(speculation) -> int:
             InterimTranscriptionFrame(UTTERANCE, "u", "t", None))
         assert rig.starts, "the turn did not open"
         strategy = rig.controller._user_turn_strategies.stop[0]
-        await rig.controller._trigger_user_turn_inference_triggered(strategy, speculation)
+        # Through the strategy's own event, as pipecat's eager stop strategy fires it:
+        # the controller's handler is what hands speculation to the wrapper.
+        await strategy.trigger_user_turn_inference_triggered(speculation=speculation)
         await rig.controller._trigger_user_turn_stop(
             strategy, UserTurnStoppedParams(enable_user_speaking_frames=True))
         assert not rig.stops, "the stop was not refused: the user is speaking"
@@ -353,13 +355,17 @@ async def test_a_moved_speculation_argument_fails_the_session_build():
 
     async def moved(strategy, params, speculation=None):
         pass
-    rig.controller._trigger_user_turn_inference_triggered = moved
-    try:
-        keep_barge_in_reachable(rig.controller)
-    except RuntimeError as e:
-        assert "keep_barge_in_reachable" in str(e), e
-    else:
-        raise AssertionError("a moved speculation argument went unnoticed")
+
+    async def keyword_only(strategy, *, speculation=None):
+        pass
+    for hook in (moved, keyword_only):
+        rig.controller._trigger_user_turn_inference_triggered = hook
+        try:
+            keep_barge_in_reachable(rig.controller)
+        except RuntimeError as e:
+            assert "keep_barge_in_reachable" in str(e), e
+        else:
+            raise AssertionError(f"{hook.__name__}: a moved speculation argument went unnoticed")
 
 
 async def test_a_speculative_inference_is_not_counted_as_a_commit():

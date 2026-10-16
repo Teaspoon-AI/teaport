@@ -123,8 +123,8 @@ async def test_the_pipeline_policy_stays_continue_so_an_llm_error_is_spoken():
 
 async def test_the_idle_timeout_counts_speech_not_transcripts():
     """pipecat 1.9's default adds transcripts and turn starts to the idle timeout's
-    activity, for pipelines without a local VAD. Here the engine decodes room noise
-    into interims, so with that default a session by a TV or on hold music would hold
+    activity, for pipelines without a local VAD. Here the engine decodes noise the VAD
+    rejects into interims, so with that default a session nobody speaks in would hold
     the engine's one STT slot for as long as the noise lasts. The session keeps its own
     list: speech as the VAD hears it, the bot's, and a held call's keep-alive."""
     from pipecat.frames.frames import BotSpeakingFrame, UserSpeakingFrame
