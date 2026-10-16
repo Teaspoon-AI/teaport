@@ -29,6 +29,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
     TurnAnalyzerUserTurnStopStrategy,
 )
+from pipecat.utils.utils import obj_id
 
 from teaport_brain.settings import setting
 
@@ -1228,6 +1229,11 @@ class CutReplyFence:
         # () -> bool: none of the reply to the last commit has played yet. Set by
         # agent_session where there is a reply hold; see hold_commits.
         self.unplayed_reply = None
+        # (marker) -> None: the caller's words are being committed now. `marker` is a
+        # number off pipecat's frame counter, taken here in the aggregator's own task
+        # just before the commit's frame is made: a frame numbered below it was made
+        # before the commit. FollowupGate.words_committed; see hold_commits.
+        self.on_words_committed = None
         # Tallies, for the tests.
         self.waits = 0
         self.timeouts = 0
@@ -1282,7 +1288,11 @@ class CutReplyFence:
         paid: the continuation stays its own message, the split turn the merge exists to
         prevent. Unreachable while the brain uses no speculating pipecat stop strategy,
         and formal/UserTurn.tla has no such path -- model it before adopting one. Where
-        run_llm sits (keyword-only) is checked at session build with the stop hook."""
+        run_llm sits (keyword-only) is checked at session build with the stop hook.
+
+        `self.on_words_committed`, where set (agent_session: FollowupGate.words_committed),
+        is told of every commit of words, after the waits, with a marker taken off pipecat's
+        frame counter just before the commit's frame is made."""
         push_aggregation = aggregator._push_aggregation
         emit_stopped = aggregator._maybe_emit_user_turn_stopped
         params = [(p.name, p.kind) for p in inspect.signature(emit_stopped).parameters.values()]
@@ -1319,6 +1329,9 @@ class CutReplyFence:
                                 "the model gets the turn as one message")
                     await aggregator.push_frame(InterruptionFrame())
                     await self.wait_for_cuts()
+            if aggregator._aggregation and self.on_words_committed is not None:
+                # After every wait: a VAD frame made during one is newer than this.
+                self.on_words_committed(obj_id())
             return await push_aggregation(*args, **kwargs)
 
         aggregator._push_aggregation = _push_aggregation

@@ -952,6 +952,52 @@ async def check_run_frames_stop_at_the_user_aggregator():
     assert a.id < b.id, "frame ids no longer increase in creation order"
 
 
+async def check_a_vad_start_discards_the_stop_strategys_conclusion():
+    """UserTurn.tla, `Inference`'s ordering fact (the commit runs with the VAD quiet) and
+    POSTTOOL's `InferenceUnderSpeech`, which drops it: pipecat guards only the FINALIZE
+    on the caller speaking, not the inference. What keeps the brain's own strategy from
+    committing under VAD speech is the stock strategy: a VAD start discards any
+    conclusion reached so far (_discard_pending_end_of_turn: `_turn_complete` False), and
+    every path to the commit passes _maybe_trigger_user_turn_stopped, which returns
+    without one. Checked on the stock strategy and on the brain's subclass.
+
+    If it goes: commits under the caller's speech become routine rather than a narrow
+    race -- each one a commit missing the words still being said. FollowupGate does not
+    rest on it (it lets go only of speech whose VAD STOP is older than the commit), but
+    Inference's ordering fact, which every row before POSTTOOL keeps, does."""
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+        TurnAnalyzerUserTurnStopStrategy,
+    )
+    from test_barge_commit_order import IN_SR, Scripted as ScriptedTurn
+
+    from teaport_brain.endpointing import LateStartTurnStopStrategy
+    def concluded(cls):
+        strategy = cls(turn_analyzer=ScriptedTurn(sample_rate=IN_SR,
+                                                  params=SmartTurnParams(stop_secs=1.0)))
+        fired = []
+
+        async def record(*_a, **_k):
+            fired.append(1)
+        for event in ("on_user_turn_stopped", "on_user_turn_inference_triggered"):
+            strategy.add_event_handler(event, record)
+        # A conclusion reached, with words in hand: what the commit fires on.
+        strategy._turn_complete = True
+        strategy._text = "what's the time"
+        strategy._transcript_finalized = True
+        return strategy, fired
+
+    for cls in (TurnAnalyzerUserTurnStopStrategy, LateStartTurnStopStrategy):
+        control, fired = concluded(cls)
+        await control._maybe_trigger_user_turn_stopped()
+        assert fired, f"{cls.__name__}: the control did not commit -- the check is vacuous"
+        strategy, fired = concluded(cls)
+        await strategy.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        assert not strategy._turn_complete, f"{cls.__name__}: a VAD start kept the conclusion"
+        await strategy._maybe_trigger_user_turn_stopped()
+        assert fired == [], f"{cls.__name__}: committed under the caller's speech"
+
+
 async def check_a_tool_result_reaches_the_gate_below_the_transport():
     """Followup.tla, `ToolEnd` (LATCH = "turnAware"): the LLM service broadcasts a
     function call's FunctionCallResultFrame, and it passes the TTS and the output

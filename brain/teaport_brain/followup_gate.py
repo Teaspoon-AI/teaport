@@ -27,8 +27,8 @@
 # there, their words then cut it, and their turn asks the model again. The gate sits
 # directly above that aggregator's push, so it HOLDS the frame while caller speech is
 # pending -- from its VAD start until a turn starts (then it is DROPPED: that turn's
-# commit reads the result, already in the context), until a commit of the open turn has
-# taken the words of that speech, or until RELEASE_SECS after the VAD stop with no turn
+# commit reads the result, already in the context), until a commit of the caller's words
+# has taken that speech's (its VAD stop made before the commit), or until RELEASE_SECS after the VAD stop with no turn
 # (a cough: it goes on). Nothing is held on speech whose words are in: with nobody
 # talking, the answer is asked at once. A blip costs a release window too: see
 # formal/README.md, "A blip costs a release window".
@@ -202,7 +202,7 @@ class TurnCommitMark(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
-            self._gate.turn_committed(frame.id)
+            self._gate.turn_committed()
         await self.push_frame(frame, direction)
 
 
@@ -342,6 +342,7 @@ class FollowupGate(FrameProcessor):
         self._vad = False
         self._speech_pending = False
         self._speech_since = None      # the id of the VAD start that made it pending
+        self._speech_stop = None       # the id of the last VAD stop
         self._speech_timer = None
         self._held_answer = None
         self._answer_cap = None
@@ -381,22 +382,30 @@ class FollowupGate(FrameProcessor):
             self._claim_secs, self.release_claim)
         self._refresh()
 
-    def turn_committed(self, frame_id: int | None = None) -> None:
+    def turn_committed(self) -> None:
         """A completion was just asked for (TurnCommitMark): hold the window shut until
-        it starts, as a claimant's is.
-
-        A commit of an open turn also carries the words of every speech that began
-        before it: nothing of that speech is pending for the answer after a tool any
-        more (a turn of two segments, "what's the time ... in Paris", whose second VAD
-        start came inside the open turn and so met no turn start of its own). "Before"
-        is by frame id -- pipecat numbers frames as they are made -- not by arrival: the
-        commit reaches TurnCommitMark above the LLM, the VAD frames reach the gate below
-        the transport, and a VAD start made after the commit (the caller resuming inside
-        its await) can arrive here first. brain/formal/UserTurn.tla, PendCommitted
-        (POSTTOOL = "gateNoCommit" is the gate without this)."""
+        it starts, as a claimant's is."""
         self._claim()
-        if (frame_id is not None and self._user and self._speech_pending
-                and self._speech_since is not None and self._speech_since < frame_id):
+
+    def words_committed(self, marker: int) -> None:
+        """The caller's words are being committed (CutReplyFence.on_words_committed: every
+        commit of them, the stop strategy's, the turn's stop and the watchdog's alike).
+        `marker` is numbered off pipecat's frame counter at the commit, in the user
+        aggregator's own task.
+
+        A commit takes the words of speech that has STOPPED -- a segment's words are
+        final once its VAD stop has flushed it (formal/SttCommit.tla's receipts) -- so
+        pending speech whose VAD stop was made before the commit is not pending any
+        more (a turn of two segments, "what's the time ... in Paris": the second VAD
+        start came inside the open turn and met no turn start of its own). Speech still
+        going on at the commit is not in it, nor speech begun after it, however its
+        frames and this call are ordered on arrival: "before" is by frame number.
+        brain/formal/UserTurn.tla, PendCommitted (gateNoCommit: no clear; gateById: a
+        clear on the VAD START older than the commit, which a commit made while the
+        caller still talked emptied)."""
+        if (self._speech_pending and self._speech_since is not None
+                and self._speech_stop is not None
+                and self._speech_since < self._speech_stop < marker):
             self._speech_pending = False
             self._cancel(self._speech_timer)
             self._speech_timer = None
@@ -497,6 +506,7 @@ class FollowupGate(FrameProcessor):
             self._speech_timer = None
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
             self._vad = False
+            self._speech_stop = frame.id
             if self._speech_pending:
                 self._cancel(self._speech_timer)
                 self._speech_timer = self.create_task(self._speech_over(),
@@ -508,10 +518,14 @@ class FollowupGate(FrameProcessor):
         if isinstance(frame, UserStartedSpeakingFrame):
             self._user = True
             self.user_heard = True
-            # Its words came: nothing of that speech is pending any more.
-            self._speech_pending = False
-            self._cancel(self._speech_timer)
-            self._speech_timer = None
+            if not self._vad:
+                # Its words came: nothing of that speech is pending any more. A turn
+                # that starts on an interim while the caller is still talking has not had
+                # the rest of their words: those stay pending until a commit takes them
+                # (words_committed) or the release timer runs out after the VAD stop.
+                self._speech_pending = False
+                self._cancel(self._speech_timer)
+                self._speech_timer = None
             self._refresh()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user = False

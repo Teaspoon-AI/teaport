@@ -54,6 +54,8 @@ from pipecat.frames.frames import (  # noqa: E402
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 
+from pipecat.utils.utils import obj_id  # noqa: E402
+
 from teaport_brain.followup_gate import FollowupGate, TurnCommitMark  # noqa: E402
 
 
@@ -598,8 +600,7 @@ async def test_a_turn_of_two_segments_holds_nothing_once_committed():
         await r.down(VADUserStartedSpeakingFrame(), UserStartedSpeakingFrame(),
                      VADUserStoppedSpeakingFrame(), VADUserStartedSpeakingFrame(),
                      VADUserStoppedSpeakingFrame())
-        commit = LLMContextFrame(LLMContext([{"role": "user", "content": "q"}]))
-        r.gate.turn_committed(commit.id)
+        r.gate.words_committed(obj_id())       # the fence, at the commit
         await r.down(UserStoppedSpeakingFrame())
         frame = await r.answer()
         assert await r.until(lambda: frame in r.top.up, timeout=0.5), (
@@ -608,17 +609,31 @@ async def test_a_turn_of_two_segments_holds_nothing_once_committed():
 
 
 async def test_speech_begun_after_the_commit_stays_pending():
-    # The caller resumes inside the commit's await: that VAD start is made after the
-    # commit's frame, and can reach the gate before TurnCommitMark tells it of the
-    # commit. Its words are not in the commit: an answer must still wait for them.
+    # The caller resumes inside the commit's await: those VAD frames are made after the
+    # commit, and can reach the gate before it hears of the commit. Their words are not
+    # in it: an answer must still wait for them.
     async with _GateRun(release=5.0) as r:
         await r.down(UserStartedSpeakingFrame())
-        commit = LLMContextFrame(LLMContext([{"role": "user", "content": "q"}]))
+        marker = obj_id()
         await r.down(VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame())
-        r.gate.turn_committed(commit.id)
+        r.gate.words_committed(marker)
         await r.down(UserStoppedSpeakingFrame())
         frame = await r.answer()
         assert await r.until(lambda: r.gate.answers_held == 1), "not held"
+        assert frame not in r.top.up
+
+
+async def test_speech_still_going_at_the_commit_stays_pending():
+    # pipecat guards only the finalize on the caller speaking, not the commit: one made
+    # while they still talk does not have the words they are saying (the gate as it was
+    # in 0db54f6 let go of them here: the answer played before the words).
+    async with _GateRun(release=5.0) as r:
+        await r.down(VADUserStartedSpeakingFrame(), UserStartedSpeakingFrame())
+        r.gate.words_committed(obj_id())       # the commit, the VAD still speaking
+        await r.down(VADUserStoppedSpeakingFrame(), UserStoppedSpeakingFrame())
+        frame = await r.answer()
+        assert await r.until(lambda: r.gate.answers_held == 1), (
+            "sent on while the words of speech the commit did not take are on their way")
         assert frame not in r.top.up
 
 
@@ -626,7 +641,7 @@ def test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator():
     """FollowupGate holds every context frame that comes UP past it as the answer to a
     tool's result. The assistant aggregator below it also sends one up for an
     LLMRunFrame or LLMMessages*Frame(run_llm) that reaches it -- so none may: each the
-    brain makes is queued on the task (it enters at the top) or pushed by the STT
+    brain makes is queued on the PipelineTask (it enters at the top) or pushed by the STT
     (wake_gate's greeting, through stt.py's own push_frame), and the user aggregator
     takes it there (test_pipecat_premises.py, check_run_frames_stop_at_the_user_
     aggregator). A new sender anywhere else must be added here, and must not be below
@@ -634,6 +649,9 @@ def test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator():
     import re
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "teaport_brain")
     made = re.compile(r"\b(LLMRunFrame|LLMMessages(Append|Update|Transform)Frame)\(")
+    # Queued on the PipelineTask, nothing else: a processor's own queue_frame (below the
+    # user aggregator) would send it straight past the gate as a tool's answer.
+    queued_at_top = re.compile(r"\btask\.queue_frames?\(")
     allowed = {("wake_gate.py", "await push(LLMRunFrame())")}
     stray = []
     for name in sorted(os.listdir(root)):
@@ -644,7 +662,7 @@ def test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator():
                 code = line.split("#", 1)[0]
                 if not made.search(code):
                     continue
-                if "queue_frames(" in code or "queue_frame(" in code:
+                if queued_at_top.search(code):
                     continue
                 if (name, code.strip()) in allowed:
                     continue

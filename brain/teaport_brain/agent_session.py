@@ -1252,6 +1252,9 @@ def build_agent_session(transport, *, voice: str | None = None,
     ep_out = endpoint_debug.EndpointDebug(ep_marks, "out") if endpoint_debug.ENABLED else None
     # Gates the async ask_openclaw follow-up so it only speaks in a clear moment.
     followup_gate = FollowupGate()
+    # Every commit of the caller's words tells the gate, which stops waiting for the words
+    # of speech that had stopped by then (the answer after a tool, followup_gate.py).
+    cut_fence.on_words_committed = followup_gate.words_committed
     # Retires the follow-up's one-shot trigger at the completion that reads it. Must
     # sit directly below the LLM — see FollowupTrigger's placement note.
     followup_trigger = FollowupTrigger()

@@ -159,7 +159,7 @@ def _chunk(content=None, tool_calls=None):
 class Rig:
     """One session's pipeline, from the user aggregator down, running."""
 
-    def __init__(self, front_end: str):
+    def __init__(self, front_end: str, tool: str = "web_search"):
         self.front_end = front_end
         self.wire = None
         if front_end == "sip":
@@ -200,7 +200,8 @@ class Rig:
             if n == 1:
                 async def stream():
                     yield _chunk(tool_calls=[NS(index=0, id="call_17", function=NS(
-                        name="web_search", arguments=json.dumps(FILLER_ARGS)))])
+                        name=tool, arguments=json.dumps(
+                            FILLER_ARGS if tool == "web_search" else {})))])
             else:
                 turn = any(m.get("role") == "user" and "metro" in str(m.get("content"))
                            for m in self.asked[-1])
@@ -209,16 +210,16 @@ class Rig:
                     yield _chunk(content=f"{tag} answer: Lima has ten million people.")
             return stream()
         self.llm._open_stream = open_stream
-        # The tool, through the real wrapper (its filler line, "Looking up ..."): its
-        # result is reported when the test releases it.
+        # The tool, through the real wrapper (web_search's filler line, "Looking up ...";
+        # get_current_time has none): its result is reported when the test releases it.
         self.release_result = asyncio.Event()
 
-        async def web_search(params):
+        async def handler(params):
+            self._fire("tool called")
             await self.release_result.wait()
             await params.result_callback({"result": "Lima: about 10 million people"})
             self._fire("result sent")
-        self.llm.register_function("web_search",
-                                   tools._wrap("web_search", web_search, lambda: "en-us"))
+        self.llm.register_function(tool, tools._wrap(tool, handler, lambda: "en-us"))
         # What the assistant aggregator handled, and what played (the words the
         # transport releases on its clock, below it).
         self.events: dict = {}
@@ -459,6 +460,52 @@ async def test_a_wordless_sound_lets_the_answer_play_once_it_is_over():
             rig.assert_nothing_held(front_end)
             print(f"    {front_end}: the answer played {time.monotonic() - stopped:.2f}s "
                   "after the cough ended")
+
+
+async def test_a_commit_made_while_the_caller_still_talks_does_not_take_their_rest():
+    """pipecat guards only the finalize on the caller speaking, not the commit. One made
+    while they are still talking (a turn opened on their first words, the strategy
+    concluding before their VAD stop) does not have the rest of what they say. Its reply
+    calls a tool with no filler, the finalize refused is re-applied at their VAD stop,
+    and the result lands then: the answer must wait for the rest of their words, which
+    start a turn of their own. On 0db54f6 the gate let go of that speech at the commit
+    (its VAD START was older), and the answer played before the words."""
+    for front_end in ("talk", "sip"):
+        async with Rig(front_end, tool="get_current_time") as rig:
+            started = time.monotonic()
+            await rig.send(VADUserStartedSpeakingFrame())
+            await rig.say(QUESTION)
+            await rig.wait_for("UserStartedSpeakingFrame")
+            await rig.stop.commit()                       # the VAD still hears them
+            await rig.wait_for("tool called")
+            await asyncio.sleep(max(0.0, started + SPEECH_S - time.monotonic()))
+            rig.clear("UserStartedSpeakingFrame")
+            await rig.send(VADUserStoppedSpeakingFrame())
+            stopped = time.monotonic()
+            await rig.wait_for("UserStoppedSpeakingFrame")   # the re-applied finalize
+            # The result lands now. (On SIP the reply gate, armed by the commit with the
+            # caller speaking, holds the tool round itself until their words or its
+            # release; the words come first, WORDS_LAG_S after the stop, as live.)
+            rig.release_result.set()
+            try:
+                await rig.wait_for("word:" + POST,
+                                   timeout=max(0.0, stopped + WORDS_LAG_S - time.monotonic()))
+            except asyncio.TimeoutError:
+                pass
+            await rig.say("what about the metro area of Lima")
+            await rig.wait_for("UserStartedSpeakingFrame")
+            await rig.stop.commit()
+            await rig.wait_for("word:" + TURN)
+            assert POST not in rig.answers_played(), (
+                f"{front_end}: the answer played before the rest of the caller's words "
+                f"(played: {rig.answers_played()})")
+            # Once on Talk; on SIP not at all: the reply gate drops the held reply's tool
+            # round with it, and the turn is answered whole (NoLateToolRound).
+            assert len(rig.asked_after_the_result()) == (1 if front_end == "talk" else 0), (
+                f"{front_end}: the result was answered "
+                f"{len(rig.asked_after_the_result())} times")
+            assert TURN in rig.answers_played(), f"{front_end}: the turn went unanswered"
+            rig.assert_nothing_held(front_end)
 
 
 def main():
