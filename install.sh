@@ -131,13 +131,20 @@ install_lines() {
   rm -f "$tmp"
   return "$rc"
 }
-# read_root_conf <path>: a root-owned config file's text, or nothing. Read privileged only
-# when the plain read can't, and never in a dry run ("a dry run does not sudo": it warns).
+# read_root_conf <path>: a root-owned config file's text, or nothing: read_env_file --lenient
+# (the one copy of the read) with two rules of its own. Not in a dry run, which does not
+# sudo for setup_logs' config files: it warns instead. And a file is known to be missing
+# only where its directory can be searched: in one that can't (a root-only drop-in
+# directory), the user can't tell, so the read goes ahead, with sudo.
 read_root_conf() {
-  [ -e "$1" ] || return 0
-  if [ -r "$1" ]; then cat "$1"
-  elif [ "$DRY_RUN" = 1 ]; then warn "$1 is not readable by $(id -un) — a real run reads it with sudo"
-  else sudo cat "$1" 2>/dev/null || true; fi
+  local d; d="$(dirname "$1")"
+  # missing for sure: no directory, or a searchable one without the file
+  if [ ! -e "$d" ] || { [ -x "$d" ] && [ ! -e "$1" ]; }; then return 0; fi
+  if [ ! -r "$1" ] && [ "$DRY_RUN" = 1 ]; then
+    warn "$1 is not readable by $(id -un) — a real run reads it with sudo"
+    return 0
+  fi
+  read_env_file "$1" --lenient
 }
 
 # --- manifest ----------------------------------------------------------------
@@ -383,16 +390,23 @@ setup_logs() {
     "# install run: set your own values in /etc/systemd/journald.conf or a drop-in of your" \
     "# own (a key you set is left out of this file; a zz-*.conf of yours wins over it)." \
     "[Journal]" ${lines[@]+"${lines[@]}"})"
-  if [ "$want" != "$(read_root_conf "$JOURNAL_DROPIN")" ]; then
+  local have written=1 on_disk
+  have="$(read_root_conf "$JOURNAL_DROPIN")"
+  # the settings the file on disk held: if they weren't these, journald can't have them now
+  # (a deleted drop-in and a reboot), whatever the marker says
+  on_disk="$(printf '%s\n' "$have" | sed -n '/^\[Journal\]/,$p' | grep -v '^\[' | grep '=' || true)"
+  if [ "$want" != "$have" ]; then
     # only made when missing: an existing directory keeps the operator's mode
     if ! { { [ -d "$JOURNAL_CONF_D" ] || SUDO install -d -m 0755 "$JOURNAL_CONF_D"; } &&
            install_lines "$JOURNAL_DROPIN" 0644 "$want"; }; then
       warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
-      return 0
+      written=0
     fi
   fi
   applied="$(read_root_conf "$JOURNAL_APPLIED")"
-  if [ "$settings" = "$applied" ]; then
+  if [ "$written" = 0 ]; then
+    :   # nothing new to apply (the timer is still checked below)
+  elif [ "$settings" = "$applied" ] && [ "$settings" = "$on_disk" ]; then
     log "logs: journald has these settings already"
   else
     if contains "Storage=persistent" "$settings"; then
@@ -411,7 +425,7 @@ setup_logs() {
       if contains "Storage=persistent" "$settings"; then
         SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
       fi
-      { SUDO mkdir -p "$STATE" && install_lines "$JOURNAL_APPLIED" 0644 "$settings"; } \
+      install_lines "$JOURNAL_APPLIED" 0644 "$settings" \
         || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
     else
       warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot (or the next run)"

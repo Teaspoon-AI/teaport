@@ -19,6 +19,13 @@ set -euo pipefail
 log()  { printf 'LOG %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*" >&2; }   # stderr, as install.sh's
 contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
+# as root would: <dir> opened for the one command, its mode put back after
+as_root() {
+  local d="$1" m rc=0; shift
+  m="$(stat -c %a "$d")"; chmod u+rwx "$d"
+  "$@" || rc=$?
+  chmod "$m" "$d"; return "$rc"
+}
 SUDO() {
   printf '%s\n' "$*" >> "$T/calls"
   [ "$DRY_RUN" = 1 ] && return 0
@@ -27,16 +34,17 @@ SUDO() {
     install)
       [ "${INSTALL_FAILS:-0}" = 0 ] || return 1
       case "$last" in "$T"/*) ;; *) return 0 ;; esac
-      if [ "$2" = -d ]; then mkdir -p "$last"; else command cp "${@: -2:1}" "$last"; fi ;;
-    mkdir) case "$last" in "$T"/*) mkdir -p "$last" ;; esac ;;
+      if [ "$2" = -d ]; then mkdir -p "$last"
+      else mkdir -p "$(dirname "$last")"   # install -D makes the parents
+           as_root "$(dirname "$last")" command cp "${@: -2:1}" "$last"; fi ;;
     systemctl) [ "$2" != restart ] || [ "${RESTART_FAILS:-0}" = 0 ] ;;
   esac
 }
 sudo() {
   printf 'sudo %s\n' "$*" >> "$T/calls"
   case "$1" in
-    cat) [ -e "$2" ] || return 1; chmod u+r "$2"; command cat "$2"; chmod 000 "$2" ;;
-    find) chmod u+r "$2"; command find "${@:2}"; chmod 300 "$2" ;;   # a dir that can't be listed
+    cat) as_root "$(dirname "$2")" sh -c '[ -e "$1" ] && { chmod u+r "$1"; cat "$1"; }' _ "$2" ;;
+    find) as_root "$2" command find "${@:2}" ;;
     *) return 1 ;;
   esac
 }
@@ -61,10 +69,10 @@ def _setup_logs(tmp, max_use="2G", install_fails=False, restart_fails=False, tim
         if unreadable:
             f.chmod(0)
     if unreadable_dir and confd.exists():
-        confd.chmod(0o300)   # can't be listed (the glob finds nothing), can be entered
+        confd.chmod(0)   # root-only: can't be listed or entered by the installing user
     calls = pathlib.Path(tmp, "calls")
     calls.unlink(missing_ok=True)
-    script = (STUBS + _fn("read_root_conf") + _fn("install_lines") + _fn("journal_operator_keys") +
+    script = (STUBS + _fn("read_env_file") + _fn("read_root_conf") + _fn("install_lines") + _fn("journal_operator_keys") +
               _fn("setup_logs") +
               f'DRY_RUN={int(dry_run)}; STATE="{tmp}/state"; '
               f'JOURNAL_CONF="{tmp}/journald.conf"; JOURNAL_CONF_D="{confd}"; '
@@ -130,6 +138,16 @@ def test_a_restart_that_failed_is_tried_again_by_the_next_run():
     assert pathlib.Path(tmp, "state/journald.applied").exists()
 
 
+def test_a_drop_in_that_went_missing_is_applied_again_whatever_the_marker_says():
+    # applied once, then the drop-in deleted (and the box rebooted): journald runs without
+    # it, so the next run must restart it, though journald.applied still matches
+    tmp = tempdir("teaport-logs-")
+    _, _, _, dropin = _setup_logs(tmp)
+    dropin.unlink()
+    rc, out, calls, _ = _setup_logs(tmp)
+    assert rc == 0 and dropin.exists() and RESTART in calls, (out, calls)
+
+
 def test_a_release_that_changes_the_settings_reaches_a_box_that_has_them():
     tmp = tempdir("teaport-logs-")
     _setup_logs(tmp, max_use="1G")
@@ -167,11 +185,12 @@ def test_an_operator_drop_in_the_installer_cannot_read_is_read_with_sudo_and_the
     assert any(c.startswith("sudo cat") for c in calls), calls
 
 
-def test_a_drop_in_directory_the_installer_cannot_list_is_listed_with_sudo():
+def test_a_drop_in_directory_the_installer_cannot_enter_is_listed_and_read_with_sudo():
     tmp = tempdir("teaport-logs-")
     rc, out, calls, _ = _setup_logs(tmp, operator="[Journal]\nSystemMaxUse=500M\n", unreadable_dir=True)
     assert rc == 0 and "DONE" in out and "SystemMaxUse is the operator's" in out, out
     assert any(c.startswith("sudo find") for c in calls), calls
+    assert any(c.startswith("sudo cat") and "50-local.conf" in c for c in calls), calls
 
 
 def test_a_dry_run_never_runs_sudo():
@@ -183,9 +202,10 @@ def test_a_dry_run_never_runs_sudo():
 
 
 def test_a_drop_in_that_cannot_be_written_warns_and_the_install_goes_on():
-    rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"), install_fails=True)
+    rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"), install_fails=True, timer="masked")
     assert rc == 0 and "DONE" in out and "WARN logs: could not write" in out, out
     assert not dropin.exists() and RESTART not in calls, calls
+    assert "logrotate.timer is masked" in out, out   # the rotation is still checked
 
 
 def test_each_logrotate_timer_state_gets_its_own_advice():
