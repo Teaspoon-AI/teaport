@@ -467,17 +467,15 @@ class TranscriptLedger(BaseObserver):
                 # A tool-call response, or one the guard emptied: the TTS opens
                 # no context for it, so nothing will claim it.
                 return
-            if not has_speech(gen["text"]):
-                # Text the engine will not synthesize (punctuation, symbols, a
-                # bare ellipsis -- run_tts: "nothing synthesizable"): no context
-                # opens for it either. Queued, it sat at the queue's head and the
-                # NEXT reply's context claimed it; a barge-in before that reply's
-                # End had drained then charted the wrong text, and the drain that
-                # would have corrected the claim cannot come before the End.
-                # The predicate is the engine's own (tts_text.has_speech).
-                logger.warning(f"LEDGER response {gen['seq']} has nothing synthesizable; "
-                               f"not expected: {gen['text'][:40]!r}")
-                return
+            # Any other text opens a context, synthesizable or not:
+            # _push_tts_frames queues the TTSStartedFrame before run_tts, whose
+            # "nothing synthesizable" (an emoji, a bare "...") yields no audio
+            # and leaves the context to the stop-frame timeout. Left out of the
+            # queue, that context claimed the NEXT reply's text when it opened
+            # late, charted it never-played, and the next reply then played in
+            # full under an anonymous turn (LedgerPlayout.tla,
+            # lp_unheard_unspeakable_opens). Expected, it claims its own entry and
+            # closes charting nothing (_finish).
             self._remember(self._end_ids, f.id, _MAX_END_IDS, gen)
             if gen["turn"] is None:
                 self._enqueue(gen)
@@ -486,11 +484,10 @@ class TranscriptLedger(BaseObserver):
             if getattr(f, "append_to_context", True) is False:
                 return  # a filler; its TTSStartedFrame carries the flag
             text = (f.text or "").strip()
-            if text and has_speech(text):
+            if text:
                 # A spoken notice (the STT-busy line, an error read-out): its
                 # context will open in turn, and it IS an assistant utterance.
-                # (has_speech: as for a response -- one the engine will not
-                # synthesize opens no context and must not be expected.)
+                # (Synthesizable or not, as for a response.)
                 self._seq += 1
                 entry = self._new_entry("speak")
                 entry["text"] = text
@@ -832,6 +829,20 @@ class TranscriptLedger(BaseObserver):
             intended = ""
         if not intended:
             # Nothing was ever attributed to this turn: there is nothing to chart.
+            return
+        if turn["pushed"] <= 0 and not has_speech(intended) and (never or entry["ended"]):
+            # No audio, and nothing synthesizable in its text (tts_text.has_speech,
+            # the engine's own predicate): a whole response (an emoji, a bare
+            # "..."), or the part of one that reached the TTS before its context
+            # timed out. Nothing of it was heard and pipecat committed nothing for it
+            # (no word frames), so a heard-0 chart would hand HeardContextCorrector a
+            # cut with no message of its own -- and it anchors by position: it deleted
+            # the reply that played after this one (LedgerPlayout.tla,
+            # lp_unspeakable_charted). A barge-in into a response still streaming is
+            # charted as any cut: the rest of it may have had words, and the
+            # follow-up loop reads that cut.
+            logger.warning(f"LEDGER response {entry['seq']} had nothing synthesizable; "
+                           f"not charted: {intended[:40]!r}")
             return
         audio_dur = turn["pushed"]
         # If synthesis was cut short, audio_dur underestimates the intended

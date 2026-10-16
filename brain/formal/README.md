@@ -897,18 +897,18 @@ this module has the same environment with the facts the design rests on spelled 
 
 The ledger, in the model's terms: turns open only on the TTS's own frames, never on
 `BotStartedSpeaking`; a turn claims the oldest expected context (the queue of ended
-responses), else the response streaming now; several turns may be open at once — a
-reply queued behind another at the transport; a turn's `audio_start` is its own chunk's
-place in the transport's queue, laid out from the window's start; a window closing
-credits the queued chunks that have played by then and keeps the rest queued, the window
-open for them; it charts, oldest first, the turns whose audio has all played and whose
-synthesis is over; a context starting proves every OTHER open context ended, since the
-TTS drains one at a time; a context's stop frame ends its turn's synthesis; the drain
-re-push confirms a turn's response or corrects it; an interruption charts every open
-turn with its own played portion. The layout's seconds are taken to be right — at a
-window close or a cut the ledger credits exactly what the transport has played;
-`PlayoutPause.tla` checks that arithmetic, `test_ledger_playout.py` the rest on the real
-ledger.
+responses — every one with text, synthesizable or not), else the response streaming now;
+several turns may be open at once — a reply queued behind another at the transport; a
+turn's `audio_start` is its own chunk's place in the transport's queue, laid out from the
+window's start; a window closing credits the queued chunks that have played by then and
+keeps the rest queued, the window open for them; it charts, oldest first, the turns whose
+audio has all played and whose synthesis is over; a context starting proves every OTHER
+open context ended, since the TTS drains one at a time; a context's stop frame ends its
+turn's synthesis; the drain re-push confirms a turn's response or corrects it; an
+interruption charts every open turn with its own played portion. The layout's seconds are
+taken to be right — at a window close or a cut the ledger credits exactly what the
+transport has played; `PlayoutPause.tla` checks that arithmetic, `test_ledger_playout.py`
+the rest on the real ledger.
 
 | row | property | LedgerPlayout |
 |---|---|---|
@@ -919,13 +919,15 @@ ledger.
 | `lp_premature` | `NoPrematureFullChart`, with stalls and timeouts | ✓ |
 | `lp_playedCharted` | `PlayedIsCharted` — audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
 | `lp_fillerSet` | `FillerCtxRemembered` | ✓ |
-| `lp_all` | every property above, two replies and a filler | ✓ (300k, ~25 s) |
+| `lp_all` | every property above and `NoUnheardAheadOfPlayed`, two replies and a filler | ✓ (375k, ~25 s) |
 | `lp_resume` | `NoPrematureFullChart` under `Resume` | ✗ (8) — below |
-| `lp_wrongText_unspeakable` | `ChartedTextMatchesContext`, `Unspeakable = {r1}`, the first cut's premise (`UnspeakableOpens = FALSE`) without `has_speech` (`LedgerSpeakCheck = FALSE`) | ✗ (6) — below |
-| `lp_wrongText_unspeakable_checked` | the same premise, with `has_speech`: why it shipped | ✓ |
-| `lp_wrongText_unspeakable_opens` | `ChartedTextMatchesContext`, **as shipped**, with the context opening as pipecat opens it | ✗ (6) — **a bug in the code**, below |
+| `lp_unspeakable` | every property, `Unspeakable = {r1}`, **as shipped** (`SpeakCheck = "chart"`): every response with text queued; one with no audio and nothing synthesizable charted nothing | ✓ (72k) |
+| `lp_wrongText_unspeakable` | `ChartedTextMatchesContext`, the first cut's premise (`UnspeakableOpens = FALSE`) without `has_speech` (`SpeakCheck = "none"`) | ✗ (6) — below |
+| `lp_wrongText_unspeakable_checked` | the same premise, `has_speech` at the queue (`"queue"`): why it shipped | ✓ |
+| `lp_wrongText_unspeakable_opens` | `ChartedTextMatchesContext`, **before this fix** (`"queue"`), with the context opening as pipecat opens it | ✗ (6) — below |
 | `lp_unheard_unspeakable_opens` | `NoUnheardWhenPlayed`, the same | ✗ (12) — below |
-| `lp_unspeakable_queued` | every property, `has_speech` dropped from the queuing (**proposed, not code**) | ✓ (66k) |
+| `lp_unspeakable_charted` | every property, the first proposal: queued and charted (`"none"`) | ✗ (12) `NoUnheardAheadOfPlayed` — below |
+| `lp_unspeakable_noOpen` | `ChartedTextMatchesContext`, the shipped ledger on the first cut's premise: the fix rests on pipecat opening the context | ✗ (7) |
 | `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ (381k, ~15 s) |
 | `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
 
@@ -989,9 +991,7 @@ friend.' interrupted=True heard=0.00` while its audio plays under an anonymous t
 context ahead must still be open when r2 reaches the TTS — "Great!!" keeps its context
 open for the full timeout (below) — so it is rare, and it needs an emoji- or
 punctuation-only reply, which the guard does not stop (it speaks its recovery line only
-for punctuation it strips). **Proposed fix, not code** (`lp_unspeakable_queued`, every
-property holds): queue every response with text, as before `has_speech`. Its context
-opens and ends with no audio, and is charted never-played under its own text.
+for punctuation it strips). Fixed, below.
 
 `lp_wrongText_unspeakable` (6 states) is the first cut's counterexample, kept under its
 premise:
@@ -1016,6 +1016,52 @@ context under the SAME id, so a reply is never split across two ids and the ledg
 above). `AudioStartIsOwn` holds by construction — `audio_start` is computed from the
 turn's own chunk or not at all — and has no row.
 
+### What was changed (2026-10-15)
+
+`has_speech` moves from the queue to the chart (`SpeakCheck = "chart"`). `_llm_side` queues
+every response with text, and every non-filler spoken notice, as pre-#13 — pipecat opens a
+context for any non-blank text, so each context claims its own entry and the queue stays
+in step. `_finish` charts nothing for a turn with no audio whose text has nothing
+synthesizable, unless a barge-in cut its response while it still streamed (`Silent` in
+the model): nothing of it was heard, and pipecat committed nothing for it.
+
+Queuing alone — the first proposal, `lp_unspeakable_queued` before this change, now
+`lp_unspeakable_charted` — held every property then checked, but charts the unspeakable
+reply heard-nothing, and `HeardContextCorrector` anchors a cut by position: the newest
+assistant message since its last reconcile. The unspeakable reply committed none, so its
+cut lands on the reply that played after it and deletes that one — the same lost answer
+by another route. Checked on the real corrector with the ledger's events (`"Great!!"`,
+`"👍"` cut at 0%, the answer heard in full): it removed the answer. `NoUnheardAheadOfPlayed`
+is that requirement as an invariant (a reply charted heard-nothing is not followed in the
+chart by one that played with no user turn between them; the model's user turns are its
+barge-ins, `epoch` in the chart). `lp_unspeakable_charted`'s counterexample, 12 states:
+
+```
+LlmStart(r1) TtsStart(r1) r1 ("👍") streams; its context opens and claims it live
+TtsStop(r1)               nothing for the stop-frame timeout: charted heard-nothing
+LlmEnd(r1) LlmStart(r2) TtsStart(r2) TtsAudio(r2) ... PlayChunk
+Interrupt                 r2 cut partway, charted with r1 in one reconcile window
+```
+
+The barge-in exception keeps a cut of a still-streaming response charted, as before:
+what it would have said is unknown, and the consult follow-up loop reads that cut to
+decide whether to say its answer again. Nothing charted after a barge-in shares its
+window: it comes after the user's turn.
+
+Removing `has_speech` from the queue does not reopen `lp_wrongText_unspeakable`: that
+counterexample needs the unspeakable response to open no context, and pipecat 1.8.1
+opens one for any text with a non-blank character (`_push_tts_frames`; the brain's TTS
+has no text filters or skipped aggregation types that could empty it first).
+`lp_unspeakable_noOpen` keeps the dependence visible — the shipped ledger on the old
+premise fails the way `lp_wrongText_unspeakable` did — and
+`test_tts_stop_frame.py`'s `test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text`
+pins the premise on the real `EngineTTSService`, so a pipecat upgrade that stopped
+opening the context fails a test rather than the transcript. Regressions:
+`test_ledger_playout.py` case k (the probe's frame order, through the ledger and the
+corrector) and that test; both fail on the code before this change.
+
+The trailing-`"!!"` hold below is unchanged: `"Great!!"` has speech and was always queued.
+
 ### What the model found
 
 Writing the drain step found a hole in the code as first written: the re-push for a
@@ -1023,7 +1069,8 @@ response whose turn was ALREADY charted (closed on other evidence — a newer co
 the hermetic fallback) reassigned the newest open turn to that response. Fixed before
 the tests ran: a charted turn's re-push is a no-op, and only an UNCLAIMED response's drain
 corrects the newest turn (`_end_drained`). The 2026-10-14 audit found the unspeakable
-reply's misclaim above.
+reply's misclaim above, and its fix found the corrector's positional anchor
+(`NoUnheardAheadOfPlayed`).
 
 ### Known limits of this model
 
@@ -1046,8 +1093,8 @@ reply's misclaim above.
 - **Numbers are out of scope**, as in `Ledger.tla`: the layout's seconds, `heard_fraction`,
   the pts cut. The layout is taken to credit exactly what played.
 - **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its
-  own, completed by its stop frame alone: no End re-push) are not modelled — "Worth
-  modeling next", item 1. The hermetic fallback is `Drain = FALSE`, above.
+  own — synthesizable or not, as a response — completed by its stop frame alone: no End
+  re-push) are not modelled — "Worth modeling next", item 1. The hermetic fallback is `Drain = FALSE`, above.
 - **A cancelled completion's End is assumed to precede the next run.** pipecat pushes it
   from the cancelled task's `finally`, at cancellation; the model had let it arrive after
   the next response began streaming, and the ledger — which cannot tell whose End it is
@@ -1058,6 +1105,13 @@ reply's misclaim above.
   sighting of the `InterruptionFrame`, and a TTS frame in flight between two of them
   opens an anonymous turn on a closed context, which the next sighting ends; the model's
   interruption is one step.
+- **The corrector's anchor, beyond the unspeakable reply.** `NoUnheardAheadOfPlayed` is
+  checked where the model can reach a heard-nothing chart, and the model's only reply
+  without audio is an unspeakable one. A speakable reply the engine fails on every clause
+  (`test_ledger_playout.py` case c) is still charted heard-0 by design, and with a reply
+  that played after it in the same window the corrector would delete that one. Not
+  modelled: engine failures, and the conversation's messages (a tool message between two
+  replies changes what the corrector anchors on).
 - **Scale.** One reply and one filler is 3.5k states; two replies 300k, about 20 s with
   two workers.
 
