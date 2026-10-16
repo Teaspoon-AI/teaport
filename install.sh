@@ -989,11 +989,17 @@ tools_link() {
 # The tmpfiles.d line makes the lamp's marker directory on /run (xvf_led.MARKER): kept
 # across a brain crash, cleared by a reboot.
 BUSY_LAMP_GROUP=teaport-hw
+# packaging_src <path under packaging/> — that file in the checkout the brain is being
+# installed from (SRC_DIR is its brain/), else beside this installer.
+packaging_src() {
+  local p="$(dirname "$SRC_DIR")/packaging/$1"
+  if [ ! -f "$p" ]; then p="$HERE/packaging/$1"; fi
+  printf '%s\n' "$p"
+}
 install_busy_lamp() {
   local rule=/etc/udev/rules.d/60-teaport-xvf3800.rules src
   local tmpfiles=/etc/tmpfiles.d/teaport-busy-lamp.conf tmp
-  src="$(dirname "$SRC_DIR")/packaging/xvf3800/60-teaport-xvf3800.rules"
-  if [ ! -f "$src" ]; then src="$HERE/packaging/xvf3800/60-teaport-xvf3800.rules"; fi
+  src="$(packaging_src xvf3800/60-teaport-xvf3800.rules)"
   # The group first, and whatever else is skipped: the brain unit names it
   # (SupplementaryGroups=), and a unit naming a group that does not exist will not start.
   if ! getent group "$BUSY_LAMP_GROUP" >/dev/null; then SUDO groupadd --system "$BUSY_LAMP_GROUP"; fi
@@ -1028,20 +1034,28 @@ install_busy_lamp() {
 # resolved within the last day from the cache once the router's first attempt times
 # out. The network's DNS server stays the one asked first: nothing here overrides it.
 # Written, and the resolver reloaded, only when the drop-in changes, so a brain update
-# does not flush the cache every time. Skipped where systemd-resolved is not running.
+# does not flush the cache every time. Only where it does something: systemd-resolved
+# running, the system's lookups going through it (/etc/resolv.conf its stub), and
+# systemd 254 or later (StaleRetentionSec; older resolvers ignore the key).
 RESOLVED_DROPIN=/etc/systemd/resolved.conf.d/60-teaport-serve-stale.conf
+RESOLV_CONF=/etc/resolv.conf
 install_dns_resilience() {
-  local src
-  src="$(dirname "$SRC_DIR")/packaging/resolved/60-teaport-serve-stale.conf"
-  if [ ! -f "$src" ]; then src="$HERE/packaging/resolved/60-teaport-serve-stale.conf"; fi
-  if [ ! -f "$src" ] || ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
-    log "dns: no drop-in source or no systemd-resolved — skipped (lookups go to the network's DNS as before)"
+  local src why="" ver
+  src="$(packaging_src resolved/60-teaport-serve-stale.conf)"
+  ver="$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')"
+  if [ ! -f "$src" ]; then why="no drop-in source"
+  elif ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then why="systemd-resolved is not running"
+  elif ! grep -qs '^nameserver 127\.0\.0\.53' "$RESOLV_CONF"; then why="$RESOLV_CONF does not use systemd-resolved's stub"
+  elif ! [ "${ver:-0}" -ge 254 ] 2>/dev/null; then why="systemd ${ver:-?} predates serve-stale (254)"
+  fi
+  if [ -n "$why" ]; then
+    log "dns: $why — serve-stale skipped (lookups go to the network's DNS as before)"
     return 0
   fi
   if cmp -s "$src" "$RESOLVED_DROPIN" 2>/dev/null; then
     return 0
   fi
-  log "dns: serve-stale drop-in -> $RESOLVED_DROPIN (a stalled router's DNS no longer blocks the brain's lookups)"
+  log "dns: serve-stale drop-in -> $RESOLVED_DROPIN (a stalled router's DNS is answered from the last good lookup once its first attempt times out)"
   SUDO install -D -m 0644 -o root -g root "$src" "$RESOLVED_DROPIN"
   SUDO systemctl try-reload-or-restart systemd-resolved \
     || warn "dns: reloading systemd-resolved failed — the drop-in applies from the next boot"

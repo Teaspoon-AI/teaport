@@ -220,21 +220,27 @@ def test_only_brain_updates_a_live_venv_a_pre_uv_one_and_a_dangling_link():
 
 # --- the resolver's serve-stale drop-in ------------------------------------------------
 
-def _dns(tmp, resolved_active=True):
-    """install_dns_resilience against a temp drop-in path; systemctl and sudo recorded."""
+def _dns(tmp, resolved_active=True, stub=True, systemd=255):
+    """install_dns_resilience against a temp drop-in and resolv.conf; systemctl and sudo
+    recorded."""
     src = pathlib.Path(tmp, "src/packaging/resolved/60-teaport-serve-stale.conf")
     src.parent.mkdir(parents=True, exist_ok=True)
     src.write_text((INSTALL.parent / "packaging/resolved/60-teaport-serve-stale.conf").read_text())
     dropin = pathlib.Path(tmp, "etc/resolved.conf.d/60-teaport-serve-stale.conf")
+    resolv = pathlib.Path(tmp, "resolv.conf")
+    resolv.write_text("nameserver 127.0.0.53\noptions edns0 trust-ad\n" if stub
+                      else "nameserver 192.168.1.254\n")
     active = 0 if resolved_active else 3
-    script = (f'SRC_DIR="{tmp}/src/brain"; HERE="{tmp}/none"; RESOLVED_DROPIN="{dropin}"\n'
+    script = (f'SRC_DIR="{tmp}/src/brain"; HERE="{tmp}/none"; RESOLVED_DROPIN="{dropin}"; '
+              f'RESOLV_CONF="{resolv}"\n'
               f'systemctl() {{ printf "%s\\n" "$*" >> "$T/systemctl.log"; '
+              f'[ "$1" = --version ] && {{ echo "systemd {systemd} ({systemd}.4-1ubuntu8)"; return 0; }}; '
               f'[ "$1" = is-active ] && return {active}; return 0; }}\n'
               'SUDO() { printf "%s\\n" "$*" >> "$T/sudo.log"; '
               '[ "$1" = install ] && { mkdir -p "$(dirname "${@: -1}")"; cp "${@: -2:1}" "${@: -1}"; }; '
               'return 0; }\n'
               'install_dns_resilience; echo DONE\n')
-    return _run(tmp, script, ["install_dns_resilience"]), dropin
+    return _run(tmp, script, ["packaging_src", "install_dns_resilience"]), dropin
 
 
 def test_the_dns_drop_in_is_written_once_and_the_resolver_reloaded_only_then():
@@ -251,10 +257,17 @@ def test_the_dns_drop_in_is_written_once_and_the_resolver_reloaded_only_then():
     assert "is-active" in log
 
 
-def test_the_dns_drop_in_is_skipped_without_systemd_resolved():
-    tmp = tempdir("teaport-dns-")
-    (rc, out), dropin = _dns(tmp, resolved_active=False)
-    assert rc == 0 and "skipped" in out and not dropin.exists() and _sudo_calls(tmp) == [], out
+def test_the_dns_drop_in_is_skipped_where_it_would_do_nothing():
+    # Not running, not in the system's lookup path (resolv.conf naming the router
+    # itself), or a systemd that predates the key: the drop-in would change nothing, and
+    # the log must not claim otherwise.
+    for case, kw, why in (("not running", dict(resolved_active=False), "not running"),
+                          ("not the stub", dict(stub=False), "does not use systemd-resolved's stub"),
+                          ("old systemd", dict(systemd=249), "systemd 249 predates serve-stale")):
+        tmp = tempdir("teaport-dns-")
+        (rc, out), dropin = _dns(tmp, **kw)
+        assert rc == 0 and why in out and "skipped" in out, (case, out)
+        assert not dropin.exists() and _sudo_calls(tmp) == [], (case, out)
 
 
 # --- the freshness check looks at what is installed ----------------------------------
@@ -332,6 +345,7 @@ def test_uncommitted_changes_in_any_installed_path_are_named():
 # brain_stage's $src) is the checkout's brain/ (check_brain_source).
 _READS = {
     r'\$\(dirname "\$SRC_DIR"\)/([\w./-]+)': "",
+    r'packaging_src ([\w./-]+)': "packaging/",
     r'\$SRC_DIR/([\w./-]+)': "brain/",
     r'\$src/([\w./-]+)': "brain/",
     r'\$HERE/([\w./-]+)': "",
