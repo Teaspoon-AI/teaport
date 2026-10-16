@@ -791,7 +791,7 @@ during synthesis — charted, correctly, as heard 0 — and nothing resets `_gen
 `InterruptionFrame` only calls `_finish_bot`. The next filler's untagged copy re-opens a
 live turn on the same text, and that filler's `BotStoppedSpeaking` charts it a second
 time, complete. With the pinned pipecat the mechanism is `_pending_gen` instead: the
-cancelled completion's `finally` pushes the End frame after the interruption, the partial
+cancelled completion's `finally` pushes the End frame after the interruption (as the ledger, an observer acting on first sighting, sees it), the partial
 text becomes `_pending_gen`, and `_ensure_bot` claims it. Same result. It needs no user
 turn in between — a false VAD trigger (an interruption with no transcription) followed by
 a narrator line is enough.

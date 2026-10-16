@@ -397,7 +397,8 @@ LlmEnd(r) ==
     /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 \* An interrupted completion still ends: pipecat pushes its End from a finally,
-\* after the InterruptionFrame. The ledger finds no stream and ignores it.
+\* after the InterruptionFrame as the ledger sees it (first sighting, above the
+\* LLM; see Ledger.tla LlmCancelEnd). The ledger finds no stream and ignores it.
 LlmCancelEnd(r) ==
     /\ llm[r] = "aborted"
     /\ llm' = [llm EXCEPT ![r] = "cancelled"]
