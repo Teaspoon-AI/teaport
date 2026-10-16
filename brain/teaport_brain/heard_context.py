@@ -162,9 +162,12 @@ def drop_overtaken_tool_calls(aggregator) -> None:
     Interruption cancels only. They carry run_llm=False, so the ordinary order runs no
     inference on them either. The tool timeout's cancel carries run_llm=True and would,
     and a drop never does; but it cannot overtake an in-progress frame in practice: the
-    only tool with a timeout is ask_openclaw (TEAPORT_ASK_OPENCLAW_TIMEOUT, at least
-    5 s, 55 by default), and its frame would have to wait that long behind the reply
-    audio queued ahead of it, with no barge-in cancelling the call first.
+    only tool with a timeout is ask_openclaw, and the config schema requires
+    TEAPORT_ASK_OPENCLAW_TIMEOUT to exceed the native consult's ack + answer timeouts
+    (a sum_lt constraint; 55 s by default). Its frame would have to wait that long
+    where frames wait ahead of their cancel -- behind the reply audio queued ahead of
+    it, or in the reply gate's hold (capped at TEAPORT_REPLY_HOLD_MAX_S, 6 s by
+    default) -- with no barge-in cancelling the call first.
 
     The in-progress frame of a call no cancel overtook always passes, and so does one of
     a new call reusing an overtaken call's id: its FunctionCallsStartedFrame, a
@@ -272,7 +275,7 @@ class HeardContextCorrector(FrameProcessor):
         A tool round the dropped reply had started, and the interruption that dropped it
         cancelled (pipecat writes CANCELLED over its IN_PROGRESS), did nothing: it goes
         with the merge, and the model decides again on the whole turn. One that finished
-        (a result, or the async consult's placeholder with the consult running on) is
+        (a result, or the consult's placeholder with the consult running on) is
         the turn acted on, and keeps the two apart (formal/UserTurn.tla, `Appended`)."""
         msgs = self._context.get_messages()
         prev, last = self._last_user, (msgs[-1] if msgs else None)
