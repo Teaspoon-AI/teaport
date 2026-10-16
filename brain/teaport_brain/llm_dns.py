@@ -71,15 +71,12 @@ FAILED_FOR_S = 30.0
 # on a resolver that has since recovered, or never will; a fresh one is asked instead.
 SHARE_FOR_S = 10.0
 
-# host -> (addresses, when they were looked up)
+# host -> (addresses, when the lookup that found them started)
 _KNOWN: dict = {}
 # loop -> {host: (the lookup in flight, when it started)}; a task belongs to its loop
 _PENDING: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 # host -> when its last lookup failed (or came back empty)
 _FAILED: dict = {}
-# host -> when the lookup last recorded above started: one that started earlier and
-# finishes later (stuck past SHARE_FOR_S, then replaced) records nothing
-_RECORDED: dict = {}
 
 
 def _is_ip(host: str) -> bool:
@@ -146,11 +143,11 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
             if t.cancelled():
                 return
             error = t.exception()   # retrieved even when superseded: no "never retrieved"
-            if _RECORDED.get(host, float("-inf")) > began:
-                return
-            _RECORDED[host] = began
+            known = _KNOWN.get(host)
+            if known is not None and known[1] > began:
+                return      # a lookup started later (this one stuck, replaced) answered
             if error is None and t.result():
-                _KNOWN[host] = (t.result(), time.monotonic())
+                _KNOWN[host] = (t.result(), began)
                 _FAILED.pop(host, None)
             else:
                 _FAILED[host] = time.monotonic()

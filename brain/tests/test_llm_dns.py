@@ -95,7 +95,6 @@ def _fresh():
     llm_dns._KNOWN.clear()
     llm_dns._PENDING.clear()
     llm_dns._FAILED.clear()
-    llm_dns._RECORDED.clear()
     llm_dns.FAST_S = FAST
 
 
@@ -302,7 +301,7 @@ async def test_an_international_name_is_primed_under_the_name_it_connects_with()
     # httpcore connects with the punycode name: the record must be under that one.
     _fresh()
     resolver = Resolver(["127.0.0.1"])
-    client = httpx.AsyncClient()
+    client = httpx.AsyncClient(trust_env=False)     # a shell's HTTPS_PROXY would be primed
     orig = llm_dns.StaleDNSBackend.__init__
     llm_dns.StaleDNSBackend.__init__ = lambda self, inner=None, resolve=None: orig(
         self, inner, resolver)
@@ -336,7 +335,30 @@ async def test_a_superseded_lookup_finishing_late_records_nothing():
     gate.set()
     await asyncio.wait({old})
     assert HOST not in llm_dns._FAILED and llm_dns._KNOWN[HOST][0] == ["10.0.0.5"], (
-        llm_dns._FAILED, llm_dns._KNOWN)
+        dict(llm_dns._FAILED), dict(llm_dns._KNOWN))
+
+
+async def test_a_late_answer_clears_a_newer_failure():
+    # resolved's TCP fallback answers the stuck lookup after its replacement failed: DNS
+    # is answering again, so the host is not left marked as failing.
+    _fresh()
+    llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic() - 60)
+    gate = asyncio.Event()
+
+    async def slow(host):
+        await gate.wait()
+        return ["10.0.0.6"]
+    backend = StaleDNSBackend(Inner(), slow)
+    old, _ = backend.lookup(HOST)
+    loop = asyncio.get_running_loop()
+    llm_dns._PENDING[loop][HOST] = (old, time.monotonic() - llm_dns.SHARE_FOR_S - 1)
+    backend._resolve = Resolver(error=socket.gaierror(-3, "Temporary failure"))
+    await backend.connect_tcp(HOST, 443, timeout=5)
+    assert HOST in llm_dns._FAILED
+    gate.set()
+    await asyncio.wait({old})
+    assert HOST not in llm_dns._FAILED and llm_dns._KNOWN[HOST][0] == ["10.0.0.6"], (
+        dict(llm_dns._FAILED), dict(llm_dns._KNOWN))
 
 
 async def test_a_failed_lookup_is_remembered_as_failed():
@@ -435,7 +457,7 @@ async def test_the_client_looks_the_host_up_when_it_is_built():
     # -- and a remembered one too old to use counts as none.
     _fresh()
     llm_dns._KNOWN["localhost"] = (["127.0.0.9"], time.monotonic() - llm_dns.MAX_AGE_S - 1)
-    client = use_stale_dns(httpx.AsyncClient(), "http://localhost:9/v1")
+    client = use_stale_dns(httpx.AsyncClient(trust_env=False), "http://localhost:9/v1")
     assert await _until(lambda: llm_dns._KNOWN["localhost"][0] != ["127.0.0.9"]), llm_dns._KNOWN
     await client.aclose()
 
