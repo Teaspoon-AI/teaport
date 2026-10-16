@@ -1821,10 +1821,16 @@ The mechanism on 1.12, which is not quite the issue's:
 awaits; skipped for an open turn); `AnswerStart` is its first audio, through the TTS's
 speech hold and the reply gate; `TtsCap` the hold's cap; a turn's interruption cancels it
 (`CutLands`). `pend` is the ground truth (speech begun whose words have not resolved: no
-turn start, no commit carrying them, no word-less close); `gpend` is FollowupGate's view
-of it, which a turn start, a commit of the open turn (`PendCommitted`: the commit took
-the words of speech begun before it) or its own release timer (`GateQuiet`) ends. New
-properties, the last for a pipecat behaviour the model found on the way:
+turn start with the caller quiet, no commit carrying them, no word-less close); `gpend` is
+FollowupGate's view of it, which a turn start with the VAD quiet, a commit made after the
+speech's VAD stop (`PendCommitted`) or its own release timer (`GateQuiet`) ends.
+`InferenceUnderSpeech` is the commit made while the caller still talks: pipecat guards
+only the finalize on their speaking, not the inference, so it is possible, if narrow (the
+stock strategy discards its conclusion at every VAD start, a premise check; a commit
+waiting at the fence can still be overtaken by one). It takes none of the words still
+being said, and a turn started on an interim mid-speech has not had them all either. The
+rows before POSTTOOL keep `Inference`'s ordering fact. New properties, the last for a
+pipecat behaviour the model found on the way:
 
 - `NoAnswerUnderSpeech`: an answer asked while the caller's speech was pending never
   plays before the words of that speech (which then start a turn: heard over the caller,
@@ -1843,6 +1849,7 @@ properties, the last for a pipecat behaviour the model found on the way:
 | `capDiscard` | the TTS discards the answer when its speech hold ends on the cap | ✗ | |
 | `lullAtStop` | a queue that delivers at the next lull, the VAD stop | ✗ | |
 | `gateNoCommit` | the gate as first written (cb5fbb8): only a turn start or its timer ends its view | ✓ | ✓ |
+| `gateById` | 0db54f6: a commit of the open turn ends the view on speech whose VAD START is older | ✗ | |
 | `gate` | as shipped: FollowupGate holds the push while speech is pending | ✓ | ✓ |
 | `gate`, timers as they are | | ✗ (accepted residual) | ✓ |
 
@@ -1851,7 +1858,18 @@ properties, the last for a pipecat behaviour the model found on the way:
 time (300 ms) in Paris": the turn starts on the first, the second VAD start comes inside
 the open turn and meets no turn start of its own, the commit takes its words, and a tool
 whose result lands within the release window has its answer held a second with nobody
-talking. `gate` holds it with every other property.
+talking.
+
+`gateById`, the first fix for that, fails `NoAnswerUnderSpeech`
+(`ut_post_gateById_noanswerunderspeech`). A VAD start older than the commit does not
+mean the words are in it. The caller starts, a turn opens on their first words, and the
+commit is made while they are still talking. Their finalize is refused and re-applied at
+their VAD stop; the tool's result lands; the gate, emptied at the commit, lets the answer
+go, and the rest of their words come after it. `gate` lets go only of speech whose VAD
+STOP is older than the commit: a segment's words are final once its stop flushes it,
+and the commit carries them (SttCommit.tla's receipts). It keeps waiting past a turn
+start made while the VAD still hears the caller. It holds `NoHoldOnCommittedSpeech` with
+every other property.
 
 The counterexamples (`ut_post_*`; their lengths vary with TLC's worker count, so none
 are given):
@@ -1882,29 +1900,39 @@ caller's VAD start until a turn starts -- then dropped at the interruption, the 
 commit reading the result -- or until `TEAPORT_REPLY_HOLD_RELEASE_S` after the VAD stop
 with no turn (it then goes on), capped at `TEAPORT_REPLY_HOLD_MAX_S`. Those two settings
 are the reply hold's, because they state the same fact: how long after the caller goes
-quiet their words may still come. A commit of the open turn (`TurnCommitMark`) ends the
-wait for speech begun before it, by frame id: the commit and the VAD frames reach the gate
-by different paths, and a VAD start made after the commit (the caller resuming inside its
-await) can arrive first; its words are not in the commit, and the wait for them stays. A
-push that arrives with a turn open at the gate is dropped (pipecat's own rule, applied
-where the turn start can have overtaken the push), and so is one still held at the cap
-once a turn has opened (a release there would be a second completion). The answer is held
-only on speech whose words have not arrived; with nobody talking it is asked at once.
+quiet their words may still come. A commit of the caller's words ends the wait for speech
+whose VAD stop came before it. `CutReplyFence.hold_commits`, the wrapper every such commit
+passes (the stop strategy's, the turn's stop, the watchdog's), tells the gate at the
+commit, in the aggregator's own task, with a marker numbered off pipecat's frame counter.
+The gate compares frame numbers, not arrival order: the commit and the VAD frames reach
+it by different paths. This replaces 0db54f6's `TurnCommitMark` signal, which also
+needed the turn open at the gate. A commit made by the turn's stop is made after its
+`UserStoppedSpeakingFrame`, and that frame could reach the gate first. A turn start
+while the VAD still hears the caller does not end the wait. A push that arrives with a
+turn open at the gate is dropped (pipecat's own rule, applied where the turn start can
+have overtaken the push), and so is one still held at the cap once a turn has opened (a
+release there would be a second completion). The answer is held only on speech whose
+words have not arrived; with nobody talking it is asked at once. A VAD stop made before
+the commit that has not yet reached the gate is not counted: the gate holds on until its
+timer, a delay and never a loss.
 
 Only the assistant aggregator sends a context frame up past the gate. It would also send
 one for an `LLMRunFrame` or `LLMMessages*Frame(run_llm)` that reached it, but every one the
 brain sends enters at the top, where the user aggregator takes it: a premise check
 (`check_run_frames_stop_at_the_user_aggregator`) and a structural check of the brain's
-senders (`test_followup_gate.py`, `test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator`).
+senders (`test_followup_gate.py`, `test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator`:
+`task.queue_frame(s)` on the PipelineTask, or the STT's own push, and nothing else).
 
 `ut_post_gate_sip_all` holds the new properties with every property `ut_shipped_all`
 checks (1.1M states), `ut_post_gate_talk_all` without the reply gate and the pause.
 Tests: `test_post_tool_under_speech.py`. Every shape above fails without the fix,
 including a result landing between the VAD stop and the words. With nobody talking the
 answer is asked at once, and after a cough it plays once, a release window later.
-Nothing is left held at the end of any scenario. `test_followup_gate.py` covers the gate
-alone: the gap after the VAD stop, the two-segment turn, speech begun after the commit,
-the cap both ways, and the session's End.
+Nothing is left held at the end of any scenario, and a commit made while the caller
+still talks leaves the rest of their words pending (fails on 0db54f6).
+`test_followup_gate.py` covers the gate alone: the gap after the VAD stop, the
+two-segment turn, speech begun after the commit and still going at it, the cap both
+ways, and the session's End.
 
 The gate does not change what FollowupGate calls the user speaking (`_user`, the turn):
 `_idle`/`_clear` feed the narrator, the injectors' windows, `room_idle` and
@@ -3015,6 +3043,7 @@ pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row
 | A cancel that overtakes an `IN_PROGRESS` still in transit leaves the call unsettled (#185: pipecat as written; the brain fixes it) | UserTurn (`CALLS`, `NoOrphanCall`, `NoUnsettledRead`; see "A call overtaken by its own cancel") | `test_pipecat_function_call_race.py::test_pipecat_alone_still_leaves_the_overtaken_call_in_progress` (fails once pipecat fixes it: the fix is then dead weight) | `llm_response_universal.py:1956-1962` `_handle_function_call_cancel` returns early with no in-progress frame on record (1.12: 2110-2116) | ✓ | ✓ |
 | `run_llm` after a result: `properties.run_llm`, else `frame.run_llm`, else yes | UserTurn (`ToolDone`, `NoOrphanCall`), Followup (`ToolEnd`) | `check_run_llm_resolves_properties_then_frame_then_yes`; the gate's frame: `test_reply_hold.py::test_a_held_result_whose_call_passed_settles_it_without_an_answer` | `llm_response_universal.py:1836-1872` | ✓ | ✓ |
 | The answer to a tool's result is an `LLMContextFrame` pushed UPSTREAM by the assistant aggregator (past `FollowupGate`, above it), deferred to `BotStoppedSpeakingFrame` while the bot is audible, and skipped for an open user TURN, whatever the VAD says | UserTurn (POSTTOOL: `PushAnswer`) | `check_the_answer_to_a_result_is_pushed_up_unless_a_turn_is_open`; through the session's processors: `test_post_tool_under_speech.py` | 1.12 `llm_response_universal.py:1786, 1797, 2026, 2057-2068` | -- | ✓ |
+| A VAD start discards the stop strategy's conclusion (`_turn_complete`), so the brain's strategy does not commit while the caller speaks; pipecat itself guards only the finalize on it | UserTurn (`Inference`'s ordering fact; POSTTOOL's `InferenceUnderSpeech` drops it) | `check_a_vad_start_discards_the_stop_strategys_conclusion` (stock and the brain's subclass, with a control) | 1.12 `turns/user_stop/turn_analyzer_user_turn_stop_strategy.py:129-141, 218-223, 328-340` | -- | ✓ |
 | An `LLMRunFrame` or `LLMMessagesAppendFrame(run_llm)` queued at the top is taken by the user aggregator (its context frame goes down, the run frame no further), so none reaches the assistant aggregator to be sent up past `FollowupGate`; frame ids increase in creation order | UserTurn (POSTTOOL: only a tool's answer comes up; `PendCommitted` by id) | `check_run_frames_stop_at_the_user_aggregator`; the brain's senders: `test_followup_gate.py::test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator` | 1.12 `llm_response_universal.py` (`LLMUserAggregator._handle_llm_run`, `_handle_llm_messages_append`); `utils/utils.py:23` (`obj_id`) | -- | ✓ |
 | A tool result is broadcast by the LLM and passes the TTS and the output transport to `FollowupGate` | Followup (`ToolEnd`, `turnAware`) | `check_a_tool_result_reaches_the_gate_below_the_transport` | `services/llm_service.py:1618-1630` (`result_callback`'s broadcast); `transports/base_output.py:896-923` (`_audio_task_handler` pushes it on) | ✓ | ✓ |
 | `FunctionCallsStartedFrame` is a SystemFrame the LLM broadcasts from inside `_process_context`, before the completion's End | UserTurn (`ToolCall`/`ToolDone` leave the gate `armed`; only `BotStart`/`CutLands` disarm) | `check_a_tool_calls_started_frame_is_a_system_frame_ahead_of_the_end` (the real `_process_context` on a scripted tool-call stream) | `services/llm_service.py:1456`; `services/openai/base_llm.py:560-600, 603-616` | ✓ | ✓ |

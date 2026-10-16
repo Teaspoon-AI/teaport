@@ -363,7 +363,7 @@ vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
 
 Gated == HOLD /= "none"
 \* FollowupGate's designs for the answer after a tool (#17, POSTTOOL).
-Gates == {"gate", "gateNoCommit"}
+Gates == {"gate", "gateNoCommit", "gateById"}
 
 \* What a drop (an interruption reaching the gate) does to the reply's tool round. A
 \* call still running in the context is cancelled (pipecat's cancel_on_interruption, the
@@ -528,8 +528,15 @@ StartTurn ==
     /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost,
                    cutAfterCommit>>
     \* The pending speech was words. An answer playing that was asked under it is the
-    \* stale answer, cut only now. One discarded under it is read by this turn.
-    /\ pend' = FALSE /\ gpend' = FALSE /\ gstale' = FALSE
+    \* stale answer, cut only now. One discarded under it is read by this turn. A turn
+    \* that starts while the caller is still talking (on an interim) has not had all of
+    \* that speech's words: the rest are still to come, to this turn's commit or -- its
+    \* finalize refused and re-applied at the VAD stop before they land -- to a turn of
+    \* their own. The gate keeps waiting for them as shipped; gateById and gateNoCommit
+    \* (as first written) let go at every turn start.
+    /\ pend' = (pend /\ userSpeaking)
+    /\ gpend' = (gpend /\ userSpeaking /\ POSTTOOL = "gate")
+    /\ gstale' = FALSE
     /\ ansOver' = (ansOver \/ (answer = "playing" /\ asUnder))
     /\ answer' = IF answer = "dropped" THEN "none" ELSE answer
     /\ UNCHANGED <<asUnder, ansLost, skipLost>>
@@ -847,18 +854,33 @@ Appended(mp, t) ==
     /\ tool' = "none"
     /\ UNCHANGED goodbyeLost
 
-\* Speech that began in the open turn has its words in this commit: none are pending.
-\* FollowupGate learns it from TurnCommitMark (every commit of an open turn), and lets go
-\* of speech that began before it -- ordered by frame id, not by arrival, since the
-\* commit and the caller's VAD frames reach it by different paths. gateNoCommit is the
-\* gate as first written (cb5fbb8): only a turn start or its timer ended its view, so a
-\* turn of two segments ("what's the time ... in Paris") held its tool's answer a
-\* release window with nobody talking.
+\* A commit takes the words of speech that has STOPPED: a segment's words are final once
+\* its VAD stop flushes it, and the commit carries them (SttCommit.tla's receipts).
+\* Speech still going on at the commit (`InferenceUnderSpeech`) is not in it: its words
+\* are still to come.
+\*
+\* FollowupGate learns of every commit of the caller's words from the fence's wrapper
+\* (CutReplyFence.hold_commits: the stop strategy's inference, the turn's stop, the
+\* watchdog), with a marker numbered in the aggregator's own task at the commit, and lets
+\* go of pending speech whose VAD STOP is older than it -- by frame id, not by arrival.
+\*   gateNoCommit -- cb5fbb8: only a turn start or the timer ended its view: a turn of
+\*                   two segments ("what's the time ... in Paris") held its tool's
+\*                   answer a release window with nobody talking.
+\*   gateById     -- 0db54f6: let go of speech whose VAD START was older than the
+\*                   commit (TurnCommitMark, an open turn at the gate): a commit made
+\*                   while the caller still talked emptied the view, and their words
+\*                   came after the answer.
+\*   gate         -- as shipped: the VAD STOP older than the commit.
+\* Read after the step's own VAD edge (userSpeaking'): the refused finalize's second
+\* commit is made at the VAD stop, after it.
 PendCommitted ==
-    /\ pend' = FALSE
-    /\ IF POSTTOOL = "gateNoCommit"
-         THEN gstale' = (gstale \/ gpend) /\ UNCHANGED gpend
-         ELSE gpend' = FALSE /\ gstale' = FALSE
+    /\ pend' = (pend /\ userSpeaking')
+    /\ CASE POSTTOOL = "gateNoCommit"
+              -> gstale' = (gstale \/ (gpend /\ ~userSpeaking')) /\ UNCHANGED gpend
+         [] POSTTOOL = "gateById"
+              -> gpend' = FALSE /\ gstale' = FALSE
+         [] OTHER
+              -> gpend' = (gpend /\ userSpeaking') /\ gstale' = (gstale /\ userSpeaking')
     /\ UNCHANGED <<answer, asUnder, ansOver, ansLost, skipLost>>
 
 CommitCore ==
@@ -924,11 +946,38 @@ CommitStep ==
 Inference ==
     /\ ~endQueued                             \* the session has not ended
     /\ userTurn /\ ~stopInFlight /\ ~inference /\ ~userSpeaking
+    /\ userSpeaking' = userSpeaking            \* (read by the commit: PendCommitted)
     /\ CommitReady
     /\ inference' = TRUE
     /\ stopInFlight' = TRUE
     /\ watchdog' = FALSE                       \* _trigger_user_turn_inference_triggered
     /\ CommitStep
+    /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
+                   missedBargeIn>>
+    /\ UNCHANGED pauseVars
+
+\* The same commit while the VAD still hears the caller. pipecat guards only the
+\* finalize on the caller speaking, not the inference: the brain's strategy does not
+\* conclude under VAD speech (a VAD start resets its `_turn_complete`,
+\* test_pipecat_premises.py), but nothing in the controller forbids it, and a commit
+\* whose push waits at the fence (`wait_for_cuts`) can be overtaken by a VAD start
+\* before its frame is made. With the answer modelled (POSTTOOL) it is a step of its
+\* own; the rows before it keep `Inference`'s ordering fact (see its note).
+\* As `Inference` then `Resume`: the reply gate, armed by the commit with the caller
+\* already speaking, holds at once (ReplyHoldGate.arm), and that speech counts as resumed.
+\* A first commit only: a continuation (`Continues`) is the refused finalize's, at VadStop.
+InferenceUnderSpeech ==
+    /\ POSTTOOL /= "off"
+    /\ ~endQueued
+    /\ userTurn /\ ~stopInFlight /\ ~inference /\ userSpeaking
+    /\ userSpeaking' = userSpeaking
+    /\ CommitReady /\ ~Continues
+    /\ inference' = TRUE
+    /\ stopInFlight' = TRUE
+    /\ watchdog' = FALSE
+    /\ Commit
+    /\ held' = Gated /\ paused' = Gated /\ resumed' = TRUE
+    /\ UNCHANGED <<endQueued, replyOverResume>>
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
@@ -1413,6 +1462,7 @@ Arm ==
 ForceStop ==
     /\ ~endQueued                             \* the session has not ended
     /\ watchdog /\ userTurn /\ ~userSpeaking
+    /\ userSpeaking' = userSpeaking
     /\ userTurn' = FALSE
     /\ inference' = FALSE
     /\ owed' = FALSE
@@ -1435,7 +1485,7 @@ Next ==
     \/ VadStart \/ Resume \/ Interject \/ OneWord \/ StopWord \/ CutLands
     \/ Wordless \/ ToolDone \/ BotStop
     \/ PushAnswer \/ ReleaseA \/ GateQuiet \/ CapA \/ AnswerStart \/ TtsCap
-    \/ VadStop \/ Inference \/ Finalize \/ BotStart \/ Arm \/ ForceStop
+    \/ VadStop \/ Inference \/ InferenceUnderSpeech \/ Finalize \/ BotStart \/ Arm \/ ForceStop
     \/ SpecStart \/ CtxChange \/ Retext \/ Release \/ Cap \/ Hangup
     \/ ToolCall \/ CallLands \/ LateLands
     \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP
@@ -1565,7 +1615,7 @@ TypeOK ==
     /\ lateCall \in {"none", "above", "atAgg"}
     /\ unsettled \in BOOLEAN /\ readUnsettled \in BOOLEAN
     /\ POSTTOOL \in {"off", "asWritten", "vadDrop", "capDiscard", "lullAtStop", "gate",
-                     "gateNoCommit"}
+                     "gateNoCommit", "gateById"}
     /\ answer \in {"none", "due", "held", "asked", "playing", "dropped"}
     /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
     /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
