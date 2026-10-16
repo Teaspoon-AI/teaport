@@ -644,9 +644,17 @@ async def test_a_commit_that_asks_no_answer_merges_nothing_and_runs_no_llm():
         return await push(frame, direction)
     user.push_frame = spy
     user._aggregation = [TextPartForConcatenation("these words", includes_inter_part_spaces=False)]
-    await user._maybe_emit_user_turn_stopped(None, run_llm=False)
+    from loguru import logger
+    lines = []
+    sink = logger.add(lambda m: lines.append(m.record["message"]), level="INFO")
+    try:
+        await user._maybe_emit_user_turn_stopped(None, run_llm=False)
+    finally:
+        logger.remove(sink)
     assert call.context.get_messages()[-1] == {"role": "user", "content": "these words"}
     assert not any(isinstance(f, (LLMContextFrame, InterruptionFrame)) for f in pushed), pushed
+    # The cost of not merging -- the continuation stays its own message -- is logged.
+    assert any("CUT-FENCE" in m and "not merged" in m for m in lines), lines
 
 
 async def test_a_moved_session_end_argument_fails_the_session_build():
@@ -670,13 +678,17 @@ async def test_a_moved_session_end_argument_fails_the_session_build():
 
     async def positional(run_llm=True):
         pass
-    user._push_aggregation = positional
-    try:
-        CutReplyFence().hold_commits(user)
-    except RuntimeError as e:
-        assert "hold_commits" in str(e), e
-    else:
-        raise AssertionError("a positional run_llm went unnoticed")
+
+    async def renamed(*, run_inference=True):
+        pass
+    for hook in (positional, renamed):
+        user._push_aggregation = hook
+        try:
+            CutReplyFence().hold_commits(user)
+        except RuntimeError as e:
+            assert "hold_commits" in str(e), e
+        else:
+            raise AssertionError(f"{hook.__name__}: a moved run_llm went unnoticed")
 
 
 async def test_a_lost_interruption_costs_one_bounded_wait():
