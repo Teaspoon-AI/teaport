@@ -319,14 +319,20 @@ cmd_logs() {
     # The SIP front-end runs in teaport-brain now; its lines are the brain's.
     sip-brain) unit=teaport-brain;     shift ;;
   esac
-  # This boot unless asked otherwise: the box's journal is persistent (install.sh setup_logs)
-  # and keeps every boot up to its cap, so a bare `teaport logs` would open at the oldest
-  # line kept, days back. A boot, time or cursor of the caller's own wins (-b -1, --since).
-  local a scope=(-b)
-  for a in "$@"; do
-    case "$a" in
-      -b*|--boot*|-S*|--since*|-U*|--until*|-c*|--cursor*|--after-cursor*|--list-boots) scope=() ;;
+  # This boot for plain viewing: the box's journal is persistent (install.sh setup_logs) and
+  # keeps every boot up to its cap, so a bare `teaport logs` would open at the oldest line
+  # kept, days back. Only when every argument is one of the viewing options below (with its
+  # value): anything else (a boot or time of the caller's own, a -g pattern, a FIELD=value
+  # match, an option this list doesn't know) passes through to journalctl exactly as given.
+  local scope=(-b) args=("$@") i=0
+  while [ "$i" -lt "${#args[@]}" ]; do
+    case "${args[$i]}" in
+      -f|--follow|-e|--pager-end|-r|--reverse|--no-pager|-x|--catalog|-q|--quiet) ;;
+      -n|--lines|-o|--output|-p|--priority) i=$((i + 1)) ;;   # and its value
+      -n[0-9]*|--lines=*|--output=*|--priority=*) ;;
+      *) scope=(); break ;;
     esac
+    i=$((i + 1))
   done
   exec journalctl -u "$unit.service" "${scope[@]}" "$@"
 }

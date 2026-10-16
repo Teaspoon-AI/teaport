@@ -1,69 +1,122 @@
-"""install.sh setup_logs: the journal as the one log store, seeded once, never failing
-the install (python -m pytest brain/tests/test_install_logs.py)."""
+"""install.sh setup_logs: the journal as the one log store, kept in step by every install
+run, an operator's own settings left alone, never failing the install
+(python brain/tests/test_install_logs.py, or pytest)."""
 
 import pathlib
 import subprocess
 
+import appliance
 from tempdirs import tempdir
 from test_install_brain_only import _fn
 
-# SUDO and systemctl recorded in $T/calls; `install` really copies (so the drop-in can be
-# read back) unless INSTALL_FAILS=1; DRY_RUN=0 and no /var/log/syslog to rotate.
+# SUDO and systemctl are recorded in $T/calls. SUDO install really writes under $T (so the
+# drop-in can be read back) and only records anything else (/var/log/journal), unless
+# INSTALL_FAILS=1. systemctl answers is-enabled with $TIMER and is-active with $ACTIVE.
 STUBS = r'''
 set -euo pipefail
 DRY_RUN=0
 log()  { printf 'LOG %s\n' "$*"; }
 warn() { printf 'WARN %s\n' "$*"; }
+contains() { case "$2" in *"$1"*) return 0 ;; *) return 1 ;; esac; }
 SUDO() {
   printf '%s\n' "$*" >> "$T/calls"
+  [ "$1" = install ] || return 0
+  [ "${INSTALL_FAILS:-0}" = 0 ] || return 1
+  local last="${*: -1}"
+  case "$last" in "$T"/*) ;; *) return 0 ;; esac
+  if [ "$2" = -d ]; then mkdir -p "$last"; else command cp "${@: -2:1}" "$last"; fi
+}
+systemctl() {
+  printf 'systemctl %s\n' "$*" >> "$T/calls"
   case "$1" in
-    install) [ "${INSTALL_FAILS:-0}" = 0 ] || return 1; command cp "${@: -2:1}" "${@: -1}" ;;
+    is-enabled) [ -n "${TIMER:-}" ] && echo "$TIMER" ;;
+    is-active) [ "${ACTIVE:-1}" = 1 ] ;;
   esac
 }
-systemctl() { printf 'systemctl %s\n' "$*" >> "$T/calls"; case "$1" in is-enabled) echo enabled ;; esac; }
-du() { return 1; }
 '''
 
 
-def _setup_logs(tmp, dropin_exists=False, install_fails=False):
-    dropin = pathlib.Path(tmp, "teaport.conf")
-    if dropin_exists:
-        dropin.write_text("[Journal]\nSystemMaxUse=4G\n")   # an operator's edit
-    script = (STUBS + _fn("install_lines") + _fn("setup_logs") +
-              f'JOURNAL_DROPIN="{dropin}"; JOURNAL_MAX_USE=2G; SYSLOG_ROTATE_NOW_MB=256; '
-              'setup_logs; echo DONE')
-    env = {"T": str(tmp), "PATH": "/usr/bin:/bin", "INSTALL_FAILS": str(int(install_fails))}
-    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
+def _setup_logs(tmp, max_use="2G", install_fails=False, timer="enabled", active=True,
+                operator=None):
+    confd = pathlib.Path(tmp, "journald.conf.d")
+    if operator:   # an operator's own drop-in
+        confd.mkdir(exist_ok=True)
+        (confd / "50-local.conf").write_text(operator)
     calls = pathlib.Path(tmp, "calls")
+    calls.unlink(missing_ok=True)
+    script = (STUBS + _fn("install_lines") + _fn("journal_operator_keys") + _fn("setup_logs") +
+              f'JOURNAL_CONF="{tmp}/journald.conf"; JOURNAL_CONF_D="{confd}"; '
+              f'JOURNAL_DROPIN="{confd}/teaport.conf"; JOURNAL_MAX_USE={max_use}; '
+              'setup_logs; echo DONE')
+    env = {"T": str(tmp), "PATH": "/usr/bin:/bin", "INSTALL_FAILS": str(int(install_fails)),
+           "TIMER": timer, "ACTIVE": str(int(active))}
+    p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
     return (p.returncode, p.stdout + p.stderr,
-            calls.read_text().splitlines() if calls.exists() else [], dropin)
+            calls.read_text().splitlines() if calls.exists() else [], confd / "teaport.conf")
 
 
-def test_a_first_run_seeds_the_drop_in_then_applies_it():
+def _index(calls, prefix):
+    return next(i for i, c in enumerate(calls) if c.startswith(prefix))
+
+
+def test_a_first_run_writes_the_drop_in_and_sets_up_the_journal_before_restarting():
     rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"))
     assert rc == 0 and "DONE" in out, out
     text = dropin.read_text()
-    assert "[Journal]" in text and "Storage=persistent" in text, text
-    assert "SystemMaxUse=2G" in text and "ForwardToSyslog=no" in text, text
-    # /var/log/journal from systemd's tmpfiles rule BEFORE journald is restarted
-    order = [c.split()[0] if not c.startswith("systemctl") else c for c in calls]
-    tmpfiles = next(i for i, c in enumerate(calls) if c.startswith("systemd-tmpfiles"))
-    restart = next(i for i, c in enumerate(calls) if c == "systemctl restart systemd-journald")
-    flush = next(i for i, c in enumerate(calls) if c == "journalctl --flush")
-    assert tmpfiles < restart < flush, (order, calls)
+    for key in ("[Journal]", "Storage=persistent", "SystemMaxUse=2G", "ForwardToSyslog=no"):
+        assert key in text, text
+    # /var/log/journal made (setgid systemd-journal), its ACLs from tmpfiles, THEN journald
+    # restarted and flushed: left to journald the directory would be root's alone
+    mkdir = _index(calls, "install -d -m 2755 -o root -g systemd-journal /var/log/journal")
+    tmpfiles = _index(calls, "systemd-tmpfiles --create --prefix /var/log/journal")
+    restart = _index(calls, "systemctl restart systemd-journald")
+    flush = _index(calls, "journalctl --flush")
+    assert mkdir < tmpfiles < restart < flush, calls
 
 
-def test_a_repair_leaves_an_operators_drop_in_and_does_not_restart_journald():
-    rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"), dropin_exists=True)
-    assert rc == 0 and "DONE" in out and "left as it is" in out, out
-    assert dropin.read_text() == "[Journal]\nSystemMaxUse=4G\n"
-    assert not any(c.startswith(("install", "systemd-tmpfiles", "journalctl")) or
-                   c == "systemctl restart systemd-journald" for c in calls), calls
+def test_a_rerun_with_nothing_changed_restarts_nothing():
+    tmp = tempdir("teaport-logs-")
+    _setup_logs(tmp)
+    rc, out, calls, _ = _setup_logs(tmp)
+    assert rc == 0 and "unchanged" in out, out
+    assert not any(c.startswith(("install", "systemd-tmpfiles", "journalctl", "systemctl restart"))
+                   for c in calls), calls
+
+
+def test_a_release_that_changes_the_drop_in_reaches_a_box_that_has_it():
+    tmp = tempdir("teaport-logs-")
+    _setup_logs(tmp, max_use="1G")
+    rc, out, calls, dropin = _setup_logs(tmp, max_use="2G")
+    assert rc == 0 and "SystemMaxUse=2G" in dropin.read_text(), out
+    assert "systemctl restart systemd-journald" in calls, calls
+
+
+def test_a_key_the_operator_set_is_left_out():
+    rc, out, _, dropin = _setup_logs(tempdir("teaport-logs-"),
+                                     operator="[Journal]\nSystemMaxUse=500M\n#Storage=volatile\n")
+    text = dropin.read_text()
+    assert rc == 0 and "SystemMaxUse" not in text, text            # theirs, left out
+    assert "Storage=persistent" in text and "ForwardToSyslog=no" in text, text   # a comment is not a setting
+    assert "SystemMaxUse is the operator's" in out, out
 
 
 def test_a_drop_in_that_cannot_be_written_warns_and_the_install_goes_on():
     rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"), install_fails=True)
-    assert rc == 0 and "DONE" in out, out                  # set -e did not end the install
-    assert "WARN logs: could not write" in out, out
-    assert not dropin.exists()
-    assert "systemctl restart systemd-journald" not in calls, calls   # nothing to apply
+    assert rc == 0 and "DONE" in out and "WARN logs: could not write" in out, out
+    assert not dropin.exists() and "systemctl restart systemd-journald" not in calls, calls
+
+
+def test_each_logrotate_timer_state_gets_its_own_advice():
+    cases = {("masked", True): "unmask", ("disabled", True): "is disabled",
+             ("not-found", True): "--reinstall logrotate", ("", True): "--reinstall logrotate",
+             ("enabled", False): "systemctl start", ("indirect", False): "systemctl start"}
+    for (timer, active), advice in cases.items():
+        rc, out, _, _ = _setup_logs(tempdir("teaport-logs-"), timer=timer, active=active)
+        assert rc == 0 and advice in out, (timer, active, out)
+    for timer in ("enabled", "static", "enabled-runtime", "indirect"):
+        rc, out, _, _ = _setup_logs(tempdir("teaport-logs-"), timer=timer, active=True)
+        assert rc == 0 and "logrotate.timer" not in out, (timer, out)
+
+
+if __name__ == "__main__":
+    appliance.run_tests([v for k, v in sorted(globals().items()) if k.startswith("test_")])
