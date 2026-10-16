@@ -196,7 +196,8 @@ class Line:
         assert not self.speaking, "and stopped on the quiet"
 
     async def verdict(self, complete, source="verdict"):
-        await self.stt.process_frame(TurnVerdictFrame(complete=complete, source=source), UP)
+        await self.stt.process_frame(TurnVerdictFrame(complete=complete, source=source,
+                                                      stop_n=self.stt._vad_stops), UP)
 
     def commits(self):
         return self.stt._websocket.commits()

@@ -1138,6 +1138,14 @@ class TeaportSTTService(WebsocketSTTService):
             self._commit_on = "verdict"
             logger.info(f"{self}: a verdict ({frame.source}) has reached the STT after "
                         "all -- the commit follows the verdict from here on")
+        if frame.stop_n != self._vad_stops:
+            # Another stop's: the stop before, whose verdict the VAD overtook with this
+            # one (the strategy's queue a whole utterance behind -- see
+            # TurnVerdictFrame). Its COMPLETE is no answer for the segment held now,
+            # which the model has yet to judge; that verdict is still on its way.
+            logger.debug(f"{self}: verdict {frame.source} complete={frame.complete} for "
+                         f"VAD stop {frame.stop_n}, not {self._vad_stops}; ignored")
+            return
         if not self._commit_pending:
             if self._expired_at is not None:
                 # It answers the stop whose hold has just expired: late, not lost. The
@@ -1929,7 +1937,7 @@ class TeaportSTTService(WebsocketSTTService):
             # session's end, and never at the cost of the teardown below.
             if not self._ending:
                 try:
-                    await self.push_frame(SegmentResetFrame())
+                    await self.push_frame(SegmentResetFrame(stop_n=self._vad_stops))
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"{self}: could not push the segment reset ({e})")
             self._interim_buffer = ""

@@ -134,9 +134,11 @@
 (* bounded by MaxCloses.                                                    *)
 (*                                                                          *)
 (* NUMBERED says whether a verdict names the stop it answers and the STT    *)
-(* ignores one for another stop. TurnVerdictFrame carries no stop (FALSE,   *)
-(* as shipped); under THE ORDER a stop's verdict can reach the STT after    *)
-(* the next stop has (the VAD found that stop in the strategy's backlog).   *)
+(* ignores one for another stop: under THE ORDER a stop's verdict can reach *)
+(* the STT after the next stop has (the VAD found that stop in the          *)
+(* strategy's backlog). TRUE as shipped since 2026-10-15                   *)
+(* (TurnVerdictFrame's stop_n); FALSE is the code before, which took        *)
+(* either (sc_verdict_stale).                                               *)
 (*                                                                          *)
 (* NoStaleTurnEnd is the property: the turn never ends on VAD stop k while  *)
 (* words of an utterance up to k are still in the engine's open segment, in *)
@@ -183,6 +185,17 @@
 (* CARRY = FALSE is the STT before #154. With it on, every such commit      *)
 (* feeds: a superset of the code (a commit that claims nothing carries      *)
 (* nothing), since `spoke` only enables Delta and no action needs it unset. *)
+(*                                                                          *)
+(* THE RESET. The STT can lose its engine session -- a reconnect after the  *)
+(* receive task fails, or hold() for a phone call -- and the open segment,  *)
+(* the dones on the wire and the stamps they were owed go with it           *)
+(* (SttReset, bounded by MaxResets). It pushes SegmentResetFrame down. What *)
+(* the strategy does with its owed close then is RESET:                     *)
+(*                                                                          *)
+(*   "keep" -- until 2026-10-15: nothing; a stop whose close went with the  *)
+(*             session stays owed (sc_reset_owed).                          *)
+(*   "pays" -- as shipped: the frame carries the STT's stop count, and the  *)
+(*             reset is the close of every stop up to it.                   *)
 (***************************************************************************)
 EXTENDS Naturals, Sequences
 
@@ -199,7 +212,9 @@ CONSTANTS MODE,        \* "vadStop" | "verdict"
           MaxVoice,    \* bound on stretches of voice the VAD has not started on
           CARRY,       \* BOOLEAN: a commit's carry feeds the next segment (#154)
           NUMBERED,    \* BOOLEAN: a verdict names its stop; the STT ignores another's
-          MaxLag       \* bound on VAD edges either side has yet to handle (THE ORDER)
+          MaxLag,      \* bound on VAD edges either side has yet to handle (THE ORDER)
+          MaxResets,   \* bound on engine sessions the STT loses (SegmentResetFrame)
+          RESET        \* "keep" | "pays": the strategy's owed close at a reset
 
 \* Utterances are numbered by VAD start; a done's words are the utterances whose
 \* audio was in the segment it closed. NONE is "no stop": owed's rest value, and the
@@ -254,7 +269,7 @@ VARIABLES
     voice,          \* "none" | "on" | "paused", since the VAD's latest stop
     voices,         \* stretches of it before a VAD start so far (bound)
     \* --- bounds ---
-    stops, lost, missed, closes, backstops,
+    stops, lost, missed, closes, backstops, resets,
     lostHere,       \* a verdict for the STT's CURRENT stop was lost in flight
     \* --- monitors ---
     closedUnjudged, \* the segment was closed for a stop the strategy has not called done
@@ -284,7 +299,7 @@ stratCount == <<stratSpeaking, stratStops, stratStarts, stopUtt>>
 sttVars == <<sttStops, sttSpeaking, spoke, segAudio, segSpeech, pending, hold, backstop,
              closedUnasked, commits, lastCommitN, deferred>>
 envVars == <<userSpeaking, utt, stops, missed>>
-bounds == <<lost, closes, backstops, lostHere>>
+bounds == <<lost, closes, backstops, resets, lostHere>>
 monitors == <<closedUnjudged, answered, split, doubleAnswer, staleClose, staleEnd,
               mispaired>>
 
@@ -334,7 +349,7 @@ Init ==
     /\ pending = FALSE /\ hold = FALSE /\ backstop = FALSE /\ closedUnasked = FALSE
     /\ commits = <<>> /\ lastCommitN = 0
     /\ stops = 0 /\ lost = 0 /\ missed = 0 /\ closes = 0 /\ backstops = 0
-    /\ lostHere = FALSE
+    /\ resets = 0 /\ lostHere = FALSE
     /\ closedUnjudged = FALSE /\ answered = FALSE
     /\ split = FALSE /\ doubleAnswer = FALSE /\ staleClose = FALSE
     /\ staleEnd = FALSE /\ mispaired = FALSE
@@ -378,7 +393,8 @@ EngineClose ==
     /\ segAudio' = IF userSpeaking THEN {utt} ELSE {}
     /\ UNCHANGED <<envVars, vadQ, toStt, toStrategy, stratCount, stratVars, sttStops,
                    sttSpeaking, spoke, segSpeech, pending, hold, backstop, closedUnasked,
-                   commits, lastCommitN, deferred, voiceEnv, lost, backstops, lostHere,
+                   commits, lastCommitN, deferred, voiceEnv, lost, backstops, resets,
+                   lostHere,
                    monitors, voiceMon>>
 
 (***************************************************************************)
@@ -609,6 +625,24 @@ StratDone ==
                    turnComplete, vadStopped, netArmed, netFired, sttVars, voiceEnv, bounds,
                    monitors, voiceMon>>
 
+\* SegmentResetFrame reaches the strategy (_handle_segment_reset): the STT's engine
+\* session went with its open segment (SttReset). "keep": it drops the interim (not
+\* modelled here) and leaves the debt standing. "pays": the reset is the close of
+\* every stop the STT had seen at it, since none of them will get another -- it pays
+\* an owed one among them, keeps a receipt for each not counted here yet, and, having
+\* paid, finalizes whatever _text holds, as a wordless close does.
+StratReset ==
+    /\ toStrategy /= <<>> /\ Head(toStrategy).kind = "reset"
+    /\ LET f == Head(toStrategy)
+           paid == RESET = "pays" /\ owed /= NONE /\ owed <= f.n
+       IN /\ toStrategy' = Tail(toStrategy)
+          /\ owed' = IF paid THEN NONE ELSE owed
+          /\ early' = IF RESET = "pays" THEN early \cup ((stratStops + 1)..f.n) ELSE early
+          /\ finalized' = (finalized \/ paid)
+    /\ UNCHANGED <<envVars, vadQ, toStt, fromEngine, stratCount, ceilingArmed, turnOpen,
+                   text, turnComplete, vadStopped, netArmed, netFired, earlier, sttVars,
+                   voiceEnv, bounds, monitors, voiceMon>>
+
 \* BaseSmartTurn.append_audio: SMARTTURN_STOP_SECS of silence since the stop overrides
 \* the INCOMPLETE verdict; _handle_input_audio sees _turn_complete flip and pushes the
 \* ceiling's verdict. The caller had the whole ceiling and did not resume, so a
@@ -685,7 +719,7 @@ LoseVerdict ==
     /\ lost' = lost + 1
     /\ lostHere' = (lostHere \/ Head(toStt).n = sttStops)
     /\ UNCHANGED <<envVars, vadQ, toStrategy, fromEngine, stratCount, stratVars, sttVars,
-                   voiceEnv, closes, backstops, monitors, voiceMon>>
+                   voiceEnv, closes, backstops, resets, monitors, voiceMon>>
 
 (***************************************************************************)
 (* The STT: its copy of each VAD edge and each verdict, in the order they   *)
@@ -736,15 +770,16 @@ SttStop ==
               /\ UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, commits, lastCommitN,
                              deferred>>
     /\ UNCHANGED <<envVars, vadQ, toStrategy, stratCount, stratVars, closedUnasked,
-                   voiceEnv, lost, closes, backstops, split, doubleAnswer, staleClose,
-                   staleEnd, mispaired, voiceMon>>
+                   voiceEnv, lost, closes, backstops, resets, split, doubleAnswer,
+                   staleClose, staleEnd, mispaired, voiceMon>>
 
 \* _handle_verdict. With no commit pending the verdict answers a stop this segment
 \* is not waiting on -- vadStop mode, or a caller who resumed before it landed -- and
 \* is ignored. A complete verdict (the model's or the ceiling's) commits; an
-\* incomplete one keeps the hold. TurnVerdictFrame names no stop, so the STT cannot
-\* tell a verdict for its pending stop from one for the stop before it that the VAD
-\* overtook (THE ORDER): unless NUMBERED, it takes either. A commit on another stop's
+\* incomplete one keeps the hold. NUMBERED, as shipped: the verdict names its stop
+\* (TurnVerdictFrame.stop_n) and one for any stop but the STT's is ignored. Without
+\* it the STT cannot tell a verdict for its pending stop from one for the stop before
+\* it that the VAD overtook (THE ORDER), and takes either; a commit on another stop's
 \* verdict closes the segment under a stop nobody has judged (closedUnjudged).
 Verdict ==
     /\ toStt /= <<>> /\ Head(toStt).kind = "verdict"
@@ -850,6 +885,33 @@ Done ==
                    spoke, segAudio, lastCommitN, voiceEnv, bounds, closedUnjudged,
                    answered, split, doubleAnswer, staleClose, staleEnd, voiceMon>>
 
+\* The engine session goes, and the open segment with it (_disconnect_websocket): a
+\* reconnect after the receive task fails, or hold() for a phone call and resume().
+\* The segment's words, the dones still on the wire and the stamps they were owed go
+\* with the socket; the hold, the wait for the caller's pause and the backstop are
+\* cancelled; a caller still talking feeds the next session (the base class buffers
+\* what arrives meanwhile and replays it). Nothing is answered: the stop this segment
+\* was held for, or whose commit was out, gets no close. The STT pushes
+\* SegmentResetFrame down behind its other frames, stamped ("pays") with the stops it
+\* has seen. The next session is up at once: a VAD stop while there is none is a
+\* commit whose send fails, out of scope (README).
+SttReset ==
+    /\ resets < MaxResets
+    /\ resets' = resets + 1
+    /\ fromEngine' = <<>>
+    /\ commits' = <<>>
+    /\ segAudio' = IF userSpeaking THEN {utt} ELSE {}
+    /\ spoke' = userSpeaking
+    /\ segSpeech' = FALSE
+    /\ pending' = FALSE /\ hold' = FALSE /\ deferred' = FALSE /\ backstop' = FALSE
+    /\ closedUnasked' = FALSE
+    /\ toStrategy' = Append(toStrategy,
+                            Frame("reset", IF RESET = "pays" THEN sttStops ELSE NONE,
+                                  0, {}))
+    /\ UNCHANGED <<envVars, vadQ, toStt, stratCount, stratVars, sttStops, sttSpeaking,
+                   lastCommitN, voiceEnv, lost, closes, backstops, lostHere, monitors,
+                   voiceMon>>
+
 \* _commit_when_hold_expires. TIMING FACT, stated: the expiry outlasts every verdict
 \* that is still coming -- one in flight, one for a stop the strategy has not
 \* processed yet, or the ceiling's, which fires SMARTTURN_STOP_SECS after the stop
@@ -889,8 +951,9 @@ Backstop ==
     \* no-op; it is here so that removing the guard makes NoSplitOnIncomplete fall.
     /\ closedUnjudged' = (closedUnjudged \/ pending)
     /\ UNCHANGED <<envVars, vadQ, toStt, toStrategy, stratCount, stratVars, sttStops,
-                   sttSpeaking, closedUnasked, voiceEnv, lost, closes, lostHere, answered,
-                   split, doubleAnswer, staleClose, staleEnd, mispaired, voiceMon>>
+                   sttSpeaking, closedUnasked, voiceEnv, lost, closes, resets, lostHere,
+                   answered, split, doubleAnswer, staleClose, staleEnd, mispaired,
+                   voiceMon>>
 
 \* The turn's end has priority: the code ends the turn inside the handler that made
 \* it possible, so no other step can come between.
@@ -899,8 +962,9 @@ Next ==
     \/ /\ ~CanEnd
        /\ \/ VadStart \/ VadStop \/ VadStopMissed \/ Delta \/ EngineClose
           \/ StratStart \/ StratStop \/ StratDelta \/ StratFinal \/ StratDone
-          \/ Ceiling \/ Net \/ TurnStop \/ LoseVerdict
+          \/ StratReset \/ Ceiling \/ Net \/ TurnStop \/ LoseVerdict
           \/ SttStart \/ SttStop \/ Verdict \/ Done \/ HoldExpire \/ Backstop
+          \/ SttReset
           \/ VoiceOn \/ VoicePause \/ PauseCommit \/ PauseCap
 
 Spec == Init /\ [][Next]_vars
@@ -1020,7 +1084,13 @@ TurnWayOut ==
     \/ BackstopReady \/ ENABLED HoldExpire \/ ENABLED PauseCap
     \/ CanEnd
 
-NoStrandedTurn == (turnOpen /\ vadStopped /\ ~stratSpeaking /\ ~userSpeaking) => TurnWayOut
+\* A reset (SttReset) can take every word the turn had: a turn that an interim opened
+\* holds no text, and the segment that interim streamed from is gone. Nothing can end
+\* that turn but the watchdog, and nothing should -- there is nothing to answer -- so
+\* it is left out; a turn with words in hand is not.
+NoStrandedTurn ==
+    (turnOpen /\ vadStopped /\ ~stratSpeaking /\ ~userSpeaking /\ (text \/ resets = 0))
+      => TurnWayOut
 
 MaxUtt == MaxStops + MaxMissed + 1
 
@@ -1040,6 +1110,7 @@ TypeOK ==
     /\ lastCommitN \in 0..MaxStops
     /\ stops \in 0..MaxStops /\ lost \in 0..MaxLost /\ missed \in 0..MaxMissed
     /\ closes \in 0..MaxCloses /\ backstops \in 0..MaxBackstops /\ lostHere \in BOOLEAN
+    /\ resets \in 0..MaxResets /\ RESET \in {"keep", "pays"}
     /\ closedUnjudged \in BOOLEAN /\ answered \in BOOLEAN
     /\ split \in BOOLEAN /\ doubleAnswer \in BOOLEAN /\ staleClose \in BOOLEAN
     /\ staleEnd \in BOOLEAN /\ mispaired \in BOOLEAN
@@ -1055,7 +1126,7 @@ TypeOK ==
                        v: {"none", "complete", "incomplete", "ceiling", "stopped"},
                        n: 0..MaxStops]
     /\ \A i \in 1..Len(toStrategy):
-         toStrategy[i] \in [kind: {"delta", "final", "done"},
+         toStrategy[i] \in [kind: {"delta", "final", "done", "reset"},
                             n: 0..(MaxStops + 1), c: 0..MaxUtt, words: SUBSET Utts]
     /\ \A i \in 1..Len(fromEngine):
          fromEngine[i] \in [asked: BOOLEAN, words: SUBSET Utts]

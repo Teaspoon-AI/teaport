@@ -3,8 +3,8 @@
 #   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh          # the default run (CI)
 #   TLA_TOOLS=/path/to/tla2tools.jar ./check.sh --full   # plus the long rows (by hand)
 #
-# --full adds the rows too large for the default run: today five SttCommit rows (the
-# carry, the missed stop and the repaired final in their full environments) whose state
+# --full adds the rows too large for the default run: today six SttCommit rows (the
+# carry, the missed stop, the repaired final and the reset in their full environments) whose state
 # spaces are tens of millions (formal/README.md).
 # Nothing runs it automatically (CI runs the default on push and pull request): it is a
 # manual gate, to run before merging any change to SttCommit.tla or to the commit paths
@@ -183,8 +183,8 @@ run SttCommit.tla sc_vadStop_split "(expected: FAILS NoSplitOnIncomplete — the
 run SttCommit.tla sc_vadStop_sound "(expected: holds — what that design did right, and what the fallback keeps)"
 run SttCommit.tla sc_verdict_silentStop "(expected: FAILS NoOrphanedHold — the first cut: nothing reported when the turn is closed under the ceiling)"
 run SttCommit.tla sc_verdict       "(expected: holds — as shipped: a lost verdict, a missed stop and a turn closed under the ceiling, the VAD one edge ahead)"
-run SttCommit.tla sc_verdict_stale "(expected: FAILS NoSplitOnIncomplete — AS SHIPPED, the strategy three edges behind: a verdict for the stop before closes the held one)"
-run SttCommit.tla sc_verdict_numbered "(expected: holds — PROPOSED, not code: the verdict names its stop and the STT ignores another's)"
+run SttCommit.tla sc_verdict_stale "(expected: FAILS NoSplitOnIncomplete — BEFORE NUMBERING (shipped until 2026-10-15), the strategy three edges behind: a verdict for the stop before closes the held one)"
+run SttCommit.tla sc_verdict_numbered "(expected: holds — AS SHIPPED, the strategy three edges behind: the verdict names its stop and the STT ignores another's)"
 echo
 echo "SttCommit.tla — the caller's voice (#140): no commit drawn over words the VAD has not started on"
 run SttCommit.tla sc_voice_blind "(expected: FAILS NoCutVoice — before #140: the verdict commits over the resumed voice)"
@@ -209,6 +209,8 @@ run SttCommit.tla sc_final_stop_stranded "(expected: FAILS NoStrandedTurn — BE
 run SttCommit.tla sc_final_receipts      "(expected: holds — AS SHIPPED: receipts for closes that come early, no stamp on an unasked final)"
 run SttCommit.tla sc_final_receipts_backstop "(expected: holds — as shipped: the same, with the backstop's half in place of the engine's cut)"
 run SttCommit.tla sc_final_stop_residual "(expected: holds — as shipped, on an engine before teagram-engine#36: every stale end is a mispairing)"
+run SttCommit.tla sc_reset_owed          "(expected: FAILS NoStrandedTurn — BEFORE 2026-10-15: a lost engine session takes a stop's close, and the strategy still owes it)"
+run SttCommit.tla sc_reset_pays          "(expected: holds — AS SHIPPED: the reset is the close of every stop the STT had seen)"
 if [ "$FULL" = 1 ]; then
   echo "  --full: the environments too large for the default run"
   run SttCommit.tla sc_vadStop_sound_carry "(expected: holds — the fallback's rows, with the carry)"
@@ -216,6 +218,7 @@ if [ "$FULL" = 1 ]; then
   run SttCommit.tla sc_voice_missed        "(expected: holds — the caller's voice, with a missed VAD stop too)"
   run SttCommit.tla sc_voice_final_carry   "(expected: holds — the final under the wait, as shipped, with the carry and a lost verdict)"
   run SttCommit.tla sc_final_receipts_full "(expected: holds — the shipped final with the backstop, a lost verdict, the engine's cut and the carry)"
+  run SttCommit.tla sc_reset_pays_closes   "(expected: holds — the shipped reset, with the engine's own close)"
 fi
 echo
 echo "SttSlot.tla — the engine's single STT slot: has the engine let go when the brain thinks so"
