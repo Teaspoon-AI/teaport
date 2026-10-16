@@ -872,9 +872,11 @@ this module has the same environment with the facts the design rests on spelled 
 - A context opens (`TTSStartedFrame`) for any text with a non-blank character:
   `tts_service._push_tts_frames` creates the audio context and queues the started frame
   *before* `run_tts`, so text with nothing synthesizable — `"..."`, an emoji — opens a
-  context that never yields audio (`UnspeakableOpens`). Such a context, and any whose
-  last `run_tts` yielded no audio, is not closed at the End: it ends on the stop-frame
-  timeout (`TTS_STOP_FRAME_TIMEOUT_S`, 15 s).
+  context that never yields audio (`UnspeakableOpens`). pipecat closes a context at its
+  End only if its last `run_tts` yielded audio (`on_turn_context_completed`, on
+  `tts_process_generator`'s flag); `EngineTTSService` closes every one at its End
+  (`CloseAtEnd`, below), so only a context the LLM leaves open mid-reply ends on the
+  stop-frame timeout (`TTS_STOP_FRAME_TIMEOUT_S`, 15 s).
 - Every context that opened ends with a `TTSStoppedFrame` naming it
   (`push_stop_frames=True`, `engine_tts.py:607`): appended behind its last chunk, or
   pushed on the stop-frame timeout — mid-reply too, when the LLM is silent that long. The
@@ -919,15 +921,23 @@ the rest on the real ledger.
 | `lp_premature` | `NoPrematureFullChart`, with stalls and timeouts | ✓ |
 | `lp_playedCharted` | `PlayedIsCharted` — audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
 | `lp_fillerSet` | `FillerCtxRemembered` | ✓ |
-| `lp_all` | every property above and `NoUnheardAheadOfPlayed`, two replies and a filler | ✓ (375k, ~25 s) |
+| `lp_all` | every property above, `NoUnheardAheadOfPlayed`, `NoPlayedReplyDeleted`, `UnheardSaidIsCorrected`, `CutAnchorsOwn`, `HeardPrefixOnOwn` and `NoSweepAfterEnd`, two replies and a filler | ✓ (405k, ~25 s) |
 | `lp_resume` | `NoPrematureFullChart` under `Resume` | ✗ (8) — below |
-| `lp_unspeakable` | every property, `Unspeakable = {r1}`, **as shipped** (`SpeakCheck = "chart"`): every response with text queued; one with no audio and nothing synthesizable charted nothing | ✓ (72k) |
+| `lp_unspeakable` | every property, `Unspeakable = {r1}`, **as shipped** (`SpeakCheck = "chart"`, `Corrector = "seq"`): every response with text queued; one with no audio and nothing synthesizable charted nothing; its committed text never taken for another reply's | ✓ (83k) |
 | `lp_wrongText_unspeakable` | `ChartedTextMatchesContext`, the first cut's premise (`UnspeakableOpens = FALSE`) without `has_speech` (`SpeakCheck = "none"`) | ✗ (6) — below |
 | `lp_wrongText_unspeakable_checked` | the same premise, `has_speech` at the queue (`"queue"`): why it shipped | ✓ |
 | `lp_wrongText_unspeakable_opens` | `ChartedTextMatchesContext`, **before this fix** (`"queue"`), with the context opening as pipecat opens it | ✗ (6) — below |
 | `lp_unheard_unspeakable_opens` | `NoUnheardWhenPlayed`, the same | ✗ (12) — below |
 | `lp_unspeakable_charted` | every property, the first proposal: queued and charted (`"none"`) | ✗ (12) `NoUnheardAheadOfPlayed` — below |
 | `lp_unspeakable_noOpen` | `ChartedTextMatchesContext`, the shipped ledger on the first cut's premise: the fix rests on pipecat opening the context | ✗ (7) |
+| `lp_endings` | `NoSweepAfterEnd`, `TrailingMute = {r1}` ("Great!!"), pipecat's default close (`CloseAtEnd = FALSE`): **before this fix** | ✗ (6) — below |
+| `lp_endings_closed` | every property and `NoSweepAfterEnd`, a trailing-mute reply and an unspeakable one, **as shipped** (`CloseAtEnd`) | ✓ (83k, ~7 s) |
+| `lp_failed_charted` | `NoUnheardAheadOfPlayed`, `Failed = {r1}`: a reply the engine fails on every clause | ✗ (12) — below |
+| `lp_failed_position` | `NoPlayedReplyDeleted`, `Failed = {r1}`, no barge-in, the corrector **before this fix** (`Corrector = "position"`) | ✗ (13) — below |
+| `lp_position` | `NoPlayedReplyDeleted`, no failure, the corrector **before this fix**: a barge-in before a queued reply's first audio | ✗ (11) — below |
+| `lp_guarded` | `HeardPrefixOnOwn`, the corrector of the first fix (`"guarded"`: still the newest message, cut by cut) | ✗ (14) — below |
+| `lp_unspeakable_tail` | `HeardPrefixOnOwn`, `Unspeakable = {r1}`, the `"seq"` corrector before the emoji fix (`"seqTail"`: with no newer reply, the newest message, speech or not) | ✗ (13) — below |
+| `lp_failed` | every property but `NoUnheardAheadOfPlayed`, with the corrector's three, `Failed = {r1}`, **as shipped** (`Corrector = "seq"`) | ✓ (85k, ~10 s) |
 | `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ (381k, ~15 s) |
 | `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
 
@@ -1023,13 +1033,15 @@ every response with text, and every non-filler spoken notice, as pre-#13 — pip
 context for any non-blank text, so each context claims its own entry and the queue stays
 in step. `_finish` charts nothing for a turn with no audio whose text has nothing
 synthesizable, unless a barge-in cut its response while it still streamed (`Silent` in
-the model): nothing of it was heard, and pipecat committed nothing for it.
+the model): nothing of it was heard. (pipecat does commit its text — the TTS
+force-completes a context's text at its stop — which the section on failed replies below
+found; an emoji left in the context is harmless.)
 
 Queuing alone — the first proposal, `lp_unspeakable_queued` before this change, now
 `lp_unspeakable_charted` — held every property then checked, but charts the unspeakable
 reply heard-nothing, and `HeardContextCorrector` anchors a cut by position: the newest
-assistant message since its last reconcile. The unspeakable reply committed none, so its
-cut lands on the reply that played after it and deletes that one — the same lost answer
+assistant message since its last reconcile. The reply that played after the unspeakable
+one committed the newer message, so the cut lands on it and deletes it — the same lost answer
 by another route. Checked on the real corrector with the ledger's events (`"Great!!"`,
 `"👍"` cut at 0%, the answer heard in full): it removed the answer. `NoUnheardAheadOfPlayed`
 is that requirement as an invariant (a reply charted heard-nothing is not followed in the
@@ -1060,7 +1072,185 @@ opening the context fails a test rather than the transcript. Regressions:
 `test_ledger_playout.py` case k (the probe's frame order, through the ledger and the
 corrector) and that test; both fail on the code before this change.
 
-The trailing-`"!!"` hold below is unchanged: `"Great!!"` has speech and was always queued.
+The trailing-`"!!"` hold is not the ledger's: `"Great!!"` has speech and was always
+queued. It is the next section.
+
+### A reply ending in `"!!"` held the TTS for 15 s (2026-10-15)
+
+pipecat closes a context at its End only if the *last* `run_tts` yielded audio
+(`on_turn_context_completed` reads the flag `tts_process_generator` sets from that one
+call: a service that yields none may be streaming on a socket of its own). The sentence
+aggregator hands a reply's trailing piece to `run_tts` on its own — `"Great!!"` reaches it
+as `"Great!"` and `"!"`, `"Really?!"` as `"Really?"` and `"!"`, `"Bye! 👋"` as `"Bye!"`
+and `"👋"` — and the engine has nothing to synthesize in it. So the context, and the TTS's
+queue behind it, stayed open for the full `TTS_STOP_FRAME_TIMEOUT_S`: bot-speaking ended
+on the transport's 3 s idle fallback instead of the stop frame, and whatever the TTS said
+next — the answer after a tool call, a narrator line — waited up to 15 s. A reply with
+nothing synthesizable at all (`"👍"`), and one whose every clause the engine fails, the
+same. Measured on the real TTS with the timeout at 1 s: the stop frame 1.00 s after the
+last audio for those endings, 0.00 s for `"That is all."`.
+
+Modelled as a property of the environment the ledger reads, not of the ledger:
+`TrailingMute` (replies with audio whose last piece has none), `MutedAtEnd` (those and
+`Unspeakable`), and `swept` — contexts the timeout closed after their End reached the TTS.
+`NoSweepAfterEnd` says none is. `lp_endings`, 6 states:
+
+```
+LlmStart(r1) TtsStart(r1)  "Great!!" streams; its context opens
+LlmEnd(r1)                 the End reaches the TTS: the last piece, "!", yielded no audio,
+                           so the End does not close the context
+TtsAudio(r1) TtsStop(r1)   "Great!" plays; the stop frame comes on the timeout, 15 s on
+```
+
+**What was changed.** `EngineTTSService.tts_process_generator` runs pipecat's and then
+sets the flag: this service yields every frame of a `run_tts` synchronously, so a call with
+no audio is one with none to give, and the End closes the context whatever the last piece
+was (`CloseAtEnd = TRUE`). `_require_close_at_end_flag` fails the session build if a
+pipecat bump stops reading that flag in `on_turn_context_completed`. Dropping the
+unspeakable piece before `run_tts` (a text filter) was the other way in, and is wrong
+here: a reply with nothing synthesizable at all would then open no context, which is the
+premise `lp_unspeakable_noOpen` shows the ledger cannot take. `lp_endings_closed` holds
+with every property — the ledger's charts do not depend on when the stop comes, only that
+it does. Regression: `test_tts_stop_frame.py`'s
+`test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end` (real
+`EngineTTSService`, timeout 2 s: `"Great!!"`, `"Really?!"`, `"Bye! 👋"`, `"👍"`, each
+followed by a reply), which fails before it (`'Great!!': its context closed 2.00s after
+its last audio`).
+
+### A failed reply's cut deleted the reply that played after it (2026-10-15)
+
+A reply the engine fails on every clause (CUDA OOM, an engine restart) opens a context,
+yields no audio, and is charted heard 0 by design (`test_ledger_playout.py` case c): it has
+speech, so it is a cut, and `HeardContextCorrector` removes it. But pipecat commits its
+text all the same — at the stop the TTS force-completes the context's remaining text
+(`_apply_force_complete`) as a word frame, which the assistant aggregator appends;
+measured on the real `EngineTTSService`: `TTSStopped`, then `TTSText 'Hello there my
+friend.' append_to_context=True`, then the End (an emoji the same, `'👍'`). The corrector
+anchors a cut on the newest assistant message of its window, so with a reply that played
+after the failed one and no user turn between — the answer after a tool call, the next
+response — the failed reply's cut deleted THAT one: an answer the caller heard, while the
+text they never heard stayed. `Failed` (replies with speech that yield no audio) reaches
+`NoUnheardAheadOfPlayed` (`lp_failed_charted`, 12 states).
+
+Modelling the corrector found a second way in. `Chart` records `said` — pipecat committed
+a message: words of it played, or its context ended — and `Anchor(i)` is the newest
+committed message of the cut's window, newest by the order the contexts opened, which is
+the order pipecat commits them (not always the charts' order: a failed reply is charted at
+its stop while the reply ahead of it still plays). `NoPlayedReplyDeleted`: the corrector
+never rewrites or deletes ANOTHER reply that played. `lp_failed_position`, 13 states:
+
+```
+LlmStart(r1) TtsStart(r1) TtsStop(r1)   r1 fails on every clause: charted heard 0, committed
+LlmEnd(r1) LlmStart(r2) TtsStart(r2) PlayMark TtsAudio(r2) PlayStart TtsStop(r2)
+PlayChunk PlayMark
+                                        r2 plays in full, committed after r1: the newest
+                                        message -- the corrector's anchor for r1's cut
+```
+
+**The premise under `said`.** The model takes `said` as the truth, and the code computes it:
+`Utterance.committed = not interrupted or never or synth_done or heard > 0`. It holds
+because each arm names a context whose end force-completes the reply's text
+(`tts_service._apply_force_complete` runs in `_handle_audio_context` before the stop frame
+is pushed, whether the context ends at its End or on the timeout), or words of it that
+reached the aggregator:
+
+- `never` — the ledger's three no-audio closes: its own `TTSStoppedFrame` (the stop was
+  pushed after the force-complete), its End re-pushed below the TTS (pushed by
+  `_maybe_reset_word_timestamps`, after the same force-complete), and another context
+  starting (`_context_started`: pipecat drains contexts one at a time, so the earlier
+  one's `_handle_audio_context`, force-complete included, has finished).
+- `synth_done` — set by the same three sightings for a turn with audio.
+- `heard > 0` — words are pushed on their pts, ahead of their audio by the caption lead,
+  so some of a reply that played have reached the assistant aggregator, which commits
+  them at the interruption.
+- `not interrupted` — charted complete: its stop and drain were seen.
+- A spoken notice (`TTSSpeakFrame`, `append_to_context`) opens a context of its own
+  through `_push_tts_frames`, and is committed by the same force-complete at its stop.
+
+Only a reply cut before its context ended, with nothing played, falls through all of
+them — and pipecat committed nothing of it. Checked by review against every `_finish`
+caller; no counterexample. A pipecat bump that commits on another frame, or stops
+force-completing, breaks it.
+
+`lp_position` (11 states) needs no failure: a reply plays, the next one's context opens,
+and a barge-in lands before its first audio. That reply committed nothing (its context had
+not ended), so the newest message is the one the caller heard, and the corrector deleted
+it. A tool message between the two stops the walk, which may be why it has not been seen.
+
+**The first fix, and what it left.** `_anchor_elsewhere` let a cut that heard nothing
+be when its message could not be the newest (`Corrector = "guarded"`): a reply newer than
+it in its window was heard, or an older one was and it committed nothing. It held
+`NoPlayedReplyDeleted`, but every cut it did reconcile was still anchored on the newest
+message left, cut by cut in the batch's order — and a reply cut partway with a reply
+committed after it lost its correction. `HeardPrefixOnOwn` (a cut that heard something
+has its heard prefix written on its OWN message) is that; `lp_guarded`, 14 states:
+
+```
+LlmStart(r1) TtsStart(r1) TtsAudio(r1) TtsAudio(r1) TtsStop(r1) LlmEnd(r1)
+LlmStart(r2) TtsStart(r2) TtsAudio(r2) TtsStop(r2)
+                          r2 synthesized whole behind r1: committed (force-completed)
+PlayStart PlayChunk       r1's first chunk plays
+Interrupt                 r1 cut partway, r2 heard nothing: r1's prefix lands on r2's
+                          message (the newest), r2's cut then removes it, and r1 keeps
+                          its FULL text -- the context says the caller heard all of it
+```
+
+The model's first run of this (with anchors taken all at once rather than cut by cut)
+showed the same with a failed reply in r2's place; the real corrector, cut by cut, gets
+that one right — the failed reply is charted first, at its stop, and its removal leaves
+r1's message the newest. The queued reply is charted after r1, at the same barge-in.
+
+**What was changed.** `HeardContextCorrector._resolve` finds each cut's OWN message,
+all of them before any is rewritten: pipecat commits the replies' messages in the order
+their contexts opened, so the cut's is as many spoken messages back from the newest as
+its batch has committed replies newer than it. The ledger puts what that needs on each
+`Utterance`: `turn_seq` (the order its context opened) and `committed`
+(`not interrupted or never or synth_done or heard > 0`). A cut that committed nothing has
+nothing to correct. Messages with nothing synthesizable (an emoji reply, charted nothing)
+are not counted; a message carrying a tool call is cleared rather than removed, so the
+tool result keeps its call. `Target` is that rule (`Corrector = "seq"`). `lp_failed`
+holds with every property but `NoUnheardAheadOfPlayed` — the charts are unchanged; the
+corrector no longer reads them by position alone — and with the corrector's three:
+`NoPlayedReplyDeleted`, `CutAnchorsOwn` (every cut it reconciles, on its own message) and
+`UnheardSaidIsCorrected` (every cut heard nothing that committed a message is removed: the
+failed reply ahead of one that played too, which the first fix had to leave). Charting a
+failed reply nothing, as `Silent` does an unspeakable one, was another way, and is worse:
+its text is in the context, and the corrector removes it. Regression:
+`test_ledger_playout.py` cases l (a failed reply then a played one; a played one then a
+failed one charted first; a played one then a barge-in before the next one's audio) and m
+(a reply cut partway with a queued reply, and with a failed one, after it), through the
+real ledger and corrector. Before the first fix, l's first and third fail (`the reply the
+caller heard was deleted`); before this one, l's first (the failed reply's text kept) and
+m (`['The bakery opens at eight and closes at six.']`: the cut reply's full text).
+
+**An emoji reply after the cut one (review, 2026-10-15).** The model's messages were the
+charts' alone, and an unspeakable reply is charted nothing — but committed: its context
+closes at its End (promptly since `lp_endings`' fix) and the TTS force-completes its text.
+Behind a reply the caller then barges into, it is the newest message, and `_resolve`, with
+no committed reply newer than the cut, took the newest message as it found it: the emoji's,
+overwritten with the cut reply's heard prefix, while the cut reply kept its full text.
+Reproduced on the real ledger and corrector (`['The bakery opens at eight and closes at
+six.', 'The bakery opens at']`). `Muted` puts those messages in the model, with
+`stopEpoch` (the window a context's stop falls in); `lp_unspeakable_tail` (`"seqTail"`, the
+code before this fix), 13 states:
+
+```
+LlmStart(r2) TtsStart(r2) TtsAudio(r2) TtsAudio(r2) TtsStop(r2) LlmEnd(r2)
+LlmStart(r1) TtsStart(r1) TtsStop(r1)   r1 ("👍"): charted nothing, committed after r2
+PlayStart PlayChunk Interrupt           r2 cut partway: its prefix lands on r1's message
+```
+
+The walk back from the newest now skips an assistant message with text and nothing
+synthesizable, as the count of newer replies already did — one predicate for both,
+`_is_reply` (the ledger's own `has_speech`). A tool call riding on the emoji does not make
+it a reply: the first cut of this fix kept such a message as a stop while the count skipped
+it, so with emoji text on a follow-up's tool call the walk stopped there and its text took
+the cut reply's prefix (review of the integrated stack). A message with no text at all — a
+bare tool call — still stops the walk, for the tool-result insert path. Tool calls are not
+in the model: to it both are `Muted` messages, which the corrector never counts or takes.
+`lp_unspeakable` (`"seq"`) holds with the corrector's three; regression:
+`test_ledger_playout.py` case n (an emoji reply, and the same with a tool call), which
+fails on the code before each fix with the review's output.
 
 ### What the model found
 
@@ -1081,15 +1271,6 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   and plays under an anonymous turn, charted nowhere. The first cut needed a narrator
   line in the gap; the stop frame does it alone. Still a 15 s LLM stall mid-reply
   (`TTS_STOP_FRAME_TIMEOUT_S`); "lead" pacing keeps the context alive through its waits.
-- **The context left open on the timeout** (not a ledger property, so not here as a row):
-  pipecat closes a context at its End only if the last `run_tts` yielded audio. A reply
-  whose last piece the sentence splitter hands over alone and the engine cannot speak —
-  `"Great!!"` (`"!"`), `"Really?!"`, `"Bye! 👋"` — keeps its context, and the TTS's
-  queue, open for the full `TTS_STOP_FRAME_TIMEOUT_S`: bot-speaking ends on the 3 s idle
-  fallback instead of the stop frame, and whatever the TTS says next (the answer after a
-  tool call, a narrator line) waits up to 15 s. Measured on the real TTS with the timeout
-  at 1 s: the stop frame 1.00 s after the last audio for those endings, 0.00 s for
-  `"That is all."`.
 - **Numbers are out of scope**, as in `Ledger.tla`: the layout's seconds, `heard_fraction`,
   the pts cut. The layout is taken to credit exactly what played.
 - **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its
@@ -1105,13 +1286,13 @@ reply's misclaim above, and its fix found the corrector's positional anchor
   sighting of the `InterruptionFrame`, and a TTS frame in flight between two of them
   opens an anonymous turn on a closed context, which the next sighting ends; the model's
   interruption is one step.
-- **The corrector's anchor, beyond the unspeakable reply.** `NoUnheardAheadOfPlayed` is
-  checked where the model can reach a heard-nothing chart, and the model's only reply
-  without audio is an unspeakable one. A speakable reply the engine fails on every clause
-  (`test_ledger_playout.py` case c) is still charted heard-0 by design, and with a reply
-  that played after it in the same window the corrector would delete that one. Not
-  modelled: engine failures, and the conversation's messages (a tool message between two
-  replies changes what the corrector anchors on).
+- **The corrector's messages are the charts' and the muted ones.** The model's context is
+  the committed charts of the window, and the unspeakable replies charted nothing whose
+  context ended (`Muted`), in the order their contexts opened; the code counts spoken
+  messages back from the newest. An uncharted commit WITH speech, or a reply pipecat
+  dropped (the tool-result insert path), would put the count off by one: the code then
+  finds too few messages and leaves the cut alone, or lands one message off. None is
+  known.
 - **Scale.** One reply and one filler is 3.5k states; two replies 300k, about 20 s with
   two workers.
 

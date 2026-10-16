@@ -578,10 +578,9 @@ async def test_k_a_response_with_nothing_synthesizable_claims_its_own_context():
     is the real EngineTTSService's, probe 2026-10-14).
 
     Every response with text is expected now, and its context claims its own entry.
-    Nothing of it could be heard and pipecat commits nothing for it, so its turn closes
-    charting nothing -- a heard-0 chart there would hand the corrector a cut with no
-    message of its own, and it anchors by position: it would delete the reply that
-    played after it (lp_unspeakable_charted)."""
+    Nothing of it could be heard, so its turn closes charting nothing -- a heard-0 chart
+    there would hand the corrector a cut, and it anchors by position: it would delete the
+    reply that played after it (lp_unspeakable_charted)."""
     assert not has_speech("\U0001F44D") and not has_speech("...") and not has_speech("\u2026 \u2014")
     assert has_speech("Ok.") and has_speech("\u65e5\u672c\u8a9e\u3067\u3059") and has_speech("7")
     f0, end0 = response("Great!!", 0.0)
@@ -614,24 +613,195 @@ async def test_k_a_response_with_nothing_synthesizable_claims_its_own_context():
         utts[1].heard_fraction, utts[1].t_start)
     assert not L._turns and not L._queue, (L._turns, list(L._queue))
 
-    # The caller's next turn: the context as pipecat committed it (the emoji yielded no
-    # word frames, so nothing of it). The corrector must leave the answer in place.
-    class Ctx:
-        def __init__(self, m):
-            self.m = m
-
-        def get_messages(self, *a, **k):
-            return self.m
-
-        def set_messages(self, m):
-            self.m = list(m)
-
+    # The caller's next turn. (pipecat commits the emoji too -- the TTS force-completes
+    # its text at the stop -- but it is charted nothing, so no cut anchors anywhere.)
+    # The corrector must leave the answer in place.
     ctx = Ctx([{"role": "user", "content": "How are you?"},
                {"role": "assistant", "content": "Great!!"},
                {"role": "assistant", "content": R2},
                {"role": "user", "content": "And you?"}])
     HeardContextCorrector(L, ctx, mode="truncate")._reconcile()
     assert [m["content"] for m in ctx.m if m["role"] == "assistant"] == ["Great!!", R2], ctx.m
+
+
+class Ctx:
+    """The LLM context as HeardContextCorrector reads and writes it."""
+
+    def __init__(self, m):
+        self.m = m
+
+    def get_messages(self, *a, **k):
+        return self.m
+
+    def set_messages(self, m):
+        self.m = list(m)
+
+
+def said(L, *replies, user=("How are you?", "And you?")):
+    """Reconcile at the caller's next turn, the context holding `replies` as pipecat
+    committed them; what is left of them."""
+    ctx = Ctx([{"role": "user", "content": user[0]}]
+              + [{"role": "assistant", "content": r} for r in replies]
+              + [{"role": "user", "content": user[1]}])
+    HeardContextCorrector(L, ctx, mode="truncate")._reconcile()
+    return [m["content"] for m in ctx.m if m["role"] == "assistant"]
+
+
+async def test_l_a_failed_reply_never_costs_the_context_a_reply_that_played():
+    """A reply the engine fails on every clause opens a context, yields no audio, and is
+    charted heard 0 by design (case c) -- but pipecat commits its text all the same: the
+    TTS force-completes it at the stop. HeardContextCorrector anchors a cut by POSITION,
+    on the newest assistant message of the window, so with a reply that played after it
+    and no user turn between, the failed reply's cut deleted THAT one: the answer the
+    caller heard (LedgerPlayout.tla, lp_failed_position). A barge-in before a queued
+    reply's first audio does the same to the reply that played before it (lp_position:
+    nothing of the cut one was committed, so the newest message is the played one's).
+
+    The corrector now lets a cut that heard nothing be when its message cannot be the
+    newest -- a newer reply in its window was heard, or an older one was and it
+    committed nothing (Utterance.turn_seq, .committed; lp_failed). A failed reply that
+    IS the newest is still removed, whichever order the ledger charted them in."""
+    # 1. Failed, then a reply that plays: the played one stays.
+    f1, end1 = response(R1, 0.0)
+    f2, end2 = response(R2, 0.3)
+    L = await feed(ledger(), f1 + [
+        (started("A"), 0.2, BELOW),
+        (TTSStoppedFrame(context_id="A"), 0.25, BELOW),   # every clause failed
+        drained(end1, 0.25),
+    ] + f2 + [
+        (started("B"), 0.5, BELOW),
+        at(audio(1.0, "B"), 0.5),
+        (TTSStoppedFrame(context_id="B"), 0.5, BELOW),
+        drained(end2, 0.5),
+        *siblings(BotStartedSpeakingFrame, 0.55),
+        (copy(1.0), 1.55, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 1.55),
+    ])
+    assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(R1, False), (R2, True)]
+    left = said(L, R1, R2)
+    assert R2 in left, "the reply the caller heard was deleted"
+    assert left == [R2], f"the failed reply's unheard text was kept: {left}"
+
+    # 2. A reply that played, then a failed one charted FIRST (at its stop, while the
+    #    first still plays): the failed one is the newest message, and is removed.
+    f0, end0 = response(ANSWER, 0.0)
+    f1, end1 = response(R1, 0.1)
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.2, BELOW),
+        at(audio(2.0, "A"), 0.2),
+        (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+        drained(end0, 0.2),
+        *siblings(BotStartedSpeakingFrame, 0.25),
+    ] + f1 + [
+        (started("B"), 0.4, BELOW),
+        (TTSStoppedFrame(context_id="B"), 0.45, BELOW),   # every clause failed
+        drained(end1, 0.45),
+        (copy(2.0), 2.25, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.25),
+    ])
+    assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(R1, False), (ANSWER, True)]
+    assert said(L, ANSWER, R1) == [ANSWER], "the failed reply's unheard text was kept"
+
+    # 3. A reply that played, then a barge-in before the next one's first audio: the
+    #    cut one committed nothing, and the one the caller heard stays.
+    f0, end0 = response(ANSWER, 0.0)
+    f1, end1 = response(R2, 2.5)
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.2, BELOW),
+        at(audio(2.0, "A"), 0.2),
+        (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+        drained(end0, 0.2),
+        *siblings(BotStartedSpeakingFrame, 0.25),
+        (copy(2.0), 2.25, AFTER),
+        *siblings(BotStoppedSpeakingFrame, 2.25),
+    ] + f1 + [
+        (started("B"), 2.7, BELOW),
+        (InterruptionFrame(), 2.8),
+    ])
+    assert [(u.text, u.heard_fraction > 0) for u in bot(L)] == [(ANSWER, True), (R2, False)]
+    assert said(L, ANSWER) == [ANSWER], "the reply the caller heard was deleted"
+
+
+async def test_m_a_cut_reply_is_reconciled_on_its_own_message_not_a_newer_one():
+    """A reply plays; the next is synthesized whole behind it (its context ended, so the
+    TTS force-completed its text and pipecat committed it) but not a chunk of it has
+    played when the caller barges in. The newest message is the queued reply's, and the
+    corrector anchored every cut on the newest it could see: the first reply's heard
+    prefix overwrote the queued reply's text, the queued reply's own cut then removed
+    that, and the first reply kept its FULL text -- the context said the caller heard
+    all of it (LedgerPlayout.tla, HeardPrefixOnOwn, lp_guarded). Each cut now finds its
+    own message before any is rewritten: as many spoken messages back from the newest as
+    its batch has committed replies newer than it (Utterance.turn_seq, .committed).
+    The same with a failed reply in place of the queued one, charted at its stop."""
+    for failed in (False, True):
+        f0, end0 = response(ANSWER, 0.0)
+        f1, end1 = response(R1, 0.1)
+        L = await feed(ledger(), f0 + [
+            (started("A"), 0.2, BELOW),
+            at(audio(2.0, "A"), 0.2),
+            (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+            drained(end0, 0.2),
+            *siblings(BotStartedSpeakingFrame, 0.25),
+        ] + f1 + [
+            (started("B"), 0.4, BELOW),
+            *([] if failed else [at(audio(3.0, "B"), 0.45)]),   # queued behind A's
+            (TTSStoppedFrame(context_id="B"), 0.45, BELOW),
+            drained(end1, 0.45),
+            (InterruptionFrame(), 1.25),                       # a second into ANSWER
+        ])
+        utts = {u.text: u for u in bot(L)}
+        assert utts[R1].heard_fraction == 0 and 0 < utts[ANSWER].heard_fraction < 0.99, (
+            failed, [(u.text[:20], round(u.heard_fraction, 2)) for u in bot(L)])
+        left = said(L, ANSWER, R1)
+        assert len(left) == 1 and left[0] != ANSWER and ANSWER.startswith(left[0]), (
+            f"failed={failed}: the cut reply must keep only what was heard, and the "
+            f"unheard one go: {left}")
+
+
+async def test_n_an_emoji_reply_after_a_cut_one_is_not_its_message():
+    """An emoji reply is charted nothing, but pipecat commits it: its context closes at
+    its End (since lp_endings' fix, promptly) and the TTS force-completes its text. So
+    it can be the newest message when the caller barges into the reply ahead of it --
+    and the corrector, finding no committed reply newer than the cut one, took the
+    newest message: the emoji's, overwritten with the cut reply's heard prefix, while
+    the cut reply kept its full text (LedgerPlayout.tla, HeardPrefixOnOwn,
+    lp_unspeakable_tail; reproduced by review on the real ledger and corrector). A
+    message with nothing synthesizable is never counted as a reply's."""
+    f0, end0 = response(ANSWER, 0.0)
+    f1, end1 = response("\U0001F44D", 0.1)
+    L = await feed(ledger(), f0 + [
+        (started("A"), 0.2, BELOW),
+        at(audio(2.0, "A"), 0.2),
+        (TTSStoppedFrame(context_id="A"), 0.2, BELOW),
+        drained(end0, 0.2),
+        *siblings(BotStartedSpeakingFrame, 0.25),
+    ] + f1 + [
+        (started("B"), 0.4, BELOW),
+        (TTSStoppedFrame(context_id="B"), 0.4, BELOW),    # closed at its End
+        drained(end1, 0.4),
+        (InterruptionFrame(), 1.25),                       # a second into ANSWER
+    ])
+    assert [u.text for u in bot(L)] == [ANSWER], [u.text[:20] for u in bot(L)]
+    left = said(L, ANSWER, "\U0001F44D")
+    assert len(left) == 2 and left[1] == "\U0001F44D", (
+        f"the emoji's message was taken for the cut reply's: {left}")
+    assert left[0] != ANSWER and ANSWER.startswith(left[0]), (
+        f"the cut reply must keep only what was heard: {left}")
+
+    # The same emoji with a tool call riding on it (a second completion in the window):
+    # neither a reply nor the cut one's message. The walk back from the newest used to
+    # stop at it -- one predicate excluded tool-call messages, the count of newer
+    # replies did not -- and its text took the cut reply's heard prefix.
+    call = {"role": "assistant", "content": "\U0001F44D",
+            "tool_calls": [{"id": "c1", "type": "function",
+                            "function": {"name": "lookup", "arguments": "{}"}}]}
+    ctx = Ctx([{"role": "user", "content": "How are you?"},
+               {"role": "assistant", "content": ANSWER}, call,
+               {"role": "user", "content": "And you?"}])
+    HeardContextCorrector(L, ctx, mode="truncate")._reconcile()
+    left = [m["content"] for m in ctx.m if m["role"] == "assistant"]
+    assert left[1] == "\U0001F44D" and left[0] != ANSWER and ANSWER.startswith(left[0]), (
+        f"the tool call's emoji was taken for the cut reply's message: {left}")
 
 
 def main():

@@ -148,6 +148,15 @@ class Utterance:
     interrupted: bool = False
     heard_fraction: float = 1.0  # 1.0 fully heard; <1 tail cut; 0 not heard
     heard_text: str = ""
+    # For HeardContextCorrector's positional anchor. turn_seq: the order its TTS context
+    # opened in, which is the order pipecat committed the replies' messages (each at its
+    # context's end) -- not always the order they are charted in: a reply the engine
+    # failed on is charted at its stop frame, while the reply ahead of it still plays.
+    # committed: pipecat committed a message for it -- words of it played, or its
+    # context ended and the TTS force-completed its text (a failed reply's included).
+    # Only a reply a barge-in cut before its context ended, with nothing played, has none.
+    turn_seq: Optional[int] = None
+    committed: bool = True
 
     @property
     def cut_short(self) -> bool:
@@ -834,11 +843,11 @@ class TranscriptLedger(BaseObserver):
             # No audio, and nothing synthesizable in its text (tts_text.has_speech,
             # the engine's own predicate): a whole response (an emoji, a bare
             # "..."), or the part of one that reached the TTS before its context
-            # timed out. Nothing of it was heard and pipecat committed nothing for it
-            # (no word frames), so a heard-0 chart would hand HeardContextCorrector a
-            # cut with no message of its own -- and it anchors by position: it deleted
+            # timed out. Nothing of it was heard, so a heard-0 chart would hand
+            # HeardContextCorrector a cut -- and it anchors by position: it deleted
             # the reply that played after this one (LedgerPlayout.tla,
-            # lp_unspeakable_charted). A barge-in into a response still streaming is
+            # lp_unspeakable_charted). (pipecat does commit its text: the TTS
+            # force-completes it at the stop. An emoji left in the context is harmless.) A barge-in into a response still streaming is
             # charted as any cut: the rest of it may have had words, and the
             # follow-up loop reads that cut.
             logger.warning(f"LEDGER response {entry['seq']} had nothing synthesizable; "
@@ -923,7 +932,10 @@ class TranscriptLedger(BaseObserver):
             logger.warning(f"LEDGER assistant reply was never played: {intended[:60]!r}")
         self._add(Utterance("assistant", intended, t_start, t_end,
                             interrupted=interrupted, heard_fraction=frac,
-                            heard_text=heard_text), turn_seq=turn["seq"])
+                            heard_text=heard_text, turn_seq=turn["seq"],
+                            committed=(not interrupted or never or turn["synth_done"]
+                                       or heard > 0)),
+                  turn_seq=turn["seq"])
 
     def next_assistant(self) -> "asyncio.Future":
         """A future resolved with the next assistant utterance charted.

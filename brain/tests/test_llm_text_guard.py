@@ -490,6 +490,44 @@ async def test_pass_through_text_keeps_its_frame_identity():
     assert h.spoken() == "I like teal."
 
 
+async def test_a_trailing_ellipsis_keeps_the_word_before_it():
+    """The fold holdback keeps a trailing ".." / "..." back for the next delta. At the
+    End it flushed riding the frame it came from -- the frame that ALSO carried the
+    words before it, as a second held entry: _emit re-texted that object and pushed it
+    again, so "Okay" was overwritten with "..." before anything downstream read it. The
+    reply spoke nothing ("Okay..." -> "...", "..."), and history lost the word (probe
+    2026-10-14, probe_guard.py: "Okay...", " moment..."). The tail rejoins its frame's
+    text; a frame already pushed with its own text is never pushed again."""
+    for deltas, want in ((["Okay..."], "Okay..."), ([" moment..."], "moment..."),
+                         (["So", " wait.."], "So wait.."), (["Okay. Sure..."], "Okay. Sure..."),
+                         (["Fine. ", "Well..."], "Fine. Well...")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in deltas:
+            await h.text(d)
+        await h.feed(LLMFullResponseEndFrame())
+        forwarded = [f for f in h.out if isinstance(f, LLMTextFrame)]
+        ids = [f.id for f in forwarded]
+        assert len(ids) == len(set(ids)), (deltas, "a frame was pushed twice", h.spoken())
+        assert h.spoken() == want, (deltas, h.spoken())
+
+
+async def test_a_leading_emoticon_is_kept_whole():
+    """The leading-punct strip took the colon off ":)" and forwarded ")" -- a stray
+    bracket in history where the model had smiled, and nothing to say either way
+    (probe_guard.py, 2026-10-14). An emoticon is kept whole, as an emoji is; punctuation
+    before it, and a colon that opens no emoticon, still go."""
+    for deltas, want in (([":)"], ":)"), ([";-) sure."], ";-) sure."), (["... :D"], ":D"),
+                         ([": hello there."], "hello there."), (["!! Okay."], "Okay."),
+                         (["... it was the worst of times"], "it was the worst of times")):
+        h = Guard()
+        await h.feed(LLMFullResponseStartFrame())
+        for d in deltas:
+            await h.text(d)
+        await h.feed(LLMFullResponseEndFrame())
+        assert h.spoken() == want, (deltas, h.spoken())
+
+
 async def test_the_recovery_line_is_allowed_a_new_frame():
     """It is genuinely new text, so it SHOULD be charted — unlike pass-through deltas."""
     h = Guard()
