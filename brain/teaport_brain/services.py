@@ -487,6 +487,57 @@ class BoundedOpenAILLMService(OpenAILLMService):
         )
 
 
+def warm_first_use_imports() -> None:
+    """Load now, at startup, what the first session and the first reply would otherwise
+    load at their first use.
+
+    - openai builds `client.chat` lazily: a cached_property that runs
+      `from .resources.chat import AsyncChat` on first use (openai/_client.py, 2.54).
+      That one import loads ~500 modules, most of them openai.types pydantic models,
+      and it ran inside the process's first chat request. On the box that froze the
+      loop 1297 ms right after a wake word (2026-10-15 14:06, after 10 h idle), ~700 ms
+      with the files in the page cache. anyio's asyncio backend loads at the first
+      connection.
+    - httpcore (+ h11) loads when make_llm builds the first session's client, and
+      certifi's CA bundle path is looked up (through importlib.resources) then.
+    - pipecat's own deferred import (NLTK's sentence tokenizer,
+      pipecat.utils.prewarm): pipecat warms it in a thread while each pipeline
+      connects, and the first session waits for it. Splitting one sentence here loads
+      it, and the one module its first split adds (nltk.tabdata). Only when NLTK's
+      punkt_tab data is already on disk: without it, pipecat's loader downloads it,
+      which must not run here (no network at a first offline boot, where the brain
+      still has to start for the spoken Wi-Fi setup) and stays in pipecat's thread.
+      Nothing here may stop the start: broken data is logged and left to the session.
+
+    Each is paid once per process, so it fell on the first session after every restart.
+    The server calls this before freeze_startup_objects, so the modules are loaded once
+    and frozen with the rest, and selfcheck calls it, so a broken extension among them
+    (jiter, under openai's chat API) fails the check, not the brain's start."""
+    import anyio._backends._asyncio  # noqa: F401
+    import certifi
+    import httpcore  # noqa: F401
+    import nltk
+    import openai.resources.chat  # noqa: F401
+    from pipecat.utils.string import match_endofsentence
+
+    certifi.where()
+    try:
+        try:
+            nltk.data.find("tokenizers/punkt_tab")
+        except LookupError:
+            logger.info("NLTK punkt_tab is not on disk yet; the first session downloads "
+                        "it (needs the internet)")
+            return
+        match_endofsentence("Warm up. Done.")
+    except Exception as e:
+        # Data on disk but broken (an unzip cut short, an empty or corrupt zip, which
+        # the find above already opens): a warm-up must not stop the start. The session
+        # meets it as pipecat's own warm-up leaves it.
+        # NLTK's LookupError text is a multi-line box of asterisks: keep its first line.
+        first = next((ln.strip() for ln in str(e).splitlines() if ln.strip(" *")), "")
+        logger.warning(f"NLTK's sentence tokenizer did not load: {type(e).__name__}: {first}")
+
+
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
 # llama.cpp server, etc. Point LLM_BASE_URL at the endpoint, LLM_API_KEY at its
 # key, LLM_MODEL at the served model. gpt-oss-120b is the reference model (clean

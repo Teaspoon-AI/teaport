@@ -25,16 +25,19 @@
 (* a refusal here is one the retry budget would have to absorb).           *)
 (*                                                                          *)
 (* SIP:  "sequential" -- the SIP front-end's contract: a call's claim is    *)
-(*                       released before the next call asks (start_call     *)
-(*                       tears the old call down first)                     *)
-(*       "overlap"    -- what SipCall.tla shows sip_server.py can do: the   *)
-(*                       next call asks while the previous call's claim is  *)
-(*                       still held (its pipeline already stopped), so the  *)
-(*                       arbiter REPLACES it                                *)
+(*                       released before the next call's is taken           *)
+(*                       (SipCall.tla, SequentialClaims: holds as shipped)  *)
+(*       "overlap"    -- what SipCall.tla shows sip_server.py did before    *)
+(*                       the claim fix: the next call asks while the        *)
+(*                       previous call's claim is still held (its pipeline  *)
+(*                       already stopped), so the arbiter REPLACES it       *)
 (* MODE: "shipped"    -- session_arbiter.py as written                      *)
-(*       "redecide"   -- proposed: after ending a holder, a newcomer that   *)
-(*                       finds the slot taken again (a conversation resumed *)
-(*                       by that end) decides again instead of overwriting  *)
+(*       "redecide"   -- an arbiter-side alternative, NOT taken: after      *)
+(*                       ending a holder, a newcomer that finds the slot    *)
+(*                       taken again (a conversation resumed by that end)   *)
+(*                       decides again instead of overwriting. The SIP fix  *)
+(*                       removes the overlap, and REPLACED never ends a     *)
+(*                       call any other way                                 *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
@@ -188,7 +191,7 @@ StopCall(c) ==
     /\ UNCHANGED <<heldF, conn, asleep, ans, apc, tgt, lockOwner, holder, held, heldFor,
                    rel, epc, ewhy, hpc, hfor, hres, rpc, clobber, engineRefused, silentEnd>>
 
-\* ... and lets the claim go after its 0.3 s settle (presence.end()).
+\* ... and lets the claim go after its 0.3 s settle (presence.end(c), in a finally).
 ReleaseCall(c) ==
     /\ st[c] = "stopping"
     /\ st' = [st EXCEPT ![c] = "out"]

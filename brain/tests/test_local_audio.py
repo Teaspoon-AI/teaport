@@ -1986,11 +1986,24 @@ def test_a_cut_off_replys_late_final_leaves_the_next_replys_mood_alone():
     assert _moods(sent) == ["happy"]                         # B was not scored over it
 
 
+def test_concerned_is_sent_as_sad_to_an_avatar_without_that_face():
+    old, old_sent, _ = _mood_face("text")                       # (lists only "sad")
+    old.assistant("This is terrible.", True, "u1")
+    assert _moods(old_sent) == ["sad"]
+    new, new_sent, _ = _mood_face("text", features={"moods": ["sad", "concerned"]})
+    new.assistant("This is terrible.", True, "u1")
+    assert _moods(new_sent) == ["concerned"]
+    tag, tag_sent, _ = _mood_face("tag", features={"moods": ["sad", "concerned"]})
+    tag.mood("concerned", ["oh", "no"])
+    tag.assistant("Oh no, I am sorry", True, "u1")
+    assert _moods(tag_sent) == ["concerned"]
+
+
 def test_the_face_mood_setting_picks_the_source():
     text, sent, _ = _mood_face("text")
     text.mood("sad", ["this", "is"])                    # (the brain sends none, but if one came)
     text.assistant("This is terrible.", True, "u1")
-    assert _moods(sent) == ["angry"]
+    assert _moods(sent) == ["sad"]       # (negative: concerned, which this avatar sees as sad)
     off, sent, _ = _mood_face("off")
     off.mood("sad", ["this", "is"])
     off.assistant("This is terrible.", True, "u1")

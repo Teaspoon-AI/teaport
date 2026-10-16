@@ -109,7 +109,8 @@ async def vad_start(s):
 
 
 async def verdict(s, complete, source="verdict"):
-    await s.process_frame(TurnVerdictFrame(complete=complete, source=source), UP)
+    await s.process_frame(TurnVerdictFrame(complete=complete, source=source,
+                                           stop_n=s._vad_stops), UP)
 
 
 async def delta(s, text):

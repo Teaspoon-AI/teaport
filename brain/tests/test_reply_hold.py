@@ -1025,6 +1025,105 @@ def test_the_tts_adds_the_hold_to_the_end_of_the_context_in_progress():
     asyncio.run(run())
 
 
+class _Clock:
+    t = 10_000_000_000
+
+    def get_time(self):
+        return self.t
+
+
+def _tts_on(clk):
+    # The clock through the processor's setup, not a patched get_clock: the TTS reads
+    # the playout clock through get_clock, and so does pipecat's word baseline.
+    from types import SimpleNamespace
+    from teaport_brain.engine_tts import EngineTTSService
+    tts = EngineTTSService(voice="af_heart")
+    tts._setup = SimpleNamespace(clock=clk)
+    return tts
+
+
+def test_a_reply_ending_inside_a_hold_moves_by_the_hold_since_its_first_audio():
+    # formal/README, PlayoutPause pp_hold_anchor: the hold is armed at the commit and
+    # begins before the reply's first audio; a short reply's context ends inside it.
+    # Its end (where a reply queued behind it is anchored) moved by the WHOLE hold,
+    # though it was anchored at its first audio, 0.3 s into the hold.
+    async def run():
+        clk = _Clock()
+        tts = _tts_on(clk)
+        await tts.process_frame(PlayoutHoldFrame(active=True), FrameDirection.UPSTREAM)
+        clk.t += 300_000_000                       # the engine's first-audio latency
+        await tts.start_word_timestamps()          # the first audio: its words anchor here
+        assert tts._initial_word_timestamp == 10_300_000_000
+        tts._ctx_audio_secs["r"] = 1.0
+        await tts._maybe_reset_word_timestamps("r")    # its whole context, inside the hold
+        clk.t += 400_000_000
+        await tts.process_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
+        # It plays from the release, 10.7 s, to 11.7 s.
+        assert tts._prev_audio_end_ns == 11_700_000_000, (
+            f"the reply's end moved to {tts._prev_audio_end_ns / 1e9:.2f}s, not 11.70s: "
+            "the hold counted from before its first audio")
+
+    asyncio.run(run())
+
+
+def test_a_reply_queued_behind_a_held_one_is_anchored_on_the_frozen_schedule():
+    # formal/README, PlayoutClock pc_second_asWritten: a second context (the answer
+    # after a tool call) starts while the first is still held. It plays right behind the
+    # first, which plays from the release; the gate moves every context it held by the
+    # first one's wait (test_the_contexts_held_behind_the_first_move_with_it), so the TTS
+    # must anchor it where the first ends on the pre-hold schedule -- not on the real
+    # clock, which ran on while nothing played -- and its own end moves by that same wait.
+    async def run():
+        clk = _Clock()
+        tts = _tts_on(clk)
+        await tts.process_frame(PlayoutHoldFrame(active=True), FrameDirection.UPSTREAM)
+        clk.t += 300_000_000
+        await tts.start_word_timestamps()                  # the held reply: 10.3 s
+        tts._ctx_audio_secs["r1"] = 1.0
+        await tts._maybe_reset_word_timestamps("r1")       # pre-hold, it ends at 11.3 s
+        clk.t = 11_800_000_000                             # still held
+        await tts.start_word_timestamps()                  # the second context's first audio
+        assert tts._initial_word_timestamp == 11_300_000_000, (
+            f"anchored at {tts._initial_word_timestamp / 1e9:.2f}s: with the gate's shift "
+            "(release - 10.3 s) its words would play that much after the first reply's end")
+        clk.t = 12_000_000_000
+        await tts.process_frame(PlayoutHoldFrame(active=False), FrameDirection.UPSTREAM)
+        tts._ctx_audio_secs["r2"] = 0.5
+        await tts._maybe_reset_word_timestamps("r2")
+        # The first plays 12.0-13.0 s, the second 13.0-13.5 s.
+        assert tts._prev_audio_end_ns == 13_500_000_000, (
+            f"the second reply ends at {tts._prev_audio_end_ns / 1e9:.2f}s, not 13.50s")
+
+    asyncio.run(run())
+
+
+async def test_the_contexts_held_behind_the_first_move_with_it():
+    # The other half of the test above, on the gate: a context held behind the first
+    # plays right behind it, so its pts move by the first one's wait -- not by its own,
+    # which is shorter by however long after the first it reached the gate.
+    async with GateRig() as rig:
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        b1 = rig.clock_ns()
+        await rig.send(TTSStartedFrame(context_id="c1"), word("Sure,", "c1", b1),
+                       audio("c1"), TTSStoppedFrame(context_id="c1"))
+        await asyncio.sleep(0.3)
+        b2 = b1 + int(CHUNK_S * 1e9)                   # right behind c1, pre-hold
+        await rig.send(TTSStartedFrame(context_id="c2"), word("Then", "c2", b2),
+                       audio("c2"), TTSStoppedFrame(context_id="c2"))
+        await asyncio.sleep(0.05)
+        await rig.send(VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(RELEASE_S + 0.3)
+        assert rig.gate.released == 1
+        got = {f.text: f.pts for _, f in rig.bottom.down if isinstance(f, TTSTextFrame)}
+        first, second = got["Sure,"] - b1, got["Then"] - b2
+        assert second == first, (
+            f"c1 moved {first / 1e9:.3f}s, c2 {second / 1e9:.3f}s: c2's words would run "
+            "ahead of its audio")
+
+
+
 # ---------------------------------------------------------------- the call's shape
 
 class ScriptedStop(BaseUserTurnStopStrategy):

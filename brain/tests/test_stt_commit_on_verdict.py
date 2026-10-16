@@ -86,6 +86,7 @@ import teaport_brain.stt as stt_mod  # noqa: E402
 from teaport_brain.captions import UserTranscriptEmitter  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
     INTERRUPT_MIN_WORDS,
+    NO_STOP,
     LateStartTurnStopStrategy,
     TurnVerdictFrame,
 )
@@ -147,8 +148,13 @@ async def vad_start(s):
     await s.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2), DOWN)
 
 
-async def verdict(s, complete, source="verdict"):
-    await s.process_frame(TurnVerdictFrame(complete=complete, source=source), UP)
+async def verdict(s, complete, source="verdict", stop_n=None):
+    """A verdict for the stop the STT is on, unless `stop_n` names another. The stop is
+    set after construction, so the rig also runs on a TurnVerdictFrame from before it
+    carried one (the regression tests' check on the old code)."""
+    frame = TurnVerdictFrame(complete=complete, source=source)
+    frame.stop_n = s._vad_stops if stop_n is None else stop_n
+    await s.process_frame(frame, UP)
 
 
 async def delta(s, text):
@@ -383,9 +389,9 @@ async def test_a_done_the_engine_sent_on_its_own_keeps_the_hold():
     utterance's, its finish outlasting the caller's next utterance (PR #49 review),
     and the wire does not say which. So the hold stays, and the ceiling's verdict
     commits: what that closes is the silent tail, which the engine answers without
-    a decode (no audio fed since its own close). The final is stamped as the next
-    stop's -- it answers no stop of ours -- and the tail's wordless done as the
-    ceiling's commit's; the stop strategy ends the turn on the latter."""
+    a decode (no audio fed since its own close). The final answers no stop of ours
+    (NO_STOP) and the tail's wordless done is stamped as the ceiling's commit's; the
+    stop strategy ends the turn on the latter."""
     s = Recorder()
     await delta(s, "what time is it")
     await vad_stop(s)
@@ -399,7 +405,7 @@ async def test_a_done_the_engine_sent_on_its_own_keeps_the_hold():
     await done(s, "")
     closes = [(type(f).__name__, f.stop_n) for f in s.pushed
               if type(f).__name__ in ("FinalTranscriptionFrame", "SegmentDoneFrame")]
-    assert closes == [("FinalTranscriptionFrame", 2), ("SegmentDoneFrame", 1)], closes
+    assert closes == [("FinalTranscriptionFrame", NO_STOP), ("SegmentDoneFrame", 1)], closes
 
 
 async def test_a_done_that_answers_our_commit_leaves_a_later_hold_alone():
@@ -532,6 +538,18 @@ class Complete(BaseSmartTurn):
         return {"prediction": 1, "probability": 0.98}
 
 
+class CompleteThenIncomplete(BaseSmartTurn):
+    """COMPLETE at the first stop, INCOMPLETE at the second, COMPLETE after."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._answers = [1, 0]
+
+    def _predict_endpoint(self, audio_array):
+        p = self._answers.pop(0) if self._answers else 1
+        return {"prediction": p, "probability": 0.98 if p else 0.02}
+
+
 class Rig:
     """The real controller with the brain's strategies, its upstream pushes routed to
     a real STT service -- the wiring the pipeline does, minus the pipeline."""
@@ -542,6 +560,7 @@ class Rig:
         analyzer.set_sample_rate(SAMPLE_RATE)
         self.stt = Recorder()
         self.verdicts = []
+        self.verdict_stops = []
         self.controller = UserTurnController(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
@@ -562,6 +581,8 @@ class Rig:
             if isinstance(frame, TurnVerdictFrame):
                 assert direction == UP, "the verdict must travel upstream to the STT"
                 self.verdicts.append((frame.complete, frame.source))
+                # getattr: the rig runs on the frame from before it named its stop too.
+                self.verdict_stops.append(getattr(frame, "stop_n", None))
                 await self.stt.process_frame(frame, direction)
 
         self.controller.add_event_handler("on_push_frame", on_push)
@@ -687,6 +708,51 @@ async def test_a_turn_closed_under_an_incomplete_verdict_closes_the_held_segment
         assert rig.stt.commit_whys() == ["turn-stopped"]
         await rig.audio(int((CEILING + 0.1) * 1000))
         assert rig.verdicts[-1] == (True, "turn-stopped"), "no ceiling after the turn closed"
+
+
+async def test_a_verdict_for_the_stop_before_does_not_close_the_held_segment():
+    """SttCommit.tla's sc_verdict_stale, through the real strategy and the real service.
+    The VAD runs in the user aggregator and pushes each edge both to this strategy (on
+    the aggregator's input queue, behind its audio) and up to the STT: with the input
+    task stalled for a whole utterance -- Smart Turn's inference on loaded cores -- the
+    STT sees stop 1, the caller's resumption and stop 2 before the strategy has
+    answered stop 1. Its COMPLETE then reaches the STT holding stop 2's segment, and,
+    naming no stop, committed it; the model then called stop 2 INCOMPLETE and the
+    caller resumed inside the ceiling: the sentence split (#43's bug). Each verdict now
+    names its stop, and the STT ignores another stop's."""
+    rig = Rig(CompleteThenIncomplete)
+    c = rig.controller
+    async with running_controller(c):
+        # The STT's copies of the edges, first: stop 1, the resumption, stop 2.
+        await vad_start(rig.stt)
+        await delta(rig.stt, "so I was")
+        await vad_stop(rig.stt)                  # stop 1: held
+        await vad_start(rig.stt)                 # released; the words join the segment
+        await delta(rig.stt, " thinking that")
+        await vad_stop(rig.stt)                  # stop 2: held
+        assert rig.stt._commit_pending and rig.stt._websocket.commits() == []
+        # The strategy catches up: stop 1 is COMPLETE, and its verdict goes up behind
+        # stop 2.
+        await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(300)
+        await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS))
+        assert rig.stt._websocket.commits() == [], (
+            "stop 1's verdict closed the segment held for stop 2")
+        assert rig.verdicts == [(True, "verdict")] and rig.verdict_stops == [1]
+        await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.audio(300)
+        await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS))
+        assert rig.verdicts[-1] == (False, "verdict") and rig.verdict_stops[-1] == 2
+        # The model was right: the caller resumes, and the rest joins the segment.
+        await vad_start(rig.stt)
+        await c.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await delta(rig.stt, " we should go")
+        await vad_stop(rig.stt)                  # stop 3
+        await rig.audio(300)
+        await c.process_frame(VADUserStoppedSpeakingFrame(stop_secs=STOP_SECS))
+        assert rig.verdict_stops[-1] == 3
+        assert rig.stt.commit_whys() == ["verdict"], "one commit for the whole sentence"
+        assert rig.stt._interim_buffer == "so I was thinking that we should go"
 
 
 # ---- the frame really crosses the pipeline ---------------------------------------------

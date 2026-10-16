@@ -1330,7 +1330,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         guard.tap() if guard is not None else None,
         followup_gate,  # track user/bot/LLM activity → hold async follow-ups for a clear moment
         CaptionTap(activity, every_final=caption_every_final),  # AFTER the transport: playout-paced partials + per-utterance finals
-        MemoryReclaim(),  # per-turn: hand glibc arena pages back to the OS (CUDA at session end)
+        MemoryReclaim(followup_gate),  # glibc arena pages back to the OS at a quiet moment (CUDA at session end)
         context_aggregator.assistant(),
         # Last: an interruption that gets here has had its cut reply committed above.
         cut_fence.tail,

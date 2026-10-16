@@ -80,6 +80,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     CutReplyFence,
     LateStartTurnStopStrategy,
     SegmentDoneSink,
+    SegmentResetFrame,
     keep_barge_in_reachable,
 )
 from teaport_brain.heard_context import HeardContextCorrector, _clean_prefix  # noqa: E402
@@ -739,7 +740,7 @@ async def test_changed_or_dropped_words_during_the_wait_start_nothing():
         if change == "interim":
             await strategy._handle_interim(InterimTranscriptionFrame(STOP + " there", "u", "t"))
         else:
-            await strategy._handle_segment_reset()
+            await strategy._handle_segment_reset(SegmentResetFrame(stop_n=0))
         fence._landed(frame)
         assert await waiting is False, change
         await _settled(spec)

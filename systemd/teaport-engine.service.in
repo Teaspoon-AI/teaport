@@ -20,6 +20,15 @@ EnvironmentFile=@ETC@/engine.env
 ExecStart=@PREFIX@/bin/voxtral -d @PREFIX@/models/voxtral --serve ${ENGINE_PORT} --delay ${ENGINE_DELAY} --tts-ctx ${TTS_CTX} --tts-model @PREFIX@/models/kokoro/Kokoro_espeak_F16.gguf --vad --vad-mode 1 --vad-commit hard --reprime 1500
 Restart=on-failure
 RestartSec=5
+# Under memory pressure the kernel kills the process with the highest OOM score, and the
+# engine's GPU buffers (~4.3 GB, unswappable) make it the biggest process on an 8 GB box:
+# unadjusted it scores close to the OpenClaw gateway, so a growing agent could get the
+# engine killed and the box would go silent. -500 puts the voice path (engine, brain, SIP
+# gateway, local audio) behind everything else. The offset is half of RAM+swap (11.75 GB
+# with the appliance's 16 GB swap file, more than its RAM), so in practice these go only
+# once nothing else is left to kill, a leak of their own included. -1000 would exempt them
+# outright; nothing needs that.
+OOMScoreAdjust=-500
 
 [Install]
 WantedBy=multi-user.target

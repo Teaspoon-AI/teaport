@@ -71,7 +71,11 @@
 # reply's first word or two and leaked the rest into the next message. The ledger's
 # heard-text cut is made on the same pts. The wait is measured per frame (queue arrival
 # to processing) and kept per context, so a word the TTS places after the release, on
-# the same pre-hold baseline, moves by the same amount.
+# the same pre-hold baseline, moves by the same amount. A context held BEHIND the first
+# (the answer after a tool call) plays right behind it, so it takes the first one's
+# shift, not its own shorter wait; the TTS anchors such a context on the frozen
+# schedule, where the first ends before the hold (engine_tts.start_word_timestamps;
+# formal/README, PlayoutClock pc_second_fix2).
 #
 # The TTS is told about the hold too (PlayoutHoldFrame, pushed upstream): its model of
 # what has played (_play_end, behind "lead" pacing and the playout-gap accounting) stands
@@ -226,12 +230,14 @@ class ReplyHoldGate(FrameProcessor):
         # A session end has reached the gate: no new hold starts behind it.
         self._ending = False
         # Queue arrival (pipeline clock, ns) of every frame, the per-context pts shift,
-        # the context last seen (for frames that carry none), and when the last hold was
-        # released (a frame that arrived before it was held).
+        # the context last seen (for frames that carry none), when the last hold was
+        # released (a frame that arrived before it was held), and the shift the first
+        # context it let through fixed (every context held behind it takes the same).
         self._arrivals: dict = {}
         self._shift: dict = {}
         self._last_ctx = None
         self._released_ns = None
+        self._release_shift = None
         # Function-call frames (pipecat's UninterruptibleFrames, which an interruption's
         # queue reset keeps) by the number of drops before they were queued: one queued
         # before a drop belongs to the reply that drop dropped (see process_frame).
@@ -335,8 +341,11 @@ class ReplyHoldGate(FrameProcessor):
                 # release delays -- not the TTSStartedFrame, which opens the context
                 # up to the engine's first-audio latency earlier (fixing the shift on it
                 # overshot every word by that latency). The frames behind it play on
-                # after it, whatever microseconds their own processing took.
-                self._shift[ctx] = waited
+                # after it, whatever microseconds their own processing took -- and so do
+                # the contexts held behind it: the first one's shift is theirs.
+                if self._release_shift is None:
+                    self._release_shift = waited
+                self._shift[ctx] = self._release_shift
                 while len(self._shift) > _MAX_SHIFTS:
                     self._shift.pop(next(iter(self._shift)))
         if getattr(frame, "pts", None) and ctx in self._shift:
@@ -455,6 +464,7 @@ class ReplyHoldGate(FrameProcessor):
         if released:
             self.released += 1
             self._released_ns = self.get_clock().get_time()
+            self._release_shift = None
         else:
             self.dropped += 1
             self._drops += 1
@@ -474,6 +484,7 @@ class ReplyHoldGate(FrameProcessor):
         was_armed, self._armed = self._armed, False
         self._shift.clear()
         self._arrivals.clear()
+        self._release_shift = None
         if self._holding:
             await self._end_hold(released=False, why="the caller's words went on")
         if was_armed and self._merge is not None:

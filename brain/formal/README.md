@@ -455,9 +455,9 @@ Since #111 the brain answers the call: `call.incoming` starts a bring-up **task*
 (`start_call`) that asks the session arbiter for the engine (`CallClaim.start` →
 `ARBITER.acquire`), builds and *publishes* the pipeline (`active["call"]`), sends
 `call.answer`, and greets once `confirmed` arrives. Teardown (`cancel_active_call`) stays
-inline when a handler runs it and ends with `presence.end()`. A pipeline that ends on its
-own (`on_pipeline_finished`) tears itself down from a separate task, concurrent with the
-reader. The 2026-08 modes keep the 2026-08 gateway (it confirms by itself, and may
+inline when a handler runs it and ends with `presence.end(call_id)`. A pipeline that ends
+on its own (`on_pipeline_finished`) tears itself down from a separate task, concurrent
+with the reader. The 2026-08 modes keep the 2026-08 gateway (it confirms by itself, and may
 confirm a second call before the first's `disconnected`); the shipped modes run behind
 teaport-sip ≥ 0.6.0: one call ringing or up at a time (a second INVITE gets 486), except
 that an INVITE may land while a call the *brain* hung up is still on its way out
@@ -467,12 +467,16 @@ that an INVITE may land while a call the *brain* hung up is still on its way out
 |---|---|---|---|---|---|---|
 | `asWritten` | 2026-08: teardown ignores `call_id`; bring-up inline | ✗ | ✗ | ✗ | | |
 | `callIdChecked` | 2026-08: teardown matches `call_id` | ✓ | ✗ | ✗ | | |
-| `shipped` | `sip_server.py` today | ✓ | ✓ | ✗ (accepted) | **✗** | **✗** |
-| `claimByCall` | proposed: claims released by call | ✓ | ✓ | ✗ | ✓ | ✓ |
+| `heldClaim` | 2026-10, before the claim fix: `presence.end()` releases the claim held *now* | ✓ | ✓ | ✗ | **✗** | **✗** |
+| `ownClaim` | the claim fix's identity check alone | ✓ | ✓ | ✗ | ✓ | **✗** |
+| `shipped` | `sip_server.py` today | ✓ | ✓ | ✗ (accepted) | ✓ | ✓ |
 
-`shipped` also holds `NoDeadLine` (an answered call is never let go without a hangup)
-and `NoStrandedRing` (a ringing call the brain heard is being brought up or hung up),
-with and without `AUTO`. Both lean on the 0.6.0 gateway: `start_call` supersedes a call
+`shipped` also holds `NoDeadLine` (an answered call is never let go without a hangup),
+`NoStrandedRing` (a ringing call the brain heard is being brought up or hung up),
+`SequentialClaims` (a call's claim is let go before the next call's is taken — the
+contract `SessionArbiter.tla`'s `SIP = "sequential"` assumes) and `NoClaimLeftBehind`
+(once every call is over, every claim has been let go), with and without `AUTO`.
+`NoDeadLine` and `NoStrandedRing` lean on the 0.6.0 gateway: `start_call` supersedes a call
 without hanging it up, which the 2026-08 gateway turned into a dead line (both 2026-08
 modes fail `NoDeadLine`).
 
@@ -488,7 +492,8 @@ blocks, bounded by `cancel_active_call`'s 5 s wait + 0.3 s settle (+ the reclaim
 
 ### The 2026-10-14 audit: what the model had drifted from
 
-The model still described the 2026-08 code. Against `sip_server.py` today:
+The model still described the 2026-08 code. Against `sip_server.py` then (the line
+numbers are the audit's, before the claim fix):
 
 1. Only `confirmed`/`disconnected` existed. Now `call.incoming` starts the bring-up
    (`sip_server.py:609-638`, `start_call` `:928-949`), a `confirmed` for a ringing call
@@ -508,7 +513,9 @@ The model still described the 2026-08 code. Against `sip_server.py` today:
    is — in `wait_for(runner_task)` the cancel is *swallowed* (`:566`) and the teardown
    completes; in the 0.3 s settle it propagates and `presence.end()` never runs.
 
-### The new finding: the next call's claim released by the last call's teardown
+### The finding: the next call's claim released by the last call's teardown
+
+As found (before the claim fix, now `MODE = "heldClaim"`):
 
 `CallClaim.end()` (`sip_server.py:379`) releases **whatever claim it holds now**, and
 `cancel_active_call` calls it *after* its awaits. The teardown task of a pipeline that
@@ -539,12 +546,45 @@ cancelled in its settle) lets the next call's acquire find the last call's claim
 held — `NoReplacedCall` — which the arbiter handles badly when a conversation is on hold
 for that call (`SessionArbiter.tla`, `sa_overlap_refused`).
 
-**Proposed** (`claimByCall`, not code): each teardown releases its *own* call's claim —
-keep the `Claim` in the `active` tuple (or have `CallClaim.end(call_id)` check the id) —
-and in a `finally`, so a teardown cancelled in its settle still lets go; and `start_call`
-awaits the `teardowns` still in flight before the new bring-up. Checked by hand on
-variants: the identity check alone fixes `NoUnclaimedCall` but not `NoReplacedCall`; the
-`finally` plus the wait fixes both, which makes the identity check belt and braces.
+### What was changed (2026-10-15, the claim fix)
+
+The model led: `shipped` is now the design it checked, and the design as found is kept
+as `heldClaim` (`sip_heldClaim_unclaimed`, `sip_heldClaim_replaced`).
+
+- `CallClaim` keeps its claims **by call id**, and `end(call_id)` lets go of that call's
+  claim only (`end()` with no id, for the connection going away, lets go of all). Every
+  teardown ends its own call's: `cancel_active_call` (`presence.end(_call_id)`) and the
+  `disconnected` that leaves nothing behind.
+- `cancel_active_call` lets go in a **`finally`**, so the bring-up's own teardown
+  ("never confirmed", "STT unavailable") abandoned in its 0.3 s settle by the next call's
+  `cancel_setup` still releases its claim before that call asks.
+- `_bring_up` **waits out the `teardowns` in flight** before `presence.start`, so a
+  pipeline that ended on its own has let its claim go before the next call asks. The
+  audit put this wait in `start_call`; it is in the bring-up task instead, so the reader
+  is not blocked by it (`NoBlockedWithPendingControl` gains no new case) and a
+  `disconnected` for the new call cancels the wait like any bring-up. It waits for the
+  teardown tasks only — what `DrainWait` waits for. A declined call's busy line
+  (`answer_busy`, for a call the gateway answered anyway) holds no claim and is kept in
+  `busy_lines`, apart: it first sat in `teardowns`, and the next caller's greeting waited
+  out the whole busy line (~3 s, review of #175). Its caller's `disconnected` now stops it
+  (`stop_busy_line`), as `answer_busy`'s docstring always said, rather than its audio
+  going on under the next call.
+
+`sip_ownClaim_replaced` keeps the identity check alone as a rejected design: it fixes
+`NoUnclaimedCall` but a teardown cancelled in its settle never lets go and a teardown
+task in flight still holds the slot when the next call asks — `NoReplacedCall` falls.
+The `finally` and the wait are what close that; with both, the identity check is what
+keeps a late `end` from touching a newer call should anything else ever reorder them.
+
+The tests are `test_session_arbiter.py`'s
+`test_a_call_that_rings_in_as_the_last_one_is_torn_down_keeps_its_claim` (the teardown
+task; fails without the wait) and
+`test_a_call_abandoned_in_its_own_teardown_lets_go_before_the_next_asks` (a Talk session
+on hold for the abandoned call; fails without the `finally`), through the real
+`sip_server` connection loop, `CallClaim` and `SessionArbiter`. Both hold the teardown's
+0.3 s settle on an event (`_SettleGate`) until the next call has got as far as it can, so
+the interleaving is forced, not raced: each fails on the code before the fix on every run.
+`test_a_busy_line_does_not_keep_the_next_caller_from_their_greeting` is the busy line's.
 
 ### What was changed (2026-08)
 
@@ -569,7 +609,9 @@ directly against a socketpair and fixed with a send lock; the reproduction is
   (busy, declined — the call left ringing) and the conversation put on hold are
   `SessionArbiter.tla`'s.
 - Not modelled: the reconnect replay (`replay: true`), the connection's EOF `finally`,
-  the declined call answered anyway (`answer_busy`), DTMF and audio routing.
+  the declined call answered anyway (`answer_busy` — a task of its own that holds no
+  claim, which no bring-up waits for; its caller's `disconnected` stops it), DTMF and
+  audio routing.
 - The over-approximation: each handler's steps (cancel the bring-up, start the
   teardown, the rest) are separate steps even where the code does not yield between
   them. Every counterexample above was checked against the code by hand.
@@ -594,10 +636,10 @@ STT connect. Time is not: every bounded wait is a step that may happen.
 
 | row | | holds / fails |
 |---|---|---|
-| `sa_shipped` | as shipped, SIP's contract (a call lets its claim go before the next asks) | all ✓ |
+| `sa_shipped` | as shipped, SIP's contract (a call lets its claim go before the next asks; `SipCall.tla`'s `SequentialClaims`, which `sip_shipped` holds) | all ✓ |
 | `sa_unaskable` | `answer_phone_call` off (CALL_IN ends Talk; an awake room refuses) | all ✓ |
-| `sa_overlap_refused` | as shipped, with the overlap `SipCall.tla` finds | `NoEngineRefusal` ✗ |
-| `sa_overlap_redecide` | proposed: decide again after the end | all ✓ |
+| `sa_overlap_refused` | before the SIP claim fix, with the overlap `SipCall.tla` found | `NoEngineRefusal` ✗ |
+| `sa_overlap_redecide` | an arbiter-side alternative, not taken: decide again after the end | all ✓ |
 | `sa_roomWakes` | witness | `NoSilentLiveEnd` ✗ (accepted) |
 
 "All": `SttOnlyHolder` (only the holder's STT is connected), `OneConversation` (never two
@@ -636,10 +678,15 @@ Talk session says it cannot hear and ends. Afterwards the arbiter's holder is c2
 nobody) while Talk runs, so a third call is taken without asking. It needs the
 `NoReplacedCall` overlap from `SipCall.tla` — narrow windows, so low likelihood.
 
-**Proposed** (`MODE = "redecide"`, not code): after `_end` returns, if the slot was taken
-back meanwhile, loop and decide again (the newcomer waits out the resume, then asks the
-conversation about itself). The SIP fix (`claimByCall`) removes the overlap instead;
-either closes this trace, and both are cheap.
+**Decided (2026-10-15): the SIP claim fix, and no arbiter change.** `MODE = "redecide"`
+(after `_end` returns, if the slot was taken back meanwhile, loop and decide again) closes
+this trace too and is kept as a row, but it is not code. The trace needs a call claim
+ended as REPLACED, and REPLACED is the only way the arbiter ends a call (`decide`: a call
+holder against a Talk or room newcomer is REFUSED, and a call claim has no `gone`), so it
+needs the next call to ask while the last one's claim is held — exactly what
+`SipCall.tla`'s `SequentialClaims` rules out, and `sip_shipped` holds it. Under that
+contract `sa_shipped` holds with the arbiter as written. Changing `_acquire`'s loop for a
+case that can no longer arise would be a second guard on one contract.
 
 `sa_roomWakes` is the accepted residual: a sleeping room is ended for a call (CALL_IN)
 or a Talk session (TAKEN) by a decision taken while it was asleep; `_end_for` closes a
@@ -872,9 +919,11 @@ this module has the same environment with the facts the design rests on spelled 
 - A context opens (`TTSStartedFrame`) for any text with a non-blank character:
   `tts_service._push_tts_frames` creates the audio context and queues the started frame
   *before* `run_tts`, so text with nothing synthesizable — `"..."`, an emoji — opens a
-  context that never yields audio (`UnspeakableOpens`). Such a context, and any whose
-  last `run_tts` yielded no audio, is not closed at the End: it ends on the stop-frame
-  timeout (`TTS_STOP_FRAME_TIMEOUT_S`, 15 s).
+  context that never yields audio (`UnspeakableOpens`). pipecat closes a context at its
+  End only if its last `run_tts` yielded audio (`on_turn_context_completed`, on
+  `tts_process_generator`'s flag); `EngineTTSService` closes every one at its End
+  (`CloseAtEnd`, below), so only a context the LLM leaves open mid-reply ends on the
+  stop-frame timeout (`TTS_STOP_FRAME_TIMEOUT_S`, 15 s).
 - Every context that opened ends with a `TTSStoppedFrame` naming it
   (`push_stop_frames=True`, `engine_tts.py:607`): appended behind its last chunk, or
   pushed on the stop-frame timeout — mid-reply too, when the LLM is silent that long. The
@@ -897,18 +946,18 @@ this module has the same environment with the facts the design rests on spelled 
 
 The ledger, in the model's terms: turns open only on the TTS's own frames, never on
 `BotStartedSpeaking`; a turn claims the oldest expected context (the queue of ended
-responses), else the response streaming now; several turns may be open at once — a
-reply queued behind another at the transport; a turn's `audio_start` is its own chunk's
-place in the transport's queue, laid out from the window's start; a window closing
-credits the queued chunks that have played by then and keeps the rest queued, the window
-open for them; it charts, oldest first, the turns whose audio has all played and whose
-synthesis is over; a context starting proves every OTHER open context ended, since the
-TTS drains one at a time; a context's stop frame ends its turn's synthesis; the drain
-re-push confirms a turn's response or corrects it; an interruption charts every open
-turn with its own played portion. The layout's seconds are taken to be right — at a
-window close or a cut the ledger credits exactly what the transport has played;
-`PlayoutPause.tla` checks that arithmetic, `test_ledger_playout.py` the rest on the real
-ledger.
+responses — every one with text, synthesizable or not), else the response streaming now;
+several turns may be open at once — a reply queued behind another at the transport; a
+turn's `audio_start` is its own chunk's place in the transport's queue, laid out from the
+window's start; a window closing credits the queued chunks that have played by then and
+keeps the rest queued, the window open for them; it charts, oldest first, the turns whose
+audio has all played and whose synthesis is over; a context starting proves every OTHER
+open context ended, since the TTS drains one at a time; a context's stop frame ends its
+turn's synthesis; the drain re-push confirms a turn's response or corrects it; an
+interruption charts every open turn with its own played portion. The layout's seconds are
+taken to be right — at a window close or a cut the ledger credits exactly what the
+transport has played; `PlayoutPause.tla` checks that arithmetic, `test_ledger_playout.py`
+the rest on the real ledger.
 
 | row | property | LedgerPlayout |
 |---|---|---|
@@ -919,13 +968,23 @@ ledger.
 | `lp_premature` | `NoPrematureFullChart`, with stalls and timeouts | ✓ |
 | `lp_playedCharted` | `PlayedIsCharted` — audio the transport played is charted once its turn is over; nothing played vanishes | ✓ |
 | `lp_fillerSet` | `FillerCtxRemembered` | ✓ |
-| `lp_all` | every property above, two replies and a filler | ✓ (300k, ~25 s) |
+| `lp_all` | every property above, `NoUnheardAheadOfPlayed`, `NoPlayedReplyDeleted`, `UnheardSaidIsCorrected`, `CutAnchorsOwn`, `HeardPrefixOnOwn` and `NoSweepAfterEnd`, two replies and a filler | ✓ (405k, ~25 s) |
 | `lp_resume` | `NoPrematureFullChart` under `Resume` | ✗ (8) — below |
-| `lp_wrongText_unspeakable` | `ChartedTextMatchesContext`, `Unspeakable = {r1}`, the first cut's premise (`UnspeakableOpens = FALSE`) without `has_speech` (`LedgerSpeakCheck = FALSE`) | ✗ (6) — below |
-| `lp_wrongText_unspeakable_checked` | the same premise, with `has_speech`: why it shipped | ✓ |
-| `lp_wrongText_unspeakable_opens` | `ChartedTextMatchesContext`, **as shipped**, with the context opening as pipecat opens it | ✗ (6) — **a bug in the code**, below |
+| `lp_unspeakable` | every property, `Unspeakable = {r1}`, **as shipped** (`SpeakCheck = "chart"`, `Corrector = "seq"`): every response with text queued; one with no audio and nothing synthesizable charted nothing; its committed text never taken for another reply's | ✓ (83k) |
+| `lp_wrongText_unspeakable` | `ChartedTextMatchesContext`, the first cut's premise (`UnspeakableOpens = FALSE`) without `has_speech` (`SpeakCheck = "none"`) | ✗ (6) — below |
+| `lp_wrongText_unspeakable_checked` | the same premise, `has_speech` at the queue (`"queue"`): why it shipped | ✓ |
+| `lp_wrongText_unspeakable_opens` | `ChartedTextMatchesContext`, **before this fix** (`"queue"`), with the context opening as pipecat opens it | ✗ (6) — below |
 | `lp_unheard_unspeakable_opens` | `NoUnheardWhenPlayed`, the same | ✗ (12) — below |
-| `lp_unspeakable_queued` | every property, `has_speech` dropped from the queuing (**proposed, not code**) | ✓ (66k) |
+| `lp_unspeakable_charted` | every property, the first proposal: queued and charted (`"none"`) | ✗ (12) `NoUnheardAheadOfPlayed` — below |
+| `lp_unspeakable_noOpen` | `ChartedTextMatchesContext`, the shipped ledger on the first cut's premise: the fix rests on pipecat opening the context | ✗ (7) |
+| `lp_endings` | `NoSweepAfterEnd`, `TrailingMute = {r1}` ("Great!!"), pipecat's default close (`CloseAtEnd = FALSE`): **before this fix** | ✗ (6) — below |
+| `lp_endings_closed` | every property and `NoSweepAfterEnd`, a trailing-mute reply and an unspeakable one, **as shipped** (`CloseAtEnd`) | ✓ (83k, ~7 s) |
+| `lp_failed_charted` | `NoUnheardAheadOfPlayed`, `Failed = {r1}`: a reply the engine fails on every clause | ✗ (12) — below |
+| `lp_failed_position` | `NoPlayedReplyDeleted`, `Failed = {r1}`, no barge-in, the corrector **before this fix** (`Corrector = "position"`) | ✗ (13) — below |
+| `lp_position` | `NoPlayedReplyDeleted`, no failure, the corrector **before this fix**: a barge-in before a queued reply's first audio | ✗ (11) — below |
+| `lp_guarded` | `HeardPrefixOnOwn`, the corrector of the first fix (`"guarded"`: still the newest message, cut by cut) | ✗ (14) — below |
+| `lp_unspeakable_tail` | `HeardPrefixOnOwn`, `Unspeakable = {r1}`, the `"seq"` corrector before the emoji fix (`"seqTail"`: with no newer reply, the newest message, speech or not) | ✗ (13) — below |
+| `lp_failed` | every property but `NoUnheardAheadOfPlayed`, with the corrector's three, `Failed = {r1}`, **as shipped** (`Corrector = "seq"`) | ✓ (85k, ~10 s) |
 | `lph_phantom`, `lph_once`, `lph_wrongText` | the same, hermetic wiring (`Drain = FALSE`) | ✓ (381k, ~15 s) |
 | `lph_premature` | `NoPrematureFullChart`, hermetic wiring | ✗ (8) — below |
 
@@ -989,9 +1048,7 @@ friend.' interrupted=True heard=0.00` while its audio plays under an anonymous t
 context ahead must still be open when r2 reaches the TTS — "Great!!" keeps its context
 open for the full timeout (below) — so it is rare, and it needs an emoji- or
 punctuation-only reply, which the guard does not stop (it speaks its recovery line only
-for punctuation it strips). **Proposed fix, not code** (`lp_unspeakable_queued`, every
-property holds): queue every response with text, as before `has_speech`. Its context
-opens and ends with no audio, and is charted never-played under its own text.
+for punctuation it strips). Fixed, below.
 
 `lp_wrongText_unspeakable` (6 states) is the first cut's counterexample, kept under its
 premise:
@@ -1016,6 +1073,232 @@ context under the SAME id, so a reply is never split across two ids and the ledg
 above). `AudioStartIsOwn` holds by construction — `audio_start` is computed from the
 turn's own chunk or not at all — and has no row.
 
+### What was changed (2026-10-15)
+
+`has_speech` moves from the queue to the chart (`SpeakCheck = "chart"`). `_llm_side` queues
+every response with text, and every non-filler spoken notice, as pre-#13 — pipecat opens a
+context for any non-blank text, so each context claims its own entry and the queue stays
+in step. `_finish` charts nothing for a turn with no audio whose text has nothing
+synthesizable, unless a barge-in cut its response while it still streamed (`Silent` in
+the model): nothing of it was heard. (pipecat does commit its text — the TTS
+force-completes a context's text at its stop — which the section on failed replies below
+found; an emoji left in the context is harmless.)
+
+Queuing alone — the first proposal, `lp_unspeakable_queued` before this change, now
+`lp_unspeakable_charted` — held every property then checked, but charts the unspeakable
+reply heard-nothing, and `HeardContextCorrector` anchors a cut by position: the newest
+assistant message since its last reconcile. The reply that played after the unspeakable
+one committed the newer message, so the cut lands on it and deletes it — the same lost answer
+by another route. Checked on the real corrector with the ledger's events (`"Great!!"`,
+`"👍"` cut at 0%, the answer heard in full): it removed the answer. `NoUnheardAheadOfPlayed`
+is that requirement as an invariant (a reply charted heard-nothing is not followed in the
+chart by one that played with no user turn between them; the model's user turns are its
+barge-ins, `epoch` in the chart). `lp_unspeakable_charted`'s counterexample, 12 states:
+
+```
+LlmStart(r1) TtsStart(r1) r1 ("👍") streams; its context opens and claims it live
+TtsStop(r1)               nothing for the stop-frame timeout: charted heard-nothing
+LlmEnd(r1) LlmStart(r2) TtsStart(r2) TtsAudio(r2) ... PlayChunk
+Interrupt                 r2 cut partway, charted with r1 in one reconcile window
+```
+
+The barge-in exception keeps a cut of a still-streaming response charted, as before:
+what it would have said is unknown, and the consult follow-up loop reads that cut to
+decide whether to say its answer again. Nothing charted after a barge-in shares its
+window: it comes after the user's turn.
+
+Removing `has_speech` from the queue does not reopen `lp_wrongText_unspeakable`: that
+counterexample needs the unspeakable response to open no context, and pipecat 1.8.1
+opens one for any text with a non-blank character (`_push_tts_frames`; the brain's TTS
+has no text filters or skipped aggregation types that could empty it first).
+`lp_unspeakable_noOpen` keeps the dependence visible — the shipped ledger on the old
+premise fails the way `lp_wrongText_unspeakable` did — and
+`test_tts_stop_frame.py`'s `test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text`
+pins the premise on the real `EngineTTSService`, so a pipecat upgrade that stopped
+opening the context fails a test rather than the transcript. Regressions:
+`test_ledger_playout.py` case k (the probe's frame order, through the ledger and the
+corrector) and that test; both fail on the code before this change.
+
+The trailing-`"!!"` hold is not the ledger's: `"Great!!"` has speech and was always
+queued. It is the next section.
+
+### A reply ending in `"!!"` held the TTS for 15 s (2026-10-15)
+
+pipecat closes a context at its End only if the *last* `run_tts` yielded audio
+(`on_turn_context_completed` reads the flag `tts_process_generator` sets from that one
+call: a service that yields none may be streaming on a socket of its own). The sentence
+aggregator hands a reply's trailing piece to `run_tts` on its own — `"Great!!"` reaches it
+as `"Great!"` and `"!"`, `"Really?!"` as `"Really?"` and `"!"`, `"Bye! 👋"` as `"Bye!"`
+and `"👋"` — and the engine has nothing to synthesize in it. So the context, and the TTS's
+queue behind it, stayed open for the full `TTS_STOP_FRAME_TIMEOUT_S`: bot-speaking ended
+on the transport's 3 s idle fallback instead of the stop frame, and whatever the TTS said
+next — the answer after a tool call, a narrator line — waited up to 15 s. A reply with
+nothing synthesizable at all (`"👍"`), and one whose every clause the engine fails, the
+same. Measured on the real TTS with the timeout at 1 s: the stop frame 1.00 s after the
+last audio for those endings, 0.00 s for `"That is all."`.
+
+Modelled as a property of the environment the ledger reads, not of the ledger:
+`TrailingMute` (replies with audio whose last piece has none), `MutedAtEnd` (those and
+`Unspeakable`), and `swept` — contexts the timeout closed after their End reached the TTS.
+`NoSweepAfterEnd` says none is. `lp_endings`, 6 states:
+
+```
+LlmStart(r1) TtsStart(r1)  "Great!!" streams; its context opens
+LlmEnd(r1)                 the End reaches the TTS: the last piece, "!", yielded no audio,
+                           so the End does not close the context
+TtsAudio(r1) TtsStop(r1)   "Great!" plays; the stop frame comes on the timeout, 15 s on
+```
+
+**What was changed.** `EngineTTSService.tts_process_generator` runs pipecat's and then
+sets the flag: this service yields every frame of a `run_tts` synchronously, so a call with
+no audio is one with none to give, and the End closes the context whatever the last piece
+was (`CloseAtEnd = TRUE`). `_require_close_at_end_flag` fails the session build if a
+pipecat bump stops reading that flag in `on_turn_context_completed`. Dropping the
+unspeakable piece before `run_tts` (a text filter) was the other way in, and is wrong
+here: a reply with nothing synthesizable at all would then open no context, which is the
+premise `lp_unspeakable_noOpen` shows the ledger cannot take. `lp_endings_closed` holds
+with every property — the ledger's charts do not depend on when the stop comes, only that
+it does. Regression: `test_tts_stop_frame.py`'s
+`test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end` (real
+`EngineTTSService`, timeout 2 s: `"Great!!"`, `"Really?!"`, `"Bye! 👋"`, `"👍"`, each
+followed by a reply), which fails before it (`'Great!!': its context closed 2.00s after
+its last audio`).
+
+### A failed reply's cut deleted the reply that played after it (2026-10-15)
+
+A reply the engine fails on every clause (CUDA OOM, an engine restart) opens a context,
+yields no audio, and is charted heard 0 by design (`test_ledger_playout.py` case c): it has
+speech, so it is a cut, and `HeardContextCorrector` removes it. But pipecat commits its
+text all the same — at the stop the TTS force-completes the context's remaining text
+(`_apply_force_complete`) as a word frame, which the assistant aggregator appends;
+measured on the real `EngineTTSService`: `TTSStopped`, then `TTSText 'Hello there my
+friend.' append_to_context=True`, then the End (an emoji the same, `'👍'`). The corrector
+anchors a cut on the newest assistant message of its window, so with a reply that played
+after the failed one and no user turn between — the answer after a tool call, the next
+response — the failed reply's cut deleted THAT one: an answer the caller heard, while the
+text they never heard stayed. `Failed` (replies with speech that yield no audio) reaches
+`NoUnheardAheadOfPlayed` (`lp_failed_charted`, 12 states).
+
+Modelling the corrector found a second way in. `Chart` records `said` — pipecat committed
+a message: words of it played, or its context ended — and `Anchor(i)` is the newest
+committed message of the cut's window, newest by the order the contexts opened, which is
+the order pipecat commits them (not always the charts' order: a failed reply is charted at
+its stop while the reply ahead of it still plays). `NoPlayedReplyDeleted`: the corrector
+never rewrites or deletes ANOTHER reply that played. `lp_failed_position`, 13 states:
+
+```
+LlmStart(r1) TtsStart(r1) TtsStop(r1)   r1 fails on every clause: charted heard 0, committed
+LlmEnd(r1) LlmStart(r2) TtsStart(r2) PlayMark TtsAudio(r2) PlayStart TtsStop(r2)
+PlayChunk PlayMark
+                                        r2 plays in full, committed after r1: the newest
+                                        message -- the corrector's anchor for r1's cut
+```
+
+**The premise under `said`.** The model takes `said` as the truth, and the code computes it:
+`Utterance.committed = not interrupted or never or synth_done or heard > 0`. It holds
+because each arm names a context whose end force-completes the reply's text
+(`tts_service._apply_force_complete` runs in `_handle_audio_context` before the stop frame
+is pushed, whether the context ends at its End or on the timeout), or words of it that
+reached the aggregator:
+
+- `never` — the ledger's three no-audio closes: its own `TTSStoppedFrame` (the stop was
+  pushed after the force-complete), its End re-pushed below the TTS (pushed by
+  `_maybe_reset_word_timestamps`, after the same force-complete), and another context
+  starting (`_context_started`: pipecat drains contexts one at a time, so the earlier
+  one's `_handle_audio_context`, force-complete included, has finished).
+- `synth_done` — set by the same three sightings for a turn with audio.
+- `heard > 0` — words are pushed on their pts, ahead of their audio by the caption lead,
+  so some of a reply that played have reached the assistant aggregator, which commits
+  them at the interruption.
+- `not interrupted` — charted complete: its stop and drain were seen.
+- A spoken notice (`TTSSpeakFrame`, `append_to_context`) opens a context of its own
+  through `_push_tts_frames`, and is committed by the same force-complete at its stop.
+
+Only a reply cut before its context ended, with nothing played, falls through all of
+them — and pipecat committed nothing of it. Checked by review against every `_finish`
+caller; no counterexample. A pipecat bump that commits on another frame, or stops
+force-completing, breaks it.
+
+`lp_position` (11 states) needs no failure: a reply plays, the next one's context opens,
+and a barge-in lands before its first audio. That reply committed nothing (its context had
+not ended), so the newest message is the one the caller heard, and the corrector deleted
+it. A tool message between the two stops the walk, which may be why it has not been seen.
+
+**The first fix, and what it left.** `_anchor_elsewhere` let a cut that heard nothing
+be when its message could not be the newest (`Corrector = "guarded"`): a reply newer than
+it in its window was heard, or an older one was and it committed nothing. It held
+`NoPlayedReplyDeleted`, but every cut it did reconcile was still anchored on the newest
+message left, cut by cut in the batch's order — and a reply cut partway with a reply
+committed after it lost its correction. `HeardPrefixOnOwn` (a cut that heard something
+has its heard prefix written on its OWN message) is that; `lp_guarded`, 14 states:
+
+```
+LlmStart(r1) TtsStart(r1) TtsAudio(r1) TtsAudio(r1) TtsStop(r1) LlmEnd(r1)
+LlmStart(r2) TtsStart(r2) TtsAudio(r2) TtsStop(r2)
+                          r2 synthesized whole behind r1: committed (force-completed)
+PlayStart PlayChunk       r1's first chunk plays
+Interrupt                 r1 cut partway, r2 heard nothing: r1's prefix lands on r2's
+                          message (the newest), r2's cut then removes it, and r1 keeps
+                          its FULL text -- the context says the caller heard all of it
+```
+
+The model's first run of this (with anchors taken all at once rather than cut by cut)
+showed the same with a failed reply in r2's place; the real corrector, cut by cut, gets
+that one right — the failed reply is charted first, at its stop, and its removal leaves
+r1's message the newest. The queued reply is charted after r1, at the same barge-in.
+
+**What was changed.** `HeardContextCorrector._resolve` finds each cut's OWN message,
+all of them before any is rewritten: pipecat commits the replies' messages in the order
+their contexts opened, so the cut's is as many spoken messages back from the newest as
+its batch has committed replies newer than it. The ledger puts what that needs on each
+`Utterance`: `turn_seq` (the order its context opened) and `committed`
+(`not interrupted or never or synth_done or heard > 0`). A cut that committed nothing has
+nothing to correct. Messages with nothing synthesizable (an emoji reply, charted nothing)
+are not counted; a message carrying a tool call is cleared rather than removed, so the
+tool result keeps its call. `Target` is that rule (`Corrector = "seq"`). `lp_failed`
+holds with every property but `NoUnheardAheadOfPlayed` — the charts are unchanged; the
+corrector no longer reads them by position alone — and with the corrector's three:
+`NoPlayedReplyDeleted`, `CutAnchorsOwn` (every cut it reconciles, on its own message) and
+`UnheardSaidIsCorrected` (every cut heard nothing that committed a message is removed: the
+failed reply ahead of one that played too, which the first fix had to leave). Charting a
+failed reply nothing, as `Silent` does an unspeakable one, was another way, and is worse:
+its text is in the context, and the corrector removes it. Regression:
+`test_ledger_playout.py` cases l (a failed reply then a played one; a played one then a
+failed one charted first; a played one then a barge-in before the next one's audio) and m
+(a reply cut partway with a queued reply, and with a failed one, after it), through the
+real ledger and corrector. Before the first fix, l's first and third fail (`the reply the
+caller heard was deleted`); before this one, l's first (the failed reply's text kept) and
+m (`['The bakery opens at eight and closes at six.']`: the cut reply's full text).
+
+**An emoji reply after the cut one (review, 2026-10-15).** The model's messages were the
+charts' alone, and an unspeakable reply is charted nothing — but committed: its context
+closes at its End (promptly since `lp_endings`' fix) and the TTS force-completes its text.
+Behind a reply the caller then barges into, it is the newest message, and `_resolve`, with
+no committed reply newer than the cut, took the newest message as it found it: the emoji's,
+overwritten with the cut reply's heard prefix, while the cut reply kept its full text.
+Reproduced on the real ledger and corrector (`['The bakery opens at eight and closes at
+six.', 'The bakery opens at']`). `Muted` puts those messages in the model, with
+`stopEpoch` (the window a context's stop falls in); `lp_unspeakable_tail` (`"seqTail"`, the
+code before this fix), 13 states:
+
+```
+LlmStart(r2) TtsStart(r2) TtsAudio(r2) TtsAudio(r2) TtsStop(r2) LlmEnd(r2)
+LlmStart(r1) TtsStart(r1) TtsStop(r1)   r1 ("👍"): charted nothing, committed after r2
+PlayStart PlayChunk Interrupt           r2 cut partway: its prefix lands on r1's message
+```
+
+The walk back from the newest now skips an assistant message with text and nothing
+synthesizable, as the count of newer replies already did — one predicate for both,
+`_is_reply` (the ledger's own `has_speech`). A tool call riding on the emoji does not make
+it a reply: the first cut of this fix kept such a message as a stop while the count skipped
+it, so with emoji text on a follow-up's tool call the walk stopped there and its text took
+the cut reply's prefix (review of the integrated stack). A message with no text at all — a
+bare tool call — still stops the walk, for the tool-result insert path. Tool calls are not
+in the model: to it both are `Muted` messages, which the corrector never counts or takes.
+`lp_unspeakable` (`"seq"`) holds with the corrector's three; regression:
+`test_ledger_playout.py` case n (an emoji reply, and the same with a tool call), which
+fails on the code before each fix with the review's output.
+
 ### What the model found
 
 Writing the drain step found a hole in the code as first written: the re-push for a
@@ -1023,7 +1306,8 @@ response whose turn was ALREADY charted (closed on other evidence — a newer co
 the hermetic fallback) reassigned the newest open turn to that response. Fixed before
 the tests ran: a charted turn's re-push is a no-op, and only an UNCLAIMED response's drain
 corrects the newest turn (`_end_drained`). The 2026-10-14 audit found the unspeakable
-reply's misclaim above.
+reply's misclaim above, and its fix found the corrector's positional anchor
+(`NoUnheardAheadOfPlayed`).
 
 ### Known limits of this model
 
@@ -1034,20 +1318,11 @@ reply's misclaim above.
   and plays under an anonymous turn, charted nowhere. The first cut needed a narrator
   line in the gap; the stop frame does it alone. Still a 15 s LLM stall mid-reply
   (`TTS_STOP_FRAME_TIMEOUT_S`); "lead" pacing keeps the context alive through its waits.
-- **The context left open on the timeout** (not a ledger property, so not here as a row):
-  pipecat closes a context at its End only if the last `run_tts` yielded audio. A reply
-  whose last piece the sentence splitter hands over alone and the engine cannot speak —
-  `"Great!!"` (`"!"`), `"Really?!"`, `"Bye! 👋"` — keeps its context, and the TTS's
-  queue, open for the full `TTS_STOP_FRAME_TIMEOUT_S`: bot-speaking ends on the 3 s idle
-  fallback instead of the stop frame, and whatever the TTS says next (the answer after a
-  tool call, a narrator line) waits up to 15 s. Measured on the real TTS with the timeout
-  at 1 s: the stop frame 1.00 s after the last audio for those endings, 0.00 s for
-  `"That is all."`.
 - **Numbers are out of scope**, as in `Ledger.tla`: the layout's seconds, `heard_fraction`,
   the pts cut. The layout is taken to credit exactly what played.
 - **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its
-  own, completed by its stop frame alone: no End re-push) are not modelled — "Worth
-  modeling next", item 1. The hermetic fallback is `Drain = FALSE`, above.
+  own — synthesizable or not, as a response — completed by its stop frame alone: no End
+  re-push) are not modelled — "Worth modeling next", item 1. The hermetic fallback is `Drain = FALSE`, above.
 - **A cancelled completion's End is assumed to precede the next run.** pipecat pushes it
   from the cancelled task's `finally`, at cancellation; the model had let it arrive after
   the next response began streaming, and the ledger — which cannot tell whose End it is
@@ -1058,6 +1333,13 @@ reply's misclaim above.
   sighting of the `InterruptionFrame`, and a TTS frame in flight between two of them
   opens an anonymous turn on a closed context, which the next sighting ends; the model's
   interruption is one step.
+- **The corrector's messages are the charts' and the muted ones.** The model's context is
+  the committed charts of the window, and the unspeakable replies charted nothing whose
+  context ended (`Muted`), in the order their contexts opened; the code counts spoken
+  messages back from the newest. An uncharted commit WITH speech, or a reply pipecat
+  dropped (the tool-result insert path), would put the count off by one: the code then
+  finds too few messages and leaves the cut alone, or lands one message off. None is
+  known.
 - **Scale.** One reply and one filler is 3.5k states; two replies 300k, about 20 s with
   two workers.
 
@@ -1759,18 +2041,20 @@ committed `'Sure here'` and left seven words uncommitted.
 is that probe, kept. The End has no `context_id`; the gate gives it the context it saw
 last, which is the one whose audio it follows.
 
-**A second context behind the held reply** (`SECOND`, 2026-10-14 audit). The model had
-one context, and the gate's shift and the TTS's anchoring are per context: a context
-that starts while the held reply is still to play — a narrator line, the answer after a
-tool call — is anchored by the TTS at the held reply's end on ITS model
-(`_prev_audio_end_ns`, or its own first audio if later; `engine_tts.start_word_timestamps`),
-and the gate moves its pts by ITS OWN first held frame's wait (`reply_hold._restamp`),
-while it really plays right behind the held reply, which plays from the release.
+**A second context behind the held reply** (`SECOND`, 2026-10-14 audit; fixed
+2026-10-15). The model had one context, and the gate's shift and the TTS's anchoring are
+per context: a context that starts while the held reply is still to play — a narrator
+line, the answer after a tool call — was anchored by the TTS at the held reply's end on
+ITS model (`_prev_audio_end_ns`, or its own first audio if later;
+`engine_tts.start_word_timestamps`), and the gate moved its pts by ITS OWN first held
+frame's wait (`reply_hold._restamp`), while it really plays right behind the held reply,
+which plays from the release. `DESIGN2` says which anchoring.
 
-| | `SecondOnTime` |
-|---|---|
-| `pc_second_shipped` — as shipped | ✗ (5 states) |
-| `pc_second_fix2` — **proposed, not code**: anchor a context that starts during a freeze on the frozen clock, move an ended context's anchor by the hold since its first audio, give every context held behind the first the first's shift | ✓ (169 states, with `CommittedIsPlayed` and `WordsOnTime`) |
+| `DESIGN2` | | `SecondOnTime` | `SecondEndOnTime` |
+|---|---|---|---|
+| `asWritten` | `pc_second_asWritten`, the code until 2026-10-15 | ✗ (5 states) | |
+| `realClock` | `pc_second_realClock`: the fix below, but anchored on the real clock | ✗ (7 states) | |
+| `shipped` | `pc_second_fix2`, **as shipped**: a context that starts while the freeze holds anchored audio back is anchored on the frozen schedule (`_frozen_from`); an ended context's anchor and the second's own end move by the hold since that instant; every context held behind the first takes the first's shift | ✓ (183 states, with `CommittedIsPlayed` and `WordsOnTime`) | ✓ |
 
 Two ways, both from the code as written. Started *after* the release (TLC's shortest,
 `Wait Wait Release Arrive2`): `_freeze_playout` moved the held reply's end by the whole
@@ -1779,8 +2063,32 @@ context's words land `LAT` late (`pp_hold_anchor` is the same arithmetic). Start
 *during* the hold (`Wait Wait Wait Arrive2 Release`, held 3, first audio at 3): anchored
 at `max(LAT + N, 3) = 4` on the pre-hold schedule, moved by its own wait, 0 — its words
 2 units EARLY, so a cut credits words not yet heard, which no estimate corrects.
-Found by the model from the code; not reproduced on the real gate. Rare: the hold is
-about a second, and needs a second context to start inside it.
+
+The fix, three parts that only hold together. The TTS records where the freeze began
+holding anchored audio back, `_frozen_from`: the freeze's start if anything anchored was
+still to play, else the first audio anchored during it (`_stop_holds_from`). An ended
+context's `_prev_audio_end_ns` and the in-progress context's `_ctx_held_ns` both move by
+the hold since that instant. A context whose first audio comes while the freeze holds
+audio back is anchored on the frozen schedule — `max(_prev_audio_end_ns, _frozen_from)`,
+pipecat's baseline reading `_frozen_from` instead of the clock (`EngineTTSService.get_clock`
+pins one read) — and the gate gives every context it held the shift the first one fixed
+(`_release_shift`). Both halves are needed: with the gate's shared shift but the real
+clock (`pc_second_realClock`, `Wait`×4 `Arrive2 Release`, `N = 2`: the second context's
+first audio at 4, after the held reply's pre-hold end at 3) its words land a unit late.
+`SecondEndOnTime` checks the second context's own end — where a third would be
+anchored — and it needs the hold since `_frozen_from` too, not since its own anchor.
+`pc_second_fix2` runs at `N = 2`, `MaxHold = 4` so a second context can start after
+the held reply's pre-hold end. The tests, each failing before the fix:
+`test_reply_hold.py::test_a_reply_queued_behind_a_held_one_is_anchored_on_the_frozen_schedule`
+(the TTS), `::test_the_contexts_held_behind_the_first_move_with_it` (the gate: 0.45 s
+against the first's 0.75 s), `::test_a_reply_ending_inside_a_hold_moves_by_the_hold_since_its_first_audio`.
+Rare on a call: the hold is about a second, and needs a second context to start inside it.
+
+Not modelled, and accepted: the TTS hears of the release one upstream SystemFrame after
+the gate acts, so a context first anchored in that window is anchored frozen but not
+shifted (well under a millisecond, on the input task). And the freeze treats everything
+the TTS has anchored as held, though audio already past the gate when the hold began (a
+line still playing at the commit) plays on — as before the fix.
 
 ## `PlayoutPause.tla` — heard accounting across playout pauses, and the TTS's freeze (#86)
 
@@ -1807,14 +2115,14 @@ word scheduled before any pause. The TTS synthesizes clause by clause, and a cla
 comes after playout ran dry is placed after the gap `_note_playout` saw — on the TTS's
 clock, which stands still while playout is stopped. A pause in that underrun (the pauser
 needs bot-speaking and reply audio, not audio queued: `barge_pause._may_pause`) that ends
-before the next clause is synthesized is then in the gap, and so in the clause's pts —
-`_freeze_playout` moves `_play_end` by the stop only when it was still ahead of the stop
+before the next clause is synthesized was then in the gap, and so in the clause's pts —
+`_freeze_playout` moved `_play_end` by the stop only when it was still ahead of the stop
 — and the ledger adds it again (`_resume`: every turn with audio pushed).
 
 | `LATE = 2`, ledger `shipped` | | `HeardIsPlayed` |
 |---|---|---|
-| `pp_late_shipped_heard` | `TTSGAP = "shipped"`, as shipped | ✗ (9 states) |
-| `pp_late_moved_heard` | `TTSGAP = "moved"` — **proposed, not code**: `_freeze_playout` always moves `_play_end` by the stop, so a gap never holds stop time and the ledger's shift is the only move | ✓ (20k states) |
+| `pp_late_ahead_heard` | `TTSGAP = "ahead"`, before the fix | ✗ (9 states) |
+| `pp_late_moved_heard` | `TTSGAP = "moved"`, **as shipped** (2026-10-15): `_freeze_playout` always moves `_play_end` by the stop, so a gap never holds stop time and the ledger's shift is the only move | ✓ (20k states) |
 
 ```
 Tick Tick      the first clause's two units play out; nothing more is synthesized yet
@@ -1824,12 +2132,14 @@ Emit2          the next clause: the TTS sees a 1-unit gap (the pause) and places
 Tick Cut       unit 3 played (pts 4); the ledger reads the cut at 4 - 1 and drops it
 ```
 
-The pause did not delay the clause, and its words carry it twice. The seconds are right
-(the layout lays a chunk out no earlier than its push), and `_finish` never reports fewer
-words than the played fraction implies, so the chart falls back to that estimate — off by
-a word or so — instead of the exact cut. The same arithmetic on the real TTS:
-`_note_playout` after a 1.0 s pause in an underrun puts the next clause at 3.0 s, where
-it plays, and the ledger's cut is 1.0 s short of it.
+The pause did not delay the clause, and its words carried it twice. The seconds were
+right (the layout lays a chunk out no earlier than its push), and `_finish` never reports
+fewer words than the played fraction implies, so the chart fell back to that estimate —
+off by a word or so — instead of the exact cut. The fix moves `_play_end` by every stop,
+even one that began after playout ran dry (a model already in the past stays in the past,
+so the pacing is unchanged). `test_barge_pause.py::
+test_a_pause_in_an_underrun_is_not_a_playout_gap_as_well` is the trace on the real TTS:
+before the fix, the next clause after a 0.3 s pause started 0.3 s late.
 
 **Part 2, the TTS.** A reply hold and a playout pause each stop playout; the two can
 overlap. `engine_tts._freeze_playout` freezes the TTS's playout model through them and,
@@ -1849,17 +2159,19 @@ reply hold is armed at the commit and usually begins before the reply's first au
 and the reply's short context often ends inside it. Ground truth is now the time stopped
 *with the reply's audio waiting*; `_freeze_playout` moves an ended context's anchor
 (`_prev_audio_end_ns`) by `now - then`, the whole stop, while the in-progress path
-(`_ctx_held_ns`) already counts from `max(then, base)`.
+(`_ctx_held_ns`) already counted from `max(then, base)`.
 
 | `SLOT = "set"`, `FIRSTAUDIO = "any"` | `AnchorMovesByStop` |
 |---|---|
-| `pp_hold_anchor` — `ANCHOR = "stop"`, as shipped | ✗ (6 states: the hold, a tick, the first audio, the context ends, the release — moved 1, stopped with audio 0) |
-| `pp_hold_anchor_fixed` — `ANCHOR = "audio"`, **proposed, not code**: the ended context's anchor moves by the stop since its first audio | ✓ (1.1k states, with `FrozenWhileStopped`) |
+| `pp_hold_anchor` — `ANCHOR = "stop"`, before the fix | ✗ (6 states: the hold, a tick, the first audio, the context ends, the release — moved 1, stopped with audio 0) |
+| `pp_hold_anchor_fixed` — `ANCHOR = "audio"`, **as shipped** (2026-10-15): the ended context's anchor moves by the stop since its first audio (`_frozen_from`) | ✓ (1.1k states, with `FrozenWhileStopped`) |
 
-A reply queued behind such a held reply — the answer after a tool call — is anchored by
-however long the hold ran before the first audio, so its captions lag and its heard cut
-comes short (the estimate floor again). `PlayoutClock.tla`'s `pc_second_shipped` is the
-same, seen from the words.
+A reply queued behind such a held reply — the answer after a tool call — was anchored
+late by however long the hold ran before the first audio, so its captions lagged and its
+heard cut came short (the estimate floor again). `PlayoutClock.tla`'s
+`pc_second_asWritten` is the same, seen from the words, and its fix carries this one.
+`test_reply_hold.py::test_a_reply_ending_inside_a_hold_moves_by_the_hold_since_its_first_audio`
+is the trace: a reply anchored 0.3 s into a 0.7 s hold ended at 12.0 s instead of 11.7 s.
 
 The anchor's own value is tested on the real TTS in `test_reply_hold.py` and
 `test_barge_pause.py`.
@@ -1891,8 +2203,8 @@ watchdog); what the strategy does then is `TURNSTOP`.
 | `vadStop` | commit at the raw VAD stop (until #43; since, only the no-verdict fallback) | ✗ | ✓ | ✓ | ✓ | — |
 | `verdict`, `TURNSTOP = "silent"` | the first cut: nothing reported when the turn is closed under the ceiling | ✓ | ✓ | ✓ | ✓ | ✗ |
 | `verdict`, `TURNSTOP = "verdict"` | the verdict commit, as shipped, the VAD one edge ahead of either side (`sc_verdict`) | ✓ | ✓ | ✓ | ✓ | ✓ |
-| the same | the strategy three edges behind the VAD (`sc_verdict_stale`, THE ORDER) | ✗ | | | | |
-| the same, `NUMBERED` | proposed: the verdict names its stop (`sc_verdict_numbered`) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| the same, before `NUMBERED` | the strategy three edges behind the VAD, a verdict naming no stop (`sc_verdict_stale`, THE ORDER; until 2026-10-15) | ✗ | | | | |
+| the same, `NUMBERED` | as shipped: the verdict names its stop, three edges behind (`sc_verdict_numbered`) | ✓ | ✓ | ✓ | ✓ | ✓ |
 
 `NoSplitOnIncomplete` is the bug, and `vadStop` fails it with nothing exotic:
 
@@ -1989,13 +2301,14 @@ the design and the wire:
 |---|---|---|---|---|---|
 | `clock` | `unmarked` | PR #49 as opened: a final placed by clock (`sc_final_clock`) | ✗ | | |
 | `clock` | `marked` | the same on a wire that says which dones answer commits (`sc_final_clock_marked`) | ✗ | | |
-| `stop` | `unmarked` | as shipped, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`) | ✗ | ✗ | |
-| `stop` | `marked` | as shipped, against the engine that marks its dones — teagram-engine#36, what the box runs (`sc_final_stop_marked`, `sc_final_stop_stranded`) | ✗ | | ✗ |
-| `receipts` | `unmarked` | proposed (THE ORDER), on the old engine (`sc_final_stop_residual`) | | ✓ | ✓ |
-| `receipts` | `marked` | proposed (THE ORDER), on the engine the box runs (`sc_final_receipts`, `_backstop`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
+| `stop` | `unmarked` | shipped until 2026-10-15, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`) | ✗ | ✗ | |
+| `stop` | `marked` | shipped until 2026-10-15, against the engine that marks its dones — teagram-engine#36, what the box runs (`sc_final_stop_marked`, `sc_final_stop_stranded`) | ✗ | | ✗ |
+| `receipts` | `unmarked` | as shipped since 2026-10-15, on the old engine (`sc_final_stop_residual`) | | ✓ | ✓ |
+| `receipts` | `marked` | as shipped since 2026-10-15, on the engine the box runs (`sc_final_receipts`, `_backstop`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
 
 The `stop` rows held on the marked engine until 2026-10-14, when THE ORDER (below) put
-the VAD where pipecat runs it; the `receipts` rows are the repair.
+the VAD where pipecat runs it; the `receipts` rows are the repair, in the code since
+2026-10-15 (THE ORDER, What was changed).
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a
@@ -2038,7 +2351,9 @@ nothing asked for no longer releases a hold (the first cut's release is what str
 rest above; the ceiling's commit now closes the silent tail, which the engine answers
 without a decode), and its stamp is the next stop's if it carries words, the last
 commit's if it does not. `tests/test_earlier_final_does_not_end_the_turn.py` pins each
-shape.
+shape. THE ORDER (below) amended both halves of it: a close for a stop the strategy has
+not counted yet is a receipt, and a done nothing asked for that carries words is
+stamped with no stop at all.
 
 **The `stop` row on the unmarked wire fell in ten states, on one cause** — before THE
 ORDER, which adds a second that TLC now reaches first (finding A below). The engine
@@ -2050,7 +2365,8 @@ of the sentence — is still on its way. `sc_final_stop_residual` was the statem
 this was the *only* way the shipped design ended a turn stale, and `sc_final_stop_marked`
 that a done which says whether it answers a client commit (`voxtral_websocket.c`'s
 `worker_send_done` sends the same message for its VAD close and for a commit) closed it
-entirely; both now say it of the `receipts` design, the shipped one having two more. Live, the mispairing needs the
+entirely; both now say it of the `receipts` design, shipped since 2026-10-15 (the
+`stop` design before it had two more). Live, the mispairing needs the
 engine's finish for the first half to outlast the rest of the sentence plus the VAD's
 floor and the model's verdict — the GPU-contended finish — and its cost is one cut reply,
 the shape the fix is for, at a small fraction of its old rate.
@@ -2078,7 +2394,7 @@ by design, and each has its own row to keep that visible rather than a property 
 holds by construction. The cap (`PauseCap`, `capCut`, `sc_voice_cap`) can fire at any
 point of the wait. The catch-up bound (`catchupCut`, `sc_voice_catchup`) is a verdict
 that commits on what the analyzer has heard because it has not heard the rest in time.
-`sc_voice_final` runs the final's protocol (its `receipts` repair) under the wait on the
+`sc_voice_final` runs the final's protocol (as shipped, `receipts`) under the wait on the
 marked engine: no stale turn end, no stranded turn. `MaxVoice` bounds only the voice
 the VAD has not started on; since THE ORDER, a VAD start sets `voice` too (the
 analyzer's own finding), so a verdict that reaches the STT after the caller has
@@ -2112,7 +2428,7 @@ rows kept for a design that was rejected (`sc_verdict_silentStop`, `sc_voice_bli
 two clock rows) run without it.
 
 **The default run and `--full`.** See THE ORDER's scale note below: since 2026-10-14
-`--full` holds the five rows too large for the default run, the carry's three among
+`--full` holds the six rows too large for the default run, the carry's three among
 them.
 
 ### THE ORDER (2026-10-14): where the VAD runs
@@ -2132,7 +2448,7 @@ the edges. So the model now has three FIFOs — `vadQ`, `toStt`, `toStrategy` �
 handles its copies in `SttStart`/`SttStop`, and the two sides count stops separately
 (`sttStops`, `stratStops`). `MaxLag` bounds how many edges either side may be behind; one
 already lets either side see a stop first. Every row was re-run; three findings, all
-against the code as it is:
+against the code as it then was. All three are fixed (What was changed, below).
 
 **A — a stale turn end on the marked engine** (`sc_final_stop_marked`, ten states):
 
@@ -2171,28 +2487,127 @@ the speech, where the tail is silence and its close an empty done.
 **C — a verdict for the stop before** (`sc_verdict_stale`, fifteen states, `MaxLag = 3`):
 the strategy's queue holds a whole utterance — stop 1, the caller's next start and stop
 2 — when it answers stop 1 COMPLETE, so that verdict goes up behind stop 2.
-`TurnVerdictFrame` names no stop, the STT takes it for stop 2's and commits the held
-segment; the model then calls stop 2 INCOMPLETE and the caller resumes inside the
+`TurnVerdictFrame` named no stop, so the STT took it for stop 2's and committed the
+held segment; the model then calls stop 2 INCOMPLETE and the caller resumes inside the
 ceiling: the #43 split. It needs the aggregator's input task stalled for a whole
 utterance (≥ ~0.5 s with Talk's 0.2 s stop), which Smart Turn's inference on the
-appliance's cores under load could do but has not been seen to.
+appliance's cores under load could do but has not been seen to. Its repair, `NUMBERED`,
+is the code (What was changed, below); `sc_verdict_stale` stays as the row for the code
+before it.
 
-**The repairs, modelled, not in the code:**
+### What was changed (2026-10-15): numbered verdicts, for C
 
-- `NUMBERED` — the strategy stamps each `TurnVerdictFrame` with the stop it answers (its
-  own count; the ceiling's and the turn-stop's with the stop they override) and
-  `_handle_verdict` ignores one that is not for `_vad_stops`. `sc_verdict_numbered`
-  holds every commit property at `MaxLag = 3` (1.1 million states).
-- `DESIGN = "receipts"` — `LateStartTurnStopStrategy` keeps the stamps of closes for
-  stops it has not counted yet (`stop_n > _stops`) and, at the count, finds that stop's
-  debt paid; and `_handle_message` stamps a done nothing asked for that carries words
-  with no stop at all (a sentinel `_note_close` treats as paying nothing — not `None`,
-  which pays as stock): the stop it lands near is always answered by its own commit, the
-  tail's included. `sc_final_receipts`, `_backstop` and `sc_voice_final` hold every
-  property in the default run, `sc_final_receipts_full` (the backstop, a lost verdict,
-  the engine's cut and the carry together: 26.6 million states) and
-  `sc_voice_final_carry` under `--full`; `sc_final_stop_residual` says that on an engine
-  without the reason field the mispairing is again the only stale end left.
+The model's repair, `NUMBERED = TRUE`, is the code.
+
+- **The verdict names its stop** (`endpointing.py`). `TurnVerdictFrame` carries
+  `stop_n`, and `LateStartTurnStopStrategy._push_verdict` stamps it with `_stops`, the
+  strategy's count of VAD stops — the count #173's receipts already keep, of the same
+  frames the STT counts in `_vad_stops`, so no second counter. Every verdict answers
+  the latest stop counted: the model's at that stop, the ceiling's and the turn-stop's
+  under it (a VAD start since stops the ceiling and releases the hold). That is
+  `StratStop`'s `Up("verdict", v, stratStops + 1)` and `Ceiling`'s and `TurnStop`'s
+  `stratStops`. The default, `NO_STOP`, answers no stop.
+- **The STT acts only on its own stop's verdict** (`stt.py`, `_handle_verdict`). One
+  whose `stop_n` is not `_vad_stops` is ignored before anything else reads it — the
+  hold, the late-after-expiry note — and the stop's own verdict, still on its way
+  behind it, decides. That is `Verdict`'s `NUMBERED /\ other`. A stale verdict still
+  counts as a verdict for the session-wide fallback: it proves the wiring answers.
+- **The rows follow the code.** Every row that runs `DESIGN = "receipts"` now runs
+  `NUMBERED = TRUE`, the code, except `sc_verdict_stale`, which stays as the row for
+  the code before (`NoSplitOnIncomplete` falls, fifteen states);
+  `sc_verdict_numbered` is the shipped design at `MaxLag = 3` (1.1 million states,
+  every commit property). The rows of an older design keep `FALSE`.
+- **Test.** `tests/test_stt_commit_on_verdict.py`,
+  `test_a_verdict_for_the_stop_before_does_not_close_the_held_segment`, drives the real
+  strategy and the real service through `sc_verdict_stale`'s trace: the STT sees stop
+  1, the resume and stop 2 before the strategy answers stop 1 COMPLETE. On the old
+  `_handle_verdict` that verdict commits stop 2's held segment; now it is ignored, the
+  model's INCOMPLETE for stop 2 holds, and the resumed words join the one segment. The
+  tests that hand the STT a verdict directly stamp it with the stop the STT is on.
+
+### THE RESET (2026-10-15): a lost session pays the stops it takes
+
+`_disconnect_websocket` — a reconnect after the receive task fails, or `hold()` for a
+phone call — drops the open segment, the stamps of the commits still out and the hold,
+and pushes `SegmentResetFrame` for the strategy. Until this change the strategy only
+dropped its interim there, and the owed close stayed owed. The model had no disconnect;
+`SttReset` is one now (bounded by `MaxResets`, the next session up at once), with
+`RESET` for what the strategy does at the frame.
+
+**D — a turn stranded by a reset** (`sc_reset_owed`, `RESET = "keep"`, twenty states):
+
+```
+VadStart, VadStop    stop 1, COMPLETE; the STT commits
+VadStart             the caller starts again before stop 1's final lands (the burst)
+VadStop              stop 2, COMPLETE; its commit goes out; the strategy owes stop 2
+Done -> StratFinal   stop 1's final: the turn's transcript, finalized; it pays stop 1
+SttReset             the session goes, and stop 2's done with it
+StratReset           the strategy drops its interim; stop 2 is still owed
+```
+
+A turn with its transcript in hand and the verdict COMPLETE, and nothing that will ever
+pay stop 2: it waits for the caller's next stop or the aggregator's 5 s watchdog
+(`NoStrandedTurn`). Not seen live; it needs the session to go inside a turn's last
+second.
+
+**The repair, `RESET = "pays"`, is the code.** `SegmentResetFrame` carries `stop_n`,
+the STT's `_vad_stops` at the reset, and `LateStartTurnStopStrategy._note_reset` takes
+the reset as the close of every stop up to it, since none of them will get another:
+it pays the owed close if it is among them, keeps a receipt for each the strategy has
+not counted yet (the STT saw it first), and, having paid, finalizes whatever `_text`
+holds, as a wordless close does (`_finalize_on_wordless_close`, shared with
+`_handle_segment_done`). That is `StratReset`. `sc_reset_pays` holds every property
+with one reset anywhere in the run (134,569 states); `sc_reset_pays_closes`
+(`--full`) adds the engine's own close (3,139,486 states, 1 min 35 s). By hand, the
+same design also held with `MaxLag = 2` (278,747) and with a lost verdict, the
+backstop and the unmarked wire (6,465,751, without `NoStaleTurnEnd`, the mispairing
+residual's). The next turn is not mis-closed under either design: the strategy's next
+count replaces the debt.
+
+`NoStrandedTurn` now leaves out a turn a reset has left with no text (Known limits, the
+disconnect); with resets off it reads as before. Every other row runs `MaxResets = 0`, and
+the receipts rows `RESET = "pays"`, the code.
+
+**Test.** `tests/test_earlier_final_does_not_end_the_turn.py`,
+`test_a_reset_with_a_stops_commit_out_is_that_stops_close`, drives the real service and
+the real strategy through the trace above and disconnects the service; on the code
+before, the turn never ends.
+
+### What was changed (2026-10-15): receipts, for A and B
+
+The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
+
+- **The strategy keeps receipts** (`endpointing.py`, `LateStartTurnStopStrategy`).
+  `_note_close` keeps the stamp of a close for a stop it has not counted yet
+  (`stop_n > _stops`) in `_receipts`; `_handle_vad_user_stopped_speaking` counts the
+  stop and owes its close only if no receipt for it is held, then drops the receipts
+  the count has passed. That is `StratStop`'s `owed'`/`early'` and `Receipt(f)`. B's
+  close, landing first, is now the receipt the count finds.
+- **An unasked done with words pays no stop** (`stt.py`, `_handle_message`). It is
+  stamped `NO_STOP` (`endpointing.py`, `0`: stops count from 1, so it matches no debt
+  and is never a receipt), where it was stamped `_vad_stops + 1`, the next stop's.
+  `None` would not do: it is another STT's unstamped final, which pays whatever is
+  owed, as stock. That is `Done`'s `NONE`. A's first half no longer pays the stop the
+  strategy has just counted. The stop is answered by its own commit, the tail's
+  included. A wordless unasked done keeps the last commit's stamp, as before.
+- **The rows follow the code.** Every row that describes the code as shipped now runs
+  `DESIGN = "receipts"`: the commit rows (`sc_verdict`, `_stale`, `_numbered`), the
+  voice rows and their witnesses, the carry pair, and the fallback's `sc_vadStop_*`.
+  The `receipts` final rows ran with `NUMBERED = FALSE`, the code at the time, where
+  they first held with `TRUE`; since the numbered verdicts (above) they run `TRUE`
+  again. At `MaxLag = 1` the verdict's stop never mattered: C needs three.
+  The `stop` rows stay as the design before receipts, each a FAILS row named for its
+  finding: `sc_final_stop_marked` (A), `sc_final_stop_stranded` (B), and
+  `sc_final_stop` (the old engine). The design rows of their own time,
+  `sc_verdict_silentStop` and `sc_voice_blind`, keep `stop`.
+- **Tests.** `tests/test_earlier_final_does_not_end_the_turn.py` drives the real
+  service and the real strategy through each trace, handing the strategy what the
+  service pushed in the order TLC found it.
+  `test_the_engines_cut_landing_between_the_two_counts_does_not_end_the_turn` is A.
+  `test_a_stops_close_landing_before_the_strategy_counts_it_is_a_receipt` is B. Both
+  fail on the code before the change: the turn ends on the first half, and the turn
+  never ends. The stamp tests there and in `test_stt_commit_on_verdict.py` expect
+  `NO_STOP` where they expected the next stop.
 
 ### Known limits of this model
 
@@ -2253,14 +2668,14 @@ appliance's cores under load could do but has not been seen to.
   verdict); in the code the inference is an await inside it, and a final the process
   task hands the strategy meanwhile sees the stop counted and no verdict yet — the same
   as landing just after the step, since the turn's end needs both.
-- **Disconnects are not modelled** — the hold for a phone call (`stt.hold()`), a
-  reconnect. `_disconnect_websocket` drops the segment, the queued stamps and the hold
-  and pushes `SegmentResetFrame`, but the strategy's `_handle_segment_reset` leaves its
-  owed close standing: a stop counted before the disconnect is owed a close that will
-  never come, and a turn that needs it (one open at the hold, or a final with no stop in
-  sight after the resume) waits for the next stop or the watchdog. A suspicion from
-  reading, not a counterexample: the turn at a hold has usually just ended on the
-  caller's answer.
+- **A disconnect is one step, and the next session is up at once** (`SttReset`, THE
+  RESET below). A VAD stop that reaches the STT while there is no session — during a
+  `hold()`, before `resume()` — holds and then commits into no socket: that is a commit
+  whose send fails (below), and the turn it strands ends on the watchdog. The words a
+  reset takes are lost, not outstanding, so no stale-end is charged for them; and a turn
+  that a reset leaves with no words at all (an interim opened it, and the segment it
+  streamed from is gone) is left out of `NoStrandedTurn`: the watchdog closes it, and
+  there is nothing to answer.
 - **One interim per segment.** `Delta` fires once per open segment: further deltas change
   nothing this model reads, and the engine streams none for a new segment until the
   previous finish is done (one worker per session), which is when the STT's buffer
@@ -2287,18 +2702,21 @@ appliance's cores under load could do but has not been seen to.
 - **A commit whose send fails is not modelled.** `stt.py` queues no stamp for it (the first
   cut left its stamp for the next done to inherit); the turn it strands ends on the
   watchdog, and the receive task owns the reconnect.
-- **Scale.** Measured 2026-10-14 on TLC 2.19, THE ORDER's model, two workers on a
-  desktop shared with other checks (so slower than the figures from before it, which
-  had the machine). Default run: `sc_verdict` 7.0 million distinct states (4 min 11 s),
-  `sc_voice` 4.3 million (1 min 45 s; the missed stop moved to `sc_voice_missed`),
-  `sc_vadStop_sound` 3.7 million (1 min 24 s), `sc_voice_final` 1.3 million (30 s),
-  `sc_verdict_numbered` 1.1 million (47 s), the three `receipts` final rows 260,000 to
-  480,000 each (under 20 s), `sc_carry_off` 260,000 (8 s); every row that falls finds its
-  trace in 8 to 15 states, in a second or a few. `--full`: `sc_final_receipts_full`
-  26.6 million (14 min), `sc_voice_missed` 27.9 million (12 min 30 s),
-  `sc_vadStop_sound_carry` 5.6 million (3 min 36 s), `sc_voice_carry` 5.7 million
-  (2 min 41 s), `sc_voice_final_carry` 4.1 million (1 min 28 s) -- about half an hour
-  in all. The three queues cost most where the engine's own close and the backstop are
+- **Scale.** Measured 2026-10-15 on TLC 2.19 with the receipts rows as shipped, two
+  workers on a desktop shared with other checks. Default run: `sc_verdict` 7.0 million
+  distinct states (4 min 4 s), `sc_voice` 4.3 million (2 min 32 s; the missed stop moved
+  to `sc_voice_missed`), `sc_vadStop_sound` 3.7 million (1 min 31 s), `sc_voice_final`
+  1.3 million (36 s), `sc_verdict_numbered` 1.1 million (37 s), the three `receipts`
+  final rows 260,000 to 480,000 each (under 20 s), `sc_carry_off` 260,000 (8 s); every
+  row that falls finds its trace in 8 to 15 states, in a second or a few. `--full`:
+  `sc_final_receipts_full` 26.6 million (15 min), `sc_voice_missed` 27.9 million
+  (14 min), `sc_vadStop_sound_carry` 5.6 million (3 min 16 s), `sc_voice_carry` 5.7
+  million (3 min 7 s), `sc_voice_final_carry` 4.1 million (2 min 12 s) -- about 40
+  minutes in all. Switching the shipped rows from `stop` to `receipts` (and the final
+  rows' `NUMBERED` to FALSE) left every count above where it was, to the figures given,
+  and so did setting `NUMBERED` back to TRUE on every shipped row (the numbered
+  verdicts, re-measured the same day: `sc_verdict` 6,953,899, `sc_voice` 4,318,220). The three queues
+  cost most where the engine's own close and the backstop are
   both on (the final rows: 0.4 million with either, 8 million with both, at the same
   other bounds), which is why the default final rows take them one at a time.
   `check.sh` passes `-deadlock`: the bounds make terminal states ordinary. Before THE

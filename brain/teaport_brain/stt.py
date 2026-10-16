@@ -78,6 +78,7 @@ from pipecat.utils.time import time_now_iso8601
 
 from teaport_brain import echo_guard
 from teaport_brain.endpointing import (
+    NO_STOP,
     SMARTTURN_STOP_SECS,
     SegmentDoneFrame,
     NoSpeechReportFrame,
@@ -619,16 +620,19 @@ class FinalTranscriptionFrame(TranscriptionFrame, UninterruptibleFrame):
     `stop_n` names the VAD stop this final answers, as a COUNT of
     VADUserStoppedSpeakingFrames: the number this service had seen when it sent the
     commit the final answers (see _send_commit), and the stop strategy's own count of
-    the same frames is what it compares against -- both count the one FIFO the frames
-    travel, so the two agree per frame, with no clock read in two places. A final for
+    the same frames is what it compares against -- the same frames, so the same
+    numbers, with no clock read in two places; but not at the same moment (the VAD
+    reaches the two by different queues), so a stamp can name a stop the strategy has
+    not counted yet, and it keeps that close as a receipt. A final for
     a stop the strategy has moved past (a later stop, or the caller started again) is
     an EARLIER utterance's, landing late -- the engine's finish takes ~0.7 s, and a
     caller who speaks in bursts starts the next utterance inside it -- and must not
     end the turn: that ended turns on the previous utterance's words and the real
     final then cut the reply at 0%. A done the engine sent on its own is stamped by
-    _handle_message's rules. The final IS its segment's close; a wordless close is a
-    SegmentDoneFrame instead. See endpointing.LateStartTurnStopStrategy, and
-    brain/formal/SttCommit.tla for the protocol and its properties.
+    _handle_message's rules, NO_STOP among them. The final IS its segment's close; a
+    wordless close is a SegmentDoneFrame instead. See
+    endpointing.LateStartTurnStopStrategy, and brain/formal/SttCommit.tla for the
+    protocol and its properties.
 
     None (another producer's final) is taken as the stock strategy would.
     """
@@ -832,7 +836,8 @@ class TeaportSTTService(WebsocketSTTService):
         # see _handle_message.
         self._last_commit_n = 0
         # VADUserStoppedSpeakingFrames seen this session: what a done's stamp counts
-        # (see FinalTranscriptionFrame). The stop strategy counts the same frames.
+        # (see FinalTranscriptionFrame). The stop strategy counts the same frames, in
+        # its own time.
         self._vad_stops = 0
         # Latches the one debug line if the backstop cannot arm at all (no TaskManager).
         self._stranded_unavailable = False
@@ -1133,6 +1138,14 @@ class TeaportSTTService(WebsocketSTTService):
             self._commit_on = "verdict"
             logger.info(f"{self}: a verdict ({frame.source}) has reached the STT after "
                         "all -- the commit follows the verdict from here on")
+        if frame.stop_n != self._vad_stops:
+            # Another stop's: the stop before, whose verdict the VAD overtook with this
+            # one (the strategy's queue a whole utterance behind -- see
+            # TurnVerdictFrame). Its COMPLETE is no answer for the segment held now,
+            # which the model has yet to judge; that verdict is still on its way.
+            logger.debug(f"{self}: verdict {frame.source} complete={frame.complete} for "
+                         f"VAD stop {frame.stop_n}, not {self._vad_stops}; ignored")
+            return
         if not self._commit_pending:
             if self._expired_at is not None:
                 # It answers the stop whose hold has just expired: late, not lost. The
@@ -1924,7 +1937,7 @@ class TeaportSTTService(WebsocketSTTService):
             # session's end, and never at the cost of the teardown below.
             if not self._ending:
                 try:
-                    await self.push_frame(SegmentResetFrame())
+                    await self.push_frame(SegmentResetFrame(stop_n=self._vad_stops))
                 except Exception as e:  # noqa: BLE001
                     logger.debug(f"{self}: could not push the segment reset ({e})")
             self._interim_buffer = ""
@@ -2081,10 +2094,14 @@ class TeaportSTTService(WebsocketSTTService):
             #     all, and never the stop of an utterance since;
             #   * otherwise it is the caller's words up to some point before now --
             #     inside the utterance under way, or an earlier one's whose finish
-            #     ran long: whichever, no stop of ours has been answered by it, so it
-            #     is stamped as the NEXT stop's and answers that only in part. The
-            #     strategy waits for the close the stop itself produces: the rest of
-            #     the words, or the silent tail the stop's commit returns at once.
+            #     ran long: whichever, no stop of ours has been answered by it, and it
+            #     is stamped NO_STOP: it pays no stop's debt. The strategy waits for
+            #     the close the stop itself produces: the rest of the words, or the
+            #     silent tail the stop's commit returns at once. It was stamped as the
+            #     NEXT stop's until SttCommit.tla gave the VAD its real place: the
+            #     strategy can count that stop before this service has seen it, and
+            #     then the first half paid the stop with the rest still in the
+            #     segment -- the turn ended on half a sentence (sc_final_stop_marked).
             # It does NOT release a segment held for its verdict, though the first
             # cut did: this close may be the PREVIOUS utterance's, landing under the
             # hold on the next one (the engine's finish outlasting the caller's next
@@ -2097,7 +2114,7 @@ class TeaportSTTService(WebsocketSTTService):
             elif not text:
                 stop_n = self._last_commit_n
             else:
-                stop_n = self._vad_stops + 1
+                stop_n = NO_STOP
             if unasked:
                 # See the VAD stop in process_frame: the next stop, if none has come
                 # yet, closes the tail rather than hold it.

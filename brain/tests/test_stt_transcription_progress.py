@@ -239,7 +239,8 @@ async def test_no_frame_without_a_speech_end_or_without_the_report():
     await vad_start(s)
     await audio(s, 1000)
     await vad_stop(s, stop_secs=0.5)
-    await s.process_frame(TurnVerdictFrame(complete=True, source="verdict"), UP)
+    await s.process_frame(TurnVerdictFrame(complete=True, source="verdict",
+                                           stop_n=s._vad_stops), UP)
     await progress(s, 5000)
     assert s.decoded() == [] and s.unreported() == []
     # an engine session without the report: the field is never there to read

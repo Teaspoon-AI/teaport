@@ -44,12 +44,14 @@
 #   TEAPORT_BRIDGE_GUILD_ID / TEAPORT_BRIDGE_FOLLOW_USER_ID   bridge guild + followed user
 #   TEAPORT_BRIDGE_SRC     install the bridge from this local dir instead of cloning
 #   TEAPORT_ENABLE_LOCAL_AUDIO=1  enable the opt-in local mic+speaker bridge (USB mic array)
-#   TEAPORT_ENABLE_OLED_AVATAR=1  install + enable the OLED face (teaport-oled-avatar, SSD1306 on I2C)
+#   TEAPORT_ENABLE_OLED_AVATAR=1  install + enable the OLED face (teaport-oled-avatar, SSD1306 on I2C;
+#                                 a private repo: Teaspoon AI appliances only, skipped elsewhere)
 #   TEAPORT_OLED_PORT / TEAPORT_OLED_ADDR  its I2C bus/address (default: probe for 0x3c/0x3d)
 #   TEAPORT_OLED_SRC       install the avatar from this local checkout instead of cloning
 #   TEAPORT_LOCAL_AUDIO_DEVICE    its ALSA device (default hw:CARD=Array,DEV=0, a ReSpeaker XVF3800;
 #                                 set, it overrides the device already in local-audio.env)
 #   TEAPORT_ALLOW_STALE_SOURCE=1  install from a checkout that is behind its upstream
+#   TEAPORT_OPENCLAW_HEAP_MIB     the host OpenClaw gateway's JS heap limit (default 1536)
 #
 set -euo pipefail
 
@@ -283,6 +285,9 @@ phase_sysdeps() {
   ensure_uv
 }
 
+# Every url + sha256 entry read here (and eula_gate's) is listed in manifest/check.py's
+# REQUIRED, which the publish workflow checks before a manifest goes up: add one there
+# when adding one here. models.voxtral.aux is optional (a missing aux file is skipped).
 phase_engine() {
   log "engine + models -> $PREFIX"
   SUDO mkdir -p "$PREFIX/bin/g2p" "$PREFIX/models/voxtral" "$PREFIX/models/kokoro"
@@ -1128,6 +1133,41 @@ phase_agent() {
 }
 
 # --- host OpenClaw -----------------------------------------------------------
+# OpenClaw sizes the gateway's JS heap at half the RAM it sees (3773 MiB on an 8 GB Orin),
+# and on this box the speech engine holds ~4.3 GB of that RAM in GPU buffers that never
+# swap: a gateway allowed to grow that far would crowd out the voice path. The flag lives
+# in the --max-old-space-size of the unit OpenClaw generates, and OpenClaw keeps a heap
+# flag it finds there whenever it rewrites the unit (an update, `gateway install
+# --force`), so setting it there is enough. 1536 MiB is about 4x the heap the gateway
+# used on the appliance (380 MB, 2026-10-14); past it the gateway restarts, as it does on
+# any crash. Returns 0 when it changed the unit, so the caller knows a restart is due.
+cap_openclaw_heap() {
+  local unit; unit="$(systemctl --user show -p FragmentPath --value openclaw-gateway.service 2>/dev/null || true)"
+  [ -n "$unit" ] && [ -f "$unit" ] || { warn "no openclaw-gateway unit file: its heap limit stays OpenClaw's"; return 1; }
+  local want="--max-old-space-size=$OPENCLAW_HEAP_MIB"
+  if grep -qE -- "^ExecStart=.* $want( |$)" "$unit"; then return 1; fi
+  # Called from an && / || list, where set -e does not reach: each step checks for itself.
+  if grep -qE -- '^ExecStart=.*--max-old-space-size=[0-9]+' "$unit"; then
+    sed -i -E "/^ExecStart=/s/--max-old-space-size=[0-9]+/$want/" "$unit" \
+      || { warn "could not edit $unit: the gateway heap limit stays OpenClaw's"; return 1; }
+  elif grep -qE '^ExecStart=([^ "]*/)?node ' "$unit"; then
+    # No flag of its own (OpenClaw found no capacity, or NODE_OPTIONS carried one) and node
+    # runs the script directly: a flag right after it is a node option.
+    sed -i -E "s#^(ExecStart=([^ \"]*/)?node) #\\1 $want #" "$unit" \
+      || { warn "could not edit $unit: the gateway heap limit stays OpenClaw's"; return 1; }
+  else
+    # A wrapper or bun runs it (OpenClaw leaves the heap out for both), or a quoted path:
+    # a flag after the first word would be an argument to something else.
+    warn "the gateway unit does not run node directly ($unit): its heap limit stays OpenClaw's"
+    return 1
+  fi
+  # OpenClaw reads the loaded unit back when it rewrites it: an edit systemd never loaded
+  # would be overwritten with the old flag.
+  systemctl --user daemon-reload \
+    || { warn "systemctl --user daemon-reload failed: the gateway heap limit may not hold"; return 1; }
+  log "OpenClaw gateway heap limit -> ${OPENCLAW_HEAP_MIB} MiB ($unit)"
+}
+
 agent_openclaw() {
   resolve_gateway_token
   log "host OpenClaw — installing the plugin + wiring talk.realtime"
@@ -1184,10 +1224,14 @@ JSON
   # until the lease expires. So: install when the unit is absent, restart when it is there.
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] openclaw gateway install (unit absent) or gateway restart (unit present)\n'
+    printf '  [dry-run] gateway unit: --max-old-space-size=%s (cap_openclaw_heap)\n' "$OPENCLAW_HEAP_MIB"
   elif systemctl --user cat openclaw-gateway.service >/dev/null 2>&1; then
+    cap_openclaw_heap || true
     "$OPENCLAW" gateway restart
   else
     "$OPENCLAW" gateway install
+    # Not restarted for it: see above. The limit takes effect at its next start.
+    cap_openclaw_heap && log "  ... from the gateway's next start (a reboot or the next install)" || true
   fi
 
   # The brain calls back into OpenClaw for memory recall and tools, authenticating with the
@@ -1317,6 +1361,10 @@ phase_credentials() {
 BRAIN_PORT="${TEAPORT_BRAIN_PORT:-7861}"
 ENGINE_PORT="${TEAPORT_ENGINE_PORT:-8000}"
 GATEWAY_PORT="${TEAPORT_GATEWAY_PORT:-18789}"     # OpenClaw gateway (sandbox -> host forward)
+OPENCLAW_HEAP_MIB="${TEAPORT_OPENCLAW_HEAP_MIB:-1536}"   # its JS heap limit (cap_openclaw_heap)
+# Checked here, before anything is installed: a value node refuses ("2G") would crash-loop
+# the gateway, and found at the agent phase it would stop the install halfway.
+[[ $OPENCLAW_HEAP_MIB =~ ^[1-9][0-9]*$ ]] || die "TEAPORT_OPENCLAW_HEAP_MIB must be a whole number of MiB, not '$OPENCLAW_HEAP_MIB'"
 FRONTDOOR_HOST="${TEAPORT_HOST:-teaport.local}"   # mDNS name the browser opens over HTTPS
 # Where 'tls internal' keeps its CA. The Debian caddy package runs the daemon with
 # HOME=/var/lib/caddy, so its data dir is the XDG default underneath that.
@@ -2136,7 +2184,12 @@ phase_oled_avatar() {
     src="$STATE/oled-avatar-src"; SUDO mkdir -p "$STATE"; SUDO chown "$RUN_USER" "$STATE"
     # Pure staging, like the bridge clone: install.sh copies what it runs into its prefix.
     if [ -e "$src" ]; then run rm -rf "$src"; fi
-    run git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$src"
+    # The repo is private (manifest oled_avatar.private): a box without access to it
+    # skips the face instead of stopping the install at a credentials prompt.
+    if ! run env GIT_TERMINAL_PROMPT=0 git clone --depth 1 --branch "$tag" "https://github.com/$repo.git" "$src"; then
+      warn "oled avatar: cannot fetch github.com/$repo at $tag (no access from this box — it is installed on Teaspoon AI appliances only — or see git's error above); the face is skipped, the rest of the box is unaffected"
+      return 0
+    fi
   fi
   local args=(--user "$RUN_USER")
   if [ -n "${TEAPORT_OLED_PORT:-}" ]; then args+=(--port "$TEAPORT_OLED_PORT"); fi

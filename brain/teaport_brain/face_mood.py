@@ -5,18 +5,21 @@
 # The OLED avatar used to do this itself, from a {"text"} event. It now takes the mood
 # it is told ({"mood": NAME}); this is the scoring it dropped. No Pipecat here: the
 # local audio bridge imports it and stays small. The scores and thresholds are the
-# avatar's (oled_face.py score_to_mood / LazyVader), so a face looks the same either way.
+# avatar's (oled_face.py score_to_mood / LazyVader), except that a negative text shows concerned, not angry.
 #
 import os
 import re
 
 
 def score_to_mood(c, text=""):
-    """A -1..1 sentiment score + light punctuation cue -> one of the eye moods."""
+    """A -1..1 sentiment score + light punctuation cue -> one of the eye moods. Words of
+    the assistant's own reply that score negative are sympathy ("sorry for your loss"),
+    not anger: they show concerned (sad, on an avatar that has no such face: see
+    FaceTap._mood_name). Only a tag from the model shows angry."""
     if c >= 0.4:
         return "happy"
     if c <= -0.4:
-        return "angry"
+        return "concerned"
     return "curious" if text.strip().endswith("?") else "neutral"
 
 

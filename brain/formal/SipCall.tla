@@ -20,18 +20,23 @@
 (* the pipeline (active["call"]), sends call.answer, and greets once the    *)
 (* gateway's `confirmed` arrives. Teardown (cancel_active_call) stays       *)
 (* INLINE in the reader when a handler runs it, and ends with               *)
-(* presence.end(), which releases whatever claim CallClaim holds NOW.       *)
-(* A pipeline that ends on its own tears itself down from a separate TASK   *)
-(* (on_pipeline_finished), which runs concurrently with the reader.         *)
+(* presence.end(call_id). A pipeline that ends on its own tears itself      *)
+(* down from a separate TASK (on_pipeline_finished), which runs             *)
+(* concurrently with the reader.                                            *)
 (*                                                                          *)
 (* MODE:                                                                    *)
 (*   "asWritten"     -- 2026-08: bring-up inline, teardown ignores call_id  *)
 (*   "callIdChecked" -- 2026-08: teardown matches call_id; still inline     *)
-(*   "shipped"       -- sip_server.py today (bring-up a task, ring+answer,  *)
-(*                      CallClaim.end() releases the claim it holds now)    *)
-(*   "claimByCall"   -- proposed: a teardown releases ITS call's claim      *)
-(*                      (also when cancelled mid-way), and start_call waits *)
-(*                      out the teardown tasks still in flight              *)
+(*   "heldClaim"     -- 2026-10, before the claim fix: bring-up a task,     *)
+(*                      ring+answer; presence.end() releases whatever claim *)
+(*                      CallClaim holds at that moment                      *)
+(*   "ownClaim"      -- the claim fix's identity check alone: a teardown    *)
+(*                      releases its call's claim, but not when cancelled   *)
+(*                      in its settle, and the next bring-up does not wait  *)
+(*   "shipped"       -- sip_server.py today: a teardown releases ITS call's *)
+(*                      claim, in a finally (a cancelled one too), and the  *)
+(*                      bring-up waits out the teardown tasks in flight     *)
+(*                      before it asks                                      *)
 (*                                                                          *)
 (* The 2026-08 modes keep the 2026-08 gateway: it confirms by itself and    *)
 (* may confirm a second call before the first's `disconnected`. The         *)
@@ -48,8 +53,9 @@ CONSTANTS Calls, MODE, AUTO
 None == "none"
 Inline   == MODE \in {"asWritten", "callIdChecked"}   \* bring-up runs in the reader
 Guarded  == MODE # "asWritten"                         \* teardown matches call_id
-RingGw   == MODE \in {"shipped", "claimByCall"}        \* #111 ring + 0.6.0 gateway
-ClaimFix == MODE = "claimByCall"
+RingGw   == MODE \in {"heldClaim", "ownClaim", "shipped"} \* #111 ring + 0.6.0 gateway
+OwnClaim == MODE \in {"ownClaim", "shipped"}           \* end(call_id): its own claim
+ClaimFix == MODE = "shipped"                           \* + the finally + the wait
 
 VARIABLES
     \* --- the gateway
@@ -72,20 +78,23 @@ VARIABLES
     td,          \* teardowns in flight: <<call, owner>>, owner "reader"|"bringup"|"task"
     ring,        \* the call in `rings`, or None
     ringAns,     \* its `answered` event
-    presence,    \* CallClaim._claim: whose claim it holds, or None
+    presence,    \* heldClaim: CallClaim._claim, whose claim it holds, or None
+    claimed,     \* calls whose claim has been taken (presence.start ran)
     \* --- the session arbiter, as far as calls see it
     holder,      \* the claim holding the engine (a call), or None
     rel,         \* calls whose claim has been released (Claim.released)
     \* --- findings
     wrongTeardown, \* a disconnected for one call tore down a DIFFERENT call
-    replaced       \* a call's acquire found another call's claim still held
+    replaced,      \* a call's acquire found another call's claim holding the slot
+    overlap        \* a call's claim was taken while another call's was not let go
 
 vars == <<wire, gw, hang, ansSent, rd, rdKind, rdCall, rdAns, heard, active, pipe,
-          setup, bpc, td, ring, ringAns, presence, holder, rel, wrongTeardown, replaced>>
+          setup, bpc, td, ring, ringAns, presence, claimed, holder, rel, wrongTeardown,
+          replaced, overlap>>
 
 gwVars   == <<wire, gw, hang, ansSent>>
 rdVars   == <<rd, rdKind, rdCall, rdAns, heard>>
-arbVars  == <<presence, holder, rel>>
+arbVars  == <<presence, claimed, holder, rel>>
 
 Init ==
     /\ wire = << >>
@@ -95,19 +104,19 @@ Init ==
     /\ heard = {}
     /\ active = None /\ pipe = {} /\ setup = None /\ bpc = "none" /\ td = {}
     /\ ring = None /\ ringAns = FALSE
-    /\ presence = None /\ holder = None /\ rel = {}
-    /\ wrongTeardown = FALSE /\ replaced = FALSE
+    /\ presence = None /\ claimed = {} /\ holder = None /\ rel = {}
+    /\ wrongTeardown = FALSE /\ replaced = FALSE /\ overlap = FALSE
 
 (***************************************************************************)
-(* The claim helpers. presence.end() at the end of a teardown for call c:  *)
-(* as shipped it releases whatever claim CallClaim holds at that moment    *)
-(* (CallClaim.end, sip_server.py:379) -- by then possibly a NEWER call's;  *)
-(* claimByCall releases c's own. release() is SessionArbiter.release      *)
+(* The claim helpers. presence.end(c) at the end of a teardown for call c  *)
+(* (CallClaim.end, sip_server.py:387) releases c's own claim; heldClaim's  *)
+(* presence.end() released whatever claim CallClaim held at that moment -- *)
+(* by then possibly a NEWER call's. release() is SessionArbiter.release    *)
 (* restricted to calls: the claim is released, and the holder slot freed   *)
 (* if it held the slot.                                                    *)
 (***************************************************************************)
 EndClaim(c) ==
-    IF ClaimFix
+    IF OwnClaim
     THEN [rel |-> rel \cup {c},
           holder |-> IF holder = c THEN None ELSE holder,
           presence |-> IF presence = c THEN None ELSE presence]
@@ -117,23 +126,25 @@ EndClaim(c) ==
                holder |-> IF holder = presence THEN None ELSE holder,
                presence |-> None]
 
-ApplyClaim(r) == rel' = r.rel /\ holder' = r.holder /\ presence' = r.presence
+ApplyClaim(r) ==
+    rel' = r.rel /\ holder' = r.holder /\ presence' = r.presence /\ UNCHANGED claimed
 
 (***************************************************************************)
 (* cancel_setup(call_id), and the await of the cancelled task, as one step *)
-(* (sip_server.py:644). What the cancellation does depends on where the    *)
+(* (sip_server.py:663). What the cancellation does depends on where the    *)
 (* bring-up is:                                                            *)
-(*   new    -- never ran: nothing (no claim was taken)                     *)
+(*   new    -- never ran, or waiting out the teardown tasks: nothing (no   *)
+(*             claim was taken)                                            *)
 (*   settle -- inside ARBITER.acquire: CallClaim.start's except releases   *)
-(*             the claim (sip_server.py:356)                               *)
+(*             the claim (sip_server.py:361)                               *)
 (*   ring/greet -- the pipeline stays published in active["call"]; the     *)
 (*             cancel_active_call after this tears it down                 *)
 (*   td     -- inside its OWN cancel_active_call ("never confirmed", "STT  *)
 (*             unavailable"). In wait_for(runner_task) the CancelledError  *)
-(*             is swallowed (sip_server.py:566) and the teardown completes *)
-(*             with presence.end(); in the 0.3 s settle it propagates and  *)
-(*             presence.end() never runs. claimByCall releases in a        *)
-(*             finally either way.                                         *)
+(*             is swallowed (sip_server.py:578) and the teardown completes *)
+(*             with presence.end(); in the 0.3 s settle it propagates --   *)
+(*             before the claim fix presence.end() never ran then; shipped *)
+(*             releases in a finally either way (sip_server.py:592).       *)
 (* Returned as the set of possible outcomes.                               *)
 (***************************************************************************)
 CancelOutcomes ==
@@ -149,7 +160,8 @@ CancelOutcomes ==
               { \* swallowed: the teardown runs to its end
                 [rel |-> e.rel, holder |-> e.holder, presence |-> e.presence,
                  pipe |-> pipe \ {s}, td |-> td \ {<<s, "bringup">>}],
-                \* propagated from the settle: no presence.end()
+                \* propagated from the settle: before the fix no presence.end(); now
+                \* the finally's
                 IF ClaimFix
                 THEN [rel |-> e.rel, holder |-> e.holder, presence |-> e.presence,
                       pipe |-> pipe \ {s}, td |-> td \ {<<s, "bringup">>}]
@@ -165,7 +177,8 @@ CancelSetup(g) ==
             /\ rel' = o.rel /\ holder' = o.holder /\ presence' = o.presence
             /\ pipe' = o.pipe /\ td' = o.td
             /\ setup' = None /\ bpc' = "none"
-    ELSE UNCHANGED <<rel, holder, presence, pipe, td, setup, bpc>>
+            /\ UNCHANGED claimed
+    ELSE UNCHANGED <<rel, holder, presence, claimed, pipe, td, setup, bpc>>
 
 (***************************************************************************)
 (* The gateway.                                                            *)
@@ -211,14 +224,14 @@ GwStep ==
     /\ \E c \in Calls : OldConfirm(c) \/ GwIncoming(c) \/ GwAnswer(c)
                         \/ GwBrainHangup(c) \/ GwDisconnect(c)
     /\ UNCHANGED <<rdVars, active, pipe, setup, bpc, td, ring, ringAns, arbVars,
-                   wrongTeardown, replaced>>
+                   wrongTeardown, replaced, overlap>>
 
 (***************************************************************************)
 (* The reader: dispatch one control event, inline.                         *)
 (***************************************************************************)
 Head1 == Head(wire)
 
-\* call.incoming (on_call_incoming, sip_server.py:609). Over a call that is up
+\* call.incoming (on_call_incoming, sip_server.py:629). Over a call that is up
 \* (answered) it is left ringing; otherwise start_call(c, answered=False).
 DispIncoming ==
     /\ rd = "free" /\ wire # << >> /\ Head1[1] = "inc"
@@ -227,12 +240,13 @@ DispIncoming ==
          /\ heard' = heard \cup {c}
          /\ IF active # None /\ active # c /\ ring = active /\ ringAns
             THEN /\ UNCHANGED <<rd, rdKind, rdCall, rdAns>>
-                 /\ UNCHANGED <<setup, bpc, rel, holder, presence, pipe, td>>
+                 /\ UNCHANGED <<setup, bpc, rel, holder, presence, claimed, pipe, td>>
             ELSE /\ CancelSetup(None)
                  /\ rd' = "ca" /\ rdKind' = "start" /\ rdCall' = c /\ rdAns' = FALSE
-    /\ UNCHANGED <<gw, hang, ansSent, active, ring, ringAns, wrongTeardown, replaced>>
+    /\ UNCHANGED <<gw, hang, ansSent, active, ring, ringAns, wrongTeardown, replaced,
+                   overlap>>
 
-\* call.state=confirmed (sip_server.py:886). The ring's own: mark it answered.
+\* call.state=confirmed (sip_server.py:912). The ring's own: mark it answered.
 \* Otherwise (no ring before it): start_call(c, answered=True).
 DispConfirm ==
     /\ rd = "free" /\ wire # << >> /\ Head1[1] = "conf"
@@ -242,13 +256,13 @@ DispConfirm ==
          /\ IF RingGw /\ ring = c
             THEN /\ ringAns' = TRUE
                  /\ UNCHANGED <<rd, rdKind, rdCall, rdAns>>
-                 /\ UNCHANGED <<setup, bpc, rel, holder, presence, pipe, td>>
+                 /\ UNCHANGED <<setup, bpc, rel, holder, presence, claimed, pipe, td>>
             ELSE /\ CancelSetup(None)
                  /\ rd' = "ca" /\ rdKind' = "start" /\ rdCall' = c /\ rdAns' = TRUE
                  /\ UNCHANGED ringAns
-    /\ UNCHANGED <<gw, hang, ansSent, active, ring, wrongTeardown, replaced>>
+    /\ UNCHANGED <<gw, hang, ansSent, active, ring, wrongTeardown, replaced, overlap>>
 
-\* call.state=disconnected (sip_server.py:914): cancel_setup(c), then
+\* call.state=disconnected (sip_server.py:940): cancel_setup(c), then
 \* cancel_active_call(c) -- both guarded by call_id, except in asWritten.
 DispDisconnect ==
     /\ rd = "free" /\ wire # << >> /\ Head1[1] = "disc"
@@ -258,7 +272,8 @@ DispDisconnect ==
          /\ wrongTeardown' = (wrongTeardown \/
                               (~Guarded /\ setup # None /\ setup # c))
          /\ rd' = "ca" /\ rdKind' = "disc" /\ rdCall' = c
-    /\ UNCHANGED <<gw, hang, ansSent, rdAns, heard, active, ring, ringAns, replaced>>
+    /\ UNCHANGED <<gw, hang, ansSent, rdAns, heard, active, ring, ringAns, replaced,
+                   overlap>>
 
 \* The handler's cancel_active_call: tear down the running pipeline (guarded by
 \* call_id on a disconnected; start_call evicts whatever runs).
@@ -275,22 +290,18 @@ ReaderCancelActive ==
           ELSE /\ rd' = "rest"
                /\ UNCHANGED <<td, active, wrongTeardown>>
     /\ UNCHANGED <<gwVars, rdKind, rdCall, rdAns, heard, pipe, setup, bpc, ring, ringAns,
-                   arbVars, replaced>>
-
-\* claimByCall: start_call also awaits the teardown TASKS still in flight (the
-\* `teardowns` set), so a superseded call's claim is gone before the next asks.
-DrainWait == ClaimFix /\ rdKind = "start" /\ \E t \in td : t[2] = "task"
+                   arbVars, replaced, overlap>>
 
 \* The rest of the handler, after its teardown.
 ReaderRest ==
-    /\ rd = "rest" /\ ~DrainWait
+    /\ rd = "rest"
     /\ IF rdKind = "start"
        THEN \* start_call: rings = {c}; setup = a NEW bring-up task (inline: run it here).
             /\ ring' = rdCall /\ ringAns' = rdAns
             /\ setup' = rdCall /\ bpc' = "new"
             /\ rd' = IF Inline THEN "bringUp" ELSE "free"
             /\ UNCHANGED arbVars
-       ELSE \* disconnected: no pipeline and no bring-up left -> presence.end().
+       ELSE \* disconnected: no pipeline and no bring-up left -> presence.end(c).
             /\ IF active = None /\ setup = None
                THEN ApplyClaim(EndClaim(rdCall))
                ELSE UNCHANGED arbVars
@@ -299,12 +310,12 @@ ReaderRest ==
             /\ rd' = "free"
             /\ UNCHANGED <<setup, bpc>>
     /\ UNCHANGED <<gwVars, rdKind, rdCall, rdAns, heard, active, pipe, td,
-                   wrongTeardown, replaced>>
+                   wrongTeardown, replaced, overlap>>
 
 (***************************************************************************)
-(* A teardown (cancel_active_call, sip_server.py:532) finishing: the       *)
+(* A teardown (cancel_active_call, sip_server.py:543) finishing: the       *)
 (* pipeline has stopped (wait_for runner_task), the 0.3 s settle is over,  *)
-(* and presence.end() runs. Then whoever ran it carries on.                *)
+(* and presence.end(c) runs. Then whoever ran it carries on.               *)
 (***************************************************************************)
 BringUpOver ==
     /\ setup' = None /\ bpc' = "none"
@@ -321,13 +332,13 @@ TdEnd(t) ==
                                     /\ rd' = IF rd = "bringUp" THEN "free" ELSE rd
               [] OTHER            -> UNCHANGED <<rd, setup, bpc>>
     /\ UNCHANGED <<gwVars, rdKind, rdCall, rdAns, heard, active, ring, ringAns,
-                   wrongTeardown, replaced>>
+                   wrongTeardown, replaced, overlap>>
 
 (***************************************************************************)
-(* The bring-up task (bring_up_call/_bring_up, sip_server.py:665/745).      *)
+(* The bring-up task (bring_up_call/_bring_up, sip_server.py:684/764).      *)
 (***************************************************************************)
 \* acquire granted, and the pipeline published -- synchronous from the grant on
-\* (sip_server.py:751-842). A claim released while it was asked for comes back
+\* (sip_server.py:777-868). A claim released while it was asked for comes back
 \* "granted" (session_arbiter._acquire: `if new.released ... return None`) but
 \* installs no holder; _bring_up builds the call anyway.
 GrantPublish(s) ==
@@ -338,36 +349,45 @@ GrantPublish(s) ==
        THEN /\ bpc' = "greet" /\ UNCHANGED ansSent
        ELSE /\ bpc' = "ring"  /\ ansSent' = ansSent \cup {s}
 
-\* The task's first run: presence.start() (CallClaim._claim = this claim), then
+\* Shipped: the bring-up first waits out the teardown TASKS still in flight (the
+\* `teardowns` set, sip_server.py:789), so the last call's claim is gone before this
+\* one asks. In the task, not the reader: the reader reads on meanwhile. Only these:
+\* a declined call's busy line (answer_busy, `busy_lines`) holds no claim -- the
+\* arbiter refused it -- so it is nothing SequentialClaims needs waited for, and the
+\* code does not (it once sat in `teardowns`, and the next greeting waited it out).
+DrainWait == ClaimFix /\ \E t \in td : t[2] = "task"
+
+\* The task's run up to its ask: presence.start() (the call's claim), then
 \* ARBITER.acquire. The holder is a call (the same "sip" client): REPLACED, its
 \* end() is CallClaim._release -> release(it); then the 0.3 s settle.
 BuRun ==
-    /\ bpc = "new"
+    /\ bpc = "new" /\ ~DrainWait
     /\ LET s == setup IN
-         IF holder = None \/ holder = s
-         THEN /\ presence' = s
-              /\ GrantPublish(s)
-              /\ UNCHANGED <<rel, replaced>>
-         ELSE /\ presence' = s
-              /\ rel' = rel \cup {holder}
-              /\ holder' = None
-              /\ replaced' = TRUE
-              /\ bpc' = "settle"
-              /\ UNCHANGED <<active, pipe, ansSent>>
+         /\ presence' = s
+         /\ claimed' = claimed \cup {s}
+         /\ overlap' = (overlap \/ \E d \in claimed \ {s} : d \notin rel)
+         /\ IF holder = None \/ holder = s
+            THEN /\ GrantPublish(s)
+                 /\ UNCHANGED <<rel, replaced>>
+            ELSE /\ rel' = rel \cup {holder}
+                 /\ holder' = None
+                 /\ replaced' = TRUE
+                 /\ bpc' = "settle"
+                 /\ UNCHANGED <<active, pipe, ansSent>>
     /\ UNCHANGED <<wire, gw, hang, rdVars, setup, td, ring, ringAns, wrongTeardown>>
 
 BuSettled ==
     /\ bpc = "settle"
     /\ GrantPublish(setup)
-    /\ UNCHANGED <<wire, gw, hang, rdVars, setup, td, ring, ringAns, presence, rel,
-                   wrongTeardown, replaced>>
+    /\ UNCHANGED <<wire, gw, hang, rdVars, setup, td, ring, ringAns, presence, claimed, rel,
+                   wrongTeardown, replaced, overlap>>
 
 \* `confirmed` arrived (ring.answered set by the reader): greet.
 BuConfirmed ==
     /\ bpc = "ring" /\ ringAns /\ ring = setup
     /\ bpc' = "greet"
     /\ UNCHANGED <<gwVars, rdVars, active, pipe, setup, td, ring, ringAns, arbVars,
-                   wrongTeardown, replaced>>
+                   wrongTeardown, replaced, overlap>>
 
 \* A failed bring-up hangs up and tears its own call down, guarded by call_id:
 \* "never confirmed" (no `confirmed` within 10 s of call.answer) or "STT
@@ -386,14 +406,14 @@ BuFail ==
                  /\ rd' = IF rd = "bringUp" THEN "free" ELSE rd
                  /\ UNCHANGED <<td, active>>
     /\ UNCHANGED <<wire, gw, ansSent, rdKind, rdCall, rdAns, heard, pipe, ring, ringAns,
-                   arbVars, wrongTeardown, replaced>>
+                   arbVars, wrongTeardown, replaced, overlap>>
 
 BuGreeted ==
     /\ bpc = "greet"
     /\ BringUpOver
     /\ rd' = IF rd = "bringUp" THEN "free" ELSE rd
     /\ UNCHANGED <<gwVars, rdKind, rdCall, rdAns, heard, active, pipe, td, ring, ringAns,
-                   arbVars, wrongTeardown, replaced>>
+                   arbVars, wrongTeardown, replaced, overlap>>
 
 (***************************************************************************)
 (* A pipeline that ends on its own (on_pipeline_finished, sip_server.py:    *)
@@ -408,7 +428,7 @@ PipelineEnds(c) ==
     /\ active' = None
     /\ td' = td \cup {<<c, "task">>}
     /\ UNCHANGED <<wire, gw, ansSent, rdVars, setup, bpc, ring, ringAns, arbVars,
-                   wrongTeardown, replaced>>
+                   wrongTeardown, replaced, overlap>>
 
 Next ==
     \/ GwStep
@@ -430,8 +450,7 @@ NoWrongTeardown == ~wrongTeardown
 
 \* 2026-08 finding #2, stated structurally: the reader is inside a handler while
 \* control waits behind it. Strict: ANY inline wait counts, the teardown too.
-NoBlockedWithPendingControl ==
-    ~((rd \in {"wait", "bringUp"} \/ (rd = "rest" /\ DrainWait)) /\ wire # << >>)
+NoBlockedWithPendingControl == ~(rd \in {"wait", "bringUp"} /\ wire # << >>)
 
 \* What the 2026-08 fix did: the BRING-UP (the arbiter's question, up to ~30 s;
 \* greet()'s 12 s STT poll) never blocks the reader. The inline teardown still
@@ -444,11 +463,22 @@ NoBringUpBlocksReader == ~(rd = "bringUp" /\ wire # << >>)
 \* call (and the busy lamp and the face's "call" go dark).
 NoUnclaimedCall == \A c \in pipe : holder = c
 
-\* What CallClaim._release's comment relies on: the SIP front-end lets a call's
-\* claim go before the next call asks, so the arbiter never REPLACES one call with
-\* another. (SessionArbiter.tla shows what REPLACED does to a conversation held for
-\* the replaced call.)
+\* What CallClaim._release's comment relies on: the arbiter never REPLACES one call
+\* with another -- no call asks while another call's claim holds the slot.
+\* (SessionArbiter.tla shows what REPLACED does to a conversation held for the
+\* replaced call.)
 NoReplacedCall == ~replaced
+
+\* The contract SessionArbiter.tla's SIP = "sequential" assumes, which NoReplacedCall
+\* only approximates (a claim still asking holds no slot): a call's claim is let go
+\* before the next call's is taken. Holding, the arbiter never meets two call claims
+\* at once, and sa_overlap_* cannot arise.
+SequentialClaims == ~overlap
+
+\* Nothing left behind: where nothing more can happen (every call over), every
+\* claim taken has been let go and nobody holds the slot. Owning the release by
+\* call must not strand a claim the old release-whatever-is-held used to sweep up.
+NoClaimLeftBehind == (~ENABLED Next) => (holder = None /\ claimed \subseteq rel)
 
 \* An answered call is never abandoned without a hangup: the caller is never left
 \* on a line with no brain behind it.

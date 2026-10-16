@@ -26,10 +26,11 @@
 # And one that is not concurrency but lives in the same teardown:
 #
 #   4. The per-call teardown never ran the session-end memory reclaim the OpenClaw path
-#      runs in talk()'s finally. MemoryReclaim skips empty_cache per turn on purpose, so
-#      the CUDA cache and the freed glibc arena pages are ONLY returned at session end;
-#      on a phone-dedicated box (teaport-brain disabled) that made every call leak, until
-#      the 8 GB unified pool OOMs. It must NOT run on a superseded teardown, where the
+#      runs in talk()'s finally. MemoryReclaim skips empty_cache on purpose and trims
+#      only at a quiet moment, so the CUDA cache is ONLY returned at session end, and so
+#      are a short call's freed glibc arena pages; on a phone-dedicated box
+#      (teaport-brain disabled) that made every call leak, until the 8 GB unified pool
+#      OOMs. It must NOT run on a superseded teardown, where the
 #      replacement call's bring-up is already starting behind it.
 #
 # And the brain's half of the gateway's reconnect replay:
@@ -160,6 +161,7 @@ class _FakeSession:
     by_id = {}          # call id -> the session built for it
     resumed = {}        # call id -> the `resumed` greet() was called with
     prepared = {}       # call id -> the greeting greet() was handed ready-made, if any
+    cannot_hear = set()  # call ids whose greet() finds the STT unavailable (should_end)
     PREPARED = "Hello there."
 
     def __init__(self, call_id):
@@ -177,6 +179,7 @@ class _FakeSession:
         _FakeSession.resumed[self.call_id] = resumed
         _FakeSession.prepared[self.call_id] = prepared
         await asyncio.sleep(self.greet_delay)
+        self.should_end = self.call_id in _FakeSession.cannot_hear
         _FakeSession.greeted.append(self.call_id)
 
 
@@ -205,6 +208,7 @@ class _Harness:
         _FakeSession.by_id = {}
         _FakeSession.resumed = {}
         _FakeSession.prepared = {}
+        _FakeSession.cannot_hear = set()
         self.reclaims = []
         self.controls = []
         self._patch()
@@ -371,7 +375,8 @@ async def test_a_slow_bring_up_does_not_block_the_receive_loop():
 
 async def test_a_finished_call_reclaims_its_memory_off_the_loop():
     """A call IS a session, so its teardown is the session end — the only point where
-    empty_cache and malloc_trim ever run (MemoryReclaim skips both per turn). Without
+    empty_cache ever runs (MemoryReclaim skips it), and the only reclaim at all for a call
+    too short to reach one of MemoryReclaim's quiet moments. Without
     this the phone-only box ratchets RSS/VRAM every call until it OOMs."""
     h = _Harness()
     try:

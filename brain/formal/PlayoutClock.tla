@@ -37,13 +37,20 @@
 (*                                                                          *)
 (* SECOND: a second TTS context (a filler, a tool's answer) whose first     *)
 (* audio comes at a2, during the hold or after it, while the held reply     *)
-(* still plays. The TTS anchors it at the held reply's end on ITS model     *)
-(* (_prev_audio_end_ns, moved at the release by the whole hold, `now -      *)
-(* then`) or at a2 if later; the gate moves its pts by ITS OWN first held   *)
-(* frame's wait. FIX2 is a PROPOSED design, not code: anchor a context that *)
-(* starts during a freeze on the frozen clock, move an ended context's      *)
-(* anchor by the hold since its first audio, and shift every context held   *)
-(* behind the first by the first's shift.                                   *)
+(* still plays.                                                             *)
+(* DESIGN2 = "asWritten" -- the code until 2026-10-15: the TTS anchored it  *)
+(*   at the held reply's end on ITS model (_prev_audio_end_ns, moved at the *)
+(*   release by the whole hold, `now - then`) or at a2 if later, and the    *)
+(*   gate moved its pts by ITS OWN first held frame's wait.                 *)
+(* DESIGN2 = "shipped" -- a context that starts while the freeze holds      *)
+(*   anchored audio back is anchored on the frozen schedule (the held       *)
+(*   reply's end, or the instant the freeze began holding audio back --     *)
+(*   here the held reply's first audio, LAT -- never the real clock); an    *)
+(*   ended context's anchor, and the second context's own end, move by the  *)
+(*   hold since that instant; every context held behind the first takes the *)
+(*   first's shift.                                                         *)
+(* DESIGN2 = "realClock" -- the same, but anchored on the real clock: a2 if *)
+(*   later than the held reply's end (why the TTS pins the clock).          *)
 (***************************************************************************)
 EXTENDS Integers
 
@@ -52,10 +59,11 @@ CONSTANTS N,        \* words in the reply
           LAT,      \* the context's open to its first audio
           SHIFT,
           SECOND,   \* BOOLEAN: a second context queued behind the held reply
-          FIX2      \* BOOLEAN: the proposed anchoring for it (see the header)
+          DESIGN2   \* its anchoring (see the header)
 
 ASSUME SHIFT \in {"words", "firstFrame", "all"} /\ N >= 1 /\ LAT <= MaxHold
-ASSUME SECOND \in BOOLEAN /\ FIX2 \in BOOLEAN /\ (SECOND => SHIFT = "all")
+ASSUME SECOND \in BOOLEAN /\ DESIGN2 \in {"asWritten", "realClock", "shipped"}
+       /\ (SECOND => SHIFT = "all")
 
 Bound == LAT + N + MaxHold + 1      \* the clock never needs to run past this
 
@@ -144,12 +152,21 @@ WordsOnTime == phase /= "held" => LAT + 1 + wordShift = hold + 1
 
 \* The second context's first word: where the TTS anchored it, moved by the gate, against
 \* where it plays -- right behind the held reply, which plays from the release.
-Prev2  == IF a2Held THEN LAT + N                          \* the held reply's end, pre-hold
-          ELSE LAT + N + (IF FIX2 THEN hold - LAT ELSE hold) \* moved at the release
-Base2  == IF a2Held /\ FIX2 THEN Prev2 ELSE IF Prev2 > a2 THEN Prev2 ELSE a2
-Shift2 == IF ~a2Held THEN 0 ELSE IF FIX2 THEN hold - LAT ELSE hold - a2
+Max(a, b) == IF a > b THEN a ELSE b
+AsWritten == DESIGN2 = "asWritten"
+Prev2  == IF a2Held THEN LAT + N                                 \* the held reply's end, pre-hold
+          ELSE LAT + N + (IF AsWritten THEN hold ELSE hold - LAT) \* moved at the release
+Base2  == IF a2Held /\ DESIGN2 = "shipped" THEN Max(Prev2, LAT)  \* the frozen schedule
+          ELSE Max(Prev2, a2)                                    \* the real clock
+Shift2 == IF ~a2Held THEN 0 ELSE IF AsWritten THEN hold - a2 ELSE hold - LAT
 True2  == IF hold + N > a2 THEN hold + N ELSE a2
 SecondOnTime == (a2 >= 0 /\ phase /= "held") => Base2 + Shift2 = True2
+
+\* Where the TTS puts the second context's END (less its own audio): its anchor plus
+\* the hold it adds at the release (_ctx_held_ns) -- what a third context queued
+\* behind it is anchored at. As written: the hold since max(then, its anchor), then = 0.
+Held2 == IF ~a2Held THEN 0 ELSE IF AsWritten THEN Max(0, hold - Base2) ELSE hold - LAT
+SecondEndOnTime == (a2 >= 0 /\ phase /= "held") => Base2 + Held2 = True2
 
 TypeOK ==
     /\ now \in 0..Bound /\ hold \in 0..MaxHold /\ wordShift \in 0..MaxHold
