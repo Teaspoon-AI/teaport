@@ -177,6 +177,37 @@
 (* FENCE = "timed"      -- the same with the bound as it is: past           *)
 (*                         CUT_COMMIT_WAIT_SECS the commit goes ahead (the  *)
 (*                         speculation is not started).                     *)
+(*                                                                          *)
+(* A tool call overtaken by its own cancel (#185). The LLM broadcasts a      *)
+(* call's FunctionCallInProgressFrame (a ControlFrame) from the call's task; *)
+(* below the LLM it queues behind whatever non-system frames are ahead of   *)
+(* it -- the output transport parks it behind the reply audio still to play *)
+(* -- and the interruption's reset keeps it (uninterruptible). The cancel   *)
+(* the LLM broadcasts on the interruption is a SystemFrame: every processor *)
+(* handles it ahead of its queue, the assistant aggregator's own included,  *)
+(* so it can reach the aggregator before the call. pipecat's cancel handler *)
+(* finds no call to settle there and returns; the call then lands as        *)
+(* IN_PROGRESS with no task left to settle it. `lateCall` is that frame,    *)
+(* still on its way, and where the cancel overtook it: "above" the          *)
+(* processor directly over the aggregator, or "atAgg", past it, inside the *)
+(* aggregator's own input queue (a priority queue: the SystemFrame goes     *)
+(* first there too).                                                        *)
+(*                                                                          *)
+(* CALLS = "asWritten"        -- pipecat's aggregator as written: the late   *)
+(*                               call is written IN_PROGRESS, for good.     *)
+(* CALLS = "dropAbove"        -- a processor directly above the aggregator  *)
+(*                               drops an InProgress whose cancel it has    *)
+(*                               seen. One the cancel overtakes inside the  *)
+(*                               aggregator's own queue gets past it.       *)
+(* CALLS = "settleAtCommit"   -- the corrector settles any such call        *)
+(*                               CANCELLED at the next commit (and          *)
+(*                               snapshot). The LLM reads it unsettled      *)
+(*                               before that: a sync tool's result asks it. *)
+(* CALLS = "dropAtAggregator" -- as shipped (drop_overtaken_tool_calls): the *)
+(*                               aggregator's own frame handling, in the    *)
+(*                               order it handles them, drops the           *)
+(*                               InProgress of a call whose cancel it       *)
+(*                               handled first.                             *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -190,9 +221,10 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
                            \* release timer or the cap. FALSE: the timers as they are
           PAUSE,           \* the barge-in pause's design (see the header)
           FENCE,           \* the cut-before-commit order (see the header)
-          EARLY_FINAL      \* a final of the caller's resumed words can be aggregated
+          EARLY_FINAL,     \* a final of the caller's resumed words can be aggregated
                            \* before the VAD stop that re-applies a refused finalize
                            \* (TRUE: as it is). FALSE: the premise, see VadStop
+          CALLS            \* a call overtaken by its own cancel (see the header)
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -264,7 +296,10 @@ fenceVars == <<cut, overtaken, cutAfterCommit>>
 VARIABLES
     \* --- the reply's tool round (the LLM called a function for the last commit) ---
     tool,            \* where that round is: "none"; "held" (its FunctionCallInProgress /
-                     \* Result frames wait in the gate's paused queue); "ctxRunning" (the
+                     \* Result frames wait in the gate's paused queue); "transit" (its
+                     \* InProgress is past the gate, on its way to the assistant
+                     \* aggregator: the transport parks it behind unplayed audio);
+                     \* "ctxRunning" (the
                      \* call and its IN_PROGRESS result are in the context); "ctxDone" (a
                      \* result is: a sync tool's, or the async consult's placeholder, the
                      \* consult running on); "resultHeld" (the call is in the context, its
@@ -277,9 +312,16 @@ VARIABLES
                      \* context after the turn that dropped it
     goodbyeLost,     \* monitor: the session-end commit dropped a reply the End was
                      \* queued behind (it would have played out first)
-    orphanCall       \* monitor: a tool call was left in the context with no result,
+    orphanCall,      \* monitor: a tool call was left in the context with no result,
                      \* ever (strict OpenAI-compatible servers refuse such a context)
-toolVars == <<tool, lateTool, goodbyeLost, orphanCall>>
+    lateCall,        \* the InProgress of a call its cancel overtook, still on its way:
+                     \* "none", "above" (the processor directly over the aggregator), or
+                     \* "atAgg" (past it, in the aggregator's own queue). Two at once
+                     \* (FIFO between them) are one, at the later position
+    unsettled,       \* a call written IN_PROGRESS after its cancel is in the context: no
+                     \* task will ever settle it
+    readUnsettled    \* monitor: the LLM was asked over a context holding such a call
+toolVars == <<tool, lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
@@ -306,6 +348,7 @@ Gated == HOLD /= "none"
 \* result and, for a sync tool, a second inference.
 Dropped(t) == CASE t = "ctxRunning" -> "ctxCancelled"
                 [] t = "held"       -> "none"
+                [] t = "transit"    -> "none"     \* cancelled before it landed: `Overtakes`
                 [] t = "resultHeld" -> IF HOLD = "gateDropsResult" THEN "ctxOrphan"
                                        ELSE "ctxDone"
                 [] OTHER            -> t
@@ -316,6 +359,20 @@ LateOnDrop == tool \in {"held", "resultHeld"} /\ HOLD = "gateKeepsTool"
 \* inference it would ask for (the commit that follows asks); c1c329f's gate
 \* (`gateDropsResult`) dropped it with the held reply and left the call unsettled.
 OrphanOnDrop == tool = "resultHeld" /\ HOLD = "gateDropsResult"
+\* The interruption reaches the LLM, which cancels a call whose InProgress is still in
+\* transit, and the cancel overtakes it: above the processor over the aggregator, or
+\* inside the aggregator's own queue (#185). A second late frame behind a first is
+\* behind it (FIFO): the two are one at the later position.
+Overtakes ==
+    \E w \in {"above", "atAgg"} :
+        lateCall' = IF tool = "transit"
+                      THEN (IF lateCall = "atAgg" THEN "atAgg" ELSE w)
+                      ELSE lateCall
+\* A commit reads the context for the LLM. settleAtCommit settles an unsettled call
+\* CANCELLED first (on the commit's LLMContextFrame, as the corrector would).
+CommitReads ==
+    /\ readUnsettled' = (readUnsettled \/ (unsettled /\ CALLS /= "settleAtCommit"))
+    /\ unsettled' = (unsettled /\ CALLS /= "settleAtCommit")
 
 Init ==
     /\ userTurn = FALSE
@@ -339,6 +396,7 @@ Init ==
     /\ wouldEnd = FALSE /\ stopHeard = FALSE /\ answerLost = FALSE
     /\ cut = "none" /\ overtaken = FALSE /\ cutAfterCommit = FALSE
     /\ tool = "none" /\ lateTool = FALSE /\ goodbyeLost = FALSE /\ orphanCall = FALSE
+    /\ lateCall = "none" /\ unsettled = FALSE /\ readUnsettled = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -458,7 +516,8 @@ CutLands ==
     /\ UNCHANGED <<unanswered, endQueued, splitTurn, replyOverResume>>
     /\ tool' = Dropped(tool) /\ lateTool' = (lateTool \/ LateOnDrop)
     /\ orphanCall' = (orphanCall \/ OrphanOnDrop)
-    /\ UNCHANGED goodbyeLost
+    /\ Overtakes
+    /\ UNCHANGED <<goodbyeLost, unsettled, readUnsettled>>
     \* The interruption reaches the transport: the queued audio is dropped and, with
     \* it, the pause -- except in a transport that keeps it.
     /\ pausedP' = (PAUSE = "keepOnInterrupt" /\ pausedP)
@@ -717,7 +776,7 @@ CommitReady == cut = "none" \/ CommitMayOvertake
 Folds(mp, t) == mp /\ unanswered >= 1
                 /\ (t \in {"none", "held"}
                     \/ (t = "ctxCancelled" /\ HOLD /= "gateNoFoldCancelled"))
-Acted(t) == t \in {"ctxRunning", "resultHeld", "ctxDone"}
+Acted(t) == t \in {"transit", "ctxRunning", "resultHeld", "ctxDone"}
 Appended(mp, t) ==
     /\ unanswered' = IF Folds(mp, t) THEN unanswered
                      ELSE IF Acted(t) THEN 1
@@ -732,7 +791,8 @@ CommitCore ==
     /\ reply' = TRUE /\ armed' = Gated
     /\ Appended(mergePending, tool)
     /\ mergePending' = FALSE
-    /\ UNCHANGED <<lateTool, orphanCall>>
+    /\ CommitReads
+    /\ UNCHANGED <<lateTool, orphanCall, lateCall>>
 Commit ==
     /\ CommitCore
     /\ overtaken' = (cut /= "none")
@@ -762,6 +822,8 @@ ContinueCommit ==
     /\ Appended(HOLD /= "gateNoMerge", Dropped(tool))
     /\ lateTool' = (lateTool \/ LateOnDrop)
     /\ orphanCall' = (orphanCall \/ OrphanOnDrop)
+    /\ Overtakes                   \* its interruption reaches the LLM too
+    /\ CommitReads
     /\ mergePending' = FALSE
     /\ UNCHANGED <<endQueued, replyOverResume>>
     /\ UNCHANGED fenceVars
@@ -936,11 +998,12 @@ Release ==
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
-    \* A tool round queued behind the hold reaches the context: still running, or done.
-    /\ \E t \in (CASE tool = "held" -> {"ctxRunning", "ctxDone"}
+    \* A tool round queued behind the hold reaches the context: still running, or done
+    \* -- or its InProgress goes on behind the released reply's audio (`transit`).
+    /\ \E t \in (CASE tool = "held" -> {"transit", "ctxRunning", "ctxDone"}
                    [] tool = "resultHeld" -> {"ctxDone"}
                    [] OTHER -> {tool}) : tool' = t
-    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
 Cap ==
@@ -953,11 +1016,12 @@ Cap ==
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
-    \* A tool round queued behind the hold reaches the context: still running, or done.
-    /\ \E t \in (CASE tool = "held" -> {"ctxRunning", "ctxDone"}
+    \* A tool round queued behind the hold reaches the context: still running, or done
+    \* -- or its InProgress goes on behind the released reply's audio (`transit`).
+    /\ \E t \in (CASE tool = "held" -> {"transit", "ctxRunning", "ctxDone"}
                    [] tool = "resultHeld" -> {"ctxDone"}
                    [] OTHER -> {tool}) : tool' = t
-    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
 \* Every other action but the caller's speech is guarded by ~endQueued: what TLC
@@ -981,7 +1045,7 @@ Hangup ==
     /\ \E words \in (IF userTurn THEN BOOLEAN ELSE {FALSE}) :
          goodbyeLost' = (goodbyeLost \/ (words /\ MODE = "retryMergesAtEnd" /\ armed
                                           /\ cut = "none" /\ reply /\ ~held))
-    /\ UNCHANGED <<tool, lateTool, orphanCall>>
+    /\ UNCHANGED <<tool, lateTool, orphanCall, lateCall, unsettled, readUnsettled>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
@@ -989,13 +1053,47 @@ Hangup ==
     /\ UNCHANGED fenceVars
 
 \* The reply to the last commit calls a function (unconditionally here: the model
-\* decides). Its FunctionCallInProgressFrame reaches the context through the gate --
-\* or waits in its queue while it holds.
+\* decides). Its FunctionCallInProgressFrame goes on through the gate towards the
+\* context (`CallLands`) -- or waits in its queue while it holds.
 ToolCall ==
     /\ ~endQueued
     /\ Gated /\ reply /\ armed /\ tool = "none" /\ cut = "none"
-    /\ tool' = IF paused THEN "held" ELSE "ctxRunning"
-    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
+    /\ tool' = IF paused THEN "held" ELSE "transit"
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+
+\* The InProgress reaches the assistant aggregator first: the call and its IN_PROGRESS
+\* result are in the context. Behind a late frame still on its way, never ahead of it:
+\* control frames on one path keep their order.
+CallLands ==
+    /\ ~endQueued
+    /\ tool = "transit" /\ lateCall = "none"
+    /\ tool' = "ctxRunning"
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+
+\* The InProgress its cancel overtook reaches the aggregator (#185). As written it is
+\* the call's first news there: the call and IN_PROGRESS go in, the call's task is
+\* gone, and nothing will settle it. The drop above the aggregator catches it only if
+\* the cancel overtook it there; the drop at the aggregator always does. settleAtCommit
+\* writes it, for the next commit to settle.
+LateLands ==
+    /\ ~endQueued
+    /\ lateCall /= "none"
+    /\ lateCall' = "none"
+    /\ LET dropped == \/ CALLS = "dropAtAggregator"
+                      \/ CALLS = "dropAbove" /\ lateCall = "above"
+       IN /\ unsettled' = (unsettled \/ ~dropped)
+          /\ orphanCall' = (orphanCall \/ (~dropped /\ CALLS /= "settleAtCommit"))
+    /\ UNCHANGED <<tool, lateTool, goodbyeLost, readUnsettled>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -1009,7 +1107,9 @@ ToolDone ==
     /\ ~endQueued
     /\ tool = "ctxRunning"
     /\ tool' = IF paused THEN "resultHeld" ELSE "ctxDone"
-    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall>>
+    \* A sync tool's result asks the LLM again: a read of the context, not at a commit.
+    /\ readUnsettled' = (readUnsettled \/ unsettled)
+    /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -1074,7 +1174,7 @@ Next ==
     \/ Arm \/ ForceStop
     \/ SpecStart \/ CtxChange \/ Retext
     \/ Wordless \/ Release \/ Cap \/ Hangup
-    \/ ToolCall \/ ToolDone
+    \/ ToolCall \/ CallLands \/ LateLands \/ ToolDone
     \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP \/ OneWord \/ StopWord
 
 Spec == Init /\ [][Next]_vars
@@ -1139,6 +1239,10 @@ NoLostGoodbye == ~goodbyeLost
 \* Every tool call in the context gets a result: none is left unsettled for good.
 NoOrphanCall == ~orphanCall
 
+\* The LLM is never asked over a context holding a call nothing is running for and
+\* nothing has settled (strict servers refuse it): settling it later is too late.
+NoUnsettledRead == ~readUnsettled
+
 \* Reachability witnesses: rows that expect these to FAIL prove the window the
 \* answer-loss fix is about is reachable in the design they run -- a pause with the
 \* rest of the reply in the 0.5-1 s band, and a tail that elapses during it.
@@ -1174,7 +1278,10 @@ TypeOK ==
     /\ cut \in {"none", "empty", "reply"} /\ overtaken \in BOOLEAN
     /\ cutAfterCommit \in BOOLEAN
     /\ (overtaken => cut /= "none")
-    /\ tool \in {"none", "held", "ctxRunning", "resultHeld", "ctxDone", "ctxCancelled",
-                 "ctxOrphan"}
+    /\ tool \in {"none", "held", "transit", "ctxRunning", "resultHeld", "ctxDone",
+                 "ctxCancelled", "ctxOrphan"}
     /\ lateTool \in BOOLEAN /\ goodbyeLost \in BOOLEAN /\ orphanCall \in BOOLEAN
+    /\ CALLS \in {"asWritten", "dropAbove", "settleAtCommit", "dropAtAggregator"}
+    /\ lateCall \in {"none", "above", "atAgg"}
+    /\ unsettled \in BOOLEAN /\ readUnsettled \in BOOLEAN
 =============================================================================

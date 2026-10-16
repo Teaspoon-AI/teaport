@@ -23,7 +23,13 @@
 
 from loguru import logger
 
-from pipecat.frames.frames import Frame, LLMContextFrame
+from pipecat.frames.frames import (
+    Frame,
+    FunctionCallCancelFrame,
+    FunctionCallInProgressFrame,
+    FunctionCallsStartedFrame,
+    LLMContextFrame,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
@@ -102,6 +108,72 @@ def drop_from_context(context, doomed) -> None:
     seen goes through HeardContextCorrector.drop_messages instead, which calls this."""
     ids = {id(m) for m in doomed}
     context.set_messages([m for m in context.get_messages() if id(m) not in ids])
+
+
+# Calls whose cancel reached the assistant aggregator ahead of their in-progress frame,
+# kept until that frame comes. One that never does (the reply gate dropped it while
+# held) is forgotten after this many more.
+_MAX_OVERTAKEN = 32
+
+
+def drop_overtaken_tool_calls(aggregator) -> None:
+    """Drop the FunctionCallInProgressFrame of a call whose cancel the assistant
+    aggregator handled first, so that it never writes the call as IN_PROGRESS (#185).
+
+    pipecat's own race, on any barge-in, with or without the reply hold. The LLM
+    broadcasts a call's in-progress frame from the call's task. It is a ControlFrame, so
+    below the LLM it queues behind the non-system frames ahead of it, and the output
+    transport parks it behind the reply audio still to play; the interruption's reset
+    keeps it (uninterruptible). The FunctionCallCancelFrame the LLM broadcasts on the
+    interruption is a SystemFrame, which every processor handles ahead of its queue --
+    the aggregator's own priority queue included. So the cancel can arrive first: the
+    aggregator knows the call only from FunctionCallsStartedFrame, and
+    _handle_function_call_cancel returns without settling anything. The in-progress
+    frame then writes the tool_calls message and an IN_PROGRESS result, and the call's
+    task is already cancelled: nothing settles it. Strict OpenAI-compatible servers
+    refuse that context (a tool call with no answer), and the corrector's _merge_tail
+    cannot fold across it.
+
+    Wraps ONE aggregator's process_frame (the instance, not the class), which pipecat
+    calls for every frame in the order the aggregator handles them -- so a cancel that
+    overtook the call ANYWHERE above, inside the aggregator's own queue included, is
+    seen first here. A processor above the aggregator would miss that last case (the
+    cancel overtaking inside the aggregator's queue, after the processor let the call
+    through): formal/UserTurn.tla, ut_calls_dropAbove_noorphancall. The call is
+    "overtaken" exactly when pipecat's cancel handler is about to return early -- no
+    in-progress frame on record for it -- read from the aggregator's own map, so the
+    two cannot disagree. Deliberately not defensive about that private name: renamed,
+    this raises at session build, as keep_barge_in_reachable does.
+
+    What is dropped is a call the LLM has already cancelled and settled on its side
+    (runner_item.settled: any result it still reports is rejected there). A result
+    already on its way behind the frame (the handler reported, then was cancelled while
+    still unwinding) finds the call not in progress and pipecat drops it -- as it drops a
+    result behind a cancel in the ordinary order, where the call reads CANCELLED. The
+    in-progress frame of a call that was not cancelled always passes, and so does any
+    frame of a new call reusing the id (its FunctionCallsStartedFrame, a SystemFrame
+    ahead of its own in-progress frame, clears the mark)."""
+    aggregator._function_calls_in_progress  # noqa: B018 -- renamed: fail at build
+    process_frame = aggregator.process_frame
+    overtaken: dict = {}
+
+    async def _process_frame(frame, direction):
+        if isinstance(frame, FunctionCallInProgressFrame):
+            if overtaken.pop(frame.tool_call_id, None) is not None:
+                logger.info(f"TOOL-CALL: dropped {frame.function_name}'s in-progress frame: "
+                            "its cancel overtook it, nothing would ever settle it")
+                return
+        elif isinstance(frame, FunctionCallsStartedFrame):
+            for call in frame.function_calls:
+                overtaken.pop(call.tool_call_id, None)
+        elif (isinstance(frame, FunctionCallCancelFrame)
+              and not aggregator._function_calls_in_progress.get(frame.tool_call_id)):
+            overtaken[frame.tool_call_id] = frame.function_name
+            while len(overtaken) > _MAX_OVERTAKEN:
+                overtaken.pop(next(iter(overtaken)))
+        await process_frame(frame, direction)
+
+    aggregator.process_frame = _process_frame
 
 
 class HeardContextCorrector(FrameProcessor):
