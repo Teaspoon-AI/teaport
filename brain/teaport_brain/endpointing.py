@@ -1050,12 +1050,15 @@ def keep_barge_in_reachable(controller) -> None:
 
     Deliberately NOT defensive about the private names it binds. If a future pipecat
     renames _trigger_user_turn_start / _trigger_user_turn_inference_triggered /
-    _trigger_user_turn_stop / _user_turn / _user_speaking, this raises AttributeError
-    at session build — loudly, on the first call, in CI — which is the outcome to
-    want; and it raises RuntimeError there if the inference hook's (strategy,
-    speculation) signature moved, the one argument it reads rather than passes on.
-    Silently doing nothing would restore a bug whose whole signature is that nothing
-    is logged when it happens.
+    _trigger_user_turn_stop or process_frame, this raises AttributeError at session
+    build — loudly, on the first call, in CI — which is the outcome to want; and
+    RuntimeError there if the inference hook's (strategy, speculation) signature
+    moved, the one argument it reads rather than passes on. _user_turn and
+    _user_speaking are read only when the wrappers run, inside pipecat's event
+    handlers: a rename of those is an "uncaught exception in event handler" ERROR on
+    every turn rather than a build failure -- loud in the log and in the turn tests,
+    not silent. Silently doing nothing would restore a bug whose whole signature is
+    that nothing is logged when it happens.
 
     Known limit: the re-attempt rides the frame that reports the user quiet, so it
     needs VAD to report a stop at all. It does NOT rescue a VAD frozen in SPEAKING —
@@ -1184,7 +1187,8 @@ def keep_barge_in_reachable(controller) -> None:
 # 0.5 s later, never hang. A VAD start handled inside a wait is the refused-finalize
 # shape keep_barge_in_reachable re-applies. Like keep_barge_in_reachable, it fails loud
 # rather than guards what it wraps: a pipecat that renames _push_aggregation raises at
-# session build, one that renames _aggregation at the first commit.
+# session build; one that renames _aggregation errors at the first commit (logged as
+# an uncaught event-handler exception where pipecat calls it from a handler).
 
 # The longest a commit (or a snapshot) waits. ~70 ms is the live crossing; this is a
 # ceiling for a loop under load, well short of the 0.45 s every such turn paid before

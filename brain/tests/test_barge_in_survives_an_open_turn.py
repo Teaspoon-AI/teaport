@@ -326,9 +326,12 @@ async def _refused_stop_after_an_inference(speculation) -> int:
             InterimTranscriptionFrame(UTTERANCE, "u", "t", None))
         assert rig.starts, "the turn did not open"
         strategy = rig.controller._user_turn_strategies.stop[0]
-        # Through the strategy's own event, as pipecat's eager stop strategy fires it:
-        # the controller's handler is what hands speculation to the wrapper.
+        # Through the stop strategy's own event (the base class's trigger, which a
+        # speculative strategy calls with speculation=): the controller's handler is
+        # what hands speculation to the wrapper. Every hop swallows exceptions, so
+        # that the inference got through is asserted, not assumed.
         await strategy.trigger_user_turn_inference_triggered(speculation=speculation)
+        assert len(rig.inferences) == 1, "the inference never reached the controller"
         await rig.controller._trigger_user_turn_stop(
             strategy, UserTurnStoppedParams(enable_user_speaking_frames=True))
         assert not rig.stops, "the stop was not refused: the user is speaking"

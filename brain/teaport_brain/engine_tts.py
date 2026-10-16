@@ -914,8 +914,9 @@ class EngineTTSService(TTSService):
         # one's rules ("Sra." cut as a sentence end under English). From this instant,
         # as the voice: text still buffered is spoken by the new voice, so it is split
         # by its rules too. (The service's _settings keep the first voice, as they
-        # always have: nothing here reads them, and the brain sends no settings
-        # update -- the aggregator was the one reader that mattered.)
+        # always have: the brain never reads them nor sends a settings update, and
+        # pipecat reads them only for the aggregator -- set here -- and its tracing,
+        # which the brain does not enable.)
         self._text_aggregator.set_language(self._espeak_lang)
         logger.info(f"TTS voice switched: {voice} (lang={self._espeak_lang})")
         return {"ok": True, "voice": voice, "language": self._espeak_lang,
