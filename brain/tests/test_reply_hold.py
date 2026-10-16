@@ -38,6 +38,7 @@ from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
     FunctionCallsStartedFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
@@ -69,7 +70,11 @@ from pipecat.turns.user_stop.base_user_turn_stop_strategy import (  # noqa: E402
 from pipecat.turns.user_turn_strategies import UserTurnStrategies  # noqa: E402
 from pipecat.utils.time import nanoseconds_to_seconds  # noqa: E402
 
-from teaport_brain.endpointing import INTERRUPT_MIN_WORDS  # noqa: E402
+from teaport_brain.endpointing import (  # noqa: E402
+    INTERRUPT_MIN_WORDS,
+    CutReplyFence,
+    keep_barge_in_reachable,
+)
 from teaport_brain.heard_context import HeardContextCorrector  # noqa: E402
 from teaport_brain.reply_hold import (  # noqa: E402
     PlayoutHoldFrame,
@@ -473,6 +478,65 @@ def test_merge_only_folds_adjacent_words_of_the_caller():
     assert [m["content"] for m in msgs] == ["s", "so I was thinking we could go"], msgs
 
 
+def test_merge_folds_across_a_tool_round_the_drop_cancelled():
+    # The dropped reply had a sync tool call in the context, and the interruption that
+    # dropped it cancelled the call (pipecat writes CANCELLED over IN_PROGRESS). The
+    # round did nothing: it goes with the merge, and the model decides again on the
+    # whole turn. Kept, it left the fragment and its continuation apart around it
+    # (formal/UserTurn.tla, ut_hold_gateNoFoldCancelled_nosplitturn). A FINISHED round
+    # -- a result, the async consult's placeholder -- is the turn acted on: it stays,
+    # and so do the two turns.
+    from types import SimpleNamespace
+
+    class Ctx:
+        def __init__(self, m):
+            self.m = m
+
+        def get_messages(self, *a, **k):
+            return self.m
+
+        def set_messages(self, m):
+            self.m[:] = m
+
+    def call(tid, *more):
+        return {"role": "assistant", "content": None,
+                "tool_calls": [{"id": i, "type": "function",
+                                "function": {"name": "web_search", "arguments": "{}"}}
+                               for i in (tid, *more)]}
+
+    def corrector(msgs):
+        merge = TurnMerge()
+        c = HeardContextCorrector(SimpleNamespace(events=[]), Ctx(msgs), merge=merge)
+        c._reconcile()
+        return c, merge
+
+    a = {"role": "user", "content": "look up the trains"}
+    note = {"role": "system", "content": "You remember these things"}
+    msgs = [{"role": "system", "content": "s"}, a]
+    c, merge = corrector(msgs)
+    msgs += [call("t1", "t2"), {"role": "tool", "tool_call_id": "t1", "content": "CANCELLED"},
+             {"role": "tool", "tool_call_id": "t2", "content": "CANCELLED"}, note,
+             {"role": "user", "content": "to Leeds tomorrow"}]
+    merge.request()
+    c._reconcile()
+    assert [m["content"] for m in msgs] == ["s", note["content"],
+                                            "look up the trains to Leeds tomorrow"], msgs
+    assert c._mark == len(msgs)
+
+    # A finished round between them (here: one call of two settled) keeps them apart.
+    for settled in ('{"status": "working_in_background"}', "IN_PROGRESS"):
+        a = {"role": "user", "content": "look up the trains"}
+        msgs = [{"role": "system", "content": "s"}, a]
+        c, merge = corrector(msgs)
+        msgs += [call("t1", "t2"),
+                 {"role": "tool", "tool_call_id": "t1", "content": "CANCELLED"},
+                 {"role": "tool", "tool_call_id": "t2", "content": settled},
+                 {"role": "user", "content": "to Leeds tomorrow"}]
+        merge.request()
+        c._reconcile()
+        assert len(msgs) == 6 and msgs[1]["content"] == "look up the trains", (settled, msgs)
+
+
 def test_the_tts_playout_model_stands_still_through_a_hold():
     from teaport_brain.engine_tts import EngineTTSService
 
@@ -514,6 +578,12 @@ async def test_the_session_puts_the_gate_right_below_the_tts_and_on_the_onset():
     assert "_arm_reply_gate" in arms, arms
     assert "_arm_reply_gate" not in [
         h.__name__ for h in p._event_handlers["on_user_turn_inference_triggered"].handlers]
+    # The fence asks this gate whether the last reply has played, before every commit.
+    fence = p.next._fence
+    assert fence.unplayed_reply is not None
+    assert fence.unplayed_reply() is False
+    gate._armed = True
+    assert fence.unplayed_reply() is True
     # Per front-end, and off unless the front-end asks (Talk's default).
     assert not isinstance(build_agent_session(_Transport()).tts.next, ReplyHoldGate)
     from teaport_brain import reply_hold
@@ -576,6 +646,104 @@ async def test_a_drop_with_an_uninterruptible_frame_in_hand_does_not_silence_the
         await asyncio.sleep(0.4)
         got = [f.context_id for _, f in rig.bottom.audio()]
         assert got.count("c2") == 3 and "c1" not in got, got
+
+
+def _call_frames(rig):
+    return [(f.tool_call_id, type(f).__name__) for _, f in rig.bottom.down
+            if isinstance(f, (FunctionCallInProgressFrame, FunctionCallResultFrame))]
+
+
+async def test_a_dropped_hold_drops_its_tool_round_too():
+    # The held reply called a tool: its IN_PROGRESS and its result (the async consult's
+    # placeholder) waited in the paused queue with the rest. Both are pipecat
+    # UninterruptibleFrames, which the interruption's reset keeps: let through, they
+    # would put the dropped reply's tool round in the context after the turn that
+    # dropped it -- a cancelled sync call as an IN_PROGRESS nothing settles.
+    # (formal/UserTurn.tla, ut_hold_gateKeepsTool_nolatetool.)
+    async with GateRig() as rig:
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        await rig.send(
+            FunctionCallInProgressFrame(function_name="web_search", tool_call_id="t1",
+                                        arguments={}),
+            FunctionCallInProgressFrame(function_name="ask_openclaw", tool_call_id="t2",
+                                        arguments={}),
+            FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="t2",
+                                    arguments={}, result={"status": "working"}),
+            *reply("c1", rig))
+        await asyncio.sleep(0.3)
+        assert rig.gate.holding and not _call_frames(rig)
+        await rig.send(InterruptionFrame(), VADUserStoppedSpeakingFrame())
+        await asyncio.sleep(0.3)
+        assert not _call_frames(rig), f"the dropped reply's tool round passed: {_call_frames(rig)}"
+        assert not rig.bottom.audio()
+        # The next reply's tool round passes, held or not, and so does a released one's.
+        await rig.gate.arm()
+        await rig.send(FunctionCallInProgressFrame(function_name="web_search",
+                                                   tool_call_id="t3", arguments={}),
+                       *reply("c2", rig))
+        await asyncio.sleep(0.3)
+        assert _call_frames(rig) == [("t3", "FunctionCallInProgressFrame")], _call_frames(rig)
+        await rig.gate.arm()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(0.05)
+        await rig.send(FunctionCallInProgressFrame(function_name="web_search",
+                                                   tool_call_id="t4", arguments={}),
+                       *reply("c3", rig))
+        await asyncio.sleep(0.1)
+        await rig.send(VADUserStoppedSpeakingFrame())          # a cough: released
+        await asyncio.sleep(RELEASE_S + 0.3)
+        assert ("t4", "FunctionCallInProgressFrame") in _call_frames(rig), _call_frames(rig)
+        assert rig.gate.released == 1 and rig.gate.dropped == 1
+
+
+async def test_a_held_result_whose_call_passed_settles_it_without_an_answer():
+    # A sync tool (web_search) takes seconds: its IN_PROGRESS passed the gate before the
+    # caller resumed, so the call is in the context, and its result came during the
+    # hold. A drop that took the result with the rest of the held reply left the call
+    # unsettled for good (nothing cancels a call that has finished): the merge could not
+    # fold across it, and strict OpenAI-compatible servers refuse a context with an
+    # unanswered tool call (formal/UserTurn.tla, ut_hold_gateDropsResult_noorphancall).
+    # The result goes through and settles the call -- without the inference it would
+    # ask for, whose reply is the one just dropped.
+    from pipecat.frames.frames import FunctionCallFromLLM, LLMContextFrame
+
+    context = LLMContext([{"role": "system", "content": "sys"},
+                          {"role": "user", "content": "look up the trains"}])
+    pair = LLMContextAggregatorPair(context)
+    gate = ReplyHoldGate(merge=TurnMerge(), release_secs=RELEASE_S, max_secs=MAX_S)
+    top = Tap()
+    task = PipelineTask(Pipeline([top, gate, pair.assistant()]), cancel_on_idle_timeout=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.sleep(STARTUP_S)
+    try:
+        await gate.arm()
+        await task.queue_frames([
+            FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+                function_name="web_search", tool_call_id="t1", arguments={}, context=None)]),
+            FunctionCallInProgressFrame(function_name="web_search", tool_call_id="t1",
+                                        arguments={}, cancel_on_interruption=True)])
+        await asyncio.sleep(0.1)
+        assert context.get_messages()[-1].get("content") == "IN_PROGRESS", context.get_messages()
+        await task.queue_frame(VADUserStartedSpeakingFrame())      # the caller resumes
+        await asyncio.sleep(0.05)
+        assert gate.holding
+        await task.queue_frame(FunctionCallResultFrame(
+            function_name="web_search", tool_call_id="t1", arguments={},
+            result={"hits": ["the 9:14 to Leeds"]}))
+        await asyncio.sleep(0.2)
+        await task.queue_frames([InterruptionFrame(), VADUserStoppedSpeakingFrame()])
+        await asyncio.sleep(0.3)
+        tool = [m for m in context.get_messages() if m.get("role") == "tool"]
+        assert len(tool) == 1 and "9:14" in str(tool[0]["content"]), (
+            f"the call was left unsettled: {context.get_messages()}")
+        asked = [f for _, f in top.up if isinstance(f, LLMContextFrame)]
+        assert not asked, "the dropped reply's result asked the model for an answer"
+        assert gate.dropped == 1
+    finally:
+        await task.cancel()
+        await run
 
 
 async def test_words_placed_after_the_release_move_with_the_held_ones():
@@ -1150,6 +1318,107 @@ async def test_the_calls_shape_without_the_gate_is_the_reported_failure():
         f"the stale reply should have been charted as heard, then cut: {cut!r}")
     users = [m["content"] for m in llm.contexts[-1] if m["role"] == "user"]
     assert len(users) == 2, f"expected the fragment and its continuation apart, got {users!r}"
+
+
+async def _the_refused_call(continues: bool):
+    """The ceiling commits "so I was thinking we could", and the caller resumes INSIDE
+    that commit's await: the controller refuses its finalize (they are audibly
+    speaking) and keep_barge_in_reachable owes it. Their words join the turn still open
+    -- no turn start, so no interruption -- and the engine's segmenter closes the final
+    of them before their VAD stop, which re-applies the stop: a second commit, with the
+    first reply held and unplayed (formal/UserTurn.tla, ut_retryOnQuiet_early_nosplitturn).
+    Wired as agent_session wires it: the fence holds the commits and, `continues`, asks
+    the gate whether the last reply has played."""
+    context = LLMContext([{"role": "system", "content": "sys"}])
+    stop = ScriptedStop()
+    pair = LLMContextAggregatorPair(
+        context,
+        user_params=LLMUserAggregatorParams(
+            user_mute_strategies=[],
+            user_turn_strategies=UserTurnStrategies(
+                start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
+                stop=[stop],
+            ),
+        ),
+    )
+    user = pair.user()
+    controller = user._user_turn_controller
+    keep_barge_in_reachable(controller)
+    fence = CutReplyFence()
+    fence.hold_commits(user)
+    llm, tts, out = ScriptedLLM(), ScriptedTTS(), Playout()
+    ledger = TranscriptLedger(tts=tts)
+    merge = TurnMerge()
+    gate = ReplyHoldGate(merge=merge, release_secs=RELEASE_S, max_secs=MAX_S)
+    if continues:
+        fence.unplayed_reply = lambda: gate.armed
+
+    @user.event_handler("on_user_turn_message_added")
+    async def _arm(_a, _m):
+        await gate.arm()
+
+    pipeline = Pipeline([user, fence.head, HeardContextCorrector(ledger, context, merge=merge),
+                         llm, tts, gate, out, pair.assistant(), fence.tail])
+    task = PipelineTask(pipeline, observers=[ledger], cancel_on_idle_timeout=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.sleep(STARTUP_S)
+
+    async def say(text, final=False):
+        cls = TranscriptionFrame if final else InterimTranscriptionFrame
+        await task.queue_frame(cls(text, "caller", "t"))
+
+    # The fragment.
+    await task.queue_frame(VADUserStartedSpeakingFrame())
+    await asyncio.sleep(0.1)
+    await say("so I was thinking")
+    await asyncio.sleep(0.2)
+    await task.queue_frame(VADUserStoppedSpeakingFrame())
+    await say("so I was thinking we could", final=True)
+    await asyncio.sleep(0.2)
+    # The ceiling's stop, its two awaits straddling the caller's resumption.
+    await stop.trigger_user_turn_inference_triggered()     # the commit; arms the gate
+    await task.queue_frame(VADUserStartedSpeakingFrame())
+    await asyncio.sleep(0.05)
+    await stop.trigger_user_turn_finalized()                # refused: they are speaking
+    refused = controller._user_turn
+    await asyncio.sleep(0.4)                                # the reply is ready, held
+    await say("maybe try")
+    await asyncio.sleep(0.3)
+    await say("maybe try the other place instead", final=True)
+    await asyncio.sleep(0.05)
+    await task.queue_frame(VADUserStoppedSpeakingFrame())  # re-applies the stop: commits
+    await asyncio.sleep(RELEASE_S + 1.0)                   # the release window, and more
+    await task.cancel()
+    await run
+    return llm, out, context, gate, refused
+
+
+async def test_a_refused_finalizes_second_commit_merges_into_the_unplayed_turn():
+    llm, out, context, gate, refused = await _the_refused_call(continues=True)
+    assert refused, "the script must leave the turn open (the finalize refused)"
+    assert "r1" not in out.played, (
+        f"the held reply to the fragment played: {out.played.count('r1')} chunks")
+    assert "r2" in out.played, "the answer to the whole turn never played"
+    assert gate.holds == 1 and gate.dropped == 1 and gate.released == 0, (
+        gate.holds, gate.dropped, gate.released)
+    users = [m["content"] for m in llm.contexts[-1] if m["role"] == "user"]
+    assert users == ["so I was thinking we could maybe try the other place instead"], (
+        f"the model must get ONE user turn with every word, got {users!r}")
+    assert not any(m["role"] == "assistant" for m in llm.contexts[-1]), llm.contexts[-1]
+    assert not any("r1" in str(m.get("content")) for m in context.get_messages()), (
+        "the dropped reply is in the context")
+
+
+async def test_without_the_continuation_the_refused_finalize_splits_the_turn():
+    # The brain as it was: the second commit lands beside the first, the held reply is
+    # released after the window and answers the fragment, then the rest is answered.
+    llm, out, _context, gate, refused = await _the_refused_call(continues=False)
+    assert refused
+    assert "r1" in out.played and "r2" in out.played, out.played
+    assert gate.released == 1 and gate.dropped == 0, (gate.released, gate.dropped)
+    users = [m["content"] for m in llm.contexts[-1] if m["role"] == "user"]
+    assert users == ["so I was thinking we could", "maybe try the other place instead"], (
+        f"expected the fragment and its continuation apart, got {users!r}")
 
 
 def main():

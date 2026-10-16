@@ -52,7 +52,12 @@
 # audio really reaches the transport, and nothing of it is ever charted as said. The
 # assistant aggregator likewise never sees the dropped reply's words, so nothing of it
 # can be committed to the context. And an interruption's queue reset is pipecat's,
-# with its Uninterruptible rules, rather than a copy of them.
+# with its Uninterruptible rules, rather than a copy of them -- with one exception: the
+# reply's function-call frames (its tool call's IN_PROGRESS and result) are
+# Uninterruptible, and the gate settles those of a dropped reply itself: a call held
+# here goes, with its result, so its tool round does not land in the context after the
+# turn that dropped it; a result held here for a call that passed before the hold goes
+# through without asking for an answer, since nothing else will ever settle that call.
 #
 # Playout times. The TTS stamps its frames with their playout time (pts) as it
 # synthesizes them: every word (TTSTextFrame), and also the response's End when it is
@@ -85,22 +90,30 @@
 #   * A commit whose finalization the turn controller REFUSED (the caller was audibly
 #     speaking when it landed; endpointing.keep_barge_in_reachable re-applies it later)
 #     arms the gate at its push, and the caller's further words then join the turn
-#     that is still open instead of starting a new one, so no interruption drops the
-#     held reply: it plays after the release window, followed by the answer to the rest.
-#     That is no worse than without the gate. 0 of 27 commits on the 2026-10-05 call.
+#     that is still open instead of starting a new one, so no turn start's interruption
+#     drops the held reply. Until 2026-10-15 a final of those words in hand by their VAD
+#     stop was then committed as a second message, and the held reply played after the
+#     release window, followed by the answer to the rest (formal/UserTurn.tla,
+#     ut_retryOnQuiet_early_nosplitturn). Now that commit finds the gate still armed,
+#     and CutReplyFence.hold_commits drops the reply with an interruption of its own
+#     before committing: the gate asks for the merge as for a turn start's. Only on the
+#     front-ends with the gate (SIP): elsewhere nothing knows the reply has not played,
+#     and the two messages stay apart.
 #   * Only a reply to a USER commit is checked. The greeting, a consult follow-up and
 #     a client-note reaction are not armed: they already wait for a quiet moment
 #     (FollowupGate) or open the call.
 #   * The merge needs nothing but system messages between the two user messages (a
-#     MemoryRecall note lands there). A reply that called a tool before it was dropped
-#     leaves the tool call between them, and the turns stay apart.
+#     MemoryRecall note lands there), or a tool round the drop cancelled, which goes
+#     with it. A reply whose tool call had FINISHED in the context before the drop (it
+#     passed the gate unheld: a sync tool's result, or the async consult's placeholder)
+#     leaves that round between them: the turn was acted on, and they stay apart.
 #   * During a tool call, a filler line (a tool acknowledgement, the consult narrator)
 #     is audio like any other: it passes the gate and disarms it, so the answer spoken
 #     after the tool returns is not checked.
 #
 import asyncio
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 from loguru import logger
 
@@ -109,6 +122,8 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
+    FunctionCallResultProperties,
     FunctionCallsStartedFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
@@ -223,6 +238,13 @@ class ReplyHoldGate(FrameProcessor):
         self._last_ctx = None
         self._released_ns = None
         self._release_shift = None
+        # Function-call frames (pipecat's UninterruptibleFrames, which an interruption's
+        # queue reset keeps) by the number of drops before they were queued: one queued
+        # before a drop belongs to the reply that drop dropped (see process_frame).
+        self._drops = 0
+        self._call_frames: dict = {}
+        # tool_call_ids whose IN_PROGRESS a drop dropped: their results go too.
+        self._dropped_calls: set = set()
         # Tallies, for the log and the tests.
         self.holds = 0
         self.onset_only_holds = 0
@@ -281,6 +303,8 @@ class ReplyHoldGate(FrameProcessor):
 
     async def queue_frame(self, frame: Frame, direction=FrameDirection.DOWNSTREAM,
                           callback=None):
+        if isinstance(frame, (FunctionCallInProgressFrame, FunctionCallResultFrame)):
+            self._call_frames[frame.id] = self._drops
         if not isinstance(frame, SystemFrame):
             try:
                 self._arrivals[frame.id] = self.get_clock().get_time()
@@ -328,6 +352,43 @@ class ReplyHoldGate(FrameProcessor):
             frame.pts += self._shift[ctx]
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        held_past_a_drop = self._call_frames.pop(frame.id, self._drops) < self._drops
+        if isinstance(frame, FunctionCallInProgressFrame) and held_past_a_drop:
+            # The tool round of a reply dropped while held: its call (IN_PROGRESS) waited
+            # here with the rest of it, and pipecat's reset keeps it. Let through, it
+            # would reach the context after the turn that dropped the reply -- a
+            # cancelled call as an IN_PROGRESS nothing settles (its cancel reached the
+            # assistant aggregator first, before the call had). Its result, whenever it
+            # comes, goes with it. The async consult itself runs on: its answer arrives
+            # as its own follow-up. (formal/UserTurn.tla, NoLateToolRound.)
+            self._dropped_calls.add(frame.tool_call_id)
+            self._arrivals.pop(frame.id, None)
+            logger.info(f"REPLY-HOLD: dropped the held reply's tool call "
+                        f"({frame.function_name})")
+            return
+        if isinstance(frame, FunctionCallResultFrame):
+            if frame.tool_call_id in self._dropped_calls:
+                if not frame.properties or frame.properties.is_final:
+                    self._dropped_calls.discard(frame.tool_call_id)
+                self._arrivals.pop(frame.id, None)
+                logger.info(f"REPLY-HOLD: dropped the result of the held reply's tool call "
+                            f"({frame.function_name})")
+                return
+            if held_past_a_drop:
+                # Its call passed before the hold began (a sync tool's seconds of work
+                # straddled the hold's start), so the call is in the context and has
+                # finished: nothing cancels it, and this result is all that will ever
+                # settle it -- dropped, the call stays IN_PROGRESS for good, and the
+                # merge cannot fold across it (formal/UserTurn.tla, NoOrphanCall). It
+                # goes through, settling the call, but asks for no inference: the reply
+                # that inference would have been is the one just dropped, and the
+                # commit that follows asks the model with the round in view.
+                frame.properties = (replace(frame.properties, run_llm=False)
+                                    if frame.properties is not None
+                                    else FunctionCallResultProperties(run_llm=False))
+                frame.run_llm = False
+                logger.info(f"REPLY-HOLD: the dropped reply's {frame.function_name} result "
+                            "settles its call, with no answer from it")
         if self._discard_to_end and not isinstance(frame, SystemFrame):
             if isinstance(frame, (EndFrame, StopFrame)):
                 self._discard_to_end = False
@@ -406,6 +467,7 @@ class ReplyHoldGate(FrameProcessor):
             self._release_shift = None
         else:
             self.dropped += 1
+            self._drops += 1
         # Also after a drop: the interruption normally unpauses the queue, but not when
         # the frame in hand was Uninterruptible (pipecat then only resets the queue).
         await self.resume_processing_frames()
@@ -417,13 +479,14 @@ class ReplyHoldGate(FrameProcessor):
 
     async def _on_interruption(self):
         # Armed: the last commit's reply never played. Sound because a turn's own
-        # interruption gets here before its commit arms the gate (endpointing.CutReplyFence).
+        # interruption gets here before its commit arms the gate (endpointing.CutReplyFence);
+        # so does the one the fence sends ahead of a commit that continues the turn.
         was_armed, self._armed = self._armed, False
         self._shift.clear()
         self._arrivals.clear()
         self._release_shift = None
         if self._holding:
-            await self._end_hold(released=False, why="the caller's new words start a turn")
+            await self._end_hold(released=False, why="the caller's words went on")
         if was_armed and self._merge is not None:
             # None of the reply to the last commit reached the caller: what they say now
             # finishes that turn rather than answering a reply they never heard.

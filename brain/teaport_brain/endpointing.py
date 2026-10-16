@@ -1093,7 +1093,11 @@ def keep_barge_in_reachable(controller) -> None:
             # aggregator runs the resumed words as their own turn -- a continuation
             # split off (LateStartTurnStopStrategy.handle_user_turn_stopped reports
             # this close to the STT, so the segment it was holding for the ceiling's
-            # verdict closes with the turn instead of waiting out its expiry).
+            # verdict closes with the turn instead of waiting out its expiry). With the
+            # reply hold, the split is undone wherever the first reply has not played:
+            # words already in hand are committed by this stop with the gate armed
+            # (CutReplyFence.hold_commits drops the reply and they merge), and words
+            # that land after it start a turn whose interruption does the same.
             # Accepted rather than waiting for the SMARTTURN_STOP_SECS
             # ceiling, because Smart Turn is near-inert on this audio (bimodal and
             # confidently wrong; see endpointing.py's threshold note), so the case is
@@ -1175,6 +1179,9 @@ class CutReplyFence:
         self._in_flight: dict = {}
         self.head = _CutFenceHead(self)
         self.tail = _CutFenceTail(self)
+        # () -> bool: none of the reply to the last commit has played yet. Set by
+        # agent_session where there is a reply hold; see hold_commits.
+        self.unplayed_reply = None
         # Tallies, for the tests.
         self.waits = 0
         self.timeouts = 0
@@ -1184,15 +1191,56 @@ class CutReplyFence:
         caller's words passes there: the stop strategy's inference, the turn's stop,
         the controller's watchdog, the session's end. An empty aggregation commits
         nothing (pipecat returns at once), so it does not wait: a hangup's CancelFrame
-        is not held for a commit that will not happen."""
+        is not held for a commit that will not happen.
+
+        `self.unplayed_reply` (reply_hold.ReplyHoldGate's `armed`, where the session has
+        the gate): True while none of the reply to the LAST commit has played. Asked once
+        the wait is over, when every turn start's interruption has reached the gate --
+        so True there means no turn has started since that commit: these words continue
+        it. That is the refused finalize's second commit (keep_barge_in_reachable): the
+        caller resumed inside the first commit's await, their words joined the turn
+        still open, and a final of them in hand by their VAD stop is committed there with
+        no turn start and so no interruption. Committed as it is, it leaves two user
+        messages, and the first one's reply, held, is released and answers the fragment
+        before the second answers the rest (formal/UserTurn.tla,
+        ut_retryOnQuiet_early_nosplitturn). So the unplayed reply is dropped first: an
+        InterruptionFrame pushed DOWN only (no turn starts, and nothing above the
+        aggregator -- the STT holding the caller's words, the input transport -- has
+        anything to drop). The gate reads it as it reads a turn start's: it drops the
+        held reply and asks for the TurnMerge; the LLM cancels a reply still being
+        written. Once it has landed (waited for like any other), the commit's words are
+        folded into the unanswered message. Past the bound, nothing is asked: the commit
+        goes ahead in the old order, as for any cut. If the wait for the continuation's
+        own frame runs out, the commit goes ahead unmerged and the frame, landing late,
+        asks the gate for a merge the next commit then gets: the fence's accepted
+        residual, for this commit as for any (formal/UserTurn.tla, ContinueLate).
+
+        Never at the session's end: pipecat commits an open turn's leftover words after
+        pushing the EndFrame on (_maybe_emit_user_turn_stopped(on_session_end=True)), and
+        an interruption there would overtake the End and drop the reply queued ahead of
+        it -- a goodbye -- for a commit nothing will answer (UserTurn.tla, NoLostGoodbye)."""
         push_aggregation = aggregator.push_aggregation
+        emit_stopped = aggregator._maybe_emit_user_turn_stopped
+        ending = False
+
+        async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False):
+            nonlocal ending
+            ending = ending or on_session_end
+            return await emit_stopped(strategy, on_session_end=on_session_end)
 
         async def _push_aggregation():
             if aggregator._aggregation:
-                await self.wait_for_cuts()
+                if (await self.wait_for_cuts() and not ending
+                        and self.unplayed_reply is not None and self.unplayed_reply()):
+                    logger.info("CUT-FENCE: words committed while the reply to the turn "
+                                "they continue has not played -- dropping that reply; "
+                                "the model gets the turn as one message")
+                    await aggregator.push_frame(InterruptionFrame())
+                    await self.wait_for_cuts()
             return await push_aggregation()
 
         aggregator.push_aggregation = _push_aggregation
+        aggregator._maybe_emit_user_turn_stopped = _maybe_emit_user_turn_stopped
 
     def _sent(self, frame) -> None:
         self._in_flight[frame.id] = asyncio.get_running_loop().create_future()

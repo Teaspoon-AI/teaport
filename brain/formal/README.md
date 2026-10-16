@@ -1398,6 +1398,7 @@ the other, for the context and the hold: `CutLands`, below).
 |---|---|---|---|
 | `asWritten` | stock pipecat — identical on 1.5.0, 1.7.0 and 1.8.1 | ✗ | ✗ |
 | `retryOnQuiet` | `keep_barge_in_reachable`: a finalization refused **after its inference ran** is re-applied at the user's next quiet moment | ✓ | ✓ |
+| `retryMerges` | the same, and the commit that re-applied stop can make continues the unplayed turn (shipped 2026-10-15; see [the refused finalize's second commit](#the-refused-finalizes-second-commit-early_final)) | ✓ | ✓ |
 
 `NoStrandedTurn` is the state itself — a turn whose inference has already run, still open
 once the user has fallen quiet. `NoMissedBargeIn` is what the user experiences, and its
@@ -1637,6 +1638,65 @@ the transport: a held commit's `LLMFullResponseStartFrame` reaches it later, so
 caller is talking or within the release window of it, which is not the dead air
 `NoDeadAirDuringTool` is about.
 
+### The reply's tool round (`tool`, 2026-10-15)
+
+Until 2026-10-15 the model's replies were all speech, and every merge folded. A reply
+can be a tool round instead, or start with one: the LLM calls a function for the
+commit (`ToolCall`), its `FunctionCallInProgressFrame` puts the call and an
+`IN_PROGRESS` result in the context, and the result lands (`ToolDone`) — a sync tool's,
+the LLM answering from it, or the async consult's placeholder (`run_llm=False`, the
+consult running on in the background). Both frames are pipecat `UninterruptibleFrame`s
+and reach the context through the gate, so a round started while the gate holds waits
+in its queue (`tool = "held"`) and lands when the hold is released — and so does a
+result alone, when a sync tool's seconds of work straddle the hold's start: the call
+passed before it and is in the context, the result waits (`tool = "resultHeld"`). What a drop does
+to it (`Dropped`): a round in the context still running is cancelled (pipecat writes
+`CANCELLED` over `IN_PROGRESS`; every tool here is registered `cancel_on_interruption`),
+one finished stays. `NoSplitTurn` now reads "neither a played reply **nor a tool round
+that ran** between them" (`Appended`): a finished round is the turn acted on — the model
+sees it, and the async consult goes on and is delivered as its own follow-up — so the
+next message is a turn of its own; a cancelled round did nothing.
+
+| HOLD | | `NoSplitTurn` | `NoLateToolRound` |
+|---|---|---|---|
+| `gateNoFoldCancelled` | the corrector until 2026-10-15: `_merge_tail` folded across system messages only | ✗ | ✓ |
+| `gateKeepsTool` | the gate until 2026-10-15: a dropped hold left the reply's function-call frames to pipecat's reset, which keeps them | ✓ | ✗ |
+| `gateDropsResult` | c1c329f: the gate dropped every function-call frame held past a drop, a result whose call had passed included | (✗) | ✓ |
+| `gate` | as shipped: the corrector drops a cancelled round with the merge; the gate drops a dropped hold's held calls with their results, and lets through, settling its call without an answer, a held result whose call had passed | ✓ | ✓ |
+
+`ut_hold_gateNoFoldCancelled_nosplitturn`, 9 states: a turn commits, its reply calls a
+tool (in the context, unheld), the caller's words start a turn whose interruption drops
+the reply and cancels the call, and the next commit is left apart from the fragment
+around the cancelled round — what the turn-start drop always did, and what the
+continuation (below) did too. `ut_hold_gateKeepsTool_nolatetool`, 9 states: the same
+with the caller talking when the tool is called, so its frames wait behind the hold;
+the drop keeps them and they land after the turn that dropped them —
+`NoLateToolRound`: **nothing of a reply dropped before it played reaches the context
+afterwards, its tool round included.** In the code a cancelled sync call landed as an
+`IN_PROGRESS` nothing settles (its `FunctionCallCancelFrame`, a SystemFrame, passed the
+paused gate and reached the assistant aggregator before the call had, and found nothing
+to settle), and a finished one with its result and, for a sync tool, a second
+inference. `reply_hold.py` now drops the function-call frames queued before a drop
+(`tests/test_reply_hold.py::test_a_dropped_hold_drops_its_tool_round_too`), and
+`HeardContextCorrector._merge_tail` folds across a round whose every call reads
+`CANCELLED`, removing it (`test_merge_folds_across_a_tool_round_the_drop_cancelled`).
+
+The first cut of that gate fix (c1c329f) dropped every function-call frame held past a
+drop, without asking whether its call had already passed. A sync tool's result held
+while its call sat in the context was then the only thing that could ever settle that
+call — a finished call is not cancelled by the interruption, and pipecat's aggregator
+writes nothing for one it was not told about — so the call stayed `IN_PROGRESS` for
+good: the merge could not fold across it (a split again), and strict OpenAI-compatible
+servers refuse a context with an unanswered tool call. `NoOrphanCall`: **every tool call
+in the context gets a result.** `ut_hold_gateDropsResult_noorphancall` fails it, 11 states: a turn
+commits, its reply calls a tool (unheld), the caller resumes (held), the result lands
+behind the hold, their words drop it. As shipped the gate drops a held call and, by its
+`tool_call_id`, that call's result; a held result whose call passed goes through with
+`run_llm=False` — it settles the call, the round is the turn acted on, and the inference
+it would have asked for is the dropped reply's, the commit that follows asking instead
+(`test_a_held_result_whose_call_passed_settles_it_without_an_answer`, on the gate and
+pipecat's assistant aggregator).
+
 ### The barge-in pause (`PAUSE`, #86)
 
 Barge-in waits for a transcript, and the STT returns none for speech over the bot until
@@ -1787,7 +1847,8 @@ silence than the VAD's floor — is pushed as a second user message, by the stra
 second stop or by the re-applied one, with no turn start and so no interruption.
 `EARLY_FINAL = TRUE` lets that happen (`VadStop`); every row above runs with `FALSE`.
 
-As shipped (`ut_shipped_nosplitturn`) it **fails `NoSplitTurn`**, 7 states:
+Until 2026-10-15 (`retryOnQuiet`, `ut_retryOnQuiet_early_nosplitturn`) it **failed
+`NoSplitTurn`**, 7 states:
 
 ```
 Interject CutLands Inference   a turn commits; its reply is on its way (the gate armed)
@@ -1797,24 +1858,92 @@ VadStop                        they stop: a final of what they added is already 
                                and the retry commits it as a second message
 ```
 
-No interruption drops the held reply, so it is released after `RELEASE_S` and the bot
-answers the fragment, then answers again with both messages in the context.
-`reply_hold.py` lists this among its known limits ("no worse than without the gate",
+No interruption dropped the held reply, so it was released after `RELEASE_S` and the bot
+answered the fragment, then answered again with both messages in the context.
+`reply_hold.py` listed this among its known limits ("no worse than without the gate",
 0 of 27 commits on 2026-10-05), but the formal rows had it hold. `CutReplyFence` widens
 the entry: the commit's wait (~70 ms over a playing reply) is inside the inference's
-await, the `Resume` gap. `MODE = "retryMerges"` is a proposed fix, not code: a second
-commit on a turn whose first reply has not played (the gate still armed) interrupts
-first — the unplayed reply is dropped and the words are folded into the unanswered
-message — and with it everything holds (`ut_retryMerges_all`, 18k states; a probe
-confirmed the drop-and-merge branch is reached with a held reply).
+await, the `Resume` gap. The row is kept as the regression row for the old code, and
+`tests/test_reply_hold.py::test_without_the_continuation_the_refused_finalize_splits_the_turn`
+replays that trace through the real aggregator, controller, fence, gate and corrector.
 
-`ut_shipped_all` is the SIP front-end as shipped with everything on — `retryOnQuiet`,
-`byContext`, `gate`, `shipped`, `inTime`, `EARLY_FINAL` — and holds every property but
-`NoSplitTurn` (32k states, a few seconds). Talk and the room mic run the same turn
-machine and fence, without the hold (`TEAPORT_REPLY_HOLD_TALK` defaults off) or the
-pause (their transport cannot pause): `HOLD = "none"`, `PAUSE = "off"`, whose
-`NoStaleReply` and `NoSplitTurn` fail as before #85. The room's own turn timing
-(`ROOM_*`, #159) and `SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
+As shipped (`MODE = "retryMerges"`, `CommitStep`) a commit that finds the gate still
+armed once the fence has let it through continues the turn whose reply has not played:
+`CutReplyFence.hold_commits` asks the gate (`unplayed_reply`, the gate's `armed`, set by
+`agent_session` where there is a gate) and, if so, pushes an `InterruptionFrame` down
+from the aggregator — no turn start, nothing upstream — and waits for it like any cut.
+The gate reads it as a turn start's: it drops the held reply (ending the hold) and asks
+for the `TurnMerge`; the LLM cancels a reply still being written; the corrector folds
+the commit into the unanswered message. Armed after the fence's wait means no turn
+start's interruption has reached the gate since the last commit, so only the refused
+finalize's second commit takes the branch; the model applies `CommitStep` at every commit
+as the code's one wrapper does, and before tool rounds were modelled `ut_shipped_all`
+had the same 18k states the proposed-fix row (`ut_retryMerges_all`, now folded into it)
+had with the branch at `VadStop` alone. Past the fence's bound the code does not ask, as
+the model's `Continues` requires `cut = "none"`.
+
+The 2026-10-15 review of the first cut (e62e67a) found four places the model was
+narrower than the code:
+
+- **Tool rounds.** A reply that called a tool before the continuation dropped it left
+  the round between the two user messages, and `_merge_tail` refused the merge: the
+  code dropped the reply *and* split the turn while `ContinueCommit` always folded. In
+  the refused-finalize shape the gate holds from the commit on, so the round is
+  normally still in its queue, where the drop used to leave it to land late. Both are
+  the turn-start drop's as much as the continuation's, and both are fixed for both
+  (the tool-round section above): the continuation folds across a round it cancelled,
+  drops a held one with the reply, and leaves a finished one (the turn acted on) apart.
+- **The session's end** (`NoLostGoodbye`). pipecat's user aggregator pushes the
+  `EndFrame` on and then commits an open turn's leftover words
+  (`_maybe_emit_user_turn_stopped(on_session_end=True)`) through the same
+  `push_aggregation`; with the gate armed the first cut sent the continuation's
+  interruption there, which overtook the End and dropped the unheld reply queued ahead
+  of it — a goodbye — for words nothing will answer (`ut_retryMergesAtEnd_nolostgoodbye`,
+  `MODE = "retryMergesAtEnd"`, 5 states: a commit, the hang-up during its await with
+  words in hand). `hold_commits` now never continues once that session-end commit has
+  begun (`test_the_session_end_commit_never_drops_the_reply_ahead_of_the_end`).
+- **The fence's bound** (`ContinueLate`). The second wait, for the continuation's own
+  frame, is bounded like every other: past `CUT_COMMIT_WAIT_SECS` the commit goes ahead
+  unmerged (the gate has not asked for the merge yet) and the frame, landing late, is
+  the overtaken cut of `CutLands` — it drops the held reply and asks for a merge the next
+  commit gets. That is `NoSplitTurn` failing under `FENCE = "timed"`, the same accepted
+  residual as `NoCutAfterCommit` there (`ut_fence_timed_nosplitturn`; its first trace is
+  a turn start's commit past the bound, and a probe with only the continuation able to
+  overtake fails it too, at the continuation's `VadStop`). Nothing is playing when the
+  continuation fires — the gate is armed — so its frame's crossing is the cheap one (a
+  few ms, against the ~70 ms of a cut that stops audio), and a timeout is logged
+  (`CUT-FENCE`).
+- **Follow-ups** (not modelled further; the argument). Below the aggregator the
+  continuation's `InterruptionFrame` is the frame a turn start sends, and it does what one
+  does to `Followup.tla`'s machinery: `FollowupTrigger` voids an armed shot,
+  `FollowupGate` settles the deliveries it watches as interrupted and releases a claim,
+  the thinking bed stops. The caller did keep talking, so that is right, and it is a
+  sequence `Followup.tla`'s environment already produces: on the re-applied stop's path
+  the aggregator broadcasts `UserStoppedSpeakingFrame`, then the continuation's
+  interruption, then the commit — `UserStop` without words, `UserStart`, `UserStop` with
+  them, each a free action there, so `NoSilentLoss`, `NoRepeatRecital` and the rest are
+  checked against it; on the strategy's own second stop the interruption comes while the
+  turn is still open (`user` set), when no window is open for a follow-up to have
+  claimed, and it only meets the reply it was sent for. A follow-up queued in the gap
+  between that `UserStoppedSpeakingFrame` and the commit is voided and re-delivered
+  exactly as one a new turn's start would void.
+
+`ut_shipped_all` is the SIP front-end as shipped with everything on — `retryMerges`,
+`byContext`, `gate`, `shipped`, `inTime`, `EARLY_FINAL`, tool rounds — and holds every
+property (63k states, a few seconds). `ut_shipped_timed` is the same with the hold's
+timers as they are (`WORDS_IN_TIME = FALSE`: `Release` and `Cap` end holds whatever the
+caller does next) and holds every property but the accepted `NoStaleReply` residual
+(237k states, ~20 s): the timeout paths leave no queue paused (`NoSilencedBot`), a held
+tool round lands when they release it, and a reply released by a timer but not yet
+started is still the one a continuation drops. With
+`EARLY_FINAL = FALSE` (every row above) no commit finds the gate armed, so
+`retryOnQuiet` and `retryMerges` are one machine and those rows keep `retryOnQuiet`.
+Talk and the room mic run the same turn machine and fence, without the hold
+(`TEAPORT_REPLY_HOLD_TALK` defaults off) or the pause (their transport cannot pause):
+`HOLD = "none"`, `PAUSE = "off"`, whose `NoStaleReply` and `NoSplitTurn` fail as before
+#85 — and without a gate nothing knows the first reply has not played, so the second
+commit stays a second message there. The room's own turn timing (`ROOM_*`, #159) and
+`SIP_ENDPOINT_STOP_SECS` are durations, which the model does not have.
 
 ### Known limits of this model
 
@@ -1838,6 +1967,12 @@ pause (their transport cannot pause): `HOLD = "none"`, `PAUSE = "off"`, whose
 - **`ForceStop` commits only when the turn's words were not committed already** (a
   stranded turn's aggregation is empty). Words aggregated since are `EARLY_FINAL`'s on
   the retry path and not modelled on the watchdog's, which nothing reaches in 5 s.
+- **One tool round per reply, all-or-nothing.** `tool` is the last commit's reply's
+  one round: a chain of calls, or a parallel batch partly settled, is not modelled (the
+  corrector folds only when EVERY call of a round reads `CANCELLED`, which the tests
+  pin). Nor is pipecat's own race outside a hold: an unheld `FunctionCallInProgressFrame`
+  still in transit below the LLM when a cancel overtakes it lands unsettled, as it does
+  for every barge-in with or without the gate.
 - **Other producers of interruptions** (none in this brain but the turn start) and
   interruptions entering below the fence's head are not modelled.
 - **A VAD frozen in SPEAKING is out of scope, and out of the fix's scope too.**
@@ -1858,7 +1993,7 @@ pause (their transport cannot pause): `HOLD = "none"`, `PAUSE = "off"`, whose
   miss will come from — `[SPEC] miss reason=ctx-changed` or `reason=text-differs` in the
   journal does — nor how often the interim and the final disagree; it checks the design
   that stays right whenever they do.
-- **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each, 32k for `ut_shipped_all`; a few seconds each.
+- **Scale.** Since the cut became its own step (2026-10-14): 592 distinct states with `SPEC = "off"` (436 before it, 47 before the reply hold's variables), 4.2k with it on, 338 for `HOLD = "gate"` with words in time and 647 with the timers as they are, 1.5k and 3.5k for the shipped pause with each; with tool rounds (2026-10-15) 1.2k and 2.2k for `HOLD = "gate"` with words in time and without, 5.1k and 12k for the shipped pause, 63k for `ut_shipped_all` and 237k for `ut_shipped_timed`; seconds each.
 
 ## `PlayoutClock.tla` — a held reply's playout times at the transport's clock (#85)
 

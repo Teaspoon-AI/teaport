@@ -44,6 +44,23 @@ def _msg_text(m) -> str:
     return ""
 
 
+def _cancelled_rounds(msgs) -> set:
+    """ids of the tool rounds among `msgs` that were cancelled whole: an assistant
+    message whose every tool call has a tool result reading CANCELLED (pipecat's
+    cancel_on_interruption), and those results."""
+    msgs = [m for m in msgs if isinstance(m, dict)]
+    results = {m.get("tool_call_id"): m for m in msgs
+               if m.get("role") == "tool" and m.get("content") == "CANCELLED"}
+    out = set()
+    for m in msgs:
+        calls = m.get("tool_calls") if m.get("role") == "assistant" else None
+        ids = [c.get("id") for c in calls or []]
+        if ids and not _msg_text(m).strip() and all(i in results for i in ids):
+            out.add(id(m))
+            out.update(id(results[i]) for i in ids)
+    return out
+
+
 def _set_msg_text(m, text):
     if isinstance(m.get("content"), list):
         m["content"] = [{"type": "text", "text": text}]
@@ -156,18 +173,29 @@ class HeardContextCorrector(FrameProcessor):
         messages sits between them (MemoryRecall adds its note just before the turn it
         recalled for): a tool call in between, or an injected order (SYSTEM_NOTICE_TAG),
         leaves them be. The system notes move ahead of the merged turn, so the context
-        still ends on the caller's words."""
+        still ends on the caller's words.
+
+        A tool round the dropped reply had started, and the interruption that dropped it
+        cancelled (pipecat writes CANCELLED over its IN_PROGRESS), did nothing: it goes
+        with the merge, and the model decides again on the whole turn. One that finished
+        (a result, or the async consult's placeholder with the consult running on) is
+        the turn acted on, and keeps the two apart (formal/UserTurn.tla, `Appended`)."""
         msgs = self._context.get_messages()
         prev, last = self._last_user, (msgs[-1] if msgs else None)
         idx = next((i for i, m in enumerate(msgs) if m is prev), None)
+        between = msgs[idx + 1:-1] if idx is not None else []
+        cancelled = _cancelled_rounds(between)
         if (idx is not None and last is not None and last is not prev
                 and prev.get("role") == "user" and last.get("role") == "user"
-                and all(m.get("role") == "system" for m in msgs[idx + 1:-1])):
+                and all(m.get("role") == "system" or id(m) in cancelled for m in between)):
             first, rest = _msg_text(prev).strip(), _msg_text(last).strip()
             if (first and rest and not first.startswith(SYSTEM_NOTICE_TAG)
                     and not rest.startswith(SYSTEM_NOTICE_TAG)):
                 _set_msg_text(prev, f"{first} {rest}")
-                self.drop_messages([last])
+                self.drop_messages([m for m in between if id(m) in cancelled] + [last])
+                if cancelled:
+                    logger.info("HeardCorrector[merge]: dropped the unplayed reply's "
+                                "cancelled tool call(s) with it")
                 notes = [m for m in self._context.get_messages()[idx + 1:]]
                 if notes:
                     # The notes go AHEAD of the merged turn, so the context still ends on
