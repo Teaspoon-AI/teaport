@@ -121,6 +121,7 @@ read_env_file() {
   elif [ "${2:-}" = --lenient ]; then sudo cat "$1" 2>/dev/null || true
   else sudo cat "$1"; fi
 }
+
 # --- manifest ----------------------------------------------------------------
 MF=""  # local path to the fetched manifest
 fetch_manifest() {
@@ -316,6 +317,13 @@ phase_sysdeps() {
 # nothing, and a restart that failed is tried again by the next run.
 # Not covered here: logs that skip both journald and rsyslog (a container runtime's own
 # files, say).
+# write_root <path> <text>: a root-owned 0644 file holding <text>. The mode is set, not left
+# to sudo's umask (a 0600 file would read back empty below, so every run would rewrite it
+# and restart journald); install -D makes missing parents and leaves existing ones be.
+write_root() {
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s\n' "$1"; return 0; fi
+  printf '%s\n' "$2" | SUDO install -D -m 0644 -o root -g root /dev/stdin "$1"
+}
 JOURNAL_CONF_D=/etc/systemd/journald.conf.d
 JOURNAL_DROPIN=$JOURNAL_CONF_D/teaport.conf
 JOURNAL_DIR=/var/log/journal
@@ -334,19 +342,16 @@ setup_logs() {
     "# ForwardToSyslog too." \
     "$target")"
   have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
-  # root-owned files written with render_unit's idiom (printf can't fail half-way); a dry run
-  # says so itself, since SUDO's own line would go to tee's /dev/null
-  write_root() {  # write_root <path> <text>
-    if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s\n' "$1"; return 0; fi
-    printf '%s\n' "$2" | SUDO tee "$1" >/dev/null
-  }
   # what the file on disk sets, comments and blank lines aside: if it isn't $target, journald
   # can't have these settings now (a deleted or edited drop-in, then a reboot)
   current="$(printf '%s\n' "$have" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' || true)"
   if [ "$want" != "$have" ]; then
     if ! { SUDO install -d -m 0755 "$JOURNAL_CONF_D" && write_root "$JOURNAL_DROPIN" "$want"; }; then
       warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
-      # nothing to apply, unless the file there already holds the settings journald lacks
+      # nothing to apply, unless the file there holds the settings journald lacks: read
+      # again, since a write that failed half-way may have left it truncated
+      have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
+      current="$(printf '%s\n' "$have" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' || true)"
       [ "$current" = "$target" ] || skip=1
     fi
   fi
@@ -369,7 +374,7 @@ setup_logs() {
     # fails the install: both happen at the next boot, and the next run tries again.
     if SUDO systemctl restart systemd-journald; then
       SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
-      { SUDO install -d -m 0755 "$(dirname "$JOURNAL_APPLIED")" && write_root "$JOURNAL_APPLIED" "$settings"; } \
+      write_root "$JOURNAL_APPLIED" "$settings" \
         || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
     else
       warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot (or the next run)"
@@ -380,10 +385,11 @@ setup_logs() {
   # box mid-setup: said, with what would fix it, not overridden.
   timer="$(systemctl is-enabled logrotate.timer 2>/dev/null || true)"
   case "$timer" in
-    enabled|static)
+    enabled|generated)
       systemctl is-active --quiet logrotate.timer \
         || warn "logs: logrotate.timer is not running — /var/log is not rotated until it is (systemctl start logrotate.timer)" ;;
-    enabled-runtime|linked|linked-runtime|indirect|alias|generated|transient)
+    static) warn "logs: logrotate.timer is static — something else must start it at boot, or /var/log stops being rotated (systemctl status logrotate.timer)" ;;
+    enabled-runtime|linked|linked-runtime|indirect|alias|transient)
       warn "logs: logrotate.timer is $timer — it does not start at boot, so /var/log may stop being rotated (systemctl enable logrotate.timer)" ;;
     masked|masked-runtime) warn "logs: logrotate.timer is $timer — /var/log is not rotated (systemctl unmask $([ "$timer" = masked-runtime ] && echo '--runtime ')logrotate.timer && systemctl enable --now logrotate.timer)" ;;
     disabled) warn "logs: logrotate.timer is disabled — /var/log is not rotated (systemctl enable --now logrotate.timer)" ;;
