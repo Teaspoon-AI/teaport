@@ -295,7 +295,8 @@ Streaming     == \E r \in Replies : llm[r] = "streaming"
 Synthesizing  == \E c \in Ctxs : synth[c] \in {"started", "audio"}
 
 \* A cancelled completion's End is pushed from its finally at cancellation, long
-\* before the next run can begin: no completion starts while one is "aborted".
+\* before the next run can begin: no completion starts while one is "aborted" --
+\* until its End is sighted (LlmCancelEnd) or lost on the way (LlmCancelLost).
 Aborted     == \E r \in Replies : llm[r] = "aborted"
 LlmStart(r) ==
     /\ llm[r] = "idle" /\ ~Streaming /\ ~Aborted
@@ -312,13 +313,31 @@ LlmEnd(r) ==
 
 \* An interrupted completion still ends: base_llm.py process_frame pushes
 \* LLMFullResponseEndFrame in a finally (pipecat 1.8.1,
-\* services/openai/base_llm.py:611-613), AFTER the InterruptionFrame has gone
-\* through -- and the ledger takes the partial text as a new _pending_gen. No more
-\* text follows, so no TTS ever starts for it.
+\* services/openai/base_llm.py:611-613) -- after the InterruptionFrame AS THE
+\* LEDGER SEES IT: the ledger is an observer acting on a frame's first sighting,
+\* and it sights the interruption above the LLM before this End leaves the LLM.
+\* (At the LLM's own output the End can go first: the task is cancelled before
+\* the LLM passes the interruption on. Nothing modelled reads the End there;
+\* test_pipecat_premises.py checks the ledger's order.) The ledger takes the
+\* partial text as a new _pending_gen. No more text follows, so no TTS ever
+\* starts for it.
 LlmCancelEnd(r) ==
     /\ llm[r] = "aborted"
     /\ llm' = [llm EXCEPT ![r] = "cancelled"]
     /\ Ledger([type |-> "LLMEnd", gen |-> r])
+    /\ UNCHANGED <<order, synth, pq, window, played, interrupts>>
+
+\* ... or it never reaches the ledger at all. The ledger reads the LLM stream where
+\* the TTS processes it, below the LLM, and the LLM cancels the completion (its
+\* finally pushes the End) BEFORE it passes the interruption on: the End reaches the
+\* TTS ahead of the interruption, as a queued ControlFrame the interruption's reset
+\* may flush. The ledger then never sights it; the completion is over all the same.
+\* (test_pipecat_premises.py: check_a_cancelled_completion_never_reaches_the_ledger_
+\* as_a_finished_one.)
+LlmCancelLost(r) ==
+    /\ llm[r] = "aborted"
+    /\ llm' = [llm EXCEPT ![r] = "cancelled"]
+    /\ UNCHANGED <<ledgerVars>>
     /\ UNCHANGED <<order, synth, pq, window, played, interrupts>>
 
 \* Synthesis is sequential per the TTS service, and in the order responses reached
@@ -391,7 +410,7 @@ Interrupt ==                                       \* the user barges in
     /\ UNCHANGED <<order, played>>
 
 Next ==
-    \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r)
+    \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r) \/ LlmCancelLost(r)
     \/ \E c \in Ctxs : TtsStart(c) \/ TtsAudio(c) \/ TtsStop(c)
     \/ PlayStart \/ PlayChunk \/ PlayStop
     \/ Interrupt
