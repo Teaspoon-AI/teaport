@@ -884,8 +884,8 @@ sip_drop() {
 # on a persistent journal journald (SplitMode=uid, the default) files a regular uid's
 # lines in user-<uid>.journal whatever unit wrote them — a file --system never opens,
 # so every registered trunk read as "not registered yet", for root too. On a volatile
-# journal (the box) there is no split and the lines are in the system journal; the
-# default scope reads both. Checked on a persistent host (systemd 255): a system unit
+# journal there is no split and the lines are in the system journal; the default scope
+# reads both. (The box's journal is persistent since install.sh's setup_logs.) Checked on a persistent host (systemd 255): a system unit
 # run as a regular uid logged a [reg] 200 that --system showed to nobody, root
 # included, and the default scope showed to root, to adm, and to that uid itself.
 sip_last_reg() {

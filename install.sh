@@ -279,49 +279,60 @@ phase_sysdeps() {
     contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
     contains 'libcudnn.so.9' "$(ldconfig -p 2>/dev/null || true)" || die "libcudnn.so.9 not installed"
   fi
-  install_logrotate
+  setup_logs
   # Bootstrap uv HERE, before phase_engine's ~15GB of downloads: a uv fetch that is going
   # to fail (proxy, DNS, an unwritable $PREFIX) should fail in the first minute, not the
   # last. Idempotent — phase_brain's own ensure_uv call becomes a no-op.
   ensure_uv
 }
 
-# --- logs: rotated, and capped ---------------------------------------------------
-# journald keeps its journal in RAM on the appliance (volatile, capped at 10% of /run) but
-# forwards everything to rsyslog, whose /var/log/syslog is on disk. The L4T image ships
-# without logrotate, so nothing ever rotated it: one appliance had a 901 MB syslog that
-# had grown since first boot, ~50 MB a day (two thirds of it the brain). Installing
-# logrotate brings Ubuntu's rules with it (/etc/logrotate.d/rsyslog: weekly, 4 kept,
-# compressed). Two files of teaport's own on top, leaving the distro's conffiles alone:
-# - logrotate.d/00-teaport: a global maxsize. Read before the other rules, it is their
-#   default, so any log past it rotates at the next run, whatever its schedule.
-# - a timer drop-in running logrotate hourly instead of daily, so that "next run" is within
-#   the hour: a component logging in a loop can't fill the disk between two weekly rotations.
-LOGROTATE_MAXSIZE=200M
-install_logrotate() {
-  local cap=/etc/logrotate.d/00-teaport tmp
-  local dropin=/etc/systemd/system/logrotate.timer.d/teaport-hourly.conf
-  log "logs: logrotate (/var/log/syslog weekly; any log past $LOGROTATE_MAXSIZE rotated within the hour)"
+# --- logs: one store, capped -----------------------------------------------------------
+# The L4T image keeps logs twice: journald's journal in RAM (volatile, capped at 10% of
+# /run, gone at every reboot) and, forwarded from it, rsyslog's /var/log/syslog on disk,
+# which nothing capped or rotated: the image ships without logrotate. One appliance had a
+# 901 MB syslog grown since first boot, ~50 MB a day (two thirds of it the brain), and a
+# component logging in a loop would have filled the disk.
+# teaport reads its logs through journalctl only (teaport logs, doctor, this installer), so
+# the journal becomes the one store: persistent, so the last boot's logs survive the next
+# one, and capped at JOURNAL_MAX_USE by journald itself (it also keeps 15% of the disk free,
+# its default), and no longer forwarded to rsyslog. /var/log/syslog then gets only what
+# rsyslog reads itself (the kernel's messages), and logrotate, installed with the system
+# packages, rotates that and the rest of /var/log with Ubuntu's own rules.
+# The drop-in is named to sort after Ubuntu's journald.conf.d/syslog.conf
+# (ForwardToSyslog=yes): journald reads the drop-ins in name order and the last one wins,
+# so a "99-teaport.conf" would lose to it (digits sort before letters).
+# Not covered here: logs that skip both journald and rsyslog (a container runtime's own
+# files, say).
+JOURNAL_DROPIN=/etc/systemd/journald.conf.d/zz-teaport.conf
+JOURNAL_MAX_USE=1G
+install_lines() {  # install_lines <dest> <mode> <line>...: root-owned, written whole
+  local dest="$1" mode="$2" tmp rc=0; shift 2
   tmp="$(mktemp)"
-  printf '%s\n' "# teaport (install.sh): any log past this size rotates at the next run (hourly, see" \
-    "# logrotate.timer.d/teaport-hourly.conf), whatever its schedule. Read first, so the rules" \
-    "# after it inherit it unless they set their own." \
-    "maxsize $LOGROTATE_MAXSIZE" > "$tmp"
-  SUDO install -D -m 0644 -o root -g root "$tmp" "$cap"
-  printf '%s\n' "# teaport (install.sh): hourly, so logrotate.d/00-teaport's maxsize catches a runaway" \
-    "# log within the hour (Ubuntu's timer is daily)." \
-    "[Timer]" "OnCalendar=" "OnCalendar=hourly" "AccuracySec=5min" > "$tmp"
-  SUDO install -D -m 0644 -o root -g root "$tmp" "$dropin"
+  printf '%s\n' "$@" > "$tmp"
+  SUDO install -D -m "$mode" -o root -g root "$tmp" "$dest" || rc=$?
   rm -f "$tmp"
-  SUDO systemctl daemon-reload
-  # enable too: a re-run repairs a box where the timer was turned off
-  SUDO systemctl enable --now logrotate.timer
+  return "$rc"
+}
+setup_logs() {
+  log "logs: one journal, persistent, capped at $JOURNAL_MAX_USE (no copy to /var/log/syslog); logrotate for the rest of /var/log"
+  install_lines "$JOURNAL_DROPIN" 0644 \
+    "# teaport (install.sh, setup_logs): the journal is the one log store. Named zz- to sort" \
+    "# after Ubuntu's journald.conf.d/syslog.conf, which sets ForwardToSyslog=yes." \
+    "[Journal]" "Storage=persistent" "SystemMaxUse=$JOURNAL_MAX_USE" "ForwardToSyslog=no"
+  # A restart applies it now (services' stdout streams survive it: journald keeps them in
+  # systemd's fd store), and the flush moves this boot's journal from /run to /var/log/journal.
+  # Neither is worth failing an install over: both happen at the next boot anyway.
+  SUDO systemctl restart systemd-journald \
+    || warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot"
+  SUDO journalctl --flush \
+    || warn "logs: journalctl --flush failed — this boot's journal moves to /var/log/journal at the next boot"
   if [ "$DRY_RUN" != 1 ]; then
-    [ -x /usr/sbin/logrotate ] || die "logrotate not installed"
-    # --debug reads every rule and rotates nothing: a broken rule shows up here, not as
-    # a log that quietly stops rotating
-    SUDO /usr/sbin/logrotate --debug /etc/logrotate.conf >/dev/null 2>&1 \
-      || warn "logs: logrotate finds a problem in its rules — see: sudo logrotate --debug /etc/logrotate.conf"
+    [ -x /usr/sbin/logrotate ] || warn "logs: logrotate is not installed — /var/log is not rotated"
+    # the package enables its timer; a masked or disabled one is an operator's choice: say so
+    case "$(systemctl is-enabled logrotate.timer 2>/dev/null || true)" in
+      enabled|static) ;;
+      *) warn "logs: logrotate.timer is not enabled — /var/log is not rotated (systemctl enable --now logrotate.timer)" ;;
+    esac
   fi
 }
 
@@ -2364,6 +2375,11 @@ main_brain_only() {
   elif [ ! -e "$BRAIN_LINK" ] && [ ! -L "$BRAIN_LINK" ]; then
     local msg="no brain venv at $BRAIN_LINK — --only brain updates an installed brain; run install.sh without --only to install one"
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
+  fi
+  # --only brain installs no system packages and leaves the box's setup alone: a box from
+  # before setup_logs keeps its uncapped /var/log/syslog until a full run, so say so.
+  if [ ! -e "$JOURNAL_DROPIN" ]; then
+    warn "logs are not capped on this box yet (no $JOURNAL_DROPIN): run install.sh without --only once"
   fi
   check_brain_source
   phase_brain
