@@ -525,14 +525,15 @@ class _Aggregator:
         self.pushed += 1
         self._aggregation = []
 
-    async def _maybe_emit_user_turn_stopped(self, strategy=None, on_session_end=False):
-        await self.push_aggregation()
+    async def _maybe_emit_user_turn_stopped(self, strategy=None, on_session_end=False,
+                                            run_llm=True):
+        await self._push_aggregation(run_llm=run_llm)
 
 
 async def test_the_session_end_commit_never_drops_the_reply_ahead_of_the_end():
     # pipecat pushes the EndFrame on and THEN commits an open turn's leftover words
     # (_maybe_emit_user_turn_stopped(on_session_end=True)), through the fenced
-    # push_aggregation. With the gate still armed the fence used to take that commit for
+    # _push_aggregation. With the gate still armed the fence used to take that commit for
     # a continuation and send its interruption, which overtook the End and dropped the
     # reply queued ahead of it -- a goodbye -- for words nothing would answer
     # (formal/UserTurn.tla, ut_retryMergesAtEnd_nolostgoodbye).
@@ -593,7 +594,7 @@ async def test_a_commit_with_nothing_in_flight_does_not_wait():
 
 
 async def test_an_empty_commit_does_not_wait():
-    # pipecat's push_aggregation commits nothing for an empty aggregation, and the
+    # pipecat's _push_aggregation commits nothing for an empty aggregation, and the
     # session's end (EndFrame, a hangup's CancelFrame) calls it regardless: it must not
     # sit out an interruption's crossing for that.
     fence = CutReplyFence(timeout=0.2)
@@ -616,13 +617,53 @@ async def test_the_turns_stop_commit_waits_too():
     # aggregator: words left after the last inference, an interruption in flight.
     call = Call(with_fence=True)
     user = call.pair.user()
-    call.fence.timeout = 0.2
+    call.fence._timeout = 0.2
     from pipecat.utils.string import TextPartForConcatenation
     user._aggregation = [TextPartForConcatenation("late words", includes_inter_part_spaces=False)]
     call.fence._sent(InterruptionFrame())
     await user._maybe_emit_user_turn_stopped(None)
     assert call.fence.waits == 1, "the stop's commit did not wait for the cut"
     assert call.context.get_messages()[-1] == {"role": "user", "content": "late words"}
+
+
+async def test_a_commit_that_asks_no_answer_merges_nothing_and_runs_no_llm():
+    # pipecat 1.12's turn stop passes run_llm=False when it confirms a speculative
+    # reply already generated for these words. That reaches the fence through the stop
+    # wrapper, and must arrive as given: run_llm=False means no LLMContextFrame, and
+    # no merge -- its interruption would drop the very reply the stop is confirming.
+    from pipecat.frames.frames import LLMContextFrame
+    from pipecat.utils.string import TextPartForConcatenation
+    call = Call(with_fence=True)
+    user = call.pair.user()
+    call.fence.unplayed_reply = lambda: True          # the gate is armed
+    pushed = []
+    push = user.push_frame
+
+    async def spy(frame, direction=FrameDirection.DOWNSTREAM):
+        pushed.append(frame)
+        return await push(frame, direction)
+    user.push_frame = spy
+    user._aggregation = [TextPartForConcatenation("these words", includes_inter_part_spaces=False)]
+    await user._maybe_emit_user_turn_stopped(None, run_llm=False)
+    assert call.context.get_messages()[-1] == {"role": "user", "content": "these words"}
+    assert not any(isinstance(f, (LLMContextFrame, InterruptionFrame)) for f in pushed), pushed
+
+
+async def test_a_moved_session_end_argument_fails_the_session_build():
+    # The stop wrapper reads on_session_end by position (NoLostGoodbye rests on it), so
+    # where it sits is checked at session build: moved, the fence raises there.
+    call = Call(with_fence=False)
+    user = call.pair.user()
+
+    async def moved(strategy=None, *, on_session_end=False, run_llm=True):
+        pass
+    user._maybe_emit_user_turn_stopped = moved
+    try:
+        CutReplyFence().hold_commits(user)
+    except RuntimeError as e:
+        assert "hold_commits" in str(e), e
+    else:
+        raise AssertionError("a keyword-only on_session_end went unnoticed")
 
 
 async def test_a_lost_interruption_costs_one_bounded_wait():

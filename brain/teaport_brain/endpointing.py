@@ -1270,9 +1270,24 @@ class CutReplyFence:
         pushing the EndFrame on (_maybe_emit_user_turn_stopped(on_session_end=True)), and
         an interruption there would overtake the End and drop the reply queued ahead of
         it -- a goodbye -- for a commit nothing will answer (UserTurn.tla, NoLostGoodbye).
-        That wrapper passes the rest of its arguments through: 1.12 added run_llm."""
+        That wrapper passes the rest of its arguments through (1.12 added run_llm), and
+        the session's end is read from its on_session_end, so where that sits is checked
+        here, at session build, as keep_barge_in_reachable checks its hook. (pipecat's
+        realtime mode commits at the End through push_aggregation directly, past this
+        wrapper; the brain's LLM is no realtime service, so that mode never turns on.)
+
+        Nor when the commit asks for no answer (run_llm False: pipecat 1.12 confirming
+        a speculative reply already generated for these words): the interruption would
+        drop that reply, and nothing would ask for another."""
         push_aggregation = aggregator._push_aggregation
         emit_stopped = aggregator._maybe_emit_user_turn_stopped
+        params = [(p.name, p.kind) for p in inspect.signature(emit_stopped).parameters.values()]
+        positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+        if params[:2] != [("strategy", positional), ("on_session_end", positional)]:
+            raise RuntimeError(
+                f"pipecat's LLMUserAggregator._maybe_emit_user_turn_stopped takes "
+                f"{[f'{n} ({k.name})' for n, k in params]}, not (strategy, on_session_end, "
+                f"...): CutReplyFence.hold_commits needs a new look")
         ending = False
 
         async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False,
@@ -1284,6 +1299,7 @@ class CutReplyFence:
         async def _push_aggregation(*args, **kwargs):
             if aggregator._aggregation:
                 if (await self.wait_for_cuts() and not ending
+                        and kwargs.get("run_llm", True)
                         and self.unplayed_reply is not None and self.unplayed_reply()):
                     logger.info("CUT-FENCE: words committed while the reply to the turn "
                                 "they continue has not played -- dropping that reply; "
