@@ -373,18 +373,21 @@ async def check_the_stop_watchdog_is_starved_by_speech_and_resets_the_strategy()
     (keep_barge_in_reachable then double-stops); one that skipped the reset would leave
     the STT holding a segment to its expiry on every watchdog stop."""
     stop = ScriptedStop()
-    controller, events = _controller(stop, timeout=0.3)
+    controller, events = _controller(stop, timeout=0.6)
     async with running_controller(controller):
         await controller.user_turn_strategies.start[0].open()
         await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
-        # A timer that must NOT fire: only a bounded wait can say so -- twice its period.
-        await asyncio.sleep(0.7)
+        # A timer that must NOT fire: only a bounded wait can say so -- two and a half
+        # periods. Not a whole number of them: the timer runs in phase with the VAD
+        # start, and a VAD stop landing on one of its expiries races it (the expiry
+        # then finds the user quiet and stops the turn).
+        await asyncio.sleep(1.5)
         assert controller._user_turn, "the watchdog stopped a turn the user was speaking in"
         await controller.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2))
-        for _ in range(7):                       # transcripts keep re-arming it
+        for _ in range(12):                      # transcripts keep re-arming it
             await asyncio.sleep(0.1)
             await controller.process_frame(InterimTranscriptionFrame("and", "u", "t"))
-        assert controller._user_turn, "transcripts every 0.1 s did not re-arm a 0.3 s watchdog"
+        assert controller._user_turn, "transcripts every 0.1 s did not re-arm a 0.6 s watchdog"
         assert await _until(lambda: not controller._user_turn), (
             "the watchdog never stopped a quiet turn")
         assert "on_user_turn_inference_triggered" not in events, (
@@ -675,12 +678,15 @@ async def check_the_interruption_reset_keeps_only_uninterruptible_frames():
         await holder.queue(run, *_queued_reply())
         assert not _kinds(below, DOWN, QUEUED), "the pause did not hold"
         await run.send(InterruptionFrame())
-        # No resume_processing_frames(): only the reset can deliver anything now. The
-        # kept frames are the last queued, so once they are through, so is the rest.
-        await _until(lambda: len(_kinds(below, DOWN, QUEUED)) >= len(KEPT))
+        # No resume_processing_frames(): only the reset can deliver anything now. A Mark
+        # queued after the interruption comes through the re-created task behind
+        # whatever the reset kept; if it never comes, the pause outlived the reset.
+        mark = Mark()
+        await run.send(mark)
+        through = await _until(lambda: any(f is mark for _, f in below.down))
         got = _kinds(below, DOWN, QUEUED)
-    assert got, ("nothing came through: the reset did not re-create the task, and the "
-                 "pause outlived the interruption")
+    assert through, ("nothing came through: the reset did not re-create the task, and the "
+                     "pause outlived the interruption")
     assert [k for k in KEPT if k not in got] == [], (
         f"uninterruptible frames the reset dropped: {[k for k in KEPT if k not in got]}")
     assert [k for k in got if k not in KEPT] == [], (
@@ -910,22 +916,24 @@ async def check_a_cancelled_completion_never_reaches_the_ledger_as_a_finished_on
     """Ledger.tla / LedgerPlayout.tla, `LlmCancelEnd` and `LlmCancelLost`: an
     interrupted completion's End is pushed from base_llm's `finally` when the
     interruption cancels it -- but the ledger reads the LLM stream only where the TTS
-    processes it (TranscriptLedger.on_process_frame), below the LLM, and there the End
-    may never be seen at all: the LLM cancels the completion (its `finally` pushes the
-    End) BEFORE it passes the interruption on, so the End reaches the TTS ahead of the
-    interruption, as a ControlFrame on the TTS's queue, and the interruption's reset may
-    flush it. Either way the ledger has run its _interrupt first (it sights the
-    interruption above the LLM) and dropped the stream, so a cut reply's partial text is
-    never queued for the next context. The models now have both: the End sighted after
-    the interruption (`LlmCancelEnd`) and lost (`LlmCancelLost`).
+    processes it (TranscriptLedger.on_process_frame), below the LLM, and the LLM cancels
+    the completion (its `finally` pushes the End) BEFORE it passes the interruption on.
+    So the End reaches the TTS ahead of the interruption, as a ControlFrame on the TTS's
+    queue: the TTS processes it (measured on 1.8.1 and 1.12), or the interruption's
+    reset flushes it and the ledger never sees it. When it does see it, it must already
+    have run _interrupt (at the interruption's first sighting, above the LLM) and so find
+    no stream: nothing of the cut reply is queued as a finished response. The models
+    have both branches: `LlmCancelEnd` and `LlmCancelLost`.
 
-    Driven on the real TranscriptLedger built with the TTS, as agent_session builds it.
+    Asserted AT that sighting, on the real TranscriptLedger built with the TTS (as
+    agent_session builds it): the ledger's state right after it handles the End the TTS
+    processed. Read afterwards, it would prove nothing -- the interruption's later
+    sightings (at the TTS, below it) run _interrupt again and clear the stream and the
+    queue whatever the End did.
 
     If it goes: an End the TTS processed ahead of the ledger's interrupt would close the
     cut reply as a finished response and queue its partial text for the next context
     to claim (ChartedTextMatchesContext)."""
-    from pipecat.observers.base_observer import BaseObserver
-
     from teaport_brain.transcript_ledger import TranscriptLedger
 
     class Hanging(BoundedOpenAILLMService):
@@ -933,41 +941,50 @@ async def check_a_cancelled_completion_never_reaches_the_ledger_as_a_finished_on
             await self.push_frame(LLMTextFrame("Partial reply that never"))
             await asyncio.Event().wait()
 
-    class Sightings(BaseObserver):
-        """What each processor processed, and the End the LLM pushed, in order."""
+    llm, tts, below = _llm(Hanging), _tts(), Tap()
+    mark = Mark()
 
-        def __init__(self):
-            super().__init__()
-            self.log = []
-
-        async def on_process_frame(self, data):
-            if isinstance(data.frame, (InterruptionFrame, LLMFullResponseEndFrame)):
-                self.log.append(("processed", data.processor, type(data.frame).__name__))
+    class Watched(TranscriptLedger):
+        """The ledger, with its state snapshotted the moment it has handled the End
+        where the TTS processed it. Observers are each fed in order through their own
+        queue, so this one's own sighting of the Mark below the TTS proves every earlier
+        TTS sighting has reached it: an End it has not seen by then never came."""
+        cancelled_end = None        # the End the LLM pushed for the cancelled completion
+        at_end = None               # (_gen, list(_queue)) right after handling it
+        mark_seen = False
 
         async def on_push_frame(self, data):
             if isinstance(data.frame, LLMFullResponseEndFrame) and data.source is llm:
-                self.log.append(("pushed", data.source, "LLMFullResponseEndFrame"))
+                self.cancelled_end = data.frame
+            await super().on_push_frame(data)
 
-    llm, tts, above, below = _llm(Hanging), _tts(), Tap(), Tap()
-    ledger, sightings = TranscriptLedger(tts=tts), Sightings()
-    async with Run(above, llm, tts, below, observers=[ledger, sightings]) as run:
+        async def on_process_frame(self, data):
+            await super().on_process_frame(data)
+            if data.processor is tts and data.frame is self.cancelled_end:
+                self.at_end = (self._gen, list(self._queue))
+            elif data.frame is mark and data.processor is below:
+                self.mark_seen = True
+
+    ledger = Watched(tts=tts)
+    async with Run(Tap(), llm, tts, below, observers=[ledger]) as run:
         await run.send(LLMContextFrame(LLMContext([{"role": "user", "content": "q"}])))
         assert await _until(lambda: ledger._gen is not None
                             and ledger._gen["parts"]), "the TTS never saw the stream"
         await run.send(InterruptionFrame())
-        assert await _until(lambda: ("pushed", llm, "LLMFullResponseEndFrame")
-                            in sightings.log), "the cancelled completion pushed no End"
+        assert await _until(lambda: ledger.cancelled_end is not None), (
+            "the cancelled completion pushed no End")
         assert await _until(lambda: _kinds(below, DOWN, InterruptionFrame))
-        await _marked(run, below)               # anything the TTS still had is through
-    assert ledger._gen is None and not ledger._queue, (
-        f"the cut reply reached the ledger as a finished response: {ledger._queue}")
-    by_tts = [kind for event, proc, kind in sightings.log
-              if event == "processed" and proc is tts]
-    first = next((kind for event, _proc, kind in sightings.log if event == "processed"), None)
-    assert first == "InterruptionFrame", f"the interruption was not sighted first: {first}"
-    print(f"    (the TTS processed: {by_tts}; the End "
-          f"{'reached' if 'LLMFullResponseEndFrame' in by_tts else 'never reached'} "
-          "the ledger)")
+        await run.send(mark)
+        assert await _until(lambda: ledger.at_end is not None or ledger.mark_seen), (
+            "the ledger never caught up with the Mark")
+    if ledger.at_end is None:
+        print("    (the End never reached the ledger: LlmCancelLost)")
+        return
+    gen, queued = ledger.at_end
+    assert gen is None and queued == [], (
+        f"the cut reply reached the ledger as a finished response: stream {gen}, "
+        f"queued {queued}")
+    print("    (the TTS processed the End after the ledger's interrupt: LlmCancelEnd)")
 
 
 # ---- SttCommit.tla: where the VAD runs -----------------------------------------------
