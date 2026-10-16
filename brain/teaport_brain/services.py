@@ -23,6 +23,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pipecat.frames.frames import FunctionCallFromLLM, SystemFrame
 from pipecat.services.openai.llm import OpenAILLMService
 
+from teaport_brain.llm_dns import use_stale_dns
 from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
 
@@ -478,12 +479,13 @@ class BoundedOpenAILLMService(OpenAILLMService):
             organization=organization,
             project=project,
             default_headers=default_headers,
-            http_client=DefaultAsyncHttpxClient(
+            # The model's last known address, used when a lookup stalls (llm_dns).
+            http_client=use_stale_dns(DefaultAsyncHttpxClient(
                 timeout=httpx.Timeout(_llm_timeout_secs(), connect=_CONNECT_SECS),
                 limits=httpx.Limits(
                     max_keepalive_connections=100, max_connections=1000, keepalive_expiry=None
                 ),
-            ),
+            ), base_url),
         )
 
 
@@ -498,8 +500,9 @@ def warm_first_use_imports() -> None:
       loop 1297 ms right after a wake word (2026-10-15 14:06, after 10 h idle), ~700 ms
       with the files in the page cache. anyio's asyncio backend loads at the first
       connection.
-    - httpcore (+ h11) loads when make_llm builds the first session's client, and
-      certifi's CA bundle path is looked up (through importlib.resources) then.
+    - httpcore loads with this module (llm_dns's backend); h11 loads when make_llm builds
+      the first session's client, and certifi's CA bundle path is looked up (through
+      importlib.resources) then.
     - Not pipecat's sentence split, any more. Up to pipecat 1.11 it was NLTK's Punkt,
       loaded lazily and warmed here from the punkt_tab data on disk. Since 1.12 it is
       sentencex: it loads with pipecat.utils.string, carries its rules in the wheel
