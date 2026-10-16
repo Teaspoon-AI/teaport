@@ -152,7 +152,9 @@ def drop_overtaken_tool_calls(aggregator) -> None:
     result behind a cancel in the ordinary order, where the call reads CANCELLED. The
     in-progress frame of a call that was not cancelled always passes, and so does any
     frame of a new call reusing the id (its FunctionCallsStartedFrame, a SystemFrame
-    ahead of its own in-progress frame, clears the mark)."""
+    ahead of its own in-progress frame, clears the mark). The dropped call's empty entry
+    in the aggregator's map goes too, so has_function_calls_in_progress does not report a
+    call running for the rest of the session."""
     aggregator._function_calls_in_progress  # noqa: B018 -- renamed: fail at build
     process_frame = aggregator.process_frame
     overtaken: dict = {}
@@ -160,6 +162,10 @@ def drop_overtaken_tool_calls(aggregator) -> None:
     async def _process_frame(frame, direction):
         if isinstance(frame, FunctionCallInProgressFrame):
             if overtaken.pop(frame.tool_call_id, None) is not None:
+                # pipecat's early-returning cancel left the call's empty entry behind
+                # (FunctionCallsStartedFrame's None); take it out, as a cancel in the
+                # ordinary order does, so the aggregator stops reporting the call running.
+                aggregator._function_calls_in_progress.pop(frame.tool_call_id, None)
                 logger.info(f"TOOL-CALL: dropped {frame.function_name}'s in-progress frame: "
                             "its cancel overtook it, nothing would ever settle it")
                 return

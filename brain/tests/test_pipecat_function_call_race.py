@@ -223,7 +223,11 @@ async def test_a_barge_in_that_overtakes_the_in_progress_frame_leaves_no_call_un
     async with Rig() as rig:
         await rig.race()
         result = rig.tool_result()
+        running = rig.assistant.has_function_calls_in_progress
     order = " -> ".join(rig.seen)
+    assert not running, (
+        f"the overtaken call {CALL_ID} is still on the aggregator's in-progress map: "
+        f"has_function_calls_in_progress stays True for the rest of the session")
     assert result in (ABSENT, "CANCELLED"), (
         f"#185: the barge-in overtook FunctionCallInProgressFrame on its way to the "
         f"assistant aggregator, which committed tool call {CALL_ID} as {result!r} with "
