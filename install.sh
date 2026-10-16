@@ -121,6 +121,24 @@ read_env_file() {
   elif [ "${2:-}" = --lenient ]; then sudo cat "$1" 2>/dev/null || true
   else sudo cat "$1"; fi
 }
+# install_lines <dest> <mode> <line>...: a root-owned file, written whole from the lines
+# given (through a temp file, removed whatever happens); fails, without exiting, when the
+# write does.
+install_lines() {
+  local dest="$1" mode="$2" tmp rc=0; shift 2
+  tmp="$(mktemp)" || return 1
+  { printf '%s\n' "$@" > "$tmp" && SUDO install -D -m "$mode" -o root -g root "$tmp" "$dest"; } || rc=$?
+  rm -f "$tmp"
+  return "$rc"
+}
+# read_root_conf <path>: a root-owned config file's text, or nothing. Read privileged only
+# when the plain read can't, and never in a dry run ("a dry run does not sudo": it warns).
+read_root_conf() {
+  [ -e "$1" ] || return 0
+  if [ -r "$1" ]; then cat "$1"
+  elif [ "$DRY_RUN" = 1 ]; then warn "$1 is not readable by $(id -un) — a real run reads it with sudo"
+  else sudo cat "$1" 2>/dev/null || true; fi
+}
 
 # --- manifest ----------------------------------------------------------------
 MF=""  # local path to the fetched manifest
@@ -304,108 +322,99 @@ phase_sysdeps() {
 # that read /var/log/syslog or auth.log for the services' lines (remote forwarding,
 # fail2ban's file backend) reads the journal instead from here on.
 # The drop-in is install.sh's, rewritten on every run like the units, so a release that
-# changes it reaches every box; journald is restarted only when it actually changed. An
-# operator's own setting wins: a key set in /etc/systemd/journald.conf or another
-# journald.conf.d file is left out of this one (and their own zz-*.conf would win anyway).
+# changes it reaches every box. journald is restarted only when the settings themselves
+# changed since journald last took them ($JOURNAL_APPLIED, written once a restart has
+# worked): a comment-only change restarts nothing, and a restart that failed is tried again
+# by the next run.
+# An operator's own setting wins: a key set in /etc/systemd/journald.conf or a drop-in under
+# /etc, /run or /usr/local/lib (systemd's admin locations; the distro's /usr/lib is the one
+# this overrides) is left out of ours. Storage decides the rest: the journal is made the
+# one store (capped, syslog no longer fed) only when Storage is ours. An operator who sets
+# Storage keeps their forwarding and their cap, or a volatile journal and no syslog would
+# keep nothing on disk.
 # It is named to sort after Ubuntu's journald.conf.d/syslog.conf (ForwardToSyslog=yes):
 # journald reads the drop-ins in name order and the last one wins, so a "99-teaport.conf"
-# would lose to it (digits sort before letters).
+# would lose to it (digits sort before letters); an operator's own zz-*.conf wins over ours.
 # Not covered here: logs that skip both journald and rsyslog (a container runtime's own
 # files, say).
 JOURNAL_CONF=/etc/systemd/journald.conf
 JOURNAL_CONF_D=/etc/systemd/journald.conf.d
 JOURNAL_DROPIN=$JOURNAL_CONF_D/teaport.conf
-LOGROTATE_BIN=/usr/sbin/logrotate
-# journald's machine directory: there once journald is writing to /var/log/journal
-JOURNAL_MACHINE_DIR="/var/log/journal/$(cat /etc/machine-id 2>/dev/null || echo unknown)"
-JOURNAL_MAX_USE=2G
-install_lines() {  # install_lines <dest> <mode> <line>...: root-owned, written whole
-  local dest="$1" mode="$2" tmp rc=0; shift 2
-  tmp="$(mktemp)" || return 1
-  { printf '%s\n' "$@" > "$tmp" && SUDO install -D -m "$mode" -o root -g root "$tmp" "$dest"; } || rc=$?
-  rm -f "$tmp"
-  return "$rc"
-}
-# The journal settings an operator has set themselves: KEY names, one per line, from
-# $JOURNAL_CONF and every drop-in journald merges besides ours: /etc, /run and
-# /usr/local/lib (not the distro's /usr/lib, whose syslog.conf ForwardToSyslog=yes is the
-# one this overrides). A file the plain read can't open is read with sudo (read_env_file
-# --lenient): a root-only drop-in is still an operator's. Never fails: an unreadable file
-# counts as setting nothing, it doesn't end the install.
 JOURNAL_OPERATOR_DIRS=("$JOURNAL_CONF_D" /run/systemd/journald.conf.d /usr/local/lib/systemd/journald.conf.d)
+JOURNAL_APPLIED="$STATE/journald.applied"
+JOURNAL_MAX_USE=2G
+LOGROTATE_BIN=/usr/sbin/logrotate
+# The journal settings an operator has set themselves: KEY names, one per line. A drop-in
+# directory or file the plain read can't open is listed and read with sudo (never in a
+# dry run). Never fails: what can't be read counts as setting nothing.
 journal_operator_keys() {
-  local f d files=("$JOURNAL_CONF")
-  for d in "${JOURNAL_OPERATOR_DIRS[@]}"; do files+=("$d"/*.conf); done
+  local d f files=("$JOURNAL_CONF")
+  for d in "${JOURNAL_OPERATOR_DIRS[@]}"; do
+    [ -d "$d" ] || continue
+    if [ -r "$d" ] && [ -x "$d" ]; then files+=("$d"/*.conf)
+    elif [ "$DRY_RUN" = 1 ]; then warn "$d is not readable by $(id -un) — a real run lists it with sudo"
+    else while IFS= read -r f; do files+=("$f"); done < <(sudo find "$d" -maxdepth 1 -name '*.conf' 2>/dev/null || true)
+    fi
+  done
   for f in "${files[@]}"; do
-    [ -f "$f" ] && [ "$f" != "$JOURNAL_DROPIN" ] || continue
-    read_env_file "$f" --lenient
-  done 2>/dev/null \
+    [ "$f" != "$JOURNAL_DROPIN" ] || continue
+    read_root_conf "$f"
+  done \
     | sed -n 's/^[[:space:]]*\(Storage\|SystemMaxUse\|ForwardToSyslog\)[[:space:]]*=.*/\1/p' \
     | sort -u || true
 }
 setup_logs() {
-  local ops k v lines=() want have timer apply=0 said=()
+  local ops lines=() said=() want settings applied timer
   ops=" $(journal_operator_keys | tr '\n' ' ')"
-  # Storage and forwarding go together: syslog stops getting the services' lines only when
-  # the journal they go to is ours, on disk. An operator's Storage (volatile, say) keeps
-  # their forwarding too, or nothing would be kept on disk at all.
-  for k in Storage SystemMaxUse ForwardToSyslog; do
-    case "$k" in Storage) v=persistent ;; SystemMaxUse) v="$JOURNAL_MAX_USE" ;; *) v=no ;; esac
-    if contains " $k " "$ops "; then
-      log "logs: $k is the operator's (set in their journald config) — left out"
-    elif [ "$k" = ForwardToSyslog ] && contains " Storage " "$ops "; then
-      log "logs: ForwardToSyslog left as it is — the operator sets Storage, so syslog may be their only disk copy"
-    else
-      lines+=("$k=$v")
-      case "$k" in
-        Storage) said+=("persistent") ;;
-        SystemMaxUse) said+=("capped at $v") ;;
-        *) said+=("no copy to /var/log/syslog") ;;
-      esac
-    fi
-  done
-  if [ "${#said[@]}" -gt 0 ]; then
+  if contains " Storage " "$ops"; then
+    log "logs: Storage is the operator's (set in their journald config) — the journal is left as they set it; logrotate for /var/log"
+  else
+    lines+=("Storage=persistent"); said+=("persistent")
+    if contains " SystemMaxUse " "$ops"; then log "logs: SystemMaxUse is the operator's — left out"
+    else lines+=("SystemMaxUse=$JOURNAL_MAX_USE"); said+=("capped at $JOURNAL_MAX_USE"); fi
+    if contains " ForwardToSyslog " "$ops"; then log "logs: ForwardToSyslog is the operator's — left out"
+    else lines+=("ForwardToSyslog=no"); said+=("no copy to /var/log/syslog"); fi
     local joined; joined="$(printf '%s, ' "${said[@]}")"
     log "logs: the journal is the one store: ${joined%, }; logrotate for the rest of /var/log"
-  else
-    log "logs: the journal is the operator's to set; logrotate for /var/log"
   fi
+  settings="$(printf '%s\n' ${lines[@]+"${lines[@]}"})"
   want="$(printf '%s\n' \
     "# teaport (install.sh setup_logs): the journal is the one log store. Rewritten on every" \
     "# install run: set your own values in /etc/systemd/journald.conf or a drop-in of your" \
     "# own (a key you set is left out of this file; a zz-*.conf of yours wins over it)." \
     "[Journal]" ${lines[@]+"${lines[@]}"})"
-  have="$(read_env_file "$JOURNAL_DROPIN" --lenient)"
-  if [ "$want" != "$have" ]; then
-    if { SUDO install -d -m 0755 "$JOURNAL_CONF_D" &&   # readable by the check above, whatever sudo's umask
-         install_lines "$JOURNAL_DROPIN" 0644 "$want"; }; then
-      apply=1
-    else
+  if [ "$want" != "$(read_root_conf "$JOURNAL_DROPIN")" ]; then
+    # only made when missing: an existing directory keeps the operator's mode
+    if ! { { [ -d "$JOURNAL_CONF_D" ] || SUDO install -d -m 0755 "$JOURNAL_CONF_D"; } &&
+           install_lines "$JOURNAL_DROPIN" 0644 "$want"; }; then
       warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
+      return 0
     fi
-  elif contains "Storage=persistent" "$want" && [ ! -d "$JOURNAL_MACHINE_DIR" ]; then
-    # written by an earlier run whose restart failed: journald is still not on disk
-    log "logs: $JOURNAL_DROPIN unchanged, but journald is not writing to /var/log/journal yet — applying it again"
-    apply=1
-  else
-    log "logs: $JOURNAL_DROPIN unchanged"
   fi
-  if [ "$apply" = 1 ]; then
-    # /var/log/journal, made before journald needs it: setgid systemd-journal, then the ACLs
-    # that let adm read it from systemd's tmpfiles rules (which only adjust a directory that
-    # exists). Left to journald, the directory would be root's alone until the next boot,
-    # and `teaport logs` as the operator would lose lines.
-    { SUDO install -d -m 2755 -o root -g systemd-journal /var/log/journal &&
-      SUDO systemd-tmpfiles --create --prefix /var/log/journal; } \
-      || warn "logs: could not set up /var/log/journal — it is set up at the next boot"
-    # The restart applies the drop-in now (services' stdout streams survive it: journald keeps
-    # them in systemd's fd store); the flush moves this boot's journal to /var/log/journal.
-    # Neither fails the install: both happen at the next boot anyway, and a repair run
-    # applies them again while journald is not on disk.
+  applied="$(read_root_conf "$JOURNAL_APPLIED")"
+  if [ "$settings" = "$applied" ]; then
+    log "logs: journald has these settings already"
+  else
+    if contains "Storage=persistent" "$settings"; then
+      # /var/log/journal, made before journald needs it: setgid systemd-journal, then the
+      # ACLs that let adm read it from systemd's tmpfiles rules (which only adjust a
+      # directory that exists). Left to journald, it would be root's alone until the next
+      # boot, and `teaport logs` as the operator would lose lines.
+      { SUDO install -d -m 2755 -o root -g systemd-journal /var/log/journal &&
+        SUDO systemd-tmpfiles --create --prefix /var/log/journal; } \
+        || warn "logs: could not set up /var/log/journal — it is set up at the next boot"
+    fi
+    # The restart applies the drop-in now (services' stdout streams survive it: journald
+    # keeps them in systemd's fd store); the flush moves this boot's journal to disk. Neither
+    # fails the install: both happen at the next boot, and the next run tries again.
     if SUDO systemctl restart systemd-journald; then
-      SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
+      if contains "Storage=persistent" "$settings"; then
+        SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
+      fi
+      { SUDO mkdir -p "$STATE" && install_lines "$JOURNAL_APPLIED" 0644 "$settings"; } \
+        || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
     else
-      warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot"
+      warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot (or the next run)"
     fi
   fi
   [ "$DRY_RUN" = 1 ] && return 0
