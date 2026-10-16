@@ -1850,6 +1850,7 @@ pipecat behaviour the model found on the way:
 | `lullAtStop` | a queue that delivers at the next lull, the VAD stop | ✗ | |
 | `gateNoCommit` | the gate as first written (cb5fbb8): only a turn start or its timer ends its view | ✓ | ✓ |
 | `gateById` | 0db54f6: a commit of the open turn ends the view on speech whose VAD START is older | ✗ | |
+| `gateOwedBlind` | ff033c9: any commit after the speech's VAD STOP ends it, the re-applied stop's included | ✗ | |
 | `gate` | as shipped: FollowupGate holds the push while speech is pending | ✓ | ✓ |
 | `gate`, timers as they are | | ✗ (accepted residual) | ✓ |
 
@@ -1868,8 +1869,20 @@ their VAD stop; the tool's result lands; the gate, emptied at the commit, lets t
 go, and the rest of their words come after it. `gate` lets go only of speech whose VAD
 STOP is older than the commit: a segment's words are final once its stop flushes it,
 and the commit carries them (SttCommit.tla's receipts). It keeps waiting past a turn
-start made while the VAD still hears the caller. It holds `NoHoldOnCommittedSpeech` with
-every other property.
+start made while the VAD still hears the caller.
+
+`gateOwedBlind`, that rule as first written, fails `NoAnswerUnderSpeech`
+(`ut_post_gateOwedBlind_noanswerunderspeech`). A commit after the stop does not always
+carry what the stop flushed. `keep_barge_in_reachable` re-applies a refused finalize
+inside the VAD stop's own handling, before the engine's flush of that stop lands
+(~0.5 s), and commits whatever is in hand: a segment the engine closed mid-span (B1),
+not the rest (B2). The caller resumed inside the first commit and went on. Their stop
+re-applied the finalize and committed B1, and the gate let go. The answer played, then
+B2 started a turn. `gate` does not count a commit made while the stop strategy still
+owes that stop its close (`LateStartTurnStopStrategy.close_owed`, the receipts'
+bookkeeping, which its own trigger waits on). The model's `owedClose` is that commit:
+VadStop's. The watchdog's commit comes 5 s into a quiet line, its close long landed: a
+timing fact. `gate` holds `NoHoldOnCommittedSpeech` with every other property.
 
 The counterexamples (`ut_post_*`; their lengths vary with TLC's worker count, so none
 are given):
@@ -1907,8 +1920,10 @@ commit, in the aggregator's own task, with a marker numbered off pipecat's frame
 The gate compares frame numbers, not arrival order: the commit and the VAD frames reach
 it by different paths. This replaces 0db54f6's `TurnCommitMark` signal, which also
 needed the turn open at the gate. A commit made by the turn's stop is made after its
-`UserStoppedSpeakingFrame`, and that frame could reach the gate first. A turn start
-while the VAD still hears the caller does not end the wait. A push that arrives with a
+`UserStoppedSpeakingFrame`, and that frame could reach the gate first. The fence says
+nothing while the stop strategy owes the latest stop its close (`close_owed`): that
+commit has none of what the stop flushed. A turn start while the VAD still hears the
+caller does not end the wait. A push that arrives with a
 turn open at the gate is dropped (pipecat's own rule, applied where the turn start can
 have overtaken the push), and so is one still held at the cap once a turn has opened (a
 release there would be a second completion). The answer is held only on speech whose
@@ -1929,7 +1944,10 @@ Tests: `test_post_tool_under_speech.py`. Every shape above fails without the fix
 including a result landing between the VAD stop and the words. With nobody talking the
 answer is asked at once, and after a cough it plays once, a release window later.
 Nothing is left held at the end of any scenario, and a commit made while the caller
-still talks leaves the rest of their words pending (fails on 0db54f6).
+still talks leaves the rest of their words pending (fails on 0db54f6). Both of those
+shapes start from a gate with a VAD stop in its history, as every turn but the first
+does live. `test_followup_gate.py` adds the re-applied stop's commit through the real
+fence with the strategy owing the close: nothing is cleared until the close is paid.
 `test_followup_gate.py` covers the gate alone: the gap after the VAD stop, the
 two-segment turn, speech begun after the commit and still going at it, the cap both
 ways, and the session's End.

@@ -363,7 +363,7 @@ vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
 
 Gated == HOLD /= "none"
 \* FollowupGate's designs for the answer after a tool (#17, POSTTOOL).
-Gates == {"gate", "gateNoCommit", "gateById"}
+Gates == {"gate", "gateNoCommit", "gateById", "gateOwedBlind"}
 
 \* What a drop (an interruption reaching the gate) does to the reply's tool round. A
 \* call still running in the context is cancelled (pipecat's cancel_on_interruption, the
@@ -532,10 +532,10 @@ StartTurn ==
     \* that starts while the caller is still talking (on an interim) has not had all of
     \* that speech's words: the rest are still to come, to this turn's commit or -- its
     \* finalize refused and re-applied at the VAD stop before they land -- to a turn of
-    \* their own. The gate keeps waiting for them as shipped; gateById and gateNoCommit
-    \* (as first written) let go at every turn start.
+    \* their own. The gate keeps waiting for them as shipped (and as in ff033c9,
+    \* gateOwedBlind); gateById and gateNoCommit let go at every turn start.
     /\ pend' = (pend /\ userSpeaking)
-    /\ gpend' = (gpend /\ userSpeaking /\ POSTTOOL = "gate")
+    /\ gpend' = (gpend /\ userSpeaking /\ POSTTOOL \in {"gate", "gateOwedBlind"})
     /\ gstale' = FALSE
     /\ ansOver' = (ansOver \/ (answer = "playing" /\ asUnder))
     /\ answer' = IF answer = "dropped" THEN "none" ELSE answer
@@ -871,16 +871,30 @@ Appended(mp, t) ==
 \*                   while the caller still talked emptied the view, and their words
 \*                   came after the answer.
 \*   gate         -- as shipped: the VAD STOP older than the commit.
-\* Read after the step's own VAD edge (userSpeaking'): the refused finalize's second
-\* commit is made at the VAD stop, after it.
+\* Read after the step's own VAD edge (userSpeaking'). The refused finalize's second
+\* commit (VadStop's, keep_barge_in_reachable) is made INSIDE that VAD stop's handling,
+\* before the close it flushes has come back from the engine (~0.5 s): it carries what
+\* was final before the stop (a segment the engine closed mid-span) and not the words of
+\* the stop's own flush, which may still come (`owedClose`; the strategy's `_owed`).
+\* The watchdog's commit (ForceStop) comes 5 s into a quiet line: its close has landed,
+\* a timing fact as the model's others are.
+\*   gateOwedBlind -- ff033c9: let go of speech whose VAD stop was older than ANY
+\*                    commit, that one included: the stop's words came after the
+\*                    answer.
+\*   gate          -- as shipped: not while that stop's close is owed.
 PendCommitted ==
-    /\ pend' = (pend /\ userSpeaking')
+    LET owedClose == userSpeaking /\ ~userSpeaking'
+        kept == userSpeaking' \/ owedClose
+    IN
+    /\ pend' = (pend /\ kept)
     /\ CASE POSTTOOL = "gateNoCommit"
-              -> gstale' = (gstale \/ (gpend /\ ~userSpeaking')) /\ UNCHANGED gpend
+              -> gstale' = (gstale \/ (gpend /\ ~kept)) /\ UNCHANGED gpend
          [] POSTTOOL = "gateById"
               -> gpend' = FALSE /\ gstale' = FALSE
-         [] OTHER
+         [] POSTTOOL = "gateOwedBlind"
               -> gpend' = (gpend /\ userSpeaking') /\ gstale' = (gstale /\ userSpeaking')
+         [] OTHER
+              -> gpend' = (gpend /\ kept) /\ gstale' = (gstale /\ kept)
     /\ UNCHANGED <<answer, asUnder, ansOver, ansLost, skipLost>>
 
 CommitCore ==
@@ -1615,7 +1629,7 @@ TypeOK ==
     /\ lateCall \in {"none", "above", "atAgg"}
     /\ unsettled \in BOOLEAN /\ readUnsettled \in BOOLEAN
     /\ POSTTOOL \in {"off", "asWritten", "vadDrop", "capDiscard", "lullAtStop", "gate",
-                     "gateNoCommit", "gateById"}
+                     "gateNoCommit", "gateById", "gateOwedBlind"}
     /\ answer \in {"none", "due", "held", "asked", "playing", "dropped"}
     /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
     /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN

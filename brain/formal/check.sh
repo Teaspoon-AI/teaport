@@ -176,6 +176,7 @@ run UserTurn.tla ut_post_capDiscard_noanswerunderspeech     "(expected: FAILS No
 run UserTurn.tla ut_post_lullAtStop_noanswerunderspeech     "(expected: FAILS NoAnswerUnderSpeech — a queue that delivers at the VAD stop: the words come after it)"
 run UserTurn.tla ut_post_gateNoCommit_noholdoncommittedspeech "(expected: FAILS NoHoldOnCommittedSpeech — the gate as first written: a turn of two segments, its words committed, still held for a release window with nobody talking)"
 run UserTurn.tla ut_post_gateById_noanswerunderspeech "(expected: FAILS NoAnswerUnderSpeech — 0db54f6: a commit made while the caller still talked emptied the gate, and the rest of their words came after the answer)"
+run UserTurn.tla ut_post_gateOwedBlind_noanswerunderspeech "(expected: FAILS NoAnswerUnderSpeech — ff033c9: the re-applied stop's commit, made before that stop's flush lands, emptied the gate)"
 run UserTurn.tla ut_post_gate_talk_all                      "(expected: holds — FollowupGate holds the answer while speech is pending, drops it at the turn: Talk)"
 run UserTurn.tla ut_post_gate_sip_all                       "(expected: holds — the same on SIP as shipped, with every property ut_shipped_all checks)"
 run UserTurn.tla ut_post_gate_timed_noanswerunderspeech     "(expected: FAILS NoAnswerUnderSpeech — the timers as they are: the ACCEPTED RESIDUAL, words later than the release or speech past both caps)"
