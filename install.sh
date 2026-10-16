@@ -263,7 +263,7 @@ phase_preflight() {
 }
 
 phase_sysdeps() {
-  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), libcudnn9-cuda-13 (engine TTS convs), python3.12-venv (brain)"
+  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), libcudnn9-cuda-13 (engine TTS convs), python3.12-venv (brain), logrotate (logs)"
   # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child) —
   # but ONLY as the OOV + non-English fallback. The en-us G2P is the misaki-derived dict
   # that phase_engine installs to bin/g2p/; espeak-only en-us speaks robotic prosody.
@@ -273,16 +273,141 @@ phase_sysdeps() {
   # cuDNN (~2x TTS throughput, teagram-engine README). Full JetPack has it, the bare L4T
   # BSP does not; NVIDIA's Jetson apt repo, which L4T configures, carries it.
   SUDO apt-get update -qq
-  SUDO apt-get install -y espeak-ng libopenblas0 libcudnn9-cuda-13 python3.12-venv
+  SUDO apt-get install -y espeak-ng libopenblas0 libcudnn9-cuda-13 python3.12-venv logrotate
   if [ "$DRY_RUN" != 1 ]; then
     have espeak-ng || die "espeak-ng not installed"
     contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
     contains 'libcudnn.so.9' "$(ldconfig -p 2>/dev/null || true)" || die "libcudnn.so.9 not installed"
   fi
+  setup_logs
   # Bootstrap uv HERE, before phase_engine's ~15GB of downloads: a uv fetch that is going
   # to fail (proxy, DNS, an unwritable $PREFIX) should fail in the first minute, not the
   # last. Idempotent — phase_brain's own ensure_uv call becomes a no-op.
   ensure_uv
+}
+
+# --- logs: one store, capped -----------------------------------------------------------
+# The L4T image keeps logs twice: journald's journal in RAM (volatile, capped at 10% of
+# /run, gone at every reboot) and, forwarded from it, rsyslog's /var/log/syslog on disk,
+# which nothing capped or rotated: the image ships without logrotate. One appliance had a
+# 901 MB syslog grown since first boot, ~50 MB a day (two thirds of it the brain), and a
+# component logging in a loop would have filled the disk.
+# teaport reads its logs through journalctl only (teaport logs, doctor, this installer), so
+# the journal becomes the one store: persistent, so the last boot's logs survive the next
+# one; capped at JOURNAL_MAX_USE by journald itself, which also keeps 15% of the disk free
+# (at most 4G: SystemKeepFree's default); and no longer forwarded to rsyslog. A journal
+# entry takes several times its text on disk, so 2G is days to a couple of weeks at the
+# box's rate, not a month: `journalctl --disk-usage` says how much it holds.
+# /var/log/syslog then gets only what rsyslog reads itself (the kernel's messages), and
+# logrotate, installed with the system packages, rotates that and the rest of /var/log with
+# Ubuntu's own rules. (An old, big syslog takes about two weeks to free its space: logrotate's
+# first run only records it, the weekly rule moves it to syslog.1, and delaycompress gzips
+# that a week later. `sudo logrotate -f /etc/logrotate.conf` does it now.) Anything
+# that read /var/log/syslog or auth.log for the services' lines (remote forwarding,
+# fail2ban's file backend) reads the journal instead from here on.
+# The journal config is install.sh's, like the units: $JOURNAL_DROPIN is rewritten on every
+# run and wins, and the directory it lives in is kept at systemd's 0755, so it can be read
+# back without sudo. An operator who wants something else puts it in a drop-in of their own
+# named to sort after ours (zz-*.conf): journald reads the drop-ins in name order and the
+# last one wins. (Setting Storage there? Set ForwardToSyslog too: with a volatile journal
+# and no forwarding, nothing would be kept on disk.)
+# Ours is named to sort after Ubuntu's journald.conf.d/syslog.conf (ForwardToSyslog=yes),
+# so it wins over that; a "99-teaport.conf" would lose to it (digits sort before letters).
+# journald is restarted only when the settings themselves are new to it: they differ from
+# what it last took ($JOURNAL_APPLIED, written once a restart has worked) or from what the
+# file on disk held (a deleted drop-in and a reboot). A comment-only change restarts
+# nothing, and a restart that failed is tried again by the next run.
+# Not covered here: logs that skip both journald and rsyslog (a container runtime's own
+# files, say).
+# write_root <path> <text>: a root-owned 0644 file holding <text>. The mode is set, not left
+# to sudo's umask (a 0600 file would read back empty below, so every run would rewrite it
+# and restart journald); install -D makes missing parents and leaves existing ones be.
+write_root() {
+  if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s\n' "$1"; return 0; fi
+  printf '%s\n' "$2" | SUDO install -D -m 0644 -o root -g root /dev/stdin "$1"
+}
+# journal_settings: the drop-in's text without comments and blank lines (what journald reads)
+journal_settings() {
+  grep -v -e '^[[:space:]]*[#;]' -e '^[[:space:]]*$' "$JOURNAL_DROPIN" 2>/dev/null || true
+}
+JOURNAL_CONF_D=/etc/systemd/journald.conf.d
+JOURNAL_DROPIN=$JOURNAL_CONF_D/teaport.conf
+JOURNAL_DIR=/var/log/journal
+JOURNAL_APPLIED="$STATE/journald.applied"
+JOURNAL_MAX_USE=2G
+LOGROTATE_BIN=/usr/sbin/logrotate
+setup_logs() {
+  local settings target want have current applied timer skip=0 dir_ok=1
+  # the journal config is the whole host's: a dev machine running this off-Jetson
+  # (TEAPORT_ALLOW_NON_JETSON) keeps its own; a dry run still shows what a box would get
+  if [ -z "${L4T_RELEASE:-}" ] && [ "$DRY_RUN" != 1 ]; then
+    log "logs: not a Jetson — this machine's journald and logrotate setup are left as they are"
+    return 0
+  fi
+  log "logs: the journal is the one store: persistent, capped at $JOURNAL_MAX_USE, no copy to /var/log/syslog; logrotate for the rest of /var/log"
+  settings="$(printf '%s\n' "Storage=persistent" "SystemMaxUse=$JOURNAL_MAX_USE" "ForwardToSyslog=no")"
+  target="$(printf '%s\n' "[Journal]" "$settings")"
+  want="$(printf '%s\n' \
+    "# teaport (install.sh setup_logs): the journal is the one log store. install.sh owns this" \
+    "# file and rewrites it on every run. To change a setting, put it in a drop-in of your own" \
+    "# that sorts after this one (zz-local.conf, say); if you set Storage there, set" \
+    "# ForwardToSyslog too." \
+    "$target")"
+  have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
+  # what the file on disk sets: if it isn't $target, journald can't have these settings now
+  # (a deleted or edited drop-in, then a reboot)
+  current="$(journal_settings)"
+  if [ "$want" != "$have" ]; then
+    if ! { SUDO install -d -m 0755 "$JOURNAL_CONF_D" && write_root "$JOURNAL_DROPIN" "$want"; }; then
+      warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
+      # nothing to apply, unless the file there holds the settings journald lacks: read
+      # again, since a write that failed half-way may have left it truncated
+      current="$(journal_settings)"
+      [ "$current" = "$target" ] || skip=1
+    fi
+  fi
+  applied="$(cat "$JOURNAL_APPLIED" 2>/dev/null || true)"
+  if [ "$skip" != 1 ] && [ "$settings" = "$applied" ] && [ "$current" = "$target" ]; then
+    log "logs: journald has these settings already"
+  elif [ "$skip" != 1 ]; then
+    # $JOURNAL_DIR, made before journald needs it when it isn't there (setgid
+    # systemd-journal), then systemd's own tmpfiles rules for it (its mode, owner and the
+    # ACLs that let adm read it; they only adjust a directory that exists). Left to
+    # journald, it would be root's alone until the next boot, and `teaport logs` as the
+    # operator would lose lines.
+    { { [ -d "$JOURNAL_DIR" ] || SUDO install -d -m 2755 -o root -g systemd-journal "$JOURNAL_DIR"; } &&
+      SUDO systemd-tmpfiles --create --prefix "$JOURNAL_DIR"; } \
+      || { warn "logs: could not set up $JOURNAL_DIR — it is set up at the next boot (or the next run)"; dir_ok=0; }
+    # The restart applies the drop-in now (services' stdout streams survive it: journald
+    # keeps them in systemd's fd store); the flush moves this boot's journal to disk. Neither
+    # fails the install: both happen at the next boot, and the next run tries again.
+    if SUDO systemctl restart systemd-journald; then
+      SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
+      # recorded only when all of it worked, so the next run retries what didn't
+      if [ "$dir_ok" = 1 ]; then
+        write_root "$JOURNAL_APPLIED" "$settings" \
+          || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
+      fi
+    else
+      warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot (or the next run)"
+    fi
+  fi
+  [ "$DRY_RUN" = 1 ] && return 0
+  # The package enables and starts its timer; anything else is an operator's choice or a
+  # box mid-setup: said, with what would fix it, not overridden.
+  timer="$(systemctl is-enabled logrotate.timer 2>/dev/null || true)"
+  case "$timer" in
+    enabled|generated)
+      systemctl is-active --quiet logrotate.timer \
+        || warn "logs: logrotate.timer is not running — /var/log is not rotated until it is (systemctl start logrotate.timer)" ;;
+    static) warn "logs: logrotate.timer is static — something else must start it at boot, or /var/log stops being rotated (systemctl status logrotate.timer)" ;;
+    enabled-runtime|linked|linked-runtime|indirect|alias|transient)
+      warn "logs: logrotate.timer is $timer — it does not start at boot, so /var/log may stop being rotated (systemctl enable logrotate.timer)" ;;
+    masked|masked-runtime) warn "logs: logrotate.timer is $timer — /var/log is not rotated (systemctl unmask $([ "$timer" = masked-runtime ] && echo '--runtime ')logrotate.timer && systemctl enable --now logrotate.timer)" ;;
+    disabled) warn "logs: logrotate.timer is disabled — /var/log is not rotated (systemctl enable --now logrotate.timer)" ;;
+    ""|not-found) warn "logs: there is no logrotate.timer — /var/log is not rotated (apt-get install --reinstall logrotate)" ;;
+    *) warn "logs: logrotate.timer is $timer — /var/log may not be rotated (systemctl status logrotate.timer)" ;;
+  esac
 }
 
 # Every url + sha256 entry read here (and eula_gate's) is listed in manifest/check.py's
@@ -2324,6 +2449,12 @@ main_brain_only() {
   elif [ ! -e "$BRAIN_LINK" ] && [ ! -L "$BRAIN_LINK" ]; then
     local msg="no brain venv at $BRAIN_LINK — --only brain updates an installed brain; run install.sh without --only to install one"
     if [ "$DRY_RUN" = 1 ]; then warn "$msg"; else die "$msg"; fi
+  fi
+  # --only brain installs no system packages and leaves the box's setup alone: a box no full
+  # run has set up since setup_logs (no logrotate, or no journal drop-in) keeps its
+  # unrotated, uncapped logs, so say so.
+  if [ ! -x "$LOGROTATE_BIN" ] || [ ! -e "$JOURNAL_DROPIN" ] || [ ! -e "$JOURNAL_APPLIED" ]; then
+    warn "logs may not be rotated or capped on this box yet (no logrotate, or no record of journald taking $JOURNAL_DROPIN): run install.sh without --only once"
   fi
   check_brain_source
   phase_brain

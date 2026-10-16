@@ -5,7 +5,7 @@
 #   teaport status                three services + ports + memory at a glance
 #   teaport doctor [--fix]        health sweep with fix hints (--fix restarts dead units)
 #   teaport update [--check]      diff installed vs the release manifest; apply what changed
-#   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain; passes -f/-n through)
+#   teaport logs [engine|brain|sip]   journalctl wrapper (defaults to brain; bare, this boot; passes -f/-n/-b through)
 #   teaport sip <cmd>             opt-in SIP telephony: configure | status | aec | restart | disable
 #
 # Thin wrapper over systemd + the release manifest, reading the layout install.sh
@@ -319,6 +319,11 @@ cmd_logs() {
     # The SIP front-end runs in teaport-brain now; its lines are the brain's.
     sip-brain) unit=teaport-brain;     shift ;;
   esac
+  # A bare `teaport logs` shows this boot: the box's journal is persistent (install.sh
+  # setup_logs) and keeps every boot up to its cap, so it would otherwise open at the oldest
+  # line kept, days back. Any argument at all goes to journalctl as given (-f and -n N show
+  # the newest lines anyway; -b -1 or --since pick their own range).
+  [ "$#" -gt 0 ] || set -- -b
   exec journalctl -u "$unit.service" "$@"
 }
 
@@ -532,7 +537,7 @@ sip_allow_count() { confvals "$1" sip_source_allow | tr ',[:blank:]' '\n' | grep
 sip_acl_mode() {
   local inv m; inv="$(sip_unit_prop InvocationID)"
   [ -n "$inv" ] || return 0
-  m="$(journalctl -q "_SYSTEMD_INVOCATION_ID=$inv" -o cat --no-pager 2>/dev/null | grep -m1 -aoE '\[acl\] source filter [A-Z]+' || true)"
+  m="$(journalctl -b -q "_SYSTEMD_INVOCATION_ID=$inv" -o cat --no-pager 2>/dev/null | grep -m1 -aoE '\[acl\] source filter [A-Z]+' || true)"
   m="${m##* }"; printf '%s' "${m,,}"
 }
 # sip_filter_state <conf> — the source filter for `sip status` and doctor: what the
@@ -884,14 +889,17 @@ sip_drop() {
 # on a persistent journal journald (SplitMode=uid, the default) files a regular uid's
 # lines in user-<uid>.journal whatever unit wrote them — a file --system never opens,
 # so every registered trunk read as "not registered yet", for root too. On a volatile
-# journal (the box) there is no split and the lines are in the system journal; the
-# default scope reads both. Checked on a persistent host (systemd 255): a system unit
-# run as a regular uid logged a [reg] 200 that --system showed to nobody, root
-# included, and the default scope showed to root, to adm, and to that uid itself.
+# journal there is no split and the lines are in the system journal; the default scope
+# reads both. (The box's journal is persistent since install.sh's setup_logs.) Checked
+# on a persistent host (systemd 255): a system unit run as a regular uid logged a
+# [reg] 200 that --system showed to nobody, root included, and the default scope
+# showed to root, to adm, and to that uid itself.
 sip_last_reg() {
   local inv; inv="$(sip_unit_prop InvocationID)"
   [ -n "$inv" ] || return 0
-  journalctl -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
+  # -b: the unit's current invocation is always in this boot, and the journal (persistent,
+  # install.sh setup_logs) keeps every boot; this runs every 0.5 s while waiting
+  journalctl -b -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
 }
 # Why sip_last_reg may be empty on a running gateway: this user cannot read the file the
 # gateway's lines land in. The default scope exits 0 on whatever it could open and only
