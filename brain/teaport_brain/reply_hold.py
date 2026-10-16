@@ -27,7 +27,7 @@
 #   * The caller's new words arrive. They start a user turn (MinWordsUserTurnStartStrategy;
 #     the bot has not started speaking, so one word is enough), the aggregator broadcasts
 #     an interruption, and pipecat's own queue reset drops the held frames (keeping the
-#     UninterruptibleFrames, as everywhere else). The gate asks HeardContextCorrector to
+#     uninterruptible frames, as everywhere else). The gate asks HeardContextCorrector to
 #     fold the turn the caller is now finishing into the one whose reply was dropped
 #     (TurnMerge), so the model answers ONE user message holding everything they said,
 #     not the fragment and then its continuation.
@@ -52,12 +52,13 @@
 # audio really reaches the transport, and nothing of it is ever charted as said. The
 # assistant aggregator likewise never sees the dropped reply's words, so nothing of it
 # can be committed to the context. And an interruption's queue reset is pipecat's,
-# with its Uninterruptible rules, rather than a copy of them -- with one exception: the
-# reply's function-call frames (its tool call's IN_PROGRESS and result) are
-# Uninterruptible, and the gate settles those of a dropped reply itself: a call held
-# here goes, with its result, so its tool round does not land in the context after the
-# turn that dropped it; a result held here for a call that passed before the hold goes
-# through without asking for an answer, since nothing else will ever settle that call.
+# with its uninterruptible rules (Frame.interruptible), rather than a copy of them --
+# with one exception: the reply's function-call frames (its tool call's IN_PROGRESS
+# and result) are uninterruptible, and the gate settles those of a dropped reply
+# itself: a call held here goes, with its result, so its tool round does not land in
+# the context after the turn that dropped it; a result held here for a call that
+# passed before the hold goes through without asking for an answer, since nothing else
+# will ever settle that call.
 #
 # Playout times. The TTS stamps its frames with their playout time (pts) as it
 # synthesizes them: every word (TTSTextFrame), and also the response's End when it is
@@ -131,7 +132,6 @@ from pipecat.frames.frames import (
     SystemFrame,
     TTSAudioRawFrame,
     TTSTextFrame,
-    UninterruptibleFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -238,8 +238,8 @@ class ReplyHoldGate(FrameProcessor):
         self._last_ctx = None
         self._released_ns = None
         self._release_shift = None
-        # Function-call frames (pipecat's UninterruptibleFrames, which an interruption's
-        # queue reset keeps) by the number of drops before they were queued: one queued
+        # Function-call frames (uninterruptible in pipecat: an interruption's queue reset
+        # keeps them) by the number of drops before they were queued: one queued
         # before a drop belongs to the reply that drop dropped (see process_frame).
         self._drops = 0
         self._call_frames: dict = {}
@@ -392,7 +392,7 @@ class ReplyHoldGate(FrameProcessor):
         if self._discard_to_end and not isinstance(frame, SystemFrame):
             if isinstance(frame, (EndFrame, StopFrame)):
                 self._discard_to_end = False
-            elif not isinstance(frame, UninterruptibleFrame):
+            elif frame.interruptible:
                 self._arrivals.pop(frame.id, None)
                 return  # the held reply, dropped on the way out
         if not isinstance(frame, SystemFrame):
@@ -469,7 +469,7 @@ class ReplyHoldGate(FrameProcessor):
             self.dropped += 1
             self._drops += 1
         # Also after a drop: the interruption normally unpauses the queue, but not when
-        # the frame in hand was Uninterruptible (pipecat then only resets the queue).
+        # the frame in hand was uninterruptible (pipecat then only resets the queue).
         await self.resume_processing_frames()
         if released:
             logger.info(f"REPLY-HOLD: released after {held:.2f}s ({why}) -- the reply plays")

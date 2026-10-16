@@ -178,6 +178,23 @@ _PIPELINE_PHASE_TIMEOUT_S = _STT_CONNECT_BUDGET_S + 20.0
 _TTS_LANG_NAMES = {k: v for k, v in LANG_NAMES.items() if not k.startswith("en-")}
 
 
+def user_aggregator_params(**kwargs) -> LLMUserAggregatorParams:
+    """The user aggregator's params with the choices every brain session makes, the
+    rest (VAD analyzer, turn strategies, timeouts) from the caller. The test rigs that
+    build a real aggregator build it here too, so they run the turn shape production
+    runs rather than pipecat's defaults.
+
+    - user_mute_strategies=[]: barge-in is the whole point of this surface (the OpenClaw
+      Talk client does its own echo cancellation), so the user is NOT muted while the
+      bot speaks -- smart-turn endpointing handles turn-taking instead.
+    - empty_user_turn=None: pipecat 1.12 answers a user turn that ends with no words by
+      default: when it cut the bot off, it adds an "ask them to repeat" developer
+      message and runs the LLM. Here a wordless turn is often deliberate -- Wi-Fi
+      setup's closer ends the turn its taken words opened, emptied (wifi_voice.py) --
+      and a noise barge-in is the pauser's to resume (barge_pause.py), so off."""
+    return LLMUserAggregatorParams(user_mute_strategies=[], empty_user_turn=None, **kwargs)
+
+
 # Who may hold the engine's single STT slot is not decided here: every front-end asks
 # the session arbiter (session_arbiter.py) before it runs the pipeline built below.
 
@@ -1113,14 +1130,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         if pauser is not None:
             await pauser.on_final_without_turn()
 
-    # Barge-in is the whole point of this surface (the OpenClaw Talk client does its
-    # own echo cancellation), so we do NOT mute the user while the bot speaks —
-    # smart-turn endpointing handles turn-taking instead.
     context_aggregator = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
+        user_params=user_aggregator_params(
             vad_analyzer=vad_analyzer,
-            user_mute_strategies=[],
             user_turn_strategies=UserTurnStrategies(
                 # Gate interruptions on a min word count so short STT garble can't
                 # cut the bot mid-reply (self-relaxes to 1 word when the bot is
@@ -1336,7 +1349,13 @@ def build_agent_session(transport, *, voice: str | None = None,
         cut_fence.tail,
     ] if p is not None])
 
-    # The idle timeout counts what pipecat counts, and a held conversation's keep-alive.
+    # The idle timeout counts speech -- the bot's, and the user's as the local VAD hears
+    # it -- and a held conversation's keep-alive. Not pipecat's default since 1.9, which
+    # adds transcripts and turn starts for pipelines that take their turns from a
+    # provider instead of a local VAD: here the engine decodes noise the VAD rejects
+    # into interims (its auto-segment fires hundreds of times a day on the box), and
+    # those would keep a session that nobody speaks in from idling out of the engine's
+    # one STT slot. (Speech the VAD hears -- a TV's included -- counts as before.)
     task_kwargs = {"observers": [ledger],
                    "idle_timeout_frames": (BotSpeakingFrame, UserSpeakingFrame,
                                            HoldKeepAliveFrame)}

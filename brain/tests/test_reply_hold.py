@@ -60,8 +60,8 @@ from pipecat.pipeline.task import PipelineTask  # noqa: E402
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
     LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
 )
+from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
 from pipecat.turns.user_stop.base_user_turn_stop_strategy import (  # noqa: E402
@@ -629,7 +629,7 @@ async def test_an_onset_only_hold_has_the_shorter_cap():
 
 
 async def test_a_drop_with_an_uninterruptible_frame_in_hand_does_not_silence_the_bot():
-    # The paused queue had already dequeued an UninterruptibleFrame when the words came:
+    # The paused queue had already dequeued an uninterruptible frame when the words came:
     # pipecat then only resets the queue and leaves its task waiting on the pause. The
     # gate must lift the pause itself, or no reply ever plays again.
     async with GateRig() as rig:
@@ -966,8 +966,7 @@ async def test_an_empty_commit_does_not_arm_the_gate():
     stop = ScriptedStop()
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[stop])))
@@ -1238,8 +1237,7 @@ async def _the_call(with_gate: bool):
     stop = ScriptedStop()
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[stop],
@@ -1333,8 +1331,7 @@ async def _the_refused_call(continues: bool):
     stop = ScriptedStop()
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[stop],

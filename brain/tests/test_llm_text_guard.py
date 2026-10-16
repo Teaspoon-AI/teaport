@@ -881,13 +881,14 @@ async def test_an_initialism_split_across_deltas_stays_whole():
 
 
 def test_unglued_text_is_what_the_tts_can_split():
-    # Why this matters: pipecat's aggregator (NLTK behind a lookahead) and the clause
-    # ramp both need the space. Glued, the reply is one sentence to both — first
-    # audio waits for the last word's synthesis. Unglued, both find the boundary.
+    # Why this matters: the clause ramp needs the space. Glued, the reply is one
+    # sentence to it — first audio waits for the last word's synthesis. Unglued, it
+    # finds the boundary, and so does pipecat's aggregator. (pipecat's matcher used to
+    # need the space too: NLTK's Punkt, up to 1.11. sentencex, since 1.12, splits
+    # "rain.Sounds" by itself — and also "Node.JS", which the guard leaves glued.)
     from pipecat.utils.string import match_endofsentence
     glued = ("Tomorrow in Austin should be warm, with a low chance of rain."
              "Sounds like a pleasant day with only a slight chance of rain.")
-    assert match_endofsentence(glued.split("Sounds")[0] + "S") == 0
     # soft_max=0: the sentence-boundary split alone (the long-sentence clause split
     # is a separate remedy, tested in test_clause_ramp.py).
     assert len(split_clauses_ramp(glued, soft_max=0)) == 1
@@ -895,6 +896,17 @@ def test_unglued_text_is_what_the_tts_can_split():
     first = spaced.split(" Sounds")[0]
     assert match_endofsentence(first + " S") == len(first)
     assert len(split_clauses_ramp(spaced, soft_max=0)) == 2
+    # What pipecat's aggregator does after the guard, pinned so a pipecat or sentencex
+    # bump that changes it fails here rather than silently re-wording the note above.
+    # Since 1.12 it splits the glued pair on its own...
+    glued_first = glued.split("Sounds")[0]
+    assert match_endofsentence(glued_first + "S") == len(glued_first)
+    # ...and also cuts a dotted name the guard leaves glued (accepted: rare in replies,
+    # and the guard cannot undo a cut made after it). Up to 1.11 (NLTK) both were 0.
+    for text, cut in (("I use Node.JS daily", len("I use Node.")),
+                      ("Use ASP.NET Core", len("Use ASP."))):
+        assert unglue_sentences(text) == text
+        assert match_endofsentence(text) == cut, (text, match_endofsentence(text))
 
 
 def main():

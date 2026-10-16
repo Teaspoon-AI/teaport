@@ -10,8 +10,9 @@
 # turn from being committed ahead of the reply it cut.
 #
 import asyncio
+import inspect
 import time
-from dataclasses import astuple, dataclass
+from dataclasses import astuple, dataclass, field
 
 from loguru import logger
 
@@ -23,7 +24,6 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     InterruptionFrame,
     SystemFrame,
-    UninterruptibleFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
@@ -322,7 +322,19 @@ class TurnVerdictFrame(SystemFrame):
 
 
 @dataclass
-class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
+class _UninterruptibleData(DataFrame):
+    """The STT's bookkeeping frames below: DATA frames, so each arrives after the
+    interims and finals it follows (a system frame would overtake the queue), and
+    uninterruptible, so the turn start a MinWords interim triggers does not flush them
+    with every interruptible frame queued behind it. Declared once here (pipecat 1.11
+    retired the UninterruptibleFrame mixin for this field) so a new one cannot be added
+    without it."""
+
+    interruptible: bool = field(default=False, init=False)
+
+
+@dataclass
+class SegmentDoneFrame(_UninterruptibleData):
     """The STT's segment closed with NO words in it: pushed DOWNSTREAM by the STT
     service in place of the FinalTranscriptionFrame a done with words produces (a
     final is its own segment's close).
@@ -344,7 +356,7 @@ class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
 
 
 @dataclass
-class SegmentResetFrame(DataFrame, UninterruptibleFrame):
+class SegmentResetFrame(_UninterruptibleData):
     """The STT dropped its open segment without closing it -- the engine session went
     (a reconnect, a hold) and the words streamed so far with it: no final and no
     SegmentDoneFrame will ever come for them. Pushed DOWNSTREAM by the STT service for
@@ -365,7 +377,7 @@ class SegmentResetFrame(DataFrame, UninterruptibleFrame):
 
 
 @dataclass
-class SttProgressFrame(DataFrame, UninterruptibleFrame):
+class SttProgressFrame(_UninterruptibleData):
     """Whether the STT's engine session reports how far it has transcribed
     (teagram-engine's transcription.progress, offered in its session.created): pushed
     DOWNSTREAM by the STT service at the start of every engine session, for the stop
@@ -377,7 +389,7 @@ class SttProgressFrame(DataFrame, UninterruptibleFrame):
 
 
 @dataclass
-class SpeechDecodedFrame(DataFrame, UninterruptibleFrame):
+class SpeechDecodedFrame(_UninterruptibleData):
     """The engine has transcribed past the caller's end of speech for VAD stop
     `stop_n` (counted as the final's stamp is, FinalTranscriptionFrame in stt.py):
     every word it will ever return for that speech is in the interims already pushed.
@@ -391,7 +403,7 @@ class SpeechDecodedFrame(DataFrame, UninterruptibleFrame):
 
 
 @dataclass
-class NoSpeechReportFrame(DataFrame, UninterruptibleFrame):
+class NoSpeechReportFrame(_UninterruptibleData):
     """No SpeechDecodedFrame will come for VAD stop `stop_n`, though the engine
     session gives its report: the STT could not place that stop's speech end on the
     engine's clock (audio passed it unsent -- a reconnect's buffer, a dropped send).
@@ -602,11 +614,15 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         # When the latest VAD stop reached this strategy, for the [SPEC] start line.
         self._stop_at = 0.0
 
-    async def trigger_user_turn_inference_triggered(self):
+    async def trigger_user_turn_inference_triggered(self, *, speculation=None):
         # Every path that commits the turn passes here (trigger_user_turn_stopped is
         # inference + finalize), so a count taken around a final says whether it fired.
-        self._inferences += 1
-        await super().trigger_user_turn_inference_triggered()
+        # `speculation` is pipecat's own speculative inference (1.9+, its eager stop
+        # strategy): it runs on a provisional copy and commits nothing, so it is not
+        # counted. Nothing here asks for one; it passes through as given.
+        if speculation is None:
+            self._inferences += 1
+        await super().trigger_user_turn_inference_triggered(speculation=speculation)
 
     async def process_frame(self, frame):
         if isinstance(frame, BotStartedSpeakingFrame):
@@ -1034,10 +1050,16 @@ def keep_barge_in_reachable(controller) -> None:
 
     Deliberately NOT defensive about the private names it binds. If a future pipecat
     renames _trigger_user_turn_start / _trigger_user_turn_inference_triggered /
-    _trigger_user_turn_stop / _user_turn / _user_speaking, this raises AttributeError
-    at session build — loudly, on the first call, in CI — which is the outcome to
-    want. Silently doing nothing would restore a bug whose whole signature is that
-    nothing is logged when it happens.
+    _trigger_user_turn_stop or process_frame, this raises AttributeError at session
+    build — loudly, on the first call, in CI — which is the outcome to want; and
+    RuntimeError there if the inference hook's (strategy, speculation) signature
+    moved, the one argument it reads rather than passes on. The two flags are read
+    only at run time: _user_turn by every wrapper, inside pipecat's event handlers (a
+    rename is an "uncaught exception in event handler" ERROR on every turn), and
+    _user_speaking only in _process_frame while a finalization is owed -- the stuck
+    case itself, which test_barge_in_survives_an_open_turn drives, so a rename fails
+    there in CI. Silently doing nothing would restore a bug whose whole signature is
+    that nothing is logged when it happens.
 
     Known limit: the re-attempt rides the frame that reports the user quiet, so it
     needs VAD to report a stop at all. It does NOT rescue a VAD frozen in SPEAKING —
@@ -1047,37 +1069,56 @@ def keep_barge_in_reachable(controller) -> None:
     """
     trigger_start = controller._trigger_user_turn_start
     trigger_inference = controller._trigger_user_turn_inference_triggered
+    # _inference below decides on the speculation argument, so its place is checked
+    # here, at session build, rather than trusted: a pipecat that moved it would leave
+    # `speculation is None` never true and every refused finalization unowed -- the
+    # dead barge-in this function exists for, with nothing logged.
+    # Names AND kinds: _inference passes speculation positionally, so a pipecat that
+    # made it keyword-only would turn every inference into a swallowed TypeError.
+    params = [(p.name, p.kind) for p in inspect.signature(trigger_inference).parameters.values()]
+    positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+    if params != [("strategy", positional), ("speculation", positional)]:
+        raise RuntimeError(
+            f"pipecat's UserTurnController._trigger_user_turn_inference_triggered takes "
+            f"{[f'{n} ({k.name})' for n, k in params]}, not (strategy, speculation): "
+            f"keep_barge_in_reachable needs a new look")
     trigger_stop = controller._trigger_user_turn_stop
     process_frame = controller.process_frame
 
     # inference: this turn's words have already been pushed to the context and the LLM
-    # asked. owed: (strategy, params) of a finalization the controller refused after
+    # asked. owed: the arguments of a finalization the controller refused after
     # that, to be re-applied at the next quiet moment.
     turn = {"inference": False, "owed": None}
 
-    async def _start(strategy, params):
+    # _start and _stop pass their arguments through as given: they are pipecat's private
+    # signatures, and 1.9 grew _trigger_user_turn_inference_triggered a `speculation`
+    # argument that a fixed (strategy) wrapper turned into a TypeError on every turn,
+    # swallowed by the event handler. _inference reads its own, checked above.
+    async def _start(strategy, *args, **kwargs):
         was_open = controller._user_turn
-        await trigger_start(strategy, params)
+        await trigger_start(strategy, *args, **kwargs)
         # Only on a turn that actually STARTED. The controller drops a start while one
         # is open, and clearing here on that no-op would forget the owed finalization
         # of the very turn that is stuck.
         if not was_open and controller._user_turn:
             turn["inference"], turn["owed"] = False, None
 
-    async def _inference(strategy):
+    async def _inference(strategy, speculation=None):
         was_open = controller._user_turn
-        await trigger_inference(strategy)
-        if was_open:
+        await trigger_inference(strategy, speculation)
+        # A speculative inference (1.9+) runs on a provisional copy and commits none of
+        # the turn's words: a stop refused after one owes nothing.
+        if was_open and speculation is None:
             turn["inference"] = True
 
-    async def _stop(strategy, params):
+    async def _stop(strategy, *args, **kwargs):
         was_open = controller._user_turn
-        await trigger_stop(strategy, params)
+        await trigger_stop(strategy, *args, **kwargs)
         # Still open after a stop that had a turn to close = refused. `_user_speaking`
         # is the only reason the controller has for that.
         refused = was_open and controller._user_turn
         if refused and turn["inference"]:
-            turn["owed"] = (strategy, params)
+            turn["owed"] = (strategy, args, kwargs)
         elif not controller._user_turn:
             turn["owed"] = None
 
@@ -1105,7 +1146,8 @@ def keep_barge_in_reachable(controller) -> None:
             turn["owed"] = None
             logger.debug(f"{controller}: re-applying the turn finalization refused "
                          "while the user was speaking — an open turn takes no barge-in")
-            await trigger_stop(*owed)
+            strategy, args, kwargs = owed
+            await trigger_stop(strategy, *args, **kwargs)
 
     controller._trigger_user_turn_start = _start
     controller._trigger_user_turn_inference_triggered = _inference
@@ -1126,7 +1168,7 @@ def keep_barge_in_reachable(controller) -> None:
 # order armed the reply hold (reply_hold.py) ahead of the turn's own interruption, which
 # it then read as a dropped reply: a false TurnMerge for the next turn.
 #
-# CutReplyFence restores the order. A commit (push_aggregation) and a speculative reply's
+# CutReplyFence restores the order. A commit (_push_aggregation) and a speculative reply's
 # snapshot (Speculator.start, whose corrector pass consumes the ledger's cut) wait until
 # every InterruptionFrame sent down ahead of them has passed the assistant aggregator.
 # Only an interruption in flight is waited on: ~70 ms over a playing reply, a few ms
@@ -1140,10 +1182,14 @@ def keep_barge_in_reachable(controller) -> None:
 # system frames run on meanwhile. A commit or snapshot at a VAD stop or the silence
 # ceiling runs on the INPUT task, so its audio, VAD and CancelFrame queue behind the
 # wait -- only when an interim opened the turn less than ~70 ms before, and never past
-# the bound. A VAD start handled inside a wait is the refused-finalize shape
-# keep_barge_in_reachable re-applies. Not defensive about what it wraps, as
-# keep_barge_in_reachable is not: a pipecat that renames push_aggregation raises at
-# session build, one that renames _aggregation at the first commit.
+# the bound. The controller's stop watchdog commits from its own task, and the session's
+# end (EndFrame, a hangup's CancelFrame) commits whatever words are left: with an
+# interruption in flight those wait too, up to the same bound -- a hangup can end
+# 0.5 s later, never hang. A VAD start handled inside a wait is the refused-finalize
+# shape keep_barge_in_reachable re-applies. Like keep_barge_in_reachable, it fails loud
+# rather than guards what it wraps: a pipecat that renames _push_aggregation raises at
+# session build; one that renames _aggregation errors at the first commit (logged as
+# an uncaught event-handler exception where pipecat calls it from a handler).
 
 # The longest a commit (or a snapshot) waits. ~70 ms is the live crossing; this is a
 # ceiling for a loop under load, well short of the 0.45 s every such turn paid before
@@ -1187,11 +1233,16 @@ class CutReplyFence:
         self.timeouts = 0
 
     def hold_commits(self, aggregator) -> None:
-        """Wrap ONE user aggregator's push_aggregation -- every path that commits the
+        """Wrap ONE user aggregator's _push_aggregation -- every path that commits the
         caller's words passes there: the stop strategy's inference, the turn's stop,
-        the controller's watchdog, the session's end. An empty aggregation commits
-        nothing (pipecat returns at once), so it does not wait: a hangup's CancelFrame
-        is not held for a commit that will not happen.
+        the controller's watchdog, the session's end. Private, because since pipecat
+        1.12 the public push_aggregation is only one of its callers: the turn's stop
+        (_maybe_emit_user_turn_stopped, behind the watchdog and the session's end too)
+        calls _push_aggregation(run_llm=...) itself, and a fence on push_aggregation
+        let those commits through unwaited. AttributeError at session build if it moves,
+        like keep_barge_in_reachable. An empty aggregation commits nothing (pipecat
+        returns at once), so it does not wait: a hangup's CancelFrame is not held for a
+        commit that will not happen.
 
         `self.unplayed_reply` (reply_hold.ReplyHoldGate's `armed`, where the session has
         the gate): True while none of the reply to the LAST commit has played. Asked once
@@ -1218,28 +1269,59 @@ class CutReplyFence:
         Never at the session's end: pipecat commits an open turn's leftover words after
         pushing the EndFrame on (_maybe_emit_user_turn_stopped(on_session_end=True)), and
         an interruption there would overtake the End and drop the reply queued ahead of
-        it -- a goodbye -- for a commit nothing will answer (UserTurn.tla, NoLostGoodbye)."""
-        push_aggregation = aggregator.push_aggregation
+        it -- a goodbye -- for a commit nothing will answer (UserTurn.tla, NoLostGoodbye).
+        That wrapper passes the rest of its arguments through (1.12 added run_llm), and
+        the session's end is read from its on_session_end, so where that sits is checked
+        here, at session build, as keep_barge_in_reachable checks its hook. (pipecat's
+        realtime mode commits at the End through push_aggregation directly, past this
+        wrapper; the brain's LLM is no realtime service, so that mode never turns on.)
+
+        Nor when the commit asks for no answer (run_llm False: pipecat 1.12 confirming
+        a speculative reply already generated for these words): the interruption would
+        drop that reply, and nothing would ask for another. The cost, logged when it is
+        paid: the continuation stays its own message, the split turn the merge exists to
+        prevent. Unreachable while the brain uses no speculating pipecat stop strategy,
+        and formal/UserTurn.tla has no such path -- model it before adopting one. Where
+        run_llm sits (keyword-only) is checked at session build with the stop hook."""
+        push_aggregation = aggregator._push_aggregation
         emit_stopped = aggregator._maybe_emit_user_turn_stopped
+        params = [(p.name, p.kind) for p in inspect.signature(emit_stopped).parameters.values()]
+        positional = inspect.Parameter.POSITIONAL_OR_KEYWORD
+        if params[:2] != [("strategy", positional), ("on_session_end", positional)]:
+            raise RuntimeError(
+                f"pipecat's LLMUserAggregator._maybe_emit_user_turn_stopped takes "
+                f"{[f'{n} ({k.name})' for n, k in params]}, not (strategy, on_session_end, "
+                f"...): CutReplyFence.hold_commits needs a new look")
+        run_llm = inspect.signature(push_aggregation).parameters.get("run_llm")
+        if run_llm is None or run_llm.kind is not inspect.Parameter.KEYWORD_ONLY:
+            raise RuntimeError(
+                "pipecat's LLMUserAggregator._push_aggregation no longer takes a "
+                "keyword-only run_llm: CutReplyFence.hold_commits reads it from kwargs")
         ending = False
 
-        async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False):
+        async def _maybe_emit_user_turn_stopped(strategy=None, on_session_end=False,
+                                                *args, **kwargs):
             nonlocal ending
             ending = ending or on_session_end
-            return await emit_stopped(strategy, on_session_end=on_session_end)
+            return await emit_stopped(strategy, on_session_end, *args, **kwargs)
 
-        async def _push_aggregation():
+        async def _push_aggregation(*args, **kwargs):
             if aggregator._aggregation:
-                if (await self.wait_for_cuts() and not ending
-                        and self.unplayed_reply is not None and self.unplayed_reply()):
+                continues = (await self.wait_for_cuts() and not ending
+                             and self.unplayed_reply is not None and self.unplayed_reply())
+                if continues and not kwargs.get("run_llm", True):
+                    logger.info("CUT-FENCE: words committed while the reply to the turn "
+                                "they continue has not played, confirming a speculative "
+                                "reply -- not merged, so they stay their own message")
+                elif continues:
                     logger.info("CUT-FENCE: words committed while the reply to the turn "
                                 "they continue has not played -- dropping that reply; "
                                 "the model gets the turn as one message")
                     await aggregator.push_frame(InterruptionFrame())
                     await self.wait_for_cuts()
-            return await push_aggregation()
+            return await push_aggregation(*args, **kwargs)
 
-        aggregator.push_aggregation = _push_aggregation
+        aggregator._push_aggregation = _push_aggregation
         aggregator._maybe_emit_user_turn_stopped = _maybe_emit_user_turn_stopped
 
     def _sent(self, frame) -> None:

@@ -908,6 +908,16 @@ class EngineTTSService(TTSService):
         exactly like session-start selection."""
         self._lang_code, self._espeak_lang = _resolve_lang(None, voice)
         self._voice = voice
+        # pipecat (1.12+) splits sentences by the TTS language, which it reads once from
+        # the settings and then only from a settings update. A voice of another
+        # language switched mid-session would otherwise go on being split by the first
+        # one's rules ("Sra." cut as a sentence end under English). From this instant,
+        # as the voice: text still buffered is spoken by the new voice, so it is split
+        # by its rules too. (The service's _settings keep the first voice, as they
+        # always have: the brain never reads them nor sends a settings update, and
+        # pipecat reads them only for the aggregator -- set here -- and its tracing,
+        # which the brain does not enable.)
+        self._text_aggregator.set_language(self._espeak_lang)
         logger.info(f"TTS voice switched: {voice} (lang={self._espeak_lang})")
         return {"ok": True, "voice": voice, "language": self._espeak_lang,
                 "language_name": LANG_NAMES.get(self._espeak_lang,

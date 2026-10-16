@@ -71,8 +71,8 @@ from pipecat.pipeline.task import PipelineTask  # noqa: E402
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 from pipecat.processors.aggregators.llm_response_universal import (  # noqa: E402
     LLMContextAggregatorPair,
-    LLMUserAggregatorParams,
 )
+from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessorSetup  # noqa: E402
 from pipecat.turns.user_start import MinWordsUserTurnStartStrategy  # noqa: E402
 from pipecat.turns.user_turn_controller import UserTurnController  # noqa: E402
@@ -780,8 +780,7 @@ async def test_over_a_real_pipeline_the_verdict_reaches_the_stt_and_commits():
     analyzer = Incomplete(sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=CEILING))
     pair = LLMContextAggregatorPair(
         LLMContext([{"role": "system", "content": "s"}]),
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[LateStartTurnStopStrategy(turn_analyzer=analyzer)],

@@ -30,7 +30,10 @@ Notable transitive dependencies of `pipecat-ai`:
 | resampy | pipecat's other resampler (`ResampyResampler`) | ISC |
 | numba | JIT for resampy's kernels; a direct pipecat dependency too | BSD-2-Clause |
 | llvmlite | numba's LLVM binding (compiled) | BSD-2-Clause |
-| nltk | sentence tokenizer behind pipecat's text aggregation (`utils/string.py`) | Apache-2.0 |
+| sentencex | sentence segmentation behind pipecat's text aggregation (pipecat ≥ 1.12; replaced nltk) | MIT |
+| soundfile | audio file I/O for pipecat's eval harness and `SoundfileMixer`, a required pipecat dependency since 1.9 that the brain never imports; its Linux wheels bundle **libsndfile (LGPL-2.1-or-later)** — same footing as soxr below | BSD-3-Clause |
+| cffi, pycparser | soundfile's binding to libsndfile | MIT-0, BSD-3-Clause |
+| python-dotenv | `.env` loading for pipecat's CLI and evals (unused by the brain) | BSD-3-Clause |
 | loudness | ITU-R BS.1770 loudness measurement for the VAD's volume gate (pipecat ≥ 1.8.0; replaced pyloudnorm + scipy) | MIT |
 | onnx model weights | Silero VAD + smart-turn-v3, shipped inside the pipecat wheel | see pipecat |
 
@@ -49,7 +52,10 @@ Notes:
   engine. The brain does not run espeak-ng, and no GPL code links into the
   software in this repository. espeak-ng runs as a separate program.
 
-### soxr (LGPL-2.1) — accepted, with one distribution constraint
+### soxr and libsndfile (LGPL-2.1) — accepted, with one distribution constraint
+
+(libsndfile arrives inside the soundfile wheel since pipecat 1.9; everything below about
+soxr's PyPI wheel holds for it word for word.)
 
 **Decision (accepted).** `soxr` is **LGPL-2.1-or-later** and an *unconditional* dependency
 of pipecat-ai, so the brain's installed tree is **not** uniformly MIT/BSD/Apache — but this

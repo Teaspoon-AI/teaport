@@ -624,12 +624,28 @@ async def test_phonemes_ride_just_ahead_of_their_audio():
           f"of its audio at its sentence time (lead cut {lead_cut:.2f}s)")
 
 
+def test_a_voice_switch_splits_sentences_in_its_language():
+    # pipecat 1.12 splits sentences by the TTS language, read once at construction. A
+    # Spanish voice switched in mid-session must be split by Spanish rules: under the
+    # English ones "Sra." ends a sentence and the TTS is handed "Hola Sra." alone.
+    from pipecat.utils.string import match_endofsentence
+    svc = EngineTTSService(voice="af_heart")
+    assert svc.text_aggregation_language == "en"
+    svc.set_voice("ef_dora")
+    assert svc.text_aggregation_language == "es"
+    text = "Hola Sra. Garc\u00eda vino hoy. Y"
+    assert match_endofsentence(text, language="en") != match_endofsentence(text, language="es")
+    svc.set_voice("af_heart")
+    assert svc.text_aggregation_language == "en"
+
+
 def test_tts_streaming():
     test_seam_trim_matches_whole_buffer_trim()
     test_seam_trim_ignores_a_quiet_first_block()
     test_seam_trim_holds_only_trailing_quiet()
     test_a_moved_pipecat_hook_fails_the_session_build()
     test_a_moved_baseline_clock_read_fails_the_session_build()
+    test_a_voice_switch_splits_sentences_in_its_language()
 
     async def main():
         await test_first_block_plays_before_the_sentence_ends()

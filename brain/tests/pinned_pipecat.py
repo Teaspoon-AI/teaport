@@ -46,7 +46,7 @@ _PYPROJECT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "pyp
 # from the manifest (see above). pyproject.toml remains the source of truth and wins
 # whenever it can be read; this exists so a detached copy still refuses rather than
 # silently passing. Keep in step with brain/pyproject.toml.
-_EXPECTED_FALLBACK = "1.8.1"
+_EXPECTED_FALLBACK = "1.12.0"
 
 
 def _pinned_version() -> str:
