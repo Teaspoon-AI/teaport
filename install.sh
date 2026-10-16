@@ -334,13 +334,17 @@ setup_logs() {
     "# ForwardToSyslog too." \
     "$target")"
   have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
+  # root-owned files written with render_unit's idiom (printf can't fail half-way); a dry run
+  # says so itself, since SUDO's own line would go to tee's /dev/null
+  write_root() {  # write_root <path> <text>
+    if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s\n' "$1"; return 0; fi
+    printf '%s\n' "$2" | SUDO tee "$1" >/dev/null
+  }
   # what the file on disk sets, comments and blank lines aside: if it isn't $target, journald
   # can't have these settings now (a deleted or edited drop-in, then a reboot)
   current="$(printf '%s\n' "$have" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' || true)"
   if [ "$want" != "$have" ]; then
-    # the idiom render_unit writes units with; printf can't fail half-way
-    if ! { SUDO install -d -m 0755 "$JOURNAL_CONF_D" &&
-           printf '%s\n' "$want" | SUDO tee "$JOURNAL_DROPIN" >/dev/null; }; then
+    if ! { SUDO install -d -m 0755 "$JOURNAL_CONF_D" && write_root "$JOURNAL_DROPIN" "$want"; }; then
       warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
       # nothing to apply, unless the file there already holds the settings journald lacks
       [ "$current" = "$target" ] || skip=1
@@ -365,8 +369,7 @@ setup_logs() {
     # fails the install: both happen at the next boot, and the next run tries again.
     if SUDO systemctl restart systemd-journald; then
       SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
-      { SUDO install -d -m 0755 "$(dirname "$JOURNAL_APPLIED")" &&
-        printf '%s\n' "$settings" | SUDO tee "$JOURNAL_APPLIED" >/dev/null; } \
+      { SUDO install -d -m 0755 "$(dirname "$JOURNAL_APPLIED")" && write_root "$JOURNAL_APPLIED" "$settings"; } \
         || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
     else
       warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot (or the next run)"
