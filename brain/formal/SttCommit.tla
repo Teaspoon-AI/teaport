@@ -3,8 +3,8 @@
 (* teaport -- when the STT closes the engine's transcript segment (#43),    *)
 (* and when the turn may end on what comes back (PR #49).                   *)
 (*                                                                          *)
-(*   brain/teaport_brain/stt.py         -- process_frame, _handle_verdict,  *)
-(*                                         the hold's expiry, the backstop; *)
+(*   brain/teaport_brain/stt.py         -- _turn_edge, _handle_verdict, the *)
+(*                                         hold's expiry, the backstop;     *)
 (*                                         _send_commit's queue of stamps,  *)
 (*                                         _handle_message's pairing and    *)
 (*                                         stamping of a done               *)
@@ -12,6 +12,8 @@
 (*                                         LateStartTurnStopStrategy; the   *)
 (*                                         owed close and the gate on       *)
 (*                                         _maybe_trigger_user_turn_stopped *)
+(*   pipecat 1.8.1 llm_response_universal.py -- where the VAD runs, and how *)
+(*                                         its edges reach both (THE ORDER) *)
 (*   the engine's voxtral_websocket.c   -- one worker, dones in order, a    *)
 (*                                         VAD close and a commit's answer  *)
 (*                                         the same message on the wire     *)
@@ -46,15 +48,30 @@
 (*                 (handle_user_turn_stopped), so the held segment closes   *)
 (*                 with the turn. As shipped.                               *)
 (*                                                                          *)
-(* The machine is two processors talking through pipeline queues in         *)
-(* opposite directions. VAD edges reach the STT first (it is the first      *)
-(* processor after the transport) and the strategy later, through the       *)
-(* aggregator's queue; verdicts travel back up the same way. Each queue is  *)
-(* FIFO, the two are independent, so a verdict pushed for a stop can arrive *)
-(* after the VAD START that followed it. Add the stranded backstop (armed   *)
-(* off interims, for a VAD stop that never comes) and the hold's expiry,    *)
-(* both timer TASKS, and the question is whether any interleaving leaves    *)
-(* words in a segment nothing will ever close, or closes one twice.         *)
+(* THE ORDER. The VAD does not run before the STT: since pipecat 1.0 it     *)
+(* runs in the user aggregator, DOWNSTREAM of it, on the aggregator's input *)
+(* task, where the stop strategy lives too. An edge it detects is queued    *)
+(* twice (_queued_broadcast_frame): onto the aggregator's own input queue,  *)
+(* behind whatever audio is already waiting there, for the strategy; and    *)
+(* UPSTREAM to the STT, through four processors' queues. Neither copy is    *)
+(* first by construction: the strategy's waits behind the aggregator's      *)
+(* audio backlog (it builds while Smart Turn's inference blocks the input   *)
+(* task at a stop), the STT's behind four hops. The strategy answers a stop *)
+(* with its verdict pushed upstream on the SAME path, so a verdict reaches  *)
+(* the STT after the stop it answers -- and after any edge the VAD found in *)
+(* the backlog before the strategy got to the stop. What the STT sends the  *)
+(* strategy (interims, finals, wordless closes: data frames) runs on the    *)
+(* aggregator's other task, the process queue, in no order with the edges.  *)
+(* So there are three FIFOs here: `vadQ` (the edges, to the strategy),      *)
+(* `toStt` (edges and verdicts, upstream to the STT), `toStrategy` (the     *)
+(* STT's frames, down). Until 2026-10-14 this model had the STT see every   *)
+(* edge first and atomically, with the strategy's copy queued behind the    *)
+(* STT's frames: a premise the code never had (README, THE ORDER).          *)
+(*                                                                          *)
+(* Add the stranded backstop (armed off interims, for a VAD stop that never *)
+(* comes) and the hold's expiry, both timer TASKS, and the question is      *)
+(* whether any interleaving leaves words in a segment nothing will ever     *)
+(* close, or closes one twice.                                              *)
 (*                                                                          *)
 (* Two faults are in the environment, bounded: a verdict frame lost in      *)
 (* flight (LoseVerdict -- the model raising before the push, a processor    *)
@@ -69,40 +86,52 @@
 (* caller is still talking, which is the known edge stt.py documents.      *)
 (*                                                                          *)
 (* THE FINAL (PR #49). What the engine returns for a closed segment travels *)
-(* back down the same queue as the VAD edges, and the strategy ends the     *)
-(* turn on it. Two things make that a protocol of its own: the engine       *)
-(* closes segments ON ITS OWN too (its endpointer, on a shorter silence     *)
-(* than the VAD's floor -- or a breath inside a sentence), and a done on    *)
-(* the wire does not say whether it answers a commit of ours or a close of  *)
-(* the engine's. So a final can be the PREVIOUS utterance's, landing        *)
-(* inside the next one (the engine's finish takes ~0.7 s; a caller who      *)
-(* speaks in bursts starts the next utterance inside it), and the stock     *)
-(* strategy ended the turn on it: 38 of 431 replies cut at 0% since         *)
-(* 2026-09-16. Two designs for telling whose a final is, selected by DESIGN:*)
+(* down to the strategy, and the strategy ends the turn on it. Two things   *)
+(* make that a protocol of its own: the engine closes segments ON ITS OWN   *)
+(* too (its endpointer, on a shorter silence than the VAD's floor -- or a   *)
+(* breath inside a sentence), and a done on the wire does not say whether   *)
+(* it answers a commit of ours or a close of the engine's. So a final can   *)
+(* be the PREVIOUS utterance's, landing inside the next one (the engine's   *)
+(* finish takes ~0.7 s; a caller who speaks in bursts starts the next       *)
+(* utterance inside it), and the stock strategy ended the turn on it: 38 of *)
+(* 431 replies cut at 0% since 2026-09-16. Designs for telling whose a      *)
+(* final is, selected by DESIGN:                                            *)
 (*                                                                          *)
-(*   "clock" -- the first cut (PR #49 as opened): the STT stamps each final *)
-(*              with the clock time of the commit it answers, or its own    *)
-(*              arrival when nothing asked; the strategy takes a final      *)
-(*              stamped before its latest VAD start as an earlier           *)
-(*              utterance's and holds it back from `_text`. Here, a stamp   *)
-(*              is the strategy's count of VAD starts at that instant --    *)
-(*              the same order the clock readings encode -- and an unasked  *)
-(*              done released a held segment.                               *)
-(*   "stop"  -- as shipped: the STT numbers VAD stops as it sees them and   *)
-(*              stamps a final with the stop its commit answered (commits   *)
-(*              and dones pair up in order); a done nothing asked for is    *)
-(*              the NEXT stop's if it has words, the last commit's if it    *)
-(*              has none, and releases nothing. The strategy counts the     *)
-(*              same frames and, once the VAD has reported a stop, ends the *)
-(*              turn only on a close stamped with that stop that arrived    *)
-(*              with the caller quiet since. Every path to the turn's end   *)
-(*              -- the verdict, the ceiling, the p99 net -- waits for it.   *)
+(*   "clock"    -- the first cut (PR #49 as opened): the STT stamps each    *)
+(*                 final with the clock time of the commit it answers, or   *)
+(*                 its own arrival when nothing asked; the strategy takes a *)
+(*                 final stamped before its latest VAD start as an earlier  *)
+(*                 utterance's and holds it back from `_text`. Here, a      *)
+(*                 stamp is the strategy's count of VAD starts at that      *)
+(*                 instant, and an unasked done released a held segment.    *)
+(*   "stop"     -- as shipped: the STT numbers VAD stops as it sees them    *)
+(*                 and stamps a final with the stop its commit answered     *)
+(*                 (commits and dones pair up in order); a done nothing     *)
+(*                 asked for is the NEXT stop's if it has words, the last   *)
+(*                 commit's if it has none, and releases nothing. The       *)
+(*                 strategy counts the same frames and, once it has counted *)
+(*                 a stop, ends the turn only after a close stamped with    *)
+(*                 that stop has landed: the debt is paid by a close that   *)
+(*                 arrives once the strategy has counted the stop, and by   *)
+(*                 no other. Every path to the turn's end waits for it.     *)
+(*   "receipts" -- the proposed repair of "stop" under THE ORDER: a close   *)
+(*                 stamped with a stop the strategy has not counted yet is  *)
+(*                 kept as a receipt, and the count finds the debt already  *)
+(*                 paid; and a done nothing asked for that carries words    *)
+(*                 is stamped with no stop at all (it never pays: the stop  *)
+(*                 it lands near is answered by its own commit).            *)
 (*                                                                          *)
-(* DONES says what the wire carries: "unmarked" is the engine as it is (a   *)
-(* done answering a commit and one from the engine's own close are the      *)
-(* same message, so the STT pairs by order and the engine's close can take  *)
-(* a commit's place in the queue); "marked" is the one-field engine change  *)
-(* that says which. The environment's engine close is bounded by MaxCloses. *)
+(* DONES says what the wire carries: "unmarked" is an engine before         *)
+(* teagram-engine#36 (a done answering a commit and one from the engine's   *)
+(* own close are the same message, so the STT pairs by order and the        *)
+(* engine's close can take a commit's place in the queue); "marked" is the  *)
+(* engine since, whose done says which. The environment's engine close is   *)
+(* bounded by MaxCloses.                                                    *)
+(*                                                                          *)
+(* NUMBERED says whether a verdict names the stop it answers and the STT    *)
+(* ignores one for another stop. TurnVerdictFrame carries no stop (FALSE,   *)
+(* as shipped); under THE ORDER a stop's verdict can reach the STT after    *)
+(* the next stop has (the VAD found that stop in the strategy's backlog).   *)
 (*                                                                          *)
 (* NoStaleTurnEnd is the property: the turn never ends on VAD stop k while  *)
 (* words of an utterance up to k are still in the engine's open segment, in *)
@@ -112,9 +141,11 @@
 (* THE CALLER'S VOICE (#140). The VAD's start trails the caller's first     *)
 (* word by 0.2-0.4 s, so after a stop the caller can be speaking again with *)
 (* no start yet sent. A commit drawn then cuts their words. In the          *)
-(* environment, `voice` is that speech as the VAD analyzer's marks see it   *)
-(* (bounded by MaxVoice): "on" since the stop, "paused" for the stop's own  *)
-(* window after being on, or "none". The STT's answer is selected by VOICE: *)
+(* environment, `voice` is the caller's speech since the VAD's latest stop  *)
+(* as the analyzer's marks see it: "on" since the stop (before a VAD start, *)
+(* bounded by MaxVoice, and from a VAD start on, since that start is the    *)
+(* analyzer's own finding), "paused" for the stop's own window after being  *)
+(* on, or "none". The STT's answer is selected by VOICE:                    *)
 (*                                                                          *)
 (*   "blind" -- before #140: a complete verdict commits whatever the voice. *)
 (*   "pause" -- as shipped: a complete verdict over voice that is "on"      *)
@@ -155,27 +186,34 @@ CONSTANTS MODE,        \* "vadStop" | "verdict"
           MaxLost,     \* bound on verdict frames the fault drops
           MaxMissed,   \* bound on VAD stops the VAD fails to report
           TURNSTOP,    \* "silent" | "verdict": the strategy at a turn closed under its ceiling
-          DESIGN,      \* "clock" | "stop": whose a final is (see the header)
+          DESIGN,      \* "clock" | "stop" | "receipts": whose a final is (see the header)
           DONES,       \* "unmarked" | "marked": whether a done says it answers a commit
           MaxCloses,   \* bound on segments the engine closes on its own
           MaxBackstops, \* bound on backstop commits (each opens a segment the caller can refill)
           VOICE,       \* "blind" | "pause": the STT and the caller's voice after a stop (#140)
           MaxVoice,    \* bound on stretches of voice the VAD has not started on
-          CARRY        \* BOOLEAN: a commit's carry feeds the next segment (#154)
+          CARRY,       \* BOOLEAN: a commit's carry feeds the next segment (#154)
+          NUMBERED,    \* BOOLEAN: a verdict names its stop; the STT ignores another's
+          MaxLag       \* bound on VAD edges either side has yet to handle (THE ORDER)
 
 \* Utterances are numbered by VAD start; a done's words are the utterances whose
-\* audio was in the segment it closed. NONE is "no stop": owed's rest value.
+\* audio was in the segment it closed. NONE is "no stop": owed's rest value, and the
+\* stamp of a close that pays nothing.
 Utts == 1..(MaxStops + MaxMissed + 1)
 NONE == 0
 
+\* The designs that stamp closes with a VAD stop and gate the turn's end on it.
+Stamped == DESIGN \in {"stop", "receipts"}
+
 VARIABLES
-    \* --- the VAD, as the transport reports it ---
+    \* --- the caller, and the VAD in the user aggregator ---
     userSpeaking,
     utt,            \* the caller's latest utterance: VAD starts so far
     \* --- frames in flight ---
-    toStrategy,     \* frames the STT has seen or pushed and the strategy has not:
-                    \* VAD edges, interims, finals and wordless closes, in order
-    toStt,          \* verdicts the strategy has pushed and the STT has not seen
+    vadQ,           \* VAD edges queued for the strategy (the aggregator's input queue)
+    toStt,          \* edges and verdicts on their way UPSTREAM to the STT, in order
+    toStrategy,     \* the STT's frames on their way down to the strategy, in order:
+                    \* interims, finals and wordless closes
     fromEngine,     \* dones the engine has produced and the STT has not received
     \* --- LateStartTurnStopStrategy + BaseSmartTurn ---
     stratSpeaking,  \* _vad_user_speaking
@@ -191,9 +229,12 @@ VARIABLES
     netArmed,       \* the p99 safety-net timer is running
     netFired,       \* _timeout_expired: it fired
     owed,           \* the latest stop counted here whose close has not landed, or NONE
-                    \* (DESIGN = "stop"; not per turn -- see CanEnd)
+                    \* (Stamped designs; not per turn -- see CanEnd)
+    early,          \* "receipts": stops not yet counted here whose close has landed
     earlier,        \* _earlier_final is held (DESIGN = "clock")
     \* --- TeaportSTTService and the engine's open segment ---
+    sttStops,       \* _vad_stops: VAD stops the STT has seen (its stamps)
+    sttSpeaking,    \* the STT has seen a VAD start since its last stop
     spoke,          \* audio has been fed since the last close: its deltas may still come
     segAudio,       \* utterances whose audio is in the engine's open segment
     segSpeech,      \* the STT's buffer holds words: the engine streamed interims
@@ -204,19 +245,19 @@ VARIABLES
     commits,        \* _commits: stamps of commits sent and not yet answered, in order
     lastCommitN,    \* _last_commit_n
     deferred,       \* a complete verdict's commit held for the caller's pause (#140)
-    \* --- the caller's voice before the VAD admits it (#140) ---
-    voice,          \* "none" | "on" | "paused", since the latest VAD stop
-    voices,         \* stretches of it so far (bound)
+    \* --- the caller's voice as the VAD analyzer's marks see it (#140) ---
+    voice,          \* "none" | "on" | "paused", since the VAD's latest stop
+    voices,         \* stretches of it before a VAD start so far (bound)
     \* --- bounds ---
     stops, lost, missed, closes, backstops,
-    lostHere,       \* a verdict for the CURRENT stop was lost in flight
+    lostHere,       \* a verdict for the STT's CURRENT stop was lost in flight
     \* --- monitors ---
     closedUnjudged, \* the segment was closed for a stop the strategy has not called done
-    answered,       \* a commit has answered the current VAD stop
+    answered,       \* a commit has answered the STT's current VAD stop
     split,          \* a stop the model called INCOMPLETE, the caller proved right,
                     \* and the segment was already closed under it
     doubleAnswer,   \* two commits answered one VAD stop
-    staleClose,     \* a verdict closed the segment after the caller had resumed
+    staleClose,     \* a verdict closed the segment after the STT saw the caller resume
     staleEnd,       \* the turn ended with words of its utterances still to come
     mispaired,      \* a done of the engine's own took a commit's place in the queue
     cutVoice,       \* a verdict's commit was drawn over the caller's voice (#140)
@@ -230,24 +271,28 @@ VARIABLES
 voiceEnv == <<voice, voices>>
 voiceMon == <<cutVoice, capCut, catchupCut, pauseExit, resumeExit>>
 
-vars == <<userSpeaking, utt, toStrategy, toStt, fromEngine,
-          stratSpeaking, ceilingArmed, stratStops, stratStarts, stopUtt, turnOpen, text,
-          finalized, turnComplete, vadStopped, netArmed, netFired, owed, earlier,
-          spoke, segAudio, segSpeech, pending, hold, backstop, closedUnasked, commits,
-          lastCommitN, stops, lost, missed, closes, backstops, lostHere,
-          closedUnjudged, answered, split, doubleAnswer, staleClose, staleEnd, mispaired,
-          deferred, voiceEnv, voiceMon>>
-
-\* The strategy's per-turn state, as _reset() + analyzer.clear() leave it.
+\* Groups, for the UNCHANGED lists.
+queues == <<vadQ, toStt, toStrategy, fromEngine>>
 stratVars == <<turnOpen, text, finalized, turnComplete, vadStopped, netArmed, netFired,
-               owed, earlier, ceilingArmed>>
+               owed, early, earlier, ceilingArmed>>
+stratCount == <<stratSpeaking, stratStops, stratStarts, stopUtt>>
+sttVars == <<sttStops, sttSpeaking, spoke, segAudio, segSpeech, pending, hold, backstop,
+             closedUnasked, commits, lastCommitN, deferred>>
+envVars == <<userSpeaking, utt, stops, missed>>
+bounds == <<lost, closes, backstops, lostHere>>
+monitors == <<closedUnjudged, answered, split, doubleAnswer, staleClose, staleEnd,
+              mispaired>>
 
-\* A frame on its way to the strategy. VAD edges carry the utterance a stop ended
-\* (n, for the stale monitor); a final or a wordless close carries its stamp under
-\* both designs (n: the stop it answers; c: the strategy's start count at the commit)
-\* and the utterances whose words it holds.
+vars == <<envVars, queues, stratCount, stratVars, sttVars, voiceEnv, bounds, monitors,
+          voiceMon>>
+
+\* A frame on its way to the strategy: an interim, or a final or a wordless close,
+\* which carries its stamp under both designs (n: the stop it answers; c: the
+\* strategy's start count at the commit) and the utterances whose words it holds.
 Frame(k, n, c, w) == [kind |-> k, n |-> n, c |-> c, words |-> w]
 
+\* A frame on its way up to the STT: a VAD edge, or a verdict (v) for stop n.
+Up(k, v, n) == [kind |-> k, v |-> v, n |-> n]
 
 \* Words of the turn's utterances not yet in the strategy's hands: in the engine's
 \* open segment, in a done on its way, or in a final queued behind other frames.
@@ -256,15 +301,30 @@ Outstanding ==
       \cup UNION {fromEngine[i].words : i \in 1..Len(fromEngine)}
       \cup UNION {toStrategy[i].words : i \in 1..Len(toStrategy)}
 
-StopInFlight == \E i \in 1..Len(toStrategy): toStrategy[i].kind = "stop"
+\* VAD edges on their way up, not yet seen by the STT.
+EdgesUp == Len(SelectSeq(toStt, LAMBDA x: x.kind /= "verdict"))
+
+\* THE ORDER, bounded: the VAD finds a new edge only while neither side is MaxLag
+\* edges behind. A lag of one already lets either side see an edge first; a lag of
+\* three is the strategy's backlog holding a whole utterance (sc_verdict_stale).
+Lag == Len(vadQ) < MaxLag /\ EdgesUp < MaxLag
+
+\* A stop the strategy has yet to process: its verdict is still to come.
+StopInFlight == \E i \in 1..Len(vadQ): vadQ[i].kind = "stop"
+
+VerdictInFlight == \E i \in 1..Len(toStt): toStt[i].kind = "verdict"
+
+\* A VAD start on its way up: the STT will release its hold on it.
+StartInFlight == \E i \in 1..Len(toStt): toStt[i].kind = "start"
 
 Init ==
     /\ userSpeaking = FALSE /\ utt = 0
-    /\ toStrategy = <<>> /\ toStt = <<>> /\ fromEngine = <<>>
+    /\ vadQ = <<>> /\ toStt = <<>> /\ toStrategy = <<>> /\ fromEngine = <<>>
     /\ stratSpeaking = FALSE /\ ceilingArmed = FALSE /\ stratStops = 0 /\ stratStarts = 0
     /\ stopUtt = 0 /\ turnOpen = FALSE /\ text = FALSE /\ finalized = FALSE
     /\ turnComplete = FALSE /\ vadStopped = FALSE /\ netArmed = FALSE /\ netFired = FALSE
-    /\ owed = NONE /\ earlier = FALSE
+    /\ owed = NONE /\ early = {} /\ earlier = FALSE
+    /\ sttStops = 0 /\ sttSpeaking = FALSE
     /\ spoke = FALSE /\ segAudio = {} /\ segSpeech = FALSE
     /\ pending = FALSE /\ hold = FALSE /\ backstop = FALSE /\ closedUnasked = FALSE
     /\ commits = <<>> /\ lastCommitN = 0
@@ -280,10 +340,10 @@ Init ==
 (***************************************************************************)
 (* What every commit does to the STT -- _send_commit and the engine's       *)
 (* reset. The segment closes into a done the engine will answer with (one   *)
-(* per final commit, in order); its stamp -- the VAD stop count n, and the  *)
-(* strategy's start count c for the clock design -- joins the queue of      *)
-(* commits awaiting an answer; the timers that were closing it are done; a  *)
-(* caller still talking keeps feeding the next segment, and so may the      *)
+(* per final commit, in order); its stamp -- the STT's VAD stop count n,    *)
+(* and the strategy's start count c for the clock design -- joins the queue *)
+(* of commits awaiting an answer; the timers that were closing it are done; *)
+(* a caller still talking keeps feeding the next segment, and so may the    *)
 (* commit's carry (#154) when `mayCarry`.                                   *)
 (***************************************************************************)
 CommitAt(n, speaking, mayCarry) ==
@@ -291,7 +351,7 @@ CommitAt(n, speaking, mayCarry) ==
     /\ segAudio' = IF speaking THEN {utt} ELSE {}
     /\ spoke' = (speaking \/ (mayCarry /\ CARRY))
     \* Only the design's own stamp is kept: the other is dead state.
-    /\ commits' = Append(commits, [n |-> IF DESIGN = "stop" THEN n ELSE 0,
+    /\ commits' = Append(commits, [n |-> IF Stamped THEN n ELSE 0,
                                    c |-> IF DESIGN = "clock" THEN stratStarts ELSE 0])
     /\ lastCommitN' = n
     /\ segSpeech' = FALSE
@@ -300,101 +360,71 @@ CommitAt(n, speaking, mayCarry) ==
     /\ backstop' = FALSE
     /\ deferred' = FALSE
 
-Commit == CommitAt(stops, userSpeaking, TRUE)
+Commit == CommitAt(sttStops, userSpeaking, TRUE)
 
 \* The engine closes the segment on its own: its endpointer, on a silence shorter
 \* than the VAD's floor or a breath inside a sentence. The words go into a done the
 \* wire cannot tell from a commit's answer; a caller mid-word keeps feeding the next
 \* segment. The STT learns of it only when the done arrives (Done).
 EngineClose ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ segAudio /= {} /\ closes < MaxCloses
     /\ closes' = closes + 1
     /\ fromEngine' = Append(fromEngine, [asked |-> FALSE, words |-> segAudio])
     /\ segAudio' = IF userSpeaking THEN {utt} ELSE {}
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, spoke, segSpeech, pending, hold, backstop,
-                   closedUnasked, commits, lastCommitN, stops, lost, missed, backstops,
-                   lostHere, closedUnjudged, answered, split, doubleAnswer, staleClose,
-                   staleEnd, mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, toStrategy, stratCount, stratVars, sttStops,
+                   sttSpeaking, spoke, segSpeech, pending, hold, backstop, closedUnasked,
+                   commits, lastCommitN, deferred, voiceEnv, lost, backstops, lostHere,
+                   monitors, voiceMon>>
 
 (***************************************************************************)
-(* The VAD. The STT is the first processor after the transport, so its      *)
-(* handling of an edge is atomic with the edge here; the strategy's copy    *)
-(* goes into toStrategy.                                                    *)
+(* The caller and the VAD. An edge is queued for the strategy (vadQ) and    *)
+(* pushed upstream to the STT (toStt) in the same step; each side handles   *)
+(* its copy when it gets to it (THE ORDER). The audio itself reached the    *)
+(* engine before the VAD heard it (the STT sends a chunk before passing it  *)
+(* on), so the segment holds the utterance from here.                       *)
 (***************************************************************************)
 
-\* The caller starts, or resumes. A held segment is released -- the caller's next
-\* words join it -- and, if it holds words, the backstop takes them back into its
-\* care (their own deltas would re-arm it; this covers a resume the engine decodes
-\* nothing for, followed by a stop the VAD misses). The monitor: if the strategy
-\* had called the stop INCOMPLETE and the segment was already closed under it, the
-\* caller has just proved the model right and the sentence is in two decodes.
+\* The caller starts, or resumes. The analyzer's marks have voice since its stop
+\* from here (#140): a VAD start is the analyzer's own finding of it. The monitor: if
+\* the strategy had called the stop INCOMPLETE and the segment was already closed
+\* under it, the caller has just proved the model right and the sentence is in two
+\* decodes.
 VadStart ==
-    /\ ~userSpeaking /\ utt < MaxStops + MaxMissed + 1
+    /\ ~userSpeaking /\ utt < MaxStops + MaxMissed + 1 /\ Lag
     /\ userSpeaking' = TRUE
     /\ utt' = utt + 1
     /\ spoke' = TRUE
     /\ segAudio' = segAudio \cup {utt + 1}
-    /\ toStrategy' = Append(toStrategy, Frame("start", 0, 0, {}))
-    /\ backstop' = (backstop \/ (pending /\ segSpeech))
-    /\ pending' = FALSE
-    /\ hold' = FALSE
-    \* The same release ends a wait for the caller's pause (#140): the slot is one.
-    /\ deferred' = FALSE
-    /\ resumeExit' = (resumeExit \/ deferred)
-    /\ voice' = "none"
-    /\ UNCHANGED <<voices, cutVoice, capCut, catchupCut, pauseExit>>
-    /\ closedUnasked' = FALSE
+    /\ vadQ' = Append(vadQ, Up("start", "none", 0))
+    /\ toStt' = Append(toStt, Up("start", "none", 0))
+    /\ voice' = IF stops > 0 THEN "on" ELSE voice
     /\ split' = (split \/ (closedUnjudged /\ ceilingArmed))
-    /\ UNCHANGED <<toStt, fromEngine, stratSpeaking, stratStops, stratStarts, stopUtt,
-                   stratVars, segSpeech, commits, lastCommitN, stops, lost, missed, closes, backstops,
-                   lostHere, closedUnjudged, answered, doubleAnswer, staleClose, staleEnd,
-                   mispaired>>
+    /\ UNCHANGED <<stops, missed, toStrategy, fromEngine, stratCount, stratVars, sttStops,
+                   sttSpeaking, segSpeech, pending, hold, backstop, closedUnasked, commits,
+                   lastCommitN, deferred, voices, bounds, closedUnjudged, answered,
+                   doubleAnswer, staleClose, staleEnd, mispaired, voiceMon>>
 
-\* The caller falls quiet and the VAD says so. The backstop's premise -- that this
-\* frame never comes -- is gone whichever path commits. vadStop commits here, before
-\* any verdict exists; verdict puts the segment on hold and arms the hold's expiry --
-\* unless the engine has closed this utterance's segment on its own already and
-\* nothing has streamed since: then what is open is the silent tail after its cut,
-\* and the stop commits it at once rather than hold it (stt.py, "tail").
+\* The caller falls quiet and the VAD says so. The analyzer's marks count voice from
+\* this stop.
 VadStop ==
-    /\ userSpeaking /\ stops < MaxStops
+    /\ userSpeaking /\ stops < MaxStops /\ Lag
     /\ userSpeaking' = FALSE
     /\ stops' = stops + 1
-    /\ lostHere' = FALSE
-    /\ toStrategy' = Append(toStrategy, Frame("stop", utt, 0, {}))
-    \* The analyzer's marks count voice from this stop.
+    /\ vadQ' = Append(vadQ, Up("stop", "none", utt))
+    /\ toStt' = Append(toStt, Up("stop", "none", stops + 1))
     /\ voice' = "none"
-    /\ UNCHANGED <<voices, voiceMon>>
-    /\ IF MODE = "vadStop" \/ (closedUnasked /\ ~segSpeech)
-         THEN /\ CommitAt(stops + 1, FALSE, TRUE)
-              /\ closedUnjudged' = (MODE = "vadStop")
-              /\ answered' = TRUE
-         ELSE /\ pending' = TRUE
-              /\ hold' = TRUE
-              /\ backstop' = FALSE
-              /\ closedUnjudged' = FALSE
-              /\ answered' = FALSE
-              /\ UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, commits, lastCommitN,
-                             deferred>>
-    /\ UNCHANGED <<utt, toStt, stratSpeaking, stratStops, stratStarts, stopUtt, stratVars,
-                   closedUnasked, lost, missed, closes, backstops, split, doubleAnswer, staleClose,
-                   staleEnd, mispaired>>
+    /\ UNCHANGED <<utt, missed, toStrategy, fromEngine, stratCount, stratVars, sttVars,
+                   voices, bounds, monitors, voiceMon>>
 
 \* The caller falls quiet and the VAD does NOT say so. Nobody sees it: not the STT,
 \* not the strategy. The stop the caller made is unanswerable by design; what the
 \* properties ask is that the words already in the segment are still closed.
 VadStopMissed ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ userSpeaking /\ missed < MaxMissed
     /\ userSpeaking' = FALSE
     /\ missed' = missed + 1
-    /\ UNCHANGED <<utt, toStrategy, toStt, fromEngine, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, spoke, segAudio, segSpeech, pending, hold,
-                   backstop, closedUnasked, commits, lastCommitN, stops, lost, closes, backstops,
-                   lostHere, closedUnjudged, answered, split, doubleAnswer, staleClose,
-                   staleEnd, mispaired>>
+    /\ UNCHANGED <<utt, stops, queues, stratCount, stratVars, sttVars, voiceEnv, bounds,
+                   monitors, voiceMon>>
 
 \* The caller's voice before the VAD admits it (#140): after a stop, the caller starts
 \* again and the VAD's start is still 0.2-0.4 s away -- or never comes, for a cough or
@@ -405,22 +435,14 @@ VoiceOn ==
     /\ ~userSpeaking /\ stops > 0 /\ voice /= "on" /\ voices < MaxVoice
     /\ voice' = "on"
     /\ voices' = voices + 1
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, fromEngine, stratSpeaking,
-                   stratStops, stratStarts, stopUtt, stratVars, spoke, segAudio, segSpeech,
-                   pending, hold, backstop, closedUnasked, commits, lastCommitN, stops,
-                   lost, missed, closes, backstops, lostHere, closedUnjudged, answered,
-                   split, doubleAnswer, staleClose, staleEnd, mispaired, deferred,
+    /\ UNCHANGED <<envVars, queues, stratCount, stratVars, sttVars, bounds, monitors,
                    voiceMon>>
 
 VoicePause ==
     /\ voice = "on" /\ ~userSpeaking
     /\ voice' = "paused"
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, fromEngine, stratSpeaking,
-                   stratStops, stratStarts, stopUtt, stratVars, spoke, segAudio, segSpeech,
-                   pending, hold, backstop, closedUnasked, commits, lastCommitN, stops,
-                   lost, missed, closes, backstops, lostHere, closedUnjudged, answered,
-                   split, doubleAnswer, staleClose, staleEnd, mispaired, deferred,
-                   voices, voiceMon>>
+    /\ UNCHANGED <<envVars, queues, stratCount, stratVars, sttVars, voices, bounds,
+                   monitors, voiceMon>>
 
 \* The engine streams an interim for the audio it was fed -- during the speech or,
 \* since its deltas lag, after the stop. Each one re-arms the backstop, UNLESS the
@@ -432,76 +454,69 @@ VoicePause ==
 \* streams none for a new segment until the previous one's finish is done (one
 \* worker per session), which is when the STT's buffer empties (Done).
 Delta ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ spoke /\ ~segSpeech
     /\ segSpeech' = TRUE
     /\ backstop' = (backstop \/ ~pending)
     /\ toStrategy' = Append(toStrategy, Frame("delta", 0, 0, {}))
-    /\ UNCHANGED <<userSpeaking, utt, toStt, fromEngine, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, spoke, segAudio, pending, hold, closedUnasked,
-                   commits, lastCommitN, stops, lost, missed, closes, backstops, lostHere,
-                   closedUnjudged, answered, split, doubleAnswer, staleClose, staleEnd,
-                   mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, fromEngine, stratCount, stratVars, sttStops,
+                   sttSpeaking, spoke, segAudio, pending, hold, closedUnasked, commits,
+                   lastCommitN, deferred, voiceEnv, bounds, monitors, voiceMon>>
 
 (***************************************************************************)
-(* The stop strategy.                                                      *)
+(* The stop strategy, on the aggregator's input task: its own copy of each  *)
+(* VAD edge, in order.                                                      *)
 (***************************************************************************)
 
 \* _reset() + analyzer.clear(): what a turn boundary leaves. The owed close is not
-\* the turn's to forget: it is a fact about the STT's segment.
+\* the turn's to forget: it is a fact about the STT's segment; nor are receipts.
 ResetStrategy ==
     /\ turnOpen' = FALSE /\ text' = FALSE /\ finalized' = FALSE /\ turnComplete' = FALSE
     /\ vadStopped' = FALSE /\ netArmed' = FALSE /\ netFired' = FALSE
     /\ earlier' = FALSE /\ ceilingArmed' = FALSE
-    /\ UNCHANGED owed
+    /\ UNCHANGED <<owed, early>>
 
 \* _handle_vad_user_started_speaking: _discard_pending_end_of_turn, and the
 \* analyzer's silence clock resets on speech. _earlier_final survives (the first cut
 \* cleared it only at turn boundaries); so does the owed close.
 StratStart ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
-    /\ toStrategy /= <<>> /\ Head(toStrategy).kind = "start"
-    /\ toStrategy' = Tail(toStrategy)
+    /\ vadQ /= <<>> /\ Head(vadQ).kind = "start"
+    /\ vadQ' = Tail(vadQ)
     /\ stratSpeaking' = TRUE
     /\ stratStarts' = stratStarts + 1
     /\ ceilingArmed' = FALSE
     /\ turnComplete' = FALSE /\ finalized' = FALSE /\ vadStopped' = FALSE
     /\ netArmed' = FALSE /\ netFired' = FALSE
-    /\ UNCHANGED <<userSpeaking, utt, toStt, fromEngine, stratStops, stopUtt, turnOpen,
-                   text, owed, earlier, spoke, segAudio, segSpeech, pending, hold, backstop,
-                   closedUnasked, commits, lastCommitN, stops, lost, missed, closes, backstops,
-                   lostHere, closedUnjudged, answered, split, doubleAnswer, staleClose,
-                   staleEnd, mispaired>>
+    /\ UNCHANGED <<envVars, toStt, toStrategy, fromEngine, stratStops, stopUtt, turnOpen,
+                   text, owed, early, earlier, sttVars, voiceEnv, bounds, monitors,
+                   voiceMon>>
 
 \* _handle_vad_user_stopped_speaking: the model runs and answers -- the answer is the
 \* environment's choice -- and the verdict is pushed upstream, numbered with the stop
-\* it answers. INCOMPLETE leaves the analyzer's speech buffer live, so its silence
-\* ceiling starts counting; COMPLETE clears it and calls the turn complete. The p99
-\* safety-net timer is armed either way. A COMPLETE verdict also vindicates a
-\* segment already closed under this stop: the model agrees the caller was done.
-\* The stop is counted (stratStops) and owed its close from here: the STT commits
-\* for every stop it sees, or holds and then commits, and a close stamped with this
-\* stop cannot have come before it (the STT counts the same frame first).
+\* it answers, behind whatever the VAD has pushed up since that stop. INCOMPLETE
+\* leaves the analyzer's speech buffer live, so its silence ceiling starts counting;
+\* COMPLETE clears it and calls the turn complete. The p99 safety-net timer is armed
+\* either way. A COMPLETE verdict also vindicates a segment already closed under this
+\* stop: the model agrees the caller was done. The stop is counted (stratStops) and
+\* owed its close from here -- under "receipts", unless its close has landed already.
 StratStop ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
-    /\ toStrategy /= <<>> /\ Head(toStrategy).kind = "stop"
-    /\ toStrategy' = Tail(toStrategy)
+    /\ vadQ /= <<>> /\ Head(vadQ).kind = "stop"
+    /\ vadQ' = Tail(vadQ)
     /\ stratSpeaking' = FALSE
     /\ stratStops' = stratStops + 1
-    /\ stopUtt' = Head(toStrategy).n
-    /\ owed' = stratStops + 1
+    /\ stopUtt' = Head(vadQ).n
+    /\ owed' = IF DESIGN = "receipts" /\ (stratStops + 1) \in early
+                 THEN NONE ELSE stratStops + 1
+    /\ early' = {x \in early : x > stratStops + 1}
     /\ vadStopped' = TRUE
     /\ netArmed' = TRUE
     /\ \E v \in {"complete", "incomplete"}:
-         /\ toStt' = Append(toStt, [v |-> v, n |-> stratStops + 1])
+         /\ toStt' = Append(toStt, Up("verdict", v, stratStops + 1))
          /\ ceilingArmed' = (v = "incomplete")
          /\ turnComplete' = (v = "complete")
          /\ closedUnjudged' = (closedUnjudged /\ v = "incomplete")
-    /\ UNCHANGED <<userSpeaking, utt, fromEngine, stratStarts, turnOpen, text, finalized,
-                   netFired, earlier, spoke, segAudio, segSpeech, pending, hold,
-                   backstop, closedUnasked, commits, lastCommitN, stops, lost, missed,
-                   closes, backstops, lostHere, answered, split, doubleAnswer, staleClose, staleEnd,
-                   mispaired>>
+    /\ UNCHANGED <<envVars, toStrategy, fromEngine, stratStarts, turnOpen, text, finalized,
+                   netFired, earlier, sttVars, voiceEnv, bounds, answered, split,
+                   doubleAnswer, staleClose, staleEnd, mispaired, voiceMon>>
 
 \* handle_user_turn_started, when a frame opens the turn (MinWordsUserTurnStartStrategy
 \* on an interim or a final): pipecat's reset -- unless the turn opens after its own
@@ -520,7 +535,6 @@ OpenTurn ==
 \* no longer covers the caller's speech (pipecat's own rule). It opens the turn if
 \* none is.
 StratDelta ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ toStrategy /= <<>> /\ Head(toStrategy).kind = "delta"
     /\ toStrategy' = Tail(toStrategy)
     /\ finalized' = FALSE
@@ -528,23 +542,24 @@ StratDelta ==
          THEN UNCHANGED <<turnOpen, text, earlier, turnComplete, vadStopped, netArmed,
                           netFired>>
          ELSE OpenTurn /\ text' = FALSE
-    /\ UNCHANGED <<userSpeaking, utt, toStt, fromEngine, stratSpeaking, ceilingArmed,
-                   stratStops, stratStarts, stopUtt, owed, spoke, segAudio, segSpeech, pending, hold,
-                   backstop, closedUnasked, commits, lastCommitN, stops, lost, missed,
-                   closes, backstops, lostHere, closedUnjudged, answered, split, doubleAnswer,
-                   staleClose, staleEnd, mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, fromEngine, stratCount, ceilingArmed, owed, early,
+                   sttVars, voiceEnv, bounds, monitors, voiceMon>>
+
+\* What a close's stamp does to the debt: it pays the owed close if it names it;
+\* under "receipts" a stamp for a stop not counted here yet is kept for the count.
+Pays(f) == Stamped /\ f.n /= NONE /\ f.n = owed
+Receipt(f) == IF DESIGN = "receipts" /\ f.n > stratStops THEN early \cup {f.n} ELSE early
 
 \* A final reaches the strategy (_handle_transcription). It opens the turn if none is
 \* (handle_user_turn_started runs first). Then, by design:
-\*   "clock": stamped before the strategy's latest VAD start -> an earlier utterance's:
-\*            held in _earlier_final, nothing else touched. Otherwise stock: it is
-\*            _text, finalized.
-\*   "stop":  stock for _text and finalized, always; and its stamp pays the owed
-\*            close if it names it -- the caller quiet or not.
+\*   "clock":  stamped before the strategy's latest VAD start -> an earlier utterance's:
+\*             held in _earlier_final, nothing else touched. Otherwise stock: it is
+\*             _text, finalized.
+\*   stamped:  stock for _text and finalized, always; and its stamp pays the owed
+\*             close if it names it -- the caller quiet or not.
 \* pipecat's fallback for a transcript with no VAD stop in sight (the caller quiet,
 \* no stop this turn) calls the turn complete and arms the net.
 StratFinal ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ toStrategy /= <<>> /\ Head(toStrategy).kind = "final"
     /\ LET f == Head(toStrategy)
            reset == ~turnOpen /\ ~(vadStopped /\ ~stratSpeaking)
@@ -554,89 +569,75 @@ StratFinal ==
            fz0 == IF reset THEN FALSE ELSE finalized
            tx0 == IF turnOpen THEN text ELSE FALSE
            isEarlier == DESIGN = "clock" /\ f.c < stratStarts
-           pays == DESIGN = "stop" /\ f.n = owed
            fallback == ~stratSpeaking /\ ~vs0
        IN /\ toStrategy' = Tail(toStrategy)
           /\ turnOpen' = TRUE
           /\ earlier' = isEarlier
           /\ text' = IF isEarlier THEN tx0 ELSE TRUE
           /\ finalized' = IF isEarlier THEN fz0 ELSE TRUE
-          /\ owed' = IF pays THEN NONE ELSE owed
+          /\ owed' = IF Pays(f) THEN NONE ELSE owed
+          /\ early' = Receipt(f)
           /\ turnComplete' = IF isEarlier THEN tc0 ELSE (tc0 \/ fallback)
           /\ netArmed' = IF isEarlier THEN na0 ELSE (na0 \/ fallback)
           /\ vadStopped' = vs0
           /\ netFired' = IF reset THEN FALSE ELSE netFired
-    /\ UNCHANGED <<userSpeaking, utt, toStt, fromEngine, stratSpeaking, ceilingArmed,
-                   stratStops, stratStarts, stopUtt, spoke, segAudio, segSpeech, pending, hold,
-                   backstop, closedUnasked, commits, lastCommitN, stops, lost, missed,
-                   closes, backstops, lostHere, closedUnjudged, answered, split, doubleAnswer,
-                   staleClose, staleEnd, mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, fromEngine, stratCount, ceilingArmed, sttVars,
+                   voiceEnv, bounds, monitors, voiceMon>>
 
 \* A wordless close reaches the strategy (_handle_segment_done). Opens no turn.
-\*   "clock": stamped from before the latest start -> ignored; else, with an earlier
-\*            final held, no _text and the VAD stopped, the earlier final is adopted
-\*            as the transcript.
-\*   "stop":  pays the owed close on the same terms as a final, and then finalizes
-\*            whatever _text holds.
+\*   "clock":  stamped from before the latest start -> ignored; else, with an earlier
+\*             final held, no _text and the VAD stopped, the earlier final is adopted
+\*             as the transcript.
+\*   stamped:  pays the owed close on the same terms as a final, and then finalizes
+\*             whatever _text holds.
 StratDone ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ toStrategy /= <<>> /\ Head(toStrategy).kind = "done"
     /\ LET f == Head(toStrategy)
-           pays == DESIGN = "stop" /\ f.n = owed
            adopt == DESIGN = "clock" /\ f.c >= stratStarts /\ earlier /\ ~text /\ vadStopped
        IN /\ toStrategy' = Tail(toStrategy)
           /\ text' = (text \/ adopt)
           /\ earlier' = (earlier /\ ~adopt)
-          /\ finalized' = (finalized \/ pays \/ adopt)
-          /\ owed' = IF pays THEN NONE ELSE owed
-    /\ UNCHANGED <<userSpeaking, utt, toStt, fromEngine, stratSpeaking, ceilingArmed,
-                   stratStops, stratStarts, stopUtt, turnOpen, turnComplete, vadStopped,
-                   netArmed, netFired, spoke, segAudio, segSpeech, pending, hold, backstop,
-                   closedUnasked, commits, lastCommitN, stops, lost, missed, closes, backstops,
-                   lostHere, closedUnjudged, answered, split, doubleAnswer, staleClose,
-                   staleEnd, mispaired>>
+          /\ finalized' = (finalized \/ Pays(f) \/ adopt)
+          /\ owed' = IF Pays(f) THEN NONE ELSE owed
+          /\ early' = Receipt(f)
+    /\ UNCHANGED <<envVars, vadQ, toStt, fromEngine, stratCount, ceilingArmed, turnOpen,
+                   turnComplete, vadStopped, netArmed, netFired, sttVars, voiceEnv, bounds,
+                   monitors, voiceMon>>
 
 \* BaseSmartTurn.append_audio: SMARTTURN_STOP_SECS of silence since the stop overrides
 \* the INCOMPLETE verdict; _handle_input_audio sees _turn_complete flip and pushes the
 \* ceiling's verdict. The caller had the whole ceiling and did not resume, so a
 \* segment closed under this stop is not a split.
 Ceiling ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ ceilingArmed /\ ~stratSpeaking
     /\ ceilingArmed' = FALSE
     /\ turnComplete' = TRUE
-    /\ toStt' = Append(toStt, [v |-> "ceiling", n |-> stratStops])
+    /\ toStt' = Append(toStt, Up("verdict", "ceiling", stratStops))
     /\ closedUnjudged' = FALSE
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, fromEngine, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, turnOpen, text, finalized, vadStopped, netArmed,
-                   netFired, owed, earlier, spoke, segAudio, segSpeech, pending, hold,
-                   backstop, closedUnasked, commits, lastCommitN, stops, lost, missed,
-                   closes, backstops, lostHere, answered, split, doubleAnswer, staleClose, staleEnd,
-                   mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStrategy, fromEngine, stratCount, turnOpen, text,
+                   finalized, vadStopped, netArmed, netFired, owed, early, earlier, sttVars,
+                   voiceEnv, bounds, answered, split, doubleAnswer, staleClose, staleEnd,
+                   mispaired, voiceMon>>
 
 \* _timeout_handler: the STT p99 safety net, armed at every VAD stop, cancelled by a
 \* VAD start or a turn boundary. Durations are out of scope, so it can fire at any
 \* point after the stop -- including, as live, before any done can exist.
 Net ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ netArmed
     /\ netArmed' = FALSE /\ netFired' = TRUE
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, fromEngine, stratSpeaking,
-                   ceilingArmed, stratStops, stratStarts, stopUtt, turnOpen, text,
-                   finalized, turnComplete, vadStopped, owed, earlier, spoke, segAudio,
-                   segSpeech, pending, hold, backstop, closedUnasked, commits, lastCommitN,
-                   stops, lost, missed, closes, backstops, lostHere, closedUnjudged, answered, split,
-                   doubleAnswer, staleClose, staleEnd, mispaired>>
+    /\ UNCHANGED <<envVars, queues, stratCount, ceilingArmed, turnOpen, text, finalized,
+                   turnComplete, vadStopped, owed, early, earlier, sttVars, voiceEnv,
+                   bounds, monitors, voiceMon>>
 
 \* _maybe_trigger_user_turn_stopped, and the controller's refusal to finalize while
 \* the user is audibly speaking: the turn ends when the model has called it complete
-\* and there is a transcript, finalized or past the net. Under DESIGN = "stop", not
-\* while the latest VAD stop counted is owed its close -- on any path, the no-stop
-\* fallback included, and across turn boundaries: this model's first two finds were
-\* the half of a sentence the backstop (MaxCloses = 0) or the engine's own cut had
-\* returned, landing after the controller closed the turn under the ceiling, opening
-\* a new turn and ending it through the fallback with the held half still on its
-\* way. Evaluated inline wherever the code calls it (see Next): the end is
+\* and there is a transcript, finalized or past the net. Under the stamped designs,
+\* not while the latest VAD stop counted is owed its close -- on any path, the
+\* no-stop fallback included, and across turn boundaries: this model's first two
+\* finds were the half of a sentence the backstop (MaxCloses = 0) or the engine's own
+\* cut had returned, landing after the controller closed the turn under the ceiling,
+\* opening a new turn and ending it through the fallback with the held half still on
+\* its way. Evaluated inline wherever the code calls it (see Next): the end is
 \* immediate.
 CanEnd ==
     /\ turnOpen /\ turnComplete /\ text /\ (finalized \/ netFired) /\ ~stratSpeaking
@@ -647,15 +648,11 @@ CanEnd ==
 \* the final that lands next opens a NEW turn on them, and its interruption cuts the
 \* reply to this one before a word of it plays.
 EndTurn ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ CanEnd
     /\ staleEnd' = (staleEnd \/ (Outstanding \cap (1..stopUtt) /= {}))
     /\ ResetStrategy
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, fromEngine, stratSpeaking,
-                   stratStops, stratStarts, stopUtt, spoke, segAudio, segSpeech, pending, hold,
-                   backstop, closedUnasked, commits, lastCommitN, stops, lost, missed,
-                   closes, backstops, lostHere, closedUnjudged, answered, split, doubleAnswer,
-                   staleClose, mispaired>>
+    /\ UNCHANGED <<envVars, queues, stratCount, sttVars, voiceEnv, bounds, closedUnjudged,
+                   answered, split, doubleAnswer, staleClose, mispaired, voiceMon>>
 
 \* The controller closes the turn under a running ceiling on something other than the
 \* ceiling: keep_barge_in_reachable re-applying a stop it refused earlier, or the stop
@@ -667,42 +664,85 @@ EndTurn ==
 \* with the ceiling here on purpose; the stale-end monitor is not consulted either --
 \* the close is accepted, not checked.
 TurnStop ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
     /\ turnOpen /\ ceilingArmed /\ ~stratSpeaking
     /\ toStt' = IF TURNSTOP = "verdict"
-                  THEN Append(toStt, [v |-> "stopped", n |-> stratStops])
+                  THEN Append(toStt, Up("verdict", "stopped", stratStops))
                   ELSE toStt
     /\ ResetStrategy
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, fromEngine, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, spoke, segAudio, segSpeech, pending, hold, backstop,
-                   closedUnasked, commits, lastCommitN, stops, lost, missed, closes, backstops,
-                   lostHere, closedUnjudged, answered, split, doubleAnswer, staleClose,
-                   staleEnd, mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStrategy, fromEngine, stratCount, sttVars, voiceEnv,
+                   bounds, monitors, voiceMon>>
 
 \* The fault: a verdict that never reaches the STT. Noted against the stop it was for,
-\* if that is the current one -- an earlier stop's, still in flight, excuses nothing.
+\* if that is the STT's current one -- an earlier stop's excuses nothing.
 LoseVerdict ==
-    /\ UNCHANGED <<deferred, voiceEnv, voiceMon>>
-    /\ toStt /= <<>> /\ lost < MaxLost
+    /\ toStt /= <<>> /\ Head(toStt).kind = "verdict" /\ lost < MaxLost
     /\ toStt' = Tail(toStt)
     /\ lost' = lost + 1
-    /\ lostHere' = (lostHere \/ Head(toStt).n = stops)
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, fromEngine, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, spoke, segAudio, segSpeech, pending, hold,
-                   backstop, closedUnasked, commits, lastCommitN, stops, missed, closes, backstops,
-                   closedUnjudged, answered, split, doubleAnswer, staleClose, staleEnd,
-                   mispaired>>
+    /\ lostHere' = (lostHere \/ Head(toStt).n = sttStops)
+    /\ UNCHANGED <<envVars, vadQ, toStrategy, fromEngine, stratCount, stratVars, sttVars,
+                   voiceEnv, closes, backstops, monitors, voiceMon>>
 
 (***************************************************************************)
-(* The STT.                                                                *)
+(* The STT: its copy of each VAD edge and each verdict, in the order they   *)
+(* were pushed up (_turn_edge, under the wire's lock).                      *)
 (***************************************************************************)
+
+\* The STT sees a VAD start: a held segment is released -- the caller's next words
+\* join it -- and, if it holds words, the backstop takes them back into its care
+\* (their own deltas would re-arm it; this covers a resume the engine decodes nothing
+\* for, followed by a stop the VAD misses).
+SttStart ==
+    /\ toStt /= <<>> /\ Head(toStt).kind = "start"
+    /\ toStt' = Tail(toStt)
+    /\ sttSpeaking' = TRUE
+    /\ backstop' = (backstop \/ (pending /\ segSpeech))
+    /\ pending' = FALSE
+    /\ hold' = FALSE
+    \* The same release ends a wait for the caller's pause (#140): the slot is one.
+    /\ deferred' = FALSE
+    /\ resumeExit' = (resumeExit \/ deferred)
+    /\ closedUnasked' = FALSE
+    /\ UNCHANGED <<envVars, vadQ, toStrategy, fromEngine, stratCount, stratVars, sttStops,
+                   spoke, segAudio, segSpeech, commits, lastCommitN, voiceEnv, bounds,
+                   monitors, cutVoice, capCut, catchupCut, pauseExit>>
+
+\* The STT sees a VAD stop. The backstop's premise -- that this frame never comes --
+\* is gone whichever path commits. vadStop commits here, before any verdict exists;
+\* verdict puts the segment on hold and arms the hold's expiry -- unless the engine
+\* has closed this utterance's segment on its own already and nothing has streamed
+\* since: then what is open is the silent tail after its cut, and the stop commits it
+\* at once rather than hold it (stt.py, "tail"). The commit closes the segment as it
+\* stands now: a caller who has already resumed keeps feeding the next one.
+SttStop ==
+    /\ toStt /= <<>> /\ Head(toStt).kind = "stop"
+    /\ toStt' = Tail(toStt)
+    /\ sttStops' = sttStops + 1
+    /\ sttSpeaking' = FALSE
+    /\ lostHere' = FALSE
+    /\ IF MODE = "vadStop" \/ (closedUnasked /\ ~segSpeech)
+         THEN /\ CommitAt(sttStops + 1, userSpeaking, TRUE)
+              /\ closedUnjudged' = (MODE = "vadStop")
+              /\ answered' = TRUE
+         ELSE /\ pending' = TRUE
+              /\ hold' = TRUE
+              /\ backstop' = FALSE
+              /\ closedUnjudged' = FALSE
+              /\ answered' = FALSE
+              /\ UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, commits, lastCommitN,
+                             deferred>>
+    /\ UNCHANGED <<envVars, vadQ, toStrategy, stratCount, stratVars, closedUnasked,
+                   voiceEnv, lost, closes, backstops, split, doubleAnswer, staleClose,
+                   staleEnd, mispaired, voiceMon>>
 
 \* _handle_verdict. With no commit pending the verdict answers a stop this segment
 \* is not waiting on -- vadStop mode, or a caller who resumed before it landed -- and
 \* is ignored. A complete verdict (the model's or the ceiling's) commits; an
-\* incomplete one keeps the hold.
+\* incomplete one keeps the hold. TurnVerdictFrame names no stop, so the STT cannot
+\* tell a verdict for its pending stop from one for the stop before it that the VAD
+\* overtook (THE ORDER): unless NUMBERED, it takes either. A commit on another stop's
+\* verdict closes the segment under a stop nobody has judged (closedUnjudged).
 Verdict ==
-    /\ toStt /= <<>>
+    /\ toStt /= <<>> /\ Head(toStt).kind = "verdict"
     /\ toStt' = Tail(toStt)
     \* Ignored as well: any verdict while one already waits for the caller's pause.
     \* Held instead of committed (VOICE = "pause"): a complete verdict over voice that
@@ -712,30 +752,33 @@ Verdict ==
     \* STT decides on what it has heard, which does not hold this voice yet, and
     \* commits over it. Durations are out of scope, so that can happen at any verdict;
     \* it is the catch-up bound's accepted cost (catchupCut), recorded apart.
-    /\ IF ~pending \/ deferred \/ Head(toStt).v = "incomplete"
-         THEN UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, pending, hold, backstop,
-                          commits, lastCommitN, answered, doubleAnswer, staleClose,
-                          deferred, cutVoice, catchupCut>>
-         ELSE IF VOICE = "pause" /\ voice = "on"
-         THEN \/ /\ deferred' = TRUE
-                 /\ UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, pending, hold,
-                                backstop, commits, lastCommitN, answered, doubleAnswer,
-                                staleClose, cutVoice, catchupCut>>
-              \/ /\ Commit
+    /\ LET h == Head(toStt)
+           other == h.n /= sttStops
+       IN IF ~pending \/ deferred \/ h.v = "incomplete" \/ (NUMBERED /\ other)
+            THEN UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, pending, hold,
+                             backstop, commits, lastCommitN, answered, doubleAnswer,
+                             staleClose, deferred, cutVoice, catchupCut, closedUnjudged>>
+            ELSE IF VOICE = "pause" /\ voice = "on"
+            THEN \/ /\ deferred' = TRUE
+                    /\ UNCHANGED <<fromEngine, spoke, segAudio, segSpeech, pending, hold,
+                                   backstop, commits, lastCommitN, answered, doubleAnswer,
+                                   staleClose, cutVoice, catchupCut, closedUnjudged>>
+                 \/ /\ Commit
+                    /\ answered' = TRUE
+                    /\ doubleAnswer' = (doubleAnswer \/ answered)
+                    /\ staleClose' = (staleClose \/ sttSpeaking)
+                    /\ catchupCut' = TRUE
+                    /\ closedUnjudged' = (closedUnjudged \/ other)
+                    /\ UNCHANGED cutVoice
+            ELSE /\ Commit
                  /\ answered' = TRUE
                  /\ doubleAnswer' = (doubleAnswer \/ answered)
-                 /\ staleClose' = (staleClose \/ userSpeaking)
-                 /\ catchupCut' = TRUE
-                 /\ UNCHANGED cutVoice
-         ELSE /\ Commit
-              /\ answered' = TRUE
-              /\ doubleAnswer' = (doubleAnswer \/ answered)
-              /\ staleClose' = (staleClose \/ userSpeaking)
-              /\ cutVoice' = (cutVoice \/ voice = "on")
-              /\ UNCHANGED catchupCut
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, stratSpeaking, stratStops, stratStarts,
-                   stopUtt, stratVars, closedUnasked, stops, lost, missed, closes, backstops,
-                   lostHere, closedUnjudged, split, staleEnd, mispaired, voiceEnv, capCut,
+                 /\ staleClose' = (staleClose \/ sttSpeaking)
+                 /\ cutVoice' = (cutVoice \/ voice = "on")
+                 /\ closedUnjudged' = (closedUnjudged \/ other)
+                 /\ UNCHANGED catchupCut
+    /\ UNCHANGED <<envVars, vadQ, toStrategy, stratCount, stratVars, sttStops, sttSpeaking,
+                   closedUnasked, voiceEnv, bounds, split, staleEnd, mispaired, capCut,
                    pauseExit, resumeExit>>
 
 \* _wait_for_pause, ending on the pause: the analyzer has heard the stop's own window
@@ -745,12 +788,11 @@ PauseCommit ==
     /\ Commit
     /\ answered' = TRUE
     /\ doubleAnswer' = (doubleAnswer \/ answered)
-    /\ staleClose' = (staleClose \/ userSpeaking)
+    /\ staleClose' = (staleClose \/ sttSpeaking)
     /\ pauseExit' = TRUE
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, closedUnasked, stops, lost, missed,
-                   closes, backstops, lostHere, closedUnjudged, split, staleEnd, mispaired,
-                   voiceEnv, cutVoice, capCut, catchupCut, resumeExit>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, toStrategy, stratCount, stratVars, sttStops,
+                   sttSpeaking, closedUnasked, voiceEnv, bounds, closedUnjudged, split,
+                   staleEnd, mispaired, cutVoice, capCut, catchupCut, resumeExit>>
 
 \* _wait_for_pause, ending on its bound (the session's ceiling after the verdict).
 \* Durations are out of scope, so it can fire at any point of the wait -- over voice
@@ -761,29 +803,31 @@ PauseCap ==
     /\ Commit
     /\ answered' = TRUE
     /\ doubleAnswer' = (doubleAnswer \/ answered)
-    /\ staleClose' = (staleClose \/ userSpeaking)
+    /\ staleClose' = (staleClose \/ sttSpeaking)
     /\ capCut' = (capCut \/ voice = "on")
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, closedUnasked, stops, lost, missed,
-                   closes, backstops, lostHere, closedUnjudged, split, staleEnd, mispaired,
-                   voiceEnv, cutVoice, catchupCut, pauseExit, resumeExit>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, toStrategy, stratCount, stratVars, sttStops,
+                   sttSpeaking, closedUnasked, voiceEnv, bounds, closedUnjudged, split,
+                   staleEnd, mispaired, cutVoice, catchupCut, pauseExit, resumeExit>>
 
 \* _handle_message on a transcription.done. The done at the head of the wire is paired
 \* with the commit at the head of the queue -- exactly when the wire says which dones
 \* answer commits (DONES = "marked"), by order when it does not, and then a close of
-\* the engine's own takes the commit's place (mispaired). The stamp under "stop": the
-\* commit's for its answer; for a done nothing asked, the last commit's if it carries
-\* no words (the silent tail behind a mispairing), the next stop's if it does. Under
-\* "clock": the commit's start count, or the strategy's start count now. The STT's
-\* buffer and the backstop are cleared; a done nothing asked for marks the segment as
-\* closed unasked, and -- in the first cut only -- released a hold it landed under.
+\* the engine's own takes the commit's place (mispaired). The stamp under the stamped
+\* designs: the commit's for its answer; for a done nothing asked, the last commit's if
+\* it carries no words (the silent tail behind a mispairing), and if it does, the next
+\* stop's ("stop") or none ("receipts"). Under "clock": the commit's start count, or
+\* the strategy's start count now. The STT's buffer and the backstop are cleared; a
+\* done nothing asked for marks the segment as closed unasked, and -- in the first cut
+\* only -- released a hold it landed under.
 Done ==
     /\ fromEngine /= <<>>
     /\ LET d == Head(fromEngine)
            paired == IF DONES = "marked" THEN d.asked ELSE commits /= <<>>
-           n == IF DESIGN /= "stop" THEN 0
+           n == IF ~Stamped THEN 0
                 ELSE IF paired THEN Head(commits).n
-                ELSE IF d.words = {} THEN lastCommitN ELSE stops + 1
+                ELSE IF d.words = {} THEN lastCommitN
+                ELSE IF DESIGN = "receipts" THEN NONE
+                ELSE sttStops + 1
            c == IF DESIGN /= "clock" THEN 0
                 ELSE IF paired THEN Head(commits).c ELSE stratStarts
            kind == IF d.words = {} THEN "done" ELSE "final"
@@ -797,19 +841,18 @@ Done ==
           /\ IF DESIGN = "clock" /\ ~paired /\ pending
                THEN pending' = FALSE /\ hold' = FALSE /\ deferred' = FALSE
                ELSE UNCHANGED <<pending, hold, deferred>>
-    /\ UNCHANGED <<userSpeaking, utt, toStt, stratSpeaking, stratStops, stratStarts,
-                   stopUtt, stratVars, spoke, segAudio, lastCommitN, stops, lost, missed, closes, backstops,
-                   lostHere, closedUnjudged, answered, split, doubleAnswer, staleClose,
-                   staleEnd, voiceEnv, voiceMon>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, stratCount, stratVars, sttStops, sttSpeaking,
+                   spoke, segAudio, lastCommitN, voiceEnv, bounds, closedUnjudged,
+                   answered, split, doubleAnswer, staleClose, staleEnd, voiceMon>>
 
 \* _commit_when_hold_expires. TIMING FACT, stated: the expiry outlasts every verdict
 \* that is still coming -- one in flight, one for a stop the strategy has not
 \* processed yet, or the ceiling's, which fires SMARTTURN_STOP_SECS after the stop
-\* and the expiry is that plus slack. So it is enabled only once none of those can
-\* arrive, i.e. when a verdict was LOST. The strategy has judged the stop by then
-\* (the ceiling fired, or the model said done), so the closure is not unjudged.
+\* and the expiry is that plus slack -- and every edge on its way up. So it is
+\* enabled only once none of those can arrive, i.e. when a verdict was LOST. The
+\* strategy has judged the stop by then (the ceiling fired, or the model said done),
+\* so the closure is not unjudged.
 HoldExpire ==
-    /\ UNCHANGED <<voiceEnv, voiceMon>>
     \* Not while the slot holds the wait for the caller's pause instead (#140): the
     \* verdict came, and the wait's own bound is PauseCap.
     /\ hold /\ pending /\ ~deferred
@@ -822,9 +865,9 @@ HoldExpire ==
     \* which the timing fact above rules out. Written this way rather than as FALSE so
     \* that dropping the fact makes the row fall instead of the monitor lie.
     /\ closedUnjudged' = ceilingArmed
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, closedUnasked, stops, lost, missed,
-                   closes, backstops, lostHere, split, staleClose, staleEnd, mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, toStrategy, stratCount, stratVars, sttStops,
+                   sttSpeaking, closedUnasked, voiceEnv, bounds, split, staleClose,
+                   staleEnd, mispaired, voiceMon>>
 
 \* _stranded_commit_after_quiet: 1.5 s after the last interim, the segment still
 \* holding words and no VAD stop having claimed them. It answers no stop -- it is for
@@ -832,19 +875,17 @@ HoldExpire ==
 BackstopReady == backstop /\ segSpeech /\ ~pending
 
 Backstop ==
-    /\ UNCHANGED <<voiceEnv, voiceMon>>
     /\ BackstopReady /\ backstops < MaxBackstops
     /\ backstops' = backstops + 1
     \* No speech end placed for it, so it claims no silence and carries nothing (#154).
-    /\ CommitAt(stops, userSpeaking, FALSE)
+    /\ CommitAt(sttStops, userSpeaking, FALSE)
     \* A backstop that fired into a HELD segment would have closed it under a stop
     \* nobody has judged. The guard above (stt.py's fire-time check) makes this a
     \* no-op; it is here so that removing the guard makes NoSplitOnIncomplete fall.
     /\ closedUnjudged' = (closedUnjudged \/ pending)
-    /\ UNCHANGED <<userSpeaking, utt, toStrategy, toStt, stratSpeaking, stratStops,
-                   stratStarts, stopUtt, stratVars, closedUnasked, stops, lost, missed,
-                   closes, lostHere, answered, split, doubleAnswer, staleClose, staleEnd,
-                   mispaired>>
+    /\ UNCHANGED <<envVars, vadQ, toStt, toStrategy, stratCount, stratVars, sttStops,
+                   sttSpeaking, closedUnasked, voiceEnv, lost, closes, lostHere, answered,
+                   split, doubleAnswer, staleClose, staleEnd, mispaired, voiceMon>>
 
 \* The turn's end has priority: the code ends the turn inside the handler that made
 \* it possible, so no other step can come between.
@@ -854,7 +895,7 @@ Next ==
        /\ \/ VadStart \/ VadStop \/ VadStopMissed \/ Delta \/ EngineClose
           \/ StratStart \/ StratStop \/ StratDelta \/ StratFinal \/ StratDone
           \/ Ceiling \/ Net \/ TurnStop \/ LoseVerdict
-          \/ Verdict \/ Done \/ HoldExpire \/ Backstop
+          \/ SttStart \/ SttStop \/ Verdict \/ Done \/ HoldExpire \/ Backstop
           \/ VoiceOn \/ VoicePause \/ PauseCommit \/ PauseCap
 
 Spec == Init /\ [][Next]_vars
@@ -880,7 +921,7 @@ WayOut ==
     \/ BackstopReady
     \/ ENABLED HoldExpire
     \/ ENABLED PauseCap
-    \/ toStt /= <<>> \/ StopInFlight \/ fromEngine /= <<>>
+    \/ toStt /= <<>> \/ vadQ /= <<>> \/ fromEngine /= <<>>
     \/ (ceilingArmed /\ ~stratSpeaking)
 
 NoStrandedSegment == (segSpeech /\ ~userSpeaking) => WayOut
@@ -893,12 +934,12 @@ NoSplitOnIncomplete == ~split
 \* segment, costs the engine's fixed finish() and logs an EMPTY final.
 NoDoubleAnswer == ~doubleAnswer
 
-\* A verdict answers the stop it was asked at. Once the caller has audibly resumed,
-\* closing the segment on it would cut their sentence at a pause the STT already
-\* knows was not the end -- the words belong in this segment, and the next stop asks
-\* again. The VAD start reaches the STT before any verdict pushed after it, so this
-\* holds by the order of the queues plus one cleared flag; it is here so that the
-\* flag cannot quietly stop being cleared.
+\* A verdict answers the stop it was asked at. Once the STT has seen the caller
+\* resume, closing the segment on it would cut their sentence at a pause the STT
+\* already knows was not the end -- the words belong in this segment, and the next
+\* stop asks again. Holds by one cleared flag (_commit_pending); it is here so that
+\* the flag cannot quietly stop being cleared. (The caller's voice before the STT
+\* hears of it is NoCutVoice's.)
 NoStaleClose == ~staleClose
 
 \* The hold and its expiry are one thing: a held segment always has a way out, and
@@ -906,13 +947,14 @@ NoStaleClose == ~staleClose
 HoldIffPending == hold = pending
 
 \* A held segment always has a verdict on its way -- one in flight, a stop the strategy
-\* has yet to process, or a ceiling counting -- unless a verdict for THIS stop was lost.
+\* has yet to process, or a ceiling counting -- or a VAD start on its way to release
+\* it, unless a verdict for THIS stop was lost.
 \* The expiry is the backstop for that loss and for nothing else: a design that leaves
 \* a hold with no verdict coming has made the expiry its normal way out, and none of
 \* the properties above can see it (the expiry keeps the segment from stranding and
 \* answers the stop exactly once). It is also what makes HoldExpire's timing fact a
 \* checked one: with this holding, the expiry is reachable only after a loss.
-VerdictComing == toStt /= <<>> \/ StopInFlight \/ (ceilingArmed /\ ~stratSpeaking)
+VerdictComing == VerdictInFlight \/ StopInFlight \/ (ceilingArmed /\ ~stratSpeaking)
 
 \*
 \* Since #140 a hold has one more way to be answered: a complete verdict that came
@@ -920,9 +962,9 @@ VerdictComing == toStt /= <<>> \/ StopInFlight \/ (ceilingArmed /\ ~stratSpeakin
 \* ends on the pause, a VAD start or its own bound -- never on a verdict, so it is the
 \* escape here. HeldOnlyForVerdict is the property as it read before, kept to show
 \* that the wait is reached at all (sc_voice_reach).
-NoOrphanedHold == pending => (VerdictComing \/ lostHere \/ deferred)
+NoOrphanedHold == pending => (VerdictComing \/ StartInFlight \/ lostHere \/ deferred)
 
-HeldOnlyForVerdict == pending => (VerdictComing \/ lostHere)
+HeldOnlyForVerdict == pending => (VerdictComing \/ StartInFlight \/ lostHere)
 
 \* The bug of #140: a verdict's commit drawn while the caller's voice since the stop is
 \* still on -- the boundary falls inside their words, and the hint claims them as
@@ -968,7 +1010,7 @@ StaleOnlyByMispairing == staleEnd => mispaired
 \* 5 s watchdog -- which is how a turn that waits for a close that never comes would
 \* look live, and what gating the end on the close must not cost.
 TurnWayOut ==
-    \/ toStrategy /= <<>> \/ toStt /= <<>> \/ fromEngine /= <<>>
+    \/ vadQ /= <<>> \/ toStrategy /= <<>> \/ toStt /= <<>> \/ fromEngine /= <<>>
     \/ (ceilingArmed /\ ~stratSpeaking) \/ netArmed
     \/ BackstopReady \/ ENABLED HoldExpire \/ ENABLED PauseCap
     \/ CanEnd
@@ -984,7 +1026,8 @@ TypeOK ==
     /\ turnOpen \in BOOLEAN /\ text \in BOOLEAN /\ finalized \in BOOLEAN
     /\ turnComplete \in BOOLEAN /\ vadStopped \in BOOLEAN
     /\ netArmed \in BOOLEAN /\ netFired \in BOOLEAN
-    /\ owed \in 0..MaxStops /\ earlier \in BOOLEAN
+    /\ owed \in 0..MaxStops /\ early \subseteq 1..(MaxStops + 1) /\ earlier \in BOOLEAN
+    /\ sttStops \in 0..MaxStops /\ sttSpeaking \in BOOLEAN
     /\ spoke \in BOOLEAN /\ segAudio \subseteq Utts /\ segSpeech \in BOOLEAN
     /\ pending \in BOOLEAN /\ hold \in BOOLEAN /\ backstop \in BOOLEAN
     /\ closedUnasked \in BOOLEAN
@@ -998,18 +1041,21 @@ TypeOK ==
     /\ deferred \in BOOLEAN /\ voice \in {"none", "on", "paused"} /\ voices \in 0..MaxVoice
     /\ cutVoice \in BOOLEAN /\ capCut \in BOOLEAN /\ catchupCut \in BOOLEAN
     /\ pauseExit \in BOOLEAN /\ resumeExit \in BOOLEAN
-    /\ CARRY \in BOOLEAN
+    /\ CARRY \in BOOLEAN /\ NUMBERED \in BOOLEAN /\ MaxLag \in 1..4
     /\ VOICE \in {"blind", "pause"}
     /\ (VOICE = "blind" => ~deferred)
-    /\ \A i \in 1..Len(toStrategy):
-         toStrategy[i] \in [kind: {"start", "stop", "delta", "final", "done"},
-                            n: 0..(MaxStops + 1), c: 0..MaxUtt, words: SUBSET Utts]
+    /\ \A i \in 1..Len(vadQ): vadQ[i] \in [kind: {"start", "stop"}, v: {"none"}, n: 0..MaxUtt]
     /\ \A i \in 1..Len(toStt):
-         toStt[i] \in [v: {"complete", "incomplete", "ceiling", "stopped"}, n: 1..MaxStops]
+         toStt[i] \in [kind: {"start", "stop", "verdict"},
+                       v: {"none", "complete", "incomplete", "ceiling", "stopped"},
+                       n: 0..MaxStops]
+    /\ \A i \in 1..Len(toStrategy):
+         toStrategy[i] \in [kind: {"delta", "final", "done"},
+                            n: 0..(MaxStops + 1), c: 0..MaxUtt, words: SUBSET Utts]
     /\ \A i \in 1..Len(fromEngine):
          fromEngine[i] \in [asked: BOOLEAN, words: SUBSET Utts]
     /\ MODE \in {"vadStop", "verdict"} /\ TURNSTOP \in {"silent", "verdict"}
-    /\ DESIGN \in {"clock", "stop"} /\ DONES \in {"unmarked", "marked"}
+    /\ DESIGN \in {"clock", "stop", "receipts"} /\ DONES \in {"unmarked", "marked"}
     /\ (MODE = "vadStop" => ~pending /\ ~hold)
     /\ (DONES = "marked" => ~mispaired)
 =============================================================================

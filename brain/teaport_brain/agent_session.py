@@ -365,6 +365,9 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                    + "\nDon't bring it up unprompted, but if the user asks about that "
                    "request, or what happened to it, answer from this.")
 
+        _SUPERSEDED = (f"{SYSTEM_NOTICE_TAG}\n(Superseded by a later notice about the "
+                       f"earlier background request \"{request}\".)")
+
         # The trigger is RE-POSTED per attempt, not restored in place, because being the
         # last message is the whole reason it works. A retry follows a barge-in, so by
         # then the caller's new question is at the tail and a trigger buried above it is
@@ -391,7 +394,13 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 msg["content"] = note
 
         def _post_trigger():
-            _retire()
+            # The earlier copy says only that it was superseded. Not _retire()'s
+            # default _SPENT: a re-post happens only because the caller did NOT get it,
+            # and "already given to the user" left behind on every attempt was still in
+            # the context after the last one failed (#80; brain/formal/Followup.tla,
+            # fu_heard_no_supersede_loss). Not _UNTOLD either: the newest copy is the one
+            # that says how it ended.
+            _retire(_SUPERSEDED)
             msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n{content}"}
             context.add_message(msg)
             posted["msg"] = msg
@@ -439,26 +448,42 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
             # above guarantees no assistant turn is in flight, so nothing stale can
             # satisfy it.
             spoken = ledger.next_assistant()
-            watch = gate.watch_delivery()
-            shot = retirer.arm(_retire)
+            watch = gate.watch_delivery(replies_only=True)
+            # An interruption before anything answered VOIDS the shot (FollowupTrigger)
+            # and takes the copy out on the spot: the caller's words are about to be
+            # committed below it, and the next completion to read it would read it
+            # buried -- answer the caller instead, or recite it unasked -- while its
+            # first text fired our shot as if it had delivered.
+            shot = retirer.arm(_retire, on_void=lambda: _retire(_UNTOLD))
             await task.queue_frames([LLMRunFrame()])
+            answered = asyncio.ensure_future(shot.fired.wait())
+            barged = asyncio.ensure_future(shot.voided.wait())
             try:
-                await asyncio.wait_for(shot.fired.wait(),
-                                       timeout=_DELIVERY_START_TIMEOUT)
-            except asyncio.TimeoutError:
-                # Nothing answered from the trigger — a barge-in flushed the queued
-                # LLMRunFrame. The trigger is still live and still accurate, so wait for
-                # the next clear moment and queue the turn again.
+                await asyncio.wait({answered, barged}, timeout=_DELIVERY_START_TIMEOUT,
+                                   return_when=asyncio.FIRST_COMPLETED)
+            finally:
+                answered.cancel()
+                barged.cancel()
+            if not shot.fired.is_set():
+                # Nothing answered from the trigger: a barge-in voided the shot, or
+                # nothing ran at all. Never leave the copy live with no shot armed while
+                # we wait for the next window -- every turn the caller takes meanwhile
+                # would read a standing "tell the user now" that nothing retires
+                # (brain/formal/Followup.tla, fu_heard_shipped_repeat). It is retired
+                # as untold, and posted again at the tail at the next clear moment.
                 retirer.disarm(shot)
+                _retire(_UNTOLD)
                 spoken.cancel()
                 gate.drop_delivery(watch)
                 if attempt + 1 < _DELIVERY_ATTEMPTS:
-                    logger.info("consult follow-up: turn was flushed before the model "
-                                f"read it — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
+                    logger.info("consult follow-up: "
+                                + ("the caller cut in before the model answered"
+                                   if shot.voided.is_set()
+                                   else "turn was flushed before the model read it")
+                                + f" — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
                     await wait_for_window()
-                    # Whatever flushed the turn was a barge-in, so the caller's question
-                    # is now the tail message and the still-live trigger is buried above
-                    # it. Re-post so the retry is a turn the model answers.
+                    # The caller's question is now the tail message; re-post so the
+                    # retry is a turn the model answers.
                     _post_trigger()
                 continue
 
@@ -474,35 +499,51 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
             try:
                 await asyncio.wait_for(watch.done.wait(),
                                        timeout=_DELIVERY_HEARD_TIMEOUT)
+                timed_out = False
             except asyncio.TimeoutError:
+                timed_out = True
+            if not watch.spoke:
+                # None of the reply ever played, and that is known without the ledger --
+                # which could not say so: it opens a turn on the TTS's TTSStartedFrame.
+                # Cut while the TTS was still gathering its first clause, the reply is
+                # charted nowhere and the waiter below timed out to "delivered", or
+                # measured the caller's NEXT reply instead (brain/formal/Followup.tla,
+                # fu_heard_shipped_loss). Text that never became audio -- emptied by the
+                # guard, no speech in it, the LLM failing after its first token -- settles
+                # nothing at all, and the heard timeout used to call it delivered too.
+                spoken.cancel()
+                heard = 0.0
+            elif timed_out:
                 spoken.cancel()
                 logger.info("consult follow-up: delivered, but it never finished nor "
                             "was cut within the window — leaving it as delivered")
                 return
-            if not watch.interrupted:
+            elif not watch.interrupted:
                 spoken.cancel()
                 logger.info("consult follow-up: delivered and played to the end")
                 return
-
-            # Cut. How much landed is the ledger's to say, and it charts a cut at the
-            # interruption, so this resolves promptly or not at all. No shield: wait_for
-            # cancels the waiter itself on timeout, and the injector's own cancellation
-            # (session teardown) has to propagate through here, as the gate promises --
-            # a shield would only force this to catch CancelledError and swallow it.
-            try:
-                said = await asyncio.wait_for(spoken, timeout=_DELIVERY_CHART_TIMEOUT)
-            except asyncio.TimeoutError:
-                # Not knowing is not grounds to say it again — an unnecessary repeat is
-                # worse than an unverified delivery.
-                logger.info("consult follow-up: cut, but the ledger charted no reply to "
-                            "measure — leaving it as delivered")
-                return
-            if said.heard_fraction >= _MIN_HEARD:
+            else:
+                # How much landed is the ledger's to say, and it charts a cut at the
+                # interruption, so this resolves promptly or not at all. No shield:
+                # wait_for cancels the waiter itself on timeout, and the injector's own
+                # cancellation (session teardown) has to propagate through here, as the
+                # gate promises -- a shield would only force this to catch
+                # CancelledError and swallow it.
+                try:
+                    said = await asyncio.wait_for(spoken, timeout=_DELIVERY_CHART_TIMEOUT)
+                except asyncio.TimeoutError:
+                    # Not knowing is not grounds to say it again — an unnecessary repeat
+                    # is worse than an unverified delivery.
+                    logger.info("consult follow-up: cut, but the ledger charted no reply "
+                                "to measure — leaving it as delivered")
+                    return
+                heard = said.heard_fraction
+            if heard >= _MIN_HEARD:
                 # Every exit from this loop says what it decided. The 2026-09-11 loss
                 # went through here in silence: a stale, fully heard reply satisfied the
                 # waiter (see TranscriptLedger.next_assistant) and nothing in the journal
                 # showed the check had run at all.
-                logger.info(f"consult follow-up: cut at heard~{said.heard_fraction*100:.0f}%"
+                logger.info(f"consult follow-up: cut at heard~{heard*100:.0f}%"
                             f" — enough of it landed, leaving it as delivered")
                 return
 
@@ -512,7 +553,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
             # context (or pipecat committed none), so the retry reads as a first telling.
             if attempt + 1 < _DELIVERY_ATTEMPTS:
                 logger.info(
-                    f"consult follow-up: answered but heard~{said.heard_fraction*100:.0f}%"
+                    f"consult follow-up: answered but heard~{heard*100:.0f}%"
                     f" — the caller did not get it, retrying "
                     f"({attempt + 2}/{_DELIVERY_ATTEMPTS})")
                 await wait_for_window()
@@ -523,7 +564,7 @@ def _make_consult_followup(task, context, gate, retirer, ledger):
                 # Out of attempts. The trigger was already retired at the read, so the
                 # post-loop notice below would say "unread", which is the wrong story.
                 logger.warning(
-                    f"consult follow-up: answered but heard~{said.heard_fraction*100:.0f}%"
+                    f"consult follow-up: answered but heard~{heard*100:.0f}%"
                     f" on the last of {_DELIVERY_ATTEMPTS} attempts — the answer never "
                     "reached the caller, leaving a note")
                 # Retired at the read as _SPENT ("already given to the user"), which

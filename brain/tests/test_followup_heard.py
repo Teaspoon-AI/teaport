@@ -27,6 +27,7 @@
 # Run: python test_followup_heard.py   (or via the suite)
 #
 import asyncio
+import copy
 import os
 import sys
 
@@ -223,6 +224,115 @@ async def test_a_reply_charted_late_does_not_satisfy_the_waiter():
              turn_seq=ours["seq"])
     assert fut.done() and fut.result().heard_fraction == 0.0, (
         "the waiter did not resolve on the injector's own reply")
+
+
+def _live_triggers(ctx):
+    return [m for m in ctx.messages
+            if m.get("role") == "user" and "Tell the user now" in str(m.get("content"))]
+
+
+async def test_a_cut_before_any_audio_played_is_said_again():
+    """brain/formal/Followup.tla, fu_heard_shipped_loss (7 steps).
+
+    The model answers from the trigger -- its first text retires it -- and the caller
+    cuts in while the TTS is still gathering the first clause. The ledger opens a turn
+    on TTSStartedFrame, so it charts nothing for this reply, and the waiter timed out to
+    "leaving it as delivered": the caller heard 0% and the answer was gone. 17:13 was
+    the same race, 84 ms on the other side of TTSStartedFrame. The transport knows
+    nothing played (Delivery.spoke), and that is enough."""
+    _ctx, task, _r, _g, _l = await _deliver(ANSWER, heard=[None, 1.0], cut=[True, False],
+                                            spoke=[False, True])
+    assert task.attempts == 2, (
+        f"queued {task.attempts} turn(s) — a reply cut before any of its audio played "
+        "was left as delivered because the ledger had nothing to measure")
+
+
+async def test_a_barge_in_before_the_answer_voids_the_attempt():
+    """brain/formal/Followup.tla, fu_heard_noVoid_repeat and the 6-step probe before it.
+
+    The caller cuts in after the trigger is posted and before anything answers from it.
+    Their words are committed BELOW the trigger, and their reply's first text used to
+    fire our still-armed shot: a completion that read the trigger buried -- one that
+    answered the caller instead (17:36), or recited it unasked (08:17) -- counted as the
+    delivery, and its heard fraction was taken for the answer's."""
+    ctx = _Context()
+    retirer = _Retirer()
+    seen = {}
+
+    class _BargedTask(_Task):
+        async def queue_frames(self, frames):
+            self.frames.extend(frames)
+            self.attempts += 1
+            self.at_run = copy.deepcopy(self.ctx.messages)
+            if self.attempts == 1:
+                retirer.interrupt()                       # the caller cuts in
+                seen["live_after_barge"] = len(_live_triggers(ctx))
+                ctx.add_message({"role": "user", "content": "What's 2 plus 2?"})
+                retirer.read()                            # their reply's first text
+            else:
+                retirer.read()
+
+    task = _BargedTask(ctx, retirer)
+    await _make_consult_followup(task, ctx, _Gate(cut=False), retirer,
+                                 _Ledger(1.0))(REQUEST, ANSWER, CALL_ID)
+    assert seen["live_after_barge"] == 0, (
+        "the trigger stayed live through the barge-in — the caller's reply reads it "
+        "buried, and nothing retires it if that reply does not fire our shot")
+    assert task.attempts == 2, (
+        f"{task.attempts} attempt(s) — the caller's own reply was taken for the delivery")
+    tail = task.at_run[-1]
+    assert tail["role"] == "user" and ANSWER in tail["content"], (
+        "the retry must put the trigger after the caller's question")
+    assert len(_live_triggers(ctx)) == 0
+
+
+async def test_a_flushed_attempt_leaves_no_live_trigger_while_it_waits():
+    """brain/formal/Followup.tla, fu_heard_shipped_repeat.
+
+    An attempt nothing answered used to leave the copy live, with no shot armed, while
+    the loop waited for the next window. Every turn the caller took meanwhile read a
+    standing "tell the user now" that nothing would retire: the 08:17 recital, back
+    inside the retry loop -- and then the re-post recited it again."""
+    ctx = _Context()
+    retirer = _Retirer()
+    live_during_wait = []
+
+    class _WatchingGate(_Gate):
+        async def wait_until_idle(self, max_wait=None, *, turn_free=False):
+            if self.idle_waits >= 1:
+                live_during_wait.append(len(_live_triggers(ctx)))
+            return await super().wait_until_idle(max_wait, turn_free=turn_free)
+
+    task = _Task(ctx, retirer, read_on_attempt=2)
+    await _make_consult_followup(task, ctx, _WatchingGate(), retirer,
+                                 _Ledger(1.0))(REQUEST, ANSWER, CALL_ID)
+    assert task.attempts == 2
+    assert live_during_wait == [0], (
+        f"live triggers while waiting to retry: {live_during_wait} — a live, unarmed "
+        "'tell the user now' is a standing order for the caller's next turn")
+
+async def test_text_that_never_became_audio_is_said_again():
+    """brain/formal/Followup.tla, RunQuiet. The model answered -- its first text retired
+    the trigger -- but nothing reached the TTS: the guard emptied it, it had no speech
+    in it, or the LLM failed after its first token. Nothing starts or stops, the watch
+    never settles, and the heard timeout used to call that delivered."""
+    _ctx, task, _r, _g, _l = await _deliver(ANSWER, heard=[None, 1.0], cut=[None, False],
+                                            spoke=[False, True])
+    assert task.attempts == 2, (
+        f"{task.attempts} attempt(s) — an answer that never made a sound was left as "
+        "delivered on the heard timeout")
+
+
+async def test_no_copy_claims_a_delivery_that_never_landed():
+    """brain/formal/Followup.tla, fu_heard_no_supersede_loss. Every re-post retired the
+    earlier copy as "already given to the user" -- so after the last attempt failed,
+    the context still told the model, once per attempt, that the caller had it (#80)."""
+    ctx, task, _r, _g, _l = await _deliver(ANSWER, heard=[0.0] * 6, cut=True)
+    assert task.attempts == agent_session._DELIVERY_ATTEMPTS
+    notes = [m["content"] for m in ctx.messages if m.get("role") == "user"
+             and "background" in str(m.get("content"))]
+    assert not any("already given to the user" in n for n in notes), notes
+    assert sum("has NOT reached the user" in n for n in notes) == 1, notes
 
 
 def main():

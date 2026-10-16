@@ -41,12 +41,18 @@
 (* push_frame() across the whole pipeline; when the trigger came from the   *)
 (* stop strategy's own _timeout_handler TASK, the aggregator's input task   *)
 (* runs a queued VADUserStartedSpeakingFrame in that gap. `Resume` below    *)
-(* is that gap, and it is the only interleaving this module needs.          *)
+(* is that gap, and it is the only interleaving the barge-in rows need    *)
+(* (the commit overtaking its own interruption, `CutLands`, is the other,   *)
+(* for the context and the hold).                                           *)
 (*                                                                          *)
 (* MODE = "asWritten"    -- stock pipecat (identical on 1.5.0/1.7.0/1.8.1). *)
 (* MODE = "retryOnQuiet" -- keep_barge_in_reachable: a finalization refused *)
 (*                          after its inference ran is re-applied at the    *)
-(*                          user's next quiet moment.                       *)
+(*                          user's next quiet moment -- and, words aggregated *)
+(*                          since, committed there as a second message.     *)
+(* MODE = "retryMerges"  -- a PROPOSED fix (not code): that second commit,  *)
+(*                          on a turn whose reply has not played, drops the *)
+(*                          reply and merges into the unanswered message.   *)
 (*                                                                          *)
 (* The speculative reply (speculate.py, TEAPORT_SPECULATIVE_REPLY). When   *)
 (* the caller's words have settled on a turn the stop strategy has not      *)
@@ -134,6 +140,27 @@
 (* PAUSE = "noStopWord"      -- the shipped pause without the stop word.    *)
 (* PAUSE = "keepOnInterrupt" -- a transport that keeps its pause when the   *)
 (*                              interruption cancels the reply.             *)
+(*                                                                          *)
+(* The cut and the commit (endpointing.CutReplyFence, 2026-10-13). A turn   *)
+(* start and its interruption are two events: the controller opens the turn *)
+(* and the aggregator only QUEUES the InterruptionFrame, which reaches the  *)
+(* gate, the transport and -- last -- the assistant aggregator (which       *)
+(* commits the reply it cut) ~70 ms later. `StartTurn` is the first,        *)
+(* `CutLands` the second. A turn that opens on its final after its own VAD  *)
+(* stop (the late-start barge-in, the commonest shape) commits in the same  *)
+(* controller call, so without a fence the commit overtakes its own cut:    *)
+(* the cut reply lands after the caller's turn, uncorrected, and the gate   *)
+(* the commit armed reads the interruption as that commit's reply dropped   *)
+(* (a false TurnMerge, and a reply left unchecked).                         *)
+(*                                                                          *)
+(* FENCE = "none"       -- before 2026-10-13: nothing orders them.          *)
+(* FENCE = "commitOnly" -- 228298e: the commit waits for the cut; the       *)
+(*                         speculation's snapshot does not.                 *)
+(* FENCE = "inTime"     -- CutReplyFence as shipped (commit AND snapshot    *)
+(*                         wait), ASSUMING the cut lands within its bound.  *)
+(* FENCE = "timed"      -- the same with the bound as it is: past           *)
+(*                         CUT_COMMIT_WAIT_SECS the commit goes ahead (the  *)
+(*                         speculation is not started).                     *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -145,7 +172,11 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
           WORDS_IN_TIME,   \* ASSUMPTION, for the gate's holding row: a resumed caller's
                            \* words (or the STT's word-less close) arrive before the
                            \* release timer or the cap. FALSE: the timers as they are
-          PAUSE            \* the barge-in pause's design (see the header)
+          PAUSE,           \* the barge-in pause's design (see the header)
+          FENCE,           \* the cut-before-commit order (see the header)
+          EARLY_FINAL      \* a final of the caller's resumed words can be aggregated
+                           \* before the VAD stop that re-applies a refused finalize
+                           \* (TRUE: as it is). FALSE: the premise, see VadStop
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -204,13 +235,28 @@ VARIABLES
     answerLost       \* monitor: a one-word answer that, without the pause, would have
                      \* been a turn (the reply would have ended), started none
 pauseVars == <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard, answerLost>>
+VARIABLES
+    \* --- the cut and the commit (endpointing.CutReplyFence) ---
+    cut,             \* the last turn start's InterruptionFrame is still on its way to
+                     \* the assistant aggregator: "none", "empty" (no reply was playing),
+                     \* or "reply" (it cuts one the caller was hearing)
+    overtaken,       \* a commit ran while that frame was still on its way
+    cutAfterCommit   \* monitor: something read the context for a turn (its commit, or
+                     \* a speculation's snapshot, which spends the ledger's cut) before
+                     \* the reply that turn cut was in it
+fenceVars == <<cut, overtaken, cutAfterCommit>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
 LateTail     == PAUSE \in {"shipped", "noStopWord", "keepOnInterrupt"}
+\* May a commit run with a cut on its way? The fence holds it, unless its bound runs out.
+CommitMayOvertake == FENCE \in {"none", "timed"}
+\* May a speculation's snapshot? Only where the fence does not cover it; past the bound
+\* the speculation is not started at all.
+SnapshotMayOvertake == FENCE \in {"none", "commitOnly"}
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
           stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply,
-          holdVars, pauseVars>>
+          holdVars, pauseVars, fenceVars>>
 
 Gated == HOLD /= "none"
 
@@ -234,6 +280,7 @@ Init ==
     /\ replyOverResume = FALSE /\ splitTurn = FALSE
     /\ pausedP = FALSE /\ left = "long" /\ synthDone = FALSE /\ tailKnown = FALSE
     /\ wouldEnd = FALSE /\ stopHeard = FALSE /\ answerLost = FALSE
+    /\ cut = "none" /\ overtaken = FALSE /\ cutAfterCommit = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -282,80 +329,105 @@ VadStart ==
                    specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
                    splitTurn>>
+    /\ UNCHANGED fenceVars
 
-\* The user falls quiet. In retryOnQuiet the owed finalization is applied HERE,
-\* inside the same process_frame() call that cleared _user_speaking -- so it is
-\* atomic with respect to every other coroutine, exactly as the wrapper is.
-VadStop ==
-    /\ ~endQueued                             \* the session has not ended
-    /\ userSpeaking
-    /\ userSpeaking' = FALSE
-    /\ watchdog' = FALSE
-    /\ IF MODE = "retryOnQuiet" /\ owed /\ userTurn
-         THEN /\ userTurn' = FALSE
-              /\ owed' = FALSE
-              /\ inference' = FALSE
-         ELSE UNCHANGED <<userTurn, owed, inference>>
-    /\ UNCHANGED <<botSpeaking, stopInFlight, turns, spec, specGen, specWords, gen,
-                   missedBargeIn, staleReply>>
-    /\ UNCHANGED holdVars
-    /\ UNCHANGED pauseVars
+\* The user falls quiet: `VadStop`, below the commit it may re-apply.
 
 (***************************************************************************)
 (* The turn.                                                               *)
 (***************************************************************************)
 
-\* MinWordsUserTurnStartStrategy fired: >= INTERRUPT_MIN_WORDS of transcript.
-\* This is the ONLY producer of an interruption in the brain.
-\* A user turn starts, and with it the interruption: the bot is cut. One definition
-\* for every transcript that starts a turn (Interject, and the pause's one-word answer
-\* and stop word below).
-\* One step: the interruption has reached the gate (and the assistant aggregator) before
-\* this turn's commit can run. In the code that is endpointing.CutReplyFence's doing --
-\* pipecat only queues the frame, and a turn that opens on its final after its own VAD
-\* stop commits inside the same controller call. Until 2026-10-13 that commit overtook
-\* the interruption: the cut reply landed after the turn, and the gate, armed by the
-\* commit, read the interruption as a dropped reply (a false TurnMerge).
+\* A user turn starts. One definition for every transcript that starts a turn
+\* (Interject, and the pause's one-word answer and stop word below). This is the
+\* CONTROLLER's half: the turn is open and the InterruptionFrame is queued (`cut`). What
+\* the interruption does below the aggregator -- the gate, the transport, the assistant
+\* aggregator's commit of the reply it cut -- is `CutLands`, a step of its own: pipecat's
+\* broadcast_interruption() only queues the frame, and a turn that opens on its final
+\* after its own VAD stop commits inside the same controller call (endpointing.py,
+\* LateStartTurnStopStrategy), so the commit can run first unless something holds it
+\* (FENCE). The model had them as one step until 2026-10-14 -- the premise the code did
+\* not keep before CutReplyFence.
+\*
+\* `cut = "none"`: a turn opens on a transcript, hundreds of ms after any earlier turn's
+\* start, and an interruption crosses in ~70 ms -- two cuts in flight at once are not
+\* modelled (stated, not checked).
 StartTurn ==
+    /\ cut = "none"
     /\ userTurn' = TRUE
-    /\ botSpeaking' = FALSE
     /\ inference' = FALSE
     /\ turns' = turns + 1
     /\ spec' = FALSE               \* a new turn: whatever was asked is not this
     \* The words were for speech that began after the commit, and a reply is
     \* playing that started over it: the stale reply, cut only now.
     /\ replyOverResume' = (replyOverResume \/ (botSpeaking /\ resumed))
-    \* The interruption cancels the reply. A held one is dropped: pipecat's
-    \* reset empties the queue; the gate lifts the pause itself -- except as
-    \* first written, where an Uninterruptible frame in hand left it paused.
-    /\ reply' = FALSE /\ armed' = FALSE /\ held' = FALSE /\ resumed' = FALSE
+    /\ resumed' = FALSE
+    \* The strategy's turn start: a stop it heard was honoured.
+    /\ stopHeard' = FALSE
+    \* What the interruption will cut into the context: a reply the caller was hearing.
+    \* One not yet playing commits nothing (the assistant aggregator takes the TTS text
+    \* as it plays), though the gate still drops it and asks for the merge.
+    /\ cut' = IF botSpeaking THEN "reply" ELSE "empty"
+    /\ overtaken' = FALSE
+    /\ UNCHANGED <<botSpeaking, reply, armed, held, paused, mergePending, unanswered,
+                   endQueued, splitTurn>>
+    /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost,
+                   cutAfterCommit>>
+
+\* The interruption reaches the gate, the transport and the assistant aggregator, which
+\* commits the reply it cut. Its effects are the old StartTurn's.
+CutLands ==
+    /\ ~endQueued                             \* the session has not ended
+    /\ cut /= "none"
+    /\ cut' = "none" /\ overtaken' = FALSE
+    /\ botSpeaking' = FALSE
+    \* The interruption cancels the reply. A held one is dropped: pipecat's reset
+    \* empties the queue; the gate lifts the pause itself -- except as first written,
+    \* where an Uninterruptible frame in hand left it paused.
+    \*
+    \* A commit that overtook the frame armed the gate for ITS reply, which the LLM is
+    \* producing behind the interruption: that reply is not dropped (none of it has
+    \* reached the gate), but the gate cannot tell -- it disarms and asks for a merge
+    \* (the false TurnMerge), so the reply plays unchecked and the merge lands on the
+    \* next commit.
+    /\ IF overtaken
+         THEN UNCHANGED <<reply, resumed>>
+         ELSE reply' = FALSE /\ resumed' = FALSE
+    /\ armed' = FALSE /\ held' = FALSE
     /\ paused' = (HOLD = "gateNoResume" /\ held)
-    \* None of the last commit's reply was played: the next commit finishes it.
+    \* Armed: none of the last commit's reply was played: the next commit finishes it.
     /\ mergePending' = (mergePending \/ (armed /\ HOLD \notin {"none", "gateNoMerge"}))
-    /\ UNCHANGED <<unanswered, endQueued, splitTurn>>
+    /\ UNCHANGED <<unanswered, endQueued, splitTurn, replyOverResume>>
     \* The interruption reaches the transport: the queued audio is dropped and, with
     \* it, the pause -- except in a transport that keeps it.
     /\ pausedP' = (PAUSE = "keepOnInterrupt" /\ pausedP)
-    /\ tailKnown' = FALSE /\ wouldEnd' = FALSE /\ stopHeard' = FALSE
-    /\ UNCHANGED <<left, synthDone, answerLost>>
+    /\ tailKnown' = FALSE /\ wouldEnd' = FALSE
+    /\ UNCHANGED <<left, synthDone, answerLost, stopHeard, cutAfterCommit>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight, owed, turns,
+                   spec, specGen, specWords, gen, missedBargeIn, staleReply>>
 
 \* MinWordsUserTurnStartStrategy fired: >= INTERRUPT_MIN_WORDS of transcript.
 \* This is the ONLY producer of an interruption in the brain.
+\* Not guarded by `userSpeaking`: the transcript that opens a barge-in usually lands
+\* AFTER the caller's VAD stop (the engine returns nothing over the bot until the stop
+\* flushes the segment -- LateStartTurnStopStrategy's note), and that late start is the
+\* shape whose commit can overtake its cut.
 Interject ==
     /\ ~endQueued                             \* the session has not ended
     /\ turns < MaxTurns
-    /\ userSpeaking
     /\ IF userTurn
          THEN \* _trigger_user_turn_start returns early. The strategy logged
               \* should_trigger=True and nothing came of it. Count it as a MISSED
               \* barge-in only once the user has had a quiet moment since the
               \* inference ran:
               \* before that, an open turn is the ordinary state of someone still
-              \* talking, and refusing a second start is correct.
-              /\ missedBargeIn' = (missedBargeIn \/ (inference /\ ~owed /\ botSpeaking))
+              \* talking, and refusing a second start is correct. Nor while this
+              \* turn's own interruption is still on its way to the transport.
+              /\ missedBargeIn' = (missedBargeIn \/ (inference /\ ~owed /\ botSpeaking
+                                                     /\ cut = "none"))
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED pauseVars
+              /\ UNCHANGED fenceVars
          ELSE /\ StartTurn
               /\ UNCHANGED missedBargeIn
     /\ watchdog' = FALSE
@@ -374,6 +446,7 @@ Progress ==
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, synthDone, tailKnown, wouldEnd, stopHeard, answerLost>>
+    /\ UNCHANGED fenceVars
 
 \* The reply's synthesis completes (its TTSStoppedFrame reaches the transport). During
 \* a pause, as shipped, the transport re-announces the pause with the tail it now
@@ -387,6 +460,7 @@ SynthDone ==
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, left, wouldEnd, stopHeard, answerLost>>
+    /\ UNCHANGED fenceVars
 
 \* Ground truth: paused with the whole reply synthesized and less than a final's
 \* latency of it left, the held-back rest would have played out by now. (With a long
@@ -399,6 +473,7 @@ TailElapsed ==
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, stopHeard, answerLost>>
+    /\ UNCHANGED fenceVars
 
 \* No words: the line is quiet and playout resumes from where it stopped. A bot that
 \* resumes after the caller said stop to it has not been stopped: that OUTCOME is
@@ -412,6 +487,7 @@ ResumeP ==
                    owed, turns, spec, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED <<left, synthDone, answerLost>>
+    /\ UNCHANGED fenceVars
 
 \* A one-word final (not a stop word) lands after the caller's VAD stop -- "Yes.".
 \* What the strategy does with it (`Starts`) is the design; what it SHOULD have done
@@ -431,6 +507,7 @@ OneWord ==
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard>>
+              /\ UNCHANGED fenceVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
 
 \* A transcript made only of stop words ("Stop.") over the speaking bot. Under the
@@ -448,6 +525,7 @@ StopWord ==
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
+              /\ UNCHANGED fenceVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
 
 (***************************************************************************)
@@ -464,13 +542,21 @@ SpecStart ==
     /\ ~endQueued                             \* the session has not ended
     /\ SPEC /= "off"
     /\ userTurn /\ ~userSpeaking /\ ~inference /\ ~stopInFlight
+    \* Speculator.start waits at the cut fence (as shipped): a snapshot is taken only
+    \* once the reply a barge-in cut is in the context, and not at all past the bound.
+    /\ cut = "none" \/ SnapshotMayOvertake
     /\ spec' = TRUE
     /\ specGen' = gen
     /\ specWords' = TRUE
+    \* The snapshot runs the heard-context corrector first (reconcile_for_snapshot),
+    \* which spends the ledger's cut: on a context without the cut reply it has nothing
+    \* to rewrite, and the reply then lands whole (live 2026-10-13, ecb4dcd).
+    /\ cutAfterCommit' = (cutAfterCommit \/ cut = "reply")
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED <<cut, overtaken>>
 
 \* The words the commit will carry move after the snapshot, with the caller quiet:
 \* the decoder's lagging tail past the settle window, or the final's re-decode
@@ -485,6 +571,7 @@ Retext ==
                    staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* Something else writes the context while a speculation is live. A free action,
 \* deliberately: HeardContextCorrector._reconcile on the very LLMContextFrame that
@@ -499,6 +586,7 @@ CtxChange ==
                    staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* trigger_user_turn_stopped(), first await: the stop strategy has decided, the
 \* aggregation is pushed and the LLM is asked. The controller gates this on the turn
@@ -528,24 +616,101 @@ Adopt == spec /\ (SPEC \in {"byText", "byContext"} => specWords)
               /\ (SPEC \in {"byHistory", "byContext"} => specGen = gen)
 Stale == Adopt /\ (specGen /= gen \/ ~specWords)
 
+\* The commit: push_aggregation(), on every path that has words to commit -- the stop
+\* strategy's inference and the watchdog's stop alike (CutReplyFence.hold_commits wraps
+\* it, so both wait). The LLM service is offered the speculation (Speculator.take), so
+\* this is where a live one is decided. A reply is on its way, and the aggregator's
+\* on_user_turn_message_added arms the gate. The aggregator appended this turn's user
+\* message -- which the corrector folds into the unanswered one when a merge is pending
+\* AND there is one to fold into (_merge_tail: nothing but system messages between
+\* them); a merge pending over a reply that did play is taken and leaves the turns apart.
+\*
+\* The fence: the commit waits until the reply a barge-in cut is in the context. Where
+\* it may run ahead of its cut, it reads a context without that reply (cutAfterCommit),
+\* and the gate it arms is the one the interruption will then find armed (overtaken).
+\* In the code the wait sits inside trigger_user_turn_inference_triggered's await, so a
+\* VAD start can land during it and the arm then holds at once ("the caller is speaking
+\* at the commit"); here the commit runs after the cut lands and `Resume` takes that
+\* start -- the same states.
+CommitReady == cut = "none" \/ CommitMayOvertake
+Commit ==
+    /\ spec' = FALSE
+    /\ staleReply' = (staleReply \/ Stale)
+    /\ reply' = TRUE /\ armed' = Gated
+    /\ unanswered' = IF mergePending /\ unanswered >= 1 THEN unanswered
+                     ELSE (IF unanswered < 2 THEN unanswered + 1 ELSE 2)
+    /\ mergePending' = FALSE
+    /\ splitTurn' = (splitTurn \/ (~mergePending /\ unanswered >= 1))
+    /\ overtaken' = (cut /= "none")
+    /\ cutAfterCommit' = (cutAfterCommit \/ cut = "reply")
+    /\ UNCHANGED cut
+
 Inference ==
     /\ ~endQueued                             \* the session has not ended
     /\ userTurn /\ ~stopInFlight /\ ~inference /\ ~userSpeaking
+    /\ CommitReady
     /\ inference' = TRUE
     /\ stopInFlight' = TRUE
     /\ watchdog' = FALSE                       \* _trigger_user_turn_inference_triggered
-    /\ spec' = FALSE
-    /\ staleReply' = (staleReply \/ Stale)
-    \* The commit: a reply is on its way, and on_user_turn_inference_triggered arms
-    \* the gate. The aggregator appended this turn's user message -- which the
-    \* corrector folds into the unanswered one when a merge is pending.
-    /\ reply' = TRUE /\ armed' = Gated
-    /\ unanswered' = IF mergePending THEN unanswered ELSE (IF unanswered < 2 THEN unanswered + 1 ELSE 2)
-    /\ mergePending' = FALSE
-    /\ splitTurn' = (splitTurn \/ (~mergePending /\ unanswered >= 1))
+    /\ Commit
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
+    /\ UNCHANGED pauseVars
+
+\* The user falls quiet. In retryOnQuiet the owed finalization is applied HERE,
+\* inside the same process_frame() call that cleared _user_speaking -- so it is
+\* atomic with respect to every other coroutine, exactly as the wrapper is.
+\*
+\* And it is a COMMIT when the aggregation is not empty. The refused finalize left the
+\* turn open with its stop strategy un-reset (pipecat: "keep the turn open so the next
+\* inference re-evaluates"), so the words the caller resumed with join it, and whatever
+\* of them was finalized by this VAD stop (the engine's own segmenter closes a segment
+\* on a shorter silence than the VAD's floor) is committed here -- by the strategy's own
+\* second stop on a COMPLETE verdict, or by the re-applied stop: either way in this
+\* frame, as a second user message, with no turn start and so no interruption: the
+\* first commit's reply, held by the gate, is released and plays, then the answer to
+\* the rest (reply_hold.py's known limits). `early` is that final, possible only with
+\* EARLY_FINAL. Until 2026-10-14 the model had the retry commit nothing, which is
+\* EARLY_FINAL = FALSE: the premise the reply hold's and the pause's rows are checked
+\* under, so that each still tells its own designs apart.
+\*
+\* MODE = "retryMerges" is a proposed fix, not code: a second commit on a turn whose
+\* first reply has not played (the gate still armed) is a continuation of it -- the
+\* unplayed reply is dropped (an interruption, which the fence orders ahead of the
+\* commit) and the words are folded into the unanswered message (TurnMerge).
+Retry == MODE \in {"retryOnQuiet", "retryMerges"}
+ContinueCommit ==
+    /\ spec' = FALSE
+    /\ staleReply' = (staleReply \/ Stale)
+    /\ reply' = TRUE /\ armed' = Gated
+    /\ held' = FALSE /\ paused' = FALSE /\ resumed' = FALSE
+    /\ mergePending' = FALSE
+    /\ UNCHANGED <<unanswered, splitTurn, endQueued, replyOverResume>>
+    /\ UNCHANGED fenceVars
+VadStop ==
+    /\ ~endQueued                             \* the session has not ended
+    /\ userSpeaking
+    /\ userSpeaking' = FALSE
+    /\ watchdog' = FALSE
+    /\ IF Retry /\ owed /\ userTurn
+         THEN /\ userTurn' = FALSE
+              /\ owed' = FALSE
+              /\ inference' = FALSE
+              /\ \/ /\ UNCHANGED <<spec, staleReply>>     \* nothing new: commits nothing
+                    /\ UNCHANGED holdVars
+                    /\ UNCHANGED fenceVars
+                 \/ /\ EARLY_FINAL /\ CommitReady        \* `early`: a second commit
+                    /\ IF MODE = "retryMerges" /\ armed
+                         THEN ContinueCommit
+                         ELSE /\ Commit
+                              /\ UNCHANGED <<held, paused, resumed, endQueued,
+                                             replyOverResume>>
+         ELSE /\ UNCHANGED <<userTurn, owed, inference, spec, staleReply>>
+              /\ UNCHANGED holdVars
+              /\ UNCHANGED fenceVars
+    /\ UNCHANGED <<botSpeaking, stopInFlight, turns, specGen, specWords, gen,
+                   missedBargeIn>>
     /\ UNCHANGED pauseVars
 
 \* The gap between the two awaits: push_aggregation()'s trip across the pipeline,
@@ -562,6 +727,7 @@ Resume ==
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
                    splitTurn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* trigger_user_turn_stopped(), second await.
 Finalize ==
@@ -572,7 +738,7 @@ Finalize ==
          THEN \* "Never finalize while the user is audibly speaking." The turn stays
               \* open -- with the inference already spent.
               /\ UNCHANGED <<userTurn, inference>>
-              /\ owed' = (MODE = "retryOnQuiet")
+              /\ owed' = Retry
          ELSE /\ userTurn' = FALSE
               /\ inference' = FALSE
               /\ owed' = FALSE
@@ -580,6 +746,7 @@ Finalize ==
                    missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* The reply the inference produced reaches the transport. It cannot overtake the
 \* finalize in practice -- an LLM round trip plus synthesis against two awaits --
@@ -589,6 +756,10 @@ BotStart ==
     /\ ~endQueued                             \* the session has not ended
     /\ (inference \/ reply) /\ ~stopInFlight /\ ~botSpeaking
     /\ ~paused                                 \* the gate holds it
+    \* An interruption on its way is a SystemFrame: it overtakes every reply frame
+    \* queued behind it, and the reply to a commit that overtook IT is produced behind
+    \* it. An ordering fact, as ~stopInFlight is.
+    /\ cut = "none"
     /\ botSpeaking' = TRUE
     \* Its first audio goes through: the gate disarms, and the caller has a reply.
     /\ reply' = FALSE /\ armed' = FALSE /\ unanswered' = 0
@@ -605,6 +776,7 @@ BotStart ==
                         /\ ~(synthDone' /\ left' = "short"))
          /\ tailKnown' = (pausedP' /\ synthDone')
     /\ UNCHANGED <<wouldEnd, stopHeard, answerLost>>
+    /\ UNCHANGED fenceVars
 
 (***************************************************************************)
 (* The reply hold.                                                         *)
@@ -620,6 +792,7 @@ Wordless ==
     /\ UNCHANGED <<reply, armed, held, paused, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* The release timer: TEAPORT_REPLY_HOLD_RELEASE_S after the caller goes quiet, the
 \* held reply plays. A timer knows nothing of the words: under WORDS_IN_TIME they have
@@ -633,6 +806,7 @@ Release ==
     /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
 Cap ==
@@ -644,6 +818,7 @@ Cap ==
     /\ UNCHANGED <<reply, armed, resumed, mergePending, unanswered, endQueued,
                    replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
 \* Every other action but the caller's speech is guarded by ~endQueued: what TLC
@@ -660,6 +835,7 @@ Hangup ==
                    stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 BotStop ==
     /\ ~endQueued                             \* the session has not ended
@@ -669,6 +845,7 @@ BotStop ==
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)
@@ -684,6 +861,7 @@ Arm ==
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
 
 \* The watchdog's stop is a commit too: _trigger_user_turn_stop pushes the
 \* aggregation, which reaches get_chat_completions and Speculator.take, so a live
@@ -695,15 +873,20 @@ ForceStop ==
     /\ inference' = FALSE
     /\ owed' = FALSE
     /\ watchdog' = FALSE
-    /\ spec' = FALSE
-    /\ staleReply' = (staleReply \/ Stale)
+    \* A commit, unless this turn's words were committed already (a stranded turn: the
+    \* aggregation is empty, and pipecat pushes nothing).
+    /\ IF ~inference
+         THEN CommitReady /\ Commit
+         ELSE /\ spec' = FALSE
+              /\ UNCHANGED <<staleReply, reply, armed, unanswered, mergePending, splitTurn>>
+              /\ UNCHANGED fenceVars
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
-    /\ UNCHANGED holdVars
+    /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
     /\ UNCHANGED pauseVars
 
 Next ==
-    \/ VadStart \/ VadStop \/ Interject
+    \/ VadStart \/ VadStop \/ Interject \/ CutLands
     \/ Inference \/ Resume \/ Finalize
     \/ BotStart \/ BotStop
     \/ Arm \/ ForceStop
@@ -756,6 +939,13 @@ NoLostAnswer == ~answerLost
 \* bot is in the middle of a reply.
 NoStuckPause == ~(pausedP /\ ~botSpeaking)
 
+\* The reply a barge-in cut is in the context, corrected to what was heard, before
+\* anything reads the context for the turn that cut it: its commit, or a speculation's
+\* snapshot (which spends the ledger's cut). Otherwise the model is asked with the cut
+\* reply missing and then reads it back whole after the caller's words -- live
+\* 2026-10-13: "Okay, stop there." over a count, and the model counted again.
+NoCutAfterCommit == ~cutAfterCommit
+
 \* Reachability witnesses: rows that expect these to FAIL prove the window the
 \* answer-loss fix is about is reachable in the design they run -- a pause with the
 \* rest of the reply in the 0.5-1 s band, and a tail that elapses during it.
@@ -784,4 +974,9 @@ TypeOK ==
     /\ tailKnown \in BOOLEAN /\ wouldEnd \in BOOLEAN /\ stopHeard \in BOOLEAN
     /\ answerLost \in BOOLEAN
     /\ (PAUSE = "off" => ~pausedP)
+    /\ MODE \in {"asWritten", "retryOnQuiet", "retryMerges"} /\ EARLY_FINAL \in BOOLEAN
+    /\ FENCE \in {"none", "commitOnly", "inTime", "timed"}
+    /\ cut \in {"none", "empty", "reply"} /\ overtaken \in BOOLEAN
+    /\ cutAfterCommit \in BOOLEAN
+    /\ (overtaken => cut /= "none")
 =============================================================================

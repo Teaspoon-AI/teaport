@@ -33,6 +33,9 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    OutputAudioRawFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
 )
@@ -61,16 +64,30 @@ SYSTEM_NOTICE_TAG = "[automated system notice, not spoken by the user]"
 
 
 class OneShot:
-    """A pending retirement: `fire()` runs `retire` exactly once and sets `fired`."""
+    """A pending retirement: `fire()` runs `retire` exactly once and sets `fired`;
+    `void()` -- an interruption before anything answered -- runs `on_void` instead and
+    sets `voided`. Whichever comes first is the only one that happens."""
 
-    def __init__(self, retire):
+    def __init__(self, retire, on_void=None):
         self._retire = retire
+        self._on_void = on_void
         self.fired = asyncio.Event()
+        self.voided = asyncio.Event()
 
     def fire(self) -> None:
-        if not self.fired.is_set():
+        if not (self.fired.is_set() or self.voided.is_set()):
             self.fired.set()
             self._retire()
+
+    @property
+    def voidable(self) -> bool:
+        return self._on_void is not None
+
+    def void(self) -> None:
+        if not (self.fired.is_set() or self.voided.is_set()):
+            self.voided.set()
+            if self._on_void is not None:
+                self._on_void()
 
 
 class FollowupTrigger(FrameProcessor):
@@ -95,18 +112,27 @@ class FollowupTrigger(FrameProcessor):
         first LLMTextFrame is the earliest point at which the request provably
         carried the trigger and the model is answering from it.
 
-    A completion that reads the trigger and is cancelled before producing text
-    leaves it armed on purpose: nothing was spoken, so the next completion should
-    still deliver it.
+    An interruption VOIDS every armed shot that asked for it (armed with `on_void`)
+    instead. Nothing has answered from the trigger yet, and the caller's words are
+    about to be committed BELOW it -- so the next completion's first text would come
+    from one that read the trigger buried, answered the caller instead (live
+    2026-09-10 17:36) or recited it unasked (2026-08-26 08:17), and either way fired a
+    shot that was not its own. brain/formal/Followup.tla, MODE = "heard": without the
+    void, NoRepeatRecital falls (fu_heard_noVoid_repeat). The owner retires its order
+    on the void and, if it still wants an answer, posts it again at the tail. A shot
+    armed without one stays armed through the interruption, as ClientNotes' reaction
+    does on purpose: the caller's barge-in turn is meant to read it and react in the
+    same reply, and nothing checks or retries a reaction.
     """
 
     def __init__(self):
         super().__init__()
         self._armed: list = []
 
-    def arm(self, retire) -> OneShot:
-        """Register `retire` to run when the next answering completion produces text."""
-        shot = OneShot(retire)
+    def arm(self, retire, on_void=None) -> OneShot:
+        """Register `retire` to run when the next answering completion produces text,
+        and `on_void` to run instead if an interruption comes first."""
+        shot = OneShot(retire, on_void)
         self._armed.append(shot)
         return shot
 
@@ -124,6 +150,11 @@ class FollowupTrigger(FrameProcessor):
             armed, self._armed = self._armed, []
             for shot in armed:
                 shot.fire()
+        elif self._armed and isinstance(frame, InterruptionFrame):
+            voided = [shot for shot in self._armed if shot.voidable]
+            self._armed = [shot for shot in self._armed if not shot.voidable]
+            for shot in voided:
+                shot.void()
         await self.push_frame(frame, direction)
 
 
@@ -171,11 +202,26 @@ class Delivery:
     So completion comes from the transport's own frames, which are prompt and mean
     exactly what they say, and the ledger is consulted only for the fraction, only when
     there was a cut.
+
+    `replies_only` is for a watcher waiting on a model's REPLY (the consult follow-up):
+    BotStarted/StoppedSpeaking are the transport's, for whatever it plays -- a tool-ack
+    line, the narrator, an error notice (all append_to_context=False) -- so a follow-up
+    whose completion called a tool first had its watch settled as played by the ack, and
+    was "delivered and played to the end" before a sample of the answer existed
+    (brain/formal/Followup.tla, fu_heard_no_ownAudio_loss). For it, `spoke` is set by
+    audio that follows a reply's own TTSStartedFrame -- frames reach the gate in playout
+    order, so audio between a reply's TTSStartedFrame and its TTSStoppedFrame is that
+    reply's. Not by the TTSStartedFrame alone: pipecat opens a context for any non-blank
+    text, so an emoji-only reply, or one whose every clause the engine failed, opens one
+    and never plays (fu_heard_ownStart_loss). A watcher that
+    speaks its own line (say_last_line, the call prompt) keeps "any audio": that line
+    may well be append_to_context=False itself.
     """
 
-    __slots__ = ("spoke", "interrupted", "done")
+    __slots__ = ("spoke", "interrupted", "done", "replies_only")
 
-    def __init__(self):
+    def __init__(self, replies_only: bool = False):
+        self.replies_only = replies_only
         self.spoke = False
         self.interrupted = False
         self.done = asyncio.Event()
@@ -245,6 +291,9 @@ class FollowupGate(FrameProcessor):
         self._settled = asyncio.Event()
         self._settled.set()
         # Replies being watched to completion — see Delivery and watch_delivery.
+        # A reply's own TTS context is the one playing (its TTSStartedFrame has passed and
+        # its TTSStoppedFrame has not), so audio here is that reply's.
+        self._reply_playing = False
         self._deliveries: list = []
         # For the session arbiter's view of a room mic without wake words: whether the
         # user has taken a turn at all, and when anyone (user or bot) last spoke or the
@@ -322,13 +371,14 @@ class FollowupGate(FrameProcessor):
             self._claimed = False
             self._refresh()
 
-    def watch_delivery(self) -> Delivery:
+    def watch_delivery(self, *, replies_only: bool = False) -> Delivery:
         """Watch the reply about to be queued, until it finishes playing or is cut.
 
         Arm it BEFORE queueing the turn: an interruption can land between the queue
-        and the first audio, and that reply was never heard either.
+        and the first audio, and that reply was never heard either. `replies_only`:
+        only a model reply's audio counts as it speaking (see Delivery).
         """
-        d = Delivery()
+        d = Delivery(replies_only)
         self._deliveries.append(d)
         return d
 
@@ -377,8 +427,20 @@ class FollowupGate(FrameProcessor):
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._bot = True
             for d in self._deliveries:
-                d.spoke = True
+                if not d.replies_only:
+                    d.spoke = True
             self._refresh()
+        elif isinstance(frame, TTSStartedFrame):
+            # A reply's audio is next in the transport's queue -- unless it is a filler
+            # (see Delivery). The thinking bed opens no TTS context at all.
+            self._reply_playing = getattr(frame, "append_to_context", True) is not False
+        elif isinstance(frame, TTSStoppedFrame):
+            self._reply_playing = False
+        elif isinstance(frame, OutputAudioRawFrame):
+            if self._reply_playing:
+                for d in self._deliveries:
+                    if d.replies_only:
+                        d.spoke = True
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot = False
             # The transport stops speaking once its queue has drained, so a watched
@@ -415,6 +477,7 @@ class FollowupGate(FrameProcessor):
             # discards any end frame the TTS service was holding.
             self._llm = False
             self._turn = False
+            self._reply_playing = False  # the transport flushed what was queued
             # Every watched reply is cut — including one queued but not yet speaking,
             # which the caller heard none of. A claimant's queued completion is flushed
             # with it, so its claim goes too.
