@@ -225,10 +225,10 @@ def test_only_brain_says_when_the_box_has_no_capped_logs_yet():
     # --only brain installs no system packages: a box no full run has set up since
     # setup_logs (no logrotate) keeps its unrotated /var/log, and is told so; it goes on.
     rc, out = _brain_only(tempdir("teaport-only-"), venv="link", logs_capped=False)
-    assert rc == 0 and "WARN logs are not rotated or capped on this box yet" in out, out
+    assert rc == 0 and "WARN logs may not be rotated or capped on this box yet" in out, out
     assert "without --only once" in out and "STEP brain_swap" in out, out
     rc, out = _brain_only(tempdir("teaport-only-"), venv="link")
-    assert rc == 0 and "not rotated" not in out, out
+    assert rc == 0 and "may not be rotated" not in out, out
 
 
 def test_only_brain_updates_a_live_venv_a_pre_uv_one_and_a_dangling_link():

@@ -537,7 +537,7 @@ sip_allow_count() { confvals "$1" sip_source_allow | tr ',[:blank:]' '\n' | grep
 sip_acl_mode() {
   local inv m; inv="$(sip_unit_prop InvocationID)"
   [ -n "$inv" ] || return 0
-  m="$(journalctl -q "_SYSTEMD_INVOCATION_ID=$inv" -o cat --no-pager 2>/dev/null | grep -m1 -aoE '\[acl\] source filter [A-Z]+' || true)"
+  m="$(journalctl -b -q "_SYSTEMD_INVOCATION_ID=$inv" -o cat --no-pager 2>/dev/null | grep -m1 -aoE '\[acl\] source filter [A-Z]+' || true)"
   m="${m##* }"; printf '%s' "${m,,}"
 }
 # sip_filter_state <conf> — the source filter for `sip status` and doctor: what the
@@ -897,7 +897,9 @@ sip_drop() {
 sip_last_reg() {
   local inv; inv="$(sip_unit_prop InvocationID)"
   [ -n "$inv" ] || return 0
-  journalctl -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
+  # -b: the unit's current invocation is always in this boot, and the journal (persistent,
+  # install.sh setup_logs) keeps every boot; this runs every 0.5 s while waiting
+  journalctl -b -q "_SYSTEMD_INVOCATION_ID=$inv" -r -o short --no-pager 2>/dev/null | grep -m1 -aE '\[reg\]' || true
 }
 # Why sip_last_reg may be empty on a running gateway: this user cannot read the file the
 # gateway's lines land in. The default scope exits 0 on whatever it could open and only

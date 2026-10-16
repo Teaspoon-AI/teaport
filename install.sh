@@ -300,7 +300,9 @@ phase_sysdeps() {
 # box's rate, not a month: `journalctl --disk-usage` says how much it holds.
 # /var/log/syslog then gets only what rsyslog reads itself (the kernel's messages), and
 # logrotate, installed with the system packages, rotates that and the rest of /var/log with
-# Ubuntu's own rules (an old, big syslog moves aside at its next weekly rotation). Anything
+# Ubuntu's own rules. (An old, big syslog takes about two weeks to free its space: logrotate's
+# first run only records it, the weekly rule moves it to syslog.1, and delaycompress gzips
+# that a week later. `sudo logrotate -f /etc/logrotate.conf` does it now.) Anything
 # that read /var/log/syslog or auth.log for the services' lines (remote forwarding,
 # fail2ban's file backend) reads the journal instead from here on.
 # The journal config is install.sh's, like the units: $JOURNAL_DROPIN is rewritten on every
@@ -324,6 +326,10 @@ write_root() {
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] write %s\n' "$1"; return 0; fi
   printf '%s\n' "$2" | SUDO install -D -m 0644 -o root -g root /dev/stdin "$1"
 }
+# journal_settings: the drop-in's text without comments and blank lines (what journald reads)
+journal_settings() {
+  grep -v -e '^[[:space:]]*[#;]' -e '^[[:space:]]*$' "$JOURNAL_DROPIN" 2>/dev/null || true
+}
 JOURNAL_CONF_D=/etc/systemd/journald.conf.d
 JOURNAL_DROPIN=$JOURNAL_CONF_D/teaport.conf
 JOURNAL_DIR=/var/log/journal
@@ -331,7 +337,13 @@ JOURNAL_APPLIED="$STATE/journald.applied"
 JOURNAL_MAX_USE=2G
 LOGROTATE_BIN=/usr/sbin/logrotate
 setup_logs() {
-  local settings target want have current applied timer skip=0
+  local settings target want have current applied timer skip=0 dir_ok=1
+  # the journal config is the whole host's: a dev machine running this off-Jetson
+  # (TEAPORT_ALLOW_NON_JETSON) keeps its own; a dry run still shows what a box would get
+  if [ -z "${L4T_RELEASE:-}" ] && [ "$DRY_RUN" != 1 ]; then
+    log "logs: not a Jetson — this machine's journald and logrotate setup are left as they are"
+    return 0
+  fi
   log "logs: the journal is the one store: persistent, capped at $JOURNAL_MAX_USE, no copy to /var/log/syslog; logrotate for the rest of /var/log"
   settings="$(printf '%s\n' "Storage=persistent" "SystemMaxUse=$JOURNAL_MAX_USE" "ForwardToSyslog=no")"
   target="$(printf '%s\n' "[Journal]" "$settings")"
@@ -342,25 +354,22 @@ setup_logs() {
     "# ForwardToSyslog too." \
     "$target")"
   have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
-  # what the file on disk sets, comments and blank lines aside: if it isn't $target, journald
-  # can't have these settings now (a deleted or edited drop-in, then a reboot)
-  current="$(printf '%s\n' "$have" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' || true)"
+  # what the file on disk sets: if it isn't $target, journald can't have these settings now
+  # (a deleted or edited drop-in, then a reboot)
+  current="$(journal_settings)"
   if [ "$want" != "$have" ]; then
     if ! { SUDO install -d -m 0755 "$JOURNAL_CONF_D" && write_root "$JOURNAL_DROPIN" "$want"; }; then
       warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
       # nothing to apply, unless the file there holds the settings journald lacks: read
       # again, since a write that failed half-way may have left it truncated
-      have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
-      current="$(printf '%s\n' "$have" | grep -v -e '^[[:space:]]*#' -e '^[[:space:]]*$' || true)"
+      current="$(journal_settings)"
       [ "$current" = "$target" ] || skip=1
     fi
   fi
   applied="$(cat "$JOURNAL_APPLIED" 2>/dev/null || true)"
-  if [ "$skip" = 1 ]; then
-    :   # (the timer is still checked below)
-  elif [ "$settings" = "$applied" ] && [ "$current" = "$target" ]; then
+  if [ "$skip" != 1 ] && [ "$settings" = "$applied" ] && [ "$current" = "$target" ]; then
     log "logs: journald has these settings already"
-  else
+  elif [ "$skip" != 1 ]; then
     # $JOURNAL_DIR, made before journald needs it when it isn't there (setgid
     # systemd-journal), then systemd's own tmpfiles rules for it (its mode, owner and the
     # ACLs that let adm read it; they only adjust a directory that exists). Left to
@@ -368,14 +377,17 @@ setup_logs() {
     # operator would lose lines.
     { { [ -d "$JOURNAL_DIR" ] || SUDO install -d -m 2755 -o root -g systemd-journal "$JOURNAL_DIR"; } &&
       SUDO systemd-tmpfiles --create --prefix "$JOURNAL_DIR"; } \
-      || warn "logs: could not set up $JOURNAL_DIR — it is set up at the next boot"
+      || { warn "logs: could not set up $JOURNAL_DIR — it is set up at the next boot (or the next run)"; dir_ok=0; }
     # The restart applies the drop-in now (services' stdout streams survive it: journald
     # keeps them in systemd's fd store); the flush moves this boot's journal to disk. Neither
     # fails the install: both happen at the next boot, and the next run tries again.
     if SUDO systemctl restart systemd-journald; then
       SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
-      write_root "$JOURNAL_APPLIED" "$settings" \
-        || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
+      # recorded only when all of it worked, so the next run retries what didn't
+      if [ "$dir_ok" = 1 ]; then
+        write_root "$JOURNAL_APPLIED" "$settings" \
+          || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
+      fi
     else
       warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot (or the next run)"
     fi
@@ -2442,7 +2454,7 @@ main_brain_only() {
   # run has set up since setup_logs (no logrotate, or no journal drop-in) keeps its
   # unrotated, uncapped logs, so say so.
   if [ ! -x "$LOGROTATE_BIN" ] || [ ! -e "$JOURNAL_DROPIN" ] || [ ! -e "$JOURNAL_APPLIED" ]; then
-    warn "logs are not rotated or capped on this box yet (no logrotate, or journald has not taken $JOURNAL_DROPIN): run install.sh without --only once"
+    warn "logs may not be rotated or capped on this box yet (no logrotate, or no record of journald taking $JOURNAL_DROPIN): run install.sh without --only once"
   fi
   check_brain_source
   phase_brain

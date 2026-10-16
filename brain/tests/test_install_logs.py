@@ -31,6 +31,7 @@ SUDO() {
       if [ "${WRITE_TRUNCATES:-0}" = 1 ]; then cat >/dev/null; [ ! -e "$last" ] || : > "$last"; return 1; fi
       mkdir -p "$(dirname "$last")"; cat > "$last"; chmod "$mode" "$last" ;;
     systemctl) [ "$2" != restart ] || [ "${RESTART_FAILS:-0}" = 0 ] ;;
+    systemd-tmpfiles) [ "${TMPFILES_FAILS:-0}" = 0 ] ;;
   esac
 }
 systemctl() {
@@ -46,18 +47,18 @@ sudo() { printf 'sudo %s\n' "$*" >> "$T/calls"; return 1; }   # never needed: re
 
 def _setup_logs(tmp, max_use="2G", write_fails=False, restart_fails=False, timer="enabled",
                 active=True, dry_run=False, journal_dir_exists=False, write_truncates=False,
-                umask="022"):
+                umask="022", tmpfiles_fails=False, l4t="39"):
     confd, journal = pathlib.Path(tmp, "journald.conf.d"), pathlib.Path(tmp, "journal")
     if journal_dir_exists:
         journal.mkdir(exist_ok=True)
     calls = pathlib.Path(tmp, "calls")
     calls.unlink(missing_ok=True)
-    script = (STUBS + _fn("write_root") + _fn("setup_logs") +
-              f'DRY_RUN={int(dry_run)}; JOURNAL_CONF_D="{confd}"; JOURNAL_DROPIN="{confd}/teaport.conf"; '
+    script = (STUBS + _fn("write_root") + _fn("journal_settings") + _fn("setup_logs") +
+              f'DRY_RUN={int(dry_run)}; L4T_RELEASE="{l4t}"; JOURNAL_CONF_D="{confd}"; JOURNAL_DROPIN="{confd}/teaport.conf"; '
               f'JOURNAL_DIR="{journal}"; JOURNAL_APPLIED="{tmp}/state/journald.applied"; '
               f'JOURNAL_MAX_USE={max_use}; umask {umask}; setup_logs; echo DONE')
     env = {"T": str(tmp), "PATH": "/usr/bin:/bin", "WRITE_FAILS": str(int(write_fails)),
-           "WRITE_TRUNCATES": str(int(write_truncates)),
+           "WRITE_TRUNCATES": str(int(write_truncates)), "TMPFILES_FAILS": str(int(tmpfiles_fails)),
            "RESTART_FAILS": str(int(restart_fails)), "TIMER": timer, "ACTIVE": str(int(active))}
     p = subprocess.run(["bash", "-c", script], capture_output=True, text=True, env=env)
     return (p.returncode, p.stdout + p.stderr,
@@ -194,6 +195,26 @@ def test_a_write_that_truncates_the_file_then_fails_restarts_nothing():
     rc, out, calls, _ = _setup_logs(tmp, write_truncates=True)
     assert rc == 0 and "could not write" in out and RESTART not in calls, (out, calls)
     assert not pathlib.Path(tmp, "state/journald.applied").exists()
+
+
+def test_a_journal_directory_that_could_not_be_set_up_is_tried_again_by_the_next_run():
+    # the restart worked but tmpfiles didn't: not recorded as applied, so the next run
+    # sets the directory up (adm's ACLs) instead of waiting for a reboot
+    tmp = tempdir("teaport-logs-")
+    rc, out, _, _ = _setup_logs(tmp, tmpfiles_fails=True)
+    assert rc == 0 and "could not set up" in out, out
+    assert not pathlib.Path(tmp, "state/journald.applied").exists()
+    rc, out, calls, _ = _setup_logs(tmp)
+    assert rc == 0 and any(c.startswith("systemd-tmpfiles") for c in calls), calls
+    assert pathlib.Path(tmp, "state/journald.applied").exists()
+
+
+def test_off_a_jetson_a_real_run_leaves_the_machines_journald_alone():
+    # a dev machine (TEAPORT_ALLOW_NON_JETSON): host-wide journald config isn't ours to change
+    rc, out, calls, dropin = _setup_logs(tempdir("teaport-logs-"), l4t="")
+    assert rc == 0 and "not a Jetson" in out and not dropin.exists() and calls == [], (out, calls)
+    rc, out, calls, _ = _setup_logs(tempdir("teaport-logs-"), l4t="", dry_run=True)
+    assert rc == 0 and "[dry-run] write" in out, out   # a dry run still shows what a box gets
 
 
 def test_each_logrotate_timer_state_gets_its_own_advice():
