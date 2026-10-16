@@ -162,7 +162,12 @@ run UserTurn.tla ut_fence_timed_nocutaftercommit      "(expected: FAILS NoCutAft
 run UserTurn.tla ut_fence_timed_nosplitturn           "(expected: FAILS NoSplitTurn — the same bound as shipped: a commit past it, a continuation's included, is not merged: the ACCEPTED RESIDUAL)"
 run UserTurn.tla ut_retryOnQuiet_early_nosplitturn    "(expected: FAILS NoSplitTurn — before 2026-10-15: words finalized before the retry's VAD stop are a second commit, the held reply still plays)"
 run UserTurn.tla ut_retryMergesAtEnd_nolostgoodbye    "(expected: FAILS NoLostGoodbye — e62e67a: the session-end commit continued too, dropping the reply the End was behind)"
-run UserTurn.tla ut_shipped_all                       "(expected: holds — SIP as shipped, speculation on, early finals, tool rounds: every property; a commit with the gate armed drops the unplayed reply and merges)"
+echo
+echo "UserTurn.tla — a tool call overtaken by its own cancel (CALLS, #185)"
+run UserTurn.tla ut_calls_asWritten_noorphancall      "(expected: FAILS NoOrphanCall — pipecat's aggregator as written: the late InProgress lands IN_PROGRESS for good)"
+run UserTurn.tla ut_calls_dropAbove_noorphancall      "(expected: FAILS NoOrphanCall — a drop in a processor above the aggregator: a cancel that overtakes inside the aggregator's own queue gets past it)"
+run UserTurn.tla ut_calls_settleAtCommit_nounsettledread "(expected: FAILS NoUnsettledRead — settling at the next commit: a sync tool's result asks the LLM before it)"
+run UserTurn.tla ut_shipped_all                      "(expected: holds — SIP as shipped, speculation on, early finals, tool rounds: every property; a commit with the gate armed drops the unplayed reply and merges)"
 run UserTurn.tla ut_shipped_timed                     "(expected: holds — the same with the hold's timers as they are (release, cap): everything but the accepted NoStaleReply residual)"
 echo
 echo "PlayoutClock.tla — a held reply's playout times at the transport's clock (#85)"

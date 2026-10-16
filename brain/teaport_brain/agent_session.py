@@ -85,7 +85,7 @@ from teaport_brain.settings import setting
 from teaport_brain.followup_gate import (
     SYSTEM_NOTICE_TAG, FollowupGate, FollowupTrigger, TurnCommitMark,
 )
-from teaport_brain.heard_context import HeardContextCorrector
+from teaport_brain.heard_context import HeardContextCorrector, drop_overtaken_tool_calls
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
 from teaport_brain.mood_tag import MoodTag
@@ -1167,6 +1167,10 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (endpointing.CutReplyFence). Its head and tail go around the two aggregators below.
     cut_fence = CutReplyFence()
     cut_fence.hold_commits(context_aggregator.user())
+    # A barge-in's tool-call cancel can overtake the call's in-progress frame on its way
+    # to the assistant aggregator, which then writes the call IN_PROGRESS for good (#185):
+    # it drops that frame, in the order the aggregator itself handles them.
+    drop_overtaken_tool_calls(context_aggregator.assistant())
     if wifi_closer is not None:
         wifi_closer.aggregator = context_aggregator.user()
 
