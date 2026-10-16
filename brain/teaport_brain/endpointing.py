@@ -1053,11 +1053,12 @@ def keep_barge_in_reachable(controller) -> None:
     _trigger_user_turn_stop or process_frame, this raises AttributeError at session
     build — loudly, on the first call, in CI — which is the outcome to want; and
     RuntimeError there if the inference hook's (strategy, speculation) signature
-    moved, the one argument it reads rather than passes on. _user_turn and
-    _user_speaking are read only when the wrappers run, inside pipecat's event
-    handlers: a rename of those is an "uncaught exception in event handler" ERROR on
-    every turn rather than a build failure -- loud in the log and in the turn tests,
-    not silent. Silently doing nothing would restore a bug whose whole signature is
+    moved, the one argument it reads rather than passes on. The two flags are read
+    only at run time: _user_turn by every wrapper, inside pipecat's event handlers (a
+    rename is an "uncaught exception in event handler" ERROR on every turn), and
+    _user_speaking only in _process_frame while a finalization is owed -- the stuck
+    case itself, which test_barge_in_survives_an_open_turn drives, so a rename fails
+    there in CI. Silently doing nothing would restore a bug whose whole signature is
     that nothing is logged when it happens.
 
     Known limit: the re-attempt rides the frame that reports the user quiet, so it
