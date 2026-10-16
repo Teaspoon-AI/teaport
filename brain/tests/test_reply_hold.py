@@ -746,6 +746,53 @@ async def test_a_held_result_whose_call_passed_settles_it_without_an_answer():
         await run
 
 
+async def test_a_dropped_held_call_leaves_the_aggregator_with_no_call_running():
+    # The held reply's call is still running when the caller's words drop the hold: the
+    # interruption cancels it, and its cancel (a SystemFrame) passes the paused gate and
+    # reaches the assistant aggregator, which has no in-progress frame on record for it
+    # -- that waits here, and the gate drops it. pipecat's cancel handler returns early
+    # and leaves the empty entry FunctionCallsStartedFrame put on its in-progress map:
+    # has_function_calls_in_progress True for the rest of the session. The aggregator
+    # as agent_session wires it (heard_context.drop_overtaken_tool_calls) takes the
+    # entry out at the cancel, the same as for a frame the cancel overtook below (#185).
+    from pipecat.frames.frames import FunctionCallCancelFrame, FunctionCallFromLLM
+
+    from teaport_brain.heard_context import drop_overtaken_tool_calls
+
+    context = LLMContext([{"role": "system", "content": "sys"},
+                          {"role": "user", "content": "look up the trains"}])
+    pair = LLMContextAggregatorPair(context)
+    drop_overtaken_tool_calls(pair.assistant())
+    gate = ReplyHoldGate(merge=TurnMerge(), release_secs=RELEASE_S, max_secs=MAX_S)
+    task = PipelineTask(Pipeline([Tap(), gate, pair.assistant()]),
+                        cancel_on_idle_timeout=False)
+    run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(task))
+    await asyncio.sleep(STARTUP_S)
+    try:
+        await gate.arm()
+        await task.queue_frame(FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+            function_name="web_search", tool_call_id="t1", arguments={}, context=None)]))
+        await task.queue_frame(VADUserStartedSpeakingFrame())      # the caller resumes
+        await asyncio.sleep(0.05)
+        assert gate.holding
+        await task.queue_frame(FunctionCallInProgressFrame(
+            function_name="web_search", tool_call_id="t1", arguments={},
+            cancel_on_interruption=True))                           # held
+        await asyncio.sleep(0.1)
+        await task.queue_frames([
+            FunctionCallCancelFrame(function_name="web_search", tool_call_id="t1"),
+            InterruptionFrame(), VADUserStoppedSpeakingFrame()])
+        await asyncio.sleep(0.3)
+        assert gate.dropped == 1
+        assert not any(m.get("role") == "tool" or m.get("tool_calls")
+                       for m in context.get_messages()), context.get_messages()
+        assert not pair.assistant().has_function_calls_in_progress, (
+            "the dropped call stays on the aggregator's in-progress map")
+    finally:
+        await task.cancel()
+        await run
+
+
 async def test_words_placed_after_the_release_move_with_the_held_ones():
     # The TTS keeps placing the held context's words on its pre-hold baseline after the
     # release: they move by the same wait, or they would run ahead of their audio.
