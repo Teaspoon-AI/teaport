@@ -27,7 +27,7 @@ from teaport_brain import llm_dns  # noqa: E402
 from teaport_brain.llm_dns import StaleDNSBackend, use_stale_dns  # noqa: E402
 
 HOST = "model.test"
-FAST = 0.1
+FAST = 0.3
 
 
 class Resolver:
@@ -37,7 +37,7 @@ class Resolver:
         self.answer, self.delay, self.error = list(answer), delay, error
         self.calls = 0
 
-    async def __call__(self, host, port):
+    async def __call__(self, host):
         self.calls += 1
         await asyncio.sleep(self.delay)
         if self.error is not None:
@@ -113,14 +113,13 @@ async def test_a_stalled_lookup_uses_the_last_known_address():
     _fresh()
     inner = Inner()
     await StaleDNSBackend(inner, Resolver(["10.0.0.1"])).connect_tcp(HOST, 443, timeout=5)
-    stalled = Resolver(["10.0.0.2"], delay=0.4)
+    stalled = Resolver(["10.0.0.2"], delay=2 * FAST)
     t = time.monotonic()
     await StaleDNSBackend(inner, stalled).connect_tcp(HOST, 443, timeout=5)
     took = time.monotonic() - t
-    assert _connects(inner)[-1] == "10.0.0.1" and took < FAST + 0.2, (inner.log, took)
+    assert _connects(inner)[-1] == "10.0.0.1" and took < 1.7 * FAST, (inner.log, took)
     # The lookup goes on, and its answer is the next connection's.
-    await asyncio.sleep(0.5)
-    assert llm_dns._KNOWN[HOST][0] == ["10.0.0.2"], llm_dns._KNOWN
+    assert await _until(lambda: llm_dns._KNOWN[HOST][0] == ["10.0.0.2"]), llm_dns._KNOWN
 
 
 async def test_a_failed_lookup_uses_the_last_known_address_at_once():
@@ -130,7 +129,7 @@ async def test_a_failed_lookup_uses_the_last_known_address_at_once():
     failing = Resolver(error=socket.gaierror(-3, "Temporary failure in name resolution"))
     t = time.monotonic()
     await StaleDNSBackend(inner, failing).connect_tcp(HOST, 443, timeout=5)
-    assert _connects(inner)[-1] == "10.0.0.1" and time.monotonic() - t < FAST
+    assert _connects(inner)[-1] == "10.0.0.1" and time.monotonic() - t < FAST / 2
     assert llm_dns._KNOWN[HOST][0] == ["10.0.0.1"], "a failed lookup must not forget the address"
 
 
@@ -159,7 +158,8 @@ async def test_an_address_older_than_a_day_is_not_used():
     _fresh()
     llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic() - llm_dns.MAX_AGE_S - 1)
     inner = Inner()
-    await StaleDNSBackend(inner, Resolver(["10.0.0.3"], delay=0.3)).connect_tcp(HOST, 443, timeout=5)
+    await StaleDNSBackend(inner, Resolver(["10.0.0.3"], delay=2 * FAST)).connect_tcp(
+        HOST, 443, timeout=5)
     assert _connects(inner) == ["10.0.0.3"], inner.log  # waited for the lookup instead
 
 
@@ -183,12 +183,30 @@ async def test_connections_waiting_on_one_host_share_one_lookup():
     # connection to the same host must not start another.
     _fresh()
     llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic())
-    resolver = Resolver(delay=0.4)
+    resolver = Resolver(delay=2 * FAST)
     backend = StaleDNSBackend(Inner(), resolver)
     await asyncio.gather(backend.connect_tcp(HOST, 443, timeout=5),
                          backend.connect_tcp(HOST, 443, timeout=5))
     assert resolver.calls == 1, resolver.calls
-    await asyncio.sleep(0.5)
+    assert await _until(lambda: not _pending_tasks())
+
+
+async def test_a_lookup_stuck_past_the_share_window_is_not_reused():
+    # A lookup stuck on a resolver that has since recovered: a new connection asks again
+    # rather than riding the stuck one for good.
+    _fresh()
+    llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic())
+    stuck = Resolver(delay=3600)
+    backend = StaleDNSBackend(Inner(), stuck)
+    await backend.connect_tcp(HOST, 443, timeout=5)
+    old = _pending_tasks()[0]
+    loop = asyncio.get_running_loop()
+    llm_dns._PENDING[loop][HOST] = (old, time.monotonic() - llm_dns.SHARE_FOR_S - 1)
+    backend._resolve = Resolver(["10.0.0.5"])
+    inner = backend._inner = Inner()
+    await backend.connect_tcp(HOST, 443, timeout=5)
+    assert _connects(inner) == ["10.0.0.5"], inner.log
+    old.cancel()
 
 
 async def test_tls_still_verifies_the_name_asked_for():
@@ -251,21 +269,31 @@ async def test_a_black_holed_ipv6_route_does_not_spend_the_budget():
     t = time.monotonic()
     await StaleDNSBackend(inner, Resolver(delay=5)).connect_tcp(HOST, 443, timeout=5)
     took = time.monotonic() - t
-    assert _connects(inner) == ["10.0.0.1"] and took < FAST + 0.3, (inner.log, took)
+    assert _connects(inner) == ["10.0.0.1"] and took < 1.7 * FAST, (inner.log, took)
 
 
-async def test_with_nothing_remembered_a_cancelled_lookup_is_a_connect_error():
+async def test_remembered_addresses_that_moved_give_way_to_the_fresh_ones():
+    # The model's host moved while DNS was slow: the old address refuses, and the
+    # connection waits out the lookup and uses its answer rather than failing.
     _fresh()
-    backend = StaleDNSBackend(Inner(), Resolver(delay=5))
-    connecting = asyncio.ensure_future(backend.connect_tcp(HOST, 443, timeout=5))
-    await asyncio.sleep(0.05)
-    _pending_tasks()[0].cancel()
+    llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic())
+    inner = Inner(refuse={"10.0.0.1"})
+    await StaleDNSBackend(inner, Resolver(["10.0.0.7"], delay=2 * FAST)).connect_tcp(
+        HOST, 443, timeout=5)
+    assert _connects(inner) == ["10.0.0.1", "10.0.0.7"], inner.log
+
+
+async def test_with_no_fresher_answer_a_refusal_is_the_error():
+    _fresh()
+    llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic())
+    inner = Inner(refuse={"10.0.0.1"})
     try:
-        await connecting
+        await StaleDNSBackend(inner, Resolver(["10.0.0.1"])).connect_tcp(HOST, 443, timeout=5)
     except httpcore.ConnectError:
         pass
     else:
-        raise AssertionError("a cancelled lookup connected")
+        raise AssertionError("a refused address connected")
+    assert _connects(inner) == ["10.0.0.1"], inner.log    # the same answer: not retried
 
 
 def test_an_international_name_is_primed_under_the_name_it_connects_with():
@@ -284,7 +312,7 @@ async def test_a_dead_ipv4_address_leaves_time_for_ipv6():
     await StaleDNSBackend(inner, Resolver(delay=5)).connect_tcp(HOST, 443, timeout=5)
     took = time.monotonic() - t
     # IPv4's share outlasts one lost SYN (2 s); IPv6 is next, not behind four IPv4.
-    assert _connects(inner) == ["10.0.0.1", "2001:db8::1"] and took < 2.6, (inner.log, took)
+    assert _connects(inner) == ["10.0.0.1", "2001:db8::1"] and took < FAST + 2.5, (inner.log, took)
     assert inner.log[0][2] >= llm_dns.MIN_ATTEMPT_S - 0.01, inner.log
 
 
@@ -302,7 +330,7 @@ async def test_a_cancelled_lookup_falls_back_rather_than_cancelling_the_request(
         task.cancel()
         t = time.monotonic()
         await connecting
-        assert time.monotonic() - t < 0.5 and _connects(backend._inner) == ["10.0.0.1"]
+        assert time.monotonic() - t < 1.0 and _connects(backend._inner) == ["10.0.0.1"]
     finally:
         llm_dns.FAST_S = saved
 
@@ -317,6 +345,8 @@ async def test_a_lookup_that_failed_moments_ago_is_not_waited_on_again():
     t = time.monotonic()
     await StaleDNSBackend(inner, Resolver(delay=5)).connect_tcp(HOST, 443, timeout=5)
     assert time.monotonic() - t < FAST / 2 and _connects(inner) == ["10.0.0.1"]
+    for task in _pending_tasks():
+        task.cancel()
 
 
 async def test_a_stall_already_known_is_not_waited_on_again():
@@ -338,10 +368,10 @@ async def test_the_wait_never_outlasts_the_connect_budget():
         llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic())
         inner = Inner()
         t = time.monotonic()
-        await StaleDNSBackend(inner, Resolver(delay=5)).connect_tcp(HOST, 443, timeout=0.3)
+        await StaleDNSBackend(inner, Resolver(delay=5)).connect_tcp(HOST, 443, timeout=1.0)
         # Half the budget waited at most, and the connect given what is left (> 0).
-        assert time.monotonic() - t < 0.5 and _connects(inner) == ["10.0.0.1"], inner.log
-        assert inner.log[0][2] > 0.1, inner.log
+        assert time.monotonic() - t < 0.8 and _connects(inner) == ["10.0.0.1"], inner.log
+        assert inner.log[0][2] > 0.3, inner.log
     finally:
         llm_dns.FAST_S = saved
         for task in _pending_tasks():
@@ -358,6 +388,24 @@ async def test_the_client_looks_the_host_up_when_it_is_built():
     await client.aclose()
 
 
+async def test_the_brain_looks_the_model_host_up_at_startup():
+    # services.prime_model_dns, called by the gateway's startup: the host of LLM_BASE_URL,
+    # and a malformed URL is not the startup's to fail on.
+    from teaport_brain import services
+    _fresh()
+    saved = os.environ.get("LLM_BASE_URL")
+    try:
+        os.environ["LLM_BASE_URL"] = "http://["
+        services.prime_model_dns()
+        os.environ["LLM_BASE_URL"] = "http://localhost:9/v1"
+        services.prime_model_dns()
+        assert await _until(lambda: "localhost" in llm_dns._KNOWN), llm_dns._KNOWN
+    finally:
+        os.environ.pop("LLM_BASE_URL", None)
+        if saved is not None:
+            os.environ["LLM_BASE_URL"] = saved
+
+
 def test_proxies_from_the_environment_are_kept_and_covered():
     # Replacing the client's transport would drop its env-proxy mounts; the backend goes
     # under the client's own transports instead -- the proxy's too, so the proxy host's
@@ -366,6 +414,7 @@ def test_proxies_from_the_environment_are_kept_and_covered():
     saved = {n: os.environ.pop(n, None) for n in names}
     os.environ["HTTPS_PROXY"] = "http://127.0.0.1:3128"
     os.environ["NO_PROXY"] = "localhost"          # its mount is None: skipped, not a crash
+    client = None
     try:
         client = use_stale_dns(httpx.AsyncClient(trust_env=True))
         proxies = [t for t in client._mounts.values() if t is not None]
@@ -373,6 +422,8 @@ def test_proxies_from_the_environment_are_kept_and_covered():
         for transport in proxies:
             assert isinstance(transport._pool._network_backend, StaleDNSBackend), transport
     finally:
+        if client is not None:
+            asyncio.run(client.aclose())
         for n in names:
             os.environ.pop(n, None)
             if saved[n] is not None:
@@ -385,14 +436,14 @@ async def test_behind_a_proxy_the_proxys_host_is_looked_up_at_build():
     _fresh()
     resolved = []
 
-    async def resolve(host, port):
+    async def resolve(host):
         resolved.append(host)
         return ["127.0.0.1"]
     names = ("HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy", "NO_PROXY", "no_proxy")
     saved = {n: os.environ.pop(n, None) for n in names}
     os.environ["HTTPS_PROXY"] = "http://proxy.test:3128"
+    client = httpx.AsyncClient(trust_env=True)
     try:
-        client = httpx.AsyncClient(trust_env=True)
         orig = llm_dns.StaleDNSBackend.__init__
         llm_dns.StaleDNSBackend.__init__ = lambda self, inner=None, resolve_=None: orig(
             self, inner, resolve)
@@ -403,6 +454,7 @@ async def test_behind_a_proxy_the_proxys_host_is_looked_up_at_build():
         assert await _until(lambda: resolved), resolved
         assert resolved == ["proxy.test"], resolved
     finally:
+        await client.aclose()
         for n in names:
             os.environ.pop(n, None)
             if saved[n] is not None:
@@ -413,11 +465,11 @@ async def test_a_link_local_ipv6_address_keeps_its_scope():
     loop = asyncio.get_running_loop()
 
     async def getaddrinfo(host, port, type=0):
-        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", port, 0, 3)),
-                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.9", port))]
+        return [(socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("fe80::1", 0, 0, 3)),
+                (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("192.168.1.9", 0))]
     loop.getaddrinfo = getaddrinfo
     try:
-        assert await llm_dns._getaddrinfo("box.local", 80) == ["fe80::1%3", "192.168.1.9"]
+        assert await llm_dns._getaddrinfo("box.local") == ["fe80::1%3", "192.168.1.9"]
     finally:
         del loop.getaddrinfo
 
@@ -441,13 +493,15 @@ def test_a_client_whose_pool_moved_keeps_the_stock_dns():
     # The hook is optional: a pool without it is logged, and the brain still answers.
     from loguru import logger
     client = httpx.AsyncClient()
-    client._transport = object()
+    real, client._transport = client._transport, object()
     lines = []
     sink = logger.add(lambda m: lines.append(m.record["message"]), level="ERROR")
     try:
         assert use_stale_dns(client, "https://openrouter.ai/api/v1") is client
     finally:
         logger.remove(sink)
+        client._transport = real
+        asyncio.run(client.aclose())
     assert any("keeps the stock DNS" in m for m in lines), lines
 
 

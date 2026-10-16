@@ -23,7 +23,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pipecat.frames.frames import FunctionCallFromLLM, SystemFrame
 from pipecat.services.openai.llm import OpenAILLMService
 
-from teaport_brain.llm_dns import use_stale_dns
+from teaport_brain.llm_dns import prime, use_stale_dns
 from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
 
@@ -487,6 +487,16 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 ),
             ), base_url),
         )
+
+
+def prime_model_dns() -> None:
+    """Look the model's host up at the brain's start, so a DNS stall at the first turn
+    -- hours later, say -- already has its address to fall back on (llm_dns)."""
+    try:
+        host = httpx.URL(setting("LLM_BASE_URL") or "").raw_host.decode("ascii")
+    except (httpx.InvalidURL, UnicodeError):
+        return      # make_llm reports a bad URL when a session needs it
+    prime(host)
 
 
 def warm_first_use_imports() -> None:

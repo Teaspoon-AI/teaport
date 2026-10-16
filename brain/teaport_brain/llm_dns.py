@@ -25,12 +25,14 @@
 #     IPv4 is tried, nor a dead IPv4 one before IPv6 -- the stock backend's connect by
 #     name raced the families; alternating them, a share each, gets a home network the
 #     same with no concurrent attempts to clean up. (It ignores gai.conf's preference;
-#     a home router answers on both or on IPv4.)
+#     a home router answers on both or on IPv4.) Remembered addresses that all fail --
+#     the host moved -- give way to the lookup's own answer, inside the same budget.
 #
-# The host's addresses are first looked up when the client is built (prime), so the
-# first turn after a brain restart already has something to fall back on -- if DNS
-# answers then. The record lives in memory: a restart during an outage starts with
-# nothing, and install.sh's serve-stale drop-in is what covers that first lookup.
+# The model's host is first looked up when the brain starts and again when each
+# session's client is built (prime), so the first turn after a restart already has
+# something to fall back on -- if DNS answers then. The record lives in memory: a
+# restart during an outage starts with nothing, which the resolver's own serve-stale
+# (install.sh's drop-in, packaging/resolved) is there to cover, after its first attempt.
 #
 # TLS is unaffected: httpcore sets the server name it verifies from the request's own
 # host, not from the address the socket was opened to (AsyncHTTPConnection._connect,
@@ -56,7 +58,7 @@ from loguru import logger
 # server not answering.
 FAST_S = 1.5
 # How old a remembered address may be. Cloudflare-fronted endpoints keep theirs for
-# months; a day matches install.sh's serve-stale drop-in.
+# months; a day matches the resolver's serve-stale drop-in (packaging/resolved).
 MAX_AGE_S = 24 * 3600.0
 # How many addresses are tried, and the least time each is given: 2 s outlasts one lost
 # SYN (Linux retransmits the first after 1 s).
@@ -65,6 +67,9 @@ MIN_ATTEMPT_S = 2.0
 # A lookup for the host that failed this recently means the DNS server is down: the
 # next connection does not wait FAST_S for another before using the remembered address.
 FAILED_FOR_S = 30.0
+# A lookup in flight longer than this is not shared with a new connection: it is stuck
+# on a resolver that has since recovered, or never will; a fresh one is asked instead.
+SHARE_FOR_S = 10.0
 
 # host -> (addresses, when they were looked up)
 _KNOWN: dict = {}
@@ -82,8 +87,8 @@ def _is_ip(host: str) -> bool:
         return False
 
 
-async def _getaddrinfo(host: str, port: int) -> list:
-    infos = await asyncio.get_running_loop().getaddrinfo(host, port, type=socket.SOCK_STREAM)
+async def _getaddrinfo(host: str) -> list:
+    infos = await asyncio.get_running_loop().getaddrinfo(host, None, type=socket.SOCK_STREAM)
     seen, out = set(), []
     for family, *_, sockaddr in infos:
         address = sockaddr[0]
@@ -119,14 +124,16 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
         self._inner = inner or httpcore.AnyIOBackend()
         self._resolve = resolve or _getaddrinfo
 
-    def lookup(self, host: str, port: int) -> "tuple[asyncio.Task, float]":
-        """The host's lookup on this loop: the one in flight, or a new one."""
+    def lookup(self, host: str) -> "tuple[asyncio.Task, float]":
+        """The host's lookup on this loop: the one in flight (unless it has been for
+        SHARE_FOR_S), or a new one."""
         loop = asyncio.get_running_loop()
         pending = _PENDING.setdefault(loop, {})
         entry = pending.get(host)
-        if entry is not None and not entry[0].done():
+        if entry is not None and not entry[0].done() and \
+                time.monotonic() - entry[1] < SHARE_FOR_S:
             return entry
-        task = loop.create_task(self._resolve(host, port))
+        task = loop.create_task(self._resolve(host))
         entry = (task, time.monotonic())
         pending[host] = entry
 
@@ -149,12 +156,29 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
             return await self._inner.connect_tcp(host, port, timeout, local_address,
                                                  socket_options)
         started = time.monotonic()
-        addresses = await self._addresses(host, port, timeout, started)
-        return await self._connect(addresses, port, timeout, started, local_address,
-                                   socket_options)
+        addresses, lookup = await self._addresses(host, timeout, started)
+        try:
+            return await self._connect(addresses, port, timeout, started, local_address,
+                                       socket_options)
+        except (httpcore.ConnectError, httpcore.ConnectTimeout):
+            # Remembered addresses that no longer answer (the host moved while DNS was
+            # slow): the lookup's own answer, waited for and tried with what is left of
+            # the budget, if it differs.
+            left = _left(timeout, started)
+            if not lookup.done() and (left is None or left > 0):
+                await asyncio.wait({lookup}, timeout=left)
+            left = _left(timeout, started)
+            if not lookup.done() or lookup.cancelled() or lookup.exception() is not None \
+                    or not lookup.result() or lookup.result() == addresses \
+                    or (left is not None and left <= 0):
+                raise
+            return await self._connect(lookup.result(), port, timeout, started,
+                                       local_address, socket_options)
 
-    async def _addresses(self, host, port, timeout, started) -> list:
-        lookup, since = self.lookup(host, port)
+    async def _addresses(self, host, timeout, started) -> "tuple[list, asyncio.Task]":
+        """The addresses to connect to, and the host's lookup they came from or stood
+        in for."""
+        lookup, since = self.lookup(host)
         known = _KNOWN.get(host)
         if known is not None and started - known[1] > MAX_AGE_S:
             known = None
@@ -167,15 +191,9 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
                 raise httpcore.ConnectTimeout(f"DNS lookup for {host} timed out") from None
             except OSError as e:
                 raise httpcore.ConnectError(str(e)) from e
-            except asyncio.CancelledError:
-                # The shared lookup cancelled under us (a loop shutting down) is a failed
-                # lookup; this request being cancelled is a cancellation.
-                if lookup.cancelled() and not asyncio.current_task().cancelling():
-                    raise httpcore.ConnectError(f"DNS lookup for {host} was cancelled") from None
-                raise
             if not found:
                 raise httpcore.ConnectError(f"DNS lookup for {host} returned no addresses")
-            return found
+            return found, lookup
         # A stall already known -- this lookup pending past FAST_S, or the host's last
         # one failing moments ago -- is not waited on again; nor is any for more than
         # half the connect budget left, so the remembered address has time to connect.
@@ -190,7 +208,7 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
             await asyncio.wait({lookup}, timeout=wait)
         if lookup.done() and not lookup.cancelled() and lookup.exception() is None \
                 and lookup.result():
-            return lookup.result()
+            return lookup.result(), lookup
         if not lookup.done() and failed_ago < FAILED_FOR_S:
             why = f"failed {failed_ago:.0f}s ago and is not answering yet"
         elif not lookup.done():
@@ -202,7 +220,7 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
         else:
             why = "returned no addresses"
         logger.info(f"DNS for {host} {why}: connecting to its last known address")
-        return known[0]
+        return known[0], lookup
 
     async def _connect(self, addresses, port, timeout, started, local_address,
                        socket_options):
@@ -262,18 +280,23 @@ def _prime(client, backend, url):
     # raw_host: the ASCII (punycode) form httpcore connects with, the key the connect
     # path reads.
     host = url.raw_host.decode("ascii")
-    port = url.port or (443 if url.scheme == "https" else 80)
     transport_for = getattr(client, "_transport_for_url", None)
     pool = getattr(transport_for(url) if transport_for else None, "_pool", None)
     proxy_url = getattr(pool, "_proxy_url", None)
     if proxy_url is not None:
         host = proxy_url.host.decode("ascii")
-        port = proxy_url.port or (443 if proxy_url.scheme == b"https" else 80)
+    prime(host, backend)
+
+
+def prime(host: str, backend: "StaleDNSBackend | None" = None) -> None:
+    """Look host up now, in the background, unless a usable answer is remembered or no
+    loop is running (the first connection looks it up then). The brain calls it at
+    startup with the model's host (services.prime_model_dns)."""
     known = _KNOWN.get(host)
     if not host or _is_ip(host) or (known and time.monotonic() - known[1] <= MAX_AGE_S):
         return
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        return      # no loop yet: the first connection looks it up
-    backend.lookup(host, port)
+        return
+    (backend or StaleDNSBackend()).lookup(host)
