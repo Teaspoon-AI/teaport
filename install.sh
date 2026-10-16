@@ -263,7 +263,7 @@ phase_preflight() {
 }
 
 phase_sysdeps() {
-  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), libcudnn9-cuda-13 (engine TTS convs), python3.12-venv (brain)"
+  log "system deps: espeak-ng (engine G2P fallback), libopenblas0 (engine BLAS), libcudnn9-cuda-13 (engine TTS convs), python3.12-venv (brain), logrotate (logs)"
   # espeak-ng is a hard runtime dep of the GPL-clean engine (arm's-length CLI child) —
   # but ONLY as the OOV + non-English fallback. The en-us G2P is the misaki-derived dict
   # that phase_engine installs to bin/g2p/; espeak-only en-us speaks robotic prosody.
@@ -273,16 +273,56 @@ phase_sysdeps() {
   # cuDNN (~2x TTS throughput, teagram-engine README). Full JetPack has it, the bare L4T
   # BSP does not; NVIDIA's Jetson apt repo, which L4T configures, carries it.
   SUDO apt-get update -qq
-  SUDO apt-get install -y espeak-ng libopenblas0 libcudnn9-cuda-13 python3.12-venv
+  SUDO apt-get install -y espeak-ng libopenblas0 libcudnn9-cuda-13 python3.12-venv logrotate
   if [ "$DRY_RUN" != 1 ]; then
     have espeak-ng || die "espeak-ng not installed"
     contains 'libopenblas.so.0' "$(ldconfig -p 2>/dev/null || true)" || die "libopenblas.so.0 not installed"
     contains 'libcudnn.so.9' "$(ldconfig -p 2>/dev/null || true)" || die "libcudnn.so.9 not installed"
   fi
+  install_logrotate
   # Bootstrap uv HERE, before phase_engine's ~15GB of downloads: a uv fetch that is going
   # to fail (proxy, DNS, an unwritable $PREFIX) should fail in the first minute, not the
   # last. Idempotent — phase_brain's own ensure_uv call becomes a no-op.
   ensure_uv
+}
+
+# --- logs: rotated, and capped ---------------------------------------------------
+# journald keeps its journal in RAM on the appliance (volatile, capped at 10% of /run) but
+# forwards everything to rsyslog, whose /var/log/syslog is on disk. The L4T image ships
+# without logrotate, so nothing ever rotated it: one appliance had a 901 MB syslog that
+# had grown since first boot, ~50 MB a day (two thirds of it the brain). Installing
+# logrotate brings Ubuntu's rules with it (/etc/logrotate.d/rsyslog: weekly, 4 kept,
+# compressed). Two files of teaport's own on top, leaving the distro's conffiles alone:
+# - logrotate.d/00-teaport: a global maxsize. Read before the other rules, it is their
+#   default, so any log past it rotates at the next run, whatever its schedule.
+# - a timer drop-in running logrotate hourly instead of daily, so that "next run" is within
+#   the hour: a component logging in a loop can't fill the disk between two weekly rotations.
+LOGROTATE_MAXSIZE=200M
+install_logrotate() {
+  local cap=/etc/logrotate.d/00-teaport tmp
+  local dropin=/etc/systemd/system/logrotate.timer.d/teaport-hourly.conf
+  log "logs: logrotate (/var/log/syslog weekly; any log past $LOGROTATE_MAXSIZE rotated within the hour)"
+  tmp="$(mktemp)"
+  printf '%s\n' "# teaport (install.sh): any log past this size rotates at the next run (hourly, see" \
+    "# logrotate.timer.d/teaport-hourly.conf), whatever its schedule. Read first, so the rules" \
+    "# after it inherit it unless they set their own." \
+    "maxsize $LOGROTATE_MAXSIZE" > "$tmp"
+  SUDO install -D -m 0644 -o root -g root "$tmp" "$cap"
+  printf '%s\n' "# teaport (install.sh): hourly, so logrotate.d/00-teaport's maxsize catches a runaway" \
+    "# log within the hour (Ubuntu's timer is daily)." \
+    "[Timer]" "OnCalendar=" "OnCalendar=hourly" "AccuracySec=5min" > "$tmp"
+  SUDO install -D -m 0644 -o root -g root "$tmp" "$dropin"
+  rm -f "$tmp"
+  SUDO systemctl daemon-reload
+  # enable too: a re-run repairs a box where the timer was turned off
+  SUDO systemctl enable --now logrotate.timer
+  if [ "$DRY_RUN" != 1 ]; then
+    [ -x /usr/sbin/logrotate ] || die "logrotate not installed"
+    # --debug reads every rule and rotates nothing: a broken rule shows up here, not as
+    # a log that quietly stops rotating
+    SUDO /usr/sbin/logrotate --debug /etc/logrotate.conf >/dev/null 2>&1 \
+      || warn "logs: logrotate finds a problem in its rules — see: sudo logrotate --debug /etc/logrotate.conf"
+  fi
 }
 
 # Every url + sha256 entry read here (and eula_gate's) is listed in manifest/check.py's
