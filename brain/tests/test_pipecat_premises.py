@@ -914,6 +914,44 @@ async def check_the_answer_to_a_result_is_pushed_up_unless_a_turn_is_open():
     assert in_turn == [UP, UP], f"a turn was open and the answer was asked anyway: {in_turn}"
 
 
+async def check_run_frames_stop_at_the_user_aggregator():
+    """FollowupGate (#17): every context frame that comes up past the gate is the answer
+    to a tool's result, because an LLMRunFrame or LLMMessagesAppendFrame(run_llm) the
+    brain queues at the top is taken by the USER aggregator -- it pushes its context
+    frame down and passes the run frame no further -- and so never reaches the
+    assistant aggregator, which would push one UP for it. And frames are numbered as
+    they are made (Frame.id increases): the gate tells speech a commit took from
+    speech begun after it by the two frames' ids, not by when they reach it.
+
+    If it goes: a run frame reaching the assistant aggregator would be held (or
+    dropped at a turn) by the gate as if it were a tool's answer -- a follow-up delayed
+    or lost; with ids out of order, a commit could end the gate's wait for words that
+    are not in it."""
+    context, pair, _stop = _user_pair()
+    between = Tap()
+    up = []
+    push_frame = pair.assistant().push_frame
+
+    async def recording(frame, direction=DOWN):
+        if isinstance(frame, LLMContextFrame) and direction == UP:
+            up.append(frame)
+        await push_frame(frame, direction)
+    pair.assistant().push_frame = recording
+    from pipecat.frames.frames import LLMMessagesAppendFrame
+    async with Run(pair.user(), between, pair.assistant()) as run:
+        await run.send(LLMRunFrame(),
+                       LLMMessagesAppendFrame(messages=[{"role": "user", "content": "x"}],
+                                              run_llm=True))
+        await _marked(run, between)
+    passed = _kinds(between, DOWN, (LLMRunFrame, LLMMessagesAppendFrame))
+    down = _kinds(between, DOWN, LLMContextFrame)
+    assert passed == [], f"the user aggregator passed run frames on: {passed}"
+    assert len(down) == 2, f"expected two context frames down from the user aggregator: {down}"
+    assert up == [], "the assistant aggregator pushed a context frame up for a run frame"
+    a, b = TextFrame("a"), TextFrame("b")
+    assert a.id < b.id, "frame ids no longer increase in creation order"
+
+
 async def check_a_tool_result_reaches_the_gate_below_the_transport():
     """Followup.tla, `ToolEnd` (LATCH = "turnAware"): the LLM service broadcasts a
     function call's FunctionCallResultFrame, and it passes the TTS and the output

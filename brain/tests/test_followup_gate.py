@@ -35,6 +35,7 @@ require_pinned()
 from pipecat.frames.frames import (  # noqa: E402
     EndFrame,
     UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
     BotStartedSpeakingFrame,
@@ -536,12 +537,131 @@ async def test_a_session_end_drops_a_held_answer():
         await r.down(VADUserStartedSpeakingFrame())
         frame = await r.answer()
         await r.until(lambda: r.gate.answers_held == 1)
+        # What the gate holds the moment the End has passed it -- before cleanup, which
+        # would drop it anyway: in between, its cap could still send it on.
+        at_end = []
+        process = r.gate.process_frame
+
+        async def watching(f, direction):
+            await process(f, direction)
+            if isinstance(f, EndFrame):
+                at_end.append(r.gate._held_answer)
+        r.gate.process_frame = watching
         await r.task.queue_frames([EndFrame()])
         await asyncio.wait_for(r._run, 5)
+        assert at_end == [None], "the End passed with the answer still held"
         assert frame not in r.top.up, "a held answer went on into a closing session"
 
 
+async def test_the_cap_sends_the_answer_on_while_the_caller_keeps_talking():
+    # The cap is never under the release window (the gate raises it to that); the
+    # caller never stops, so only the cap can end this hold.
+    async with _GateRun(release=0.3, cap=0.5) as r:
+        await r.down(VADUserStartedSpeakingFrame())
+        frame = await r.answer()
+        assert await r.until(lambda: frame in r.top.up), "the cap never sent it on"
+        assert r.gate.answers_released == 1 and r.gate._held_answer is None
+
+
+async def test_the_cap_drops_the_answer_into_an_open_turn():
+    # The caller's turn has started (its interruption not here yet): its commit reads
+    # the result, so the cap must not ask for a second completion.
+    # The cap is never under the release window (the gate raises it to that); the
+    # caller never stops, so only the cap can end this hold.
+    async with _GateRun(release=0.3, cap=0.5) as r:
+        await r.down(VADUserStartedSpeakingFrame())
+        frame = await r.answer()
+        await r.until(lambda: r.gate.answers_held == 1)
+        await r.down(UserStartedSpeakingFrame())
+        assert await r.until(lambda: r.gate._held_answer is None), "still held past the cap"
+        assert frame not in r.top.up, "the cap asked for the answer inside an open turn"
+        assert r.gate.answers_dropped == 1 and r.gate.answers_released == 0
+
+
+async def test_the_answer_waits_out_the_gap_between_the_vad_stop_and_the_words():
+    # The result lands after the caller's VAD stop: their words are still to come.
+    async with _GateRun(release=0.3) as r:
+        await r.down(VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame())
+        frame = await r.answer()
+        assert await r.until(lambda: r.gate.answers_held == 1), (
+            "sent on between the VAD stop and the words")
+        await r.down(UserStartedSpeakingFrame(), InterruptionFrame())
+        assert not await r.until(lambda: frame in r.top.up, timeout=0.6)
+        assert r.gate._held_answer is None and r.gate.answers_dropped == 1
+
+
+async def test_a_turn_of_two_segments_holds_nothing_once_committed():
+    # "What's the time (300 ms) in Paris": the turn starts on the first segment, the
+    # second VAD start comes inside the open turn (no turn start of its own), and the
+    # commit takes its words. A tool's answer after that is asked at once.
+    async with _GateRun(release=5.0) as r:
+        await r.down(VADUserStartedSpeakingFrame(), UserStartedSpeakingFrame(),
+                     VADUserStoppedSpeakingFrame(), VADUserStartedSpeakingFrame(),
+                     VADUserStoppedSpeakingFrame())
+        commit = LLMContextFrame(LLMContext([{"role": "user", "content": "q"}]))
+        r.gate.turn_committed(commit.id)
+        await r.down(UserStoppedSpeakingFrame())
+        frame = await r.answer()
+        assert await r.until(lambda: frame in r.top.up, timeout=0.5), (
+            "held with nobody talking: the commit had taken the speech's words")
+        assert r.gate.answers_held == 0
+
+
+async def test_speech_begun_after_the_commit_stays_pending():
+    # The caller resumes inside the commit's await: that VAD start is made after the
+    # commit's frame, and can reach the gate before TurnCommitMark tells it of the
+    # commit. Its words are not in the commit: an answer must still wait for them.
+    async with _GateRun(release=5.0) as r:
+        await r.down(UserStartedSpeakingFrame())
+        commit = LLMContextFrame(LLMContext([{"role": "user", "content": "q"}]))
+        await r.down(VADUserStartedSpeakingFrame(), VADUserStoppedSpeakingFrame())
+        r.gate.turn_committed(commit.id)
+        await r.down(UserStoppedSpeakingFrame())
+        frame = await r.answer()
+        assert await r.until(lambda: r.gate.answers_held == 1), "not held"
+        assert frame not in r.top.up
+
+
+def test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator():
+    """FollowupGate holds every context frame that comes UP past it as the answer to a
+    tool's result. The assistant aggregator below it also sends one up for an
+    LLMRunFrame or LLMMessages*Frame(run_llm) that reaches it -- so none may: each the
+    brain makes is queued on the task (it enters at the top) or pushed by the STT
+    (wake_gate's greeting, through stt.py's own push_frame), and the user aggregator
+    takes it there (test_pipecat_premises.py, check_run_frames_stop_at_the_user_
+    aggregator). A new sender anywhere else must be added here, and must not be below
+    the user aggregator."""
+    import re
+    root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "teaport_brain")
+    made = re.compile(r"\b(LLMRunFrame|LLMMessages(Append|Update|Transform)Frame)\(")
+    allowed = {("wake_gate.py", "await push(LLMRunFrame())")}
+    stray = []
+    for name in sorted(os.listdir(root)):
+        if not name.endswith(".py"):
+            continue
+        with open(os.path.join(root, name), encoding="utf-8") as f:
+            for n, line in enumerate(f, 1):
+                code = line.split("#", 1)[0]
+                if not made.search(code):
+                    continue
+                if "queue_frames(" in code or "queue_frame(" in code:
+                    continue
+                if (name, code.strip()) in allowed:
+                    continue
+                stray.append(f"{name}:{n}: {line.strip()}")
+    assert not stray, ("run frames sent from somewhere FollowupGate cannot tell from a "
+                       f"tool's answer: {stray}")
+    with open(os.path.join(root, "stt.py"), encoding="utf-8") as f:
+        assert "self.wake_gate.final(text, self.push_frame)" in f.read(), (
+            "wake_gate's push is no longer the STT's own push_frame")
+
+
 def main():
+    sync = [v for k, v in sorted(globals().items())
+            if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]
+    for fn in sync:
+        fn()
+        print(f"  ok {fn.__name__}")
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
 

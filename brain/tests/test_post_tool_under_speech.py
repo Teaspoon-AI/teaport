@@ -299,6 +299,14 @@ class Rig:
         await self.wait_for("BotStartedSpeakingFrame")          # the filler
         assert self.completions == 1
 
+    def assert_nothing_held(self, where=""):
+        """Every answer the gate held went somewhere: dropped for a turn, or on. One
+        still held at the end would play a cap later, into whatever came next."""
+        assert self.gate._held_answer is None, f"{where}: an answer is still held"
+        assert self.gate.answers_held <= self.gate.answers_dropped + self.gate.answers_released, (
+            f"{where}: held {self.gate.answers_held}, dropped {self.gate.answers_dropped}, "
+            f"released {self.gate.answers_released}")
+
     def answers_played(self):
         return [t for t in (POST, TURN) if any(w.startswith(t) for w in self.played)]
 
@@ -326,8 +334,29 @@ async def _resume_over(rig: Rig, shape: str, words_before_stop: bool):
       "filler_end" the filler plays out under their speech (on SIP they start inside
                    its last 0.5 s, where the pauser does not pause), and the result
                    lands while they are still talking.
-      "after"      the filler has played out, they start, the result lands."""
+      "after"      the filler has played out, they start, the result lands.
+      "after_stop" the filler has played out, they speak and stop, and the result
+                   lands between their VAD stop and their words (always words after
+                   the stop) -- what the TTS's speech hold cannot see at all."""
     await rig.ask_the_question()
+    if shape == "after_stop":
+        await rig.wait_for("BotStoppedSpeakingFrame")
+        rig.vad_started = time.monotonic()
+        await rig.send(VADUserStartedSpeakingFrame())
+        await asyncio.sleep(max(0.0, rig.vad_started + SPEECH_S - time.monotonic()))
+        await rig.send(VADUserStoppedSpeakingFrame())
+        rig.clear("UserStartedSpeakingFrame")
+        rig.release_result.set()
+        await rig.wait_for("FunctionCallResultFrame")
+        try:
+            await rig.wait_for("word:" + POST, timeout=WORDS_LAG_S)
+        except asyncio.TimeoutError:
+            pass
+        await rig.say("what about the metro area of Lima")
+        await rig.wait_for("UserStartedSpeakingFrame")
+        await rig.stop.commit()
+        await rig.wait_for("word:" + TURN)
+        return
     if shape == "after":
         await rig.wait_for("BotStoppedSpeakingFrame")
     elif shape == "filler_end" and rig.front_end == "sip":
@@ -359,8 +388,9 @@ async def _resume_over(rig: Rig, shape: str, words_before_stop: bool):
 # Which shapes each front-end has: the barge-in pauser exists only on SIP, so only there
 # can the caller start mid-filler and have it paused; elsewhere the filler plays out
 # under them ("filler_end").
-SHAPES = [("sip", "paused"), ("sip", "filler_end"), ("sip", "after"),
-          ("talk", "filler_end"), ("talk", "after"), ("room", "after")]
+SHAPES = [("sip", "paused"), ("sip", "filler_end"), ("sip", "after"), ("sip", "after_stop"),
+          ("talk", "filler_end"), ("talk", "after"), ("talk", "after_stop"),
+          ("room", "after")]
 
 
 async def _check_one_answer(front_end, shape, words_before_stop):
@@ -374,6 +404,7 @@ async def _check_one_answer(front_end, shape, words_before_stop):
         asked = rig.asked_after_the_result()
         assert len(asked) == 1, (
             f"{where}: the tool's result was answered {len(asked)} times, not once")
+        rig.assert_nothing_held(where)
 
 
 async def test_an_answer_due_while_the_caller_talks_is_answered_once_after_their_words():
@@ -383,7 +414,7 @@ async def test_an_answer_due_while_the_caller_talks_is_answered_once_after_their
     Nothing asked under their speech plays, and the result is answered once -- by their
     own turn, which reads it in the context."""
     for front_end, shape in SHAPES:
-        for words_before_stop in (False, True):
+        for words_before_stop in ((False,) if shape == "after_stop" else (False, True)):
             await _check_one_answer(front_end, shape, words_before_stop)
             print(f"    ok {front_end}/{shape}/words_before_stop={words_before_stop}")
 
@@ -404,6 +435,8 @@ async def test_with_nobody_talking_the_answer_plays_at_once():
             assert asked_after < 0.2, (
                 f"{front_end}: the answer waited {asked_after:.2f}s with nobody talking")
             assert len(rig.asked_after_the_result()) == 1
+            assert rig.gate.answers_held == 0
+            rig.assert_nothing_held(front_end)
 
 
 async def test_a_wordless_sound_lets_the_answer_play_once_it_is_over():
@@ -422,6 +455,8 @@ async def test_a_wordless_sound_lets_the_answer_play_once_it_is_over():
             stopped = time.monotonic()
             await rig.wait_for("word:" + POST)
             assert len(rig.asked_after_the_result()) == 1
+            assert rig.gate.answers_released == 1
+            rig.assert_nothing_held(front_end)
             print(f"    {front_end}: the answer played {time.monotonic() - stopped:.2f}s "
                   "after the cough ended")
 

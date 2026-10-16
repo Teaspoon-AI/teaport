@@ -27,8 +27,11 @@
 # there, their words then cut it, and their turn asks the model again. The gate sits
 # directly above that aggregator's push, so it HOLDS the frame while caller speech is
 # pending -- from its VAD start until a turn starts (then it is DROPPED: that turn's
-# commit reads the result, already in the context) or until RELEASE_SECS after the VAD
-# stop with no turn (a cough: it goes on). Nothing is held while the caller is silent.
+# commit reads the result, already in the context), until a commit of the open turn has
+# taken the words of that speech, or until RELEASE_SECS after the VAD stop with no turn
+# (a cough: it goes on). Nothing is held on speech whose words are in: with nobody
+# talking, the answer is asked at once. A blip costs a release window too: see
+# formal/README.md, "A blip costs a release window".
 # brain/formal/UserTurn.tla, POSTTOOL = "gate"; the rejected designs are rows there too.
 #
 import asyncio
@@ -199,7 +202,7 @@ class TurnCommitMark(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
-            self._gate.turn_committed()
+            self._gate.turn_committed(frame.id)
         await self.push_frame(frame, direction)
 
 
@@ -338,11 +341,13 @@ class FollowupGate(FrameProcessor):
         self._answer_max_secs = max(self._answer_release_secs, answer_max_secs)
         self._vad = False
         self._speech_pending = False
+        self._speech_since = None      # the id of the VAD start that made it pending
         self._speech_timer = None
         self._held_answer = None
         self._answer_cap = None
         self.answers_held = 0
         self.answers_dropped = 0
+        self.answers_released = 0
 
     @property
     def held(self) -> bool:
@@ -376,10 +381,25 @@ class FollowupGate(FrameProcessor):
             self._claim_secs, self.release_claim)
         self._refresh()
 
-    def turn_committed(self) -> None:
+    def turn_committed(self, frame_id: int | None = None) -> None:
         """A completion was just asked for (TurnCommitMark): hold the window shut until
-        it starts, as a claimant's is."""
+        it starts, as a claimant's is.
+
+        A commit of an open turn also carries the words of every speech that began
+        before it: nothing of that speech is pending for the answer after a tool any
+        more (a turn of two segments, "what's the time ... in Paris", whose second VAD
+        start came inside the open turn and so met no turn start of its own). "Before"
+        is by frame id -- pipecat numbers frames as they are made -- not by arrival: the
+        commit reaches TurnCommitMark above the LLM, the VAD frames reach the gate below
+        the transport, and a VAD start made after the commit (the caller resuming inside
+        its await) can arrive here first. brain/formal/UserTurn.tla, PendCommitted
+        (POSTTOOL = "gateNoCommit" is the gate without this)."""
         self._claim()
+        if (frame_id is not None and self._user and self._speech_pending
+                and self._speech_since is not None and self._speech_since < frame_id):
+            self._speech_pending = False
+            self._cancel(self._speech_timer)
+            self._speech_timer = None
 
     async def wait_out_claim(self, max_wait: float = _CLAIMANT_WAIT_SECS) -> None:
         """For a waiter whose wait_until_idle ran out and that goes ahead anyway: wait
@@ -453,8 +473,12 @@ class FollowupGate(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         if isinstance(frame, LLMContextFrame) and direction == FrameDirection.UPSTREAM:
-            # The assistant aggregator, below, asking for the answer to a tool's result
-            # (nothing else sends a context frame up past here).
+            # The assistant aggregator, below, asking for the answer to a tool's result.
+            # Nothing else sends a context frame up past here: the aggregator also does
+            # for an LLMRunFrame or an LLMMessages*Frame(run_llm) that reaches it, but
+            # every one the brain sends enters at the top, where the user aggregator
+            # takes it (test_pipecat_premises.py, check_run_frames_stop_at_the_user_
+            # aggregator; test_followup_gate.py pins where the brain sends them).
             if self._user:
                 # A turn is open: its commit reads the result. pipecat would not have
                 # pushed this had the turn reached the aggregator before the push left.
@@ -468,6 +492,7 @@ class FollowupGate(FrameProcessor):
         elif isinstance(frame, VADUserStartedSpeakingFrame):
             self._vad = True
             self._speech_pending = True
+            self._speech_since = frame.id
             self._cancel(self._speech_timer)
             self._speech_timer = None
         elif isinstance(frame, VADUserStoppedSpeakingFrame):
@@ -615,6 +640,7 @@ class FollowupGate(FrameProcessor):
         self._cancel(self._answer_cap)
         self._answer_cap = None
         if frame is not None:
+            self.answers_released += 1
             logger.info(f"FOLLOWUP-GATE: the held answer goes on ({why})")
             await self.push_frame(frame, FrameDirection.UPSTREAM)
 
@@ -630,6 +656,12 @@ class FollowupGate(FrameProcessor):
     async def _answer_capped(self) -> None:
         await asyncio.sleep(self._answer_max_secs)
         self._answer_cap = None
+        if self._user:
+            # A turn has opened (its start is here, its interruption not yet): its
+            # commit reads the result. Released, the answer would be a second completion.
+            self._drop_answer(f"hold cap {self._answer_max_secs:.1f}s with the caller's "
+                              "turn open, whose commit reads the result")
+            return
         await self._release_answer(f"hold cap {self._answer_max_secs:.1f}s")
 
     async def cleanup(self):
