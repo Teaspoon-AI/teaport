@@ -1331,8 +1331,7 @@ async def _the_refused_call(continues: bool):
     stop = ScriptedStop()
     pair = LLMContextAggregatorPair(
         context,
-        user_params=LLMUserAggregatorParams(
-            user_mute_strategies=[],
+        user_params=user_aggregator_params(
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[stop],

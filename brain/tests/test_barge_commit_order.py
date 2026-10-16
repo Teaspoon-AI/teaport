@@ -557,8 +557,7 @@ async def test_the_session_end_commit_never_drops_the_reply_ahead_of_the_end():
         """The turn is still open when the session ends."""
 
     context = LLMContext([{"role": "system", "content": "sys"}])
-    pair = LLMContextAggregatorPair(context, user_params=LLMUserAggregatorParams(
-        user_mute_strategies=[],
+    pair = LLMContextAggregatorPair(context, user_params=user_aggregator_params(
         user_turn_strategies=UserTurnStrategies(
             start=[PauseAwareMinWordsStrategy(min_words=2)], stop=[NoStopYet()])))
     user = pair.user()

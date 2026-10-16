@@ -238,8 +238,8 @@ class ReplyHoldGate(FrameProcessor):
         self._last_ctx = None
         self._released_ns = None
         self._release_shift = None
-        # Function-call frames (uninterruptible in pipecat, so an interruption's
-        # queue reset keeps) by the number of drops before they were queued: one queued
+        # Function-call frames (uninterruptible in pipecat: an interruption's queue reset
+        # keeps them) by the number of drops before they were queued: one queued
         # before a drop belongs to the reply that drop dropped (see process_frame).
         self._drops = 0
         self._call_frames: dict = {}
