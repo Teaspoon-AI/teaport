@@ -121,30 +121,14 @@ read_env_file() {
   elif [ "${2:-}" = --lenient ]; then sudo cat "$1" 2>/dev/null || true
   else sudo cat "$1"; fi
 }
-# install_lines <dest> <mode> <line>...: a root-owned file, written whole from the lines
-# given (through a temp file, removed whatever happens); fails, without exiting, when the
-# write does.
-install_lines() {
-  local dest="$1" mode="$2" tmp rc=0; shift 2
+# install_stdin <dest> <mode>: a root-owned file written whole from stdin (through a temp
+# file, removed whatever happens). Fails, without exiting, when the write does.
+install_stdin() {
+  local dest="$1" mode="$2" tmp rc=0
   tmp="$(mktemp)" || return 1
-  { printf '%s\n' "$@" > "$tmp" && SUDO install -D -m "$mode" -o root -g root "$tmp" "$dest"; } || rc=$?
+  { cat > "$tmp" && SUDO install -D -m "$mode" -o root -g root "$tmp" "$dest"; } || rc=$?
   rm -f "$tmp"
   return "$rc"
-}
-# read_root_conf <path>: a root-owned config file's text, or nothing: read_env_file --lenient
-# (the one copy of the read) with two rules of its own. Not in a dry run, which does not
-# sudo for setup_logs' config files: it warns instead. And a file is known to be missing
-# only where its directory can be searched: in one that can't (a root-only drop-in
-# directory), the user can't tell, so the read goes ahead, with sudo.
-read_root_conf() {
-  local d; d="$(dirname "$1")"
-  # missing for sure: no directory, or a searchable one without the file
-  if [ ! -e "$d" ] || { [ -x "$d" ] && [ ! -e "$1" ]; }; then return 0; fi
-  if [ ! -r "$1" ] && [ "$DRY_RUN" = 1 ]; then
-    warn "$1 is not readable by $(id -un) — a real run reads it with sudo"
-    return 0
-  fi
-  read_env_file "$1" --lenient
 }
 
 # --- manifest ----------------------------------------------------------------
@@ -328,104 +312,65 @@ phase_sysdeps() {
 # Ubuntu's own rules (an old, big syslog moves aside at its next weekly rotation). Anything
 # that read /var/log/syslog or auth.log for the services' lines (remote forwarding,
 # fail2ban's file backend) reads the journal instead from here on.
-# The drop-in is install.sh's, rewritten on every run like the units, so a release that
-# changes it reaches every box. journald is restarted only when the settings themselves
-# changed since journald last took them ($JOURNAL_APPLIED, written once a restart has
-# worked): a comment-only change restarts nothing, and a restart that failed is tried again
-# by the next run.
-# An operator's own setting wins: a key set in /etc/systemd/journald.conf or a drop-in under
-# /etc, /run or /usr/local/lib (systemd's admin locations; the distro's /usr/lib is the one
-# this overrides) is left out of ours. Storage decides the rest: the journal is made the
-# one store (capped, syslog no longer fed) only when Storage is ours. An operator who sets
-# Storage keeps their forwarding and their cap, or a volatile journal and no syslog would
-# keep nothing on disk.
-# It is named to sort after Ubuntu's journald.conf.d/syslog.conf (ForwardToSyslog=yes):
-# journald reads the drop-ins in name order and the last one wins, so a "99-teaport.conf"
-# would lose to it (digits sort before letters); an operator's own zz-*.conf wins over ours.
+# The journal config is install.sh's, like the units: $JOURNAL_DROPIN is rewritten on every
+# run and wins, and the directory it lives in is kept at systemd's 0755, so it can be read
+# back without sudo. An operator who wants something else puts it in a drop-in of their own
+# named to sort after ours (zz-*.conf): journald reads the drop-ins in name order and the
+# last one wins. (Setting Storage there? Set ForwardToSyslog too: with a volatile journal
+# and no forwarding, nothing would be kept on disk.)
+# Ours is named to sort after Ubuntu's journald.conf.d/syslog.conf (ForwardToSyslog=yes),
+# so it wins over that; a "99-teaport.conf" would lose to it (digits sort before letters).
+# journald is restarted only when the settings themselves are new to it: they differ from
+# what it last took ($JOURNAL_APPLIED, written once a restart has worked) or from what the
+# file on disk held (a deleted drop-in and a reboot). A comment-only change restarts
+# nothing, and a restart that failed is tried again by the next run.
 # Not covered here: logs that skip both journald and rsyslog (a container runtime's own
 # files, say).
-JOURNAL_CONF=/etc/systemd/journald.conf
 JOURNAL_CONF_D=/etc/systemd/journald.conf.d
 JOURNAL_DROPIN=$JOURNAL_CONF_D/teaport.conf
-JOURNAL_OPERATOR_DIRS=("$JOURNAL_CONF_D" /run/systemd/journald.conf.d /usr/local/lib/systemd/journald.conf.d)
+JOURNAL_DIR=/var/log/journal
 JOURNAL_APPLIED="$STATE/journald.applied"
 JOURNAL_MAX_USE=2G
 LOGROTATE_BIN=/usr/sbin/logrotate
-# The journal settings an operator has set themselves: KEY names, one per line. A drop-in
-# directory or file the plain read can't open is listed and read with sudo (never in a
-# dry run). Never fails: what can't be read counts as setting nothing.
-journal_operator_keys() {
-  local d f files=("$JOURNAL_CONF")
-  for d in "${JOURNAL_OPERATOR_DIRS[@]}"; do
-    [ -d "$d" ] || continue
-    if [ -r "$d" ] && [ -x "$d" ]; then files+=("$d"/*.conf)
-    elif [ "$DRY_RUN" = 1 ]; then warn "$d is not readable by $(id -un) — a real run lists it with sudo"
-    else while IFS= read -r f; do files+=("$f"); done < <(sudo find "$d" -maxdepth 1 -name '*.conf' 2>/dev/null || true)
-    fi
-  done
-  for f in "${files[@]}"; do
-    [ "$f" != "$JOURNAL_DROPIN" ] || continue
-    read_root_conf "$f"
-  done \
-    | sed -n 's/^[[:space:]]*\(Storage\|SystemMaxUse\|ForwardToSyslog\)[[:space:]]*=.*/\1/p' \
-    | sort -u || true
-}
 setup_logs() {
-  local ops lines=() said=() want settings applied timer
-  ops=" $(journal_operator_keys | tr '\n' ' ')"
-  if contains " Storage " "$ops"; then
-    log "logs: Storage is the operator's (set in their journald config) — the journal is left as they set it; logrotate for /var/log"
-  else
-    lines+=("Storage=persistent"); said+=("persistent")
-    if contains " SystemMaxUse " "$ops"; then log "logs: SystemMaxUse is the operator's — left out"
-    else lines+=("SystemMaxUse=$JOURNAL_MAX_USE"); said+=("capped at $JOURNAL_MAX_USE"); fi
-    if contains " ForwardToSyslog " "$ops"; then log "logs: ForwardToSyslog is the operator's — left out"
-    else lines+=("ForwardToSyslog=no"); said+=("no copy to /var/log/syslog"); fi
-    local joined; joined="$(printf '%s, ' "${said[@]}")"
-    log "logs: the journal is the one store: ${joined%, }; logrotate for the rest of /var/log"
-  fi
-  settings="$(printf '%s\n' ${lines[@]+"${lines[@]}"})"
+  local settings want have on_disk applied timer written=1
+  log "logs: the journal is the one store: persistent, capped at $JOURNAL_MAX_USE, no copy to /var/log/syslog; logrotate for the rest of /var/log"
+  settings="$(printf '%s\n' "Storage=persistent" "SystemMaxUse=$JOURNAL_MAX_USE" "ForwardToSyslog=no")"
   want="$(printf '%s\n' \
-    "# teaport (install.sh setup_logs): the journal is the one log store. Rewritten on every" \
-    "# install run: set your own values in /etc/systemd/journald.conf or a drop-in of your" \
-    "# own (a key you set is left out of this file; a zz-*.conf of yours wins over it)." \
-    "[Journal]" ${lines[@]+"${lines[@]}"})"
-  local have written=1 on_disk
-  have="$(read_root_conf "$JOURNAL_DROPIN")"
-  # the settings the file on disk held: if they weren't these, journald can't have them now
-  # (a deleted drop-in and a reboot), whatever the marker says
+    "# teaport (install.sh setup_logs): the journal is the one log store. install.sh owns this" \
+    "# file and rewrites it on every run. To change a setting, put it in a drop-in of your own" \
+    "# that sorts after this one (zz-local.conf, say); if you set Storage there, set" \
+    "# ForwardToSyslog too." \
+    "[Journal]" "$settings")"
+  have="$(cat "$JOURNAL_DROPIN" 2>/dev/null || true)"
   on_disk="$(printf '%s\n' "$have" | sed -n '/^\[Journal\]/,$p' | grep -v '^\[' | grep '=' || true)"
   if [ "$want" != "$have" ]; then
-    # only made when missing: an existing directory keeps the operator's mode
-    if ! { { [ -d "$JOURNAL_CONF_D" ] || SUDO install -d -m 0755 "$JOURNAL_CONF_D"; } &&
-           install_lines "$JOURNAL_DROPIN" 0644 "$want"; }; then
+    if ! { SUDO install -d -m 0755 "$JOURNAL_CONF_D" &&
+           printf '%s\n' "$want" | install_stdin "$JOURNAL_DROPIN" 0644; }; then
       warn "logs: could not write $JOURNAL_DROPIN — the journal stays as it was (logs are not capped)"
       written=0
     fi
   fi
-  applied="$(read_root_conf "$JOURNAL_APPLIED")"
+  applied="$(cat "$JOURNAL_APPLIED" 2>/dev/null || true)"
   if [ "$written" = 0 ]; then
     :   # nothing new to apply (the timer is still checked below)
   elif [ "$settings" = "$applied" ] && [ "$settings" = "$on_disk" ]; then
     log "logs: journald has these settings already"
   else
-    if contains "Storage=persistent" "$settings"; then
-      # /var/log/journal, made before journald needs it: setgid systemd-journal, then the
-      # ACLs that let adm read it from systemd's tmpfiles rules (which only adjust a
-      # directory that exists). Left to journald, it would be root's alone until the next
-      # boot, and `teaport logs` as the operator would lose lines.
-      { SUDO install -d -m 2755 -o root -g systemd-journal /var/log/journal &&
-        SUDO systemd-tmpfiles --create --prefix /var/log/journal; } \
-        || warn "logs: could not set up /var/log/journal — it is set up at the next boot"
-    fi
+    # $JOURNAL_DIR, made before journald needs it when it isn't there (setgid
+    # systemd-journal), then systemd's own tmpfiles rules for it (its mode, owner and the
+    # ACLs that let adm read it; they only adjust a directory that exists). Left to
+    # journald, it would be root's alone until the next boot, and `teaport logs` as the
+    # operator would lose lines.
+    { { [ -d "$JOURNAL_DIR" ] || SUDO install -d -m 2755 -o root -g systemd-journal "$JOURNAL_DIR"; } &&
+      SUDO systemd-tmpfiles --create --prefix "$JOURNAL_DIR"; } \
+      || warn "logs: could not set up $JOURNAL_DIR — it is set up at the next boot"
     # The restart applies the drop-in now (services' stdout streams survive it: journald
     # keeps them in systemd's fd store); the flush moves this boot's journal to disk. Neither
     # fails the install: both happen at the next boot, and the next run tries again.
     if SUDO systemctl restart systemd-journald; then
-      if contains "Storage=persistent" "$settings"; then
-        SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
-      fi
-      install_lines "$JOURNAL_APPLIED" 0644 "$settings" \
+      SUDO journalctl --flush || warn "logs: journalctl --flush failed — this boot's journal moves at the next boot"
+      printf '%s\n' "$settings" | install_stdin "$JOURNAL_APPLIED" 0644 \
         || warn "logs: could not record the journal settings in $JOURNAL_APPLIED — the next run restarts journald again"
     else
       warn "logs: systemd-journald did not restart — the new journal settings apply at the next boot (or the next run)"
@@ -1172,9 +1117,8 @@ install_busy_lamp() {
   SUDO udevadm trigger --action=change --subsystem-match=usb \
     --attr-match=idVendor=2886 --attr-match=idProduct=001a \
     || warn "busy lamp: udevadm trigger failed — replug the XVF3800 or reboot for the rule to apply"
-  install_lines "$tmpfiles" 0644 \
-    "# teaport busy lamp: the ring's look to restore after a brain crash (xvf_led.MARKER)" \
-    "d /run/teaport-busy-lamp 0700 $RUN_USER $RUN_USER -"
+  printf '%s\n' "# teaport busy lamp: the ring's look to restore after a brain crash (xvf_led.MARKER)" \
+    "d /run/teaport-busy-lamp 0700 $RUN_USER $RUN_USER -" | install_stdin "$tmpfiles" 0644
   SUDO systemd-tmpfiles --create "$tmpfiles" \
     || warn "busy lamp: systemd-tmpfiles failed — /run/teaport-busy-lamp appears at the next boot"
 }
@@ -2288,11 +2232,11 @@ phase_wifi_setup() {
   log "wifi setup: unit + polkit rule + captive DNS (runs only when asked)"
   have pkaction || warn "wifi setup: polkit not found — the run user cannot change NetworkManager's Wi-Fi without it"
   render_unit teaport-wifi-setup.service.in teaport-wifi-setup.service
-  local rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules pkg="$HERE/packaging/wifi-setup" body
+  local rules=/etc/polkit-1/rules.d/50-teaport-wifi-setup.rules pkg="$HERE/packaging/wifi-setup"
   if [ "$DRY_RUN" = 1 ]; then printf '  [dry-run] render %s -> %s\n' 50-teaport-wifi-setup.rules.in "$rules"
   else
-    body="$(sed -e "s#@USER@#$RUN_USER#g" "$pkg/50-teaport-wifi-setup.rules.in")"
-    install_lines "$rules" 0644 "$body"
+    # the template's bytes as they are, @USER@ filled in
+    sed -e "s#@USER@#$RUN_USER#g" "$pkg/50-teaport-wifi-setup.rules.in" | install_stdin "$rules" 0644
   fi
   SUDO install -D -m 0644 -o root -g root "$pkg/teaport-captive.conf" /usr/local/lib/teaport/teaport-captive.conf
   # The unit's root-side steps (port-80 rule, captive DNS, clean-up): sh, not the venv.
