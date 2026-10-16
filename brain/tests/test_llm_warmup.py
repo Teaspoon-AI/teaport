@@ -24,14 +24,9 @@ import appliance
 # anyio's backend), the request, SSE parsing, the chunk models. No network.
 _FIRST_REPLY = """
 import asyncio, sys
-import nltk
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pipecat.utils.string import match_endofsentence
 from teaport_brain.services import warm_first_use_imports
-try:  # the warm-up splits a sentence only with the data on disk, as on a box
-    nltk.data.find("tokenizers/punkt_tab")
-except LookupError:
-    nltk.download("punkt_tab", quiet=True)
 WARM
 SSE = (b'data: {"id":"c","object":"chat.completion.chunk","created":0,"model":"m",'
        b'"choices":[{"index":0,"delta":{"role":"assistant","content":"Hi there."},'
@@ -66,8 +61,7 @@ print(" ".join(asyncio.run(first_reply())) or "-")
 
 def _child(code: str, **env) -> str:
     """Run code in a fresh interpreter; its last line. This machine's proxy settings are
-    kept (the child may download punkt_tab through them) but bypassed for the local
-    server the first reply goes to."""
+    kept but bypassed for the local server the first reply goes to."""
     brain = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     local = "127.0.0.1,localhost"
     p = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
@@ -94,50 +88,6 @@ def test_without_the_warm_up_the_first_reply_imports_the_chat_api():
     assert "openai.resources.chat" in _first_reply(warm=False)
 
 
-def test_offline_without_nltk_data_the_warm_up_neither_downloads_nor_fails():
-    # A first boot with no network (the spoken Wi-Fi setup is why the brain must start
-    # then) and punkt_tab never downloaded: pipecat's loader would try the download (on
-    # a blackholed network, with no timeout) and leave the tokenizer broken. The warm-up
-    # must not try it, and must return; the first session's own warm-up fetches the
-    # data later, in its thread.
-    import tempfile
-    with tempfile.TemporaryDirectory() as home:
-        out = _child(
-            "import os, sys, nltk\n"
-            "nltk.data.path[:] = [os.path.join(os.environ['HOME'], 'nltk_data')]\n"
-            "nltk.download = lambda *a, **k: sys.exit(f'the warm-up tried to download {a}')\n"
-            "from teaport_brain.services import warm_first_use_imports\n"
-            "warm_first_use_imports()\n"
-            "print('returned')\n",
-            HOME=home)
-    assert out == "returned", out
-
-
-def test_broken_nltk_data_on_disk_does_not_stop_the_start():
-    # punkt_tab there but broken: a directory cut short (an interrupted unzip; the split
-    # raises), or an empty zip (the find itself raises). The warm-up is an
-    # optimisation; the brain must still start.
-    import tempfile
-    for broken in ("partial directory", "empty zip"):
-        with tempfile.TemporaryDirectory() as home:
-            tokenizers = os.path.join(home, "nltk_data", "tokenizers")
-            if broken == "partial directory":
-                os.makedirs(os.path.join(tokenizers, "punkt_tab"))
-            else:
-                os.makedirs(tokenizers)
-                open(os.path.join(tokenizers, "punkt_tab.zip"), "wb").close()
-            out = _child(
-                "import os, nltk\n"
-                "nltk.data.path[:] = [os.path.join(os.environ['HOME'], 'nltk_data')]\n"
-                "from teaport_brain.services import warm_first_use_imports\n"
-                "warm_first_use_imports()\n"
-                "print('returned')\n",
-                HOME=home)
-        assert out == "returned", f"{broken}: {out}"
-
-
 if __name__ == "__main__":
     appliance.run_tests([test_after_the_warm_up_a_first_reply_imports_nothing,
-                         test_without_the_warm_up_the_first_reply_imports_the_chat_api,
-                         test_offline_without_nltk_data_the_warm_up_neither_downloads_nor_fails,
-                         test_broken_nltk_data_on_disk_does_not_stop_the_start])
+                         test_without_the_warm_up_the_first_reply_imports_the_chat_api])

@@ -500,14 +500,14 @@ def warm_first_use_imports() -> None:
       connection.
     - httpcore (+ h11) loads when make_llm builds the first session's client, and
       certifi's CA bundle path is looked up (through importlib.resources) then.
-    - pipecat's own deferred import (NLTK's sentence tokenizer,
-      pipecat.utils.prewarm): pipecat warms it in a thread while each pipeline
-      connects, and the first session waits for it. Splitting one sentence here loads
-      it, and the one module its first split adds (nltk.tabdata). Only when NLTK's
-      punkt_tab data is already on disk: without it, pipecat's loader downloads it,
-      which must not run here (no network at a first offline boot, where the brain
-      still has to start for the spoken Wi-Fi setup) and stays in pipecat's thread.
-      Nothing here may stop the start: broken data is logged and left to the session.
+    - Not pipecat's sentence split, any more. Up to pipecat 1.11 it was NLTK's Punkt,
+      loaded lazily and warmed here from the punkt_tab data on disk. Since 1.12 it is
+      sentencex: it loads with pipecat.utils.string, carries its rules in the wheel
+      (no data, no download), and its first split imports nothing (~1 ms).
+      test_llm_warmup still runs a split in the first reply it pins, so a pipecat
+      that brings a lazy load back fails there. Nothing left here can reach the
+      network, which the NLTK block could (its punkt_tab download), so the brain
+      still starts at a first boot with none, for the spoken Wi-Fi setup.
 
     Each is paid once per process, so it fell on the first session after every restart.
     The server calls this before freeze_startup_objects, so the modules are loaded once
@@ -516,26 +516,9 @@ def warm_first_use_imports() -> None:
     import anyio._backends._asyncio  # noqa: F401
     import certifi
     import httpcore  # noqa: F401
-    import nltk
     import openai.resources.chat  # noqa: F401
-    from pipecat.utils.string import match_endofsentence
 
     certifi.where()
-    try:
-        try:
-            nltk.data.find("tokenizers/punkt_tab")
-        except LookupError:
-            logger.info("NLTK punkt_tab is not on disk yet; the first session downloads "
-                        "it (needs the internet)")
-            return
-        match_endofsentence("Warm up. Done.")
-    except Exception as e:
-        # Data on disk but broken (an unzip cut short, an empty or corrupt zip, which
-        # the find above already opens): a warm-up must not stop the start. The session
-        # meets it as pipecat's own warm-up leaves it.
-        # NLTK's LookupError text is a multi-line box of asterisks: keep its first line.
-        first = next((ln.strip() for ln in str(e).splitlines() if ln.strip(" *")), "")
-        logger.warning(f"NLTK's sentence tokenizer did not load: {type(e).__name__}: {first}")
 
 
 # Any OpenAI-compatible chat endpoint — Groq, Cerebras, OpenRouter, a local
