@@ -77,6 +77,9 @@ _KNOWN: dict = {}
 _PENDING: "weakref.WeakKeyDictionary" = weakref.WeakKeyDictionary()
 # host -> when its last lookup failed (or came back empty)
 _FAILED: dict = {}
+# host -> when the lookup last recorded above started: one that started earlier and
+# finishes later (stuck past SHARE_FOR_S, then replaced) records nothing
+_RECORDED: dict = {}
 
 
 def _is_ip(host: str) -> bool:
@@ -137,12 +140,16 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
         entry = (task, time.monotonic())
         pending[host] = entry
 
-        def _record(t, pending=pending, host=host):
+        def _record(t, pending=pending, host=host, began=entry[1]):
             if pending.get(host, (None,))[0] is t:
                 del pending[host]
             if t.cancelled():
                 return
-            if t.exception() is None and t.result():
+            error = t.exception()   # retrieved even when superseded: no "never retrieved"
+            if _RECORDED.get(host, float("-inf")) > began:
+                return
+            _RECORDED[host] = began
+            if error is None and t.result():
                 _KNOWN[host] = (t.result(), time.monotonic())
                 _FAILED.pop(host, None)
             else:
@@ -185,6 +192,8 @@ class StaleDNSBackend(httpcore.AsyncNetworkBackend):
         if known is None:
             # Nothing to fall back on: wait for the lookup inside the connect budget, as
             # the stock backend would have.
+            # (A lookup cancelled under it -- only at loop teardown -- is CancelledError
+            # here, as it is from the stock backend.)
             try:
                 found = await asyncio.wait_for(asyncio.shield(lookup), _left(timeout, started))
             except asyncio.TimeoutError:

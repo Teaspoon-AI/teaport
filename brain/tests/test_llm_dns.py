@@ -9,6 +9,7 @@
 # Run: python test_llm_dns.py   (or via pytest test_suite.py)
 #
 import asyncio
+import inspect
 import os
 import socket
 import sys
@@ -94,6 +95,7 @@ def _fresh():
     llm_dns._KNOWN.clear()
     llm_dns._PENDING.clear()
     llm_dns._FAILED.clear()
+    llm_dns._RECORDED.clear()
     llm_dns.FAST_S = FAST
 
 
@@ -296,9 +298,59 @@ async def test_with_no_fresher_answer_a_refusal_is_the_error():
     assert _connects(inner) == ["10.0.0.1"], inner.log    # the same answer: not retried
 
 
-def test_an_international_name_is_primed_under_the_name_it_connects_with():
-    host = httpx.URL("https://münchen.example/v1").raw_host.decode("ascii")
-    assert host.startswith("xn--"), host
+async def test_an_international_name_is_primed_under_the_name_it_connects_with():
+    # httpcore connects with the punycode name: the record must be under that one.
+    _fresh()
+    resolver = Resolver(["127.0.0.1"])
+    client = httpx.AsyncClient()
+    orig = llm_dns.StaleDNSBackend.__init__
+    llm_dns.StaleDNSBackend.__init__ = lambda self, inner=None, resolve=None: orig(
+        self, inner, resolver)
+    try:
+        use_stale_dns(client, "https://münchen.example/v1")
+    finally:
+        llm_dns.StaleDNSBackend.__init__ = orig
+    try:
+        assert await _until(lambda: llm_dns._KNOWN), llm_dns._KNOWN
+        assert list(llm_dns._KNOWN) == ["xn--mnchen-3ya.example"], llm_dns._KNOWN
+    finally:
+        await client.aclose()
+
+
+async def test_a_superseded_lookup_finishing_late_records_nothing():
+    # A lookup stuck past SHARE_FOR_S is replaced; the replacement answers. The stuck one
+    # failing afterwards must not mark the host's DNS as failing (nor, answering late,
+    # overwrite the newer addresses).
+    _fresh()
+    gate = asyncio.Event()
+
+    async def stuck(host):
+        await gate.wait()
+        raise socket.gaierror(-3, "Temporary failure in name resolution")
+    backend = StaleDNSBackend(Inner(), stuck)
+    old, _ = backend.lookup(HOST)
+    loop = asyncio.get_running_loop()
+    llm_dns._PENDING[loop][HOST] = (old, time.monotonic() - llm_dns.SHARE_FOR_S - 1)
+    backend._resolve = Resolver(["10.0.0.5"])
+    await backend.connect_tcp(HOST, 443, timeout=5)
+    gate.set()
+    await asyncio.wait({old})
+    assert HOST not in llm_dns._FAILED and llm_dns._KNOWN[HOST][0] == ["10.0.0.5"], (
+        llm_dns._FAILED, llm_dns._KNOWN)
+
+
+async def test_a_failed_lookup_is_remembered_as_failed():
+    # The next connection then uses the remembered address without waiting FAST_S.
+    _fresh()
+    llm_dns._KNOWN[HOST] = (["10.0.0.1"], time.monotonic())
+    failing = Resolver(error=socket.gaierror(-3, "Temporary failure in name resolution"))
+    await StaleDNSBackend(Inner(), failing).connect_tcp(HOST, 443, timeout=5)
+    assert HOST in llm_dns._FAILED, llm_dns._FAILED
+    t = time.monotonic()
+    await StaleDNSBackend(Inner(), Resolver(delay=5)).connect_tcp(HOST, 443, timeout=5)
+    assert time.monotonic() - t < FAST / 2, time.monotonic() - t
+    for task in _pending_tasks():
+        task.cancel()
 
 
 async def test_a_dead_ipv4_address_leaves_time_for_ipv6():
@@ -515,9 +567,9 @@ async def _until(pred, timeout=3.0):
 def main():
     saved = llm_dns.FAST_S
     sync = [v for k, v in sorted(globals().items())
-            if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]
+            if k.startswith("test_") and not inspect.iscoroutinefunction(v)]
     aio = [v for k, v in sorted(globals().items())
-           if k.startswith("test_") and asyncio.iscoroutinefunction(v)]
+           if k.startswith("test_") and inspect.iscoroutinefunction(v)]
     try:
         for fn in sync:
             fn()
