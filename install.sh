@@ -1042,7 +1042,7 @@ RESOLV_CONF=/etc/resolv.conf
 install_dns_resilience() {
   local src why="" ver
   src="$(packaging_src resolved/60-teaport-serve-stale.conf)"
-  ver="$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}')"
+  ver="$(systemctl --version 2>/dev/null | awk 'NR==1 {print $2}' || true)"   # no systemctl: no version, a skip
   if [ ! -f "$src" ]; then why="no drop-in source"
   elif ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then why="systemd-resolved is not running"
   elif ! grep -qs '^nameserver 127\.0\.0\.53' "$RESOLV_CONF"; then why="$RESOLV_CONF does not use systemd-resolved's stub"
