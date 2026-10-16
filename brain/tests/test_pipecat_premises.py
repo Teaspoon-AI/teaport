@@ -768,8 +768,8 @@ async def check_an_interruption_cancels_a_running_call_as_CANCELLED():
     tool uses) and the assistant aggregator writes CANCELLED over its IN_PROGRESS --
     exactly the shape HeardContextCorrector._merge_tail folds across
     (heard_context._cancelled_rounds), asserted here in the corrector's own terms. No
-    output transport between the two: the race with one (#185) is fix/function-call-
-    race-185's.
+    output transport between the two: the race with one (#185) is
+    test_pipecat_function_call_race.py's.
 
     If it goes: a cancelled round no longer reads CANCELLED, the merge stops folding
     across it, and the caller's fragment and continuation stay two turns."""
