@@ -75,6 +75,7 @@ from turn_harness import running_controller  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
     ENDPOINT_STOP_SECS,
     INTERRUPT_MIN_WORDS,
+    NO_STOP,
     SMARTTURN_STOP_SECS,
     LateStartTurnStopStrategy,
     SegmentDoneFrame,
@@ -332,7 +333,7 @@ async def _the_engines_split_of_one_utterance(*, tail):
     """Review of PR #49, finding 3. One VAD utterance, a breath inside it shorter
     than ENDPOINT_STOP_SECS that the engine's own endpointer cuts: its final for the
     first half lands mid-utterance, stamped (as the STT stamps an unasked close with
-    words) with the stop still to come. The verdict at the stop must not end the
+    words) with no stop at all. The verdict at the stop must not end the
     turn on that half, and neither may the safety net once the second half's
     interims have cleared `_transcript_finalized`; the turn ends on the close the
     stop itself produces -- the second half's final, or a wordless tail, which then
@@ -343,9 +344,8 @@ async def _the_engines_split_of_one_utterance(*, tail):
         await rig.audio(400)
         await rig.interim(A_TEXT)
         await rig.audio(400)
-        # The engine's close of the first half: an unasked done, stamped 1 = the
-        # stop that has not come yet.
-        await rig.controller.process_frame(_final(A_TEXT, 1))
+        # The engine's close of the first half: an unasked done with words, NO_STOP.
+        await rig.controller.process_frame(_final(A_TEXT, NO_STOP))
         if tail == "words":
             for n in (1, 2, 3):
                 await rig.interim(" ".join(B_TEXT.split()[:n]))
@@ -524,8 +524,8 @@ async def test_a_done_the_engine_marks_as_its_own_never_takes_a_commits_place():
     """The pairing residual, closed by the engine's marker: commit 1 is out when the
     engine's own close of the first half lands. Unmarked, the queue hands that done
     commit 1's stamp and the commit's real answer -- the rest of the sentence --
-    arrives as nobody's (SttCommit.tla, sc_final_stop). Marked "vad", the close is
-    placed as the next stop's and commit 1's answer keeps its stamp; an unmarked
+    arrives as nobody's (SttCommit.tla, sc_final_stop). Marked "vad", the close
+    answers no stop and commit 1's answer keeps its stamp; an unmarked
     done on the same wire is paired by the queue as before."""
     s = Recorder()
     await s.delta("It was the best of")
@@ -534,7 +534,7 @@ async def test_a_done_the_engine_marks_as_its_own_never_takes_a_commits_place():
     await s.done("It was the best of", reason="vad")   # the engine's own close, first
     assert len(s._commits) == 1, "a marked vad close must not pop the commit"
     await s.done("times.", reason="commit")  # commit 1's real answer
-    assert s.closes() == [("final", 2), ("final", 1)], s.closes()
+    assert s.closes() == [("final", NO_STOP), ("final", 1)], s.closes()
     assert not s._commits
 
     s = Recorder()
@@ -555,14 +555,14 @@ async def test_a_done_the_engine_marks_as_its_own_never_takes_a_commits_place():
         await s.done(A_TEXT, reason="commit")
     finally:
         logger.remove(sink)
-    assert s.closes() == [("final", 1)], s.closes()
+    assert s.closes() == [("final", NO_STOP)], s.closes()
     assert any("no commit outstanding" in w for w in warnings), warnings
 
 
 async def test_an_unasked_close_answers_no_stop_and_keeps_a_hold():
     """The engine's own close, landing after the caller resumed (stop 1's verdict
     never committed: the resume released it) or under stop 1's hold: it answers no
-    stop of ours, so it is stamped as the NEXT stop's, and a hold it lands under
+    stop of ours, so it is stamped NO_STOP, and a hold it lands under
     stays -- it may be the previous utterance's words, not the held segment's. The
     first cut stamped such a done with its arrival time and took one landing after
     the next start as that utterance's (review of PR #49, finding 1); its release
@@ -574,7 +574,7 @@ async def test_an_unasked_close_answers_no_stop_and_keeps_a_hold():
     assert s._commit_pending is False
     await s.done(A_TEXT)                     # ...and the engine's own close lands
     assert s._websocket.commits() == []
-    assert s.closes() == [("final", 2)], s.closes()
+    assert s.closes() == [("final", NO_STOP)], s.closes()
 
     s = Recorder()
     await s.delta(A_TEXT)
@@ -582,25 +582,27 @@ async def test_an_unasked_close_answers_no_stop_and_keeps_a_hold():
     await s.verdict(False)                   # INCOMPLETE: still held
     await s.done(A_TEXT)                     # the engine's close lands under the hold
     assert s._commit_pending is True and s._websocket.commits() == []
-    assert s.closes() == [("final", 2)], s.closes()
+    assert s.closes() == [("final", NO_STOP)], s.closes()
     await s.verdict(True)                    # the ceiling: commit 1 closes the tail
     await s.done("")
-    assert s.closes() == [("final", 2), ("done", 1)], s.closes()
+    assert s.closes() == [("final", NO_STOP), ("done", 1)], s.closes()
 
 
-async def test_an_unasked_close_with_words_is_stamped_with_the_stop_to_come():
+async def test_an_unasked_close_with_words_answers_no_stop():
     """The engine's own close of the utterance under way -- a breath it cut, or its
     endpointer beating the VAD's floor: no stop has come for these words, so they
-    are the next stop's, and answer it only when the stop's own close follows."""
+    answer none (NO_STOP), and the stop is answered by its own close. Stamped as the
+    next stop's until SttCommit.tla's sc_final_stop_marked: the strategy can count
+    that stop before the STT sees it, and the first half then paid it."""
     s = Recorder()
     await s.vad_start()
     await s.delta(A_TEXT)
     await s.done(A_TEXT)                     # nothing committed, nothing held
-    assert s.closes() == [("final", 1)], s.closes()
+    assert s.closes() == [("final", NO_STOP)], s.closes()
     await s.vad_stop()                       # stop 1: the tail, committed at once
     assert [c["final"] for c in s._websocket.commits()] == [True]
     await s.done("")
-    assert s.closes() == [("final", 1), ("done", 1)], s.closes()
+    assert s.closes() == [("final", NO_STOP), ("done", 1)], s.closes()
 
 
 async def test_a_marking_engines_close_in_the_stops_silence_leaves_the_commit_its_answer():
@@ -608,7 +610,7 @@ async def test_a_marking_engines_close_in_the_stops_silence_leaves_the_commit_it
     the caller's stop is held INCOMPLETE, the engine's own endpointer closes the
     utterance in the silence (1.5 s of it) before the ceiling's commit goes out, and
     the commit is answered EMPTY right behind it -- no decode, one worker iteration
-    later. The engine's close is marked vad and stamped as the next stop's; the
+    later. The engine's close is marked vad and answers no stop (NO_STOP); the
     commit's wordless answer is marked commit and stamped with the stop: the turn
     ends on that SegmentDoneFrame(1), not on the final. (With the verdict commit
     beating the engine's close -- the everyday turn -- there is one done, marked
@@ -620,11 +622,11 @@ async def test_a_marking_engines_close_in_the_stops_silence_leaves_the_commit_it
     await s.verdict(False)                   # INCOMPLETE: held for the ceiling
     await s.done(A_TEXT, reason="vad")       # the engine's own close, in the silence
     assert s._commit_pending is True and s._websocket.commits() == []
-    assert s.closes() == [("final", 2)], s.closes()
+    assert s.closes() == [("final", NO_STOP)], s.closes()
     await s.verdict(True, source="ceiling")  # the ceiling: commit 1 goes out
     assert [c["final"] for c in s._websocket.commits()] == [True]
     await s.done("", reason="commit")        # its answer: the silent tail, no decode
-    assert s.closes() == [("final", 2), ("done", 1)], s.closes()
+    assert s.closes() == [("final", NO_STOP), ("done", 1)], s.closes()
     assert not s._commits
 
 
@@ -672,7 +674,7 @@ async def test_a_commit_whose_send_failed_owes_no_done():
     await s.vad_start()
     await s.delta(B_TEXT)
     await s.done(A_TEXT + " " + B_TEXT)      # the engine's own close, later
-    assert s.closes() == [("final", 2)], s.closes()
+    assert s.closes() == [("final", NO_STOP)], s.closes()
 
 
 async def test_a_disconnect_forgets_the_outstanding_commits():
@@ -684,6 +686,95 @@ async def test_a_disconnect_forgets_the_outstanding_commits():
     s._websocket = None                  # the recorder has no close handshake to run
     await s._disconnect_websocket()
     assert len(s._commits) == 0
+
+
+# ---- THE ORDER: the two counts of one stop -----------------------------------------
+#
+# The VAD runs in the user aggregator, downstream of the STT, and each edge reaches the
+# stop strategy (on the aggregator's input queue) and the STT (four queues upstream) in
+# no fixed order. Both tests run the REAL service and the REAL strategy and hand the
+# strategy what the service pushed, in the interleaving SttCommit.tla found.
+
+FIRST_HALF = "It was the best of"
+REST = "times, it was the worst of times."
+
+
+async def _forward(s, rig):
+    """What the service has pushed for the strategy since the last call, in order."""
+    frames, s.pushed = s.pushed, []
+    for f in frames:
+        if isinstance(f, (InterimTranscriptionFrame, TranscriptionFrame, SegmentDoneFrame)):
+            await rig.controller.process_frame(f)
+
+
+async def test_the_engines_cut_landing_between_the_two_counts_does_not_end_the_turn():
+    """sc_final_stop_marked (SttCommit.tla): the engine cuts a breath mid-sentence, the
+    caller finishes, and the strategy counts the VAD stop before the STT has seen it.
+    The engine's done for the first half reaches the STT in between: it was stamped as
+    the NEXT stop's -- stop 1, the one the strategy had just counted -- so it paid that
+    stop and the turn ended on half the sentence; the rest, committed at the STT's own
+    count of the stop, then opened a new turn and cut the reply at 0%. Unasked words
+    answer no stop now: the turn waits for the stop's own close."""
+    s = Recorder()
+    rig = Rig(LateStartTurnStopStrategy)
+    async with running_controller(rig.controller):
+        await s.vad_start()
+        await rig.vad_start()
+        await s.delta(FIRST_HALF)
+        await _forward(s, rig)                         # the interim opens the turn
+        await rig.audio(400)
+        await s.done(FIRST_HALF, reason="vad")         # the engine's cut, at the STT
+        await rig.audio(300)
+        await rig.vad_stop()                           # the strategy counts stop 1: COMPLETE
+        await _forward(s, rig)                         # the first half's final
+        await rig.settle(SAFETY_NET_SECS + 0.3)
+        assert not rig.stops, (
+            "the turn ended on the engine's cut of the first half, with the rest of the "
+            "sentence still in the open segment (sc_final_stop_marked)")
+        await s.vad_stop()                             # the STT's count: the tail, at once
+        assert [c["final"] for c in s._websocket.commits()] == [True]
+        await s.done(REST, reason="commit")
+        t = time.monotonic()
+        await _forward(s, rig)
+        await rig.settle(0.5)
+        assert len(rig.stops) == 1, "the turn never ended on the stop's own close"
+        assert rig.stops[0] - t < PROMPT_SECS
+        assert len(rig.starts) == 1, "the rest of the sentence opened a second turn"
+
+
+async def test_a_stops_close_landing_before_the_strategy_counts_it_is_a_receipt():
+    """sc_final_stop_stranded (SttCommit.tla): the engine cuts at the end of the
+    speech and its final lands; the STT sees the VAD stop first and commits the tail
+    at once; the tail's wordless close reaches the strategy before the strategy has
+    counted that stop. It used to pay nothing (no stop owed yet), and the count then
+    owed a close that had already gone by: a finalized transcript, a COMPLETE verdict,
+    and a turn left to the aggregator's 5 s watchdog. The close is a receipt now, and
+    the count finds the stop paid: the turn ends at the stop."""
+    s = Recorder()
+    rig = Rig(LateStartTurnStopStrategy)
+    async with running_controller(rig.controller):
+        await s.vad_start()
+        await rig.vad_start()
+        await s.delta(A_TEXT)
+        await _forward(s, rig)                         # the interim opens the turn
+        await rig.audio(400)
+        await s.done(A_TEXT, reason="vad")             # the engine's close of the speech
+        await _forward(s, rig)
+        await rig.audio(300)
+        await s.vad_stop()                             # the STT's count: the tail, at once
+        assert [c["final"] for c in s._websocket.commits()] == [True]
+        await s.done("", reason="commit")              # its answer: SegmentDoneFrame(1)
+        await _forward(s, rig)                         # ...before the strategy's count
+        assert not rig.stops
+        t = time.monotonic()
+        await rig.vad_stop()                           # the strategy counts stop 1: COMPLETE
+        await rig.settle(SAFETY_NET_SECS + 0.3)
+        assert rig.stops, (
+            "the turn never ended: the stop's close came before the strategy counted the "
+            "stop, and the count owed it again (sc_final_stop_stranded)")
+        assert rig.stops[0] - t < PROMPT_SECS, (
+            f"turn ended {rig.stops[0] - t:.2f}s after the stop, not at it")
+        assert len(rig.starts) == 1
 
 
 def main():

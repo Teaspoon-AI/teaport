@@ -1854,13 +1854,14 @@ the design and the wire:
 |---|---|---|---|---|---|
 | `clock` | `unmarked` | PR #49 as opened: a final placed by clock (`sc_final_clock`) | ✗ | | |
 | `clock` | `marked` | the same on a wire that says which dones answer commits (`sc_final_clock_marked`) | ✗ | | |
-| `stop` | `unmarked` | as shipped, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`) | ✗ | ✗ | |
-| `stop` | `marked` | as shipped, against the engine that marks its dones — teagram-engine#36, what the box runs (`sc_final_stop_marked`, `sc_final_stop_stranded`) | ✗ | | ✗ |
-| `receipts` | `unmarked` | proposed (THE ORDER), on the old engine (`sc_final_stop_residual`) | | ✓ | ✓ |
-| `receipts` | `marked` | proposed (THE ORDER), on the engine the box runs (`sc_final_receipts`, `_backstop`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
+| `stop` | `unmarked` | shipped until 2026-10-15, against an engine without the reason field — before teagram-engine#36 (`sc_final_stop`) | ✗ | ✗ | |
+| `stop` | `marked` | shipped until 2026-10-15, against the engine that marks its dones — teagram-engine#36, what the box runs (`sc_final_stop_marked`, `sc_final_stop_stranded`) | ✗ | | ✗ |
+| `receipts` | `unmarked` | as shipped since 2026-10-15, on the old engine (`sc_final_stop_residual`) | | ✓ | ✓ |
+| `receipts` | `marked` | as shipped since 2026-10-15, on the engine the box runs (`sc_final_receipts`, `_backstop`; `_full` and `sc_voice_final_carry` under `--full`) | ✓ | | ✓ |
 
 The `stop` rows held on the marked engine until 2026-10-14, when THE ORDER (below) put
-the VAD where pipecat runs it; the `receipts` rows are the repair.
+the VAD where pipecat runs it; the `receipts` rows are the repair, in the code since
+2026-10-15 (THE ORDER, What was changed).
 
 `NoStaleTurnEnd` is the property: the turn never ends on VAD stop *k* with words of an
 utterance up to *k* still in the engine's open segment, in a done on its way, or in a
@@ -1903,7 +1904,9 @@ nothing asked for no longer releases a hold (the first cut's release is what str
 rest above; the ceiling's commit now closes the silent tail, which the engine answers
 without a decode), and its stamp is the next stop's if it carries words, the last
 commit's if it does not. `tests/test_earlier_final_does_not_end_the_turn.py` pins each
-shape.
+shape. THE ORDER (below) amended both halves of it: a close for a stop the strategy has
+not counted yet is a receipt, and a done nothing asked for that carries words is
+stamped with no stop at all.
 
 **The `stop` row on the unmarked wire fell in ten states, on one cause** — before THE
 ORDER, which adds a second that TLC now reaches first (finding A below). The engine
@@ -1915,7 +1918,8 @@ of the sentence — is still on its way. `sc_final_stop_residual` was the statem
 this was the *only* way the shipped design ended a turn stale, and `sc_final_stop_marked`
 that a done which says whether it answers a client commit (`voxtral_websocket.c`'s
 `worker_send_done` sends the same message for its VAD close and for a commit) closed it
-entirely; both now say it of the `receipts` design, the shipped one having two more. Live, the mispairing needs the
+entirely; both now say it of the `receipts` design, shipped since 2026-10-15 (the
+`stop` design before it had two more). Live, the mispairing needs the
 engine's finish for the first half to outlast the rest of the sentence plus the VAD's
 floor and the model's verdict — the GPU-contended finish — and its cost is one cut reply,
 the shape the fix is for, at a small fraction of its old rate.
@@ -1943,7 +1947,7 @@ by design, and each has its own row to keep that visible rather than a property 
 holds by construction. The cap (`PauseCap`, `capCut`, `sc_voice_cap`) can fire at any
 point of the wait. The catch-up bound (`catchupCut`, `sc_voice_catchup`) is a verdict
 that commits on what the analyzer has heard because it has not heard the rest in time.
-`sc_voice_final` runs the final's protocol (its `receipts` repair) under the wait on the
+`sc_voice_final` runs the final's protocol (as shipped, `receipts`) under the wait on the
 marked engine: no stale turn end, no stranded turn. `MaxVoice` bounds only the voice
 the VAD has not started on; since THE ORDER, a VAD start sets `voice` too (the
 analyzer's own finding), so a verdict that reaches the STT after the caller has
@@ -1997,7 +2001,8 @@ the edges. So the model now has three FIFOs — `vadQ`, `toStt`, `toStrategy` �
 handles its copies in `SttStart`/`SttStop`, and the two sides count stops separately
 (`sttStops`, `stratStops`). `MaxLag` bounds how many edges either side may be behind; one
 already lets either side see a stop first. Every row was re-run; three findings, all
-against the code as it is:
+against the code as it then was. A and B are fixed (What was changed, below); C is
+open.
 
 **A — a stale turn end on the marked engine** (`sc_final_stop_marked`, ten states):
 
@@ -2042,22 +2047,45 @@ ceiling: the #43 split. It needs the aggregator's input task stalled for a whole
 utterance (≥ ~0.5 s with Talk's 0.2 s stop), which Smart Turn's inference on the
 appliance's cores under load could do but has not been seen to.
 
-**The repairs, modelled, not in the code:**
+**C's repair, modelled, not in the code:** `NUMBERED` — the strategy stamps each
+`TurnVerdictFrame` with the stop it answers (its own count; the ceiling's and the
+turn-stop's with the stop they override) and `_handle_verdict` ignores one that is not
+for `_vad_stops`. `sc_verdict_numbered` holds every commit property at `MaxLag = 3`.
 
-- `NUMBERED` — the strategy stamps each `TurnVerdictFrame` with the stop it answers (its
-  own count; the ceiling's and the turn-stop's with the stop they override) and
-  `_handle_verdict` ignores one that is not for `_vad_stops`. `sc_verdict_numbered`
-  holds every commit property at `MaxLag = 3` (1.1 million states).
-- `DESIGN = "receipts"` — `LateStartTurnStopStrategy` keeps the stamps of closes for
-  stops it has not counted yet (`stop_n > _stops`) and, at the count, finds that stop's
-  debt paid; and `_handle_message` stamps a done nothing asked for that carries words
-  with no stop at all (a sentinel `_note_close` treats as paying nothing — not `None`,
-  which pays as stock): the stop it lands near is always answered by its own commit, the
-  tail's included. `sc_final_receipts`, `_backstop` and `sc_voice_final` hold every
-  property in the default run, `sc_final_receipts_full` (the backstop, a lost verdict,
-  the engine's cut and the carry together: 26.6 million states) and
-  `sc_voice_final_carry` under `--full`; `sc_final_stop_residual` says that on an engine
-  without the reason field the mispairing is again the only stale end left.
+### What was changed (2026-10-15): receipts, for A and B
+
+The model's repair, `DESIGN = "receipts"`, is the code; the model led it.
+
+- **The strategy keeps receipts** (`endpointing.py`, `LateStartTurnStopStrategy`).
+  `_note_close` keeps the stamp of a close for a stop it has not counted yet
+  (`stop_n > _stops`) in `_receipts`; `_handle_vad_user_stopped_speaking` counts the
+  stop and owes its close only if no receipt for it is held, then drops the receipts
+  the count has passed. That is `StratStop`'s `owed'`/`early'` and `Receipt(f)`. B's
+  close, landing first, is now the receipt the count finds.
+- **An unasked done with words pays no stop** (`stt.py`, `_handle_message`). It is
+  stamped `NO_STOP` (`endpointing.py`, `0`: stops count from 1, so it matches no debt
+  and is never a receipt), where it was stamped `_vad_stops + 1`, the next stop's.
+  `None` would not do: it is another STT's unstamped final, which pays whatever is
+  owed, as stock. That is `Done`'s `NONE`. A's first half no longer pays the stop the
+  strategy has just counted. The stop is answered by its own commit, the tail's
+  included. A wordless unasked done keeps the last commit's stamp, as before.
+- **The rows follow the code.** Every row that describes the code as shipped now runs
+  `DESIGN = "receipts"`: the commit rows (`sc_verdict`, `_stale`, `_numbered`), the
+  voice rows and their witnesses, the carry pair, and the fallback's `sc_vadStop_*`.
+  The `receipts` final rows run with `NUMBERED = FALSE`, the code, where they first
+  held with `TRUE`. At `MaxLag = 1` the verdict's stop never mattered: C needs three.
+  The `stop` rows stay as the design before receipts, each a FAILS row named for its
+  finding: `sc_final_stop_marked` (A), `sc_final_stop_stranded` (B), and
+  `sc_final_stop` (the old engine). The design rows of their own time,
+  `sc_verdict_silentStop` and `sc_voice_blind`, keep `stop`.
+- **Tests.** `tests/test_earlier_final_does_not_end_the_turn.py` drives the real
+  service and the real strategy through each trace, handing the strategy what the
+  service pushed in the order TLC found it.
+  `test_the_engines_cut_landing_between_the_two_counts_does_not_end_the_turn` is A.
+  `test_a_stops_close_landing_before_the_strategy_counts_it_is_a_receipt` is B. Both
+  fail on the code before the change: the turn ends on the first half, and the turn
+  never ends. The stamp tests there and in `test_stt_commit_on_verdict.py` expect
+  `NO_STOP` where they expected the next stop.
 
 ### Known limits of this model
 
@@ -2152,18 +2180,19 @@ appliance's cores under load could do but has not been seen to.
 - **A commit whose send fails is not modelled.** `stt.py` queues no stamp for it (the first
   cut left its stamp for the next done to inherit); the turn it strands ends on the
   watchdog, and the receive task owns the reconnect.
-- **Scale.** Measured 2026-10-14 on TLC 2.19, THE ORDER's model, two workers on a
-  desktop shared with other checks (so slower than the figures from before it, which
-  had the machine). Default run: `sc_verdict` 7.0 million distinct states (4 min 11 s),
-  `sc_voice` 4.3 million (1 min 45 s; the missed stop moved to `sc_voice_missed`),
-  `sc_vadStop_sound` 3.7 million (1 min 24 s), `sc_voice_final` 1.3 million (30 s),
-  `sc_verdict_numbered` 1.1 million (47 s), the three `receipts` final rows 260,000 to
-  480,000 each (under 20 s), `sc_carry_off` 260,000 (8 s); every row that falls finds its
-  trace in 8 to 15 states, in a second or a few. `--full`: `sc_final_receipts_full`
-  26.6 million (14 min), `sc_voice_missed` 27.9 million (12 min 30 s),
-  `sc_vadStop_sound_carry` 5.6 million (3 min 36 s), `sc_voice_carry` 5.7 million
-  (2 min 41 s), `sc_voice_final_carry` 4.1 million (1 min 28 s) -- about half an hour
-  in all. The three queues cost most where the engine's own close and the backstop are
+- **Scale.** Measured 2026-10-15 on TLC 2.19 with the receipts rows as shipped, two
+  workers on a desktop shared with other checks. Default run: `sc_verdict` 7.0 million
+  distinct states (4 min 4 s), `sc_voice` 4.3 million (2 min 32 s; the missed stop moved
+  to `sc_voice_missed`), `sc_vadStop_sound` 3.7 million (1 min 31 s), `sc_voice_final`
+  1.3 million (36 s), `sc_verdict_numbered` 1.1 million (37 s), the three `receipts`
+  final rows 260,000 to 480,000 each (under 20 s), `sc_carry_off` 260,000 (8 s); every
+  row that falls finds its trace in 8 to 15 states, in a second or a few. `--full`:
+  `sc_final_receipts_full` 26.6 million (15 min), `sc_voice_missed` 27.9 million
+  (14 min), `sc_vadStop_sound_carry` 5.6 million (3 min 16 s), `sc_voice_carry` 5.7
+  million (3 min 7 s), `sc_voice_final_carry` 4.1 million (2 min 12 s) -- about 40
+  minutes in all. Switching the shipped rows from `stop` to `receipts` (and the final
+  rows' `NUMBERED` to FALSE) left every count above where it was, to the figures given. The three queues
+  cost most where the engine's own close and the backstop are
   both on (the final rows: 0.4 million with either, 8 million with both, at the same
   other bounds), which is why the default final rows take them one at a time.
   `check.sh` passes `-deadlock`: the bounds make terminal states ordinary. Before THE

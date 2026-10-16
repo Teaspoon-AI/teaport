@@ -86,6 +86,7 @@ import teaport_brain.stt as stt_mod  # noqa: E402
 from teaport_brain.captions import UserTranscriptEmitter  # noqa: E402
 from teaport_brain.endpointing import (  # noqa: E402
     INTERRUPT_MIN_WORDS,
+    NO_STOP,
     LateStartTurnStopStrategy,
     TurnVerdictFrame,
 )
@@ -383,9 +384,9 @@ async def test_a_done_the_engine_sent_on_its_own_keeps_the_hold():
     utterance's, its finish outlasting the caller's next utterance (PR #49 review),
     and the wire does not say which. So the hold stays, and the ceiling's verdict
     commits: what that closes is the silent tail, which the engine answers without
-    a decode (no audio fed since its own close). The final is stamped as the next
-    stop's -- it answers no stop of ours -- and the tail's wordless done as the
-    ceiling's commit's; the stop strategy ends the turn on the latter."""
+    a decode (no audio fed since its own close). The final answers no stop of ours
+    (NO_STOP) and the tail's wordless done is stamped as the ceiling's commit's; the
+    stop strategy ends the turn on the latter."""
     s = Recorder()
     await delta(s, "what time is it")
     await vad_stop(s)
@@ -399,7 +400,7 @@ async def test_a_done_the_engine_sent_on_its_own_keeps_the_hold():
     await done(s, "")
     closes = [(type(f).__name__, f.stop_n) for f in s.pushed
               if type(f).__name__ in ("FinalTranscriptionFrame", "SegmentDoneFrame")]
-    assert closes == [("FinalTranscriptionFrame", 2), ("SegmentDoneFrame", 1)], closes
+    assert closes == [("FinalTranscriptionFrame", NO_STOP), ("SegmentDoneFrame", 1)], closes
 
 
 async def test_a_done_that_answers_our_commit_leaves_a_later_hold_alone():

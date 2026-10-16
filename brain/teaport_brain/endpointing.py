@@ -324,6 +324,13 @@ class SegmentDoneFrame(DataFrame, UninterruptibleFrame):
     stop_n: int
 
 
+# The stamp of a close that answers no VAD stop: the engine's own close of words no
+# stop has claimed yet (stt.py, _handle_message). Stops count from 1, so it pays no
+# debt and is no receipt. Not None, which is another STT's unstamped final, taken as
+# stock.
+NO_STOP = 0
+
+
 @dataclass
 class SegmentResetFrame(DataFrame, UninterruptibleFrame):
     """The STT dropped its open segment without closing it -- the engine session went
@@ -522,6 +529,17 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     such a segment -- the half of a sentence the backstop or the engine's own cut
     had already returned would otherwise open a new turn and end it through the
     fallback while the other half is still on its way (SttCommit.tla found both).
+    The two sides count in no fixed order, though: the VAD runs in the user
+    aggregator, downstream of the STT, and each of its edges reaches this strategy on
+    the aggregator's input queue and the STT four queues upstream. So a close can land
+    here stamped with a stop not counted yet -- the STT saw the stop first and its
+    commit came back quickly (the silent tail behind the engine's own cut, a stop over
+    the bot) -- and is kept as a RECEIPT: at the count, that stop's debt is found
+    already paid. Without it the count owed a close that had gone by, and the turn
+    waited for the aggregator's 5 s watchdog. The STT's half of the same rule is that
+    a close nobody asked for stamps no stop at all (NO_STOP) when it carries words: it
+    used to be stamped as the next stop's, which the STT could only know while it
+    counted first.
     Finals without the stamp (another STT service) pay whatever is owed, as stock.
     What the STT cannot stamp right, and what the wait costs, is in
     brain/formal/SttCommit.tla and its README section.
@@ -533,13 +551,15 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         self._inferences = 0
         self._bot_speaking = False
         # VADUserStoppedSpeakingFrames seen: the count the STT stamps its finals with
-        # (see the class note), and the latest of them whose close has not landed --
-        # None once it has. NOT per turn: see the class note. The debt is only
+        # (see the class note), the latest of them whose close has not landed -- None
+        # once it has -- and the receipts: stops not counted yet whose close has. NOT
+        # per turn: see the class note. The debt is only
         # collected once the session's STT has shown it stamps its closes (the first
         # stamped one latches this): another STT's finals are taken as stock, a
         # final in hand before the stop included.
         self._stops = 0
         self._owed = None
+        self._receipts = set()
         self._stamped = False
         # The settled-interim trigger (see the class note): the latest interim's words
         # since the STT last closed a segment -- its buffer resets at every close, final
@@ -594,12 +614,19 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
         """The STT closed a segment stamped as answering VAD stop `stop_n`. If that is
         the stop whose close is owed, the debt is paid -- whether the caller is quiet
         (this utterance's own close) or has started again (the previous utterance's
-        final, landing late). Any other stamp -- a stop still to come, or one already
-        paid -- changes nothing. Returns whether it paid."""
+        final, landing late). A stop not counted here yet is the STT's, seen first: the
+        close is kept as a receipt for the count. Any other stamp -- NO_STOP, or a stop
+        already paid -- changes nothing. Returns whether it paid."""
         self._stamped = True
         if stop_n == self._owed:
             self._owed = None
             return True
+        if stop_n > self._stops:
+            self._receipts.add(stop_n)
+            logger.debug(f"{self}: segment close for VAD stop {stop_n} before this "
+                         f"strategy has counted it (the latest counted: {self._stops}); "
+                         "kept as a receipt")
+            return False
         if self._owed is None:
             # Nothing owed: the engine's own close of a segment it opened on noise
             # (hundreds a day, stamped with the last commit's stop, already paid), or
@@ -781,10 +808,11 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
     async def _handle_vad_user_stopped_speaking(self, frame):
         # Counted before the stock handler runs the model, and owed its close from
         # here: the STT commits for every stop it sees (or holds and then commits),
-        # and the turn's end waits for what that returns. A close stamped with this
-        # stop cannot have come before it (the STT counts the same frame first).
+        # and the turn's end waits for what that returns -- unless it has come already,
+        # the STT having seen this stop first (a receipt: see the class note).
         self._stops += 1
-        self._owed = self._stops
+        self._owed = None if self._stops in self._receipts else self._stops
+        self._receipts = {n for n in self._receipts if n > self._stops}
         self._stop_at = time.monotonic()
         before = self._inferences
         await super()._handle_vad_user_stopped_speaking(frame)
