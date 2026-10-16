@@ -502,6 +502,36 @@ def test_the_tts_freezes_its_playout_model_and_passes_the_pause_on():
     asyncio.run(run())
 
 
+def test_a_pause_in_an_underrun_is_not_a_playout_gap_as_well():
+    # formal/README, PlayoutPause pp_late_ahead_heard: the first clause has played out
+    # and the next is not synthesized yet; the caller makes a sound, the transport pauses
+    # with nothing to hold back, and resumes. The ledger moves the reply's words by the
+    # pause (_resume: the turn has audio pushed). The TTS used to count the pause into
+    # the playout gap as well -- _play_end moved only if still ahead of the pause -- so
+    # the next clause's words (placed at the context's tally) carried it twice, and the
+    # ledger's cut dropped the words heard after it.
+    from teaport_brain.engine_tts import EngineTTSService
+
+    async def run():
+        tts = EngineTTSService(voice="af_heart")
+
+        async def push(frame, direction=FrameDirection.DOWNSTREAM):
+            pass
+
+        tts.push_frame = push
+        tts._ctx_audio_secs["c"] = 1.0           # the first clause's audio
+        tts._play_end = time.monotonic()         # ... just played out: an underrun
+        await tts.process_frame(PlayoutPauseFrame(paused=True), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.3)
+        await tts.process_frame(PlayoutPauseFrame(paused=False), FrameDirection.UPSTREAM)
+        tts._note_playout("c", 0.5, mid_sentence=False)   # the next clause, at once
+        assert tts._ctx_audio_secs["c"] < 1.05, (
+            f"the pause joined the playout gap: the next clause starts at "
+            f"{tts._ctx_audio_secs['c']:.2f}s, and the ledger adds the pause again")
+
+    asyncio.run(run())
+
+
 async def test_no_pause_in_the_last_half_second_of_a_reply():
     async with Rig() as rig:
         await rig.speak()

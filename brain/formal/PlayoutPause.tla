@@ -32,10 +32,11 @@
 (* underrun: the LLM's next sentence is slow). The TTS places its words at  *)
 (* the context's audio so far plus the playout gap it saw (_note_playout,   *)
 (* on its own clock, which stands still while playout is stopped).          *)
-(* TTSGAP = "shipped" -- _freeze_playout moves its _play_end by the stop    *)
-(*                       only when that was still in the future at the stop.*)
-(* TTSGAP = "moved"   -- PROPOSED, not code: it always moves it, so a gap   *)
-(*                       never includes stop time.                          *)
+(* TTSGAP = "ahead" -- before the fix: _freeze_playout moved its _play_end *)
+(*                      by the stop only when that was still in the future *)
+(*                      at the stop.                                        *)
+(* TTSGAP = "moved" -- as shipped: it always moves it, so a gap never       *)
+(*                      includes stop time.                                 *)
 (*                                                                          *)
 (* Part 2, the TTS. A reply hold (reply_hold.py) and a playout pause each   *)
 (* stop playout; the two can overlap. engine_tts._freeze_playout freezes its *)
@@ -52,10 +53,10 @@
 (*                    stop began (a pause mid-reply).                       *)
 (* FIRSTAUDIO = "any"    -- it may come during the stop (a hold armed at the *)
 (*                    commit, before the reply's first audio).              *)
-(* ANCHOR = "stop"  -- as shipped: an ended context's anchor moves by the   *)
-(*                    whole stop (`now - then`).                            *)
-(* ANCHOR = "audio" -- PROPOSED, not code: by the stop since its first      *)
-(*                    audio, as the in-progress path (_ctx_held_ns) does.   *)
+(* ANCHOR = "stop"  -- before the fix: an ended context's anchor moved by   *)
+(*                    the whole stop (`now - then`).                        *)
+(* ANCHOR = "audio" -- as shipped: by the stop since its first audio        *)
+(*                    (_frozen_from), as the in-progress path does.         *)
 (***************************************************************************)
 EXTENDS Integers, Sequences
 
@@ -70,7 +71,7 @@ CONSTANTS PART,       \* 1: the ledger; 2: the TTS's freeze (checked separately)
           ANCHOR
 
 ASSUME /\ LEDGER \in {"unaware", "noShift", "shipped"} /\ SLOT \in {"single", "set"}
-       /\ TTSGAP \in {"shipped", "moved"} /\ LATE \in 0..(A - 1)
+       /\ TTSGAP \in {"ahead", "moved"} /\ LATE \in 0..(A - 1)
        /\ FIRSTAUDIO \in {"before", "any"} /\ ANCHOR \in {"stop", "audio"}
 
 A1 == A - LATE                      \* the first clause: emitted at 0
@@ -100,7 +101,7 @@ VARIABLES
     clk,               \* part 2's own clock
     holdOn, pauseOn,   \* the two sources currently stopping playout
     sources,           \* engine_tts._freezes (set design)
-    frozenAt,          \* -1, or _frozen_clock: when the freeze began
+    frozenAt,          \* -1, or when the freeze began (_frozen_from is Max(it, audioAt))
     audioAt,           \* -1, or when the stopped reply's first audio was queued
     ctxEnded,          \* that reply's context has ended (its anchor is _prev_audio_end_ns)
     stopped,           \* ground truth: ticks playout was stopped with its audio waiting
@@ -234,10 +235,11 @@ Stop(src) ==
     /\ UNCHANGED <<clk, audioAt, ctxEnded, stopped, moved>>
 
 \* _freeze_playout(src, False): when nothing else freezes (set), or on any end
-\* (single), the anchor moves: an ended context's _prev_audio_end_ns by the time
-\* since the freeze began (`now - then`); one still in progress by the time since
-\* max(then, its baseline) (_ctx_held_ns, added at its end). No audio yet: nothing
-\* of it is anchored, nothing moves.
+\* (single), the anchor moves by the time since max(then, its first audio)
+\* (_frozen_from): an ended context's _prev_audio_end_ns now, one still in progress
+\* at its end (_ctx_held_ns). Before the fix (ANCHOR = "stop") an ended one moved by
+\* the time since the freeze began (`now - then`). No audio yet: nothing of it is
+\* anchored, nothing moves.
 Delta == IF audioAt < 0 THEN 0
          ELSE IF ANCHOR = "stop" /\ ctxEnded THEN clk - frozenAt
          ELSE clk - Max(frozenAt, audioAt)
