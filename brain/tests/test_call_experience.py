@@ -259,7 +259,10 @@ async def test_the_brain_lets_it_ring_then_answers_with_the_greeting_ready():
         # Ready-made: TTS alone stands between the answer and it (~0.2 s here), well
         # inside the completion it would otherwise wait for. Room for a loaded runner.
         assert onset is not None and onset < 3.0, f"greeting {onset} s after the answer"
-        assert GREETING_REPLY in " ".join(rig.engine.tts_texts), rig.engine.tts_texts
+        # The whole greeting: its second sentence goes to the TTS after the first's
+        # audio has started, so on a loaded runner it is not there yet at the onset.
+        assert await wait_until(lambda: GREETING_REPLY in " ".join(rig.engine.tts_texts)), (
+            rig.engine.tts_texts)
         assert len(rig.engine.llm_requests) == 1, (
             "the greeting was asked for again after the answer")
         await call.hangup()
