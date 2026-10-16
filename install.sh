@@ -461,14 +461,15 @@ BRAIN_LEGACY="$PREFIX/venv.pre-uv"
 SRC_DIR=""
 # What --only brain installs from a checkout, and so all its freshness check looks at:
 # the brain (brain_stage), the CLI (brain_stage_tools), the busy lamp's udev rule
-# (install_busy_lamp) — and install.sh itself. The installer is not just the runner: how
-# the brain is built lives in it (uv's flags and pin: a checkout one commit behind the
+# (install_busy_lamp), the resolver's serve-stale drop-in (install_dns_resilience) — and
+# install.sh itself. The installer is not just the runner: how the brain is built
+# lives in it (uv's flags and pin: a checkout one commit behind the
 # --reinstall-package fix installed the PREVIOUS build's code under the new revision),
 # and so does some of what --only brain writes (the busy lamp's group and tmpfiles line,
 # sip_brain_detach's and migrate_brain_dropins' unit edits). The price: a commit that
 # touches install.sh for the engine or SIP alone also asks for a git pull first.
 # Keep in step with those functions (test_install_brain_only.py checks the paths).
-BRAIN_ONLY_PATHS=(brain cli packaging/xvf3800 install.sh)
+BRAIN_ONLY_PATHS=(brain cli packaging/xvf3800 packaging/resolved install.sh)
 # brain_src_fetch — fetch the checkout's upstream without ever stopping at a prompt:
 # GIT_TERMINAL_PROMPT for https, ssh BatchMode for ssh, and a timeout for anything else.
 # BatchMode only when neither the environment nor the repo names its own ssh command —
@@ -1018,6 +1019,32 @@ install_busy_lamp() {
   rm -f "$tmp"
   SUDO systemd-tmpfiles --create "$tmpfiles" \
     || warn "busy lamp: systemd-tmpfiles failed — /run/teaport-busy-lamp appears at the next boot"
+}
+
+# DNS that keeps answering through a stalled router. The brain opens connections to
+# its language model by name, and a home router's DNS can stop answering for tens of
+# seconds: each new connection then waits on a lookup, and the caller hears nothing
+# (live 2026-10-15, three turns lost). systemd-resolved's serve-stale answers a name it
+# resolved within the last day from the cache once the router's first attempt times
+# out. The network's DNS server stays the one asked first: nothing here overrides it.
+# Written, and the resolver reloaded, only when the drop-in changes, so a brain update
+# does not flush the cache every time. Skipped where systemd-resolved is not running.
+RESOLVED_DROPIN=/etc/systemd/resolved.conf.d/60-teaport-serve-stale.conf
+install_dns_resilience() {
+  local src
+  src="$(dirname "$SRC_DIR")/packaging/resolved/60-teaport-serve-stale.conf"
+  if [ ! -f "$src" ]; then src="$HERE/packaging/resolved/60-teaport-serve-stale.conf"; fi
+  if [ ! -f "$src" ] || ! systemctl is-active --quiet systemd-resolved 2>/dev/null; then
+    log "dns: no drop-in source or no systemd-resolved — skipped (lookups go to the network's DNS as before)"
+    return 0
+  fi
+  if cmp -s "$src" "$RESOLVED_DROPIN" 2>/dev/null; then
+    return 0
+  fi
+  log "dns: serve-stale drop-in -> $RESOLVED_DROPIN (a stalled router's DNS no longer blocks the brain's lookups)"
+  SUDO install -D -m 0644 -o root -g root "$src" "$RESOLVED_DROPIN"
+  SUDO systemctl try-reload-or-restart systemd-resolved \
+    || warn "dns: reloading systemd-resolved failed — the drop-in applies from the next boot"
 }
 
 # Which agent hosts the realtime-voice plugin: "nemoclaw" (OpenClaw inside NVIDIA's docker
@@ -2334,6 +2361,7 @@ main_brain_only() {
   brain_swap "$STAGED" --auto-rollback
   sip_brain_retire
   install_busy_lamp   # only now: the swap has been verified
+  install_dns_resilience
   brain_prune
   log "done — brain updated from uv.lock$([ "$DRY_RUN" = 1 ] && echo ' (dry-run: nothing changed)')"
   printf '  undo:    install.sh --rollback brain\n'
@@ -2375,6 +2403,7 @@ main() {
   phase_engine
   phase_brain
   install_busy_lamp
+  install_dns_resilience
   detect_agent
   phase_agent
   phase_credentials

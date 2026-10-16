@@ -180,7 +180,7 @@ ONLY_BRAIN_STUBS = r'''
 STAGED=/opt/teaport/venvs/new
 systemctl() { [ "$1" = cat ]; }   # the brain unit is installed
 for f in check_brain_source phase_brain sip_brain_detach brain_swap sip_brain_retire \
-         install_busy_lamp brain_prune; do eval "$f() { echo STEP $f; }"; done
+         install_busy_lamp install_dns_resilience brain_prune; do eval "$f() { echo STEP $f; }"; done
 '''
 
 
@@ -214,6 +214,47 @@ def test_only_brain_updates_a_live_venv_a_pre_uv_one_and_a_dangling_link():
     for venv in ("link", "dir", "dangling"):
         rc, out = _brain_only(tempdir("teaport-only-"), venv=venv)
         assert rc == 0 and "no brain venv" not in out and "STEP brain_swap" in out, (venv, out)
+        # The resolver's drop-in rides the brain update too, after the verified swap.
+        assert out.index("STEP brain_swap") < out.index("STEP install_dns_resilience"), out
+
+
+# --- the resolver's serve-stale drop-in ------------------------------------------------
+
+def _dns(tmp, resolved_active=True):
+    """install_dns_resilience against a temp drop-in path; systemctl and sudo recorded."""
+    src = pathlib.Path(tmp, "src/packaging/resolved/60-teaport-serve-stale.conf")
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_text((INSTALL.parent / "packaging/resolved/60-teaport-serve-stale.conf").read_text())
+    dropin = pathlib.Path(tmp, "etc/resolved.conf.d/60-teaport-serve-stale.conf")
+    active = 0 if resolved_active else 3
+    script = (f'SRC_DIR="{tmp}/src/brain"; HERE="{tmp}/none"; RESOLVED_DROPIN="{dropin}"\n'
+              f'systemctl() {{ printf "%s\\n" "$*" >> "$T/systemctl.log"; '
+              f'[ "$1" = is-active ] && return {active}; return 0; }}\n'
+              'SUDO() { printf "%s\\n" "$*" >> "$T/sudo.log"; '
+              '[ "$1" = install ] && { mkdir -p "$(dirname "${@: -1}")"; cp "${@: -2:1}" "${@: -1}"; }; '
+              'return 0; }\n'
+              'install_dns_resilience; echo DONE\n')
+    return _run(tmp, script, ["install_dns_resilience"]), dropin
+
+
+def test_the_dns_drop_in_is_written_once_and_the_resolver_reloaded_only_then():
+    tmp = tempdir("teaport-dns-")
+    (rc, out), dropin = _dns(tmp)
+    assert rc == 0 and "DONE" in out, out
+    assert "StaleRetentionSec=1d" in dropin.read_text()
+    log = pathlib.Path(tmp, "systemctl.log").read_text()
+    assert "try-reload-or-restart systemd-resolved" in "".join(_sudo_calls(tmp)), _sudo_calls(tmp)
+    # A second brain update with the same drop-in touches nothing: the cache stays.
+    pathlib.Path(tmp, "sudo.log").unlink()
+    (rc, out), _ = _dns(tmp)
+    assert rc == 0 and _sudo_calls(tmp) == [], (_sudo_calls(tmp), out)
+    assert "is-active" in log
+
+
+def test_the_dns_drop_in_is_skipped_without_systemd_resolved():
+    tmp = tempdir("teaport-dns-")
+    (rc, out), dropin = _dns(tmp, resolved_active=False)
+    assert rc == 0 and "skipped" in out and not dropin.exists() and _sudo_calls(tmp) == [], out
 
 
 # --- the freshness check looks at what is installed ----------------------------------
@@ -233,6 +274,7 @@ def _behind(touching):
     _git(tmp, "init", "--bare", up)
     _git(tmp, "clone", up, other)
     for f in ("brain/uv.lock", "cli/teaport", "packaging/xvf3800/60-teaport-xvf3800.rules",
+              "packaging/resolved/60-teaport-serve-stale.conf",
               "packaging/wifi-setup/x", "docs/x.md", "plugin/x.ts", "install.sh"):
         p = pathlib.Path(other, f)
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -268,12 +310,12 @@ def test_only_brain_is_not_refused_for_upstream_commits_it_does_not_install():
 def test_only_brain_is_refused_for_upstream_commits_to_what_it_installs():
     # install.sh too: how the brain is built, and some of what --only brain writes, is in it.
     for touching in ("brain/uv.lock", "cli/teaport", "packaging/xvf3800/60-teaport-xvf3800.rules",
-                     "install.sh"):
+                     "packaging/resolved/60-teaport-serve-stale.conf", "install.sh"):
         tmp, here = _behind(touching)
         rc, out = _check(tmp, here, "brain")
         assert rc != 0, (touching, out)
         assert ("1 commit(s) behind origin/main in what --only brain installs "
-                "(brain cli packaging/xvf3800 install.sh)") in out, (touching, out)
+                "(brain cli packaging/xvf3800 packaging/resolved install.sh)") in out, (touching, out)
 
 
 def test_uncommitted_changes_in_any_installed_path_are_named():
@@ -299,12 +341,13 @@ _READS = {
 def test_every_checkout_path_only_brain_reads_is_in_its_freshness_check():
     paths = re.findall(r"\((.*)\)", _line("BRAIN_ONLY_PATHS="))[0].split()
     read = set()
-    for fn in ("brain_stage", "brain_stage_tools", "install_busy_lamp"):
+    for fn in ("brain_stage", "brain_stage_tools", "install_busy_lamp", "install_dns_resilience"):
         body = _fn(fn)
         for pattern, base in _READS.items():
             read.update(base + m for m in re.findall(pattern, body))
     # Found at all: a respelled reference must not make this pass by matching nothing.
-    assert {"cli/teaport", "brain/uv.lock", "packaging/xvf3800/60-teaport-xvf3800.rules"} <= read, read
+    assert {"cli/teaport", "brain/uv.lock", "packaging/xvf3800/60-teaport-xvf3800.rules",
+            "packaging/resolved/60-teaport-serve-stale.conf"} <= read, read
     uncovered = sorted(r for r in read if not any(r == p or r.startswith(p + "/") for p in paths))
     assert not uncovered, f"read by --only brain but not in BRAIN_ONLY_PATHS: {uncovered}"
     assert "install.sh" in paths
