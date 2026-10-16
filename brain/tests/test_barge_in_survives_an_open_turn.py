@@ -65,6 +65,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     ENDPOINT_STOP_SECS,
     INTERRUPT_MIN_WORDS,
     SMARTTURN_STOP_SECS,
+    LateStartTurnStopStrategy,
     keep_barge_in_reachable,
 )
 
@@ -311,6 +312,66 @@ async def test_the_stock_controller_still_wedges():
             "the stock controller closed the stranded turn on its own; the "
             "user_turn_stop_timeout is supposed to be starved by the continuing speech"
         )
+
+
+async def _refused_stop_after_an_inference(speculation) -> int:
+    """Open a turn, run its inference (speculative or not), have its stop refused while
+    the user speaks, then let the user go quiet. How many stops reached the turn: the
+    wrapper re-applies a refused stop only when the turn's words were committed."""
+    from pipecat.turns.user_stop.base_user_turn_stop_strategy import UserTurnStoppedParams
+    rig = Rig(patched=True)
+    async with running_controller(rig.controller, sample_rate=SAMPLE_RATE):
+        await rig.controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        await rig.controller.process_frame(
+            InterimTranscriptionFrame(UTTERANCE, "u", "t", None))
+        assert rig.starts, "the turn did not open"
+        strategy = rig.controller._user_turn_strategies.stop[0]
+        await rig.controller._trigger_user_turn_inference_triggered(strategy, speculation)
+        await rig.controller._trigger_user_turn_stop(
+            strategy, UserTurnStoppedParams(enable_user_speaking_frames=True))
+        assert not rig.stops, "the stop was not refused: the user is speaking"
+        await rig.controller.process_frame(
+            VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
+        await asyncio.sleep(0.05)
+        return len(rig.stops)
+
+
+async def test_a_speculative_inference_owes_no_refused_stop():
+    # pipecat 1.9's speculative inference runs on a provisional copy and commits none
+    # of the turn's words. A stop refused after a REAL inference is re-applied at the
+    # next quiet frame; after a speculative one there is nothing to finish, and closing
+    # the turn there would cut the caller off at their next pause.
+    assert await _refused_stop_after_an_inference(None) == 1
+    assert await _refused_stop_after_an_inference(object()) == 0
+
+
+async def test_a_moved_speculation_argument_fails_the_session_build():
+    # The wrapper decides on the speculation argument, so where it sits is checked at
+    # session build: a pipecat that moved it must fail loudly there, not leave every
+    # refused stop unowed with nothing logged.
+    rig = Rig(patched=False)
+
+    async def moved(strategy, params, speculation=None):
+        pass
+    rig.controller._trigger_user_turn_inference_triggered = moved
+    try:
+        keep_barge_in_reachable(rig.controller)
+    except RuntimeError as e:
+        assert "keep_barge_in_reachable" in str(e), e
+    else:
+        raise AssertionError("a moved speculation argument went unnoticed")
+
+
+async def test_a_speculative_inference_is_not_counted_as_a_commit():
+    # LateStartTurnStopStrategy reads its inference count around a final to tell
+    # whether the turn committed; a speculation commits nothing.
+    analyzer = Incomplete(
+        sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=SMARTTURN_STOP_SECS))
+    strategy = LateStartTurnStopStrategy(turn_analyzer=analyzer)
+    await strategy.trigger_user_turn_inference_triggered(speculation=object())
+    assert strategy._inferences == 0
+    await strategy.trigger_user_turn_inference_triggered()
+    assert strategy._inferences == 1
 
 
 def main():

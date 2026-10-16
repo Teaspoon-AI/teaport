@@ -56,6 +56,7 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  #
 from pipecat.utils.time import time_now_iso8601  # noqa: E402
 
 from teaport_brain import tools as tools_mod  # noqa: E402
+from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from teaport_brain.persona import build_system_prompt  # noqa: E402
 from teaport_brain.services import make_llm  # noqa: E402
 
@@ -120,7 +121,7 @@ async def main() -> int:
         [{"role": "system", "content": build_system_prompt("")}],
         tools=tools_mod.build_tools_schema(),
     )
-    aggr = LLMContextAggregatorPair(context)
+    aggr = LLMContextAggregatorPair(context, user_params=user_aggregator_params())
     cap = Capture()
     task = PipelineTask(Pipeline([
         Injector("Please remember that my favorite hobby is rock climbing in the Dolomites."),

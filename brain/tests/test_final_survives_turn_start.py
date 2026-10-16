@@ -150,7 +150,6 @@ async def test_a_turn_started_from_an_interim_keeps_its_in_flight_final():
         user_params=user_aggregator_params(
             # Mirrors gateway_server.py minus the VAD analyzer: turn B in the
             # incident had no VAD events — the VAD went quiet before it started.
-
             user_turn_strategies=UserTurnStrategies(
                 start=[MinWordsUserTurnStartStrategy(min_words=INTERRUPT_MIN_WORDS)],
                 stop=[

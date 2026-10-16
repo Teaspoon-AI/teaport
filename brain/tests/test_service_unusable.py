@@ -121,6 +121,22 @@ async def test_the_pipeline_policy_stays_continue_so_an_llm_error_is_spoken():
         "instead of reaching LLMErrorSpeaker, which exists to speak it and carry on")
 
 
+async def test_the_idle_timeout_counts_speech_not_transcripts():
+    """pipecat 1.9's default adds transcripts and turn starts to the idle timeout's
+    activity, for pipelines without a local VAD. Here the engine decodes room noise
+    into interims, so with that default a session by a TV or on hold music would hold
+    the engine's one STT slot for as long as the noise lasts. The session keeps its own
+    list: speech as the VAD hears it, the bot's, and a held call's keep-alive."""
+    from pipecat.frames.frames import BotSpeakingFrame, UserSpeakingFrame
+    from pipecat.pipeline.worker import IdleFrameObserver
+    from teaport_brain.agent_session import HoldKeepAliveFrame
+    _, session = await _build()
+    idle = [o for o in session.task._observer._observers if isinstance(o, IdleFrameObserver)]
+    assert len(idle) == 1, session.task._observer._observers
+    assert idle[0]._idle_timeout_frames == (BotSpeakingFrame, UserSpeakingFrame,
+                                            HoldKeepAliveFrame), idle[0]._idle_timeout_frames
+
+
 async def test_the_start_budget_covers_the_stt_connect():
     """1.8.0 bounded the StartFrame's trip at 20s and TEARS THE PIPELINE DOWN past it.
 

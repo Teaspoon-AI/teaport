@@ -10,6 +10,7 @@
 # turn from being committed ahead of the reply it cut.
 #
 import asyncio
+import inspect
 import time
 from dataclasses import astuple, dataclass, field
 
@@ -1062,6 +1063,16 @@ def keep_barge_in_reachable(controller) -> None:
     """
     trigger_start = controller._trigger_user_turn_start
     trigger_inference = controller._trigger_user_turn_inference_triggered
+    # _inference below decides on the speculation argument, so its place is checked
+    # here, at session build, rather than trusted: a pipecat that moved it would leave
+    # `speculation is None` never true and every refused finalization unowed -- the
+    # dead barge-in this function exists for, with nothing logged.
+    params = list(inspect.signature(trigger_inference).parameters)
+    if params != ["strategy", "speculation"]:
+        raise RuntimeError(
+            f"pipecat's UserTurnController._trigger_user_turn_inference_triggered takes "
+            f"{params}, not (strategy, speculation): keep_barge_in_reachable needs a "
+            f"new look")
     trigger_stop = controller._trigger_user_turn_stop
     process_frame = controller.process_frame
 
@@ -1070,9 +1081,10 @@ def keep_barge_in_reachable(controller) -> None:
     # that, to be re-applied at the next quiet moment.
     turn = {"inference": False, "owed": None}
 
-    # Each wrapper passes its arguments through as given: they are pipecat's private
+    # _start and _stop pass their arguments through as given: they are pipecat's private
     # signatures, and 1.9 grew _trigger_user_turn_inference_triggered a `speculation`
-    # argument that a fixed (strategy) wrapper turned into a TypeError on every turn.
+    # argument that a fixed (strategy) wrapper turned into a TypeError on every turn,
+    # swallowed by the event handler. _inference reads its own, checked above.
     async def _start(strategy, *args, **kwargs):
         was_open = controller._user_turn
         await trigger_start(strategy, *args, **kwargs)
@@ -1082,9 +1094,9 @@ def keep_barge_in_reachable(controller) -> None:
         if not was_open and controller._user_turn:
             turn["inference"], turn["owed"] = False, None
 
-    async def _inference(strategy, speculation=None, *args, **kwargs):
+    async def _inference(strategy, speculation=None):
         was_open = controller._user_turn
-        await trigger_inference(strategy, speculation, *args, **kwargs)
+        await trigger_inference(strategy, speculation)
         # A speculative inference (1.9+) runs on a provisional copy and commits none of
         # the turn's words: a stop refused after one owes nothing.
         if was_open and speculation is None:
@@ -1147,7 +1159,7 @@ def keep_barge_in_reachable(controller) -> None:
 # order armed the reply hold (reply_hold.py) ahead of the turn's own interruption, which
 # it then read as a dropped reply: a false TurnMerge for the next turn.
 #
-# CutReplyFence restores the order. A commit (push_aggregation) and a speculative reply's
+# CutReplyFence restores the order. A commit (_push_aggregation) and a speculative reply's
 # snapshot (Speculator.start, whose corrector pass consumes the ledger's cut) wait until
 # every InterruptionFrame sent down ahead of them has passed the assistant aggregator.
 # Only an interruption in flight is waited on: ~70 ms over a playing reply, a few ms
@@ -1161,9 +1173,12 @@ def keep_barge_in_reachable(controller) -> None:
 # system frames run on meanwhile. A commit or snapshot at a VAD stop or the silence
 # ceiling runs on the INPUT task, so its audio, VAD and CancelFrame queue behind the
 # wait -- only when an interim opened the turn less than ~70 ms before, and never past
-# the bound. A VAD start handled inside a wait is the refused-finalize shape
-# keep_barge_in_reachable re-applies. Not defensive about what it wraps, as
-# keep_barge_in_reachable is not: a pipecat that renames push_aggregation raises at
+# the bound. The controller's stop watchdog commits from its own task, and the session's
+# end (EndFrame, a hangup's CancelFrame) commits whatever words are left: with an
+# interruption in flight those wait too, up to the same bound -- a hangup can end
+# 0.5 s later, never hang. A VAD start handled inside a wait is the refused-finalize
+# shape keep_barge_in_reachable re-applies. Not defensive about what it wraps, as
+# keep_barge_in_reachable is not: a pipecat that renames _push_aggregation raises at
 # session build, one that renames _aggregation at the first commit.
 
 # The longest a commit (or a snapshot) waits. ~70 ms is the live crossing; this is a
