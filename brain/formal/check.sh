@@ -174,11 +174,12 @@ run UserTurn.tla ut_post_asWritten_sip_noanswerunderspeech  "(expected: FAILS No
 run UserTurn.tla ut_post_vadDrop_nolosttoolanswer           "(expected: FAILS NoLostToolAnswer — the issue's VAD filter: dropped under a cough, no turn ever reads the result)"
 run UserTurn.tla ut_post_capDiscard_noanswerunderspeech     "(expected: FAILS NoAnswerUnderSpeech — discarding at the TTS hold's cap: the hold ends at the VAD stop, before the words)"
 run UserTurn.tla ut_post_lullAtStop_noanswerunderspeech     "(expected: FAILS NoAnswerUnderSpeech — a queue that delivers at the VAD stop: the words come after it)"
+run UserTurn.tla ut_post_gateNoCommit_noholdoncommittedspeech "(expected: FAILS NoHoldOnCommittedSpeech — the gate as first written: a turn of two segments, its words committed, still held for a release window with nobody talking)"
 run UserTurn.tla ut_post_gate_talk_all                      "(expected: holds — FollowupGate holds the answer while speech is pending, drops it at the turn: Talk)"
 run UserTurn.tla ut_post_gate_sip_all                       "(expected: holds — the same on SIP as shipped, with every property ut_shipped_all checks)"
 run UserTurn.tla ut_post_gate_timed_noanswerunderspeech     "(expected: FAILS NoAnswerUnderSpeech — the timers as they are: the ACCEPTED RESIDUAL, words later than the release or speech past both caps)"
 run UserTurn.tla ut_post_gate_timed_rest                    "(expected: holds — the timers as they are: every other property, NoLostToolAnswer included)"
-run UserTurn.tla ut_post_asWritten_noskippedanswer          "(expected: FAILS NoSkippedAnswer — pipecat's skip for an open turn whose commit already ran: a result nothing answers (not #17's; see README))"
+run UserTurn.tla ut_post_asWritten_noskippedanswer          "(expected: FAILS NoSkippedAnswer — pipecat's skip for an open turn whose commit already ran: a result nothing answers (#196, not #17's fix))"
 run UserTurn.tla ut_shipped_all                      "(expected: holds — SIP as shipped, speculation on, early finals, tool rounds: every property; a commit with the gate armed drops the unplayed reply and merges)"
 run UserTurn.tla ut_shipped_timed                     "(expected: holds — the same with the hold's timers as they are (release, cap): everything but the accepted NoStaleReply residual)"
 echo

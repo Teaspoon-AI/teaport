@@ -343,9 +343,11 @@ VARIABLES
                      \* was asked under, which then started their turn
     ansLost,         \* monitor: the answer was discarded and no turn of the caller's read
                      \* the result instead (their speech was word-less)
-    skipLost         \* monitor: pipecat skipped the push for an open turn whose commit
-                     \* had already read the context without the result
-postVars == <<answer, pend, gpend, asUnder, ansOver, ansLost, skipLost>>
+    skipLost,        \* monitor: pipecat skipped the push for an open turn whose commit
+                     \* had already read the context without the result (#196)
+    gstale           \* ghost: the gate's view is pending on speech whose words a commit
+                     \* has already taken (gateNoCommit)
+postVars == <<answer, pend, gpend, asUnder, ansOver, ansLost, skipLost, gstale>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
@@ -360,6 +362,8 @@ vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
           holdVars, pauseVars, fenceVars, toolVars, postVars>>
 
 Gated == HOLD /= "none"
+\* FollowupGate's designs for the answer after a tool (#17, POSTTOOL).
+Gates == {"gate", "gateNoCommit"}
 
 \* What a drop (an interruption reaching the gate) does to the reply's tool round. A
 \* call still running in the context is cancelled (pipecat's cancel_on_interruption, the
@@ -422,7 +426,7 @@ Init ==
     /\ tool = "none" /\ lateTool = FALSE /\ goodbyeLost = FALSE /\ orphanCall = FALSE
     /\ lateCall = "none" /\ unsettled = FALSE /\ readUnsettled = FALSE
     /\ answer = "none" /\ pend = FALSE /\ gpend = FALSE /\ asUnder = FALSE /\ ansOver = FALSE
-    /\ ansLost = FALSE /\ skipLost = FALSE
+    /\ ansLost = FALSE /\ skipLost = FALSE /\ gstale = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -450,6 +454,7 @@ HoldOnSpeech ==
 PendOnSpeech ==
     /\ pend' = (pend \/ POSTTOOL /= "off")
     /\ gpend' = (gpend \/ POSTTOOL /= "off")
+    /\ gstale' = FALSE                         \* what the gate waits for is real again
     /\ UNCHANGED <<answer, asUnder, ansOver, ansLost, skipLost>>
 
 (***************************************************************************)
@@ -524,7 +529,7 @@ StartTurn ==
                    cutAfterCommit>>
     \* The pending speech was words. An answer playing that was asked under it is the
     \* stale answer, cut only now. One discarded under it is read by this turn.
-    /\ pend' = FALSE /\ gpend' = FALSE
+    /\ pend' = FALSE /\ gpend' = FALSE /\ gstale' = FALSE
     /\ ansOver' = (ansOver \/ (answer = "playing" /\ asUnder))
     /\ answer' = IF answer = "dropped" THEN "none" ELSE answer
     /\ UNCHANGED <<asUnder, ansLost, skipLost>>
@@ -568,7 +573,7 @@ CutLands ==
     \* one being synthesized is discarded by the TTS, one playing is cut.
     /\ answer' = IF answer \in {"due", "held", "asked", "playing"} THEN "none" ELSE answer
     /\ asUnder' = (asUnder /\ answer \notin {"due", "held", "asked", "playing"})
-    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost>>
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<left, synthDone, answerLost, stopHeard, cutAfterCommit>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight, owed, turns,
                    spec, specGen, specWords, gen, missedBargeIn, staleReply>>
@@ -843,9 +848,18 @@ Appended(mp, t) ==
     /\ UNCHANGED goodbyeLost
 
 \* Speech that began in the open turn has its words in this commit: none are pending.
+\* FollowupGate learns it from TurnCommitMark (every commit of an open turn), and lets go
+\* of speech that began before it -- ordered by frame id, not by arrival, since the
+\* commit and the caller's VAD frames reach it by different paths. gateNoCommit is the
+\* gate as first written (cb5fbb8): only a turn start or its timer ended its view, so a
+\* turn of two segments ("what's the time ... in Paris") held its tool's answer a
+\* release window with nobody talking.
 PendCommitted ==
     /\ pend' = FALSE
-    /\ UNCHANGED <<answer, gpend, asUnder, ansOver, ansLost, skipLost>>
+    /\ IF POSTTOOL = "gateNoCommit"
+         THEN gstale' = (gstale \/ gpend) /\ UNCHANGED gpend
+         ELSE gpend' = FALSE /\ gstale' = FALSE
+    /\ UNCHANGED <<answer, asUnder, ansOver, ansLost, skipLost>>
 
 CommitCore ==
     /\ spec' = FALSE
@@ -1051,7 +1065,7 @@ Wordless ==
     /\ pend' = FALSE /\ asUnder' = FALSE
     /\ ansLost' = (ansLost \/ answer = "dropped")
     /\ answer' = IF answer = "dropped" THEN "none" ELSE answer
-    /\ UNCHANGED <<gpend, ansOver, skipLost>>
+    /\ UNCHANGED <<gpend, ansOver, skipLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, held, paused, mergePending, unanswered, endQueued,
@@ -1195,7 +1209,7 @@ ToolDone ==
     \* answer is the reply gate's: not modelled here, see the README).
     /\ \E sync \in (IF POSTTOOL = "off" \/ paused THEN {FALSE} ELSE BOOLEAN) :
          answer' = IF sync THEN "due" ELSE answer
-    /\ UNCHANGED <<pend, gpend, asUnder, ansOver, ansLost, skipLost>>
+    /\ UNCHANGED <<pend, gpend, asUnder, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
@@ -1209,7 +1223,7 @@ BotStop ==
     /\ botSpeaking' = FALSE
     /\ answer' = IF answer = "playing" THEN "none" ELSE answer
     /\ asUnder' = (asUnder /\ answer /= "playing")
-    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost>>
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -1266,7 +1280,7 @@ PushAnswer ==
     /\ IF userTurn
          THEN /\ answer' = "none" /\ asUnder' = FALSE
               /\ skipLost' = (skipLost \/ inference)
-         ELSE /\ LET holdIt == \/ POSTTOOL = "gate" /\ (userSpeaking \/ gpend)
+         ELSE /\ LET holdIt == \/ POSTTOOL \in Gates /\ (userSpeaking \/ gpend)
                                \/ POSTTOOL = "lullAtStop" /\ userSpeaking
                  IN  IF POSTTOOL = "vadDrop" /\ userSpeaking
                        THEN answer' = "dropped" /\ asUnder' = FALSE
@@ -1274,7 +1288,7 @@ PushAnswer ==
                        THEN answer' = "held" /\ asUnder' = FALSE
                      ELSE answer' = "asked" /\ asUnder' = pend
               /\ UNCHANGED skipLost
-    /\ UNCHANGED <<pend, gpend, ansOver, ansLost>>
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -1289,7 +1303,7 @@ ReleaseA ==
     /\ answer = "held" /\ ~userSpeaking
     /\ POSTTOOL = "lullAtStop" \/ ~gpend
     /\ answer' = "asked" /\ asUnder' = pend
-    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost>>
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -1304,8 +1318,8 @@ ReleaseA ==
 GateQuiet ==
     /\ ~endQueued
     /\ gpend /\ ~userSpeaking /\ (~WORDS_IN_TIME \/ ~pend)
-    /\ gpend' = FALSE
-    /\ IF POSTTOOL = "gate" /\ answer = "held"
+    /\ gpend' = FALSE /\ gstale' = FALSE
+    /\ IF POSTTOOL \in Gates /\ answer = "held"
          THEN answer' = "asked" /\ asUnder' = pend
          ELSE UNCHANGED <<answer, asUnder>>
     /\ UNCHANGED <<pend, ansOver, ansLost, skipLost>>
@@ -1320,8 +1334,12 @@ GateQuiet ==
 CapA ==
     /\ ~endQueued
     /\ answer = "held" /\ ~WORDS_IN_TIME
-    /\ answer' = "asked" /\ asUnder' = pend
-    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost>>
+    \* A turn open by then (its start reached the gate, its interruption not yet):
+    \* that turn's commit reads the result, so the cap drops the answer rather than
+    \* ask for a second completion.
+    /\ IF userTurn THEN answer' = "none" /\ asUnder' = FALSE
+                   ELSE answer' = "asked" /\ asUnder' = pend
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
@@ -1336,7 +1354,7 @@ CapA ==
 StartAnswer ==
     /\ answer' = "playing" /\ botSpeaking' = TRUE
     /\ reply' = FALSE /\ armed' = FALSE /\ unanswered' = 0
-    /\ UNCHANGED <<pend, gpend, asUnder, ansOver, ansLost, skipLost>>
+    /\ UNCHANGED <<pend, gpend, asUnder, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<held, paused, resumed, mergePending, endQueued, replyOverResume,
@@ -1361,7 +1379,7 @@ TtsCap ==
     /\ AnswerReady /\ userSpeaking /\ ~WORDS_IN_TIME
     /\ IF POSTTOOL = "capDiscard"
          THEN /\ answer' = "dropped" /\ asUnder' = FALSE
-              /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost>>
+              /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
               /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                              stopInFlight, owed, turns, spec, specGen, specWords, gen,
                              missedBargeIn, staleReply>>
@@ -1503,8 +1521,12 @@ NoAnswerUnderSpeech == ~ansOver
 NoLostToolAnswer == ~ansLost
 
 \* pipecat's skip for an open turn never strands a result: the turn's commit is still
-\* to come.
+\* to come. Fails as pipecat is (#196): not #17's, and not fixed by its gate.
 NoSkippedAnswer == ~skipLost
+
+\* The gate never holds the answer on speech whose words a commit has already taken:
+\* with nobody talking it is not waiting for anything.
+NoHoldOnCommittedSpeech == ~(answer = "held" /\ gstale)
 NoTailElapsed == ~wouldEnd
 
 TypeOK ==
@@ -1542,9 +1564,10 @@ TypeOK ==
     /\ CALLS \in {"asWritten", "dropAbove", "settleAtCommit", "dropAtAggregator"}
     /\ lateCall \in {"none", "above", "atAgg"}
     /\ unsettled \in BOOLEAN /\ readUnsettled \in BOOLEAN
-    /\ POSTTOOL \in {"off", "asWritten", "vadDrop", "capDiscard", "lullAtStop", "gate"}
+    /\ POSTTOOL \in {"off", "asWritten", "vadDrop", "capDiscard", "lullAtStop", "gate",
+                     "gateNoCommit"}
     /\ answer \in {"none", "due", "held", "asked", "playing", "dropped"}
     /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
-    /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN
+    /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
     /\ (POSTTOOL = "off" => answer = "none" /\ ~pend /\ ~gpend)
 =============================================================================
