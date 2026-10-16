@@ -17,6 +17,20 @@
 # LLM frames propagate downstream through the whole pipeline, so all three activity
 # signals are visible at that one spot.
 #
+# THE ANSWER AFTER A TOOL (#17). The gate is also the one door for the completion a sync
+# tool's result asks for. pipecat's LLMAssistantAggregator pushes it UPSTREAM as an
+# LLMContextFrame once the result lands (deferred to BotStoppedSpeaking while the bot is
+# audible), and only `if not self._user_speaking` -- the user TURN, which here starts
+# only once the caller's words are transcribed (MinWords). A caller who has started
+# talking again (the VAD) without words yet gets the answer asked under them, against a
+# context without what they are saying; the TTS holds it to their VAD stop, it plays
+# there, their words then cut it, and their turn asks the model again. The gate sits
+# directly above that aggregator's push, so it HOLDS the frame while caller speech is
+# pending -- from its VAD start until a turn starts (then it is DROPPED: that turn's
+# commit reads the result, already in the context) or until RELEASE_SECS after the VAD
+# stop with no turn (a cough: it goes on). Nothing is held while the caller is silent.
+# brain/formal/UserTurn.tla, POSTTOOL = "gate"; the rejected designs are rows there too.
+#
 import asyncio
 import time
 
@@ -25,6 +39,8 @@ from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
+    CancelFrame,
+    EndFrame,
     Frame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
@@ -34,13 +50,18 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     OutputAudioRawFrame,
+    StopFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.reply_hold import MAX_SECS as _ANSWER_MAX_SECS
+from teaport_brain.reply_hold import RELEASE_SECS as _ANSWER_RELEASE_SECS
 from teaport_brain.settings import setting
 
 # How long the conversation must stay quiet before a window counts (rejects
@@ -264,7 +285,9 @@ class FollowupGate(FrameProcessor):
     never reported as turn-free."""
 
     def __init__(self, quiet_secs: float = _QUIET_SECS, max_wait: float = _MAX_WAIT,
-                 claim_secs: float = _CLAIM_SECS):
+                 claim_secs: float = _CLAIM_SECS,
+                 answer_release_secs: float = _ANSWER_RELEASE_SECS,
+                 answer_max_secs: float = _ANSWER_MAX_SECS):
         super().__init__()
         self._quiet_secs = quiet_secs
         self._max_wait = max_wait
@@ -308,6 +331,18 @@ class FollowupGate(FrameProcessor):
         # note's reaction) waits it out rather than speaking into a held conversation.
         self._unheld = asyncio.Event()
         self._unheld.set()
+        # The answer after a tool (module header, #17). Caller speech is PENDING from its
+        # VAD start until a turn starts or the release timer runs out after its VAD stop:
+        # its words may still come. The answer's push is held while it is.
+        self._answer_release_secs = max(0.0, answer_release_secs)
+        self._answer_max_secs = max(self._answer_release_secs, answer_max_secs)
+        self._vad = False
+        self._speech_pending = False
+        self._speech_timer = None
+        self._held_answer = None
+        self._answer_cap = None
+        self.answers_held = 0
+        self.answers_dropped = 0
 
     @property
     def held(self) -> bool:
@@ -417,9 +452,41 @@ class FollowupGate(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.UPSTREAM:
+            # The assistant aggregator, below, asking for the answer to a tool's result
+            # (nothing else sends a context frame up past here).
+            if self._user:
+                # A turn is open: its commit reads the result. pipecat would not have
+                # pushed this had the turn reached the aggregator before the push left.
+                self.answers_dropped += 1
+                logger.info("FOLLOWUP-GATE: dropped the answer to the tool's result -- the "
+                            "caller's turn is open, and its commit reads the result")
+                return
+            if self._vad or self._speech_pending:
+                self._hold_answer(frame)
+                return
+        elif isinstance(frame, VADUserStartedSpeakingFrame):
+            self._vad = True
+            self._speech_pending = True
+            self._cancel(self._speech_timer)
+            self._speech_timer = None
+        elif isinstance(frame, VADUserStoppedSpeakingFrame):
+            self._vad = False
+            if self._speech_pending:
+                self._cancel(self._speech_timer)
+                self._speech_timer = self.create_task(self._speech_over(),
+                                                      name="followup-gate-speech")
+        elif isinstance(frame, (EndFrame, StopFrame, CancelFrame)):
+            self._drop_answer(None)
+            self._cancel(self._speech_timer)
+            self._speech_timer = None
         if isinstance(frame, UserStartedSpeakingFrame):
             self._user = True
             self.user_heard = True
+            # Its words came: nothing of that speech is pending any more.
+            self._speech_pending = False
+            self._cancel(self._speech_timer)
+            self._speech_timer = None
             self._refresh()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user = False
@@ -473,6 +540,11 @@ class FollowupGate(FrameProcessor):
                 self._turn = False
                 self._refresh()
         elif isinstance(frame, InterruptionFrame):
+            # A held answer goes with it: the turn behind the interruption commits, and
+            # that commit reads the result. (Only what is held here: a push already past
+            # is the LLM's to cancel, or the reset's to drop while still queued.)
+            self._drop_answer("the caller's words started a turn, whose commit reads "
+                              "the result")
             # An interruption kills the in-flight response by definition, and
             # discards any end frame the TTS service was holding.
             self._llm = False
@@ -509,6 +581,61 @@ class FollowupGate(FrameProcessor):
             self._llm = False
             self._refresh()
         await self.push_frame(frame, direction)
+
+    # ------------------------------------------------------------ the answer after a tool
+
+    @staticmethod
+    def _cancel(task) -> None:
+        if task is not None and task is not asyncio.current_task():
+            task.cancel()
+
+    def _hold_answer(self, frame: LLMContextFrame) -> None:
+        # One push per held answer: a newer one asks the same context frame's question
+        # with every result in it, so it replaces the older.
+        first = self._held_answer is None
+        self._held_answer = frame
+        if first:
+            self.answers_held += 1
+            self._answer_cap = self.create_task(self._answer_capped(),
+                                                name="followup-gate-answer-cap")
+            logger.info("FOLLOWUP-GATE: holding the answer to the tool's result -- the "
+                        "caller is talking, and their words may take the turn")
+
+    def _drop_answer(self, why: str | None) -> None:
+        self._cancel(self._answer_cap)
+        self._answer_cap = None
+        if self._held_answer is not None:
+            self._held_answer = None
+            if why is not None:
+                self.answers_dropped += 1
+                logger.info(f"FOLLOWUP-GATE: dropped the held answer -- {why}")
+
+    async def _release_answer(self, why: str) -> None:
+        frame, self._held_answer = self._held_answer, None
+        self._cancel(self._answer_cap)
+        self._answer_cap = None
+        if frame is not None:
+            logger.info(f"FOLLOWUP-GATE: the held answer goes on ({why})")
+            await self.push_frame(frame, FrameDirection.UPSTREAM)
+
+    async def _speech_over(self) -> None:
+        """The release timer: the caller went quiet and no words started a turn."""
+        await asyncio.sleep(self._answer_release_secs)
+        self._speech_timer = None
+        self._speech_pending = False
+        if not self._vad:
+            await self._release_answer(f"no words within {self._answer_release_secs:.1f}s "
+                                       "of the caller stopping")
+
+    async def _answer_capped(self) -> None:
+        await asyncio.sleep(self._answer_max_secs)
+        self._answer_cap = None
+        await self._release_answer(f"hold cap {self._answer_max_secs:.1f}s")
+
+    async def cleanup(self):
+        self._drop_answer(None)
+        self._cancel(self._speech_timer)
+        await super().cleanup()
 
     async def wait_until_delivered(self, start_timeout: float = 10.0) -> None:
         """Wait for the next stretch of activity to start and then finish.

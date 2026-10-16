@@ -929,7 +929,7 @@ min = 0
 default = 1.0
 read = "startup"
 tier = "tuning"
-help = "How long a held reply waits for the caller's words once the line is quiet -- the VAD's stop and the fast onset test's offset, whichever is later -- before it plays anyway. So it is about ENDPOINT_STOP_SECS more than this after the speech ends."
+help = "How long a held reply waits for the caller's words once the line is quiet -- the VAD's stop and the fast onset test's offset, whichever is later -- before it plays anyway. So it is about ENDPOINT_STOP_SECS more than this after the speech ends. The answer to a tool's result, asked while the caller was talking, waits the same time after their VAD stop (FollowupGate), on every front-end."
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_MAX_S"
@@ -941,7 +941,7 @@ min = 0
 default = 6.0
 read = "startup"
 tier = "tuning"
-help = "The longest a reply is ever held, from the start of the hold, whatever the VAD says. Raised to TEAPORT_REPLY_HOLD_RELEASE_S if set lower."
+help = "The longest a reply is ever held, from the start of the hold, whatever the VAD says. Raised to TEAPORT_REPLY_HOLD_RELEASE_S if set lower. Also caps the hold of a tool's answer under the caller's speech."
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD_ONSET_MAX_S"

@@ -33,6 +33,10 @@ from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
+    EndFrame,
+    UserStartedSpeakingFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
     BotStartedSpeakingFrame,
     OutputAudioRawFrame,
     TTSStartedFrame,
@@ -47,7 +51,7 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMFullResponseStartFrame,
 )
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
-from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  # noqa: E402
 
 from teaport_brain.followup_gate import FollowupGate, TurnCommitMark  # noqa: E402
 
@@ -417,6 +421,124 @@ async def test_a_waiter_that_ran_out_waits_out_a_completion_already_running():
     assert not waiter.done(), "went ahead while a completion was running"
     await _feed(gate, LLMFullResponseEndFrame())
     await asyncio.wait_for(waiter, timeout=0.5)
+
+
+# ---- the answer after a tool (#17): the push held while the caller's speech is pending
+
+class _Top(FrameProcessor):
+    """Above the gate: records what reaches it going up (the LLM's side)."""
+
+    def __init__(self):
+        super().__init__()
+        self.up = []
+
+    async def process_frame(self, frame, direction):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.UPSTREAM:
+            self.up.append(frame)
+        await self.push_frame(frame, direction)
+
+
+class _GateRun:
+    """[top] -> gate, running; the answer's push is sent up into the gate as the
+    assistant aggregator below it sends it."""
+
+    def __init__(self, release=0.1, cap=5.0):
+        from pipecat.pipeline.pipeline import Pipeline
+        from pipecat.pipeline.task import PipelineTask
+        self.gate = FollowupGate(quiet_secs=0.01, answer_release_secs=release,
+                                 answer_max_secs=cap)
+        self.top = _Top()
+        self.task = PipelineTask(Pipeline([self.top, self.gate]), cancel_on_idle_timeout=False)
+        self.started = asyncio.Event()
+
+        @self.task.event_handler("on_pipeline_started")
+        async def _started(_t, _f):
+            self.started.set()
+
+    async def __aenter__(self):
+        from pipecat.pipeline.runner import PipelineRunner
+        self._run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(self.task))
+        await asyncio.wait_for(self.started.wait(), 10)
+        return self
+
+    async def __aexit__(self, *exc):
+        if not self._run.done():
+            await self.task.cancel()
+        await self._run
+
+    async def down(self, *frames):
+        """Send frames down and wait until the gate has handled them."""
+        mark = TTSStoppedFrame()                 # any frame the gate passes on
+        seen = asyncio.Event()
+        process = self.gate.process_frame
+
+        async def watching(frame, direction):
+            await process(frame, direction)
+            if frame is mark:
+                seen.set()
+        self.gate.process_frame = watching
+        await self.task.queue_frames([*frames, mark])
+        await asyncio.wait_for(seen.wait(), 5)
+        self.gate.process_frame = process
+
+    async def answer(self):
+        frame = LLMContextFrame(LLMContext([{"role": "user", "content": "q"}]))
+        await self.gate.queue_frame(frame, FrameDirection.UPSTREAM)
+        return frame
+
+    async def until(self, predicate, timeout=5.0):
+        deadline = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < deadline:
+            await asyncio.sleep(0.01)
+        return predicate()
+
+
+async def test_the_answer_passes_at_once_with_nobody_talking():
+    async with _GateRun() as r:
+        frame = await r.answer()
+        assert await r.until(lambda: frame in r.top.up), "held with nobody talking"
+        assert r.gate.answers_held == 0
+
+
+async def test_the_answer_waits_out_speech_that_has_no_words():
+    async with _GateRun(release=0.2) as r:
+        await r.down(VADUserStartedSpeakingFrame())
+        frame = await r.answer()
+        await r.down(VADUserStoppedSpeakingFrame())
+        stopped = time.monotonic()
+        assert await r.until(lambda: frame in r.top.up), "a cough's answer never went on"
+        assert time.monotonic() - stopped >= 0.15, "released before the words could come"
+        assert r.gate.answers_held == 1
+
+
+async def test_the_answer_is_dropped_when_the_words_start_a_turn():
+    async with _GateRun(release=0.2) as r:
+        await r.down(VADUserStartedSpeakingFrame())
+        frame = await r.answer()
+        await r.down(VADUserStoppedSpeakingFrame(), UserStartedSpeakingFrame(),
+                     InterruptionFrame())
+        assert not await r.until(lambda: frame in r.top.up, timeout=0.5), (
+            "the answer went on after the caller's turn started")
+        assert r.gate.answers_dropped == 1
+
+
+async def test_an_answer_pushed_into_an_open_turn_is_dropped():
+    async with _GateRun() as r:
+        await r.down(UserStartedSpeakingFrame())
+        frame = await r.answer()
+        assert not await r.until(lambda: frame in r.top.up, timeout=0.3)
+        assert r.gate.answers_dropped == 1
+
+
+async def test_a_session_end_drops_a_held_answer():
+    async with _GateRun(release=0.2) as r:
+        await r.down(VADUserStartedSpeakingFrame())
+        frame = await r.answer()
+        await r.until(lambda: r.gate.answers_held == 1)
+        await r.task.queue_frames([EndFrame()])
+        await asyncio.wait_for(r._run, 5)
+        assert frame not in r.top.up, "a held answer went on into a closing session"
 
 
 def main():
