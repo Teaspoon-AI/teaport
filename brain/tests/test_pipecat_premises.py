@@ -95,8 +95,8 @@ try:  # pipecat 1.9+: speculative inference
 except ImportError:
     UserTurnSpeculation = None
 
-STARTUP_S = 0.3
-SETTLE_S = 0.15
+STARTUP_TIMEOUT_S = 10.0
+STEP_TIMEOUT_S = 5.0
 DOWN, UP = FrameDirection.DOWNSTREAM, FrameDirection.UPSTREAM
 
 
@@ -108,15 +108,22 @@ class NotHere(Exception):
 
 
 class Run:
-    """A PipelineTask over `processors`, running for the `async with` body."""
+    """A PipelineTask over `processors`, running for the `async with` body: entered once
+    the StartFrame has reached the pipeline's sink (every processor has started), never
+    on a guess at how long a runner takes to start."""
 
     def __init__(self, *processors, **task_kwargs):
         self.task = PipelineTask(Pipeline(list(processors)), cancel_on_idle_timeout=False,
                                  **task_kwargs)
+        self.started = asyncio.Event()
+
+        @self.task.event_handler("on_pipeline_started")
+        async def _started(_task, _frame):
+            self.started.set()
 
     async def __aenter__(self):
         self._run = asyncio.create_task(PipelineRunner(handle_sigint=False).run(self.task))
-        await asyncio.sleep(STARTUP_S)
+        await asyncio.wait_for(self.started.wait(), STARTUP_TIMEOUT_S)
         return self
 
     async def __aexit__(self, *exc):
@@ -127,14 +134,51 @@ class Run:
     async def send(self, *frames):
         await self.task.queue_frames(list(frames))
 
+    async def ended(self):
+        """Wait for the pipeline to finish on its own (an EndFrame, a cancel)."""
+        await asyncio.wait_for(asyncio.shield(self._run), STEP_TIMEOUT_S)
 
-async def say(run, *frames):
-    """Send frames one at a time. A turn start resets the user aggregator's own process
-    queue (broadcast_interruption), so a scripted frame queued right behind the
-    transcript that opens the turn would be flushed with it."""
-    for frame in frames:
-        await run.send(frame)
-        await asyncio.sleep(0.05)
+
+class Mark(DataFrame):
+    """A sentinel queued behind the frames under test: by the time a Tap below sees it,
+    every processor above has handled everything queued ahead of it. What a check
+    asserts did NOT happen is asserted after its Mark arrives, never after a sleep."""
+
+
+async def _until(predicate, timeout=None):
+    """Poll `predicate` until it holds or STEP_TIMEOUT_S passes; return its last value.
+    The callers assert on the state themselves, so a timeout fails with their message."""
+    deadline = time.monotonic() + (timeout or STEP_TIMEOUT_S)
+    while not predicate() and time.monotonic() < deadline:
+        await asyncio.sleep(0.01)
+    return predicate()
+
+
+async def _marked(run, tap):
+    """Queue a Mark and wait for it at `tap`."""
+    mark = Mark()
+    await run.send(mark)
+    assert await _until(lambda: any(f is mark for _, f in tap.down)), "the Mark never arrived"
+
+
+def _turn_starts(user):
+    """The user turns the aggregator has started, counted from its own event. The
+    turn start's broadcast_interruption resets the aggregator's process queue first, so
+    a scripted frame is sent only once the count has moved: queued behind the transcript
+    that opens the turn, it would be flushed with the reset."""
+    starts = []
+
+    @user.event_handler("on_user_turn_started")
+    async def _started(_aggregator, _strategy):
+        starts.append(1)
+    return starts
+
+
+async def _open_turn(run, user_starts, text):
+    """Send a final that opens a turn, and wait for the turn to have started."""
+    n = len(user_starts)
+    await run.send(_final(text))
+    assert await _until(lambda: len(user_starts) > n), f"{text!r} opened no turn"
 
 
 def _kinds(tap, direction=DOWN, of=None):
@@ -256,12 +300,6 @@ def _tts(segments=_fake_segments, stop_timeout=None):
     return tts
 
 
-async def _until(predicate, timeout=5.0):
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and not predicate():
-        await asyncio.sleep(0.05)
-
-
 def _of(probe, cls, ctx=None):
     return [(i, f) for i, (_, f) in enumerate(probe.seen) if isinstance(f, cls)
             and (ctx is None or getattr(f, "context_id", None) == ctx)]
@@ -339,6 +377,7 @@ async def check_the_stop_watchdog_is_starved_by_speech_and_resets_the_strategy()
     async with running_controller(controller):
         await controller.user_turn_strategies.start[0].open()
         await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        # A timer that must NOT fire: only a bounded wait can say so -- twice its period.
         await asyncio.sleep(0.7)
         assert controller._user_turn, "the watchdog stopped a turn the user was speaking in"
         await controller.process_frame(VADUserStoppedSpeakingFrame(stop_secs=0.2))
@@ -346,8 +385,8 @@ async def check_the_stop_watchdog_is_starved_by_speech_and_resets_the_strategy()
             await asyncio.sleep(0.1)
             await controller.process_frame(InterimTranscriptionFrame("and", "u", "t"))
         assert controller._user_turn, "transcripts every 0.1 s did not re-arm a 0.3 s watchdog"
-        await asyncio.sleep(0.6)
-        assert not controller._user_turn, "the watchdog never stopped a quiet turn"
+        assert await _until(lambda: not controller._user_turn), (
+            "the watchdog never stopped a quiet turn")
         assert "on_user_turn_inference_triggered" not in events, (
             "the watchdog's stop has no inference ahead of it")
         assert stop.stopped == 1, f"handle_user_turn_stopped ran {stop.stopped}x"
@@ -400,7 +439,8 @@ async def check_a_turn_start_broadcasts_the_interruption():
     top, below = Tap(), Tap()
     async with Run(top, pair.user(), below) as run:
         await run.send(_final("hello there"))
-        await asyncio.sleep(SETTLE_S)
+        await _until(lambda: _kinds(below, DOWN, InterruptionFrame)
+                     and _kinds(top, UP, InterruptionFrame))
     assert _kinds(below, DOWN, InterruptionFrame), "no interruption went down on a turn start"
     assert _kinds(top, UP, InterruptionFrame), "no interruption went up on a turn start"
 
@@ -428,9 +468,11 @@ async def check_the_commit_runs_before_the_finalize_it_may_lose():
             resumed.append(list(_user_msgs(context)))
             await controller.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
     user.push_context_frame = resume_in_the_gap
-    async with Run(user, Tap()) as run:
-        await say(run, _final("hello there"), StopNow())
-        await asyncio.sleep(SETTLE_S)
+    starts, below = _turn_starts(user), Tap()
+    async with Run(user, below) as run:
+        await _open_turn(run, starts, "hello there")
+        await run.send(StopNow())
+        await _marked(run, below)               # the stop strategy has run StopNow
         assert resumed == [["hello there"]], (
             f"the words were not in the context when the LLM was asked: {resumed}")
         assert controller._user_turn, "the finalize was not refused after the commit"
@@ -458,17 +500,24 @@ async def check_every_commit_passes_the_fenced_writer():
         fenced.append(user.aggregation_string())
         return True
     fence.wait_for_cuts = wait_for_cuts
-    async with Run(user, Tap()) as run:
-        await say(run, _final("one"), StopNow())                         # inference + stop
-        await asyncio.sleep(SETTLE_S)
-        await say(run, _final("two"), InferNow(), _final("three"), FinalizeNow())
-        await asyncio.sleep(SETTLE_S)                                    # words after it
-        await run.send(_final("four"))
-        await asyncio.sleep(0.8)                                         # the watchdog
-        await run.send(_final("five"))
-        await asyncio.sleep(SETTLE_S)
+    starts, below = _turn_starts(user), Tap()
+
+    def written_up_to(n):
+        return lambda: len(_user_msgs(context)) >= n
+    async with Run(user, below) as run:
+        await _open_turn(run, starts, "one")
+        await run.send(StopNow())                                        # inference + stop
+        await _until(written_up_to(1))
+        await _open_turn(run, starts, "two")
+        await run.send(InferNow())                                       # the inference alone
+        await _until(written_up_to(2))
+        await run.send(_final("three"), FinalizeNow())                   # words after it
+        await _until(written_up_to(3))
+        await _open_turn(run, starts, "four")                            # ... the watchdog
+        await _until(written_up_to(4))
+        await _open_turn(run, starts, "five")
         await run.send(EndFrame())                                       # the session's end
-        await asyncio.wait_for(run._run, timeout=5)
+        await run.ended()
     written = _user_msgs(context)
     assert written == ["one", "two", "three", "four", "five"], written
     assert fenced == written, (
@@ -497,14 +546,15 @@ async def _session_end(ending):
             log.append("session-end commit")
         return await emit(*args, **kwargs)
     user.push_frame, user._maybe_emit_user_turn_stopped = logged_push, logged_emit
+    starts = _turn_starts(user)
     async with Run(user, Tap()) as run:
-        await run.send(_final("and one more thing"))
-        await asyncio.sleep(SETTLE_S)
+        await _open_turn(run, starts, "and one more thing")
+        assert await _until(lambda: user.aggregation_string()), "the words were not aggregated"
         if ending == "End":
             await run.send(EndFrame())
         else:
             await run.task.cancel()
-        await asyncio.wait_for(run._run, timeout=5)
+        await run.ended()
     return log, _user_msgs(context)
 
 
@@ -553,12 +603,30 @@ class Holder(FrameProcessor):
         self.entered = []
 
     async def queue_frame(self, frame, direction=DOWN, callback=None):
-        self.entered.append(type(frame).__name__)
+        self.entered.append(frame)
         await super().queue_frame(frame, direction, callback)
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
+
+    def in_hand(self):
+        """The frame the paused process task has dequeued and is holding (pipecat's
+        own private slot: the only witness to "dequeued, waiting on the pause")."""
+        return getattr(self, "_FrameProcessor__process_current_frame", None)
+
+    async def hold(self, run, frame):
+        """Pause, and send `frame` for the process task to take in hand and wait on."""
+        await self.pause_processing_frames()
+        await run.send(frame)
+        assert await _until(lambda: self.in_hand() is frame), "the frame never came in hand"
+
+    async def queue(self, run, *frames):
+        """Send `frames` and wait until each has entered this processor, in order --
+        before anything sent after them. (Sent together with an InterruptionFrame, the
+        task's source would let that SystemFrame overtake them on its way here.)"""
+        await run.send(*frames)
+        assert await _until(lambda: all(any(e is f for e in self.entered) for f in frames))
 
 
 def _queued_reply():
@@ -598,21 +666,27 @@ async def check_the_interruption_reset_keeps_only_uninterruptible_frames():
     held tool round and its pass-through of a held result would act on frames that never
     come (an orphaned call); if a final were dropped, a MinWords interim's interruption
     would flush the caller's turn -- the SILENT TURN stt.py records; if the LLMRunFrame
-    survived, a flushed follow-up would still run."""
+    survived, a flushed follow-up would still run; if the pause outlived the reset, a
+    processor paused by the reply hold would hold everything after a barge-in."""
     holder, below = Holder(), Tap()
+    in_hand = TextFrame("in hand")
     async with Run(holder, below) as run:
-        await holder.pause_processing_frames()
-        await run.send(TextFrame("in hand"))
-        await asyncio.sleep(0.05)
-        await run.send(*_queued_reply())
-        await asyncio.sleep(0.05)
+        await holder.hold(run, in_hand)
+        await holder.queue(run, *_queued_reply())
         assert not _kinds(below, DOWN, QUEUED), "the pause did not hold"
         await run.send(InterruptionFrame())
-        await asyncio.sleep(SETTLE_S)
-    got = _kinds(below, DOWN, QUEUED)
-    assert got == KEPT, f"after the reset: {got}, expected {KEPT}"
-    assert not _texts(below, "in hand"), (
-        "the interruptible frame in hand was delivered")
+        # No resume_processing_frames(): only the reset can deliver anything now. The
+        # kept frames are the last queued, so once they are through, so is the rest.
+        await _until(lambda: len(_kinds(below, DOWN, QUEUED)) >= len(KEPT))
+        got = _kinds(below, DOWN, QUEUED)
+    assert got, ("nothing came through: the reset did not re-create the task, and the "
+                 "pause outlived the interruption")
+    assert [k for k in KEPT if k not in got] == [], (
+        f"uninterruptible frames the reset dropped: {[k for k in KEPT if k not in got]}")
+    assert [k for k in got if k not in KEPT] == [], (
+        f"interruptible frames the reset kept: {[k for k in got if k not in KEPT]}")
+    assert got == KEPT, f"kept out of order: {got}"
+    assert not _texts(below, "in hand"), "the interruptible frame in hand was delivered"
 
 
 async def check_an_uninterruptible_frame_in_hand_keeps_the_pause():
@@ -626,20 +700,21 @@ async def check_an_uninterruptible_frame_in_hand_keeps_the_pause():
     pipecat that no longer exists."""
     holder, below = Holder(), Tap()
     async with Run(holder, below) as run:
-        await holder.pause_processing_frames()
-        await run.send(FunctionCallInProgressFrame(function_name="f", tool_call_id="t0",
-                                                   arguments={}))
-        await asyncio.sleep(0.05)
-        await run.send(*_queued_reply())
-        await asyncio.sleep(0.05)              # a SystemFrame would overtake them
+        await holder.hold(run, FunctionCallInProgressFrame(
+            function_name="f", tool_call_id="t0", arguments={}))
+        await holder.queue(run, *_queued_reply())
         await run.send(InterruptionFrame())
-        await asyncio.sleep(SETTLE_S)
+        # The interruption is pushed on only after the holder has handled it (the reset).
+        assert await _until(lambda: _kinds(below, DOWN, InterruptionFrame))
+        # What must NOT happen -- the paused task delivering anything -- has no event to
+        # wait for: a bounded wait, many times the task's turnaround.
+        await asyncio.sleep(0.1)
         held = _kinds(below, DOWN, QUEUED)
         assert held == [], f"the pause was lifted with an uninterruptible frame in hand: {held}"
         await holder.resume_processing_frames()
-        await asyncio.sleep(SETTLE_S)
-    assert _kinds(below, DOWN, QUEUED) == ["FunctionCallInProgressFrame"] + KEPT, (
-        _kinds(below, DOWN, QUEUED))
+        want = ["FunctionCallInProgressFrame"] + KEPT
+        await _until(lambda: len(_kinds(below, DOWN, QUEUED)) >= len(want))
+    assert _kinds(below, DOWN, QUEUED) == want, _kinds(below, DOWN, QUEUED)
 
 
 async def check_a_system_frame_passes_a_paused_queue_and_the_end_waits_in_it():
@@ -655,22 +730,20 @@ async def check_a_system_frame_passes_a_paused_queue_and_the_end_waits_in_it():
     hang-up would wait out the hold (Talk's close took 5.7 s before the fix)."""
     holder, below = Holder(), Tap()
     async with Run(holder, below) as run:
-        await holder.pause_processing_frames()
-        await run.send(TextFrame("held"))
-        await asyncio.sleep(0.05)
+        await holder.hold(run, TextFrame("held"))
         await run.send(InterruptionFrame())
-        await asyncio.sleep(SETTLE_S)
-        assert _kinds(below, DOWN, InterruptionFrame), "an interruption waited behind a pause"
+        assert await _until(lambda: _kinds(below, DOWN, InterruptionFrame)), (
+            "an interruption waited behind a pause")
         assert not _texts(below, "held"), "the held frame went ahead of the interruption"
-        await holder.pause_processing_frames()
-        await run.send(TextFrame("held again"))
-        await asyncio.sleep(0.05)
-        await run.send(EndFrame())
-        await asyncio.sleep(SETTLE_S)
+        await holder.hold(run, TextFrame("held again"))
+        end = EndFrame()
+        await holder.queue(run, end)
+        # The End must NOT pass the pause, and nothing marks its not passing: a bounded
+        # wait, many times a frame's turnaround.
+        await asyncio.sleep(0.1)
         assert not _kinds(below, DOWN, EndFrame), "the End overtook a paused queue"
-        assert "EndFrame" in holder.entered, "the End did not enter through queue_frame"
         await holder.resume_processing_frames()
-        await asyncio.wait_for(run._run, timeout=5)
+        await run.ended()
     assert _texts(below, "held again") and _kinds(below, DOWN, EndFrame), (
         "the End and the frame ahead of it did not follow the resume")
 
@@ -706,14 +779,14 @@ async def check_an_interruption_cancels_a_running_call_as_CANCELLED():
     async with Run(llm, assistant) as run:
         await llm.run_function_calls([FunctionCallFromLLM(
             function_name="lookup", tool_call_id="call_1", arguments={}, context=context)])
-        await asyncio.wait_for(entered.wait(), 5)
-        await asyncio.sleep(0.05)
-        tool = [m for m in context.get_messages() if m.get("role") == "tool"]
-        assert [m.get("content") for m in tool] == ["IN_PROGRESS"], context.get_messages()
+        await asyncio.wait_for(entered.wait(), STEP_TIMEOUT_S)
+
+        def tool():
+            return [m.get("content") for m in context.get_messages() if m.get("role") == "tool"]
+        assert await _until(lambda: tool() == ["IN_PROGRESS"]), context.get_messages()
         await run.send(InterruptionFrame())
-        await asyncio.sleep(SETTLE_S)
-    tool = [m for m in context.get_messages() if m.get("role") == "tool"]
-    assert [m.get("content") for m in tool] == ["CANCELLED"], context.get_messages()
+        await _until(lambda: tool() != ["IN_PROGRESS"])
+    assert tool() == ["CANCELLED"], context.get_messages()
     assert _cancelled_rounds(context.get_messages()), (
         "the corrector does not read this round as cancelled")
 
@@ -731,29 +804,38 @@ async def check_run_llm_resolves_properties_then_frame_then_yes():
     answer it does not have), or the dropped reply's result asks again; or a gate that
     reads False where pipecat runs one waits out a turn nobody is answering."""
     context = LLMContext([{"role": "user", "content": "q"}])
-    top = Tap()
+    below = Tap()
     assistant = LLMContextAggregatorPair(context).assistant()
+    asked = []                                  # the aggregator's pushes, as it makes them
+    push_frame = assistant.push_frame
+
+    async def recording(frame, direction=DOWN):
+        if isinstance(frame, LLMContextFrame) and direction == UP:
+            asked.append(frame)
+        await push_frame(frame, direction)
+    assistant.push_frame = recording
     cases = [("neither set", None, None, True),
              ("tools.no_inference()", None, no_inference(), False),
              ("frame.run_llm=False", False, None, False),
              ("properties win over the frame", False,
               FunctionCallResultProperties(run_llm=True), True)]
     got = {}
-    async with Run(top, assistant) as run:
+    async with Run(assistant, below) as run:
         for i, (name, frame_run_llm, props, _) in enumerate(cases):
             cid = f"t{i}"
-            before = len(_kinds(top, UP, LLMContextFrame))
+            before = len(asked)
+            # Started is a SystemFrame: sent on its own, so it is not overtaken.
+            await run.send(FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+                function_name="f", tool_call_id=cid, arguments={}, context=None)]))
+            await _marked(run, below)
             await run.send(
-                FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
-                    function_name="f", tool_call_id=cid, arguments={}, context=None)]),
                 FunctionCallInProgressFrame(function_name="f", tool_call_id=cid,
-                                            arguments={}, cancel_on_interruption=True))
-            await asyncio.sleep(0.05)
-            await run.send(FunctionCallResultFrame(
-                function_name="f", tool_call_id=cid, arguments={}, result={"ok": i},
-                run_llm=frame_run_llm, properties=props))
-            await asyncio.sleep(0.1)
-            got[name] = len(_kinds(top, UP, LLMContextFrame)) > before
+                                            arguments={}, cancel_on_interruption=True),
+                FunctionCallResultFrame(
+                    function_name="f", tool_call_id=cid, arguments={}, result={"ok": i},
+                    run_llm=frame_run_llm, properties=props))
+            await _marked(run, below)               # the result has been handled
+            got[name] = len(asked) > before
     want = {name: ran for name, _, _, ran in cases}
     assert got == want, f"inference after a result: {got}, expected {want}"
 
@@ -785,57 +867,107 @@ async def check_a_tool_result_reaches_the_gate_below_the_transport():
         f"the placeholder's run_llm did not survive the trip: {props}")
 
 
-async def check_a_cancelled_completion_still_ends_after_its_interruption():
-    """Ledger.tla / LedgerPlayout.tla, `LlmCancelEnd` ("an interrupted completion still
-    ends: pipecat pushes its End from a finally, after the InterruptionFrame. The ledger
-    finds no stream and ignores it"): base_llm's process_frame pushes
-    LLMFullResponseEndFrame from a `finally` when the interruption cancels the
-    completion. The ledger is an OBSERVER acting on the first sighting of each frame,
-    and the interruption is first sighted where the user aggregator pushes it, above
-    the LLM -- so the ledger has seen the interruption before the End, as the model has
-    it (`LlmCancelEnd` enabled only once the reply is `aborted`).
+async def check_a_tool_calls_started_frame_is_a_system_frame_ahead_of_the_end():
+    """UserTurn.tla, `ToolCall`/`ToolDone` leave the gate `armed` (only `BotStart` and
+    `CutLands` disarm it): ReplyHoldGate stays armed across a tool round
+    (reply_hold.process_frame) because the LLM broadcasts FunctionCallsStartedFrame, a
+    SystemFrame, from inside _process_context (run_function_calls) -- before base_llm's
+    `finally` pushes the completion's End. Driven through the real _process_context on
+    a scripted stream whose one chunk is a tool call.
 
-    Note, measured on 1.8.1 and 1.12: at the LLM's OWN output the order is the other
-    way round. FrameProcessor.process_frame cancels the process task on the
-    interruption (the finally pushes the End) before the LLM pushes the interruption
-    on, so a processor below the LLM receives the End first; the End is a ControlFrame
-    the interruption then overtakes and may flush from that processor's queue. Nothing
-    the models check reads the End below the LLM (FollowupGate releases `_llm` on
-    either frame), so this is recorded, not asserted.
+    If it goes: if the frame came after the End, or were a queued frame the End could
+    pass, the gate would read the bare tool call's End as a reply with no audio and
+    disarm, and the tool's answer would play unchecked over a caller who had resumed."""
+    from types import SimpleNamespace as NS
 
-    If it goes: no End for a cancelled completion -- harmless to the ledger, but the
-    models' `LlmCancelEnd` would describe a frame that never comes; if the ledger ever
-    sighted the End first, it would take the cut reply's partial text as a finished
-    response and queue it for the next context (ChartedTextMatchesContext)."""
-    class Hanging(BoundedOpenAILLMService):
-        async def _process_context(self, context):
-            await self.push_frame(LLMTextFrame("Partial"))
-            await asyncio.Event().wait()
+    from pipecat.frames.frames import SystemFrame
 
+    async def tool_call_stream():
+        yield NS(usage=None, model=None, choices=[NS(finish_reason=None, delta=NS(
+            content=None, tool_calls=[NS(index=0, id="call_4", function=NS(
+                name="lookup", arguments="{}"))]))])
+
+    class ToolCalling(BoundedOpenAILLMService):
+        async def _open_stream(self, context):
+            return tool_call_stream()
+
+    llm, below = _llm(ToolCalling), Tap()
+
+    async def lookup(params):
+        await params.result_callback({"ok": 1}, properties=no_inference())
+    llm.register_function("lookup", lookup)
+    async with Run(llm, below) as run:
+        await run.send(LLMContextFrame(LLMContext([{"role": "user", "content": "q"}])))
+        await _until(lambda: _kinds(below, DOWN, LLMFullResponseEndFrame)
+                     and _kinds(below, DOWN, FunctionCallsStartedFrame))
+    order = _kinds(below, DOWN, (FunctionCallsStartedFrame, LLMFullResponseEndFrame))
+    assert order == ["FunctionCallsStartedFrame", "LLMFullResponseEndFrame"], order
+    started = [f for _, f in below.down if isinstance(f, FunctionCallsStartedFrame)][0]
+    assert isinstance(started, SystemFrame), "FunctionCallsStartedFrame is no longer a SystemFrame"
+
+
+async def check_a_cancelled_completion_never_reaches_the_ledger_as_a_finished_one():
+    """Ledger.tla / LedgerPlayout.tla, `LlmCancelEnd` and `LlmCancelLost`: an
+    interrupted completion's End is pushed from base_llm's `finally` when the
+    interruption cancels it -- but the ledger reads the LLM stream only where the TTS
+    processes it (TranscriptLedger.on_process_frame), below the LLM, and there the End
+    may never be seen at all: the LLM cancels the completion (its `finally` pushes the
+    End) BEFORE it passes the interruption on, so the End reaches the TTS ahead of the
+    interruption, as a ControlFrame on the TTS's queue, and the interruption's reset may
+    flush it. Either way the ledger has run its _interrupt first (it sights the
+    interruption above the LLM) and dropped the stream, so a cut reply's partial text is
+    never queued for the next context. The models now have both: the End sighted after
+    the interruption (`LlmCancelEnd`) and lost (`LlmCancelLost`).
+
+    Driven on the real TranscriptLedger built with the TTS, as agent_session builds it.
+
+    If it goes: an End the TTS processed ahead of the ledger's interrupt would close the
+    cut reply as a finished response and queue its partial text for the next context
+    to claim (ChartedTextMatchesContext)."""
     from pipecat.observers.base_observer import BaseObserver
 
-    class FirstSighting(BaseObserver):
+    from teaport_brain.transcript_ledger import TranscriptLedger
+
+    class Hanging(BoundedOpenAILLMService):
+        async def _process_context(self, context):
+            await self.push_frame(LLMTextFrame("Partial reply that never"))
+            await asyncio.Event().wait()
+
+    class Sightings(BaseObserver):
+        """What each processor processed, and the End the LLM pushed, in order."""
+
         def __init__(self):
             super().__init__()
-            self.order = []
+            self.log = []
+
+        async def on_process_frame(self, data):
+            if isinstance(data.frame, (InterruptionFrame, LLMFullResponseEndFrame)):
+                self.log.append(("processed", data.processor, type(data.frame).__name__))
 
         async def on_push_frame(self, data):
-            kind = type(data.frame).__name__
-            if (isinstance(data.frame, (InterruptionFrame, LLMFullResponseEndFrame))
-                    and kind not in self.order):
-                self.order.append(kind)
+            if isinstance(data.frame, LLMFullResponseEndFrame) and data.source is llm:
+                self.log.append(("pushed", data.source, "LLMFullResponseEndFrame"))
 
-    sighting, llm, above, below = FirstSighting(), _llm(Hanging), Tap(), Tap()
-    async with Run(above, llm, below, observers=[sighting]) as run:
+    llm, tts, above, below = _llm(Hanging), _tts(), Tap(), Tap()
+    ledger, sightings = TranscriptLedger(tts=tts), Sightings()
+    async with Run(above, llm, tts, below, observers=[ledger, sightings]) as run:
         await run.send(LLMContextFrame(LLMContext([{"role": "user", "content": "q"}])))
-        await _until(lambda: _kinds(below, DOWN, LLMTextFrame), 3.0)
-        sighting.order.clear()                  # the completion's start, not its End
+        assert await _until(lambda: ledger._gen is not None
+                            and ledger._gen["parts"]), "the TTS never saw the stream"
         await run.send(InterruptionFrame())
-        await _until(lambda: len(sighting.order) == 2, 3.0)
-    assert sighting.order == ["InterruptionFrame", "LLMFullResponseEndFrame"], (
-        f"first sightings: {sighting.order}")
-    print("    (below the LLM: "
-          f"{_kinds(below, DOWN, (InterruptionFrame, LLMFullResponseEndFrame))})")
+        assert await _until(lambda: ("pushed", llm, "LLMFullResponseEndFrame")
+                            in sightings.log), "the cancelled completion pushed no End"
+        assert await _until(lambda: _kinds(below, DOWN, InterruptionFrame))
+        await _marked(run, below)               # anything the TTS still had is through
+    assert ledger._gen is None and not ledger._queue, (
+        f"the cut reply reached the ledger as a finished response: {ledger._queue}")
+    by_tts = [kind for event, proc, kind in sightings.log
+              if event == "processed" and proc is tts]
+    first = next((kind for event, _proc, kind in sightings.log if event == "processed"), None)
+    assert first == "InterruptionFrame", f"the interruption was not sighted first: {first}"
+    print(f"    (the TTS processed: {by_tts}; the End "
+          f"{'reached' if 'LLMFullResponseEndFrame' in by_tts else 'never reached'} "
+          "the ledger)")
 
 
 # ---- SttCommit.tla: where the VAD runs -----------------------------------------------
@@ -861,8 +993,7 @@ async def check_vad_edges_are_pushed_upstream_to_the_stt():
                 await run.send(InputAudioRawFrame(audio=frame, sample_rate=16000,
                                                   num_channels=1))
                 await asyncio.sleep(0.005)
-            await asyncio.sleep(0.1)
-        await asyncio.sleep(SETTLE_S)
+        await _until(lambda: _kinds(above, UP, VADUserStoppedSpeakingFrame))
     edges = _kinds(above, UP, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame))
     assert edges == ["VADUserStartedSpeakingFrame", "VADUserStoppedSpeakingFrame"], edges
 
@@ -926,8 +1057,8 @@ async def check_a_reply_with_no_audio_still_commits_its_text():
     async with Run(tts, probe, LLMContextAggregatorPair(context).assistant()) as run:
         await run.send(LLMFullResponseStartFrame(), LLMTextFrame(text),
                        LLMFullResponseEndFrame())
-        await _until(lambda: _of(probe, LLMFullResponseEndFrame))
-        await asyncio.sleep(0.1)
+        await _until(lambda: _of(probe, LLMFullResponseEndFrame)
+                     and any(m.get("role") == "assistant" for m in context.get_messages()))
     assert not _of(probe, TTSAudioRawFrame), "the engine stub yielded audio"
     ctx = _of(probe, TTSStartedFrame)[0][1].context_id
     i_end = _of(probe, LLMFullResponseEndFrame)[0][0]
@@ -986,6 +1117,12 @@ async def check_the_transport_releases_timed_frames_by_pts_then_arrival():
     ], released
 
 
+def _played(probe):
+    """What the transport pushed on after writing it."""
+    from pipecat.frames.frames import OutputAudioRawFrame
+    return [f for _, f in probe.seen if isinstance(f, OutputAudioRawFrame)]
+
+
 async def check_the_transport_repushes_played_audio_untagged():
     """Ledger.tla / LedgerPlayout.tla environment ("the transport's untagged rebuild of
     each chunk it played is recognised and ignored"): what the output transport pushes on
@@ -999,11 +1136,10 @@ async def check_the_transport_repushes_played_audio_untagged():
     async with Run(out, probe) as run:
         await run.send(TTSStartedFrame(context_id="c"),
                        TTSAudioRawFrame(b"\x01\x00" * 4800, 24000, 1, context_id="c"))
-        await _until(lambda: _of(probe, TTSAudioRawFrame) or _of(probe, type(None)), 1.0)
-        await asyncio.sleep(0.3)
-    from pipecat.frames.frames import OutputAudioRawFrame
-    played = [f for _, f in probe.seen if isinstance(f, OutputAudioRawFrame)]
-    assert played, "the transport pushed nothing on after writing"
+        await _until(lambda: sum(len(f.audio) for f in _played(probe)) >= 9600)
+    played = _played(probe)
+    assert sum(len(f.audio) for f in played) >= 9600, (
+        "the transport did not push on all it wrote")
     tagged = [getattr(f, "context_id", None) for f in played
               if getattr(f, "context_id", None) is not None]
     assert not tagged, f"played chunks re-pushed with a context: {tagged}"
@@ -1027,20 +1163,21 @@ async def check_the_assistant_aggregator_commits_at_the_interruption_and_the_end
 
     def said():
         return [m.get("content") for m in context.get_messages() if m["role"] == "assistant"]
-    async with Run(assistant) as run:
+    below = Tap()
+    async with Run(assistant, below) as run:
         await run.send(LLMFullResponseStartFrame(), word("Sure,", "c1", 1), word("here", "c1", 2))
-        await asyncio.sleep(0.05)
+        await _marked(run, below)
         assert said() == [], "committed before the cut"
         await run.send(InterruptionFrame())
-        await asyncio.sleep(0.05)
+        await _until(lambda: said())
         assert said() == ["Sure, here"], said()
         await run.send(LLMFullResponseStartFrame(), word("One", "c2", 1),
                        LLMFullResponseEndFrame(), word("two", "c2", 2), word("three", "c2", 3))
-        await asyncio.sleep(0.05)
+        await _marked(run, below)
         assert said() == ["Sure, here", "One"], said()
         await run.send(LLMFullResponseStartFrame(), word("Next.", "c3", 1),
                        LLMFullResponseEndFrame())
-        await asyncio.sleep(0.05)
+        await _marked(run, below)
     assert said() == ["Sure, here", "One", "two three Next."], (
         f"the words after the End did not leak into the next message: {said()}")
 
@@ -1087,9 +1224,11 @@ async def check_a_speculative_inference_commits_nothing():
     @user.event_handler("on_user_turn_message_added")
     async def _added(_a, message):
         added.append(message.content)
+    starts = _turn_starts(user)
     async with Run(user, below) as run:
-        await say(run, _final("what time is it"), SpeculateNow("what time is it"))
-        await asyncio.sleep(SETTLE_S)
+        await _open_turn(run, starts, "what time is it")
+        await run.send(SpeculateNow("what time is it"))
+        await _marked(run, below)
         frames = [f for _, f in below.down if isinstance(f, LLMContextFrame)]
         assert len(frames) == 1 and getattr(frames[0], "speculation", False), frames
         assert frames[0].context is not context, "the speculation ran on the real context"
@@ -1111,12 +1250,14 @@ async def check_a_confirming_stop_commits_without_inference():
         raise NotHere("pipecat has no speculative inference before 1.9")
     context, pair, _ = _user_pair(stop=Speculating())
     user, below = pair.user(), Tap()
+    starts = _turn_starts(user)
     async with Run(user, below) as run:
-        await say(run, _final("what time is it"), SpeculateNow("what time is it"))
-        await asyncio.sleep(SETTLE_S)
+        await _open_turn(run, starts, "what time is it")
+        await run.send(SpeculateNow("what time is it"))
+        await _marked(run, below)
         before = [f for _, f in below.down if isinstance(f, LLMContextFrame)]
         await run.send(ConfirmNow())
-        await asyncio.sleep(SETTLE_S)
+        await _marked(run, below)
         after = [f for _, f in below.down if isinstance(f, LLMContextFrame)]
     assert _user_msgs(context) == ["what time is it"], context.get_messages()
     assert len(after) == len(before), "a confirming stop asked the LLM again"
@@ -1140,12 +1281,13 @@ async def check_the_brain_never_speculates():
     assert not issubclass(LateStartTurnStopStrategy, EagerUserTurnStopStrategy)
     root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "teaport_brain")
     offenders = []
-    for name in sorted(os.listdir(root)):
-        if name.endswith(".py"):
-            with open(os.path.join(root, name), encoding="utf-8") as f:
-                src = f.read()
-            if "EagerUserTurnStopStrategy" in src or "UserTurnSpeculation(" in src:
-                offenders.append(name)
+    for here, _dirs, names in os.walk(root):
+        for name in sorted(names):
+            if name.endswith(".py"):
+                with open(os.path.join(here, name), encoding="utf-8") as f:
+                    src = f.read()
+                if "EagerUserTurnStopStrategy" in src or "UserTurnSpeculation(" in src:
+                    offenders.append(os.path.relpath(os.path.join(here, name), root))
     assert not offenders, f"the brain speculates now: {offenders}"
 
 

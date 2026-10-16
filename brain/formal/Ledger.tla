@@ -295,7 +295,8 @@ Streaming     == \E r \in Replies : llm[r] = "streaming"
 Synthesizing  == \E c \in Ctxs : synth[c] \in {"started", "audio"}
 
 \* A cancelled completion's End is pushed from its finally at cancellation, long
-\* before the next run can begin: no completion starts while one is "aborted".
+\* before the next run can begin: no completion starts while one is "aborted" --
+\* until its End is sighted (LlmCancelEnd) or lost on the way (LlmCancelLost).
 Aborted     == \E r \in Replies : llm[r] = "aborted"
 LlmStart(r) ==
     /\ llm[r] = "idle" /\ ~Streaming /\ ~Aborted
@@ -324,6 +325,19 @@ LlmCancelEnd(r) ==
     /\ llm[r] = "aborted"
     /\ llm' = [llm EXCEPT ![r] = "cancelled"]
     /\ Ledger([type |-> "LLMEnd", gen |-> r])
+    /\ UNCHANGED <<order, synth, pq, window, played, interrupts>>
+
+\* ... or it never reaches the ledger at all. The ledger reads the LLM stream where
+\* the TTS processes it, below the LLM, and the LLM cancels the completion (its
+\* finally pushes the End) BEFORE it passes the interruption on: the End reaches the
+\* TTS ahead of the interruption, as a queued ControlFrame the interruption's reset
+\* may flush. The ledger then never sights it; the completion is over all the same.
+\* (test_pipecat_premises.py: check_a_cancelled_completion_never_reaches_the_ledger_
+\* as_a_finished_one.)
+LlmCancelLost(r) ==
+    /\ llm[r] = "aborted"
+    /\ llm' = [llm EXCEPT ![r] = "cancelled"]
+    /\ UNCHANGED <<ledgerVars>>
     /\ UNCHANGED <<order, synth, pq, window, played, interrupts>>
 
 \* Synthesis is sequential per the TTS service, and in the order responses reached
@@ -396,7 +410,7 @@ Interrupt ==                                       \* the user barges in
     /\ UNCHANGED <<order, played>>
 
 Next ==
-    \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r)
+    \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r) \/ LlmCancelLost(r)
     \/ \E c \in Ctxs : TtsStart(c) \/ TtsAudio(c) \/ TtsStop(c)
     \/ PlayStart \/ PlayChunk \/ PlayStop
     \/ Interrupt

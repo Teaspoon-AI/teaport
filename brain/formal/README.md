@@ -731,8 +731,10 @@ gapless chaining inside one `BotStartedSpeaking` window, a reply path with no
 a reply re-created under a second context id mid-turn. Synthesis is sequential per the
 TTS service; playout lags it arbitrarily. A cancelled completion still ends: pipecat
 1.8.1 `services/openai/base_llm.py:611-613` pushes `LLMFullResponseEndFrame` in a
-`finally`, after the `InterruptionFrame`, and the ledger of that time took the partial
-text as a new `_pending_gen`.
+`finally`, after the `InterruptionFrame` as the ledger sees it, and the ledger of that
+time took the partial text as a new `_pending_gen` -- or the ledger never sights it
+(`LlmCancelLost`): it reads the stream where the TTS processes it, and the End reaches
+the TTS ahead of the interruption, a queued frame the reset may flush.
 
 Two designs, selected by `MODE`. `asWritten` is the ledger at PR #13 and fails every
 property; its rows are kept failing, pinning the counterexamples. `windowHead` was the
@@ -1323,12 +1325,16 @@ reply's misclaim above, and its fix found the corrector's positional anchor
 - **Spoken notices** (a non-filler `TTSSpeakFrame`, queued as an expected context of its
   own — synthesizable or not, as a response — completed by its stop frame alone: no End
   re-push) are not modelled — "Worth modeling next", item 1. The hermetic fallback is `Drain = FALSE`, above.
-- **A cancelled completion's End is assumed to precede the next run.** pipecat pushes it
-  from the cancelled task's `finally`, at cancellation; the model had let it arrive after
-  the next response began streaming, and the ledger — which cannot tell whose End it is
-  and ends the stream it holds — closed that response on the stale frame. Excluded as an
-  ordering fact (`LlmStart` waits for it) rather than modelled; real only if the event
-  loop stalls between the cancel and the next run.
+- **A cancelled completion's End is assumed to precede the next run, if it comes at
+  all.** pipecat pushes it from the cancelled task's `finally`, at cancellation; the model
+  had let it arrive after the next response began streaming, and the ledger — which cannot
+  tell whose End it is and ends the stream it holds — closed that response on the stale
+  frame. Excluded as an ordering fact (`LlmStart` waits for `LlmCancelEnd` or
+  `LlmCancelLost`) rather than modelled; real only if the event loop stalls between the
+  cancel and the next run. The End may also never reach the ledger (`LlmCancelLost`, added
+  2026-10-15: it reaches the TTS ahead of the interruption, whose reset may flush it);
+  every row's verdict is unchanged with it, and every holding row's state count too (a
+  lost End and an ignored one leave the same state).
 - **One interruption sighting.** The ledger runs `_interrupt` at every processor's
   sighting of the `InterruptionFrame`, and a TTS frame in flight between two of them
   opens an anonymous turn on a closed context, which the next sighting ends; the model's
@@ -2734,21 +2740,27 @@ on REAL pipecat objects -- the turn controller, the aggregators, the frame proce
 queues, the TTS base under `EngineTTSService`, the output transport -- and fails if
 pipecat stops doing it. A failure there means a model has drifted from pipecat: re-read
 the model's premise, not just the check. Where another test already pins a premise on
-the real code, the table names it instead. Sources are pipecat 1.8.1, under
-`pipecat/` (`llm_response_universal.py` is `processors/aggregators/`).
+the real code, the table names it instead. Sources are pipecat 1.8.1, the pin the table
+was first written against, under `pipecat/` (`llm_response_universal.py` is
+`processors/aggregators/`); where 1.12 (main's pin since #184) moved a premise, its row
+says so. The 1.8.1 column stays as the record of the previous pin, so the next upgrade
+has two columns to compare against.
 
 The brain's own behaviour (strategies, gate, ledger, corrector, fence) and the engine's
-are not premises in this sense and are not listed. `SipCall.tla`, `SessionArbiter.tla`,
-`SttSlot.tla` and `PlayoutPause.tla` rest on none: their machines are the brain's.
+are not premises in this sense and are not listed. `SipCall.tla`, `SessionArbiter.tla`
+and `SttSlot.tla` rest on none: their machines are the brain's. `PlayoutPause.tla`'s
+Part 1 is the ledger's arithmetic, but its Part 2 (`ANCHOR = "audio"`) is
+`_prev_audio_end_ns` and `_ctx_held_ns`, kept in `EngineTTSService`'s override of
+pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row below.
 
-| premise | model(s) | check | source (1.8.1) | 1.8.1 | 1.12 |
+| premise | model(s) | check | source (1.8.1) | 1.8.1 (the previous pin) | 1.12 (main's pin) |
 |---|---|---|---|---|---|
 | A second user turn start is refused while one is open; a start calls each stop strategy's `handle_user_turn_started` (the late-start rule) | UserTurn (`StartTurn`; `retryOnQuiet`), SttCommit (`OpenTurn`) | `check_a_second_turn_start_is_refused_while_one_is_open`; the composite wedge: `test_barge_in_survives_an_open_turn.py::test_the_stock_controller_still_wedges` | `turns/user_turn_controller.py:332-351` | ✓ | ✓ |
 | A finalize is refused while the user speaks, leaving the turn open and the stop strategy un-reset; an accepted stop resets it (`handle_user_turn_stopped`) | UserTurn (`Finalize`, `EARLY_FINAL`), SttCommit (`TURNSTOP = "verdict"`) | `check_a_finalize_is_refused_while_the_user_speaks` | `turns/user_turn_controller.py:367-396` | ✓ | ✓ |
 | The stop watchdog is an inactivity timer every VAD edge and transcript re-arms, fires only while the user is quiet, and its stop resets the strategies | UserTurn (`Arm`, `ForceStop`), SttCommit (`TurnStop`) | `check_the_stop_watchdog_is_starved_by_speech_and_resets_the_strategy` | `turns/user_turn_controller.py:266-296, 398-415` | ✓ | ✓ |
 | `MinWordsUserTurnStartStrategy` asks `min_words` while the bot speaks and one word otherwise | UserTurn (PAUSE: `OneWord`, `NoLostAnswer`) | `check_min_words_relaxes_to_one_word_only_while_the_bot_is_silent` | `turns/user_start/min_words_user_turn_start_strategy.py:77-111` | ✓ | ✓ |
 | A user turn start broadcasts an `InterruptionFrame` both ways (barge-in is a turn start) | UserTurn (`StartTurn`/`CutLands`); every `Interrupt` (Ledger, LedgerPlayout, Followup) | `check_a_turn_start_broadcasts_the_interruption` | `llm_response_universal.py:1275-1292`; `processors/frame_processor.py:1017-1022` | ✓ | ✓ |
-| The interruption is only queued: the commit in the same controller call can overtake it | UserTurn (`CutLands`, `FENCE`) | `test_barge_commit_order.py::test_without_the_fence_the_turn_overtakes_the_cut_reply` | `processors/frame_processor.py:1017-1022` | ✓ (that test) | ✓ (#184's copy) |
+| The interruption is only queued: the commit in the same controller call can overtake it | UserTurn (`CutLands`, `FENCE`) | `test_barge_commit_order.py::test_without_the_fence_the_turn_overtakes_the_cut_reply` | `processors/frame_processor.py:1017-1022` | ✓ (that test) | ✓ (main's copy) |
 | `trigger_user_turn_stopped` is two awaits, and the context write (the LLM asked) is in the first: a VAD start inside it has the finalize refused after the commit | UserTurn (`Inference`/`Resume`/`Finalize`) | `check_the_commit_runs_before_the_finalize_it_may_lose` | `turns/user_stop/base_user_turn_stop_strategy.py:204-222`; `llm_response_universal.py:1296-1330` | ✓ | ✓ |
 | Every write of the caller's words goes through the one writer `CutReplyFence.hold_commits` wraps: inference, a finalize with words since, the watchdog, the session's end | UserTurn (`CommitStep`, `NoCutAfterCommit`; the hold's arming) | `check_every_commit_passes_the_fenced_writer` (through the brain's own `hold_commits`; fails on 1.12 with main's fence: `three`, `four`, `five` bypass it) | `llm_response_universal.py:869-886, 1296-1330, 1371-1404` (1.12: `_push_aggregation`, `:900`) | ✓ | ✓ |
 | Cascade mode, session end by EndFrame: the End is pushed on, THEN the leftover words are committed through `_maybe_emit_user_turn_stopped(on_session_end=True)` (`_stop`) | UserTurn (`Hangup`, `NoLostGoodbye`) | `check_the_session_end_commit_follows_the_end_frame` (real aggregator); the fence's half: `test_barge_commit_order.py::test_the_session_end_commit_never_drops_the_reply_ahead_of_the_end` | `llm_response_universal.py:809-813, 891-900` | ✓ | ✓ |
@@ -2759,20 +2771,21 @@ are not premises in this sense and are not listed. `SipCall.tla`, `SessionArbite
 | An interruption cancels a running `cancel_on_interruption` call, and the assistant aggregator writes `CANCELLED` over `IN_PROGRESS` (the shape `_merge_tail` folds across) | UserTurn (`Dropped`, `gateNoFoldCancelled`) | `check_an_interruption_cancels_a_running_call_as_CANCELLED` | `services/llm_service.py:688-689, 758-761`; `llm_response_universal.py:1772-1806, 1956-1968` | ✓ | ✓ |
 | #185: a cancel that overtakes an `IN_PROGRESS` still in transit leaves the call unsettled | UserTurn (known limit) | modelled and fixed in fix/function-call-race-185 (separate PR) | | | |
 | `run_llm` after a result: `properties.run_llm`, else `frame.run_llm`, else yes | UserTurn (`ToolDone`, `NoOrphanCall`), Followup (`ToolEnd`) | `check_run_llm_resolves_properties_then_frame_then_yes`; the gate's frame: `test_reply_hold.py::test_a_held_result_whose_call_passed_settles_it_without_an_answer` | `llm_response_universal.py:1836-1872` | ✓ | ✓ |
-| A tool result is broadcast by the LLM and passes the TTS and the output transport to `FollowupGate` | Followup (`ToolEnd`, `turnAware`) | `check_a_tool_result_reaches_the_gate_below_the_transport` | `services/llm_service.py:1618-1630` (`result_callback`'s broadcast); `transports/base_output.py:396-399, 651-656` | ✓ | ✓ |
-| A cancelled completion still pushes its End (from a `finally`), and the ledger (an observer, first sighting) has seen the interruption before it | Ledger, LedgerPlayout (`LlmCancelEnd`) | `check_a_cancelled_completion_still_ends_after_its_interruption` (below the LLM the End comes FIRST: recorded there, not a premise) | `services/openai/base_llm.py:603-616`; `processors/frame_processor.py:839-841` | ✓ | ✓ |
+| A tool result is broadcast by the LLM and passes the TTS and the output transport to `FollowupGate` | Followup (`ToolEnd`, `turnAware`) | `check_a_tool_result_reaches_the_gate_below_the_transport` | `services/llm_service.py:1618-1630` (`result_callback`'s broadcast); `transports/base_output.py:896-923` (`_audio_task_handler` pushes it on) | ✓ | ✓ |
+| `FunctionCallsStartedFrame` is a SystemFrame the LLM broadcasts from inside `_process_context`, before the completion's End | UserTurn (`ToolCall`/`ToolDone` leave the gate `armed`; only `BotStart`/`CutLands` disarm) | `check_a_tool_calls_started_frame_is_a_system_frame_ahead_of_the_end` (the real `_process_context` on a scripted tool-call stream) | `services/llm_service.py:1456`; `services/openai/base_llm.py:560-600, 603-616` | ✓ | ✓ |
+| A cancelled completion's End (pushed from a `finally`) is sighted by the ledger after the interruption, or never: the ledger reads it where the TTS processes it, and it reaches the TTS ahead of the interruption, a queued frame the reset may flush. Either way the ledger has interrupted first and queues no partial text | Ledger, LedgerPlayout (`LlmCancelEnd`, `LlmCancelLost`) | `check_a_cancelled_completion_never_reaches_the_ledger_as_a_finished_one` (the real `TranscriptLedger` built with the TTS) | `services/openai/base_llm.py:603-616`; `processors/frame_processor.py:839-841`; the brain's reading point `transcript_ledger.py:318-327` | ✓ | ✓ |
 | The VAD runs in the user aggregator and each edge is also pushed UPSTREAM, to the STT | SttCommit (THE ORDER; the receipts, numbered verdicts) | `check_vad_edges_are_pushed_upstream_to_the_stt` | `llm_response_universal.py:1237-1270` | ✓ | ✓ |
-| A context opens (`TTSStartedFrame`) for any non-blank text, before `run_tts` | LedgerPlayout (`UnspeakableOpens`) | `test_tts_stop_frame.py::test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text` | `services/tts_service.py:1147-1282` | ✓ (that test) | ✓ (#184 suite) |
-| A context closes at its End only if the last `run_tts` yielded audio (the flag `on_turn_context_completed` reads) | LedgerPlayout (`CloseAtEnd`, `lp_endings`) | guard `engine_tts._require_close_at_end_flag` (source); `test_tts_stop_frame.py::test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end` | `services/tts_service.py:722-746, 1348-1375` | ✓ (that test) | ✓ (#184 suite) |
-| Every opened context ends with a `TTSStoppedFrame` naming it; the transport ends bot-speaking on it (3 s idle fallback without) | LedgerPlayout (`TtsStop`, `PlayMark`, `PlayIdle`) | `test_tts_stop_frame.py::test_stop_frame_ends_bot_speaking_at_audio_end`, `::test_without_stop_frame_transport_waits_out_the_fallback` | `services/tts_service.py:1711-1782`; `transports/base_output.py:396` | ✓ (those tests) | ✓ (#184 suite) |
-| After the stop the TTS re-pushes the response's OWN End (same id) at the last word's pts, before the next context starts | LedgerPlayout (`TtsDrain`, `CanStart`), PlayoutClock (the End's pts) | `check_the_tts_repushes_each_responses_own_end_after_its_context`; the hook: guard `engine_tts._require_context_end_hook` | `services/tts_service.py:1659-1691` | ✓ | ✓ |
+| A context opens (`TTSStartedFrame`) for any non-blank text, before `run_tts` | LedgerPlayout (`UnspeakableOpens`) | `test_tts_stop_frame.py::test_an_unspeakable_reply_opens_a_context_and_the_next_reply_keeps_its_text` | `services/tts_service.py:1147-1282` | ✓ (that test) | ✓ (main's suite) |
+| A context closes at its End only if the last `run_tts` yielded audio (the flag `on_turn_context_completed` reads) | LedgerPlayout (`CloseAtEnd`, `lp_endings`) | guard `engine_tts._require_close_at_end_flag` (source); `test_tts_stop_frame.py::test_a_reply_whose_last_piece_is_unspeakable_closes_at_its_end` | `services/tts_service.py:722-746, 1348-1375` | ✓ (that test) | ✓ (main's suite) |
+| Every opened context ends with a `TTSStoppedFrame` naming it; the transport ends bot-speaking on it (3 s idle fallback without) | LedgerPlayout (`TtsStop`, `PlayMark`, `PlayIdle`) | `test_tts_stop_frame.py::test_stop_frame_ends_bot_speaking_at_audio_end`, `::test_without_stop_frame_transport_waits_out_the_fallback` | `services/tts_service.py:1711-1782`; `transports/base_output.py:396` | ✓ (those tests) | ✓ (main's suite) |
+| After the stop the TTS re-pushes the response's OWN End (same id) at the last word's pts, before the next context starts; the context-end hook `_maybe_reset_word_timestamps(context_id)` that `EngineTTSService` overrides runs there | LedgerPlayout (`TtsDrain`, `CanStart`), PlayoutClock (the End's pts), PlayoutPause (Part 2: the anchor the override keeps) | `check_the_tts_repushes_each_responses_own_end_after_its_context`; the hook: guard `engine_tts._require_context_end_hook` | `services/tts_service.py:1659-1691` | ✓ | ✓ |
 | A context that ends without audio has its text force-completed as word frames ahead of the End, and the assistant aggregator commits it | LedgerPlayout (`said`, `Failed`, `Muted`) | `check_a_reply_with_no_audio_still_commits_its_text` | `services/tts_service.py:1693-1709, 1752-1778` | ✓ | ✓ |
 | A context that timed out mid-reply is re-created under the SAME id | LedgerPlayout (`TtsRestart`; `ledger_split` settled) | `check_a_timed_out_context_resumes_under_its_own_id` | `services/tts_service.py:1277-1282` (`_turn_context_id`) | ✓ | ✓ |
-| `start_word_timestamps` takes its baseline from its first `get_clock()` read | PlayoutClock (`pc_second_realClock`) | guard `engine_tts._require_baseline_clock_read` (behavioural); `test_tts_streaming.py::test_a_moved_baseline_clock_read_fails_the_session_build` | `services/tts_service.py:1381-1398` | ✓ (that test) | ✓ (#184 suite) |
+| `start_word_timestamps` takes its baseline from its first `get_clock()` read | PlayoutClock (`pc_second_realClock`) | guard `engine_tts._require_baseline_clock_read` (behavioural); `test_tts_streaming.py::test_a_moved_baseline_clock_read_fails_the_session_build` | `services/tts_service.py:1381-1398` | ✓ (that test) | ✓ (main's suite) |
 | The output transport releases timed frames by (pts, arrival), not arrival order | PlayoutClock (`Pop`, `pc_release_words`) | `check_the_transport_releases_timed_frames_by_pts_then_arrival` | `transports/base_output.py:640-649, 1079-1100` | ✓ | ✓ |
 | What the transport pushes on after writing a chunk carries no `context_id` | Ledger, LedgerPlayout (the untagged rebuild) | `check_the_transport_repushes_played_audio_untagged` | `transports/base_output.py:896-923` | ✓ | ✓ |
 | The assistant aggregator commits a cut reply at the interruption and a reply at its End; words after the End go to the next message | UserTurn (`CutLands`), PlayoutClock (`Pop`) | `check_the_assistant_aggregator_commits_at_the_interruption_and_the_end` | `llm_response_universal.py:1748-1750, 2053-2061, 2076-2097` | ✓ | ✓ |
-| The stop strategy's own rules the brain subclasses: an interim un-finalizes, the fallback for a transcript with no VAD stop, `_maybe_trigger_user_turn_stopped` as every path's gate | SttCommit (`StratDelta`, `StratFinal`, the owed close) | `test_endpointing.py`, `test_earlier_final_does_not_end_the_turn.py` (real strategy) | `turns/user_stop/turn_analyzer_user_turn_stop_strategy.py` | ✓ (those tests) | ✓ (#184 suite) |
+| The stop strategy's own rules the brain subclasses: an interim un-finalizes, the fallback for a transcript with no VAD stop, `_maybe_trigger_user_turn_stopped` as every path's gate | SttCommit (`StratDelta`, `StratFinal`, the owed close) | `test_endpointing.py`, `test_earlier_final_does_not_end_the_turn.py` (real strategy) | `turns/user_stop/turn_analyzer_user_turn_stop_strategy.py` | ✓ (those tests) | ✓ (main's suite) |
 | **1.12 only.** A speculative inference runs on a provisional context copy and commits nothing (no user message, no `on_user_turn_message_added`, the aggregation kept) | UserTurn (the fence, the hold's arming) | `check_a_speculative_inference_commits_nothing` | 1.12 `llm_response_universal.py:1412-1433` | skip | ✓ |
 | **1.12 only.** A commit with `run_llm=False` (a stop with `confirms_speculation`) confirms an already-generated reply: the context write, no inference | UserTurn (`CommitStep`, `NoLostGoodbye`; 0aa019b's fence) | `check_a_confirming_stop_commits_without_inference` | 1.12 `llm_response_universal.py:900-930, 1463` | skip | ✓ |
 | **1.12 only.** The brain uses no speculating stop strategy (pipecat's only one is `EagerUserTurnStopStrategy`): the two rows above are latent | -- | `check_the_brain_never_speculates` (structural) | 1.12 `turns/user_stop/eager_user_turn_stop_strategy.py` | skip | ✓ |
@@ -2783,8 +2796,10 @@ request serializes the context, the TTS consumes `LLMTextFrame`, a bare tool cal
 is held at the TTS (the pre-#13 latch). Also not checked separately: an interruption
 dropping a completed reply whose synthesis has not begun (the TTS's own queue reset,
 `tts_service.py:1031-1067`; the processor reset rule above is the general case), and
-"a cancelled completion's End precedes the next run" (an ordering fact the model
-states).
+"a cancelled completion's End, if the ledger sights it at all, does so before the next
+run" (an ordering fact the models state: `LlmStart` waits for `LlmCancelEnd` or
+`LlmCancelLost`; the End is pushed at the cancel, ahead of anything the next commit
+sends).
 
 **Guards.** Three premises fail the session build if pipecat moves them
 (`engine_tts._require_context_end_hook`, `_require_close_at_end_flag` -- both read the

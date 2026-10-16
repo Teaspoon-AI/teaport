@@ -255,7 +255,7 @@ Ledger(f) ==
          \* The ledger cannot tell WHOSE End this is: it ends the stream it holds
          \* (_llm_side: `gen, self._gen = self._gen, None`); a cancelled
          \* completion's End finds none and is ignored -- it arrives before any new
-         \* stream begins, see LlmStart.
+         \* stream begins, if at all: see LlmStart and LlmCancelLost.
          IF genAcc = NONE THEN UNCHANGED ledgerVars
          ELSE /\ ended' = ended \cup {genAcc}
               \* SpeakCheck = "queue" (before this fix): text the engine will not
@@ -379,7 +379,8 @@ Synthesizing  == \E c \in Ctxs : synth[c] \in {"started", "audio"}
 Draining      == \E r \in Replies : drainPending[r]
 
 \* A cancelled completion's End is pushed from its finally at cancellation, before
-\* any new run can start: no completion begins while one is "aborted". (Without
+\* any new run can start: no completion begins while one is "aborted" -- until its
+\* End is sighted (LlmCancelEnd) or lost on the way (LlmCancelLost). (Without
 \* this the ledger, which cannot tell whose End it is, closed the NEXT stream on
 \* the stale frame.)
 Aborted == \E r \in Replies : llm[r] = "aborted"
@@ -403,6 +404,19 @@ LlmCancelEnd(r) ==
     /\ llm[r] = "aborted"
     /\ llm' = [llm EXCEPT ![r] = "cancelled"]
     /\ Ledger([type |-> "LLMEnd", gen |-> r])
+    /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
+
+\* ... or it never reaches the ledger at all. The ledger reads the LLM stream where
+\* the TTS processes it, below the LLM, and the LLM cancels the completion (its
+\* finally pushes the End) BEFORE it passes the interruption on: the End reaches the
+\* TTS ahead of the interruption, as a queued ControlFrame the interruption's reset
+\* may flush. The ledger then never sights it; the completion is over all the same.
+\* (test_pipecat_premises.py: check_a_cancelled_completion_never_reaches_the_ledger_
+\* as_a_finished_one.)
+LlmCancelLost(r) ==
+    /\ llm[r] = "aborted"
+    /\ llm' = [llm EXCEPT ![r] = "cancelled"]
+    /\ UNCHANGED <<ledgerVars>>
     /\ UNCHANGED <<order, synth, timedOut, drainPending, chunks, playedN, pq, window, interrupts, swept, stopEpoch>>
 
 \* Synthesis is sequential per the TTS service, and in the order responses
@@ -536,7 +550,7 @@ Interrupt ==                                       \* the user barges in
     /\ UNCHANGED <<order, chunks, playedN, swept, stopEpoch>>
 
 Next ==
-    \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r) \/ TtsRestart(r) \/ TtsDrain(r)
+    \/ \E r \in Replies : LlmStart(r) \/ LlmEnd(r) \/ LlmCancelEnd(r) \/ LlmCancelLost(r) \/ TtsRestart(r) \/ TtsDrain(r)
     \/ \E c \in Ctxs : TtsStart(c) \/ TtsAudio(c) \/ TtsStop(c)
     \/ PlayStart \/ PlayChunk \/ PlayMark \/ PlayIdle
     \/ Interrupt
