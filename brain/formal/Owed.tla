@@ -1,12 +1,13 @@
 --------------------------------- MODULE Owed ---------------------------------
 (***************************************************************************)
 (* teaport — "owed until heard" (#203): handing an async consult's answer   *)
-(* to the caller. The model leads the code; none of this exists yet.        *)
+(* to the caller. Written before the code, which follows it action for      *)
+(* action (README.md, "Actions and the code they become"):                  *)
 (*                                                                          *)
-(*   brain/teaport_brain/owed.py           -- the record (new)              *)
-(*   services.BoundedOpenAILLMService._open_stream -- the render hook (new) *)
+(*   brain/teaport_brain/owed.py           -- the record, the note, Settle  *)
+(*   services.BoundedOpenAILLMService._open_stream -- the render hook       *)
 (*   followup_gate.FollowupGate            -- gate.ask, the two-slot hold   *)
-(*   transcript_ledger / followup_gate.Delivery -- the settle feed (new)    *)
+(*   followup_gate / transcript_ledger     -- the settle feed               *)
 (*                                                                          *)
 (* Replaces Followup.tla's delivery loop (MODE = "heard"). That loop kept a *)
 (* STANDING ORDER in the context and retired it at the read, then asked     *)
@@ -55,8 +56,8 @@
 (* that exactly, so the model can ask whether the RULE closes on it.        *)
 (*                                                                          *)
 (* MUT, a set ({} = the design). The evidence rule (one at a time):         *)
-(*   "fraction"    -- today's rule: a run's reply heard >= 1/3 of its       *)
-(*                    words closes (agent_session._MIN_HEARD). #203.        *)
+(*   "fraction"    -- the rule before #203: a run's reply heard >= 1/3 of   *)
+(*                    its words closes (the removed _MIN_HEARD). #203.      *)
 (*   "countSettle" -- two uncut replies that carried the note close (the    *)
 (*                    inbox proposal; X2-Igone: 20/20 re-lookups after).    *)
 (*   "singleWord"  -- no common-word list and no 2-term minimum: a filler   *)
@@ -72,9 +73,9 @@
 (*                    lull, the render) do not wait for the settle feed:    *)
 (*                    the ledger charts a reply that played through only at *)
 (*                    the next bot activity (the 2026-09-11 14:23 loss, in  *)
-(*                    transcript_ledger.next_assistant's docstring).        *)
+(*                    the removed TranscriptLedger.next_assistant's doc).   *)
 (*   "oneSlot"     -- the hold keeps one frame, a newer one replacing the   *)
-(*                    older (FollowupGate._hold_answer as it is today).     *)
+(*                    older (FollowupGate._hold_answer before #203).        *)
 (*   "askOnly"     -- a run is validated when it is asked (gate.ask) and    *)
 (*                    not again when it goes: a post-tool answer released   *)
 (*                    from the same hold ahead of it can tell first.        *)
@@ -291,9 +292,9 @@ Land ==
 \* The settle feed: owed.py hears how the reply ended and closes the record on the
 \* evidence. Its own step, so a reader that does not wait for it reads a stale record.
 \* The feed's source is the reply's own end -- the interruption (ledger._interrupt, ahead
-\* of the commit by CutReplyFence) or its BotStoppedSpeakingFrame with its own audio
-\* (FollowupGate's Delivery, replies_only) -- NOT the ledger's chart of a reply that
-\* played through, which comes only at the next bot activity.
+\* of the commit by CutReplyFence) or the end of its own audio at the transport
+\* (FollowupGate.on_reply_played: its context's stop after its own audio) -- NOT a chart
+\* of a reply that played through that comes only at the next bot activity.
 Settle ==
     /\ fed = "close"
     /\ fed' = "none"
