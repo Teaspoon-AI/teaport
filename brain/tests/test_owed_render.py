@@ -102,19 +102,16 @@ def _llm(provider):
 
 
 class _Gate:
-    caller_request_pending = False
-
     def __init__(self):
-        self.asked, self.rendered, self.released = [], 0, 0
+        self.asked, self.rendered = [], 0
+        self.caller_request_pending = False
 
-    def ask(self, keys, purpose):
+    def ask(self, keys, purpose, context):
         self.asked.append((list(keys), purpose))
 
     def request_rendered(self):
         self.rendered += 1
-
-    def release_claim(self):
-        self.released += 1
+        self.caller_request_pending = False
 
     def quiet_for(self):
         return 0.0
@@ -154,7 +151,7 @@ async def test_a_caller_request_carries_the_note_before_their_words():
                    {"role": "user", "content": "I'm ready."})
     llm.owed, gate = _book(ctx)
     before = json.dumps(ctx.get_messages())
-    reply = owed.Reply("caller")
+    reply = owed.Reply("caller", commit=True)
     token = services._REPLY.set(reply)
     try:
         await llm.get_chat_completions(ctx)
@@ -245,6 +242,9 @@ async def test_a_run_goes_with_the_note_at_the_tail_and_the_run_line_first():
 
 
 async def test_a_run_whose_answer_was_heard_sends_no_request():
+    """Checked where it renders (Owed.tla RunGo, ow_askOnly): a run whose records were
+    heard since it was asked goes as an empty completion, and the gate is told the turn
+    is over."""
     provider = _Provider()
     llm = _llm(provider)
     ctx = _context()
@@ -254,8 +254,63 @@ async def test_a_run_whose_answer_was_heard_sends_no_request():
                         LLMContextFrame(context=LLMContext([{"role": "user", "content": "x"}])))
     assert len(provider.requests) == 1, "the run sent a request"
     assert not _notes(provider.requests[0])
-    assert sum(isinstance(f, LLMFullResponseStartFrame) for f in frames) == 1
-    assert gate.released == 1, "the window the run claimed was kept"
+    assert any(isinstance(f, RunSilentFrame) for f in frames), "the gate kept the turn"
+
+
+async def test_a_commit_is_rendered_only_once_its_view_is_built():
+    """Owed.tla Land: a consult landing while the commit's view waits for a settle finds
+    the commit still to be rendered, leaves the note to it, and asks no run ("tell them
+    now" right after "hold on"). A post-tool request never clears a pending commit."""
+    provider = _Provider()
+    llm = _llm(provider)
+    ctx = _context({"role": "user", "content": "Hold on."})
+    llm.owed, gate = _book(ctx, land=False)
+    gate.caller_request_pending = True               # the commit passed TurnCommitMark
+    earlier = owed.Reply("caller")
+    llm.owed.noted(earlier, ("x",))                  # a reply still to settle
+    reply = owed.Reply("caller", commit=True)
+
+    async def render():
+        token = services._REPLY.set(reply)
+        try:
+            await llm.get_chat_completions(ctx)
+        finally:
+            services._REPLY.reset(token)
+    task = asyncio.ensure_future(render())
+    await asyncio.sleep(0.05)
+    assert gate.rendered == 0, "rendered before its view"
+    llm.owed.land(REQ, ANSWER, "call-hn")
+    assert gate.asked == [], "a run was asked while the commit was still to be rendered"
+    llm.owed.settle(earlier, None, cut=True, audio=False)
+    await task
+    notes = _notes(provider.requests[0])
+    assert gate.rendered == 1 and notes and "Tesla Roadster" in notes[0]["content"]
+    post = owed.Reply("caller")                      # a context frame on its way up
+    token = services._REPLY.set(post)
+    try:
+        await llm.get_chat_completions(ctx)
+    finally:
+        services._REPLY.reset(token)
+    assert gate.rendered == 1, "a post-tool request told the gate a commit was rendered"
+
+
+async def test_a_run_that_calls_a_tool_keeps_its_turn():
+    """RunSilentFrame only for a run that said nothing AND called nothing: a call out is a
+    tool round the gate must keep (NoRunMidTurn)."""
+    provider = _Provider(reply=lambda p: [_chunk(tool="get_current_time")])
+    llm = _llm(provider)
+    called = asyncio.Event()
+
+    async def handler(params):
+        called.set()
+        await params.result_callback({"time": "noon"})
+    llm.register_function("get_current_time", handler)
+    ctx = _context()
+    llm.owed, _ = _book(ctx)
+    frames = await _run(llm, RunFrame(context=ctx, keys=("call-hn",), purpose="run"))
+    assert called.is_set(), "the run's call was not dispatched"
+    assert not any(isinstance(f, RunSilentFrame) for f in frames), (
+        "a run with a call out told the gate its turn was over")
 
 
 async def test_the_reoffers_stay_silent_never_reaches_the_context():

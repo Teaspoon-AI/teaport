@@ -874,13 +874,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # renders its note into every request, the ledger settles each reply into it, the
     # gate is the door its runs go through, and a room's sleep keeps it with the
     # conversation.
-    book = Owed(context, gate=followup_gate)
-    followup_gate.book = book
-    llm.owed = book
-    ledger.on_reply_end = book.settle
-    followup_gate.on_reply_played = ledger.reply_played
+    owed = Owed(context, gate=followup_gate)
+    llm.owed = owed
+    ledger.on_reply_end = owed.settle
     if wake_gate is not None:
-        wake_gate.book = book
+        wake_gate.owed = owed
     # Retires ClientNotes' reaction order at the completion that reads it. Must sit
     # directly below the LLM — see FollowupTrigger's placement note.
     followup_trigger = FollowupTrigger() if context_notes else None
@@ -1060,7 +1058,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # Agent-first runs consults SYNCHRONOUSLY on the turn (nothing owed);
     # the ThinkingSound bed covers the wait and TURN-TIMING measures to the answer.
     register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
-                   followup=None if AGENT_FIRST else book,
+                   owed=None if AGENT_FIRST else owed,
                    # Lets the consult narrator fit its progress lines into a gap
                    # rather than talking over the user (see _consult_progress).
                    gate=followup_gate,
@@ -1080,7 +1078,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         input_mute=input_mute,
     )
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
-    session.owed = book    # what the caller is still owed (owed.py)
+    session.owed = owed    # what the caller is still owed (owed.py)
     if prompt is not None:
         prompt.session = session
         session.call_prompt = prompt

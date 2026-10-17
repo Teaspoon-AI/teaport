@@ -299,8 +299,8 @@ Land ==
 \* The settle feed: owed.py hears how the reply ended and closes the record on the
 \* evidence. Its own step, so a reader that does not wait for it reads a stale record.
 \* The feed's source is the reply's own end -- the interruption (ledger._interrupt, ahead
-\* of the commit by CutReplyFence) or the end of its own audio at the transport
-\* (FollowupGate.on_reply_played: its context's stop after its own audio) -- NOT a chart
+\* of the commit by CutReplyFence) or its synthesis done and all of its own audio played
+\* (ledger._close_ready, at the window close its last chunk played out in) -- NOT a chart
 \* of a reply that played through that comes only at the next bot activity.
 Settle ==
     /\ fed = "close"

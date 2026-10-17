@@ -42,12 +42,14 @@
 # while caller speech is pending, as the answer is, but a run that reaches the hold cap
 # is DROPPED, never sent (room TV noise would otherwise make it speak over whatever kept
 # the VAD up; Owed.tla Cap). Out of the hold it waits for a window that is turn-free as
-# well (no turn open, no committed words unanswered, no tool round out, nothing claimed:
-# ow_turnLevel and ow_vadLevel are each half alone, #197), owed.py is asked again whether
-# its records are still owed (a post-tool answer released ahead of it, or a caller turn,
-# may have told them: ow_askOnly), and the gate claims the window itself -- TurnCommitMark
-# never sees a frame pushed up from here -- and pushes it UP to the LLM as a RunFrame,
-# an LLMContextFrame the LLM answers whatever its direction (test_pipecat_premises.py).
+# well (no turn open, no committed words unanswered, no tool round out -- a call put
+# out with a line before it included, endClearsTool -- nothing claimed: ow_turnLevel and
+# ow_vadLevel are each half alone, #197), the gate claims the window itself --
+# TurnCommitMark never sees a frame pushed up from here -- and pushes it UP to the LLM as
+# a RunFrame, an LLMContextFrame the LLM answers whatever its direction
+# (test_pipecat_premises.py). Where it renders, owed.py asks again whether its records
+# are still owed (a post-tool answer released ahead of it may have told them:
+# ow_askOnly); a run whose records were heard sends no request.
 # A caller turn drops a waiting run: its own request carries the note (Owed.tla
 # TurnStart).
 #
@@ -71,10 +73,7 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     ControlFrame,
-    OutputAudioRawFrame,
     StopFrame,
-    TTSStartedFrame,
-    TTSStoppedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
@@ -310,11 +309,14 @@ class FollowupGate(FrameProcessor):
         # model last answered (time.monotonic(); refreshed while that is still going on).
         self.user_heard = False
         self.last_active = time.monotonic()
-        # Async consults still running (tools._consult_and_followup).
+        # Async consults still running (tools._consult_and_land).
         self.consults_running = 0
-        # The session's owed records (owed.Owed): the run's door asks them at the go and
-        # tells them of caller turns and dropped runs. None: no async consults here.
-        self.book = None
+        # What the run's door reports (owed.Owed wires them): a caller turn started
+        # (Owed.tla TurnStart arms the re-offer), a run dropped at the hold cap (keys),
+        # the session's end (the gate's cleanup).
+        self.on_caller_turn = None
+        self.on_run_dropped = None
+        self.on_session_end = None
         self._was_busy = False
         # Clear == the conversation is on hold for a phone call (AgentSession.hold): no
         # window opens while it is, and a turn-free waiter (a consult answer, a client
@@ -340,26 +342,22 @@ class FollowupGate(FrameProcessor):
         # run waits for.
         self._speech_clear = asyncio.Event()
         self._speech_clear.set()
-        # The run's slot (module header, THE RUN): (keys, purpose, task), or None. Its
-        # own, beside the post-tool answer's _held_answer: HoldNoLoss.
+        # The run's slot (module header, THE RUN): (keys, purpose, context, task), or
+        # None. Its own, beside the post-tool answer's _held_answer: HoldNoLoss.
         self._run = None
-        self.runs_sent = 0
         self.runs_dropped = 0
+        # A function call is out and nothing has answered it yet: set by its
+        # FunctionCallInProgressFrame, cleared by the answering completion's start, a
+        # result that runs no inference, or an interruption. _turn alone does not cover
+        # it: a completion with text AND a call ("Let me check." + get_weather) ends --
+        # its End reaches here -- while the call is out (formal/Owed.tla, endClearsTool).
+        self._tool_round = False
         # A commit's LLMContextFrame passed TurnCommitMark and the LLM has not rendered it
         # yet (request_rendered): with _user, "a caller request is still to be rendered"
         # (owed.Owed.land; Owed.tla Land).
         self._commit_unrendered = False
         # When the line was last not quiet (quiet_for): the re-offer's lull.
         self._last_unquiet = time.monotonic()
-        # The settle feed's played-through half (owed.py; Owed.tla Settle, ow_lagSettle):
-        # a model reply's own TTS context -- opened by a TTSStartedFrame that is not a
-        # filler's (append_to_context=False) -- and whether its audio has passed. Frames
-        # reach the gate in playout order, below the transport, so that context's
-        # TTSStoppedFrame after its own audio is the reply having played to its end.
-        # on_reply_played(context_id): TranscriptLedger.reply_played (agent_session).
-        self.on_reply_played = None
-        self._reply_ctx = None
-        self._reply_audio = False
 
     @property
     def held(self) -> bool:
@@ -480,7 +478,7 @@ class FollowupGate(FrameProcessor):
         else:
             self._idle.set()
             self._busy.clear()
-        if busy or self._turn or self._claimed:
+        if busy or self._turn or self._claimed or self._tool_round:
             self._clear.clear()
         else:
             self._clear.set()
@@ -540,8 +538,8 @@ class FollowupGate(FrameProcessor):
             # A caller turn (Owed.tla TurnStart): a run waiting at the door is dropped --
             # this turn's request carries the note -- and the re-offer is armed.
             self._drop_run("the caller's turn started; its request carries the note")
-            if self.book is not None:
-                self.book.caller_turn()
+            if self.on_caller_turn is not None:
+                self.on_caller_turn()
             self._refresh()
         elif isinstance(frame, UserStoppedSpeakingFrame):
             self._user = False
@@ -551,19 +549,8 @@ class FollowupGate(FrameProcessor):
             for d in self._deliveries:
                 d.spoke = True
             self._refresh()
-        elif isinstance(frame, TTSStartedFrame):
-            own = getattr(frame, "append_to_context", True) is not False
-            self._reply_ctx = getattr(frame, "context_id", None) if own else None
-            self._reply_audio = False
-        elif isinstance(frame, OutputAudioRawFrame):
-            if self._reply_ctx is not None:
-                self._reply_audio = True
-        elif isinstance(frame, TTSStoppedFrame):
-            self._reply_played(getattr(frame, "context_id", None))
         elif isinstance(frame, BotStoppedSpeakingFrame):
             self._bot = False
-            # Without a stop frame of its own the transport's stop still ends it.
-            self._reply_played(self._reply_ctx)
             # The transport stops speaking once its queue has drained, so a watched
             # line that had started is now fully played. One that has not started yet
             # belongs to a later turn and keeps waiting.
@@ -572,6 +559,7 @@ class FollowupGate(FrameProcessor):
         elif isinstance(frame, LLMFullResponseStartFrame):
             self._llm = True
             self._turn = True
+            self._tool_round = False   # the answering completion (or a new one) is here
             # A claimant's completion has started; _turn holds the window shut from here.
             self.release_claim()
             self._refresh()
@@ -594,6 +582,7 @@ class FollowupGate(FrameProcessor):
             if (getattr(frame, "run_llm", None) is False
                     or (props is not None and getattr(props, "run_llm", None) is False)):
                 self._turn = False
+                self._tool_round = False
                 self._refresh()
         elif isinstance(frame, InterruptionFrame):
             # A held answer goes with it: the turn behind the interruption commits, and
@@ -606,7 +595,7 @@ class FollowupGate(FrameProcessor):
             self._llm = False
             self._turn = False
             self._commit_unrendered = False   # a commit still queued is flushed with it
-            self._reply_ctx, self._reply_audio = None, False   # cut: the ledger's to settle
+            self._tool_round = False          # a sync call is cancelled
             # Every watched line is cut — including one queued but not yet speaking,
             # which the caller heard none of. A claimant's queued completion is flushed
             # with it, so its claim goes too.
@@ -636,6 +625,7 @@ class FollowupGate(FrameProcessor):
             # found the interleaving in 7 steps (LATCH = "clearedOnToolCall",
             # invariant NoInterjectMidTurn); Owed.tla's ow_vadLevel is the run's.
             self._llm = False
+            self._tool_round = True
             self._refresh()
         self._mark_unquiet()
         await self.push_frame(frame, direction)
@@ -702,19 +692,12 @@ class FollowupGate(FrameProcessor):
         self._drop_answer(None)
         self._drop_run(None)
         self._cancel(self._speech_timer)
-        if self.book is not None:
+        if self.on_session_end is not None:
             # The session is over: a consult still running cannot report back to it.
-            self.book.close_session()
+            self.on_session_end()
         await super().cleanup()
 
     # ------------------------------------------------------------ the run (#203)
-
-    def _reply_played(self, ctx) -> None:
-        if ctx is None or ctx != self._reply_ctx or not self._reply_audio:
-            return
-        self._reply_ctx, self._reply_audio = None, False
-        if self.on_reply_played is not None:
-            self.on_reply_played(ctx)
 
     def _speech_changed(self) -> None:
         if self._vad or self._speech_pending:
@@ -744,36 +727,37 @@ class FollowupGate(FrameProcessor):
     def _door_open(self) -> bool:
         """The run's window (Owed.tla Window): VAD-level AND turn-level -- no caller
         speech pending, no turn open, no request or reply in flight, no tool round out
-        (_turn), nothing claimed (a commit not yet answered: TurnCommitMark; a client
+        (_turn, _tool_round), nothing claimed (a commit not yet answered: TurnCommitMark; a client
         note's reaction), nothing held for a phone call, the post-tool answer's slot
         empty (it goes first)."""
         return (self._clear.is_set() and not self._vad and not self._speech_pending
                 and self._held_answer is None and not self.held)
 
-    def ask(self, keys, purpose: str = "run") -> None:
-        """gate.ask (Owed.tla Ask): a run of ours for the owed records `keys` (a key or a
-        list), "run" or "reoffer". One run waits at a time: one already waiting takes
-        the new keys too (it renders every owed record anyway)."""
-        keys = [keys] if isinstance(keys, str) else list(keys)
+    def ask(self, keys, purpose: str, context) -> None:
+        """gate.ask (Owed.tla Ask): a run of ours for the owed records `keys`, "run" or
+        "reoffer", on `context`. One run waits at a time: one already waiting takes the
+        new keys too (it renders every owed record anyway)."""
+        keys = list(keys)
         if self._run is not None:
-            old_keys, old_purpose, task = self._run
+            old_keys, old_purpose, _, task = self._run
             merged = old_keys + [k for k in keys if k not in old_keys]
             # The landing run's line over the re-offer's: something new to tell.
-            self._run = (merged, "run" if "run" in (old_purpose, purpose) else purpose, task)
+            purpose = "run" if "run" in (old_purpose, purpose) else purpose
+            self._run = (merged, purpose, context, task)
             return
         try:
             task = self.create_task(self._run_door(), name="followup-gate-run")
         except Exception as e:  # noqa: BLE001 -- the pipeline is gone (the session ended)
             logger.info(f"FOLLOWUP-GATE: no run for {keys}: the session is over ({e!r})")
             return
-        self._run = (keys, purpose, task)
+        self._run = (keys, purpose, context, task)
         self._mark_unquiet()
 
     def _drop_run(self, why: str | None) -> None:
         run, self._run = self._run, None
         if run is None:
             return
-        self._cancel(run[2])
+        self._cancel(run[3])
         if why is not None:
             self.runs_dropped += 1
             logger.info(f"FOLLOWUP-GATE: dropped the {run[1]} for {run[0]} -- {why}")
@@ -799,8 +783,8 @@ class FollowupGate(FrameProcessor):
                     keys = self._run[0]
                     self._drop_run(f"hold cap {self._answer_max_secs:.1f}s with the "
                                    "caller still talking")
-                    if self.book is not None:
-                        self.book.run_dropped(keys, "the hold cap")
+                    if self.on_run_dropped is not None:
+                        self.on_run_dropped(keys)
                     return
                 continue
             held_since = None
@@ -811,23 +795,12 @@ class FollowupGate(FrameProcessor):
             await asyncio.sleep(self._quiet_secs)
             if self._run is None or not self._door_open():
                 continue
-            keys, purpose, _ = self._run
-            if self.book is not None:
-                # Re-validated where it goes (Owed.tla RunGo; ow_askOnly): a post-tool
-                # answer released ahead of it, or a caller turn, may have told it.
-                keys = await self.book.still_owed(keys)
-                if self._run is None:
-                    return
-                if not keys:
-                    self._drop_run("its answer has been heard since it was asked")
-                    return
-                if not self._door_open():
-                    continue
-            context = self.book.context if self.book is not None else None
+            # Whether its records are still owed is asked where it renders (owed.Owed.view):
+            # in the quiet window nothing comes between this go and that render.
+            keys, purpose, context, _ = self._run
             self._run = None
             # No await between the check and the claim: one window, one waiter.
             self._claim()
-            self.runs_sent += 1
             logger.info(f"FOLLOWUP-GATE: the {purpose} for {keys} goes")
             await self.push_frame(RunFrame(context=context, keys=tuple(keys), purpose=purpose),
                                   FrameDirection.UPSTREAM)

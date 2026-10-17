@@ -540,11 +540,13 @@ class BoundedOpenAILLMService(OpenAILLMService):
             logger.info(f"{self}: completion finished in {time.monotonic() - started:.1f}s")
 
     async def _run_said_nothing(self):
-        """A run of ours that said nothing (stay_silent, empty, failed before its first
-        text): its End will be held at the TTS (test_pipecat_premises.py), so the gate is
-        told the turn is over (RunSilentFrame)."""
+        """A run of ours that said nothing and called nothing (stay_silent alone, empty,
+        failed before its first text): its End will be held at the TTS
+        (test_pipecat_premises.py), so the gate is told the turn is over
+        (RunSilentFrame). Not with a call out: that is a tool round the gate keeps."""
         reply = _REPLY.get()
-        if reply is not None and reply.purpose in owed_mod.RUNS and not reply.texts:
+        if (reply is not None and reply.purpose in owed_mod.RUNS and not reply.texts
+                and not reply.calls):
             await self.push_frame(RunSilentFrame())
 
     async def run_function_calls(self, function_calls):
@@ -565,7 +567,6 @@ class BoundedOpenAILLMService(OpenAILLMService):
             # stray "..." beside it is not spoken as a vanished reply.
             silent = [c for c in function_calls if c.function_name == owed_mod.STAY_SILENT]
             if silent:
-                reply.silenced = True
                 logger.info(f"{self}: the re-offer called stay_silent -- saying nothing")
                 function_calls = [c for c in function_calls if c not in silent]
                 if not function_calls:
@@ -573,6 +574,8 @@ class BoundedOpenAILLMService(OpenAILLMService):
                                                function_calls=silent)
                     return
         if function_calls:
+            if reply is not None:
+                reply.calls += len(function_calls)
             await self.broadcast_frame(
                 FunctionCallsDispatchedFrame, function_calls=function_calls
             )
@@ -593,20 +596,9 @@ class BoundedOpenAILLMService(OpenAILLMService):
             await super().process_frame(frame, direction)
             return
         if isinstance(frame, RunFrame):
-            purpose, keys = frame.purpose, frame.keys
-            # Where it goes, as well as where the gate let it go (Owed.tla RunGo,
-            # ow_askOnly): a run none of whose records is owed renders nothing and sends
-            # no request -- not a bare "tell them now" with no results.
-            if not await self.owed.still_owed(keys):
-                logger.info(f"{self}: the {purpose} for {list(keys)} is not sent -- its "
-                            "answer has been heard since")
-                if self.owed.gate is not None:
-                    self.owed.gate.release_claim()
-                return
+            reply = owed_mod.Reply(frame.purpose, frame.keys)
         else:
-            purpose = "posttool" if direction == FrameDirection.UPSTREAM else "caller"
-            keys = ()
-        reply = owed_mod.Reply(purpose, keys)
+            reply = owed_mod.Reply("caller", commit=direction == FrameDirection.DOWNSTREAM)
         token = _REPLY.set(reply)
         try:
             await super().process_frame(frame, direction)
@@ -623,11 +615,17 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 reply.texts += 1
         await super().push_frame(frame, direction)
 
+    def _rendered(self, reply, noted) -> None:
+        """`reply`'s request is built: what its note carried is evidence when it ends, and
+        a commit is no longer one still to be rendered -- told only now, after the view
+        (which waits for the settles), so a consult landing meanwhile still finds it
+        pending and leaves the note to it (Owed.tla Land)."""
+        self.owed.noted(reply, noted)
+        if reply is not None and reply.commit and self.owed.gate is not None:
+            self.owed.gate.request_rendered()
+
     async def get_chat_completions(self, context):
         reply = _REPLY.get()
-        if reply is not None and reply.purpose not in owed_mod.RUNS \
-                and self.owed is not None and self.owed.gate is not None:
-            self.owed.gate.request_rendered()
         # A speculation opened for this very context, if there is one, is the stream --
         # its buffered chunks replay first, then it continues live. The request-building
         # path below is what the speculation itself went through, so the two are the
@@ -637,7 +635,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
             adopted = await self.speculator.take(context)
             if adopted is not None:
                 if self.owed is not None:
-                    self.owed.noted(reply, getattr(adopted, "owed_noted", ()))
+                    self._rendered(reply, getattr(adopted, "owed_noted", ()))
                 return adopted
         return await self._open_stream(context)
 
@@ -669,7 +667,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 logger.info(f"{self}: the {purpose} has nothing owed to tell -- no request")
                 return _NothingToSay()
             context = view
-            self.owed.noted(reply, noted)
+            self._rendered(reply, noted)
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
         # _RenumberedStream, not the bare generator — see the class docstring: a

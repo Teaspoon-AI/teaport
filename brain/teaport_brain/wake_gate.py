@@ -117,7 +117,7 @@ class WakeGate:
         self.greeting = greeting
         self.store = store or MIC
         self.context = None   # the session's LLMContext, set by build_agent_session
-        self.book = None      # the session's owed records (owed.Owed), likewise
+        self.owed = None      # the session's owed records (owed.Owed), likewise
         self.woke = not asleep
         self._clock = clock
         self._carry: tuple[str, float] | None = None   # (tail, when) -- see CARRY_SECS
@@ -148,8 +148,8 @@ class WakeGate:
         restored = self.store.take(self.conversation_secs)
         if restored and self.context is not None:
             self.context.add_messages(restored)
-            if self.book is not None:
-                self.book.restore(self.store.records)
+            if self.owed is not None:
+                self.owed.restore(self.store.records)
         greet = not restored
         logger.info(f'wake word "{phrase}" heard — '
                     + (f"continuing the conversation ({len(restored)} messages)" if restored
@@ -167,7 +167,7 @@ class WakeGate:
         """The session is over: what it said is the mic conversation, to be continued."""
         if self.woke and self.context is not None:
             records = []
-            if self.book is not None:
-                self.book.close_session()
-                records = self.book.snapshot()
+            if self.owed is not None:
+                self.owed.close_session()
+                records = self.owed.snapshot()
             self.store.save(self.context.get_messages(), records)

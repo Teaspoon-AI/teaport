@@ -223,16 +223,16 @@ the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
 
 | action | code |
 |---|---|
-| `Land` | `tools._consult_and_followup` → `Owed.land` (the session's `Owed` is the tools' `followup`): the placeholder tool result is rewritten once to the cleaned outcome (`owed.clean_outcome`; the rewrite moved from the old `speak_followup`), and the landing run is asked unless `FollowupGate.caller_request_pending` (their turn is open, `_user`, or a commit passed `TurnCommitMark` and the LLM has not rendered it, `request_rendered`); then the re-offer is armed instead |
-| `Ask` | `Owed._ask` → `FollowupGate.ask(keys, purpose)`: the run's own slot (`_run`), beside the post-tool answer's `_held_answer`. The attempt counts here, so a held-then-dropped run is one |
-| `RunGo` | `FollowupGate._run_door`: past the hold, a window that is turn-free (`_clear`: no turn, no request or reply in flight, nothing claimed) and VAD-free (no `_vad`, no `_speech_pending`), debounced; `Owed.still_owed` is asked there (after `settled()`), the gate claims the window and pushes a `RunFrame` UP. The LLM asks `still_owed` again where it arrives (`BoundedOpenAILLMService.process_frame`), and a run whose records closed sends no request |
-| `Cap` | `_run_door`'s hold: a run held under speech for `TEAPORT_REPLY_HOLD_MAX_S` is **dropped** (`Owed.run_dropped` arms the re-offer), never sent. The post-tool answer keeps `_answer_capped`'s release |
+| `Land` | `tools._consult_and_land` → `Owed.land` (the tools hold the session's `Owed`; `Owed.dispatch` registered the consult and folds a duplicate into it): the placeholder tool result is rewritten once to the cleaned outcome (`owed.clean_outcome`; the rewrite moved from the old `speak_followup`), and the landing run is asked unless `FollowupGate.caller_request_pending` (their turn is open, `_user`, or a commit passed `TurnCommitMark` and the LLM has not rendered it, `request_rendered`); then the re-offer is armed instead |
+| `Ask` | `FollowupGate.ask(keys, purpose, context)`: the run's own slot (`_run`), beside the post-tool answer's `_held_answer`. A re-offer counts at its ask (`Record.reoffers`), so a held-then-dropped one is one |
+| `RunGo` | `FollowupGate._run_door`: past the hold, a window that is turn-free (`_clear`: no turn, no request or reply in flight, no tool round out, nothing claimed) and VAD-free (no `_vad`, no `_speech_pending`), debounced; the gate claims the window and pushes a `RunFrame` UP. Whether its records are still owed is asked where it renders (`Owed.view`, after `settled()`): in the quiet window nothing lies between the go and the render, so that is the model's check at the go. A run whose records were heard renders nothing (`_NothingToSay`) and its empty completion ends the gate's turn (`RunSilentFrame`) |
+| `Cap` | `_run_door`'s hold: a run held under speech for `TEAPORT_REPLY_HOLD_MAX_S` is **dropped** (`on_run_dropped` → `Owed.run_dropped` arms the re-offer), never sent. The post-tool answer keeps `_answer_capped`'s release |
 | `GateQuiet` | `_speech_over`: no words within the release window |
-| `ToolResult` | pipecat's `_maybe_push_context_after_function_result`, as in `UserTurn.tla`'s POSTTOOL |
-| `Issue` | the LLM takes a caller commit or a post-tool answer; `_open_stream` asks `Owed.view` (which waits for every pending settle) and sends the view. The commit passed `HeardContextCorrector` first; `sp` is the speculative reply, opened through `_open_stream` directly (`speculate.py`), its noted keys carried on the stream to the commit that adopts it |
-| `Say`, `Played` | the completion and its playout. `stay_silent` is offered only in the re-offer's view, and `run_function_calls` consumes it: no call, no result in the context, a `RunSilentFrame` to end the gate's turn |
-| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
-| `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: `FollowupGate.on_reply_played` → `TranscriptLedger.reply_played`, when the reply's context's `TTSStoppedFrame` passes the transport after its own audio, with the whole text (the ledger's chart, `_close_ready`, is the fallback). No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame` |
+| `ToolResult` | pipecat's `_maybe_push_context_after_function_result`, as in `UserTurn.tla`'s POSTTOOL. The gate's tool round (`_tool_round`: set by a call's `FunctionCallInProgressFrame`, cleared by the answering completion's start, a no-inference result or an interruption) is `tres` for a call put out with a line before it, whose End clears `_turn` (`tend`, `endClearsTool`) |
+| `Issue` | the LLM takes a caller commit or a post-tool answer; `_open_stream` asks `Owed.view` (which waits for every pending settle) and sends the view. Only then is a commit no longer "still to be rendered" (`request_rendered`), so a consult landing during that wait leaves the note to it. The commit passed `HeardContextCorrector` first; `sp` is the speculative reply, opened through `_open_stream` directly (`speculate.py`), its noted keys carried on the stream to the commit that adopts it |
+| `Say`, `Played` | the completion and its playout. `stay_silent` is offered only in the re-offer's view, and `run_function_calls` consumes it: no call, no result in the context, a `RunSilentFrame` to end the gate's turn (only with no other call out) |
+| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
+| `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame` |
 | `Lull` | `Owed._lull_loop`: every reply settled, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
 | `Commit` | the user aggregator's commit (an empty final commits nothing) |
 
@@ -244,10 +244,13 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   oldest as `dropped` (not heard, its tool result kept, no note): never `closed`, which
   would break `ClosedOnEvidence`. One run renders every owed record, so a second ask
   joins the waiting run.
-- **The bounded settle wait.** Readers wait `SETTLE_WAIT_S` (2 s) for pending settles. A
-  reply the ledger never saw start (its Start flushed by an interruption) is then settled
-  as heard nothing; one it saw and has not charted is read as it stands, with a warning.
-  The model's readers wait unboundedly; this is its timed residual.
+- **The bounded settle wait: an accepted residual.** The render waits `SETTLE_WAIT_S`
+  (2 s) for pending settles; past it every reply still pending is settled as heard
+  nothing, with a warning (errs owed; one lost reply does not hold every later render).
+  The model's readers wait unboundedly. If the bound is ever hit by a reply that the
+  caller did hear, a run rendered right after can tell it again: `ow_lagSettle`'s
+  repeat, in practice, behind a 2 s timer. The lull does not take the bound: it waits
+  for the settle itself.
 - **The session's end** (`Owed.close_session`, from the gate's cleanup and the room's
   sleep): a consult still running has its placeholder rewritten to its failure record,
   owed, with no run. **Room sleep and wake** save and restore the owed records with the
@@ -256,7 +259,10 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   the re-offer line last (where rounds 4 and 5 measured it).
 - **The heard quote.** A cut reply that carried the note and closed nothing has its
   pts-exact heard text quoted ("They heard only …") when it was a run of ours or shares
-  a non-common token with the record; the status line is not in the model.
+  a non-common token with the record (`Owed._about`: the #203 session would otherwise
+  have quoted a clarifying question, `test_owed_corpus.py`). The re-offer's note never
+  quotes (the confirmation round: 9/40 stay silent after "hold on" with the quote, 18/40
+  without). The status line is not in the model.
 
 ### What the model may say
 
@@ -354,17 +360,19 @@ The model was written to lead the design, and it found these:
    error after the first token), and, with fix 1, a run that played through with an
    item untold. In each case no cut and no turn ever comes. Fix (`REOFFER = "anyMiss"`):
    any run that ended without closing the record also arms the re-offer.
-3. **The settle feed cannot be the ledger's chart** (`ow_lagSettle`,
-   `ow_lagSettle_repeat`). §6 lists "a ledger feed of settled replies". The ledger charts
-   a reply that played through only at the next bot activity (`next_assistant`'s
-   docstring, the 2026-09-11 14:23 loss), so the lull, the run and the render would read
+3. **The settle feed must be the reply's own end** (`ow_lagSettle`,
+   `ow_lagSettle_repeat`). §6 lists "a ledger feed of settled replies". The ledger of
+   `next_assistant`'s docstring charted a reply that played through only at the next bot
+   activity (the 2026-09-11 14:23 loss), so the lull, the run and the render would read
    a stale record. Fable's lagging-settle trace is exactly this. The feed has to be the
    reply's own end: the interruption (ahead of the commit, by `CutReplyFence`), or the
-   end of its own audio. Every reader waits for it. As built: the cut from
-   `TranscriptLedger._interrupt`; the played-through end from `FollowupGate`, below the
-   transport, when the reply's context's `TTSStoppedFrame` passes after that context's
-   own audio (not a filler's; `on_reply_played` → `TranscriptLedger.reply_played`, which
-   knows the context's reply and its text), with the ledger's own chart as the fallback.
+   end of its own audio. Every reader waits for it. As built, both come from the
+   ledger, whose playout design (`LedgerPlayout.tla`) charts at exactly those ends: the
+   cut at `_interrupt`; a reply that played through once its synthesis is done and all
+   of its audio has played (`_close_ready`), which is the window close its own last
+   chunk played out in -- never a mid-reply `BotStoppedSpeakingFrame` (the transport's
+   3 s fallback on a TTS stall) or a filler's end, which a first version that watched
+   one TTS context at the gate took for the reply's (review round, `test_owed.py`).
 4. **The ledger's heard text over-reports on a cut** (`ow_ledgerMax`). §3 says "the
    ledger's word-exact heard prefix". It is not word-exact. `transcript_ledger.py:902`
    keeps the **longer** of the pts prefix and `_prefix(intended, frac)`, an estimate that

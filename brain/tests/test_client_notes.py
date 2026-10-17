@@ -437,7 +437,9 @@ async def test_no_note_lands_while_a_tool_call_turn_is_in_flight():
     assert _results(h)[-1]["status"] == "queued"
     await asyncio.sleep(0.15)
     assert _notes_in(h.context) == [], "a note landed inside a tool-call turn"
-    await h.gate.process_frame(LLMFullResponseEndFrame(), FrameDirection.DOWNSTREAM)
+    # The tool's answering completion: its start ends the tool round, its end the turn.
+    for f in (LLMFullResponseStartFrame(), LLMFullResponseEndFrame()):
+        await h.gate.process_frame(f, FrameDirection.DOWNSTREAM)
     await _settle(h)
     assert len(_notes_in(h.context)) == 1
 

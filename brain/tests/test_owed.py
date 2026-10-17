@@ -274,6 +274,17 @@ def test_the_reoffer_line_goes_where_it_was_measured():
     assert out[-1]["content"] == measured_note(run=MEASURED_REOFFER)
 
 
+def test_the_reoffer_says_not_heard_whatever_was_quoted():
+    """The confirmation round (RESULTS-confirm): after "hold on" the re-offer stayed
+    silent 9/40 with the lead-in quoted, 18/40 with round 5's "They have NOT heard this
+    yet.". A caller's turn keeps the quote (round 4 S3, 20/20)."""
+    rec = hn_record(heard_quote=LEAD_IN)
+    out = render(tool_round(), [rec], "reoffer")
+    assert out[-1]["content"] == measured_note(run=MEASURED_REOFFER), out[-1]["content"]
+    caller = render([{"role": "user", "content": "I'm ready."}], [rec], "caller")[0]["content"]
+    assert f"They heard only \"{LEAD_IN}\"" in caller
+
+
 def test_no_records_no_note():
     msgs = tool_round()
     assert render(msgs, [], "caller") == msgs and render(msgs, [], "run") == msgs
@@ -293,7 +304,7 @@ class FakeGate:
         self.asked = []
         self.quiet = 0.0
 
-    def ask(self, keys, purpose):
+    def ask(self, keys, purpose, context):
         self.asked.append((list(keys), purpose))
 
     def quiet_for(self):
@@ -321,7 +332,6 @@ async def test_landing_rewrites_the_placeholder_once_and_asks_the_run():
     tool = ctx.get_messages()[-1]
     assert json.loads(tool["content"]) == {"status": "complete", "answer": HN_CLEAN}
     assert b.record("call-hn").state == OWED and gate.asked == [(["call-hn"], "run")]
-    assert b.record("call-hn").attempts == 1
 
 
 async def test_a_landing_with_a_caller_request_to_render_asks_no_run():
@@ -420,12 +430,19 @@ async def test_readers_wait_for_a_pending_settle():
     assert out is ctx and keys == (), "a closed record still rendered"
 
 
-async def test_a_reply_the_ledger_never_saw_is_settled_as_unheard():
+async def test_a_reply_that_never_settles_holds_one_render_not_every_one():
+    """Past the bound every pending reply is settled as heard nothing, the ledger's own
+    included (it errs owed): one lost reply must not make every later render wait."""
     b, _, _ = book()
     b.land(HN_REQ, HN_RAW, "call-hn")
-    r = noted_reply(b, "caller")
+    seen, lost = noted_reply(b, "caller"), noted_reply(b, "caller")
+    seen.claimed = True               # the ledger had it, and lost it
     await b.settled(timeout=0.05)
-    assert r.settled and b.record("call-hn").state == OWED
+    assert seen.settled and lost.settled and b.is_settled()
+    assert b.record("call-hn").state == OWED
+    t0 = asyncio.get_running_loop().time()
+    await b.settled(timeout=2.0)
+    assert asyncio.get_running_loop().time() - t0 < 0.05, "the next render waited again"
 
 
 async def test_a_run_for_a_heard_answer_renders_nothing():
@@ -433,7 +450,6 @@ async def test_a_run_for_a_heard_answer_renders_nothing():
     b.land(HN_REQ, HN_RAW, "call-hn")
     b.record("call-hn").state = CLOSED
     assert await b.view(ctx, "run", ("call-hn",)) == (None, ())
-    assert await b.still_owed(["call-hn"]) == []
 
 
 async def test_the_reoffer_view_offers_stay_silent():
@@ -465,7 +481,7 @@ async def test_at_most_three_render_and_the_oldest_is_dropped_not_closed():
 async def test_the_session_end_turns_a_running_consults_placeholder_into_its_failure():
     b, ctx, gate = book(msgs=tool_round(placeholder=json.dumps(
         {"status": "working_in_background", "instruction": "will arrive later"})))
-    b.dispatched("call-hn", HN_REQ)
+    assert b.dispatch("call-hn", HN_REQ) is None
     b.close_session()
     tool = json.loads(ctx.get_messages()[-1]["content"])
     assert tool["status"] == "unknown" and "report back" in tool["error"], tool
@@ -477,8 +493,8 @@ async def test_the_session_end_turns_a_running_consults_placeholder_into_its_fai
 async def test_a_duplicate_dispatch_is_answered_by_the_original():
     msgs = tool_round("a") + tool_round("b")
     b, ctx, _ = book(msgs=msgs)
-    b.dispatched("a", HN_REQ)
-    b.dispatched("b", HN_REQ)
+    assert b.dispatch("a", HN_REQ) is None
+    assert b.dispatch("b", HN_REQ) == "a", "a duplicate was dispatched as a consult"
     b.land(HN_REQ, HN_RAW, "a")
     assert json.loads(ctx.get_messages()[3]["content"])["status"] == "complete"
     assert json.loads(ctx.get_messages()[7]["content"])["status"] == "duplicate"
@@ -493,13 +509,13 @@ async def test_the_records_sleep_and_wake_with_the_conversation():
     b.land(HN_REQ, HN_RAW, "call-hn")
     b.record("call-hn").heard_quote = LEAD_IN
     g = wake_gate.WakeGate(["hey teaport"], asleep=False, store=store)
-    g.context, g.book = ctx, b
+    g.context, g.owed = ctx, b
     g.ended()
     assert store.records and store.records[0]["key"] == "call-hn"
 
     b2, ctx2, _ = book(msgs=[{"role": "system", "content": "persona"}])
     g2 = wake_gate.WakeGate(["hey teaport"], asleep=True, store=store)
-    g2.context, g2.book = ctx2, b2
+    g2.context, g2.owed = ctx2, b2
     pushed = []
 
     async def push(f):
@@ -525,15 +541,26 @@ def _word(s, pts_s):
     return f
 
 
-async def _ledger(seq, reply):
-    ledger = TranscriptLedger()
+TTS = object()   # the session's TTS, as the ledger is built with it: frames sighted there
+
+
+async def _ledger(seq, reply, tts=None):
+    """A ledger fed `seq`; with `tts`, built as the session builds it and every frame
+    sighted at the TTS (a reply's synthesis is over only at its own TTSStoppedFrame)."""
+    ledger = TranscriptLedger(tts=tts)
     got = []
     ledger.on_reply_end = lambda r, heard, *, cut, audio: got.append((r, heard, cut, audio))
     start = LLMFullResponseStartFrame()
     start.owed_reply = reply
-    for f, t in [(start, 0.0)] + seq:
-        await ledger.on_process_frame(SimpleNamespace(frame=f, timestamp=int(t * 1e9)))
+    ledger.feed = lambda more: _feed_ledger(ledger, more, tts)
+    await ledger.feed([(start, 0.0)] + seq)
     return ledger, got
+
+
+async def _feed_ledger(ledger, seq, tts):
+    for f, t in seq:
+        await ledger.on_process_frame(SimpleNamespace(frame=f, timestamp=int(t * 1e9),
+                                                      processor=tts))
 
 
 TELLING = "Tesla Roadster is the top story on Hacker News right now, posted by shekhar101."
@@ -566,22 +593,41 @@ async def test_a_reply_that_played_through_settles_at_its_own_window_close():
     assert got == [(reply, TELLING, False, True)], got
 
 
-async def test_a_reply_that_played_through_settles_at_the_gates_word_before_any_chart():
-    """FollowupGate saw the context's stop pass after its own audio (on_reply_played):
-    settled then, whatever the ledger's layout says of the window (ow_lagSettle)."""
+def _ctx(frame, ctx):
+    frame.context_id = ctx
+    return frame
+
+
+async def test_a_bot_stop_mid_reply_settles_nothing():
+    """The transport's 3 s idle fallback sends BotStoppedSpeaking when the TTS stalls
+    mid-reply: the reply is not over until its synthesis is done and all of it played.
+    Settled there, it would close on words not yet spoken (ClosedOnEvidence)."""
     reply = Reply("caller")
-    start = TTSStartedFrame(context_id="c1")
-    audio = _audio(3.0)
-    audio.context_id = "c1"
     ledger, got = await _ledger([
         (LLMTextFrame(TELLING), 0.0), (LLMFullResponseEndFrame(), 0.0),
-        (start, 1.0), (audio, 1.0), (BotStartedSpeakingFrame(), 1.0)], reply)
-    assert got == [], "settled before it played"
-    ledger.reply_played(start.context_id)
+        (TTSStartedFrame(context_id="r"), 1.0), (_ctx(_audio(1.0), "r"), 1.0),
+        (BotStartedSpeakingFrame(), 1.0), (BotStoppedSpeakingFrame(), 5.0)], reply, TTS)
+    assert got == [], f"settled on a stall: {got}"
+    await ledger.feed([(_ctx(_audio(1.0), "r"), 6.0), (TTSStoppedFrame(context_id="r"), 6.0),
+                       (BotStartedSpeakingFrame(), 6.0), (BotStoppedSpeakingFrame(), 7.0)])
     assert got == [(reply, TELLING, False, True)], got
-    await ledger.on_process_frame(SimpleNamespace(frame=BotStoppedSpeakingFrame(),
-                                                  timestamp=int(4.0 * 1e9)))
-    assert len(got) == 1, "settled twice"
+
+
+async def test_a_filler_lines_end_settles_nothing():
+    """A tool-ack (append_to_context=False) plays first, the reply queued behind it: the
+    transport's stop at the filler's end is not the reply's (the gate's one-context
+    watch this replaced took whatever context came last)."""
+    reply = Reply("caller")
+    ledger, got = await _ledger([
+        (LLMTextFrame(TELLING), 0.0), (LLMFullResponseEndFrame(), 0.0),
+        (TTSStartedFrame(context_id="f", append_to_context=False), 1.0),
+        (_ctx(_audio(1.0), "f"), 1.0), (TTSStoppedFrame(context_id="f"), 1.0),
+        (TTSStartedFrame(context_id="r"), 1.0), (_ctx(_audio(1.0), "r"), 1.0),
+        (BotStartedSpeakingFrame(), 1.0), (BotStoppedSpeakingFrame(), 2.0)], reply, TTS)
+    assert got == [], f"the filler's end settled the reply: {got}"
+    await ledger.feed([(TTSStoppedFrame(context_id="r"), 2.0),
+                       (BotStoppedSpeakingFrame(), 3.0)])
+    assert got == [(reply, TELLING, False, True)], got
 
 
 async def test_a_reply_with_no_text_settles_as_no_audio():

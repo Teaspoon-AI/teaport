@@ -576,12 +576,11 @@ async def _consult_progress(llm, request=None, gate=None):
         llm._teaport_progress_active = False
 
 
-async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, llm=None,
-                                gate=None):
+async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None):
     """Background waiter for the ASYNC ask_openclaw path. The turn already ended, so
-    there's no tight voice deadline: wait out the consult, then land its outcome
-    (`followup`, the session's owed.Owed): the placeholder tool result is rewritten to
-    it, and it is owed to the caller until they hear it. Runs as a session-lifecycle
+    there's no tight voice deadline: wait out the consult, then land its outcome in
+    `owed` (the session's owed.Owed): the placeholder tool result is rewritten to it,
+    and it is owed to the caller until they hear it. Runs as a session-lifecycle
     task (params.llm.create_task) — a barge-in or the user moving on to another topic
     does NOT cancel the in-flight consult."""
     from teaport_brain import consult_bridge
@@ -619,8 +618,8 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         # tight." landed at :37.3.
         if progress is not None:
             progress.cancel()
-        await followup(request, outcome.text, tool_call_id,
-                       failure=outcome.failure, detail=outcome.detail)
+        owed.land(request, outcome.text, tool_call_id, failure=outcome.failure,
+                  detail=outcome.detail)
 
     loop = asyncio.get_running_loop()
     deadline = loop.time() + _ASYNC_CONSULT_TIMEOUT
@@ -676,7 +675,7 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         await working(True)
 
 
-async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
+async def _ask_openclaw(params: FunctionCallParams, owed=None, gate=None):
     import uuid
 
     from teaport_brain import consult_bridge
@@ -689,25 +688,16 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
     # Fold duplicate dispatches BEFORE creating any consult machinery: gpt-oss
     # sometimes emits the same ask_openclaw twice a few seconds apart (observed
     # live), which doubled every ack, progress line, and follow-up. One
-    # in-flight consult per exact request text; the duplicate resolves silently
-    # and the original's record answers for both (its landing rewrites both results).
-    if followup is not None:
-        inflight = getattr(params.llm, "_teaport_consults", None)
-        if inflight is None:
-            inflight = params.llm._teaport_consults = {}
-        prior = inflight.get(request)
-        if prior is not None and not prior.done():
-            dispatched = getattr(followup, "dispatched", None)
-            if dispatched is not None:
-                dispatched(params.tool_call_id, request,
-                           duplicate_of=getattr(prior, "teaport_tool_call_id", None))
-            # No inference on a placeholder result — see no_inference() below.
-            await params.result_callback(
-                {"status": "duplicate",
-                 "instruction": ("This exact request is already in progress. Do not "
-                                 "respond now. " + _PENDING_RULE)},
-                properties=no_inference())
-            return
+    # in-flight consult per exact request text (owed.Owed.dispatch); the duplicate
+    # resolves silently and the original's record answers for both.
+    if owed is not None and owed.dispatch(params.tool_call_id, request) is not None:
+        # No inference on a placeholder result — see no_inference() below.
+        await params.result_callback(
+            {"status": "duplicate",
+             "instruction": ("This exact request is already in progress. Do not "
+                             "respond now. " + _PENDING_RULE)},
+            properties=no_inference())
+        return
 
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
     fut = consult_bridge.create(call_id)
@@ -722,19 +712,9 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
     # waiter, acknowledge NOW so the turn ends and the user can keep talking, and tell
     # the answer when it lands (owed.py). This is the pattern mature voice platforms use
     # for slow sub-agent delegation.
-    if followup is not None:
-        task = params.llm.create_task(_consult_and_followup(
-            call_id, fut, request, followup, params.tool_call_id, llm=params.llm,
-            gate=gate))
-        inflight[request] = task
-        task.teaport_tool_call_id = params.tool_call_id
-        dispatched = getattr(followup, "dispatched", None)
-        if dispatched is not None:
-            dispatched(params.tool_call_id, request)
-        # Identity-checked pop: a same-text consult started AFTER this one
-        # finished must not be evicted by this one's completion callback.
-        task.add_done_callback(
-            lambda t, r=request: inflight.pop(r, None) if inflight.get(r) is t else None)
+    if owed is not None:
+        params.llm.create_task(_consult_and_land(
+            call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate))
         # Run NO inference on this placeholder (no_inference()). There is nothing for
         # the model to say: the user already heard the deterministic "I'll work on
         # that" ack, and the real outcome lands later (owed.py), rewriting this tool
@@ -885,9 +865,9 @@ class ToolContext:
     tts: object = None
     has_tts: bool = False
     client_features: frozenset = frozenset()
-    # The session's owed records (owed.Owed): called with a consult's outcome to land
-    # it. None: ask_openclaw consults synchronously on the turn.
-    followup: Callable | None = None
+    # The session's owed records (owed.Owed): ask_openclaw's consults are dispatched and
+    # landed there. None: ask_openclaw consults synchronously on the turn.
+    owed: object = None
     gate: object = None
     # The session's WifiSetupVoice (wifi_voice.py), which the wifi_setup tool hands to.
     wifi_voice: object = None
@@ -984,8 +964,8 @@ async def _answer_phone_call(params: FunctionCallParams, prompt=None):
 def _bind_ask_openclaw(ctx: ToolContext):
     # ASYNC consult (its outcome lands later, owed.py) when the session gave us its
     # owed records; agent-first passes none and consults synchronously on the turn.
-    if ctx.followup is not None:
-        return functools.partial(_ask_openclaw, followup=ctx.followup, gate=ctx.gate)
+    if ctx.owed is not None:
+        return functools.partial(_ask_openclaw, owed=ctx.owed, gate=ctx.gate)
     return _ask_openclaw
 
 
@@ -1237,14 +1217,13 @@ def _wrap(name, handler, lang_fn):
     return wrapped
 
 
-def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
+def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
                    client_features: frozenset = frozenset(), wifi_voice=None,
                    call_prompt=None) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
-    build_tools_schema offered for the same tts and client_features. `followup`, if
-    given, is the session's owed records (owed.Owed: an async `(request, text|None,
-    tool_call_id, failure=, detail=)` that lands a background consult's outcome, plus
-    `dispatched`); providing it switches ask_openclaw to the ASYNC path. `gate` (a
+    build_tools_schema offered for the same tts and client_features. `owed`, if given,
+    is the session's owed records (owed.Owed), which a background consult is dispatched
+    to and lands in; providing it switches ask_openclaw to the ASYNC path. `gate` (a
     FollowupGate), if given, lets the consult narrator wait for a conversational gap
     before speaking its progress lines."""
     _install_spoke_tracker(llm)
@@ -1257,7 +1236,7 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
         def lang_fn():
             return (lang or "en-us").split("-")[0]
     ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
-                      followup=followup if HAS_AGENT else None, gate=gate,
+                      owed=owed if HAS_AGENT else None, gate=gate,
                       wifi_voice=wifi_voice, call_prompt=call_prompt)
     for tool in active_tools(ctx):
         kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}

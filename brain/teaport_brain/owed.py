@@ -35,16 +35,18 @@
 # REOFFER = "anyMiss": ow_asWritten_live is what arming on a cut or a turn alone
 # strands). The door both go through is FollowupGate.ask (followup_gate.py: the #198
 # hold, a slot of their own beside the post-tool answer's, dropped at the cap, a window
-# both VAD- and turn-level, re-validated where it goes). OneReoffer, HoldNoLoss,
+# both VAD- and turn-level); where it renders (view) it is checked again, and a run
+# whose records were heard meanwhile sends no request. OneReoffer, HoldNoLoss,
 # NoRunUnderSpeech, NoRunMidTurn, NoRunAfterHeard, OwedResolves.
 #
 # The SETTLE FEED is each reply's own end, charted by the transcript ledger: at the
 # interruption that cut it (TranscriptLedger._interrupt, ahead of the commit by
-# CutReplyFence), or at the window close its own audio played out in (_close_ready on
-# BotStoppedSpeaking), with the pts-exact heard prefix, never the ledger's heard_text
-# (the longer of that prefix and an audio-fraction estimate: ow_ledgerMax). Every
-# reader of the records -- the render, the lull, the run's go -- first waits for the
-# replies still to settle (settled()): ow_lagSettle, ow_lagSettle_repeat.
+# CutReplyFence), or once its synthesis is done and all of its audio has played
+# (_close_ready, at the window close its own last chunk played out in), with the
+# pts-exact heard prefix, never the ledger's heard_text (the longer of that prefix and
+# an audio-fraction estimate: ow_ledgerMax). Every reader of the records -- the render,
+# the lull -- first waits for the replies still to settle (settled()): ow_lagSettle,
+# ow_lagSettle_repeat.
 #
 # What the model and the measured replay rounds fixed in the texts below: DESIGN.md §2
 # and "v3: corrections from Owed.tla" in the #203 design notes; RESULTS-round3..5.
@@ -52,7 +54,6 @@
 import asyncio
 import json
 import re
-import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -71,8 +72,8 @@ from teaport_brain.tts_text import _normalize_for_tts, strip_urls_for_speech
 # ------------------------------------------------------------------------- constants
 
 # The brain's own unprompted requests (Owed.tla `Runs`): the landing run and the
-# re-offer. The other purposes are "caller" (a commit, or any other LLMContextFrame on
-# its way down) and "posttool" (a sync tool's answer, pushed up by the aggregator).
+# re-offer. Every other request -- a commit, a post-tool answer, a client note's
+# reaction -- is "caller": the note goes before the caller's last words.
 RUN, REOFFER = "run", "reoffer"
 RUNS = frozenset({RUN, REOFFER})
 
@@ -337,10 +338,8 @@ class Record:
     items: list = field(default_factory=list)       # [(text, terms)]
     state: str = OWED
     heard_quote: str = ""         # what a cut reply carrying the note got through
-    attempts: int = 0             # runs asked (a held-then-dropped one counts)
-    reoffers: int = 0
+    reoffers: int = 0             # counted at the ask: a held-then-dropped one is one
     missed: bool = False          # the one re-offer is armed (Owed.tla `missed`)
-    landed_at: float = 0.0
 
     @classmethod
     def make(cls, key, request, outcome, failure=None, **kw) -> "Record":
@@ -366,7 +365,7 @@ class Record:
     def to_saved(self) -> dict:
         return {"key": self.key, "request": self.request, "outcome": self.outcome,
                 "failure": self.failure, "heard_quote": self.heard_quote,
-                "attempts": self.attempts, "reoffers": self.reoffers}
+                "reoffers": self.reoffers}
 
 
 def _record_items(outcome, request, failure) -> list:
@@ -393,13 +392,17 @@ def is_caller_message(m) -> bool:
 
 
 def note_text(records: list, purpose: str) -> str:
-    """The note for `records` (oldest first), as the replay rounds measured it."""
+    """The note for `records` (oldest first), as the replay rounds measured it. The
+    re-offer's says NOT heard whatever was quoted: with the lead-in quoted it stayed
+    silent after "hold on" 9/40 against 18/40 (the confirmation round, RESULTS-confirm):
+    the quote contradicts its line and reads as engagement."""
     lines = [SYSTEM_NOTICE_TAG]
     if purpose == RUN:
         lines.append(RUN_LINE)
     lines.append(NOTE_HEAD)
     for i, r in enumerate(records, 1):
-        status = PART_HEARD.format(quote=r.heard_quote) if r.heard_quote else NOT_HEARD
+        status = (PART_HEARD.format(quote=r.heard_quote)
+                  if r.heard_quote and purpose != REOFFER else NOT_HEARD)
         lines.append(f"{i}. They asked: \"{r.request}\"\n   Result: {r.outcome}\n   {status}")
     lines.append(FOOTER)
     if purpose == REOFFER:
@@ -409,12 +412,12 @@ def note_text(records: list, purpose: str) -> str:
 
 def render(messages: list, records: list, purpose: str) -> list:
     """The request's messages: `messages` (never modified) with the note for `records`
-    -- one tagged user message, immediately before the last CALLER message for a
-    caller's or a post-tool request (not before a notice or a wake cue: the caller's
-    words stay what is answered), and at the tail for a run of ours, which it is the
-    turn of. No records, no note. Pure: the replay harness calls it as the code does.
+    -- one tagged user message, immediately before the last CALLER message for any
+    request but ours (not before a notice or a wake cue: the caller's words stay what is
+    answered), and at the tail for a run of ours, which it is the turn of. No records,
+    no note. Pure: the replay harness calls it as the code does.
 
-    `purpose`: "caller" | "posttool" | "run" | "reoffer"."""
+    `purpose`: "caller" (any request but ours) | "run" | "reoffer"."""
     msgs = list(messages)
     if not records:
         return msgs
@@ -436,18 +439,18 @@ class Reply:
     request carried the note for (record keys), filled by the render or, for an adopted
     speculation, from the stream; the ledger settles it at the reply's own end."""
 
-    __slots__ = ("purpose", "keys", "noted", "settled", "claimed", "texts", "silenced",
-                 "since")
+    __slots__ = ("purpose", "keys", "commit", "noted", "settled", "claimed", "texts",
+                 "calls")
 
-    def __init__(self, purpose: str, keys=()):
-        self.purpose = purpose
+    def __init__(self, purpose: str, keys=(), commit: bool = False):
+        self.purpose = purpose        # "caller" | "run" | "reoffer"
         self.keys = tuple(keys)       # a run's records
+        self.commit = commit          # a context frame on its way down (a commit, mostly)
         self.noted: tuple = ()
         self.settled = False
         self.claimed = False          # the ledger has its LLMFullResponseStartFrame
         self.texts = 0                # LLMTextFrames with text the completion pushed
-        self.silenced = False         # a re-offer that called stay_silent
-        self.since = time.monotonic()
+        self.calls = 0                # function calls it dispatched (stay_silent not one)
 
 
 # ------------------------------------------------------------------------- the book
@@ -455,25 +458,29 @@ class Reply:
 class Owed:
     """The session's owed records, and every action of Owed.tla's `rec` on them.
 
-    Called with the consult's outcome (tools._consult_and_followup's `followup`): Land.
-    The LLM service asks it for each request's view (view) and registers the reply that
-    view carried (noted); the ledger settles replies (settle); the gate (`gate`, a
-    FollowupGate) is the door the runs go through and tells it of caller turns and
-    dropped runs; the lull is its own task."""
+    tools.ask_openclaw registers each consult (dispatch) and lands its outcome (land).
+    The LLM service asks for each request's view (view) and registers the reply that view
+    carried (noted); the ledger settles replies (settle). `gate`, a FollowupGate, is the
+    door the runs go through: the book asks it (ask), and it reports caller turns, runs
+    dropped at its hold cap and the session's end through its callbacks. The lull is the
+    book's own task."""
 
-    def __init__(self, context, gate=None, *, reoffer_quiet_s: float = None, clock=time.monotonic):
+    def __init__(self, context, gate=None, *, reoffer_quiet_s: float = None):
         self.context = context
         self.gate = gate
-        self._clock = clock
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
-        self._running: dict = {}              # key -> request: consults dispatched, not landed
+        self._running: dict = {}              # request -> key: consults not landed yet
         self._duplicates: dict = {}           # key -> the key whose consult answers it
         self._pending: list = []              # Replies rendered with the note, not settled
         self._settled = asyncio.Event()
         self._settled.set()
         self._lull = None
         self._closed = False
+        if gate is not None:
+            gate.on_caller_turn = self.caller_turn
+            gate.on_run_dropped = self.run_dropped
+            gate.on_session_end = self.close_session
 
     # ---- what renders --------------------------------------------------------------
 
@@ -483,26 +490,33 @@ class Owed:
     def record(self, key) -> Optional[Record]:
         return self._records.get(key)
 
+    def is_settled(self) -> bool:
+        """No reply that carried the note is still to settle."""
+        return self._settled.is_set()
+
     async def settled(self, timeout: float = SETTLE_WAIT_S) -> None:
         """Until every reply that carried the note has settled (Owed.tla: `fed = none`
-        before Issue, RunGo and Lull). Bounded: see SETTLE_WAIT_S."""
+        before Issue, RunGo and Lull). Bounded: past SETTLE_WAIT_S every reply still
+        pending is settled as heard nothing -- it errs owed, and one lost reply does not
+        hold every later render. That bound is the accepted residual (formal/README.md)."""
         if self._settled.is_set():
             return
         try:
             await asyncio.wait_for(self._settled.wait(), timeout)
         except asyncio.TimeoutError:
-            stuck = [r for r in self._pending if not r.claimed]
+            stuck = list(self._pending)
             for r in stuck:
                 self.settle(r, None, cut=True, audio=False)
-            logger.warning(f"OWED: {len(self._pending) + len(stuck)} repl(ies) still unsettled "
-                           f"after {timeout:.1f}s ({len(stuck)} the ledger never saw, settled "
-                           "as heard nothing); reading the records as they stand")
+            logger.warning(f"OWED: {len(stuck)} repl(ies) unsettled after {timeout:.1f}s, "
+                           "settled as heard nothing")
 
     async def view(self, context: LLMContext, purpose: str, run_keys=()):
         """The request `context` becomes, and the record keys its note carries: the
-        render hook (services.BoundedOpenAILLMService._open_stream). (context, ()) when
-        nothing is owed; (None, ()) for a run none of whose records is owed any more --
-        it renders nothing and sends no request (ow_askOnly's second half)."""
+        render hook (services.BoundedOpenAILLMService._open_stream), after every pending
+        settle. (context, ()) when nothing is owed; (None, ()) for a run none of whose
+        records is owed any more -- it renders nothing and sends no request. This is
+        where a run is checked again (Owed.tla RunGo; ow_askOnly): the gate lets it go
+        only into a quiet window, so nothing lies between its go and this render."""
         await self.settled()
         records = self.owed()
         if purpose in RUNS and not any(r.key in run_keys for r in records):
@@ -524,39 +538,30 @@ class Owed:
         self._pending.append(reply)
         self._settled.clear()
 
-    async def still_owed(self, keys) -> list:
-        """Of `keys`, the ones still owed once every pending reply has settled: asked at
-        the gate's go and again where the run reaches the LLM (Owed.tla RunGo: a post-tool
-        answer released ahead of it, or a caller turn, may have told it -- ow_askOnly)."""
-        await self.settled()
-        return [k for k in keys if (r := self._records.get(k)) is not None and r.state == OWED]
-
     # ---- Land ---------------------------------------------------------------------
 
-    def dispatched(self, key: str, request: str, duplicate_of: str = None) -> None:
-        """A consult started (or a duplicate was folded into one): its placeholder is in
-        the context until Land rewrites it, or the session ends (close_session)."""
-        if duplicate_of is None:
-            duplicate_of = next((k for k, r in self._running.items() if r == request), None)
-        if duplicate_of is not None:
-            self._duplicates[key] = duplicate_of
-        else:
-            self._running[key] = request
+    def dispatch(self, key: str, request: str) -> Optional[str]:
+        """A consult is asked for (tools.ask_openclaw). None: it runs, and its placeholder
+        is in the context until land() rewrites it or the session ends (close_session).
+        Otherwise the key of the consult already running for this exact request: gpt-oss
+        sometimes asks the same thing twice a few seconds apart, and that one's outcome
+        answers both (land() rewrites this placeholder to point at it)."""
+        running = self._running.get(request)
+        if running is not None:
+            self._duplicates[key] = running
+            return running
+        self._running[request] = key
+        return None
 
-    async def __call__(self, request, text, tool_call_id=None, failure=None, detail=""):
-        """Land (tools._consult_and_followup's follow-up)."""
-        self.land(request, text, tool_call_id, failure=failure, detail=detail)
-
-    def land(self, request, text, key, *, failure=None, detail="", ask=True) -> Optional[Record]:
+    def land(self, request, text, key, *, failure=None, detail="", ask=True) -> Record:
         """The consult landed: rewrite its placeholder ONCE to the cleaned outcome (the
         only context write delivery makes), make the record owed, and ask the landing run
         -- unless a caller request is still to be rendered (their turn is open, or
         committed and not yet asked): that request carries the note, and a run would
         speak before or over it (Owed.tla Land; DESIGN v3 #7). Skipped, the run's place
         is taken by the re-offer, armed."""
-        self._running.pop(key, None)
-        if self._closed:
-            ask = False
+        if self._running.get(request) == key:
+            del self._running[request]
         outcome = clean_outcome(text) if text else None
         status = "complete"
         if not outcome:
@@ -565,28 +570,25 @@ class Owed:
             failure = status
         rewrote = self._rewrite(key, {"status": "complete", "answer": outcome} if not failure
                                 else {"status": status, "error": outcome})
-        for dup, of in list(self._duplicates.items()):
-            if of == key:
-                self._rewrite(dup, {"status": "duplicate",
-                                    "note": "The same request as an earlier call; its "
-                                            "result is that call's."})
-                del self._duplicates[dup]
-        rec = Record.make(key or f"owed-{len(self._records)}", request, outcome,
-                          failure=failure, landed_at=self._clock())
-        self._records[rec.key] = rec
+        for dup in [d for d, of in self._duplicates.items() if of == key]:
+            self._rewrite(dup, {"status": "duplicate",
+                                "note": "The same request as an earlier call; its result "
+                                        "is that call's."})
+            del self._duplicates[dup]
+        rec = Record.make(key, request, outcome, failure=failure)
+        self._records[key] = rec
         self._evict()
-        logger.info(f"OWED: landed {rec.key} ({failure or 'answer'}, {len(rec.items)} item(s), "
+        logger.info(f"OWED: landed {key} ({failure or 'answer'}, {len(rec.items)} item(s), "
                     f"terms {[sorted(t) for _, t in rec.items]}); tool result "
                     f"{'rewritten' if rewrote else 'not found'}")
-        if not ask:
+        if not ask or self._closed or self.gate is None:
             return rec
-        if self.gate is not None and self.gate.caller_request_pending:
-            rec.missed = True
-            logger.info(f"OWED: {rec.key} lands with a caller request still to be rendered "
+        if self.gate.caller_request_pending:
+            logger.info(f"OWED: {key} lands with a caller request still to be rendered "
                         "-- it carries the note; the re-offer is armed instead of a run")
-            self._arm_lull()
+            self._arm([rec])
         else:
-            self._ask([rec], RUN)
+            self.gate.ask([key], RUN, self.context)
         return rec
 
     def _rewrite(self, key, result: dict) -> bool:
@@ -604,74 +606,49 @@ class Owed:
             logger.info(f"OWED: {rec.key} dropped unheard -- {MAX_RENDERED} newer answers "
                         "are owed (its tool result stays)")
 
-    # ---- the runs ----------------------------------------------------------------
+    # ---- the re-offer --------------------------------------------------------------
 
-    def _ask(self, records: list, purpose: str) -> None:
-        """gate.ask: the attempt counts at the ask, so a run held and then dropped is one
-        (ow_runAfterCut drops one)."""
-        for rec in records:
-            rec.attempts += 1
-            if purpose == REOFFER:
-                rec.reoffers += 1
-        if self.gate is None:
-            return
-        self.gate.ask([r.key for r in records], purpose)
-
-    def run_dropped(self, keys, why: str) -> None:
-        """The gate dropped a run before it went (the hold cap under room noise): a run
-        that ended without closing arms the re-offer (REOFFER = "anyMiss"; Owed.tla Cap)."""
-        armed = False
-        for k in keys:
-            rec = self._records.get(k)
-            if rec is not None and rec.state == OWED:
-                rec.missed = True
-                armed = True
-        if armed:
-            logger.info(f"OWED: run for {list(keys)} dropped ({why}); the re-offer is armed")
-            self._arm_lull()
+    def run_dropped(self, keys) -> None:
+        """The gate dropped a run at its hold cap (room noise): a run that ended without
+        closing arms the re-offer (REOFFER = "anyMiss"; Owed.tla Cap)."""
+        self._arm([r for k in keys if (r := self._records.get(k)) is not None and r.state == OWED])
 
     def caller_turn(self) -> None:
         """A caller turn started (Owed.tla TurnStart): it arms the re-offer of every owed
-        record. The run waiting at the door is dropped by the gate (it counted at the
-        ask), and the turn's own request carries the note."""
-        owed = self.owed()
-        for rec in owed:
-            rec.missed = True
-        if any(rec.reoffers == 0 for rec in owed):
-            self._arm_lull()
+        record. The gate drops the run waiting at its door; the turn's own request
+        carries the note."""
+        self._arm(self.owed())
 
-    def _arm_lull(self) -> None:
-        if self._closed or self.gate is None:
-            return
-        if self._lull is None or self._lull.done():
+    def _arm(self, records) -> None:
+        for rec in records:
+            rec.missed = True
+        if records and not self._closed and self.gate is not None \
+                and (self._lull is None or self._lull.done()):
             try:
                 self._lull = asyncio.get_running_loop().create_task(self._lull_loop())
             except RuntimeError:
                 self._lull = None
 
+    def _due(self) -> list:
+        return [r for r in self.owed() if r.missed and r.reoffers == 0]
+
     async def _lull_loop(self) -> None:
         """Owed.tla Lull: an owed record whose re-offer is armed and unspent, every
         reply settled, and the line quiet (FollowupGate.quiet_for: no caller speech
         pending, no turn, no request or reply, nothing waiting at the door) for
-        REOFFER_QUIET_S. One re-offer per record, ever: OneReoffer."""
+        REOFFER_QUIET_S. One re-offer per record, ever, counted at the ask: OneReoffer."""
         try:
-            while True:
-                due = [r for r in self.owed() if r.missed and r.reoffers == 0]
-                if not due:
-                    return
+            while self._due():
                 await asyncio.sleep(_LULL_TICK_S)
-                if not self._settled.is_set():
-                    continue
-                if self.gate.quiet_for() < self._reoffer_quiet_s:
-                    continue
-                due = [r for r in self.owed() if r.missed and r.reoffers == 0]
-                if not due:
-                    return
-                for r in due:
-                    r.missed = False
-                logger.info(f"OWED: {self._reoffer_quiet_s:g}s of quiet with "
-                            f"{[r.key for r in due]} unheard -- the one re-offer")
-                self._ask(due, REOFFER)
+                if self._settled.is_set() and self.gate.quiet_for() >= self._reoffer_quiet_s:
+                    due = self._due()
+                    for r in due:
+                        r.missed = False
+                        r.reoffers += 1
+                    if due:
+                        logger.info(f"OWED: {self._reoffer_quiet_s:g}s of quiet with "
+                                    f"{[r.key for r in due]} unheard -- the one re-offer")
+                        self.gate.ask([r.key for r in due], REOFFER, self.context)
         except asyncio.CancelledError:
             pass
 
@@ -679,10 +656,11 @@ class Owed:
 
     def settle(self, reply: Optional[Reply], heard: Optional[str], *, cut: bool,
                audio: bool) -> None:
-        """A reply ended (the settle feed: TranscriptLedger at its interruption or at
-        its own audio's end). `heard`: its pts-exact heard text -- all of it when it
-        played through, None when cut with no per-word pts. Applies the close rule to
-        every record its request carried the note for (Owed.tla Finish -> Settle)."""
+        """A reply ended (the settle feed: TranscriptLedger, at the interruption that cut
+        it or once all of its audio has played). `heard`: its pts-exact heard text -- all
+        of it when it played through, None when cut with no per-word pts. Applies the
+        close rule to every record its request carried the note for (Owed.tla Finish ->
+        Settle)."""
         if reply is None or reply.settled:
             return
         reply.settled = True
@@ -691,6 +669,7 @@ class Owed:
         if not self._pending:
             self._settled.set()
         run = reply.purpose in RUNS
+        missed = []
         for key in reply.noted:
             rec = self._records.get(key)
             if rec is None or rec.state != OWED:
@@ -701,21 +680,22 @@ class Owed:
                 logger.info(f"OWED: {key} closed -- heard by the {reply.purpose} reply "
                             f"({'cut' if cut else 'played through'}): {(heard or '')[:80]!r}")
                 continue
-            if cut and heard and heard.strip() and (run or self._relevant(rec, heard)):
+            if cut and heard and heard.strip() and (run or self._about(rec, heard)):
                 rec.heard_quote = heard.strip()
             if run or (cut and audio):
-                # A run that ended without closing (no audio, partial, dropped at the
-                # cap) and an audible cut both arm the re-offer: REOFFER = "anyMiss".
-                rec.missed = True
-                self._arm_lull()
+                # A run that ended without closing (no audio, partial) and an audible cut
+                # both arm the re-offer: REOFFER = "anyMiss".
+                missed.append(rec)
             logger.info(f"OWED: {key} still owed after the {reply.purpose} reply "
                         f"({'cut' if cut else 'played through' if audio else 'no audio'}; "
                         f"heard {(heard or '')[:60]!r})")
+        self._arm(missed)
 
-    def _relevant(self, rec: Record, heard: str) -> bool:
-        """Whether a cut reply's heard words are about this record (they share a spoken
-        token outside the common words with its request or its terms), so "They heard
-        only ..." quotes a telling, not an answer about the time."""
+    @staticmethod
+    def _about(rec: Record, heard: str) -> bool:
+        """Whether a cut reply's words are about this record (a non-common spoken token
+        shared with its request or its terms): the #203 session quoted a clarifying
+        question otherwise (test_owed_corpus.py)."""
         toks = {t for t in spoken_tokens(heard) if not _is_common(t)}
         about = set(spoken_tokens(rec.request)) | {t for _, ts in rec.items for t in ts}
         return bool(toks & about)
@@ -727,9 +707,9 @@ class Owed:
         first, wake_gate). A consult still running cannot report back to it: its
         placeholder becomes its failure record, so no "will arrive later" outlives the
         session, and the record is owed in a conversation that is continued. Idempotent."""
-        for key, request in list(self._running.items()):
-            self.land(request, None, key, failure="unknown", ask=False)
         self._closed = True
+        for request, key in list(self._running.items()):
+            self.land(request, None, key, failure="unknown")
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()
@@ -743,8 +723,7 @@ class Owed:
         for d in saved or ():
             rec = Record.make(d["key"], d["request"], d["outcome"], failure=d.get("failure"),
                               heard_quote=d.get("heard_quote", ""),
-                              attempts=d.get("attempts", 0), reoffers=d.get("reoffers", 0),
-                              landed_at=self._clock())
+                              reoffers=d.get("reoffers", 0))
             self._records[rec.key] = rec
         if saved:
             logger.info(f"OWED: {len(saved)} unheard answer(s) restored with the conversation")

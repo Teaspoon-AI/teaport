@@ -23,7 +23,9 @@ from pinned_pipecat import require_pinned  # noqa: E402
 
 require_pinned()
 
-from teaport_brain.owed import Record, clean_outcome  # noqa: E402
+from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
+
+from teaport_brain.owed import Owed, Record, Reply, clean_outcome  # noqa: E402
 
 # ---- the outcomes, as OpenClaw returned them --------------------------------------
 TOP = ("Fetch the current top story from Hacker News and give its title and URL.",
@@ -120,6 +122,26 @@ def test_the_tellings_close():
     print(f"    corpus: {len(CORPUS)} triples, {owed} owed (0 false closes), {heard} heard "
           f"({len(missed)} left owed)")
     assert not missed, f"a full telling left the record owed: {missed}"
+
+
+def test_a_cut_line_about_something_else_is_not_quoted():
+    """The quote ("They heard only ...") is a cut reply's heard words only when they are
+    about the record (Owed._about). In this session the five-story list was cut at
+    "... Ultramarine 1 Flash, Llama"; the next reply, cut too, had got through only a
+    clarifying question. Quoted, the note would tell the model the caller heard that
+    question of the answer; the time is the other shape."""
+    owed = Owed(LLMContext([]))
+    owed.land(TOP5[0], TOP5[1], "top5")
+
+    def cut(heard):
+        reply = Reply("caller")
+        owed.noted(reply, ("top5",))
+        owed.settle(reply, heard, cut=True, audio=True)
+        return owed.record("top5").heard_quote
+
+    assert cut(FIVE_CUT) == FIVE_CUT
+    assert cut(ONE_STORY) == FIVE_CUT, "a clarifying question was quoted as the answer"
+    assert cut("It's eleven twenty-two at night.") == FIVE_CUT, "the time was quoted"
 
 
 def main():

@@ -237,8 +237,8 @@ class TranscriptLedger(BaseObserver):
         super().__init__()
         self.events: List[Utterance] = []
         # The settle feed (owed.py, #203): called as on_reply_end(reply, heard, cut=,
-        # audio=) at each LLM reply's OWN end -- the interruption that cut it, or the
-        # window close its own audio played out in -- with `reply` the owed.Reply its
+        # audio=) at each LLM reply's OWN end -- the interruption that cut it, or once its
+        # synthesis is done and all of its audio has played -- with `reply` the owed.Reply its
         # LLMFullResponseStartFrame carried and `heard` its pts-exact heard text (all of
         # it when it played through; None when cut with no per-word pts). Never the
         # heard_text charted below, which on a cut is the LONGER of that prefix and an
@@ -565,20 +565,6 @@ class TranscriptLedger(BaseObserver):
             self._close_ready(t)
 
     # ------------------------------------------------------------ bookkeeping
-
-    def reply_played(self, ctx) -> None:
-        """The settle feed for a reply that played to its end, at that end: FollowupGate,
-        below the transport, saw context `ctx`'s TTSStoppedFrame pass after the context's
-        own audio. Not this ledger's chart of the turn, which waits for the window to
-        close on its layout and can come only at the next bot activity -- the readers of
-        owed.py would read a stale record meanwhile (formal/Owed.tla, ow_lagSettle; the
-        2026-09-11 14:23 loss). The chart stays the fallback (_finish); a reply settles
-        once."""
-        turn = self._turn_for(ctx) if ctx is not None else None
-        entry = turn["entry"] if turn is not None else None
-        if entry is None or not entry["ended"] or not entry["text"]:
-            return
-        self._reply_end(entry, entry["text"], cut=False, audio=True)
 
     def _new_entry(self, kind: str) -> dict:
         return {"seq": self._seq, "kind": kind, "parts": [], "text": "",
@@ -984,6 +970,10 @@ class TranscriptLedger(BaseObserver):
                             heard_text=heard_text, turn_seq=turn["seq"],
                             committed=(not interrupted or never or turn["synth_done"]
                                        or heard > 0)))
+        # The settle feed (on_reply_end), here and nowhere earlier: a reply that played
+        # through is charted only once its synthesis is done and all of its audio has
+        # played (_close_ready) -- not at a BotStoppedSpeaking that came mid-reply, which
+        # the transport's 3 s idle fallback sends on a TTS stall.
         played_any = (not never and audio_dur > 0 and (not interrupted or heard > 0))
         self._reply_end(entry, exact if played_any else None, cut=interrupted,
                         audio=played_any)

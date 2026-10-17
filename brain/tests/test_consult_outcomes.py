@@ -188,8 +188,9 @@ async def test_echoes_of_the_brains_own_tool_calls_are_not_logged():
 async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None):
     delivered = []
 
-    async def followup(request, text, tool_call_id=None, failure=None, detail=""):
-        delivered.append((text, failure))
+    class Owed:
+        def land(self, request, text, key, *, failure=None, detail=""):
+            delivered.append((text, failure))
 
     saved = (tools._NATIVE_CONSULT_ACK_TIMEOUT, tools._ASYNC_CONSULT_TIMEOUT,
              oc.agent_consult)
@@ -197,7 +198,7 @@ async def _wait(fut, *, ack=0.05, ceiling=0.3, cli=None):
     if cli is not None:
         oc.agent_consult = cli
     try:
-        await tools._consult_and_followup("call-1", fut, "news?", followup, "tc-1")
+        await tools._consult_and_land("call-1", fut, "news?", Owed(), "tc-1")
     finally:
         (tools._NATIVE_CONSULT_ACK_TIMEOUT, tools._ASYNC_CONSULT_TIMEOUT,
          oc.agent_consult) = saved
@@ -266,13 +267,15 @@ class _Params:
 
 async def _placeholders():
     """(first, duplicate) placeholder results for the same request."""
-    async def followup(*a, **k):
-        pass
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from teaport_brain.owed import Owed
 
+    owed = Owed(LLMContext([]))
     llm = _PlaceholderLLM()
     first, dup = _Params(llm, "French rioting news"), _Params(llm, "French rioting news")
-    await tools._ask_openclaw(first, followup=followup)
-    await tools._ask_openclaw(dup, followup=followup)
+    dup.tool_call_id = "tc-2"
+    await tools._ask_openclaw(first, owed=owed)
+    await tools._ask_openclaw(dup, owed=owed)
     for t in llm.tasks:
         t.cancel()
     await asyncio.gather(*llm.tasks, return_exceptions=True)

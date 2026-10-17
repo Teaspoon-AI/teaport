@@ -127,7 +127,7 @@ class Rig:
     def __init__(self):
         transport = TalkTransport()
         session = build_agent_session(transport, front_end="talk")
-        self.session, self.book = session, session.owed
+        self.session, self.owed = session, session.owed
         inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
         procs = inner.processors
         first = next(i for i, p in enumerate(procs) if isinstance(p, LLMUserAggregator))
@@ -181,7 +181,7 @@ class Rig:
                  "function": {"name": "ask_openclaw", "arguments": json.dumps({"request": REQ})}}]},
             {"role": "tool", "tool_call_id": "call-hn",
              "content": json.dumps({"status": "working_in_background"})}])
-        self.book.dispatched("call-hn", REQ)
+        self.owed.dispatch("call-hn", REQ)
 
     async def requests(self, n):
         await until(lambda: len(self.provider.requests) >= n)
@@ -200,7 +200,7 @@ class Rig:
 
     async def played_out(self, since):
         await until(lambda: self.bot_stops > since)
-        await until(lambda: self.book._settled.is_set())
+        await until(self.owed.is_settled)
 
 
 async def until(predicate, timeout=STEP_TIMEOUT_S):
@@ -214,14 +214,14 @@ async def test_an_answer_heard_as_it_lands_is_closed_and_not_rendered_again():
     async with Rig() as rig:
         rig.seed()
         rig.provider.replies = [ANSWER_FIRST, "You're welcome!"]
-        await rig.book(REQ, HN_RAW, "call-hn")
+        rig.owed.land(REQ, HN_RAW, "call-hn")
         run = await rig.requests(1)
         tail = run["messages"][-1]
         assert tail["role"] == "user" and tail["content"].startswith(
             SYSTEM_NOTICE_TAG + "\n" + owed.RUN_LINE), tail
         assert "Tesla Roadster" in tail["content"] and "They have NOT heard this yet." in tail["content"]
         await rig.played_out(0)
-        assert rig.book.record("call-hn").state == owed.CLOSED, "heard in full, still owed"
+        assert rig.owed.record("call-hn").state == owed.CLOSED, "heard in full, still owed"
         stored = [m for m in rig.session.context.get_messages()
                   if isinstance(m.get("content"), str) and m["content"].startswith(SYSTEM_NOTICE_TAG)]
         assert not stored, "the note was stored in the context"
@@ -235,18 +235,17 @@ async def test_an_answer_heard_as_it_lands_is_closed_and_not_rendered_again():
 async def test_203_a_lead_in_cut_stays_owed_until_the_caller_hears_it():
     async with Rig() as rig:
         rig.seed()
-        rig.book._reoffer_quiet_s = 0.6
+        rig.owed._reoffer_quiet_s = 0.6
         rig.provider.replies = [LEAD_IN_FIRST, "No rush, just let me know when you're ready.",
                                 ("call", owed.STAY_SILENT), ANSWER_FIRST]
-        await rig.book(REQ, HN_RAW, "call-hn")
+        rig.owed.land(REQ, HN_RAW, "call-hn")
         await rig.requests(1)
         # The caller cuts in ~1.1 s into the lead-in: "The top story on ..." (the fake
         # engine plays 0.3 s a word).
-        await until(lambda: len(rig.played) >= 2)
-        await asyncio.sleep(0.4)
+        await until(lambda: len(rig.played) >= 4)       # "The top story on" has played
         await rig.say("Oh, wow, I just saw something cool. Hold on.")
         hold_on = await rig.requests(2)
-        rec = rig.book.record("call-hn")
+        rec = rig.owed.record("call-hn")
         assert rec.state == owed.OWED, "a lead-in that named nothing closed the record (#203)"
         assert rec.heard_quote and "Roadster" not in rec.heard_quote, rec.heard_quote
         msgs = hold_on["messages"]
@@ -258,6 +257,8 @@ async def test_203_a_lead_in_cut_stays_owed_until_the_caller_hears_it():
         names = [t["function"]["name"] for t in reoffer.get("tools") or []]
         assert owed.STAY_SILENT in names, names
         assert reoffer["messages"][-1]["content"].endswith(owed.REOFFER_LINE)
+        assert owed.NOT_HEARD in reoffer["messages"][-1]["content"], (
+            "the re-offer quoted the lead-in (RESULTS-confirm: 9/40 stay silent, 18/40 not)")
         n = len(rig.session.context.get_messages())
         try:
             await until(lambda: rig.gate.is_clear())
