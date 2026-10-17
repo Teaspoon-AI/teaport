@@ -221,15 +221,27 @@ async def test_an_idle_connection_the_server_closed_is_not_reused():
             assert server.connections == 2, (goaway, server.connections)
 
 
-async def test_a_frame_to_an_idle_connection_costs_a_reconnect_not_an_error():
-    # A PING to an idle connection cannot be told from a close (llm_http2): the next
-    # request takes a new connection -- and succeeds.
+async def test_a_frame_to_an_idle_connection_keeps_it():
+    # A PING to an idle connection leaves its socket readable, but it is not a close.
     async with Server(size=4_000, delay=0) as server, _client() as client:
         assert len((await client.get(server.url)).content) == 4_000
         await server.ping()
         await asyncio.sleep(0.1)
         assert len((await client.get(server.url)).content) == 4_000
-        assert server.connections == 2, server.connections
+        assert server.connections == 1, server.connections
+
+
+async def test_the_request_after_a_cut_rides_the_same_connection():
+    # The cut reply's data already on its way when the reset went out waits on the idle
+    # connection's socket. Live (2026-10-16), HTTP/1.1's idle-readable rule took that for
+    # a close: each cut cost the next request a new connection, and sometimes the reset.
+    async with Server(size=400_000, chunk=400, delay=0) as server, _client() as client:
+        for _ in range(5):
+            await _cut(client, server.url)
+            r = await client.get(server.url)
+            assert r.status_code == 200
+            server.size = 400_000
+        assert server.connections == 1, server.connections
 
 
 async def test_an_idle_connection_left_alone_is_reused():

@@ -35,14 +35,19 @@
 #
 # One more gap against HTTP/1.1: httpcore drops an idle HTTP/1.1 connection whose socket
 # has turned readable -- the server closed it -- before reusing it, but an HTTP/2 one only
-# on its keepalive clock (has_expired). An idle connection the server closed (an idle
-# timeout) would take the next request and fail it with "Server disconnected", and the
-# SDK's retry would cost the caller its backoff (~0.5-1 s). has_expired is wrapped with
-# the HTTP/1.1 rule. A frame the server sends to an idle connection (a PING) trips it
-# too -- under TLS the socket shows records, not frames, so a close cannot be told from
-# one -- and that costs a reconnect, what HTTP/1.1 pays after every cancelled reply; a
-# missed close costs a failed request and a retry. OpenRouter sent nothing to an idle
-# connection in 3 minutes of watching (2026-10-16).
+# on its keepalive clock (has_expired). An idle connection the server closed without a
+# GOAWAY would take the next request and fail it with "Server disconnected", and the
+# SDK's retry would cost the caller its backoff (~0.5-1 s). (One closed with a GOAWAY is
+# fine: httpcore reads it on the next request and moves that request to a new
+# connection.) HTTP/1.1's rule -- idle and readable -- is wrong here, though: over HTTP/2
+# an idle connection is readable whenever frames are waiting, and after every cut reply
+# they are -- the stream's data already on its way when the reset went out. Live on the
+# box (2026-10-16) that rule closed the connection at the next request after each cut,
+# sometimes before the reset was flushed, and one cut reply ran to its end. So
+# has_expired is wrapped to look closer, only when an idle connection is readable: a
+# one-byte peek at the socket (a duplicate of its descriptor, so the event loop's own is
+# untouched) that sees the end of the stream -- the server closed it -- and nothing
+# else. Waiting bytes, TLS records of frames or of a GOAWAY, keep the connection.
 #
 # The wraps read httpcore's private HTTP/2 internals; httpcore is pinned exactly
 # (pyproject) and enable() checks the parts it uses before patching. If they have moved,
@@ -51,6 +56,7 @@
 #
 import asyncio
 import inspect
+import socket
 
 import h2.connection
 import h2.errors
@@ -146,9 +152,27 @@ async def _response_closed(self, stream_id: int) -> None:
 
 
 def _has_expired(self) -> bool:
-    return _original_expired(self) or (
-        self._state == HTTPConnectionState.IDLE
-        and bool(self._network_stream.get_extra_info("is_readable")))
+    if _original_expired(self):
+        return True
+    if self._state != HTTPConnectionState.IDLE or \
+            not self._network_stream.get_extra_info("is_readable"):
+        return False
+    return _closed_by_peer(self._network_stream.get_extra_info("socket"))
+
+
+def _closed_by_peer(sock) -> bool:
+    """Has the server closed this readable socket -- the end of the stream, and no bytes
+    before it? A socket that cannot be looked at counts as closed (HTTP/1.1's rule)."""
+    try:
+        fd = sock.fileno()
+        if fd < 0:
+            return True
+        with socket.fromfd(fd, sock.family, sock.type) as peek:
+            return peek.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
+    except BlockingIOError:
+        return False        # readable a moment ago, drained since: open
+    except (OSError, AttributeError):
+        return True
 
 
 async def _flush(conn) -> None:
