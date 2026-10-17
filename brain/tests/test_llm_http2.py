@@ -283,6 +283,18 @@ async def test_a_connection_that_stopped_answering_is_left_after_the_cut():
         llm_http2.NO_ANSWER_SECS = saved
 
 
+async def test_a_read_bound_shorter_than_the_rule_still_leaves_the_connection():
+    # LLM_TIMEOUT_SECS may be as low as 1 s; pipecat's timeout, the same setting, cancels
+    # just under it -- the rule must not be longer than that.
+    async with Server(size=4_000, delay=0, black_hole_first=True) as server, \
+            _client() as client:
+        try:
+            await asyncio.wait_for(client.get(server.url, timeout=httpx.Timeout(1.0)), 0.95)
+        except asyncio.TimeoutError:
+            pass
+        assert not _h2(client).is_available()
+
+
 async def test_pipecats_retry_after_a_silent_connection_goes_out_on_a_new_one():
     # pipecat's own timeout (retry_on_timeout) cancels the request and asks again inside
     # get_chat_completions. The retry must not ride the connection that just stayed

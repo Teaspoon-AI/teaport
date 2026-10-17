@@ -75,7 +75,11 @@ _FLUSH_REQUEST = httpcore.Request("POST", "https://flush.invalid/",
                                   extensions={"timeout": {"write": 5.0}})
 
 # How long a request may wait for its response headers before a cancel takes its
-# connection out of reuse (above).
+# connection out of reuse (above) -- or 90% of the request's own read bound, if that is
+# shorter: pipecat's timeout is the same setting (LLM_TIMEOUT_SECS, 1 s at the least), and
+# must not always come first. (A caller who re-speaks sooner than this each time keeps a
+# dead connection until one request is waited on this long -- the turn's own, which
+# they wait on -- or pipecat's timeout.)
 NO_ANSWER_SECS = 2.0
 
 _original = None        # httpcore's own _response_closed, once wrapped
@@ -138,7 +142,9 @@ async def _handle_async_request(self, request):
         return await _original_handle(self, request)
     except asyncio.CancelledError:
         waited = asyncio.get_running_loop().time() - started
-        if waited >= NO_ANSWER_SECS and not self._connection_error:
+        read = (request.extensions.get("timeout") or {}).get("read")
+        limit = NO_ANSWER_SECS if read is None else min(NO_ANSWER_SECS, 0.9 * read)
+        if waited >= limit and not self._connection_error:
             # Out of reuse: the pool sends no new request on it; streams on it run on.
             self._connection_error = True
             logger.info(f"llm_http2: no answer from {request.url.host.decode('ascii', 'replace')} "
