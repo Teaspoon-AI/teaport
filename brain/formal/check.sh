@@ -127,6 +127,7 @@ run Owed.tla ow_askOnly           "(expected: FAILS NoRunAfterHeard — the run 
 run Owed.tla ow_oneSlot           "(expected: FAILS HoldNoLoss — the hold's single slot: a held run and a held post-tool answer, the newer displaces the older)"
 run Owed.tla ow_turnLevel         "(expected: FAILS NoRunUnderSpeech — a turn-level window: the run goes into speech whose words have not come (#197))"
 run Owed.tla ow_vadLevel          "(expected: FAILS NoRunMidTurn — a VAD-level window: the run goes between a tool call and its answer)"
+run Owed.tla ow_endClearsTool     "(expected: FAILS NoRunMidTurn — the gate's turn ends at a completion's End with its call still out (\"Let me check.\" + a tool): the run goes before the answer)"
 run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"
 run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other property; a re-lookup costs time, never a lost or repeated answer)"
 echo

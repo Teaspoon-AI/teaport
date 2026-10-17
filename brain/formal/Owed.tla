@@ -86,6 +86,10 @@
 (*                    caller's turn (words in, not yet answered) or between *)
 (*                    a tool call and its answer (Followup's                *)
 (*                    NoInterjectMidTurn).                                  *)
+(*   "endClearsTool" -- the gate's turn ends at a completion's End even when *)
+(*                    it put a sync tool call out with its text ("Let me    *)
+(*                    check." + get_weather): the run goes between the call *)
+(*                    and its answer (FollowupGate before the review round).*)
 (*   "ledgerMax"   -- the feed reads the ledger's heard_text as it is: the  *)
 (*                    longer of the pts-exact prefix and an audio-fraction  *)
 (*                    estimate, so a cut can read as more than played.      *)
@@ -151,6 +155,8 @@ VARIABLES
                   \*   pending, then waiting for a turn-free window)
     rk,           \* what the waiting run is: "none" | "run" | "reoffer"
     tres,         \* a sync tool's call is out and its result not yet back
+    tend,         \* ...and the completion that put it out has ended at the gate (it
+                  \*   had text: "Let me check." + the call); only endClearsTool reads it
     \* --- the request in flight and its reply (one at a time) ---
     req,          \* "none" | "caller" | "post" | "run" | "reoffer"
     rst,          \* the record's state when the request was rendered
@@ -170,7 +176,7 @@ VARIABLES
 
 rec   == <<st, fed, uncut, missed, reoffers>>
 line  == <<vad, pend, turn, speech>>
-door  == <<q, hPost, rloc, rk, tres>>
+door  == <<q, hPost, rloc, rk, tres, tend>>
 reply == <<req, rst, noted, say, ph>>
 mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, got>>
 vars  == <<rec, heard, repeat, line, door, reply, ended, mons>>
@@ -185,6 +191,7 @@ Init ==
     /\ heard = FALSE /\ repeat = FALSE
     /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0
     /\ q = "none" /\ hPost = FALSE /\ rloc = "none" /\ rk = "none" /\ tres = FALSE
+    /\ tend = FALSE
     /\ req = "none" /\ rst = "none" /\ noted = FALSE /\ say = "none" /\ ph = "none"
     /\ ended = FALSE
     /\ runUnder = FALSE /\ runMid = FALSE /\ displaced = FALSE /\ staleNote = FALSE
@@ -286,7 +293,7 @@ Land ==
     /\ IF turn \/ q = "caller"
          THEN missed' = TRUE /\ UNCHANGED <<rloc, rk, hPost, displaced>>
          ELSE Ask("run") /\ UNCHANGED missed
-    /\ UNCHANGED <<fed, uncut, reoffers, heard, repeat, line, q, tres, reply, ended,
+    /\ UNCHANGED <<fed, uncut, reoffers, heard, repeat, line, q, tres, tend, reply, ended,
                    runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
 
 \* The settle feed: owed.py hears how the reply ended and closes the record on the
@@ -315,7 +322,7 @@ Lull ==
     /\ reoffers' = reoffers + 1
     /\ missed' = FALSE                         \* runAfterCut: re-armed by the next cut
     /\ Ask("reoffer")
-    /\ UNCHANGED <<st, fed, uncut, heard, repeat, line, q, tres, reply, ended,
+    /\ UNCHANGED <<st, fed, uncut, heard, repeat, line, q, tres, tend, reply, ended,
                    runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
 
 (* ============================ the door (FollowupGate) ============================ *)
@@ -326,7 +333,7 @@ Lull ==
 \* sees an upstream run).
 Window ==
     /\ Mut("turnLevel") \/ (~vad /\ ~pend)
-    /\ Mut("vadLevel")  \/ (~turn /\ q = "none" /\ ~tres)
+    /\ Mut("vadLevel")  \/ (~turn /\ q = "none" /\ (~tres \/ (Mut("endClearsTool") /\ tend)))
 
 \* The run goes: the gate pushes it up to the LLM and claims the window. At this door,
 \* not at gate.ask, owed.py is asked again whether the record is still owed: between the
@@ -346,7 +353,7 @@ RunGo ==
               /\ noNote'     = (noNote \/ (st = "owed" /\ ~Noted(st)))
               /\ staleHeard' = (staleHeard \/ (Noted(st) /\ heard))
          ELSE UNCHANGED <<reply, runUnder, runMid, staleNote, noNote, staleHeard>>
-    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, ended, displaced, relook, got>>
+    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, tend, ended, displaced, relook, got>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S) on a held run: DROPPED, never released (room
 \* TV noise holds it forever otherwise; §4). A timer: never forced (not in FairSpec).
@@ -354,7 +361,7 @@ Cap ==
     /\ ~ended /\ rloc = "wait" /\ (vad \/ pend)
     /\ rloc' = "none" /\ rk' = "none"
     /\ missed' = (missed \/ (REOFFER = "anyMiss" /\ st = "owed"))
-    /\ UNCHANGED <<st, fed, uncut, reoffers, heard, repeat, line, q, hPost, tres, reply,
+    /\ UNCHANGED <<st, fed, uncut, reoffers, heard, repeat, line, q, hPost, tres, tend, reply,
                    ended, mons>>
 
 \* The caller's VAD stopped and no words came within TEAPORT_REPLY_HOLD_RELEASE_S (a
@@ -365,14 +372,14 @@ GateQuiet ==
     /\ ~ended /\ pend /\ ~vad /\ ~turn
     /\ pend' = FALSE
     /\ IF hPost THEN hPost' = FALSE /\ q' = "post" ELSE UNCHANGED <<hPost, q>>
-    /\ UNCHANGED <<rec, heard, repeat, vad, turn, speech, rloc, rk, tres, reply, ended, mons>>
+    /\ UNCHANGED <<rec, heard, repeat, vad, turn, speech, rloc, rk, tres, tend, reply, ended, mons>>
 
 \* A sync tool's result lands and the assistant aggregator pushes the answer UP
 \* (_maybe_push_context_after_function_result): held while speech is pending, else asked.
 \* (A turn start cancelled the call: TurnStart clears `tres`.)
 ToolResult ==
     /\ ~ended /\ tres
-    /\ tres' = FALSE
+    /\ tres' = FALSE /\ tend' = FALSE
     /\ IF vad \/ pend
          THEN /\ hPost' = TRUE /\ UNCHANGED q
               /\ IF Mut("oneSlot") /\ rloc = "wait"
@@ -402,17 +409,19 @@ Issue ==
          /\ staleNote'  = (staleNote \/ (n /\ st = "closed"))
          /\ noNote'     = (noNote \/ (st = "owed" /\ ~n))
          /\ staleHeard' = (staleHeard \/ (n /\ heard))
-    /\ UNCHANGED <<say, rec, heard, repeat, line, hPost, rloc, rk, tres, ended, runUnder,
+    /\ UNCHANGED <<say, rec, heard, repeat, line, hPost, rloc, rk, tres, tend, ended, runUnder,
                    runMid, displaced, relook, got>>
 
 \* What the model may say, by who asked and what the request carried (header; DESIGN.md
 \* "What the evidence supports"). "tool" is a sync tool call (get_current_time, ...),
-\* only on a caller's turn; "lookup" is ask_openclaw again for what the outcome answers.
+\* only on a caller's turn, and "texttool" the same call with a line before it ("Let me
+\* check." + get_weather): the line plays while the call is out; "lookup" is ask_openclaw
+\* again for what the outcome answers.
 Says(p, r, n) ==
     IF p = "run"     THEN {"tell"} \cup Opt(PARTIAL, "part") \cup Opt(SILENT, "silent")
     ELSE IF p = "reoffer"
                      THEN {"tell", "stay"} \cup Opt(PARTIAL, "part") \cup Opt(SILENT, "silent")
-    ELSE LET t == IF p = "caller" THEN {"tool"} ELSE {} IN
+    ELSE LET t == IF p = "caller" THEN {"tool", "texttool"} ELSE {} IN
          IF n            THEN {"tell", "part", "defer", "other"} \cup t \cup Opt(FLAKY, "lookup")
          ELSE IF r = "none"   THEN {"other"} \cup t
          ELSE IF r = "closed" THEN {"tell", "other"} \cup t
@@ -431,17 +440,20 @@ Say ==
                    /\ tres' = (s = "tool")
                    /\ missed' = (missed \/ MissedRun(FALSE, "nothing"))
               ELSE /\ say' = s /\ ph' = "play"
-                   /\ UNCHANGED <<req, rst, noted, heard, fed, uncut, tres, missed, got>>
-    /\ UNCHANGED <<st, reoffers, line, q, hPost, rloc, rk, ended, runUnder, runMid,
+                   /\ tres' = (s = "texttool")
+                   /\ UNCHANGED <<req, rst, noted, heard, fed, uncut, missed, got>>
+    /\ UNCHANGED <<st, reoffers, line, q, hPost, rloc, rk, tend, ended, runUnder, runMid,
                    displaced, staleNote, noNote, staleHeard>>
 
-\* BotStoppedSpeaking: the reply played to its end.
+\* BotStoppedSpeaking: the reply played to its end. A "texttool" reply's End passes the
+\* gate here with its call still out (tend).
 Played ==
     /\ ~ended /\ ph = "play"
     /\ Finish(FALSE, PlayGot(say))
     /\ missed' = (missed \/ MissedRun(FALSE, PlayGot(say)))
-    /\ UNCHANGED <<st, reoffers, repeat, line, door, ended, runUnder, runMid, displaced,
-                   staleNote, noNote, staleHeard, relook>>
+    /\ tend' = (tres /\ say = "texttool")
+    /\ UNCHANGED <<st, reoffers, repeat, line, q, hPost, rloc, rk, tres, ended, runUnder,
+                   runMid, displaced, staleNote, noNote, staleHeard, relook>>
 
 (* ============================ the caller ============================ *)
 
@@ -466,6 +478,7 @@ TurnStart ==
     /\ turn' = TRUE /\ pend' = FALSE
     /\ missed' = (missed \/ st = "owed")
     /\ q' = "none" /\ hPost' = FALSE /\ rloc' = "none" /\ rk' = "none" /\ tres' = FALSE
+    /\ tend' = FALSE
     /\ IF req # "none"
          THEN \E g \in CutGot(say, ph) : Finish(TRUE, g)
          ELSE UNCHANGED <<reply, heard, fed, uncut, got>>
@@ -480,7 +493,7 @@ Commit ==
     /\ ~ended /\ turn /\ ~vad
     /\ turn' = FALSE /\ pend' = FALSE
     /\ \E words \in BOOLEAN : q' = IF words THEN "caller" ELSE "none"
-    /\ UNCHANGED <<rec, heard, repeat, vad, speech, hPost, rloc, rk, tres, reply, ended, mons>>
+    /\ UNCHANGED <<rec, heard, repeat, vad, speech, hPost, rloc, rk, tres, tend, reply, ended, mons>>
 
 \* The client disconnects or the call hangs up. Nothing is owed to nobody: the escape in
 \* the liveness property, never forced.
@@ -560,10 +573,11 @@ TypeOK ==
     /\ vad \in BOOLEAN /\ pend \in BOOLEAN /\ turn \in BOOLEAN /\ speech \in 0..MaxSpeech
     /\ q \in {"none", "caller", "post"} /\ hPost \in BOOLEAN
     /\ rloc \in {"none", "wait"} /\ rk \in {"none", "run", "reoffer"} /\ tres \in BOOLEAN
+    /\ tend \in BOOLEAN /\ (tend => tres)
     /\ (rloc = "wait") = (rk # "none")
     /\ req \in {"none", "caller", "post", "run", "reoffer"}
     /\ rst \in {"none", "owed", "closed"} /\ noted \in BOOLEAN
-    /\ say \in {"none", "tell", "part", "defer", "other", "lookup"}
+    /\ say \in {"none", "tell", "part", "defer", "other", "lookup", "texttool"}
     /\ ph \in {"none", "gen", "play"} /\ ((req = "none") = (ph = "none"))
     /\ (ph = "play") = (say # "none")
     \* the model's one-slot queue at the LLM is enough: a held post-tool answer and a
@@ -572,6 +586,6 @@ TypeOK ==
     /\ ended \in BOOLEAN /\ got \in {"none", "nothing", "lead", "filler", "some", "all"}
     /\ MUT \subseteq {"fraction", "countSettle", "singleWord", "oneItem", "storeNote",
                       "runAfterCut", "lagSettle", "oneSlot", "askOnly", "turnLevel",
-                      "vadLevel", "renderInGet", "ledgerMax"}
+                      "vadLevel", "renderInGet", "ledgerMax", "endClearsTool"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms"}
 =============================================================================

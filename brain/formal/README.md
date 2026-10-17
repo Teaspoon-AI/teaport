@@ -265,7 +265,7 @@ trials each, gpt-oss-120b on Groq, one session's contexts):
 
 | request | choices | evidence |
 |---|---|---|
-| carries the note | tell, tell part, defer, other (+ a sync tool call on a caller turn) | X1-I 18/20 answer, W 18-20/20, HOLD 60/60 defer |
+| carries the note | tell, tell part, defer, other (+ a sync tool call on a caller turn, bare or after a line: "Let me check." + the call) | X1-I 18/20 answer, W 18-20/20, HOLD 60/60 defer |
 | carries the note, `FLAKY` | + re-look-up | measured: 1/20 in X1-P and X2-I (round 1); 0 in round 2's "I'm ready"/"go ahead" arms |
 | no note, after landing, not yet heard (mutations only) | anything, re-lookup included | B0 19/20 re-lookups |
 | no note, before landing | nothing to tell | — |
@@ -306,8 +306,8 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 
 | row | what | verdict | the counterexample, or the state count |
 |---|---|---|---|
-| `ow_design` | the design as the model corrected it (`anyMiss`, `terms`), with partial and silent runs, `MaxSpeech = 6` | holds, all 11 safety properties | 10,150 states |
-| `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolves` | 8,116 states |
+| `ow_design` | the design as the model corrected it (`anyMiss`, `terms`), with partial and silent runs, `MaxSpeech = 6` | holds, all 11 safety properties | 14,738 states |
+| `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolves` | 11,754 states |
 | `ow_asWritten_closed` | DESIGN §3 as written (`RUNCLOSE = "uncut"`) | ✗ `ClosedOnEvidence` | the landing run tells one item of two and plays through; "uncut run" closes it |
 | `ow_asWritten_live` | DESIGN §4 as written (`REOFFER = "cutOrTurn"`) | ✗ `OwedResolves` | the landing run produces no audio; with no cut and no caller turn, nothing ever arms the re-offer (the hold cap's drop does the same) |
 | `ow_fraction` | today's ≥ 1/3 of the words | ✗ `ClosedOnEvidence` | the run is cut after a lead-in or partway into the items, and the fraction closes it (#203) |
@@ -324,8 +324,9 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_oneSlot` | the hold's single slot | ✗ `HoldNoLoss` | a post-tool answer is held under speech; the landing run is asked into the same slot and displaces it (or the other way round) |
 | `ow_turnLevel` | a turn-level window (today's `wait_until_idle`) | ✗ `NoRunUnderSpeech` | the caller starts talking, the answer lands, the run goes before their words make a turn (#197) |
 | `ow_vadLevel` | a VAD-level window | ✗ `NoRunMidTurn` | the caller's reply is a sync tool call; the run goes between the call and its answer |
+| `ow_endClearsTool` | the gate's turn half ends at a completion's End even with its call out (`FollowupGate` before the review round: `_turn` cleared by the `LLMFullResponseEndFrame`) | ✗ `NoRunMidTurn` | a caller request in flight without the note; the answer lands, the run waits; the reply is "Let me check." + a sync tool call, its line plays, its End clears the turn, and the run goes before the tool's answer (10 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
-| `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 16,912 states |
+| `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 24,224 states |
 
 `NoRedundantLookup` is a rate the model shows, not something the design guarantees.
 gpt-oss re-looked-up with the note in view 1/20 in round 1. The design's claim is the
