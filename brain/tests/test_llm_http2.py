@@ -264,27 +264,64 @@ async def test_an_idle_connection_left_alone_is_reused():
 
 async def test_a_connection_that_stopped_answering_is_left_after_the_cut():
     # A connection dead without a word: every request on it hangs, and is cancelled before
-    # httpcore's own read timeout (pipecat's fires first, or the caller speaks). Taken out
-    # of reuse (services: no answer before the cut), the next request opens a new one;
-    # without that, every turn after hung on it.
-    async with Server(size=4_000, delay=0, black_hole_first=True) as server, \
-            _client() as client:
-        try:
-            await asyncio.wait_for(client.get(server.url), 0.5)
-        except asyncio.TimeoutError:
-            pass
-        assert llm_http2.stop_reusing(client._transport._pool.connections) == 1
-        r = await asyncio.wait_for(client.get(server.url), 3)
-        assert len(r.content) == 4_000 and server.connections == 2, server.connections
+    # httpcore's own read timeout. One cancelled after NO_ANSWER_SECS without an answer
+    # takes it out of reuse, and the next request opens a new one; one cancelled sooner
+    # (a fast barge-in, a provider still starting) leaves it be.
+    saved, llm_http2.NO_ANSWER_SECS = llm_http2.NO_ANSWER_SECS, 0.3
+    try:
+        async with Server(size=4_000, delay=0, black_hole_first=True) as server, \
+                _client() as client:
+            for wait, available in ((0.1, True), (0.5, False)):
+                try:
+                    await asyncio.wait_for(client.get(server.url), wait)
+                except asyncio.TimeoutError:
+                    pass
+                assert _h2(client).is_available() is available, wait
+            r = await asyncio.wait_for(client.get(server.url), 3)
+            assert len(r.content) == 4_000 and server.connections == 2, server.connections
+    finally:
+        llm_http2.NO_ANSWER_SECS = saved
+
+
+async def test_pipecats_retry_after_a_silent_connection_goes_out_on_a_new_one():
+    # pipecat's own timeout (retry_on_timeout) cancels the request and asks again inside
+    # get_chat_completions. The retry must not ride the connection that just stayed
+    # silent: there it would wait out httpcore's read timeout, then the SDK's backoff
+    # (~40 s live, where HTTP/1.1's cancel closed the connection and the retry
+    # reconnected).
+    from pipecat.processors.aggregators.llm_context import LLMContext
+    from teaport_brain.services import BoundedOpenAILLMService, OpenAILLMService
+    saved, llm_http2.NO_ANSWER_SECS = llm_http2.NO_ANSWER_SECS, 0.3
+    try:
+        async with Server(size=4_000, delay=0, black_hole_first=True) as server:
+            svc = BoundedOpenAILLMService(
+                api_key="t", base_url=server.url + "v1",
+                settings=OpenAILLMService.Settings(model="m"),
+                retry_on_timeout=True, retry_timeout_secs=0.5)
+            h2c = httpx.AsyncClient(http1=False, http2=True,
+                                    timeout=httpx.Timeout(30.0, connect=5.0))
+            svc._client._client = h2c                   # cleartext HTTP/2, for the server
+            try:
+                t = time.monotonic()
+                stream = await asyncio.wait_for(
+                    svc._open_stream(LLMContext(messages=[{"role": "user", "content": "hi"}])),
+                    10)
+                took = time.monotonic() - t
+                await stream.close()
+            finally:
+                await h2c.aclose()
+            assert server.connections == 2 and took < 2.0, (server.connections, took)
+    finally:
+        llm_http2.NO_ANSWER_SECS = saved
 
 
 async def test_streams_on_a_connection_left_run_on():
-    # Taken out of reuse is not closed: a reply streaming on it is not cut.
+    # Out of reuse is not closed: a reply streaming on it is not cut, and new requests go
+    # to a new connection.
     async with Server(size=8_000, chunk=400, delay=0.005) as server, _client() as client:
         running = asyncio.ensure_future(client.get(server.url))
         await asyncio.sleep(0.05)
-        assert llm_http2.stop_reusing(client._transport._pool.connections) == 1
-        assert llm_http2.stop_reusing(client._transport._pool.connections) == 0
+        _h2(client)._connection_error = True
         fresh = await client.get(server.url)
         assert len((await running).content) == 8_000 and len(fresh.content) == 8_000
         assert server.connections == 2, server.connections

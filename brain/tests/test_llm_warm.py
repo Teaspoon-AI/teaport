@@ -174,32 +174,6 @@ def test_a_closed_loops_client_is_let_go():
     assert not any(loop.is_closed() for loop in services._HTTP_CLIENTS)
 
 
-async def test_a_request_cut_without_an_answer_leaves_its_connection():
-    # services: a request cancelled after _NO_ANSWER_SECS with no response headers takes
-    # the connection out of reuse; one cancelled sooner (the usual barge-in or discarded
-    # speculation, or a provider still starting) does not.
-    from teaport_brain import llm_http2
-    calls, saved = [], (llm_http2.stop_reusing, services._NO_ANSWER_SECS,
-                        OpenAILLMService.get_chat_completions)
-
-    async def never(self, context):
-        await asyncio.sleep(3600)
-    llm_http2.stop_reusing = lambda conns: calls.append(list(conns)) or 1
-    services._NO_ANSWER_SECS = 0.2
-    OpenAILLMService.get_chat_completions = never
-    try:
-        svc = _service("http://127.0.0.1:9/v1")
-        for wait, expected in ((0.05, 0), (0.3, 1)):
-            try:
-                await asyncio.wait_for(svc._open_stream(None), wait)
-            except asyncio.TimeoutError:
-                pass
-            assert len(calls) == expected, (wait, calls)
-    finally:
-        (llm_http2.stop_reusing, services._NO_ANSWER_SECS,
-         OpenAILLMService.get_chat_completions) = saved
-
-
 async def test_one_warm_up_at_a_time():
     async with Server() as server:
         svc = _service(server.base_url)
