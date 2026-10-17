@@ -932,7 +932,7 @@ def test_a_room_is_not_idle_while_a_consult_answer_is_owed():
     gate.user_heard = True
     gate.last_active -= 1000                                       # a long lull...
     assert gs.room_idle(gate, 1.0)
-    gate.owed = 1                                                  # ...but an answer is coming
+    gate.consults_running = 1                                      # ...but an answer is coming
     assert not gs.room_idle(gate, 1.0)
 
 

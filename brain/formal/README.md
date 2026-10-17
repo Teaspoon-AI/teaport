@@ -32,13 +32,27 @@ java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
      -nowarning -workers auto -config fu_retireOnRead.cfg Followup.tla
 ```
 
-## `Followup.tla` — the async `ask_openclaw` follow-up
+## `Followup.tla` — a one-shot order in the context, and the gate's turn latch
 
-Models `FollowupGate` (`followup_gate.py`) together with `_make_consult_followup`
-(`agent_session.py`): when a background consult finishes, a one-shot USER-role trigger
-("tell the user now…") is appended to the context and an `LLMRunFrame` is queued.
+> Until #203 this was the model of the async `ask_openclaw` follow-up: when a background
+> consult finished, a one-shot USER-role trigger ("tell the user now…") was appended to
+> the context and an `LLMRunFrame` queued, and a delivery loop (`MODE = "heard"`, #30)
+> posted it again until the caller had heard a third of its words. #203 broke that
+> loop's premise and `Owed.tla` replaced it: `owed.py` renders its note into each
+> request and stores nothing, so there is no trigger to retire. The loop's rows
+> (`fu_heard_*`) and its code (`_make_consult_followup`, `OneShot.void`,
+> `Delivery.replies_only`, `TranscriptLedger.next_assistant`, `_MIN_HEARD`) went in the
+> same change. What stays is what still describes live code: retiring a one-shot order
+> AT its read (`FollowupTrigger`, which now retires `ClientNotes`' reaction order), and
+> `FollowupGate`'s turn latch (`LATCH`), which `ClientNotes` and the run's door wait on.
+> The history below keeps the follow-up's words where they are the record of a live
+> incident.
 
-Retiring that trigger is a **two-sided** constraint, and each side has already cost a
+Models `FollowupGate` (`followup_gate.py`) together with an injector that appends a
+one-shot USER-role order to the context and queues an `LLMRunFrame` (the consult
+follow-up's trigger then, `ClientNotes`' reaction now).
+
+Retiring that order is a **two-sided** constraint, and each side has already cost a
 live session:
 
 | | |
@@ -100,12 +114,10 @@ to get wrong:
   request (`pipecat/services/openai/base_llm.py`), so retiring there would neutralize
   the trigger in place before the model ever saw it — losing *every* answer.
 
-`speak_followup` arms the one-shot **before** `queue_frames` (the completion can start
-while `queue_frames` is still awaiting) and retries a flushed turn at the next quiet
-window instead of treating it as delivered.
-
-The counterexample is a regression test: `brain/tests/test_followup_injection.py`,
-`test_a_flushed_turn_does_not_retire_the_trigger_unread`.
+The injector arms the one-shot **before** `queue_frames` (the completion can start
+while `queue_frames` is still awaiting): `ClientNotes._post_order` does. The read point's
+two facts are `brain/tests/test_followup_trigger.py`
+(`test_the_response_start_alone_does_not_retire_it`, `test_someone_elses_activity_does_not_retire_it`).
 
 ### PR #13: the latch across a tool call
 
@@ -162,181 +174,313 @@ properties do not gate this.
 `FunctionCallInProgressFrame`. A second flag, `_turn`, is set on
 `LLMFullResponseStartFrame` and cleared by the answering completion's End frame, by a
 `FunctionCallResultFrame` whose `run_llm` is False (`tools.no_inference()`, the async
-placeholder nothing answers from), or by an interruption. `wait_until_idle(turn_free=True)`
-waits on idle *and* `~_turn`; the follow-up injector (`agent_session.speak_followup`)
-passes it, the narrator does not. The gate sits before the assistant aggregator, so it
-sees the result frame. `test_followup_gate.py` covers the synchronous shape (narrator
-idle, injector held until the answering completion ends), the no-inference result, and
-the interruption.
-
-### The delivery loop (#30): delivered means heard
-
-The table above stops at "a completion read it". #33 moved the bar: the trigger is read
-the moment the model starts answering, before a sample reaches the caller, so a delivery
-barged over at 0% heard was retired as delivered (live 2026-09-10 17:13). The loop in
-`speak_followup` now asks whether the caller **heard** it, and below `_MIN_HEARD` (0.3,
-`TEAPORT_FOLLOWUP_MIN_HEARD`) posts it again, up to `_DELIVERY_ATTEMPTS`. `MODE = "heard"`
-models that loop, and the two read-count properties mean what the loop needs:
-
-| | `MODE = "heard"` |
-|---|---|
-| `NoSilentLoss` | the loop never ends *delivered*, and no copy left in the context says "already given", unless a recital was heard to the end or cut at ≥ `_MIN_HEARD`. Running out of attempts is not a loss: the note left behind (`_UNTOLD`) says it never arrived |
-| `NoRepeatRecital` | no recital begins after the caller has heard one — the loop retries on purpose, so "read twice" is no longer the line |
-| `NoStandingOrder` | the loop never ends with a live trigger (the budget retires it regardless) |
-| `LiveIsArmed` | a live trigger always has a shot armed: whatever completion reads it next takes it out |
-
-What the model adds to reach those: the read point at the completion's **first text**
-(`FollowupTrigger`, which fires *every* armed shot on *any* completion's first text);
-the heard outcome `HEARD | CUT_ABOVE | CUT_BELOW` from **two signals** — the transport's
-`Delivery` (settled by `BotStoppedSpeaking` once it spoke, or by any interruption) and the
-ledger's `next_assistant()` (which charts a cut at the interruption, a finished reply only
-later, and **no turn at all for a reply whose TTS never opened**); the window's claim and
-`TurnCommitMark`; whether the trigger is still the **tail** of the context; and the attempt
-budget. A trigger at the tail is the turn the model answers. One buried under the
-caller's words may be answered or not, and both happened live: 08:17 recited a buried one,
-17:36 answered the caller instead. So the model lets it go either way.
-
-The environment includes what the code can actually see happen:
-- a caller's turn that commits nothing (an empty final: no completion queued);
-- a completion whose text never becomes audio (emptied by the guard, #70; no speech; the
-  LLM failing after its first token);
-- a filler line (tool-ack, narrator: `append_to_context=False`) playing during a tool call;
-- `FollowupTrigger` firing on *any* token while a shot is armed, not only on a
-  completion's first.
-
-One timing assumption is explicit: a queued completion claims the window (at
-`TurnCommitMark`) and starts within milliseconds, long before a 0.7 s debounce could
-end. The gate's claim is a single flag, released by the first completion to start, so
-with two queued the second runs unclaimed. Untimed, no window opens while one is queued.
-
-`REPOST` picks where a retry puts the trigger, `FIX` (a set, `{}` = the code before
-this change) the parts of the fix, and `TIMED` the exits only a timer takes:
-`max_wait` and `wait_out_claim`'s give-up, a 20 s start timeout that overtakes a slow
-completion, and the 45 s heard timeout while audio is still playing. Untimed, every wait
-ends on the event it waits for, or on its timer once that event can no longer come.
-
-**17:36, found by TLC this time** (`fu_heard_inPlace_loss`). The first retry restored the
-trigger *in place*. By then the caller's barge-in is the tail and the trigger is buried
-above it. The retry's completion answers the caller, its first text fires our shot, the
-ledger charts *that* reply cut at ≥ 30%, and the loop returns delivered. The live
-incident was exactly this. `42d0a2b` re-posts at the tail (`REPOST = "tail"`).
-
-**Before this change, the loop still lost answers and still repeated them.** Each
-counterexample below was confirmed against the code and pipecat 1.8.1 by an independent
-review:
-
-1. **Cut before the TTS opened** (`fu_heard_shipped_loss`, 7 steps). Our completion
-   answers from the trigger, and its first text retires it. (With mood tags on, that
-   first text is the `[mood: …]` tag itself.) The caller barges in while the TTS is still
-   aggregating the first sentence. `TranscriptLedger._interrupt` charts only the turns a
-   `TTSStartedFrame` opened and drops the streaming entry, so nothing is charted.
-   `Delivery` is cut with `spoke == False`. The loop waits `_DELIVERY_CHART_TIMEOUT` for
-   a chart that never comes and logs "cut, but the ledger charted no reply to measure —
-   leaving it as delivered". The caller heard 0%. 17:13 was this, 84 ms on the safe side
-   of `TTSStartedFrame`. If the caller's own reply opens and is charted within those
-   5 s, the waiter measures *that* reply instead, with the same result.
-2. **The caller's reply fires our shot** (`fu_heard_no_void_repeat`). A barge-in right
-   after the post, before anything answered: the caller's words are committed below the
-   trigger, and their reply's first text fires our still-armed shot. That reply read the
-   trigger buried. It may have answered the caller and not the trigger, and its audio is
-   what the heard check then measures.
-3. **A live trigger with no shot** (`fu_heard_shipped_repeat`). An attempt abandoned on
-   the start timeout ("turn was flushed before the model read it") leaves the copy *live*
-   and disarmed while it waits for the next window. The easy way in is a barge-in that
-   commits nothing (a 0-char final). Every turn the caller takes meanwhile reads it
-   buried, with nothing to retire it: the 08:17 standing order, back inside the retry
-   loop. A recital the caller hears there is followed by the re-post's recital.
-4. **A filler line counts as the answer playing** (`fu_heard_no_ownAudio_loss`). The
-   gate marked a watched `Delivery` spoke on *any* `BotStartedSpeaking`, and settled it
-   as played on the next `BotStoppedSpeaking`. When the follow-up's completion calls a
-   tool first, the tool-ack line plays, the watch settles as played, and the answering
-   completion's first text fires the shot. The loop logs "delivered and played to the
-   end" before the answer has made a sound.
-5. **Every re-post says "already given"** (`fu_heard_no_supersede_loss`). `_post_trigger`
-   retired the earlier copy with `_retire()`'s default, `_SPENT` ("already given to the
-   user"). A re-post only happens because the caller did *not* get it. After the last
-   attempt fails, only the newest copy says so, and every earlier one still says the
-   opposite: the #80 lie, once per attempt.
-6. **Text that never becomes audio** settles nothing. No `BotStarted`, no `BotStopped`,
-   no interruption. The 45 s heard timeout then "left it as delivered". That timer is
-   not standing in for a slow event here, since the event never comes.
-7. **A context that opens and never plays** (`fu_heard_ownStart_loss`), found after the
-   first version of this fix by the ledger's own audit: pipecat opens a TTS context for
-   any non-blank text, so an emoji-only reply, or one whose every clause the engine
-   failed, passes its `TTSStartedFrame` and then nothing. A watch that counted that frame
-   as the reply speaking rode the heard timeout to "delivered".
-
-**What was changed.** The fix is `FIX = {"void", "retireUnarmed", "unspoken",
-"ownAudio", "supersede"}`, and `fu_heard_fixed_all` holds. It lives in
-`followup_gate.py` (`OneShot.void`, `FollowupTrigger` on `InterruptionFrame`, `Delivery`
-marked spoke by the reply's own `TTSStartedFrame`) and in `speak_followup`. Each
-counterexample is a test in `brain/tests/test_followup_heard.py` /
-`test_followup_trigger.py` / `test_followup_gate.py`, failing against the loop before it:
-
-- `void`: an `InterruptionFrame` voids every armed shot that asked for it (armed with
-  `on_void`) instead of leaving it for the next completion's text. The consult's copy is
-  retired as `_UNTOLD` at that moment, and the loop treats the attempt as flushed.
-  Closes 2.
-- `retireUnarmed`: an attempt abandoned unanswered retires its copy as `_UNTOLD` *before*
-  waiting for the window. Closes 3. `LiveIsArmed` is the invariant this buys.
-- `unspoken`: a reply with `Delivery.spoke == False` is heard 0%, whether it was cut or
-  hit the heard timeout, without asking the ledger. Closes 1 and 6.
-- `ownAudio`: for the consult's watch (`watch_delivery(replies_only=True)`),
-  `Delivery.spoke` is set by audio that follows a reply's own `TTSStartedFrame` (not a
-  filler's, `append_to_context=False`), not by `BotStartedSpeaking`. Frames reach the gate
-  in playout order, so audio between a reply's `TTSStartedFrame` and `TTSStoppedFrame` is
-  that reply's. The `TTSStartedFrame` alone is not enough (`ownStart`, closes 4 but not
-  7). Watchers of a line they speak themselves (`say_last_line`, the call prompt) keep
-  "any audio", since their line may be a filler itself. Closes 4 and 7.
-- `supersede`: the earlier copy is left saying only that a later notice supersedes it.
-  Closes 5.
-
-Each part is necessary: the `fu_heard_no_*` rows drop one each and fail. `no_void` is
-the instructive one. With `unspoken` but no `void`, the barge-in's own reply can recite
-the buried trigger and be heard while our watch, settled by the barge-in, says nothing
-spoke. The loop retries, and the caller hears the answer twice.
-
-**Timers** (`fu_heard_fixed_timed_*`). With the timer exits on, both properties fall
-even with the fix. `NoSilentLoss` falls to a reply still playing at the 45 s heard
-timeout ("never finished nor was cut within the window — leaving it as delivered").
-`NoRepeatRecital` falls to a start timeout that overtakes a completion slower than 20 s,
-which then recites a copy the loop has already retired and re-posted. Both need a real
-wait longer than its timer: these are the accepted residuals, in the sense of UserTurn's
-timed rows. `NoInterjectMidTurn` falls to the give-up by design ("speak anyway"). The
-budget, the one live trigger and the narrator still hold.
-
-**Exactly one live trigger.** `_post_trigger` retires the earlier copy before appending,
-synchronously. The model has one slot for the current copy plus the strongest claim any
-earlier copy makes (`stale`), so "two live copies" is not expressible in it. It is
-checked by the code's construction, not by TLC.
+placeholder nothing answers from) once no other call is out, by a run that says nothing
+(`RunSilentFrame`, #203), or by an interruption. Since #203 the gate also keeps the calls
+out by id (`_calls_out`; `Owed.tla`'s `endClearsTool` and `staleFlag` rows): a turn whose
+line ended with its call still out stays shut. `wait_until_idle(turn_free=True)` waits on idle *and* `~_turn`;
+`ClientNotes` passes it (the follow-up injector did), the narrator does not, and the
+run's door (`FollowupGate.ask`) waits on the same window. The gate sits before the
+assistant aggregator, so it sees the result frame. `test_followup_gate.py` covers the
+synchronous shape (narrator idle, a turn-free wait held until the answering completion
+ends), the no-inference result, and the interruption.
 
 ### Known limits of this model
 
-- **Liveness is not established.** `EventuallyDelivered` (`live.cfg`) fails only
-  because the `MaxRuns` bound is exhausted, not because of a defect — the trace ends
-  with `started = MaxRuns` and a turn still queued. Raising the bound doesn't settle
-  it; a proper liveness argument needs fairness assumptions about the user, which the
-  model doesn't currently state.
-- **Durations are out of scope.** `_QUIET_SECS`, the delivery timeouts and the 0.3 s
-  STT settle are timing assumptions TLA+ cannot judge. `TIMED` only says which
-  properties a timer's exit can break, never how likely the wait is to outlast it.
-- **One injector.** `ClientNotes` arms its reaction orders on the same
-  `FollowupTrigger` and competes for the same claimed windows. The model has the consult
-  follow-up alone. The claim keeps the two apart except on a give-up (`TIMED`). `void`
-  is opt-in (a shot armed with `on_void`), and a reaction is armed without one. Its
-  order stays through a barge-in on purpose, so the caller's turn folds the reaction
-  into its reply. Nothing checks or retries a reaction, so none of the properties above
-  are at stake for it.
-- **The session ending** (`_session_over`, the copy retired untold) is not modelled. It
-  only exits the loop.
-- **What the model says** is reduced to "recites the answer or not". A buried trigger
-  may be answered either way, as the live record shows. A reply that answers both
-  the caller and the trigger counts as a recital.
-- The 0%-heard residual this section used to list (a completion that reads the trigger
-  and is barged away before speaking) was built in `cbe2795` (#33), with the
-  `TEAPORT_FOLLOWUP_MIN_HEARD` threshold. The delivery loop above models it, and its
-  first counterexample shows `heard_fraction` alone does not close it: the ledger never
-  charts a reply whose TTS never opened.
+- **Durations are out of scope.** `_QUIET_SECS` and the claim's expiry are timing
+  assumptions TLA+ cannot judge.
+- **One injector.** `ClientNotes`' reaction competes with `owed.py`'s run for the same
+  claimed windows; the claim keeps the two apart, and `Owed.tla` models the run's side
+  (`NoRunMidTurn`, `NoRunUnderSpeech`). A reaction stays armed through a barge-in on
+  purpose, so the caller's turn folds the reaction into its reply. Nothing checks or
+  retries a reaction, so the liveness question the follow-up had (`EventuallyDelivered`,
+  never established here) is not asked of it; the consult's is `Owed.tla`'s
+  `OwedResolves`.
+- **What the model says** is reduced to "reads the order or not".
+
+## `Owed.tla` — owed until heard (#203)
+
+This model was written before the code it describes, and led it: it is the delivery
+design for issue #203, and it replaced `Followup.tla`'s delivery loop (`MODE = "heard"`),
+whose rows and code went in the same change. The code below is the model's actions,
+one for one; nothing in it forced a change to the model (see "What the code adds" for
+what it does that the model abstracts).
+
+#203 broke `Followup.tla`'s premise. The loop counted a reply as delivered when the caller
+heard at least `_MIN_HEARD` (a third) of its words. On 2026-10-16 the caller cut in 1.1 s
+into "The top story on Hacker News right now is…": 31% of the words and none of the
+answer. The trigger was retired as "already given", and "I'm ready." got a second
+49-second lookup. The new design has three concepts and two states:
+
+| | what it is | code |
+|---|---|---|
+| the **record** | what the caller is still owed, outside the conversation: `none` (consult running) → `owed` → `closed` (or `dropped`, evicted unheard: not modelled) | `owed.Record`, kept by `owed.Owed` (one per session) |
+| the **note** | rendered into every request from the record while it is owed, never stored | `owed.render(messages, records, purpose)`, called by the render hook in `BoundedOpenAILLMService._open_stream` through `Owed.view` |
+| the **evidence** | the caller heard every item of the outcome; for an item with no terms, an uncut telling run | `Record.closes_on`, fed by the settle feed (`Owed.settle`) |
+
+The brain speaks unprompted at most twice per record. It asks one **run** when the answer
+lands, and one **re-offer** at a long lull (`TEAPORT_REOFFER_AFTER_QUIET_S`, 10 s) once
+the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
+
+### Actions and the code they become
+
+| action | code |
+|---|---|
+| `Land` | `tools._consult_and_land` → `Owed.land` (the tools hold the session's `Owed`; `Owed.dispatch` registered the consult and folds a duplicate into it): the placeholder tool result is rewritten once to the cleaned outcome (`owed.clean_outcome`; the rewrite moved from the old `speak_followup`), and the landing run is asked unless `FollowupGate.caller_request_pending` (their turn is open, `_user`, or a commit passed `TurnCommitMark` and the LLM has not rendered it, `request_rendered`); then the re-offer is armed instead |
+| `Ask` | `FollowupGate.ask(keys, purpose, context)`: the run's own slot (`_run`), beside the post-tool answer's `_held_answer`. A re-offer counts at its ask (`Record.reoffers`), so a held-then-dropped one is one |
+| `RunGo` | `FollowupGate._run_door`: past the hold, a window that is turn-free (`_clear`: no turn, no request or reply in flight, no tool round out, nothing claimed) and VAD-free (no `_vad`, no `_speech_pending`), debounced; the gate claims the window and pushes a `RunFrame` UP. Whether its records are still owed is asked where it renders (`Owed.view`, after `settled()`): in the quiet window nothing lies between the go and the render, so that is the model's check at the go. A run whose records were heard renders nothing (`_NothingToSay`) and its empty completion ends the gate's turn (`RunSilentFrame`) |
+| `Cap` | `_run_door`'s hold: a run held under speech for `TEAPORT_REPLY_HOLD_MAX_S` is **dropped** (`on_run_dropped` → `Owed.run_dropped` arms the re-offer), never sent. The post-tool answer keeps `_answer_capped`'s release |
+| `GateQuiet` | `_speech_over`: no words within the release window |
+| `ToolResult` | pipecat's `_maybe_push_context_after_function_result`, as in `UserTurn.tla`'s POSTTOOL. The gate keeps the ids of the calls out (`_calls_out`, `gtool`): an id is added by its `FunctionCallInProgressFrame` unless it has already settled or been cancelled (`Mark`: the frame is uninterruptible and can come after the barge-in, `staleFlag`), and removed by its result or its `FunctionCallCancelFrame`. A call out keeps the window shut although a line before it ended `_turn` (`tend`, `endClearsTool`) |
+| `Issue` | the LLM takes a caller commit or a post-tool answer; `_open_stream` asks `Owed.view` (which waits for every pending settle) and sends the view. Only then is a commit no longer "still to be rendered" (`request_rendered`), so a consult landing during that wait leaves the note to it. The commit passed `HeardContextCorrector` first; `sp` is the speculative reply, opened through `_open_stream` directly (`speculate.py`), its noted keys carried on the stream to the commit that adopts it |
+| `Say`, `Played` | the completion and its playout. `stay_silent` is offered only in the re-offer's view, and `run_function_calls` consumes it: no call, no result in the context, a `RunSilentFrame` to end the gate's turn (only with no other call out) |
+| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
+| `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame` |
+| `Lull` | `Owed._lull_loop`: every reply settled, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
+| `Commit` | the user aggregator's commit (an empty final commits nothing) |
+
+### What the code adds
+
+Each is outside what the model checks, and each errs toward owed or toward silence:
+
+- **Several records.** At most `MAX_RENDERED` (3) owed records render; a fourth evicts the
+  oldest as `dropped` (not heard, its tool result kept, no note): never `closed`, which
+  would break `ClosedOnEvidence`. One run renders every owed record, so a second ask
+  joins the waiting run.
+- **The bounded settle wait: an accepted residual.** The render waits `SETTLE_WAIT_S`
+  (2 s) for pending settles; past it every reply still pending is settled as heard
+  nothing, with a warning (errs owed; one lost reply does not hold every later render).
+  The model's readers wait unboundedly. If the bound is ever hit by a reply that the
+  caller did hear, a run rendered right after can tell it again: `ow_lagSettle`'s
+  repeat, in practice, behind a 2 s timer. The lull does not take the bound: it waits
+  for the settle itself.
+- **The session's end** (`Owed.close_session`, from the gate's cleanup and the room's
+  sleep): a consult still running has its placeholder rewritten to its failure record,
+  owed, with no run. **Room sleep and wake** save and restore the owed records with the
+  conversation (`wake_gate`).
+- **A run that says nothing** (`SILENT`, `stay`): the model ends its turn there. The
+  code tells the gate (`RunSilentFrame`) when the run's completion gave the TTS nothing it
+  would speak -- counted with the TTS's own test (`tts_text.has_speech`), so a reply of
+  zero-width spaces (#70) is silent -- and called nothing. What it cannot see: text the
+  LLM pushed that a processor below it then swallowed without a word in its place. The
+  guard speaks its recovery line for anything it empties; `MoodTag` alone could take a
+  reply that is only a mood tag, and that run's turn would stay set until the next
+  interruption.
+- **The note's placement and texts** (`render`): the measured texts; the run line first,
+  the re-offer line last (where rounds 4 and 5 measured it).
+- **The heard quote.** A cut reply that carried the note and closed nothing has its
+  pts-exact heard text quoted ("They heard only …") when it was a run of ours or shares
+  a non-common token with the record (`Owed._about`: the #203 session would otherwise
+  have quoted a clarifying question, `test_owed_corpus.py`). The re-offer's note never
+  quotes (the confirmation round: 9/40 stay silent after "hold on" with the quote, 18/40
+  without). The status line is not in the model.
+
+### What the model may say
+
+The model's reply is nondeterministic, bounded by the replay rounds' measurements (20
+trials each, gpt-oss-120b on Groq, one session's contexts):
+
+| request | choices | evidence |
+|---|---|---|
+| carries the note | tell, tell part, defer, other (+ a sync tool call on a caller turn, bare or after a line: "Let me check." + the call) | X1-I 18/20 answer, W 18-20/20, HOLD 60/60 defer |
+| carries the note, `FLAKY` | + re-look-up | measured: 1/20 in X1-P and X2-I (round 1); 0 in round 2's "I'm ready"/"go ahead" arms |
+| no note, after landing, not yet heard (mutations only) | anything, re-lookup included | B0 19/20 re-lookups |
+| no note, before landing | nothing to tell | — |
+| no note, closed (the telling is in the history) | mention it or not, no lookup | K-M-ready: 15 ok, 5 mention, 0 lookups |
+| the landing run | tell; `PARTIAL`: tell some items; `SILENT`: no audio (#70's guard, an LLM error) | D-first 20/20, round 5 C 20/20 |
+| the re-offer run | tell, or `stay_silent` | round 5: 10/20 silent after "hold on", 2/20 after an unrelated exchange |
+
+The outcome is abstracted to **two items with terms** (a two-story list). That makes "one
+item of two" and "a filler that shares common words" expressible. The caller hears
+`nothing | lead | filler | some | all` of a reply. A telling may open with a lead-in that
+restates the question, and a cut can land before, inside or after the items. The ghost
+`heard` means that some reply's heard text carried every item. §3's lexical premise is
+that the rule reads that exactly (the corpus test before the PR). So the model asks
+whether the **rule** closes on it.
+
+### Properties
+
+| property | meaning |
+|---|---|
+| `ClosedOnEvidence` | `st = closed ⇒ heard` |
+| `NoteWhileOwed` | every request rendered while owed carries the note |
+| `NoStoredNote` | no request carries the note for a closed record. A type invariant over the render would be vacuous, so the `storeNote` row carries it |
+| `NoStaleNote` | no request tells the model "They have NOT heard this yet" after they have |
+| `NoRunAfterHeard` | `req ∈ {run, reoffer} ⇒ ¬heard`, ghost-based: a run decided on a record the feed has not caught up with is a counterexample |
+| `NoRepeatRecital` | `¬repeat`: no unprompted telling begins after `heard` (08-26 08:17) |
+| `NoRunUnderSpeech` | a run never goes while caller speech is pending (#198's hold, #197) |
+| `NoRunMidTurn` | a run never goes inside a caller's turn (words in, unanswered) or a tool round |
+| `HoldNoLoss` | neither a run nor a held post-tool answer is displaced by the other |
+| `OneReoffer` | at most one re-offer per record. A held-then-dropped re-offer counts (it is counted at the ask) |
+| `NoRedundantLookup` | the model never re-looks-up what the outcome answers |
+| `OwedResolves` | `owed ~> (closed ∨ sessionEnd ∨ reoffered)`, where `reoffered` is a terminal for unprompted speech only: the note keeps rendering, so a caller who asks gets the answer |
+
+### Rows
+
+Every mutation row is the design with exactly one change. Partial and silent runs are
+off in those rows (they have rows of their own), so each counterexample shows its own
+mechanism. Counterexample lengths vary with TLC's worker count.
+
+| row | what | verdict | the counterexample, or the state count |
+|---|---|---|---|
+| `ow_design` | the design as the model corrected it (`anyMiss`, `about`), with partial and silent runs, `MaxSpeech = 6` | holds, all 11 safety properties | 21,486 states |
+| `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolves` | 17,066 states |
+| `ow_asWritten_closed` | DESIGN §3 as written (`RUNCLOSE = "uncut"`) | ✗ `ClosedOnEvidence` | the landing run tells one item of two and plays through; "uncut run" closes it |
+| `ow_asWritten_live` | DESIGN §4 as written (`REOFFER = "cutOrTurn"`) | ✗ `OwedResolves` | the landing run produces no audio; with no cut and no caller turn, nothing ever arms the re-offer (the hold cap's drop does the same) |
+| `ow_fraction` | today's ≥ 1/3 of the words | ✗ `ClosedOnEvidence` | the run is cut after a lead-in or partway into the items, and the fraction closes it (#203) |
+| `ow_countSettle` | two uncut noted replies close (X2) | ✗ `ClosedOnEvidence` | the caller's turn is open at landing; a noted reply tells one item, another defers; both play through and the count closes |
+| `ow_singleWord` | no common-word list, no 2-term minimum | ✗ `ClosedOnEvidence` | a noted reply defers ("Sure, take your time.") and its common words close it |
+| `ow_oneItem` | one item's terms close | ✗ `ClosedOnEvidence` | the run is cut after the first item |
+| `ow_ledgerMax` | the feed reads the ledger's `heard_text` as it is | ✗ `ClosedOnEvidence` | the run is cut after the first item, and the estimate reads both |
+| `ow_storeNote` | the note stored once at landing | ✗ `NoStoredNote` | the run is heard to the end, closed; the caller's next turn still carries the stored note |
+| `ow_renderInGet` | the hook in `get_chat_completions` | ✗ `NoteWhileOwed` | the answer lands mid-turn; the commit adopts a speculative stream that never passed the hook |
+| `ow_runAfterCut` | no bound on runs after a cut or a turn (§4 (c), today's loop) | ✗ `OneReoffer` | a re-offer held and dropped by a caller turn, then a second at the next lull |
+| `ow_lagSettle` | the readers do not wait for the settle feed | ✗ `NoRunAfterHeard` | the run is cut after its last item (heard); the close is still in the feed; the lull reads owed and asks a re-offer |
+| `ow_lagSettle_repeat` | the same | ✗ `NoRepeatRecital` | a noted caller reply tells it all; the lull, ahead of the settle, re-offers, and the run recites it again |
+| `ow_askOnly` | the run validated only at `gate.ask` | ✗ `NoRunAfterHeard` | a sync tool is out, so the landing run waits for its window; the post-tool answer goes first, carries the note, tells it; the run goes anyway |
+| `ow_oneSlot` | the hold's single slot | ✗ `HoldNoLoss` | a post-tool answer is held under speech; the landing run is asked into the same slot and displaces it (or the other way round) |
+| `ow_turnLevel` | a turn-level window (today's `wait_until_idle`) | ✗ `NoRunUnderSpeech` | the caller starts talking, the answer lands, the run goes before their words make a turn (#197) |
+| `ow_vadLevel` | a VAD-level window | ✗ `NoRunMidTurn` | the caller's reply is a sync tool call; the run goes between the call and its answer |
+| `ow_endClearsTool` | the gate's turn half ends at a completion's End even with its call out (`FollowupGate` before the review round: `_turn` cleared by the `LLMFullResponseEndFrame`) | ✗ `NoRunMidTurn` | a caller request in flight without the note; the answer lands, the run waits; the reply is "Let me check." + a sync tool call, its line plays, its End clears the turn, and the run goes before the tool's answer (10 steps) |
+| `ow_staleFlag` | the gate's tool round as ONE flag, set by a call's `FunctionCallInProgressFrame` (`FollowupGate` before the second review round). The frame is uninterruptible: it waits in the TTS's and the transport's queues and reaches the gate after the barge-in that cancelled the call (`Mark` after `TurnStart`) | ✗ `OwedResolves` | the answer lands, the run waits; the caller's reply is a sync call, the caller barges in (the call cancelled, the run dropped, the re-offer armed), the stale in-progress frame sets the flag, the turn commits no words: no completion clears the flag, the door and the lull stay shut for good (13 steps) |
+| `ow_adoptDropsKeys` | the commit that adopts a speculative reply registers none of the keys its note carried (`BoundedOpenAILLMService.get_chat_completions` read `owed_noted` off `speculate._AdoptedStream`, which never had it: Fable's final review) | ✗ `NoRepeatRecital` | the caller's turn tells it all through an adopted stream; the record stays owed, the lull re-offers, and the run tells it again (12 steps) |
+| `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 20,566 states |
+| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 16,314 states |
+| `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
+| `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
+| `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 34,884 states |
+
+`NoRedundantLookup` is a rate the model shows, not something the design guarantees.
+gpt-oss re-looked-up with the note in view 1/20 in round 1. The design's claim is the
+`ow_flaky_rest` row: a re-lookup costs the caller time and a second consult, but it never
+loses or repeats an answer. (A second consult's own record is outside this model.)
+
+`check.sh` gates the liveness rows too. TLC does not name the temporal property that
+fell, so a liveness row's cfg checks exactly one `PROPERTY`, and the gate takes that one
+as the name.
+
+### What the model changed in the design
+
+The model was written to lead the design, and it found these:
+
+1. **An uncut run proves nothing about items it did not say** (`ow_asWritten_closed`).
+   §3 closes on "a run that played to the end uncut". That is only sound if the run told
+   every item. The run line asks for "one or two short spoken sentences", which a
+   five-story list will not fit into, and §3 itself says naming one story does not close
+   a five-story result. Fix (`RUNCLOSE = "terms"`): an uncut run closes only items with
+   no terms (a bare "done"). Items with terms are closed by their terms, from a run as
+   from any other reply.
+2. **§4's re-offer arming leaves records owed with nothing further said**
+   (`ow_asWritten_live`). "After an audible cut or a caller turn" misses a landing run
+   dropped at the hold cap (room TV), a run that produced no audio (#70's guard, an LLM
+   error after the first token), and, with fix 1, a run that played through with an
+   item untold. In each case no cut and no turn ever comes. Fix (`REOFFER = "anyMiss"`):
+   any run that ended without closing the record also arms the re-offer.
+3. **The settle feed must be the reply's own end** (`ow_lagSettle`,
+   `ow_lagSettle_repeat`). §6 lists "a ledger feed of settled replies". The ledger of
+   `next_assistant`'s docstring charted a reply that played through only at the next bot
+   activity (the 2026-09-11 14:23 loss), so the lull, the run and the render would read
+   a stale record. Fable's lagging-settle trace is exactly this. The feed has to be the
+   reply's own end: the interruption (ahead of the commit, by `CutReplyFence`), or the
+   end of its own audio. Every reader waits for it. As built, both come from the
+   ledger, whose playout design (`LedgerPlayout.tla`) charts at exactly those ends: the
+   cut at `_interrupt`; a reply that played through once its synthesis is done and all
+   of its audio has played (`_close_ready`), which is the window close its own last
+   chunk played out in -- never a mid-reply `BotStoppedSpeakingFrame` (the transport's
+   3 s fallback on a TTS stall) or a filler's end, which a first version that watched
+   one TTS context at the gate took for the reply's (review round, `test_owed.py`).
+4. **The ledger's heard text over-reports on a cut** (`ow_ledgerMax`). §3 says "the
+   ledger's word-exact heard prefix". It is not word-exact. `transcript_ledger.py:902`
+   keeps the **longer** of the pts prefix and `_prefix(intended, frac)`, an estimate that
+   rounds to the nearest word and divides by `max(audio, words × 0.36 s)`. That bias is
+   right for the corrector, which must never delete words that were heard, and wrong for
+   closing a record. The close rule must read the pts-exact prefix only. A reply without
+   per-word pts can close only by playing through.
+5. **The run must be re-validated where it goes, not where it is asked** (`ow_askOnly`).
+   Between `gate.ask` and the run reaching the LLM, a post-tool answer released from the
+   same hold can go first, carry the note, and tell. §4 states only the landing-time
+   condition. `owed.py` must be asked again at the gate's release (`RunGo`), and a run
+   for a record that has closed is dropped there. It must not be rendered as a bare "tell
+   them now" with no results.
+6. **The run's window is both VAD-level and turn-level** (`ow_turnLevel`,
+   `ow_vadLevel`). #198's branch gives the VAD half. The turn half (no turn open, no
+   committed words unanswered, no tool round out: today's `_turn` and the claim) must
+   still gate the run. Otherwise it goes between a sync tool call and its answer.
+7. **§4's landing condition, made precise.** "A run is not started if any caller turn has
+   opened since the consult was dispatched and nobody has answered it" becomes: skip the
+   landing run if and only if a caller request is still to be **rendered** (their turn is
+   open, or committed and not yet asked). That request will carry the note. A caller
+   request already in flight was rendered without the note, so it does not stop the run,
+   which waits behind it. A skipped landing run arms the re-offer.
+8. **Fable's three model points hold.** The repeat side (`NoRunAfterHeard`, `repeat`)
+   catches the lagging settle. A held-then-dropped run counts as an attempt (the
+   `ow_runAfterCut` trace drops one), and the settle is its own step.
+9. **A failure told on any path but an uncut run was re-offered** (`ow_failure_runOnly`,
+   Fable's final review). A failure is one item with no terms, so finding 1 left only an
+   uncut run to close it. When the landing run was skipped (a caller request still to be
+   rendered) or cut after its last word, the caller heard it in full on another path,
+   and the lull told it again. Fix (`RUNCLOSE = "about"`, `OUTCOME = "failure"`): a
+   term-less item also closes on any noted reply heard to its end that is about the
+   record (`owed._about`: a non-common word shared with the request). The premise, the
+   corpus test's to check: a failure is one statement, told whole or not at all, and the
+   telling is the reply. An unrelated reply shares nothing with the request and closes
+   nothing.
+10. **An adopted speculation's keys must reach the evidence** (`ow_adoptDropsKeys`). The
+   speculation renders its note in its own task, and the adopting commit is the reply
+   whose ending is the evidence: if it registers none of the keys, a full telling never
+   closes the record, and the lull tells it again. The code read the keys off the wrong
+   object (the speculation's wrapper, not its stream) until Fable's final review.
+
+Not a finding, but a simplification the model allows: speculation's `take()` comparing a
+records version (§2) is redundant here. `Land` rewrites the placeholder, which is a
+context write the existing compare already sees, and the settle precedes every render
+(finding 3). The version compare is cheap insurance, and only something that closes a
+record **without** a context write between snapshot and commit would need it. §1's
+eviction of a fourth record happens only at a landing, which writes the context, so it
+is covered too; the compare was not built.
+
+### Fairness
+
+`FairSpec` makes weakly fair every step the brain or pipecat takes on its own: the LLM
+answers what it is asked, audio plays out, the settle feed runs, a waiting run goes once
+its window is open, and the release timer fires. The caller's VAD stop and commit are
+fair too, since nobody talks forever and `MaxSpeech` bounds them anyway. `Lull` is fair
+because it is time passing on a quiet line. These are **not** fair: the consult landing,
+the caller starting to speak or opening a turn, the hold cap, and the session ending. So
+`OwedResolves` holds without assuming the caller ever speaks, or that a session ever
+ends.
+
+### Known limits of this model
+
+- **One record.** §1 renders at most the 3 newest owed records. Evicting an older one is
+  not a close on evidence, so `owed.py` has a third terminal state, `dropped`, distinct
+  from closed (no note, no run, its tool result kept); a model with several records
+  would have `ClosedOnEvidence` and the liveness property name it. Two records
+  interacting (one run telling both, a run for B while A's re-offer waits) are not
+  modelled.
+- **The lexical premise** (§3; the corpus test is its check): "every item's terms in the
+  pts-exact heard text" is taken to mean the caller heard every item. Two partial
+  tellings that together cover the items count as not heard. The rule errs the same way:
+  towards owed, which costs a mention.
+- **One request and reply at a time.** pipecat's LLM runs ahead of playout. The
+  serialization is sound for runs, because a run's window waits for the bot to be quiet.
+  Caller and post-tool requests follow a cut or a tool call with no audio, so no telling
+  is still playing when they are rendered.
+- **`WORDS_IN_TIME`** is inherited from `UserTurn.tla`'s gate: words later than the
+  release timer are #198's accepted residual. The barge-in pause and the reply hold's
+  timers are not modelled.
+- **A cut before the TTS opened** (#79) is taken as heard-nothing. The feed reads a cut
+  with no charted turn that way (`TranscriptLedger._interrupt` settles a reply still
+  streaming or queued for its context as heard nothing), never "leave it as delivered".
+- **Room sleep and wake** persistence (`wake_gate.py`) and the session end's rewrite of
+  a running consult's placeholder are not modelled (`test_owed.py` covers both).
+- **Durations.** The settle wait's bound (`SETTLE_WAIT_S`), the debounce before a run
+  goes, the lull's length: timing the model leaves out ("What the code adds").
+- **pipecat premises**, checked in `test_pipecat_premises.py`: the LLM answers an
+  `LLMContextFrame` whatever its direction, so a run pushed up from the gate is answered
+  (`check_an_upstream_context_frame_is_answered_by_the_llm`); the post-tool answer asks
+  on the live context, so its one slot loses nothing (`check_the_answer_to_a_result_asks_on_the_live_context`);
+  the TTS holds a text-less completion's End, which is why a silent run tells the gate
+  itself (`check_a_text_less_completions_end_is_held_by_the_tts`).
 
 ## `SttSlot.tla` — arbitration of the engine's single STT slot
 
@@ -3061,6 +3205,9 @@ pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row
 | A cancel that overtakes an `IN_PROGRESS` still in transit leaves the call unsettled (#185: pipecat as written; the brain fixes it) | UserTurn (`CALLS`, `NoOrphanCall`, `NoUnsettledRead`; see "A call overtaken by its own cancel") | `test_pipecat_function_call_race.py::test_pipecat_alone_still_leaves_the_overtaken_call_in_progress` (fails once pipecat fixes it: the fix is then dead weight) | `llm_response_universal.py:1956-1962` `_handle_function_call_cancel` returns early with no in-progress frame on record (1.12: 2110-2116) | ✓ | ✓ |
 | `run_llm` after a result: `properties.run_llm`, else `frame.run_llm`, else yes | UserTurn (`ToolDone`, `NoOrphanCall`), Followup (`ToolEnd`) | `check_run_llm_resolves_properties_then_frame_then_yes`; the gate's frame: `test_reply_hold.py::test_a_held_result_whose_call_passed_settles_it_without_an_answer` | `llm_response_universal.py:1836-1872` | ✓ | ✓ |
 | The answer to a tool's result is an `LLMContextFrame` pushed UPSTREAM by the assistant aggregator (past `FollowupGate`, above it), deferred to `BotStoppedSpeakingFrame` while the bot is audible, and skipped for an open user TURN, whatever the VAD says | UserTurn (POSTTOOL: `PushAnswer`) | `check_the_answer_to_a_result_is_pushed_up_unless_a_turn_is_open`; through the session's processors: `test_post_tool_under_speech.py` | 1.12 `llm_response_universal.py:1786, 1797, 2026, 2057-2068` | -- | ✓ |
+| An `LLMContextFrame` is answered by the LLM whatever its direction, on its own context, and pushed no further: a run the gate pushes UP (`gate.ask`) is a completion like the post-tool answer | Owed (`RunGo`) | `check_an_upstream_context_frame_is_answered_by_the_llm` (a subclass of the frame, as `RunFrame` is) | 1.12 `services/openai/base_llm.py:643-657` | -- | ✓ |
+| Each answer the assistant aggregator pushes up for a tool's result asks on its own live context, every result in it: the gate's hold keeps one, a newer replacing the older, beside the run's own slot | Owed (`HoldNoLoss`), UserTurn (POSTTOOL) | `check_the_answer_to_a_result_asks_on_the_live_context` | 1.12 `llm_response_universal.py:2057-2068` | -- | ✓ |
+| The TTS holds the End of a completion with no text (no context opens; it is re-pushed only when a context of its turn's id ends): a run that says nothing (stay_silent, empty) tells the gate itself (`RunSilentFrame`) | Owed (`Say`'s silent and stay outcomes) | `check_a_text_less_completions_end_is_held_by_the_tts` | 1.12 `services/tts_service.py:933-945, 1785-1803` | -- | ✓ |
 | A VAD start discards the stop strategy's conclusion (`_turn_complete`), so the brain's strategy does not commit while the caller speaks; pipecat itself guards only the finalize on it | UserTurn (`Inference`'s ordering fact; POSTTOOL's `InferenceUnderSpeech` drops it) | `check_a_vad_start_discards_the_stop_strategys_conclusion` (stock and the brain's subclass, with a control) | 1.12 `turns/user_stop/turn_analyzer_user_turn_stop_strategy.py:129-141, 218-223, 328-340` | -- | ✓ |
 | An `LLMRunFrame` or `LLMMessagesAppendFrame(run_llm)` queued at the top is taken by the user aggregator (its context frame goes down, the run frame no further), so none reaches the assistant aggregator to be sent up past `FollowupGate`; frame ids increase in creation order | UserTurn (POSTTOOL: only a tool's answer comes up; `PendCommitted` by id) | `check_run_frames_stop_at_the_user_aggregator`; the brain's senders: `test_followup_gate.py::test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator` | 1.12 `llm_response_universal.py` (`LLMUserAggregator._handle_llm_run`, `_handle_llm_messages_append`); `utils/utils.py:23` (`obj_id`) | -- | ✓ |
 | A tool result is broadcast by the LLM and passes the TTS and the output transport to `FollowupGate` | Followup (`ToolEnd`, `turnAware`) | `check_a_tool_result_reaches_the_gate_below_the_transport` | `services/llm_service.py:1618-1630` (`result_callback`'s broadcast); `transports/base_output.py:896-923` (`_audio_task_handler` pushes it on) | ✓ | ✓ |
@@ -3084,8 +3231,9 @@ pipecat's `_maybe_reset_word_timestamps(context_id)` -- the context-end hook row
 
 Not checked behaviourally, because no fix rests on them (each holds whichever way pipecat
 goes): `Followup.tla`'s placement facts -- `LLMFullResponseStartFrame` is pushed before the
-request serializes the context, the TTS consumes `LLMTextFrame`, a bare tool call's End
-is held at the TTS (the pre-#13 latch). Also not checked separately: an interruption
+request serializes the context, the TTS consumes `LLMTextFrame` (a bare tool call's End
+held at the TTS, the pre-#13 latch, is now checked as the text-less End above). Also not
+checked separately: an interruption
 dropping a completed reply whose synthesis has not begun (the TTS's own queue reset,
 `tts_service.py:1031-1067`; the processor reset rule above is the general case), and
 "a cancelled completion's End, if the ledger sights it at all, does so before the next

@@ -100,8 +100,8 @@
 #     before committing: the gate asks for the merge as for a turn start's. Only on the
 #     front-ends with the gate (SIP): elsewhere nothing knows the reply has not played,
 #     and the two messages stay apart.
-#   * Only a reply to a USER commit is checked. The greeting, a consult follow-up and
-#     a client-note reaction are not armed: they already wait for a quiet moment
+#   * Only a reply to a USER commit is checked. The greeting, a run of ours (owed.py)
+#     and a client-note reaction are not armed: they already wait for a quiet moment
 #     (FollowupGate) or open the call.
 #   * The merge needs nothing but system messages between the two user messages (a
 #     MemoryRecall note lands there), or a tool round the drop cancelled, which goes

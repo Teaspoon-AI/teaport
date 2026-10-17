@@ -470,14 +470,15 @@ async def test_a_pending_consult_is_announced_to_the_client_until_it_is_delivere
         async def push_frame(self, frame, direction=None):
             pushed.append(frame)
 
-    async def followup(request, text, tool_call_id, failure=None, detail=None):
-        delivered.append(text)
-        assert [m["type"] for m in _messages(pushed)] == ["working"]   # still owed here
+    class Owed:
+        def land(self, request, text, key, *, failure=None, detail=None):
+            delivered.append(text)
+            assert [m["type"] for m in _messages(pushed)] == ["working"]   # still owed here
 
     fut = asyncio.get_running_loop().create_future()
     fut.set_result({"ok": True, "text": "the answer"})
-    await tools._consult_and_followup("call-1", fut, "a long question", followup, "tc-1",
-                                      llm=LLM())
+    await tools._consult_and_land("call-1", fut, "a long question", Owed(), "tc-1",
+                                  llm=LLM())
     working = [m for m in _messages(pushed) if m["type"] == "working"]
     assert working[0]["call_id"] == "call-1" and working[0]["secs"] > tools._ASYNC_CONSULT_TIMEOUT
     assert working[-1] == {"type": "working", "call_id": "call-1", "done": True}

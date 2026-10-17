@@ -8,7 +8,7 @@
 # of truth for the agent: build_agent_session() constructs the whole brain
 # (VAD + engine STT -> LLM -> engine TTS, the heard-grounding TranscriptLedger +
 # HeardContextCorrector, memory recall/reclaim, captions, turn-timing taps, the
-# degenerate-text guards, tools + the async ask_openclaw follow-up) and returns an
+# degenerate-text guards, tools + the async ask_openclaw consult's owed answers) and returns an
 # AgentSession the front-end drives. A front-end supplies only its transport and,
 # optionally, its own input-side processors (SIP's HalfDuplexInputGate).
 #
@@ -17,9 +17,6 @@
 # GAINS the full stack by adopting the factory.
 #
 import asyncio
-import json
-import re
-from typing import NamedTuple
 
 from loguru import logger
 
@@ -82,9 +79,8 @@ from teaport_brain.speech_onset import SpeechOnsetMixin
 from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.settings import setting
-from teaport_brain.followup_gate import (
-    SYSTEM_NOTICE_TAG, FollowupGate, FollowupTrigger, TurnCommitMark,
-)
+from teaport_brain.followup_gate import FollowupGate, FollowupTrigger, TurnCommitMark
+from teaport_brain.owed import Owed
 from teaport_brain.heard_context import HeardContextCorrector, drop_overtaken_tool_calls
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
@@ -135,8 +131,8 @@ def _vad_cls():
 
 
 # Agent-first experiment (TEAPORT_AGENT_FIRST=1): the sandboxed OpenClaw agent owns
-# every conversational turn — ask_openclaw runs SYNCHRONOUSLY (no follow-up
-# injector, so tools.py takes its sync path) and a strict system directive makes
+# every conversational turn — ask_openclaw runs SYNCHRONOUSLY (no owed records,
+# so tools.py takes its sync path) and a strict system directive makes
 # the brain LLM a thin router/phraser instead of the mind. Bridge-is-brain is the
 # default; set TEAPORT_AGENT_FIRST=1 to enable. (AGENT_FIRST is defined once, in
 # tools.py — imported here so both front-ends share the same switch.)
@@ -199,9 +195,6 @@ def user_aggregator_params(**kwargs) -> LLMUserAggregatorParams:
 # the session arbiter (session_arbiter.py) before it runs the pipeline built below.
 
 
-# How many quiet windows to try before giving up on delivering a consult answer. A
-# barge-in between queueing the follow-up turn and the model reading it flushes the
-# queued LLMRunFrame, so the attempt has to be repeatable.
 # How long greet() waits for the STT tri-state to resolve before treating it as
 # can't-hear. The loopback engine answers in well under a second and a 503 now
 # resolves within the connect retry budget, but an unreachable HOST (SYN blackhole —
@@ -209,393 +202,6 @@ def user_aggregator_params(**kwargs) -> LLMUserAggregatorParams:
 # outlast that. Named so tests can shorten it instead of sitting through it.
 _STT_RESOLVE_POLLS = 120
 _STT_RESOLVE_INTERVAL_S = 0.1
-
-_DELIVERY_ATTEMPTS = 3
-# How long one attempt waits for the model to start answering from the trigger before
-# treating the turn as flushed. Generous: this covers the queue plus a cold completion.
-_DELIVERY_START_TIMEOUT = 20.0
-# How long to wait for the transport to report the reply we just caused as finished or
-# cut (FollowupGate.watch_delivery), before giving up on knowing whether it was heard.
-# Covers a full long delivery plus its barge-in.
-_DELIVERY_HEARD_TIMEOUT = 45.0
-# Once the transport says the reply was CUT, how long to wait for the ledger to chart it
-# with the fraction that played. Short on purpose: the ledger charts a cut at the
-# interruption itself, so this resolves promptly or not at all.
-_DELIVERY_CHART_TIMEOUT = 5.0
-# Below this heard fraction the answer did not land and is worth saying again.
-#
-# The trade runs both ways and neither end is free. Too high and a caller who heard most
-# of it hears the whole thing again — the repeat-recital failure the retirement logic
-# already exists to prevent. Too low and answers are lost exactly as they were live
-# 2026-09-10 17:13 (heard~0%, retired as delivered, asked for three more times). A third
-# is the line: below it the caller has a fragment, not an answer.
-#
-# setting(), not a bare float(): this lives in /etc/teaport/brain.env, which installer
-# repairs preserve verbatim, so `TEAPORT_FOLLOWUP_MIN_HEARD=` from a bare cast would
-# raise at IMPORT time and crash-loop the brain. See settings.py.
-_MIN_HEARD = setting("TEAPORT_FOLLOWUP_MIN_HEARD")
-
-
-class _FailureOutcome(NamedTuple):
-    status: str  # the tool result's status and the trigger's tag
-    record: str  # the tool result's error: what the model may say if asked later
-    told: str    # the trigger's statement of what happened ({request} is filled in)
-    ask: str     # what the trigger asks the model to say
-
-
-# A hedge every failure keeps: a consult can die AFTER its action landed (observed
-# live: message posted, then rc=1), and a timed-out one may still be running.
-_ACTION_HEDGE = (" If the request was something visible (a message, poll, or post), "
-                 "ask them to check whether it appeared — do NOT state that it "
-                 "definitely failed. Don't mention tools or agents.")
-
-
-def _failure_outcome(failure, detail) -> _FailureOutcome:
-    """How a consult that produced no answer is recorded and told. Each kind says what
-    actually happened — a timeout says time ran out, an empty run says it came back
-    empty — because "didn't get confirmation" for all of them left the caller unable
-    to tell a slow request from a broken one (#80)."""
-    if failure == "timeout":
-        return _FailureOutcome(
-            "timeout", "the desktop agent ran out of time before it finished",
-            "The desktop agent ran out of time on this earlier request and did not "
-            "finish it: \"{request}\".",
-            " In one short spoken sentence, tell the user it took too long and you "
-            "don't have an answer, and offer to try again or narrow it down." + _ACTION_HEDGE)
-    if failure == "empty":
-        return _FailureOutcome(
-            "empty", "the desktop agent finished but came back with no answer",
-            "The desktop agent finished this earlier request but came back with no "
-            "answer: \"{request}\".",
-            " In one short spoken sentence, tell the user it came back empty-handed and "
-            "offer to try again." + _ACTION_HEDGE)
-    if failure == "error":
-        # A whole-number 402, not the digits anywhere: the detail can be a CLI stderr
-        # tail or a relay error carrying ids and timestamps, and a false "billing
-        # problem" sends the caller off to fix the wrong thing.
-        billing = re.search(r"\b402\b", detail or "") is not None
-        why = ("its AI service refused the request (a billing or credit problem)"
-               if billing else "it hit an error")
-        return _FailureOutcome(
-            "error", f"the desktop agent could not do it: {why}",
-            f"The desktop agent could not complete this earlier request — {why}: "
-            "\"{request}\".",
-            " In one short spoken sentence, tell the user it couldn't be done"
-            + (" because of a billing or credit problem with the AI service" if billing
-               else " and offer to try again") + "." + _ACTION_HEDGE)
-    # "unknown", not "failed": the consult can die on teardown AFTER the action
-    # landed, so asserting failure can be a lie.
-    return _FailureOutcome(
-        "unknown", "the desktop agent did not report back; the action may or may not "
-                   "have completed",
-        "The desktop agent did not report back on this earlier request: "
-        "\"{request}\". It may or may not have completed.",
-        " In one short spoken sentence, tell the user you didn't get confirmation."
-        + _ACTION_HEDGE)
-
-
-def _make_consult_followup(task, context, gate, retirer, ledger):
-    """Follow-up injector for the ASYNC ask_openclaw path. When a background consult
-    finishes, append its answer to the context and run the LLM so the bot SPEAKS it
-    as an unprompted turn, reattached to what the user asked. A failed/empty consult
-    yields a brief 'couldn't get it' turn instead of silence. Bound per-session to
-    this task + context; `gate` holds the turn until neither side is mid-speech and
-    `retirer` (FollowupTrigger) takes the one-shot trigger back out of the context
-    once the model has actually answered from it, and `ledger` says whether the caller
-    heard the answer — a different question from whether the model gave one."""
-    async def wait_for_window():
-        # Wait for a clear moment: don't step on the user mid-utterance OR the
-        # assistant mid-answer about something else. (Gives up after max_wait so a
-        # relentlessly chatty conversation can't strand the answer.) Giving up still
-        # waits out a claimed window and any completion in flight: the first text of
-        # another completion retires every armed one-shot trigger, ours included.
-        if not await gate.wait_until_idle(turn_free=True):
-            await gate.wait_out_claim()
-
-    async def speak_followup(request, text, tool_call_id=None, failure=None, detail=""):
-        await wait_for_window()
-        # Rewrite the placeholder tool result to the real outcome. The placeholder's
-        # own instruction ("add nothing more... do not invent an answer now") stays
-        # authoritative if left in the context — observed live: the model obeyed IT
-        # over the delivery request below and answered with another waiting phrase,
-        # so the answer never reached the user. With the tool result rewritten, the
-        # context reads like any normally-completed tool call.
-        rewrote = False
-        outcome = _failure_outcome(failure, detail) if not text else None
-        # The record loses the web addresses too. 2132096 kept them here so "what
-        # did the agent say?" could still offer a link -- and live 2026-09-04 21:59
-        # that question was answered FROM this record with every path read aloud
-        # ("nvd.nist.gov/vuln/detail/cve-2026-85046 … artificialanalysis.ai/articles/
-        # …"), 48 s of it, the overlay rule notwithstanding. On a voice surface the
-        # only thing this text is ever used for is being spoken.
-        for m in context.get_messages():
-            if (isinstance(m, dict) and m.get("role") == "tool"
-                    and m.get("tool_call_id") == tool_call_id):
-                m["content"] = json.dumps(
-                    {"status": "complete", "answer": strip_urls_for_speech(text)} if text
-                    else {"status": outcome.status, "error": outcome.record})
-                rewrote = True
-                break
-        if text:
-            # The addresses stay in the rewritten tool result above (the record the
-            # user can ask about); they leave the delivery text. Spoken, each one is
-            # "nvd dot nist dot gov slash vuln slash …" — live 2026-09-04 21:10 a
-            # five-item delivery read five of them in ONE sentence, ~30 s of audio
-            # whose first chunk alone took 6.6 s to synthesize: 8 s of silence the
-            # user took for "done" and talked over, so the delivery was retired at
-            # 10% heard. The persona now names sources instead of reading them.
-            content = (
-                f"[background task complete] The desktop agent you delegated to has "
-                f"finished this earlier request: \"{request}\".\n\nIts answer:\n"
-                f"{strip_urls_for_speech(text)}\n\n"
-                "Tell the user now, in one or two short spoken sentences, briefly "
-                "reattaching it to what they asked (e.g. \"About that forecast you "
-                "wanted — …\"). Speak naturally; don't mention tools, agents, or that "
-                "it was delayed, and don't read out web addresses — name the source.")
-        else:
-            content = (f"[background task: {outcome.status}] {outcome.told.format(request=request)}"
-                       f"{outcome.ask}")
-        # As a USER message, not a system one. A trailing system message is not a turn
-        # the model answers: it re-answers the last real user question instead and the
-        # delivery never happens. Measured against the live model on the exact context
-        # from the 2026-08-26 07:59 failure — system delivered the answer 0/4 times
-        # with an unrelated exchange in between (it repeated its own espresso answer,
-        # which is what the user saw) and only 1/4 even when nothing intervened, while
-        # leaking "background task"/"agent" wording 2/4. As a user message it delivered
-        # 8/8 across both shapes and leaked nothing.
-        #
-        # The tag matters because this message OUTLIVES the turn: without it the rest
-        # of the session reads a request the user never made, and the model starts
-        # attributing it to them.
-        _SPENT = (f"{SYSTEM_NOTICE_TAG}\nAn earlier background task finished and its outcome was "
-                  "already given to the user. Nothing further is needed.")
-        # What a trigger retired UNREAD becomes. Not _SPENT: that tells the model the
-        # user already knows, which after a lost delivery is false — three failure
-        # notices on 2026-10-02 went out that way and the caller never learned the
-        # consult had failed (#80). Not a "tell them now" either, which would be a
-        # standing order for the next unrelated turn. A note the model can answer
-        # from if the user asks what happened.
-        _UNTOLD = (f"{SYSTEM_NOTICE_TAG}\nThe outcome of the earlier background request "
-                   f"\"{request}\" has NOT reached the user yet: "
-                   + (strip_urls_for_speech(text) if text
-                      else outcome.told.format(request=request))
-                   + "\nDon't bring it up unprompted, but if the user asks about that "
-                   "request, or what happened to it, answer from this.")
-
-        _SUPERSEDED = (f"{SYSTEM_NOTICE_TAG}\n(Superseded by a later notice about the "
-                       f"earlier background request \"{request}\".)")
-
-        # The trigger is RE-POSTED per attempt, not restored in place, because being the
-        # last message is the whole reason it works. A retry follows a barge-in, so by
-        # then the caller's new question is at the tail and a trigger buried above it is
-        # not the turn the model answers — it re-answers the barge-in.
-        #
-        # Live 2026-09-10 17:36, the first shape of this bug: the toy-store answer was
-        # cut at 14% heard, the retry re-ran with "What's 2 plus 2? What color is a
-        # lemon?" sitting at the tail, and the bot said "Four, and lemons are yellow" a
-        # SECOND time while the toy-store answer was never delivered at all. Same reason
-        # the trigger is a user message and not a system one, one message later.
-        #
-        # _post_trigger retires any earlier copy first: exactly one may ever be live, or
-        # a later turn reads the stale one and recites the answer twice.
-        posted: dict = {}
-
-        def _session_over():
-            # PipelineTask.has_finished: true once the pipeline has run to its end
-            # (the client disconnected, or the call hung up).
-            return bool(getattr(task, "has_finished", lambda: False)())
-
-        def _retire(note=_SPENT):
-            msg = posted.get("msg")
-            if msg is not None:
-                msg["content"] = note
-
-        def _post_trigger():
-            # The earlier copy says only that it was superseded. Not _retire()'s
-            # default _SPENT: a re-post happens only because the caller did NOT get it,
-            # and "already given to the user" left behind on every attempt was still in
-            # the context after the last one failed (#80; brain/formal/Followup.tla,
-            # fu_heard_no_supersede_loss). Not _UNTOLD either: the newest copy is the one
-            # that says how it ended.
-            _retire(_SUPERSEDED)
-            msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n{content}"}
-            context.add_message(msg)
-            posted["msg"] = msg
-
-        _post_trigger()
-        logger.info(f"consult follow-up: delivering ({'answer' if text else outcome.status}; "
-                    f"tool result {'rewritten' if rewrote else 'not found'})")
-
-        # Retire the trigger once the model has ANSWERED FROM IT. It is a one-shot:
-        # "Tell the user now..." left in the context is a standing order, and the model
-        # re-executes it the next time a turn gives it nothing else to do (observed live
-        # 2026-08-26 08:17 — the shop list was delivered, the user said "That's useful."
-        # and the bot recited the whole list again).
-        #
-        # Neutralised in place rather than removed: the messages list may be a copy, but
-        # the dicts in it are live (that is how the tool result above is rewritten).
-        # Nothing is lost, because the answer itself stays in the rewritten tool result.
-        #
-        # This used to key on gate.wait_until_delivered(), and that is unsound: _busy is
-        # set by ANY activity, so the user speaking right after the consult landed
-        # satisfied it and the trigger was retired having never been read — the answer
-        # then never reached the user at all. TLC finds it in 8 steps
-        # (brain/formal/Followup.tla, MODE = "asWritten"). Keying on our OWN completion
-        # instead is not enough either: a barge-in between the read and the retirement
-        # leaves the trigger live for the next turn to recite a second time (MODE =
-        # "gateOnOwn" violates NoRepeatRecital). Only retiring AT the read satisfies
-        # both, which is what FollowupTrigger does. _retire is defined with the posting
-        # helper above, so it always neutralises the copy that is currently live.
-
-        for attempt in range(_DELIVERY_ATTEMPTS):
-            if _session_over():
-                # The caller has gone. All three "not delivered after 3 attempts" on
-                # 2026-10-02 (00:14, 17:01, 20:26) were this: the Talk client had
-                # disconnected and the pipeline had finished (pipecat even flagged the
-                # consult waiter as a dangling task), so each attempt queued an
-                # LLMRunFrame into a dead pipeline and timed out as "flushed". There is
-                # no one to tell; say so once and stop.
-                logger.info("consult follow-up: the session ended before it could be "
-                            f"delivered ({'answer' if text else outcome.status}) — dropping it")
-                _retire(_UNTOLD)
-                return
-            # Arm BOTH before queueing: the completion can start while queue_frames is
-            # still awaiting, and an unarmed trigger read is exactly the double-recital
-            # case. next_assistant() fires on the next utterance charted, and the gate
-            # above guarantees no assistant turn is in flight, so nothing stale can
-            # satisfy it.
-            spoken = ledger.next_assistant()
-            watch = gate.watch_delivery(replies_only=True)
-            # An interruption before anything answered VOIDS the shot (FollowupTrigger)
-            # and takes the copy out on the spot: the caller's words are about to be
-            # committed below it, and the next completion to read it would read it
-            # buried -- answer the caller instead, or recite it unasked -- while its
-            # first text fired our shot as if it had delivered.
-            shot = retirer.arm(_retire, on_void=lambda: _retire(_UNTOLD))
-            await task.queue_frames([LLMRunFrame()])
-            answered = asyncio.ensure_future(shot.fired.wait())
-            barged = asyncio.ensure_future(shot.voided.wait())
-            try:
-                await asyncio.wait({answered, barged}, timeout=_DELIVERY_START_TIMEOUT,
-                                   return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                answered.cancel()
-                barged.cancel()
-            if not shot.fired.is_set():
-                # Nothing answered from the trigger: a barge-in voided the shot, or
-                # nothing ran at all. Never leave the copy live with no shot armed while
-                # we wait for the next window -- every turn the caller takes meanwhile
-                # would read a standing "tell the user now" that nothing retires
-                # (brain/formal/Followup.tla, fu_heard_shipped_repeat). It is retired
-                # as untold, and posted again at the tail at the next clear moment.
-                retirer.disarm(shot)
-                _retire(_UNTOLD)
-                spoken.cancel()
-                gate.drop_delivery(watch)
-                if attempt + 1 < _DELIVERY_ATTEMPTS:
-                    logger.info("consult follow-up: "
-                                + ("the caller cut in before the model answered"
-                                   if shot.voided.is_set()
-                                   else "turn was flushed before the model read it")
-                                + f" — retrying ({attempt + 2}/{_DELIVERY_ATTEMPTS})")
-                    await wait_for_window()
-                    # The caller's question is now the tail message; re-post so the
-                    # retry is a turn the model answers.
-                    _post_trigger()
-                continue
-
-            # The model answered from the trigger. Whether the CALLER heard it is a
-            # separate question, and the one that decides if this worked: a delivery
-            # barged over before any of it played is indistinguishable, from here, from
-            # one that was never sent.
-            #
-            # Completion comes from the transport (gate.watch_delivery), not the ledger.
-            # The ledger charts a CUT immediately but does not chart a reply that simply
-            # finished until the bot next speaks, so waiting on it left every quiet
-            # delivery to time out — see Delivery in followup_gate.py.
-            try:
-                await asyncio.wait_for(watch.done.wait(),
-                                       timeout=_DELIVERY_HEARD_TIMEOUT)
-                timed_out = False
-            except asyncio.TimeoutError:
-                timed_out = True
-            if not watch.spoke:
-                # None of the reply ever played, and that is known without the ledger --
-                # which could not say so: it opens a turn on the TTS's TTSStartedFrame.
-                # Cut while the TTS was still gathering its first clause, the reply is
-                # charted nowhere and the waiter below timed out to "delivered", or
-                # measured the caller's NEXT reply instead (brain/formal/Followup.tla,
-                # fu_heard_shipped_loss). Text that never became audio -- emptied by the
-                # guard, no speech in it, the LLM failing after its first token -- settles
-                # nothing at all, and the heard timeout used to call it delivered too.
-                spoken.cancel()
-                heard = 0.0
-            elif timed_out:
-                spoken.cancel()
-                logger.info("consult follow-up: delivered, but it never finished nor "
-                            "was cut within the window — leaving it as delivered")
-                return
-            elif not watch.interrupted:
-                spoken.cancel()
-                logger.info("consult follow-up: delivered and played to the end")
-                return
-            else:
-                # How much landed is the ledger's to say, and it charts a cut at the
-                # interruption, so this resolves promptly or not at all. No shield:
-                # wait_for cancels the waiter itself on timeout, and the injector's own
-                # cancellation (session teardown) has to propagate through here, as the
-                # gate promises -- a shield would only force this to catch
-                # CancelledError and swallow it.
-                try:
-                    said = await asyncio.wait_for(spoken, timeout=_DELIVERY_CHART_TIMEOUT)
-                except asyncio.TimeoutError:
-                    # Not knowing is not grounds to say it again — an unnecessary repeat
-                    # is worse than an unverified delivery.
-                    logger.info("consult follow-up: cut, but the ledger charted no reply "
-                                "to measure — leaving it as delivered")
-                    return
-                heard = said.heard_fraction
-            if heard >= _MIN_HEARD:
-                # Every exit from this loop says what it decided. The 2026-09-11 loss
-                # went through here in silence: a stale, fully heard reply satisfied the
-                # waiter (see TranscriptLedger.next_assistant) and nothing in the journal
-                # showed the check had run at all.
-                logger.info(f"consult follow-up: cut at heard~{heard*100:.0f}%"
-                            f" — enough of it landed, leaving it as delivered")
-                return
-
-            # Spoken into a barge-in and lost. The answer never reached the caller, so
-            # the trigger goes back and we wait for a genuinely clear moment. The
-            # HeardContextCorrector has already removed the unheard reply from the
-            # context (or pipecat committed none), so the retry reads as a first telling.
-            if attempt + 1 < _DELIVERY_ATTEMPTS:
-                logger.info(
-                    f"consult follow-up: answered but heard~{heard*100:.0f}%"
-                    f" — the caller did not get it, retrying "
-                    f"({attempt + 2}/{_DELIVERY_ATTEMPTS})")
-                await wait_for_window()
-                # After the gate, not before: the caller's barge-in question lands in
-                # the context while we wait, and the trigger has to end up after it.
-                _post_trigger()
-            else:
-                # Out of attempts. The trigger was already retired at the read, so the
-                # post-loop notice below would say "unread", which is the wrong story.
-                logger.warning(
-                    f"consult follow-up: answered but heard~{heard*100:.0f}%"
-                    f" on the last of {_DELIVERY_ATTEMPTS} attempts — the answer never "
-                    "reached the caller, leaving a note")
-                # Retired at the read as _SPENT ("already given to the user"), which
-                # the heard check just proved false.
-                _retire(_UNTOLD)
-                return
-        # Out of attempts. Retire it anyway: a live "tell the user now" is a standing
-        # order the next unrelated turn would execute, which is worse than a lost answer
-        # (the answer itself survives in the rewritten tool result, so "what did the
-        # agent say?" still works).
-        logger.warning(f"consult follow-up: not delivered after {_DELIVERY_ATTEMPTS} "
-                       "attempts — retiring the trigger unread, leaving a note")
-        _retire(_UNTOLD)
-    return speak_followup
 
 
 def _build_initial_messages(system_prompt: str, lang_name: str | None, *,
@@ -1106,8 +712,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         logger.info("AGENT-FIRST mode active: every turn delegates to the OpenClaw agent")
     if lang_name:
         logger.info(f"TTS language selected → instructing the LLM to reply in {lang_name}")
-    # register_tools is deferred until after the PipelineTask exists: the async
-    # ask_openclaw path needs a follow-up injector bound to THIS task + context.
+    # register_tools is deferred until after the PipelineTask exists, with the owed
+    # records the async ask_openclaw path lands its outcomes in.
 
     # The stock TurnAnalyzerUserTurnStopStrategy, keeping its verdict across the late
     # turn start every barge-in has here -- see endpointing.py. Named because the
@@ -1257,15 +863,25 @@ def build_agent_session(transport, *, voice: str | None = None,
     ep_marks: dict = {}
     ep_in = endpoint_debug.EndpointDebug(ep_marks, "in") if endpoint_debug.ENABLED else None
     ep_out = endpoint_debug.EndpointDebug(ep_marks, "out") if endpoint_debug.ENABLED else None
-    # Gates the async ask_openclaw follow-up so it only speaks in a clear moment.
+    # The door for what the brain says or adds on its own (owed.py's runs, ClientNotes),
+    # and the hold for the answer after a tool.
     followup_gate = FollowupGate()
     # Every commit of the caller's words tells the gate, which stops waiting for the words
     # of speech that had stopped by then (the answer after a tool, followup_gate.py).
     cut_fence.on_words_committed = followup_gate.words_committed
     cut_fence.close_owed = stop_strategy.close_owed
-    # Retires the follow-up's one-shot trigger at the completion that reads it. Must
-    # sit directly below the LLM — see FollowupTrigger's placement note.
-    followup_trigger = FollowupTrigger()
+    # What the caller is still owed of the async consults (owed.py, #203): the LLM
+    # renders its note into every request, the ledger settles each reply into it, the
+    # gate is the door its runs go through, and a room's sleep keeps it with the
+    # conversation.
+    owed = Owed(context, gate=followup_gate)
+    llm.owed = owed
+    ledger.on_reply_end = owed.settle
+    if wake_gate is not None:
+        wake_gate.owed = owed
+    # Retires ClientNotes' reaction order at the completion that reads it. Must sit
+    # directly below the LLM — see FollowupTrigger's placement note.
+    followup_trigger = FollowupTrigger() if context_notes else None
     # Client context notes (teaport.talk.context; /talk only). Removals go through the
     # corrector so its positional window survives them.
     client_notes = (ClientNotes(context, followup_gate, followup_trigger,
@@ -1317,8 +933,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # model.
         LLMErrorSpeaker() if llm_error_speaker.ENABLED else None,
         llm,
-        # Retires the consult follow-up's one-shot trigger the moment the model starts
-        # answering from it. HERE and nowhere else: LLMTextFrame is consumed by the TTS
+        # Retires ClientNotes' reaction order the moment the model starts answering from
+        # it. HERE and nowhere else: LLMTextFrame is consumed by the TTS
         # (push_text_frames=False), so no position below it ever sees one — and
         # LLMFullResponseStartFrame is pushed BEFORE the context is serialized, so it
         # cannot be the signal. See FollowupTrigger.
@@ -1356,7 +972,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         transport_output,
         # Directly below the transport: each word's text frame passes here as it plays.
         guard.tap() if guard is not None else None,
-        followup_gate,  # track user/bot/LLM activity → hold async follow-ups for a clear moment
+        followup_gate,  # track user/bot/LLM activity → the door for the brain's own runs (owed.py)
         CaptionTap(activity, every_final=caption_every_final),  # AFTER the transport: playout-paced partials + per-utterance finals
         MemoryReclaim(followup_gate),  # glibc arena pages back to the OS at a quiet moment (CUDA at session end)
         context_aggregator.assistant(),
@@ -1436,14 +1052,13 @@ def build_agent_session(transport, *, voice: str | None = None,
                      "is the long pole (see stt.CONNECT_BUDGET_S)")
 
     # Now that the task exists, wire the tools — ask_openclaw goes ASYNC: it hands
-    # the consult to a background waiter and this injector speaks the answer as an
-    # unprompted follow-up turn when it lands.
-    # Agent-first runs consults SYNCHRONOUSLY on the turn (no follow-up injector);
+    # the consult to a background waiter, and when it lands its outcome is a record
+    # owed to the caller until they hear it (owed.py): rendered into every request as a
+    # note, told by one run as it lands, and re-offered once at a long lull.
+    # Agent-first runs consults SYNCHRONOUSLY on the turn (nothing owed);
     # the ThinkingSound bed covers the wait and TURN-TIMING measures to the answer.
     register_tools(llm, lang=getattr(tts, "espeak_language", "en-us"), tts=tts,
-                   followup=None if AGENT_FIRST
-                   else _make_consult_followup(task, context, followup_gate,
-                                               followup_trigger, ledger),
+                   owed=None if AGENT_FIRST else owed,
                    # Lets the consult narrator fit its progress lines into a gap
                    # rather than talking over the user (see _consult_progress).
                    gate=followup_gate,
@@ -1463,6 +1078,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         input_mute=input_mute,
     )
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
+    session.owed = owed    # what the caller is still owed (owed.py)
     if prompt is not None:
         prompt.session = session
         session.call_prompt = prompt

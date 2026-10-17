@@ -1,13 +1,14 @@
 #
-# Unit test: FollowupTrigger retires the consult follow-up's one-shot AT the read.
+# Unit test: FollowupTrigger retires a one-shot context order AT the read -- ClientNotes'
+# reaction order ("React now ... to this app event"), since #203 the only one.
 #
-# The follow-up's trigger message ("tell the user now...") is a standing order in the
-# LLM context. Retiring it is a two-sided constraint and each side has cost a live
-# session — see brain/formal/Followup.tla, which model-checks all three designs:
+# Such an order is a standing order in the LLM context. Retiring it is a two-sided
+# constraint and each side cost a live session when the consult follow-up was delivered
+# this way — see brain/formal/Followup.tla, which model-checks all three designs:
 #
-#   retired before any completion read it -> the answer is never spoken
+#   retired before any completion read it -> it is never acted on
 #                                            (NoSilentLoss,     MODE = "asWritten")
-#   still live after delivery             -> a later turn recites it again
+#   still live after it was acted on      -> a later turn re-executes it
 #                                            (NoRepeatRecital,  MODE = "gateOnOwn")
 #
 # Only retiring at the read satisfies both, and THIS module is where that lands. Its
@@ -120,8 +121,8 @@ async def test_whitespace_is_not_an_answer():
 
 
 async def test_disarm_withdraws_it():
-    """speak_followup disarms when it gives up on an attempt; a withdrawn one-shot must
-    not fire later on an unrelated turn."""
+    """ClientNotes disarms an order nobody read in time; a withdrawn one-shot must not
+    fire later on an unrelated turn."""
     trigger, _ = _harness()
     fired = []
     shot = trigger.arm(lambda: fired.append(1))
@@ -141,36 +142,17 @@ async def test_every_frame_is_forwarded():
         "the tap dropped or reordered frames")
 
 
-async def test_an_interruption_voids_a_shot_that_asked_for_it():
-    """brain/formal/Followup.tla, FIX "void": the caller cut in before anything answered,
-    so the next completion's text comes from one that read the trigger buried. It must
-    not count as ours."""
-    trigger, _ = _harness()
-    fired, voided = [], []
-    shot = trigger.arm(lambda: fired.append(1), on_void=lambda: voided.append(1))
-    await _feed(trigger, LLMFullResponseStartFrame(), InterruptionFrame(),
-                LLMFullResponseStartFrame(), LLMTextFrame("Four."))
-    assert voided == [1] and shot.voided.is_set(), "the interruption did not void it"
-    assert fired == [] and not shot.fired.is_set(), (
-        "the caller's reply fired a shot voided by their barge-in")
-
-
-async def test_an_interruption_leaves_a_plain_shot_armed():
-    """ClientNotes' reaction, armed without on_void, is meant to be read by the caller's
-    barge-in turn and folded into that reply."""
+async def test_an_interruption_leaves_the_shot_armed():
+    """ClientNotes' reaction is meant to be read by the caller's barge-in turn and folded
+    into that reply."""
     trigger, _ = _harness()
     fired = []
     trigger.arm(lambda: fired.append(1))
     await _feed(trigger, InterruptionFrame(), LLMTextFrame("Sure"))
-    assert fired == [1], "a shot without on_void was dropped by the interruption"
+    assert fired == [1], "the interruption dropped the shot"
 
 
-async def test_text_before_the_interruption_fires_not_voids():
-    trigger, _ = _harness()
-    fired, voided = [], []
-    trigger.arm(lambda: fired.append(1), on_void=lambda: voided.append(1))
-    await _feed(trigger, LLMTextFrame("About that forecast"), InterruptionFrame())
-    assert fired == [1] and voided == [], (fired, voided)
+
 
 def main():
     tests = [v for k, v in sorted(globals().items())
