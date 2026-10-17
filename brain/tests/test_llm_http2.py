@@ -36,8 +36,9 @@ class Server:
     """An HTTP/2 server streaming `size` bytes per request, `chunk` at a time, `delay`
     seconds apart."""
 
-    def __init__(self, size=200_000, chunk=400, delay=0.01):
+    def __init__(self, size=200_000, chunk=400, delay=0.01, black_hole_first=False):
         self.size, self.chunk, self.delay = size, chunk, delay
+        self.black_hole_first = black_hole_first     # the first connection never answers
         self.connections, self.resets, self.sent = 0, set(), {}
 
     async def __aenter__(self):
@@ -74,22 +75,23 @@ class Server:
         self._tasks = getattr(self, "_tasks", [])
 
         async def respond(sid):
+            key = (id(conn), sid)       # stream ids start over on each connection
             conn.send_headers(sid, [(":status", "200"), ("content-type", "text/event-stream")])
             writer.write(conn.data_to_send())
-            while self.sent[sid] < self.size and sid not in self.resets:
+            while self.sent[key] < self.size and key not in self.resets:
                 n = min(self.chunk, conn.local_flow_control_window(sid),
-                        self.size - self.sent[sid])
+                        self.size - self.sent[key])
                 if n <= 0:
                     window.clear()
                     await window.wait()
                     continue
                 conn.send_data(sid, b"x" * n)
-                self.sent[sid] += n
+                self.sent[key] += n
                 writer.write(conn.data_to_send())
                 await writer.drain()
                 if self.delay:
                     await asyncio.sleep(self.delay)
-            if sid not in self.resets:
+            if key not in self.resets:
                 conn.end_stream(sid)
                 writer.write(conn.data_to_send())
 
@@ -97,12 +99,14 @@ class Server:
             while data := await reader.read(65536):
                 if writer.is_closing():
                     return
+                if self.black_hole_first and self.connections == 1:
+                    continue
                 for ev in conn.receive_data(data):
                     if isinstance(ev, h2.events.RequestReceived):
-                        self.sent[ev.stream_id] = 0
+                        self.sent[(id(conn), ev.stream_id)] = 0
                         self._tasks.append(asyncio.ensure_future(respond(ev.stream_id)))
                     elif isinstance(ev, h2.events.StreamReset):
-                        self.resets.add(ev.stream_id)
+                        self.resets.add((id(conn), ev.stream_id))
                     elif isinstance(ev, h2.events.WindowUpdated):
                         window.set()
                 writer.write(conn.data_to_send())
@@ -256,6 +260,34 @@ async def test_an_idle_connection_left_alone_is_reused():
             assert len((await client.get(server.url)).content) == 4_000
             await asyncio.sleep(0.1)
         assert server.connections == 1, server.connections
+
+
+async def test_a_connection_that_stopped_answering_is_left_after_the_cut():
+    # A connection dead without a word: every request on it hangs, and is cancelled before
+    # httpcore's own read timeout (pipecat's fires first, or the caller speaks). Taken out
+    # of reuse (services: no answer before the cut), the next request opens a new one;
+    # without that, every turn after hung on it.
+    async with Server(size=4_000, delay=0, black_hole_first=True) as server, \
+            _client() as client:
+        try:
+            await asyncio.wait_for(client.get(server.url), 0.5)
+        except asyncio.TimeoutError:
+            pass
+        assert llm_http2.stop_reusing(client._transport._pool.connections) == 1
+        r = await asyncio.wait_for(client.get(server.url), 3)
+        assert len(r.content) == 4_000 and server.connections == 2, server.connections
+
+
+async def test_streams_on_a_connection_left_run_on():
+    # Taken out of reuse is not closed: a reply streaming on it is not cut.
+    async with Server(size=8_000, chunk=400, delay=0.005) as server, _client() as client:
+        running = asyncio.ensure_future(client.get(server.url))
+        await asyncio.sleep(0.05)
+        assert llm_http2.stop_reusing(client._transport._pool.connections) == 1
+        assert llm_http2.stop_reusing(client._transport._pool.connections) == 0
+        fresh = await client.get(server.url)
+        assert len((await running).content) == 8_000 and len(fresh.content) == 8_000
+        assert server.connections == 2, server.connections
 
 
 def test_the_model_client_uses_http2():

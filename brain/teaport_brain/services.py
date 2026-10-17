@@ -396,19 +396,39 @@ def _model_http_client(base_url) -> httpx.AsyncClient:
     return client
 
 
-def _has_live_connection(client: httpx.AsyncClient, url) -> bool:
-    """Is a connection to url's server open in client's pool, and able to take a request
-    now? (One with a stream running counts, over HTTP/2.) A pool that cannot be read
-    counts as yes: no warm-up is better than a guess."""
+def _pooled_connections(client: httpx.AsyncClient, url) -> list | None:
+    """The connections in client's pool that can carry a request to url's server (the
+    pool httpx uses for url: a proxy's, where one is configured); None when the pool
+    cannot be read."""
     url = httpx.URL(str(url))
     transport_for = getattr(client, "_transport_for_url", None)
     pool = getattr(transport_for(url) if transport_for else None, "_pool", None)
     if not isinstance(pool, httpcore.AsyncConnectionPool):
-        return True
+        return None
     origin = httpcore.Origin(url.raw_scheme, url.raw_host,
                              url.port or (443 if url.scheme == "https" else 80))
-    return any(c.can_handle_request(origin) and c.is_available() and not c.has_expired()
-               for c in pool.connections)
+    return [c for c in pool.connections if c.can_handle_request(origin)]
+
+
+def _has_live_connection(client: httpx.AsyncClient, url) -> bool:
+    """Is a connection to url's server open in client's pool, and able to take a request
+    now? (One with a stream running counts, over HTTP/2.) A pool that cannot be read
+    counts as yes: no warm-up is better than a guess."""
+    connections = _pooled_connections(client, url)
+    return connections is None or any(c.is_available() and not c.has_expired()
+                                      for c in connections)
+
+
+# A request cancelled after this long without its response headers -- the caller spoke
+# into the silence, or pipecat's own timeout gave up on it -- leaves its connection out of
+# reuse (llm_http2.stop_reusing). A connection can die without a word (a NAT entry reset,
+# the box's Wi-Fi reconnecting); over HTTP/1.1 the cancel closed it, but an HTTP/2 one
+# outlives cancels, and nothing else would retire it: httpcore marks it broken only when
+# its own read timeout fires, and pipecat's fires first. OpenRouter sends the headers
+# when the provider starts, usually 0.25-0.5 s after the request but 3.7 s once (box,
+# 2026-10-16): a slow provider taken for a dead connection costs one reconnect, ~0.1 s;
+# a dead one kept costs every turn after it until it is found.
+_NO_ANSWER_SECS = 2.0
 
 
 @dataclass
@@ -531,7 +551,18 @@ class BoundedOpenAILLMService(OpenAILLMService):
     #
     # The stream is also renumbered on the way past — see _sequential_tool_call_indices.
     async def _open_stream(self, context):
-        stream = await super().get_chat_completions(context)
+        started = time.monotonic()
+        try:
+            stream = await super().get_chat_completions(context)
+        except asyncio.CancelledError:
+            waited = time.monotonic() - started
+            if waited >= _NO_ANSWER_SECS and self._http is not None and \
+                    llm_http2.stop_reusing(
+                        _pooled_connections(self._http, self._client.base_url) or ()):
+                logger.info(f"{self}: no answer from the language model's server in "
+                            f"{waited:.1f}s before the request was cancelled; the next "
+                            f"request opens a new connection")
+            raise
         logger.debug(f"{self}: response stream open")
         # _RenumberedStream, not the bare generator — see the class docstring: a
         # generator has no close(), so wrapping in one silently disabled base_llm's

@@ -35,6 +35,13 @@
 # on OpenRouter, with it: cut replies stopped at 7-15 tokens, and 5 cuts and a request
 # went over one connection.
 #
+# One more thing a cancel no longer does: over HTTP/1.1 it closed the connection, which
+# also got the brain off a connection that had died without a word. An HTTP/2 one outlives
+# cancels, so the model service takes it out of reuse itself when a cancelled request
+# never got an answer (services._NO_ANSWER_SECS): stop_reusing sets the flag httpcore's
+# own read timeout would have -- new requests open a new connection, streams on the old
+# one run on.
+#
 # The wrap reads httpcore's private HTTP/2 internals; httpcore is pinned exactly
 # (pyproject) and enable() checks the parts it uses before patching. If they have moved,
 # it logs an ERROR and the model client stays on HTTP/1.1 -- slower to reconnect, never
@@ -82,6 +89,14 @@ def _problem() -> str | None:
         return "AsyncHTTP2Connection._h2_state is not an h2 H2Connection"
     if not isinstance(getattr(conn, "_events", None), dict):
         return "AsyncHTTP2Connection._events is not a dict"
+    if getattr(conn, "_connection_error", None) is not False or not conn.is_available():
+        return "AsyncHTTP2Connection._connection_error is not the flag is_available reads"
+    conn._connection_error = True
+    if conn.is_available():
+        return "AsyncHTTP2Connection.is_available ignores _connection_error"
+    pooled = httpcore.AsyncHTTPConnection(origin=httpcore.Origin(b"https", b"check.invalid", 443))
+    if not hasattr(pooled, "_connection"):
+        return "httpcore.AsyncHTTPConnection has no _connection (the protocol's connection)"
     for name in ("streams", "reset_stream", "acknowledge_received_data"):
         if not hasattr(conn._h2_state, name):
             return f"h2's H2Connection has no {name}"
@@ -103,6 +118,19 @@ def enable() -> bool:
             AsyncHTTP2Connection._response_closed = _response_closed
             _enabled = True
     return _enabled
+
+
+def stop_reusing(connections) -> int:
+    """Take the HTTP/2 ones among these pooled connections out of reuse: the pool sends no
+    new request on them, and the streams running on them run on (a stream on a connection
+    that really died fails by its own timeout, as it would have). How many it took."""
+    taken = 0
+    for pooled in connections:
+        conn = getattr(pooled, "_connection", None)
+        if _enabled and isinstance(conn, AsyncHTTP2Connection) and not conn._connection_error:
+            conn._connection_error = True
+            taken += 1
+    return taken
 
 
 async def _response_closed(self, stream_id: int) -> None:
