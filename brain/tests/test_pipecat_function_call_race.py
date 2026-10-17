@@ -361,7 +361,7 @@ async def test_an_overtaken_calls_id_reused_by_a_new_call_lands_and_settles():
 
 async def main():
     failed = 0
-    for name, fn in [(n, f) for n, f in globals().items()
+    for name, fn in [(n, f) for n, f in list(globals().items())
                      if n.startswith("test_") and asyncio.iscoroutinefunction(f)]:
         try:
             await fn()

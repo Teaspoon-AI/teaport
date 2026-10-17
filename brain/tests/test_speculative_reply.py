@@ -566,6 +566,7 @@ CHUNK_MS = 20
 CHUNK = b"\x00\x02" * int(SAMPLE_RATE * CHUNK_MS / 1000)
 UTTERANCE = "tell me a story"
 SETTLE = 0.06   # the window, shortened so the suite stays quick
+STEP_LIMIT_S = 5.0   # the most _over_a_pipeline waits for any one step under load
 
 
 class Complete(BaseSmartTurn):
@@ -1356,7 +1357,12 @@ class TakeAtCommit(FrameProcessor):
 async def _over_a_pipeline(final_text):
     """VAD start, the interim (the engine's leading space and all), the VAD stop, the
     model's INCOMPLETE, silence through the settle window and the ceiling, then the
-    final the ceiling's commit returns."""
+    final the ceiling's commit returns.
+
+    Synchronised on events, not on windows (#188): the Smart Turn analyzer runs on its
+    own thread (pipecat's model executor), so under load its verdict, and with it the
+    speculation and the commit, can land after any fixed window of loop time. Silence
+    is fed until each step is seen, bounded by STEP_LIMIT_S."""
     ceiling = 0.3
     opened = []
     analyzer = Incomplete(sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=ceiling))
@@ -1378,33 +1384,48 @@ async def _over_a_pipeline(final_text):
     strategy.speculator = speculator
     commit = TakeAtCommit(speculator)
     task = PipelineTask(Pipeline([pair.user(), commit]), observers=[])
+    started = asyncio.Event()
+
+    @task.event_handler("on_pipeline_started")
+    async def _started(_task, _frame):
+        started.set()
+
     runner = PipelineRunner(handle_sigint=False)
     running = asyncio.create_task(runner.run(task))
     agg = pair.user()
 
-    async def silence(secs):
-        deadline = asyncio.get_running_loop().time() + secs
-        while asyncio.get_running_loop().time() < deadline:
+    async def silence(secs, until=None):
+        """Silence for `secs` -- or, with `until`, until it holds (at most STEP_LIMIT_S)."""
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + (STEP_LIMIT_S if until else secs)
+        while loop.time() < deadline and not (until and until()):
             await agg.queue_frame(InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE,
                                                      num_channels=1))
             await asyncio.sleep(CHUNK_MS / 1000)
 
     try:
-        await asyncio.sleep(0.2)
+        await asyncio.wait_for(started.wait(), STEP_LIMIT_S)
         await agg.queue_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
         for _ in range(400 // CHUNK_MS):                 # the speech the analyzer judges
             await agg.queue_frame(InputAudioRawFrame(audio=CHUNK, sample_rate=SAMPLE_RATE,
                                                      num_channels=1))
         await agg.queue_frame(InterimTranscriptionFrame(" " + UTTERANCE, "u", "t", None))
         await agg.queue_frame(VADUserStoppedSpeakingFrame(stop_secs=ENDPOINT_STOP_SECS))
-        await silence(SETTLE + 0.1)
+        # The verdict comes from the analyzer's thread, and the ceiling counts the
+        # silence fed to it: fed on through a slow verdict, the ceiling would commit
+        # first and this would be another scenario. So no audio until the INCOMPLETE
+        # has opened the speculation (the settle window is loop time, not audio).
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + STEP_LIMIT_S
+        while not opened and loop.time() < deadline:
+            await asyncio.sleep(CHUNK_MS / 1000)
         assert len(opened) == 1 and speculator.text == UTTERANCE, (opened, speculator.text)
         assert opened[0].messages == [{"role": "system", "content": "be brief"},
                                       {"role": "user", "content": UTTERANCE}]
         await silence(ceiling + 0.1)
         assert not commit.taken, "the ceiling waits for the final its commit returns"
         await agg.queue_frame(TranscriptionFrame(final_text, "u", "t", None, finalized=True))
-        await silence(0.1)
+        await silence(0.1, until=lambda: commit.taken)
         assert len(commit.taken) == 1, commit.taken
         return commit.taken[0], speculator, opened
     finally:
