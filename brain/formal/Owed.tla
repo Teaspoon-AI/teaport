@@ -111,13 +111,27 @@
 (*                  that played through with an item untold (RUNCLOSE       *)
 (*                  "terms").                                               *)
 (*                                                                          *)
-(* RUNCLOSE: what an uncut run closes on its own.                           *)
+(* RUNCLOSE: what closes an item with no terms (a failure, a bare "done"). *)
 (*   "uncut" -- DESIGN.md §3 as written: a run that played to the end       *)
 (*              uncut closes the record, whatever it said.                  *)
-(*   "terms" -- only items with no terms (a bare "done"): an item with      *)
-(*              terms is closed by its terms, from a run as from any other  *)
-(*              reply. The model's outcome has two items with terms, so     *)
-(*              here the shortcut never applies.                            *)
+(*   "terms" -- an item with terms is closed by its terms, from a run as    *)
+(*              from any other reply; one with none only by an uncut run.   *)
+(*   "about" -- as "terms", and a term-less item also by ANY noted reply    *)
+(*              heard to its end (played through, or cut after its last     *)
+(*              word) that is about the record (it shares a non-common word *)
+(*              with the request: owed._about) -- the failure the caller's  *)
+(*              own turn told in full is not re-offered (Fable's review).   *)
+(*                                                                          *)
+(* OUTCOME: "items" -- two items with terms (a two-story list); "failure"   *)
+(*   -- one term-less item (the consult failed). The lexical premise for    *)
+(*   the latter: a reply about the record heard to its end told it -- a     *)
+(*   failure is one statement, told whole or not at all (no "part"), and    *)
+(*   the telling is the reply (a question after it, cut, reads owed).       *)
+(*                                                                          *)
+(* adoptDropsKeys (MUT) -- the commit that adopts a speculative reply's     *)
+(*   stream does not register the keys its note carried (the note was in    *)
+(*   the request, rendered in the speculation's own task): its telling is   *)
+(*   no evidence, and the record stays owed after it was heard.             *)
 (*                                                                          *)
 (* Checked designs and results are in README.md next to this file.          *)
 (***************************************************************************)
@@ -126,7 +140,8 @@ EXTENDS Naturals
 CONSTANTS MaxSpeech,   \* bound on the caller's bursts of speech (VAD starts)
           MUT,         \* the mutations switched on (see the header); {} = the design
           REOFFER,     \* "cutOrTurn" | "anyMiss"
-          RUNCLOSE,    \* "uncut" | "terms" (see the header)
+          RUNCLOSE,    \* "uncut" | "terms" | "about" (see the header)
+          OUTCOME,     \* "items" | "failure" (see the header)
           FLAKY,       \* a request carrying the note may still re-look-up
           PARTIAL,     \* a telling run may carry only some of the items
           SILENT       \* a run's completion may produce no audio at all
@@ -172,6 +187,7 @@ VARIABLES
     req,          \* "none" | "caller" | "post" | "run" | "reoffer"
     rst,          \* the record's state when the request was rendered
     noted,        \* the request carried the note
+    nreg,         \* ...and the reply is registered as carrying it: its evidence counts
     say,          \* what the model chose: tell | part | defer | other | lookup
     ph,           \* "none" | "gen" (asked, no output yet) | "play" (audio playing)
     ended,        \* the session ended (the client left, the call hung up)
@@ -188,7 +204,7 @@ VARIABLES
 rec   == <<st, fed, uncut, missed, reoffers>>
 line  == <<vad, pend, turn, speech>>
 door  == <<q, hPost, rloc, rk, tres, tend, mark, gtool>>
-reply == <<req, rst, noted, say, ph>>
+reply == <<req, rst, noted, nreg, say, ph>>
 mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, got>>
 vars  == <<rec, heard, repeat, line, door, reply, ended, mons>>
 
@@ -203,7 +219,7 @@ Init ==
     /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0
     /\ q = "none" /\ hPost = FALSE /\ rloc = "none" /\ rk = "none" /\ tres = FALSE
     /\ tend = FALSE /\ mark = FALSE /\ gtool = FALSE
-    /\ req = "none" /\ rst = "none" /\ noted = FALSE /\ say = "none" /\ ph = "none"
+    /\ req = "none" /\ rst = "none" /\ noted = FALSE /\ nreg = FALSE /\ say = "none" /\ ph = "none"
     /\ ended = FALSE
     /\ runUnder = FALSE /\ runMid = FALSE /\ displaced = FALSE /\ staleNote = FALSE
     /\ noNote = FALSE /\ staleHeard = FALSE /\ relook = FALSE /\ got = "none"
@@ -242,6 +258,12 @@ Closes(p, n, cut, g) ==
        ELSE IF Mut("singleWord") THEN RunUncut(p, cut, g) \/ g \in {"filler", "all"}
        ELSE IF Mut("oneItem")    THEN RunUncut(p, cut, g) \/ g \in {"some", "all"}
        ELSE IF Mut("countSettle") THEN FALSE        \* the count below decides
+       \* one term-less item. Before "about": only a run played through uncut. "about":
+       \* any noted reply about it, heard to its end -- played through, or cut after its
+       \* last word (the ledger's pts-exact prefix is all of it): `g = "all"`
+       ELSE IF OUTCOME = "failure"
+            THEN IF RUNCLOSE = "about" THEN g = "all"
+                 ELSE p \in Runs /\ ~cut /\ g \in {"some", "all"}
        ELSE \* the design: an uncut run, or every item's terms in the heard text
             RunUncut(p, cut, g) \/ g = "all"
 
@@ -265,10 +287,11 @@ Reads(cut, g) ==
 
 Finish(cut, g) ==
     \E r \in Reads(cut, g) :
-      LET u  == IF Mut("countSettle") /\ noted /\ ~cut /\ g # "nothing"
+      LET u  == IF Mut("countSettle") /\ nreg /\ ~cut /\ g # "nothing"
                   THEN (IF uncut < 2 THEN uncut + 1 ELSE 2) ELSE uncut
-          c  == Closes(req, noted, cut, r) \/ (Mut("countSettle") /\ u = 2)
-      IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ say' = "none" /\ ph' = "none"
+          c  == Closes(req, nreg, cut, r) \/ (Mut("countSettle") /\ u = 2)
+      IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ nreg' = FALSE
+         /\ say' = "none" /\ ph' = "none"
          /\ heard' = (heard \/ g = "all")
          /\ fed' = IF c /\ st = "owed" THEN "close" ELSE fed
          /\ uncut' = u
@@ -277,7 +300,7 @@ Finish(cut, g) ==
 \* Did a run end without closing the record? Under "anyMiss" that arms the re-offer.
 MissedRun(cut, g) ==
     /\ REOFFER = "anyMiss" /\ req \in Runs /\ st = "owed"
-    /\ ~Closes(req, noted, cut, g)
+    /\ ~Closes(req, nreg, cut, g)
 
 (* ============================ the record (owed.py) ============================ *)
 
@@ -357,7 +380,8 @@ RunGo ==
     /\ fed = "none" \/ Mut("lagSettle")
     /\ rloc' = "none" /\ rk' = "none"
     /\ IF st = "owed" \/ Mut("askOnly")
-         THEN /\ req' = rk /\ rst' = st /\ noted' = Noted(st) /\ ph' = "gen"
+         THEN /\ req' = rk /\ rst' = st /\ noted' = Noted(st) /\ nreg' = Noted(st)
+              /\ ph' = "gen"
               /\ UNCHANGED say
               /\ runUnder'   = (runUnder \/ vad \/ pend)
               /\ runMid'     = (runMid \/ turn \/ q # "none" \/ tres)
@@ -422,13 +446,18 @@ Mark ==
 \* drops that order.
 \*
 \* `sp`: the request is the speculative reply's, opened through _open_stream directly
-\* (speculate.py:148) and adopted at the commit. Only renderInGet tells it apart.
+\* (speculate.py) and adopted at the commit. Its note was rendered in the speculation's
+\* own task, so the keys it carried ride on the stream (_RenumberedStream.owed_noted,
+\* read through speculate._AdoptedStream) and the adopting commit registers them: the
+\* design takes the carried keys to survive the adoption (`nreg` = `noted`).
+\* renderInGet renders no note into it; adoptDropsKeys registers none.
 Issue ==
     /\ ~ended /\ q # "none" /\ req = "none"
     /\ fed = "none" \/ Mut("lagSettle")
-    /\ \E sp \in (IF Mut("renderInGet") /\ q = "caller" THEN BOOLEAN ELSE {FALSE}) :
-         LET n == ~sp /\ Noted(st) IN
+    /\ \E sp \in (IF q = "caller" THEN BOOLEAN ELSE {FALSE}) :
+         LET n == ~(Mut("renderInGet") /\ sp) /\ Noted(st) IN
          /\ req' = q /\ rst' = st /\ noted' = n /\ ph' = "gen" /\ q' = "none"
+         /\ nreg' = (n /\ ~(Mut("adoptDropsKeys") /\ sp))
          /\ staleNote'  = (staleNote \/ (n /\ st = "closed"))
          /\ noNote'     = (noNote \/ (st = "owed" /\ ~n))
          /\ staleHeard' = (staleHeard \/ (n /\ heard))
@@ -443,14 +472,16 @@ Issue ==
 \* check." + get_weather): the line plays while the call is out; "lookup" is ask_openclaw
 \* again for what the outcome answers.
 Says(p, r, n) ==
-    IF p = "run"     THEN {"tell"} \cup Opt(PARTIAL, "part") \cup Opt(SILENT, "silent")
+    LET pt == Opt(OUTCOME = "items", "part") IN    \* a failure is told whole or not at all
+    IF p = "run"     THEN {"tell"} \cup (Opt(PARTIAL, "part") \cap pt) \cup Opt(SILENT, "silent")
     ELSE IF p = "reoffer"
-                     THEN {"tell", "stay"} \cup Opt(PARTIAL, "part") \cup Opt(SILENT, "silent")
+                     THEN {"tell", "stay"} \cup (Opt(PARTIAL, "part") \cap pt)
+                          \cup Opt(SILENT, "silent")
     ELSE LET t == IF p = "caller" THEN {"tool", "texttool"} ELSE {} IN
-         IF n            THEN {"tell", "part", "defer", "other"} \cup t \cup Opt(FLAKY, "lookup")
+         IF n            THEN {"tell", "defer", "other"} \cup pt \cup t \cup Opt(FLAKY, "lookup")
          ELSE IF r = "none"   THEN {"other"} \cup t
          ELSE IF r = "closed" THEN {"tell", "other"} \cup t
-         ELSE {"tell", "part", "defer", "other", "lookup"} \cup t
+         ELSE {"tell", "defer", "other", "lookup"} \cup pt \cup t
 
 \* The completion's first output. stay_silent (offered only to the re-offer run; the run
 \* loop consumes the call and its result), a reply with no audio, and a bare tool call
@@ -466,7 +497,7 @@ Say ==
                    /\ missed' = (missed \/ MissedRun(FALSE, "nothing"))
               ELSE /\ say' = s /\ ph' = "play"
                    /\ tres' = (s = "texttool") /\ mark' = (s = "texttool")
-                   /\ UNCHANGED <<req, rst, noted, heard, fed, uncut, missed, got>>
+                   /\ UNCHANGED <<req, rst, noted, nreg, heard, fed, uncut, missed, got>>
     /\ UNCHANGED <<st, reoffers, line, q, hPost, rloc, rk, tend, gtool, ended, runUnder,
                    runMid, displaced, staleNote, noNote, staleHeard>>
 
@@ -613,6 +644,7 @@ TypeOK ==
     /\ MUT \subseteq {"fraction", "countSettle", "singleWord", "oneItem", "storeNote",
                       "runAfterCut", "lagSettle", "oneSlot", "askOnly", "turnLevel",
                       "vadLevel", "renderInGet", "ledgerMax", "endClearsTool",
-                      "staleFlag"}
-    /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms"}
+                      "staleFlag", "adoptDropsKeys"}
+    /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
+    /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
 =============================================================================

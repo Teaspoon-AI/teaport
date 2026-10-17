@@ -314,7 +314,7 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 
 | row | what | verdict | the counterexample, or the state count |
 |---|---|---|---|
-| `ow_design` | the design as the model corrected it (`anyMiss`, `terms`), with partial and silent runs, `MaxSpeech = 6` | holds, all 11 safety properties | 21,486 states |
+| `ow_design` | the design as the model corrected it (`anyMiss`, `about`), with partial and silent runs, `MaxSpeech = 6` | holds, all 11 safety properties | 21,486 states |
 | `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolves` | 17,066 states |
 | `ow_asWritten_closed` | DESIGN §3 as written (`RUNCLOSE = "uncut"`) | ✗ `ClosedOnEvidence` | the landing run tells one item of two and plays through; "uncut run" closes it |
 | `ow_asWritten_live` | DESIGN §4 as written (`REOFFER = "cutOrTurn"`) | ✗ `OwedResolves` | the landing run produces no audio; with no cut and no caller turn, nothing ever arms the re-offer (the hold cap's drop does the same) |
@@ -334,6 +334,10 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_vadLevel` | a VAD-level window | ✗ `NoRunMidTurn` | the caller's reply is a sync tool call; the run goes between the call and its answer |
 | `ow_endClearsTool` | the gate's turn half ends at a completion's End even with its call out (`FollowupGate` before the review round: `_turn` cleared by the `LLMFullResponseEndFrame`) | ✗ `NoRunMidTurn` | a caller request in flight without the note; the answer lands, the run waits; the reply is "Let me check." + a sync tool call, its line plays, its End clears the turn, and the run goes before the tool's answer (10 steps) |
 | `ow_staleFlag` | the gate's tool round as ONE flag, set by a call's `FunctionCallInProgressFrame` (`FollowupGate` before the second review round). The frame is uninterruptible: it waits in the TTS's and the transport's queues and reaches the gate after the barge-in that cancelled the call (`Mark` after `TurnStart`) | ✗ `OwedResolves` | the answer lands, the run waits; the caller's reply is a sync call, the caller barges in (the call cancelled, the run dropped, the re-offer armed), the stale in-progress frame sets the flag, the turn commits no words: no completion clears the flag, the door and the lull stay shut for good (13 steps) |
+| `ow_adoptDropsKeys` | the commit that adopts a speculative reply registers none of the keys its note carried (`BoundedOpenAILLMService.get_chat_completions` read `owed_noted` off `speculate._AdoptedStream`, which never had it: Fable's final review) | ✗ `NoRepeatRecital` | the caller's turn tells it all through an adopted stream; the record stays owed, the lull re-offers, and the run tells it again (12 steps) |
+| `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 20,566 states |
+| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 16,314 states |
+| `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
 | `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 34,884 states |
 
@@ -402,6 +406,21 @@ The model was written to lead the design, and it found these:
 8. **Fable's three model points hold.** The repeat side (`NoRunAfterHeard`, `repeat`)
    catches the lagging settle. A held-then-dropped run counts as an attempt (the
    `ow_runAfterCut` trace drops one), and the settle is its own step.
+9. **A failure told on any path but an uncut run was re-offered** (`ow_failure_runOnly`,
+   Fable's final review). A failure is one item with no terms, so finding 1 left only an
+   uncut run to close it. When the landing run was skipped (a caller request still to be
+   rendered) or cut after its last word, the caller heard it in full on another path,
+   and the lull told it again. Fix (`RUNCLOSE = "about"`, `OUTCOME = "failure"`): a
+   term-less item also closes on any noted reply heard to its end that is about the
+   record (`owed._about`: a non-common word shared with the request). The premise, the
+   corpus test's to check: a failure is one statement, told whole or not at all, and the
+   telling is the reply. An unrelated reply shares nothing with the request and closes
+   nothing.
+10. **An adopted speculation's keys must reach the evidence** (`ow_adoptDropsKeys`). The
+   speculation renders its note in its own task, and the adopting commit is the reply
+   whose ending is the evidence: if it registers none of the keys, a full telling never
+   closes the record, and the lull tells it again. The code read the keys off the wrong
+   object (the speculation's wrapper, not its stream) until Fable's final review.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a
