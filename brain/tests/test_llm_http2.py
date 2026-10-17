@@ -195,8 +195,9 @@ async def test_a_reply_read_to_its_end_is_not_reset():
 
 
 async def test_a_cut_on_a_connection_that_died_is_contained():
-    # The reset's frames cannot go out: the connection is gone. Nothing escapes into the
-    # caller's turn, and the next request opens a new connection without an error.
+    # The reset's frames cannot go out: the connection is gone. The cut itself raises
+    # nothing into the caller's turn. The next request may find the dead connection --
+    # a transport error, which the SDK retries -- and the retry gets a new one.
     async with Server(size=200_000) as server, _client() as client:
         async with client.stream("GET", server.url) as r:
             async for _ in r.aiter_raw():
@@ -204,25 +205,29 @@ async def test_a_cut_on_a_connection_that_died_is_contained():
             _h2(client)._network_stream._stream._transport.abort()
         await asyncio.sleep(0.1)
         server.size, server.delay = 4_000, 0
+        try:
+            await client.get(server.url)
+        except httpx.TransportError:
+            pass
         assert len((await client.get(server.url)).content) == 4_000
         assert server.connections == 2, server.connections
 
 
-async def test_an_idle_connection_the_server_closed_is_not_reused():
-    # An idle timeout, with a GOAWAY first and without: the next request goes out on a new
-    # connection, not on the dead one (stock httpcore: "Server disconnected" -- and the
-    # SDK's retry, after its backoff).
-    for goaway in (False, True):
-        async with Server(size=4_000, delay=0) as server, _client() as client:
-            assert len((await client.get(server.url)).content) == 4_000
-            await server.close_idle(goaway)
-            await asyncio.sleep(0.1)
-            assert len((await client.get(server.url)).content) == 4_000
-            assert server.connections == 2, (goaway, server.connections)
+async def test_a_connection_the_server_closed_with_a_goaway_moves_the_request():
+    # What a server closing an idle connection does (OpenRouter, 2026-10-16: a GOAWAY's
+    # record waiting on the socket): httpcore reads it on the next request and sends that
+    # request on a new connection -- no error, no SDK retry. services keeps connections
+    # idle for less than OpenRouter does, so this is the rare case, not the turn's.
+    async with Server(size=4_000, delay=0) as server, _client() as client:
+        assert len((await client.get(server.url)).content) == 4_000
+        await server.close_idle(goaway=True)
+        await asyncio.sleep(0.1)
+        assert len((await client.get(server.url)).content) == 4_000
+        assert server.connections == 2, server.connections
 
 
 async def test_a_frame_to_an_idle_connection_keeps_it():
-    # A PING to an idle connection leaves its socket readable, but it is not a close.
+    # A PING to an idle connection is not a close: the connection stays.
     async with Server(size=4_000, delay=0) as server, _client() as client:
         assert len((await client.get(server.url)).content) == 4_000
         await server.ping()
@@ -233,8 +238,9 @@ async def test_a_frame_to_an_idle_connection_keeps_it():
 
 async def test_the_request_after_a_cut_rides_the_same_connection():
     # The cut reply's data already on its way when the reset went out waits on the idle
-    # connection's socket. Live (2026-10-16), HTTP/1.1's idle-readable rule took that for
-    # a close: each cut cost the next request a new connection, and sometimes the reset.
+    # connection's socket; it is not a close. (Live 2026-10-16, a version that took an
+    # idle readable socket for one cost each cut a new connection, and sometimes the
+    # reset.)
     async with Server(size=400_000, chunk=400, delay=0) as server, _client() as client:
         for _ in range(5):
             await _cut(client, server.url)

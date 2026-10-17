@@ -10,11 +10,11 @@
 #
 # httpcore's HTTP/2 (1.0.9, the latest release) does not end it, though: a response
 # closed early is dropped on our side only (AsyncHTTP2Connection._response_closed), and
-# the server is never told. Reproduced on a local h2 server (#201):
-#   * no RST_STREAM: the server goes on generating and sending a reply nobody reads (the
-#     model's tokens, billed);
+# the server is never told. Reproduced on a local h2 server, and live (#201):
+#   * no RST_STREAM: the server goes on generating and sending a reply nobody reads --
+#     on OpenRouter each cut reply ran on until the connection closed (13-265 tokens);
 #   * the data it sends is never acknowledged, and drains the connection's flow-control
-#     window: after ~16 MiB every stream on the connection stalls;
+#     window: after ~16 MiB every stream on the connection crawls or stalls;
 #   * h2 still counts the stream open: at the 101st cancel, "Max outbound streams is 100,
 #     100 open" fails every request on the connection.
 # Upstream: encode/httpcore#943 (closed unfixed), #1022 (open), PR #1098 (the reset,
@@ -31,32 +31,17 @@
 # teardown httpcore runs _response_closed in, where taking the write lock can deadlock
 # against a request holding it (upstream #1098's reason for not flushing). The next
 # request or read would send them anyway; the task makes it now, so the server stops
-# generating when the caller's barge-in stopped the reply, not at their next turn.
+# generating when the caller's barge-in stopped the reply, not at their next turn. Live
+# on OpenRouter, with it: cut replies stopped at 7-15 tokens, and 5 cuts and a request
+# went over one connection.
 #
-# One more gap against HTTP/1.1: httpcore drops an idle HTTP/1.1 connection whose socket
-# has turned readable -- the server closed it -- before reusing it, but an HTTP/2 one only
-# on its keepalive clock (has_expired). An idle connection the server closed without a
-# GOAWAY would take the next request and fail it with "Server disconnected", and the
-# SDK's retry would cost the caller its backoff (~0.5-1 s). (One closed with a GOAWAY is
-# fine: httpcore reads it on the next request and moves that request to a new
-# connection.) HTTP/1.1's rule -- idle and readable -- is wrong here, though: over HTTP/2
-# an idle connection is readable whenever frames are waiting, and after every cut reply
-# they are -- the stream's data already on its way when the reset went out. Live on the
-# box (2026-10-16) that rule closed the connection at the next request after each cut,
-# sometimes before the reset was flushed, and one cut reply ran to its end. So
-# has_expired is wrapped to look closer, only when an idle connection is readable: a
-# one-byte peek at the socket (a duplicate of its descriptor, so the event loop's own is
-# untouched) that sees the end of the stream -- the server closed it -- and nothing
-# else. Waiting bytes, TLS records of frames or of a GOAWAY, keep the connection.
-#
-# The wraps read httpcore's private HTTP/2 internals; httpcore is pinned exactly
+# The wrap reads httpcore's private HTTP/2 internals; httpcore is pinned exactly
 # (pyproject) and enable() checks the parts it uses before patching. If they have moved,
 # it logs an ERROR and the model client stays on HTTP/1.1 -- slower to reconnect, never
 # broken. test_llm_http2 fails once httpcore resets streams itself: then delete this.
 #
 import asyncio
 import inspect
-import socket
 
 import h2.connection
 import h2.errors
@@ -66,9 +51,9 @@ import httpcore
 from loguru import logger
 
 try:
-    from httpcore._async.http2 import AsyncHTTP2Connection, HTTPConnectionState
+    from httpcore._async.http2 import AsyncHTTP2Connection
 except ImportError:  # pragma: no cover -- enable() reports it
-    AsyncHTTP2Connection = HTTPConnectionState = None
+    AsyncHTTP2Connection = None
 
 # The frames' write bound: the request that closed is gone, so this stands in for its
 # timeouts (httpcore reads the write timeout from a request's extensions).
@@ -76,7 +61,6 @@ _FLUSH_REQUEST = httpcore.Request("POST", "https://flush.invalid/",
                                   extensions={"timeout": {"write": 5.0}})
 
 _original = None        # httpcore's own _response_closed, once wrapped
-_original_expired = None  # and its has_expired
 _enabled = None         # enable()'s answer, once asked
 _flushes: set = set()   # the flush tasks running (a reference, so none is collected)
 
@@ -85,10 +69,6 @@ def _problem() -> str | None:
     """What of httpcore's HTTP/2 internals the wrap needs is missing, if anything."""
     if AsyncHTTP2Connection is None:
         return "httpcore._async.http2.AsyncHTTP2Connection is gone"
-    has_expired = getattr(AsyncHTTP2Connection, "has_expired", None)
-    if not callable(has_expired) or inspect.iscoroutinefunction(has_expired) or \
-            list(inspect.signature(has_expired).parameters) != ["self"]:
-        return "AsyncHTTP2Connection.has_expired is not has_expired(self)"
     for name, params in (("_response_closed", ["self", "stream_id"]),
                          ("_write_outgoing_data", ["self", "request"])):
         fn = getattr(AsyncHTTP2Connection, name, None)
@@ -102,9 +82,6 @@ def _problem() -> str | None:
         return "AsyncHTTP2Connection._h2_state is not an h2 H2Connection"
     if not isinstance(getattr(conn, "_events", None), dict):
         return "AsyncHTTP2Connection._events is not a dict"
-    if getattr(conn, "_state", None) is not HTTPConnectionState.IDLE or \
-            not hasattr(conn, "_network_stream"):
-        return "AsyncHTTP2Connection has no _state / _network_stream"
     for name in ("streams", "reset_stream", "acknowledge_received_data"):
         if not hasattr(conn._h2_state, name):
             return f"h2's H2Connection has no {name}"
@@ -112,9 +89,9 @@ def _problem() -> str | None:
 
 
 def enable() -> bool:
-    """Wrap httpcore's HTTP/2 stream close and expiry (once). True when the model client may use
+    """Wrap httpcore's HTTP/2 stream close (once). True when the model client may use
     HTTP/2; False -- logged -- when httpcore has moved, and HTTP/1.1 is used instead."""
-    global _original, _original_expired, _enabled
+    global _original, _enabled
     if _enabled is None:
         problem = _problem()
         if problem is not None:
@@ -123,56 +100,32 @@ def enable() -> bool:
             _enabled = False
         else:
             _original = AsyncHTTP2Connection._response_closed
-            _original_expired = AsyncHTTP2Connection.has_expired
             AsyncHTTP2Connection._response_closed = _response_closed
-            AsyncHTTP2Connection.has_expired = _has_expired
             _enabled = True
     return _enabled
 
 
 async def _response_closed(self, stream_id: int) -> None:
-    unread = [e for e in self._events.get(stream_id, ())
-              if isinstance(e, h2.events.DataReceived)]
-    stream = self._h2_state.streams.get(stream_id)
-    reset = stream is not None and not stream.closed
-    if unread or reset:
-        try:
+    try:
+        unread = [e for e in self._events.get(stream_id, ())
+                  if isinstance(e, h2.events.DataReceived)]
+        stream = self._h2_state.streams.get(stream_id)
+        reset = stream is not None and not stream.closed
+        if unread or reset:
             for event in unread:
                 self._h2_state.acknowledge_received_data(event.flow_controlled_length,
                                                          stream_id)
             if reset:
                 self._h2_state.reset_stream(stream_id, h2.errors.ErrorCodes.CANCEL)
-        except h2.exceptions.ProtocolError:
-            pass        # the connection itself is closing: nothing left to tell it
-        else:
             task = asyncio.get_running_loop().create_task(_flush(self))
             _flushes.add(task)
             task.add_done_callback(_flushes.discard)
-    await _original(self, stream_id)
-
-
-def _has_expired(self) -> bool:
-    if _original_expired(self):
-        return True
-    if self._state != HTTPConnectionState.IDLE or \
-            not self._network_stream.get_extra_info("is_readable"):
-        return False
-    return _closed_by_peer(self._network_stream.get_extra_info("socket"))
-
-
-def _closed_by_peer(sock) -> bool:
-    """Has the server closed this readable socket -- the end of the stream, and no bytes
-    before it? A socket that cannot be looked at counts as closed (HTTP/1.1's rule)."""
-    try:
-        fd = sock.fileno()
-        if fd < 0:
-            return True
-        with socket.fromfd(fd, sock.family, sock.type) as peek:
-            return peek.recv(1, socket.MSG_PEEK | socket.MSG_DONTWAIT) == b""
-    except BlockingIOError:
-        return False        # readable a moment ago, drained since: open
-    except (OSError, AttributeError):
-        return True
+    except h2.exceptions.ProtocolError:
+        pass            # the connection itself is closing: nothing left to tell it
+    finally:
+        # httpcore's own bookkeeping -- the stream's slot, its events -- whatever the above
+        # did.
+        await _original(self, stream_id)
 
 
 async def _flush(conn) -> None:
