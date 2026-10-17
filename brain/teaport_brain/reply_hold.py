@@ -110,7 +110,9 @@
 #     leaves that round between them: the turn was acted on, and they stay apart.
 #   * During a tool call, a filler line (a tool acknowledgement, the consult narrator)
 #     is audio like any other: it passes the gate and disarms it, so the answer spoken
-#     after the tool returns is not checked.
+#     after the tool returns is not checked here. One asked while the caller is
+#     talking is held by FollowupGate instead, on every front-end (#17); one asked
+#     before they start is not.
 #
 import asyncio
 import os

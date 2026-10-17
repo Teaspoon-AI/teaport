@@ -208,6 +208,8 @@
 (*                               order it handles them, drops the           *)
 (*                               InProgress of a call whose cancel it       *)
 (*                               handled first.                             *)
+(*                                                                          *)
+(* The answer after the tool (#17): POSTTOOL, see its section below.        *)
 (***************************************************************************)
 EXTENDS Naturals
 
@@ -224,7 +226,8 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
           EARLY_FINAL,     \* a final of the caller's resumed words can be aggregated
                            \* before the VAD stop that re-applies a refused finalize
                            \* (TRUE: as it is). FALSE: the premise, see VadStop
-          CALLS            \* a call overtaken by its own cancel (see the header)
+          CALLS,           \* a call overtaken by its own cancel (see the header)
+          POSTTOOL         \* the answer to a tool's result, under the caller's speech (#17)
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -322,6 +325,29 @@ VARIABLES
                      \* task will ever settle it
     readUnsettled    \* monitor: the LLM was asked over a context holding such a call
 toolVars == <<tool, lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
+VARIABLES
+    \* --- the answer to a tool's result (#17; see "The answer after the tool") ---
+    answer,          \* "none"; "due" (a sync result is in the context and asks for the
+                     \* answer: the assistant aggregator's push, or its deferral to the
+                     \* bot's stop); "held" (FollowupGate holds the push); "asked" (the
+                     \* LLM is answering, the TTS holding its first clause while the VAD
+                     \* hears the caller); "playing"; "dropped" (discarded while the
+                     \* caller spoke: only a turn of theirs will ever read the result)
+    pend,            \* ground truth: caller speech has begun whose words have not
+                     \* resolved -- no turn start, no commit carrying them and no
+                     \* word-less close since its VAD start
+    gpend,           \* FollowupGate's view of it (gate): from a VAD start until a turn
+                     \* start, or its release timer after the VAD stop
+    asUnder,         \* the answer was asked while such speech was pending
+    ansOver,         \* monitor: the answer started playing before the words of speech it
+                     \* was asked under, which then started their turn
+    ansLost,         \* monitor: the answer was discarded and no turn of the caller's read
+                     \* the result instead (their speech was word-less)
+    skipLost,        \* monitor: pipecat skipped the push for an open turn whose commit
+                     \* had already read the context without the result (#196)
+    gstale           \* ghost: the gate's view is pending on speech whose words a commit
+                     \* has already taken (gateNoCommit)
+postVars == <<answer, pend, gpend, asUnder, ansOver, ansLost, skipLost, gstale>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
@@ -333,9 +359,11 @@ CommitMayOvertake == FENCE \in {"none", "timed"}
 SnapshotMayOvertake == FENCE \in {"none", "commitOnly"}
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
           stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply,
-          holdVars, pauseVars, fenceVars, toolVars>>
+          holdVars, pauseVars, fenceVars, toolVars, postVars>>
 
 Gated == HOLD /= "none"
+\* FollowupGate's designs for the answer after a tool (#17, POSTTOOL).
+Gates == {"gate", "gateNoCommit", "gateById", "gateOwedBlind"}
 
 \* What a drop (an interruption reaching the gate) does to the reply's tool round. A
 \* call still running in the context is cancelled (pipecat's cancel_on_interruption, the
@@ -397,6 +425,8 @@ Init ==
     /\ cut = "none" /\ overtaken = FALSE /\ cutAfterCommit = FALSE
     /\ tool = "none" /\ lateTool = FALSE /\ goodbyeLost = FALSE /\ orphanCall = FALSE
     /\ lateCall = "none" /\ unsettled = FALSE /\ readUnsettled = FALSE
+    /\ answer = "none" /\ pend = FALSE /\ gpend = FALSE /\ asUnder = FALSE /\ ansOver = FALSE
+    /\ ansLost = FALSE /\ skipLost = FALSE /\ gstale = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -420,6 +450,13 @@ HoldOnSpeech ==
          THEN held' = TRUE /\ paused' = TRUE
          ELSE UNCHANGED <<held, paused>>
 
+\* Its words are not known yet: they come with the STT's final, after the VAD stop.
+PendOnSpeech ==
+    /\ pend' = (pend \/ POSTTOOL /= "off")
+    /\ gpend' = (gpend \/ POSTTOOL /= "off")
+    /\ gstale' = FALSE                         \* what the gate waits for is real again
+    /\ UNCHANGED <<answer, asUnder, ansOver, ansLost, skipLost>>
+
 (***************************************************************************)
 (* VAD. Both edges re-arm the stop watchdog, which is the whole reason it   *)
 (* cannot save anyone: _handle_vad_user_started_speaking,                   *)
@@ -441,6 +478,7 @@ VadStart ==
     /\ spec' = FALSE                           \* the caller resumed: the text will differ
     /\ HoldOnSpeech
     /\ PauseOnSpeech
+    /\ PendOnSpeech
     /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
                    specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
@@ -489,6 +527,19 @@ StartTurn ==
                    endQueued, splitTurn>>
     /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost,
                    cutAfterCommit>>
+    \* The pending speech was words. An answer playing that was asked under it is the
+    \* stale answer, cut only now. One discarded under it is read by this turn. A turn
+    \* that starts while the caller is still talking (on an interim) has not had all of
+    \* that speech's words: the rest are still to come, to this turn's commit or -- its
+    \* finalize refused and re-applied at the VAD stop before they land -- to a turn of
+    \* their own. The gate keeps waiting for them as shipped (and as in ff033c9,
+    \* gateOwedBlind); gateById and gateNoCommit let go at every turn start.
+    /\ pend' = (pend /\ userSpeaking)
+    /\ gpend' = (gpend /\ userSpeaking /\ POSTTOOL \in {"gate", "gateOwedBlind"})
+    /\ gstale' = FALSE
+    /\ ansOver' = (ansOver \/ (answer = "playing" /\ asUnder))
+    /\ answer' = IF answer = "dropped" THEN "none" ELSE answer
+    /\ UNCHANGED <<asUnder, ansLost, skipLost>>
 
 \* The interruption reaches the gate, the transport and the assistant aggregator, which
 \* commits the reply it cut. Its effects are the old StartTurn's.
@@ -522,6 +573,14 @@ CutLands ==
     \* it, the pause -- except in a transport that keeps it.
     /\ pausedP' = (PAUSE = "keepOnInterrupt" /\ pausedP)
     /\ tailKnown' = FALSE /\ wouldEnd' = FALSE
+    \* The answer goes with it, and the turn's commit reads the result: a push still due
+    \* is skipped (pipecat's reset clears a deferral, and the turn is open at the
+    \* aggregator), a held one is dropped by FollowupGate, a completion is cancelled or
+    \* -- its LLMContextFrame still queued -- dropped by the reset (test_pipecat_premises),
+    \* one being synthesized is discarded by the TTS, one playing is cut.
+    /\ answer' = IF answer \in {"due", "held", "asked", "playing"} THEN "none" ELSE answer
+    /\ asUnder' = (asUnder /\ answer \notin {"due", "held", "asked", "playing"})
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<left, synthDone, answerLost, stopHeard, cutAfterCommit>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight, owed, turns,
                    spec, specGen, specWords, gen, missedBargeIn, staleReply>>
@@ -549,6 +608,7 @@ Interject ==
               /\ UNCHANGED holdVars
               /\ UNCHANGED pauseVars
               /\ UNCHANGED fenceVars
+              /\ UNCHANGED postVars
          ELSE /\ StartTurn
               /\ UNCHANGED missedBargeIn
     /\ watchdog' = FALSE
@@ -570,6 +630,7 @@ Progress ==
     /\ UNCHANGED <<pausedP, synthDone, tailKnown, wouldEnd, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* The reply's synthesis completes (its TTSStoppedFrame reaches the transport). During
 \* a pause, as shipped, the transport re-announces the pause with the tail it now
@@ -585,6 +646,7 @@ SynthDone ==
     /\ UNCHANGED <<pausedP, left, wouldEnd, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* Ground truth: paused with the whole reply synthesized and less than a final's
 \* latency of it left, the held-back rest would have played out by now. (With a long
@@ -599,6 +661,7 @@ TailElapsed ==
     /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* No words: the line is quiet and playout resumes from where it stopped. A bot that
 \* resumes after the caller said stop to it has not been stopped: that OUTCOME is
@@ -614,6 +677,7 @@ ResumeP ==
     /\ UNCHANGED <<left, synthDone, answerLost>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* A one-word final (not a stop word) lands after the caller's VAD stop -- "Yes.".
 \* What the strategy does with it (`Starts`) is the design; what it SHOULD have done
@@ -634,6 +698,7 @@ OneWord ==
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard>>
               /\ UNCHANGED fenceVars
+              /\ UNCHANGED postVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED toolVars
 
@@ -653,6 +718,7 @@ StopWord ==
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
               /\ UNCHANGED fenceVars
+              /\ UNCHANGED postVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED toolVars
 
@@ -686,6 +752,7 @@ SpecStart ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED <<cut, overtaken>>
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* The words the commit will carry move after the snapshot, with the caller quiet:
 \* the decoder's lagging tail past the settle window, or the final's re-decode
@@ -702,6 +769,7 @@ Retext ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* Something else writes the context while a speculation is live. A free action,
 \* deliberately: HeardContextCorrector._reconcile on the very LLMContextFrame that
@@ -718,6 +786,7 @@ CtxChange ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* trigger_user_turn_stopped(), first await: the stop strategy has decided, the
 \* aggregation is pushed and the LLM is asked. The controller gates this on the turn
@@ -785,6 +854,49 @@ Appended(mp, t) ==
     /\ tool' = "none"
     /\ UNCHANGED goodbyeLost
 
+\* A commit takes the words of speech that has STOPPED: a segment's words are final once
+\* its VAD stop flushes it, and the commit carries them (SttCommit.tla's receipts).
+\* Speech still going on at the commit (`InferenceUnderSpeech`) is not in it: its words
+\* are still to come.
+\*
+\* FollowupGate learns of every commit of the caller's words from the fence's wrapper
+\* (CutReplyFence.hold_commits: the stop strategy's inference, the turn's stop, the
+\* watchdog), with a marker numbered in the aggregator's own task at the commit, and lets
+\* go of pending speech whose VAD STOP is older than it -- by frame id, not by arrival.
+\*   gateNoCommit -- cb5fbb8: only a turn start or the timer ended its view: a turn of
+\*                   two segments ("what's the time ... in Paris") held its tool's
+\*                   answer a release window with nobody talking.
+\*   gateById     -- 0db54f6: let go of speech whose VAD START was older than the
+\*                   commit (TurnCommitMark, an open turn at the gate): a commit made
+\*                   while the caller still talked emptied the view, and their words
+\*                   came after the answer.
+\*   gate         -- as shipped: the VAD STOP older than the commit.
+\* Read after the step's own VAD edge (userSpeaking'). The refused finalize's second
+\* commit (VadStop's, keep_barge_in_reachable) is made INSIDE that VAD stop's handling,
+\* before the close it flushes has come back from the engine (~0.5 s): it carries what
+\* was final before the stop (a segment the engine closed mid-span) and not the words of
+\* the stop's own flush, which may still come (`owedClose`; the strategy's `_owed`).
+\* The watchdog's commit (ForceStop) comes 5 s into a quiet line: its close has landed,
+\* a timing fact as the model's others are.
+\*   gateOwedBlind -- ff033c9: let go of speech whose VAD stop was older than ANY
+\*                    commit, that one included: the stop's words came after the
+\*                    answer.
+\*   gate          -- as shipped: not while that stop's close is owed.
+PendCommitted ==
+    LET owedClose == userSpeaking /\ ~userSpeaking'
+        kept == userSpeaking' \/ owedClose
+    IN
+    /\ pend' = (pend /\ kept)
+    /\ CASE POSTTOOL = "gateNoCommit"
+              -> gstale' = (gstale \/ (gpend /\ ~kept)) /\ UNCHANGED gpend
+         [] POSTTOOL = "gateById"
+              -> gpend' = FALSE /\ gstale' = FALSE
+         [] POSTTOOL = "gateOwedBlind"
+              -> gpend' = (gpend /\ userSpeaking') /\ gstale' = (gstale /\ userSpeaking')
+         [] OTHER
+              -> gpend' = (gpend /\ kept) /\ gstale' = (gstale /\ kept)
+    /\ UNCHANGED <<answer, asUnder, ansOver, ansLost, skipLost>>
+
 CommitCore ==
     /\ spec' = FALSE
     /\ staleReply' = (staleReply \/ Stale)
@@ -793,6 +905,7 @@ CommitCore ==
     /\ mergePending' = FALSE
     /\ CommitReads
     /\ UNCHANGED <<lateTool, orphanCall, lateCall>>
+    /\ PendCommitted
 Commit ==
     /\ CommitCore
     /\ overtaken' = (cut /= "none")
@@ -824,6 +937,7 @@ ContinueCommit ==
     /\ orphanCall' = (orphanCall \/ OrphanOnDrop)
     /\ Overtakes                   \* its interruption reaches the LLM too
     /\ CommitReads
+    /\ PendCommitted
     /\ mergePending' = FALSE
     /\ UNCHANGED <<endQueued, replyOverResume>>
     /\ UNCHANGED fenceVars
@@ -846,11 +960,38 @@ CommitStep ==
 Inference ==
     /\ ~endQueued                             \* the session has not ended
     /\ userTurn /\ ~stopInFlight /\ ~inference /\ ~userSpeaking
+    /\ userSpeaking' = userSpeaking            \* (read by the commit: PendCommitted)
     /\ CommitReady
     /\ inference' = TRUE
     /\ stopInFlight' = TRUE
     /\ watchdog' = FALSE                       \* _trigger_user_turn_inference_triggered
     /\ CommitStep
+    /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
+                   missedBargeIn>>
+    /\ UNCHANGED pauseVars
+
+\* The same commit while the VAD still hears the caller. pipecat guards only the
+\* finalize on the caller speaking, not the inference: the brain's strategy does not
+\* conclude under VAD speech (a VAD start resets its `_turn_complete`,
+\* test_pipecat_premises.py), but nothing in the controller forbids it, and a commit
+\* whose push waits at the fence (`wait_for_cuts`) can be overtaken by a VAD start
+\* before its frame is made. With the answer modelled (POSTTOOL) it is a step of its
+\* own; the rows before it keep `Inference`'s ordering fact (see its note).
+\* As `Inference` then `Resume`: the reply gate, armed by the commit with the caller
+\* already speaking, holds at once (ReplyHoldGate.arm), and that speech counts as resumed.
+\* A first commit only: a continuation (`Continues`) is the refused finalize's, at VadStop.
+InferenceUnderSpeech ==
+    /\ POSTTOOL /= "off"
+    /\ ~endQueued
+    /\ userTurn /\ ~stopInFlight /\ ~inference /\ userSpeaking
+    /\ userSpeaking' = userSpeaking
+    /\ CommitReady /\ ~Continues
+    /\ inference' = TRUE
+    /\ stopInFlight' = TRUE
+    /\ watchdog' = FALSE
+    /\ Commit
+    /\ held' = Gated /\ paused' = Gated /\ resumed' = TRUE
+    /\ UNCHANGED <<endQueued, replyOverResume>>
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
@@ -890,12 +1031,14 @@ VadStop ==
                     /\ UNCHANGED holdVars
                     /\ UNCHANGED fenceVars
                     /\ UNCHANGED toolVars
+                    /\ UNCHANGED postVars
                  \/ /\ EARLY_FINAL /\ CommitReady        \* `early`: a second commit
                     /\ CommitStep
          ELSE /\ UNCHANGED <<userTurn, owed, inference, spec, staleReply>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED fenceVars
               /\ UNCHANGED toolVars
+              /\ UNCHANGED postVars
     /\ UNCHANGED <<botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
@@ -909,6 +1052,7 @@ Resume ==
     /\ userSpeaking' = TRUE
     /\ watchdog' = FALSE
     /\ HoldOnSpeech
+    /\ PendOnSpeech
     /\ UNCHANGED <<userTurn, botSpeaking, inference, stopInFlight, owed, turns,
                    spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, mergePending, unanswered, endQueued, replyOverResume,
@@ -936,6 +1080,7 @@ Finalize ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* The reply the inference produced reaches the transport. It cannot overtake the
 \* finalize in practice -- an LLM round trip plus synthesis against two awaits --
@@ -967,6 +1112,7 @@ BotStart ==
     /\ UNCHANGED <<wouldEnd, stopHeard, answerLost>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 (***************************************************************************)
 (* The reply hold.                                                         *)
@@ -975,8 +1121,14 @@ BotStart ==
 \* The resumed speech ended and its segment closed with no words (a cough, a breath).
 Wordless ==
     /\ ~endQueued                             \* the session has not ended
-    /\ resumed /\ ~userSpeaking /\ ~stopInFlight
+    /\ (resumed \/ pend) /\ ~userSpeaking /\ ~stopInFlight
     /\ resumed' = FALSE
+    \* No turn will come of it: an answer discarded under it is lost.
+    \* (FollowupGate does not see the close: its own timer is GateQuiet.)
+    /\ pend' = FALSE /\ asUnder' = FALSE
+    /\ ansLost' = (ansLost \/ answer = "dropped")
+    /\ answer' = IF answer = "dropped" THEN "none" ELSE answer
+    /\ UNCHANGED <<gpend, ansOver, skipLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
                    stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED <<reply, armed, held, paused, mergePending, unanswered, endQueued,
@@ -1004,6 +1156,7 @@ Release ==
                    [] tool = "resultHeld" -> {"ctxDone"}
                    [] OTHER -> {tool}) : tool' = t
     /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
+    /\ UNCHANGED postVars
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
 Cap ==
@@ -1022,6 +1175,7 @@ Cap ==
                    [] tool = "resultHeld" -> {"ctxDone"}
                    [] OTHER -> {tool}) : tool' = t
     /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
+    /\ UNCHANGED postVars
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
 \* Every other action but the caller's speech is guarded by ~endQueued: what TLC
@@ -1051,13 +1205,15 @@ Hangup ==
     /\ UNCHANGED <<armed, resumed, mergePending, unanswered, replyOverResume, splitTurn>>
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED postVars
 
 \* The reply to the last commit calls a function (unconditionally here: the model
 \* decides). Its FunctionCallInProgressFrame goes on through the gate towards the
 \* context (`CallLands`) -- or waits in its queue while it holds.
 ToolCall ==
     /\ ~endQueued
-    /\ Gated /\ reply /\ armed /\ tool = "none" /\ cut = "none"
+    /\ (Gated \/ POSTTOOL /= "off") /\ reply /\ (armed \/ ~Gated) /\ tool = "none"
+    /\ cut = "none"
     /\ tool' = IF paused THEN "held" ELSE "transit"
     /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
@@ -1065,6 +1221,7 @@ ToolCall ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED postVars
 
 \* The InProgress reaches the assistant aggregator first: the call and its IN_PROGRESS
 \* result are in the context. Behind a late frame still on its way, never ahead of it:
@@ -1079,6 +1236,7 @@ CallLands ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED postVars
 
 \* The InProgress its cancel overtook reaches the aggregator (#185). As written it is
 \* the call's first news there: the call and IN_PROGRESS go in, the call's task is
@@ -1099,6 +1257,7 @@ LateLands ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED postVars
 
 \* Its result lands: a sync tool's (the LLM then answers from it -- the reply goes on),
 \* or the consult's placeholder (run_llm=False; the consult runs on). Through the
@@ -1109,6 +1268,11 @@ ToolDone ==
     /\ tool' = IF paused THEN "resultHeld" ELSE "ctxDone"
     \* A sync tool's result asks the LLM again: a read of the context, not at a commit.
     /\ readUnsettled' = (readUnsettled \/ unsettled)
+    \* POSTTOOL: a sync result passing the gate makes the answer due (a held result's
+    \* answer is the reply gate's: not modelled here, see the README).
+    /\ \E sync \in (IF POSTTOOL = "off" \/ paused THEN {FALSE} ELSE BOOLEAN) :
+         answer' = IF sync THEN "due" ELSE answer
+    /\ UNCHANGED <<pend, gpend, asUnder, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
@@ -1120,12 +1284,173 @@ BotStop ==
     /\ ~endQueued                             \* the session has not ended
     /\ botSpeaking /\ ~pausedP                  \* a paused reply cannot finish
     /\ botSpeaking' = FALSE
+    /\ answer' = IF answer = "playing" THEN "none" ELSE answer
+    /\ asUnder' = (asUnder /\ answer /= "playing")
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+
+
+(***************************************************************************)
+(* The answer after the tool (#17, POSTTOOL).                              *)
+(*                                                                          *)
+(* A sync tool's result lands; the assistant aggregator asks the LLM for    *)
+(* the answer (_maybe_push_context_after_function_result, pushing an        *)
+(* LLMContextFrame UPSTREAM), deferring it to BotStoppedSpeaking while the  *)
+(* bot is audible -- and, either way, only `if not self._user_speaking`,    *)
+(* which is the user TURN (UserStartedSpeakingFrame), not the VAD. The      *)
+(* result frame waits behind the filler's audio at the transport, so the    *)
+(* push is after the filler either way: one step, `PushAnswer`, guarded by  *)
+(* ~botSpeaking. The TTS holds a clause while the VAD hears the caller      *)
+(* (engine_tts._hold_for_user_speech), so the answer plays at their VAD     *)
+(* stop at the earliest (`AnswerStart`), or at the hold's cap (`TtsCap`).   *)
+(*                                                                          *)
+(* POSTTOOL = "off"        -- no answer modelled (every row before #17).    *)
+(* POSTTOOL = "asWritten"  -- pipecat's push, gated on the turn alone.      *)
+(* POSTTOOL = "vadDrop"    -- the issue's filter in front of the LLM: drop  *)
+(*                            the push while the VAD hears the caller; the  *)
+(*                            caller's own turn will read the result.       *)
+(* POSTTOOL = "capDiscard" -- the TTS discards the answer when its speech   *)
+(*                            hold ends on the cap, the caller still going. *)
+(* POSTTOOL = "lullAtStop" -- FollowupGate holds the push while the VAD     *)
+(*                            hears the caller and lets it go at the VAD    *)
+(*                            stop (a queue that delivers in the next lull, *)
+(*                            "speaking" being the VAD).                    *)
+(* POSTTOOL = "gate"       -- FollowupGate holds the push while caller      *)
+(*                            speech is pending: from its VAD start until   *)
+(*                            its words start a turn (the push is then      *)
+(*                            dropped: that turn's commit reads the result) *)
+(*                            or TEAPORT_REPLY_HOLD_RELEASE_S after it went *)
+(*                            quiet with none (the push goes on). The       *)
+(*                            release is a timer: WORDS_IN_TIME, as for the *)
+(*                            reply hold.                                   *)
+(***************************************************************************)
+
+\* The push, at the aggregator, once the filler's audio is past (or with none). pipecat
+\* skips it for an open turn: that turn's commit reads the result -- unless the commit
+\* has already run (`inference`: a finalize refused, or in flight), and then nothing
+\* ever does (skipLost).
+PushAnswer ==
+    /\ ~endQueued
+    /\ answer = "due" /\ ~botSpeaking /\ cut = "none"
+    \* A result that asks for an answer comes of a reply, a round trip after its commit:
+    \* never inside the commit's two awaits (the ordering fact BotStart states).
+    /\ ~stopInFlight
+    /\ IF userTurn
+         THEN /\ answer' = "none" /\ asUnder' = FALSE
+              /\ skipLost' = (skipLost \/ inference)
+         ELSE /\ LET holdIt == \/ POSTTOOL \in Gates /\ (userSpeaking \/ gpend)
+                               \/ POSTTOOL = "lullAtStop" /\ userSpeaking
+                 IN  IF POSTTOOL = "vadDrop" /\ userSpeaking
+                       THEN answer' = "dropped" /\ asUnder' = FALSE
+                     ELSE IF holdIt
+                       THEN answer' = "held" /\ asUnder' = FALSE
+                     ELSE answer' = "asked" /\ asUnder' = pend
+              /\ UNCHANGED skipLost
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, gstale>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+
+\* FollowupGate lets the held push go: at the VAD stop (lullAtStop), or (gate) with
+\* nothing pending in its view -- a VAD that stopped after its timer already ran.
+ReleaseA ==
+    /\ ~endQueued
+    /\ answer = "held" /\ ~userSpeaking
+    /\ POSTTOOL = "lullAtStop" \/ ~gpend
+    /\ answer' = "asked" /\ asUnder' = pend
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+
+\* FollowupGate's release timer (TEAPORT_REPLY_HOLD_RELEASE_S after the VAD stop, no
+\* turn start): the speech is taken as word-less, and a held push goes on. A timer knows
+\* nothing of the words: under WORDS_IN_TIME they have resolved first (a turn start, a
+\* commit, or the STT's word-less close); without it, it fires regardless.
+GateQuiet ==
+    /\ ~endQueued
+    /\ gpend /\ ~userSpeaking /\ (~WORDS_IN_TIME \/ ~pend)
+    /\ gpend' = FALSE /\ gstale' = FALSE
+    /\ IF POSTTOOL \in Gates /\ answer = "held"
+         THEN answer' = "asked" /\ asUnder' = pend
+         ELSE UNCHANGED <<answer, asUnder>>
+    /\ UNCHANGED <<pend, ansOver, ansLost, skipLost>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+
+\* The gate's cap (TEAPORT_REPLY_HOLD_MAX_S): the caller may still be talking.
+CapA ==
+    /\ ~endQueued
+    /\ answer = "held" /\ ~WORDS_IN_TIME
+    \* A turn open by then (its start reached the gate, its interruption not yet):
+    \* that turn's commit reads the result, so the cap drops the answer rather than
+    \* ask for a second completion.
+    /\ IF userTurn THEN answer' = "none" /\ asUnder' = FALSE
+                   ELSE answer' = "asked" /\ asUnder' = pend
+    /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+
+\* The answer's first audio reaches the transport, through the reply gate (it holds an
+\* armed reply: a tool round with no filler) -- as BotStart, and like it the gate is
+\* disarmed. As shipped, a caller already talking (only past the TTS cap) is paused at
+\* its start.
+StartAnswer ==
+    /\ answer' = "playing" /\ botSpeaking' = TRUE
+    /\ reply' = FALSE /\ armed' = FALSE /\ unanswered' = 0
+    /\ UNCHANGED <<pend, gpend, asUnder, ansOver, ansLost, skipLost, gstale>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED <<held, paused, resumed, mergePending, endQueued, replyOverResume,
+                   splitTurn>>
+    /\ \E l \in {"long", "mid", "short"}, d \in BOOLEAN :
+         /\ left' = IF PAUSE = "off" THEN "long" ELSE l
+         /\ synthDone' = (PAUSE /= "off" /\ d)
+         /\ pausedP' = (PAUSE = "shipped" /\ userSpeaking
+                        /\ ~(synthDone' /\ left' = "short"))
+         /\ tailKnown' = (pausedP' /\ synthDone')
+    /\ UNCHANGED <<wouldEnd, stopHeard, answerLost>>
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+AnswerReady == ~endQueued /\ answer = "asked" /\ ~botSpeaking /\ ~paused /\ cut = "none"
+AnswerStart ==
+    /\ AnswerReady /\ ~userSpeaking            \* the TTS's speech hold
+    /\ StartAnswer
+
+\* The TTS's speech hold runs out (TTS_USER_SPEECH_HOLD_MAX_S) with the caller still
+\* talking: the answer plays -- or, capDiscard, is discarded.
+TtsCap ==
+    /\ AnswerReady /\ userSpeaking /\ ~WORDS_IN_TIME
+    /\ IF POSTTOOL = "capDiscard"
+         THEN /\ answer' = "dropped" /\ asUnder' = FALSE
+              /\ UNCHANGED <<pend, gpend, ansOver, ansLost, skipLost, gstale>>
+              /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
+                             stopInFlight, owed, turns, spec, specGen, specWords, gen,
+                             missedBargeIn, staleReply>>
+              /\ UNCHANGED holdVars
+              /\ UNCHANGED pauseVars
+              /\ UNCHANGED fenceVars
+              /\ UNCHANGED toolVars
+         ELSE StartAnswer
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)
@@ -1143,6 +1468,7 @@ Arm ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
 
 \* The watchdog's stop is a commit too: _trigger_user_turn_stop pushes the
 \* aggregation, which reaches get_chat_completions and Speculator.take, so a live
@@ -1150,6 +1476,7 @@ Arm ==
 ForceStop ==
     /\ ~endQueued                             \* the session has not ended
     /\ watchdog /\ userTurn /\ ~userSpeaking
+    /\ userSpeaking' = userSpeaking
     /\ userTurn' = FALSE
     /\ inference' = FALSE
     /\ owed' = FALSE
@@ -1163,19 +1490,19 @@ ForceStop ==
               /\ UNCHANGED <<held, paused, resumed, endQueued, replyOverResume>>
               /\ UNCHANGED fenceVars
               /\ UNCHANGED toolVars
+              /\ UNCHANGED postVars
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
 
 Next ==
-    \/ VadStart \/ VadStop \/ Interject \/ CutLands
-    \/ Inference \/ Resume \/ Finalize
-    \/ BotStart \/ BotStop
-    \/ Arm \/ ForceStop
-    \/ SpecStart \/ CtxChange \/ Retext
-    \/ Wordless \/ Release \/ Cap \/ Hangup
-    \/ ToolCall \/ CallLands \/ LateLands \/ ToolDone
-    \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP \/ OneWord \/ StopWord
+    \/ VadStart \/ Resume \/ Interject \/ OneWord \/ StopWord \/ CutLands
+    \/ Wordless \/ ToolDone \/ BotStop
+    \/ PushAnswer \/ ReleaseA \/ GateQuiet \/ CapA \/ AnswerStart \/ TtsCap
+    \/ VadStop \/ Inference \/ InferenceUnderSpeech \/ Finalize \/ BotStart \/ Arm \/ ForceStop
+    \/ SpecStart \/ CtxChange \/ Retext \/ Release \/ Cap \/ Hangup
+    \/ ToolCall \/ CallLands \/ LateLands
+    \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP
 
 Spec == Init /\ [][Next]_vars
 
@@ -1247,6 +1574,23 @@ NoUnsettledRead == ~readUnsettled
 \* answer-loss fix is about is reachable in the design they run -- a pause with the
 \* rest of the reply in the 0.5-1 s band, and a tail that elapses during it.
 NoPauseInTailBand == ~(pausedP /\ left = "mid")
+
+\* #17. The answer to a tool's result is never asked while the caller is talking and
+\* then played before their words: the stale answer over (or just after) them, cut
+\* by those words, and their turn answered again.
+NoAnswerUnderSpeech == ~ansOver
+
+\* Nothing discards the answer for good: a result that asked for one gets it, or the
+\* caller's own turn reads it.
+NoLostToolAnswer == ~ansLost
+
+\* pipecat's skip for an open turn never strands a result: the turn's commit is still
+\* to come. Fails as pipecat is (#196): not #17's, and not fixed by its gate.
+NoSkippedAnswer == ~skipLost
+
+\* The gate never holds the answer on speech whose words a commit has already taken:
+\* with nobody talking it is not waiting for anything.
+NoHoldOnCommittedSpeech == ~(answer = "held" /\ gstale)
 NoTailElapsed == ~wouldEnd
 
 TypeOK ==
@@ -1284,4 +1628,10 @@ TypeOK ==
     /\ CALLS \in {"asWritten", "dropAbove", "settleAtCommit", "dropAtAggregator"}
     /\ lateCall \in {"none", "above", "atAgg"}
     /\ unsettled \in BOOLEAN /\ readUnsettled \in BOOLEAN
+    /\ POSTTOOL \in {"off", "asWritten", "vadDrop", "capDiscard", "lullAtStop", "gate",
+                     "gateNoCommit", "gateById", "gateOwedBlind"}
+    /\ answer \in {"none", "due", "held", "asked", "playing", "dropped"}
+    /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
+    /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
+    /\ (POSTTOOL = "off" => answer = "none" /\ ~pend /\ ~gpend)
 =============================================================================

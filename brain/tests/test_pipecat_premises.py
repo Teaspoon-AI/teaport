@@ -56,6 +56,7 @@ from pipecat.frames.frames import (  # noqa: E402
     TTSStartedFrame,
     TTSStoppedFrame,
     TTSTextFrame,
+    UserStartedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -637,6 +638,7 @@ def _queued_reply():
     the STT's bookkeeping frames."""
     return [TTSAudioRawFrame(b"\x01\x00" * 240, 24000, 1, context_id="c"),
             LLMRunFrame(),
+            LLMContextFrame(LLMContext([{"role": "user", "content": "q"}])),
             FunctionCallInProgressFrame(function_name="f", tool_call_id="t", arguments={}),
             FunctionCallResultFrame(function_name="f", tool_call_id="t", arguments={},
                                     result={"ok": 1}),
@@ -652,7 +654,7 @@ def _takes_stop_n(cls):
 
 KEPT = ["FunctionCallInProgressFrame", "FunctionCallResultFrame",
         "FinalTranscriptionFrame", "SegmentDoneFrame"]
-QUEUED = (TTSAudioRawFrame, LLMRunFrame, FunctionCallInProgressFrame,
+QUEUED = (TTSAudioRawFrame, LLMRunFrame, LLMContextFrame, FunctionCallInProgressFrame,
           FunctionCallResultFrame, FinalTranscriptionFrame, SegmentDoneFrame, LLMTextFrame)
 
 
@@ -661,7 +663,9 @@ async def check_the_interruption_reset_keeps_only_uninterruptible_frames():
     `Dropped`; SttCommit.tla's `toStrategy` FIFO; Followup.tla's `UserStart` ("the
     interruption flushes the queued LLMRunFrame"): an interruption's queue reset drops
     every queued frame but the uninterruptible ones -- pipecat's function-call frames
-    and the brain's FinalTranscriptionFrame and segment frames -- and, with an
+    and the brain's FinalTranscriptionFrame and segment frames -- (UserTurn.tla's
+    POSTTOOL `CutLands`: a queued LLMContextFrame, the answer a tool's result asked for
+    still on its way to the LLM, goes too) -- and, with an
     interruptible frame in hand, cancels and re-creates the process task, which lifts a
     pause.
 
@@ -669,7 +673,9 @@ async def check_the_interruption_reset_keeps_only_uninterruptible_frames():
     held tool round and its pass-through of a held result would act on frames that never
     come (an orphaned call); if a final were dropped, a MinWords interim's interruption
     would flush the caller's turn -- the SILENT TURN stt.py records; if the LLMRunFrame
-    survived, a flushed follow-up would still run; if the pause outlived the reset, a
+    survived, a flushed follow-up would still run; if the LLMContextFrame did, a tool's
+    answer asked just before a barge-in would run after it and be answered twice (#17,
+    as seen on 1.7); if the pause outlived the reset, a
     processor paused by the reply hold would hold everything after a barge-in."""
     holder, below = Holder(), Tap()
     in_hand = TextFrame("in hand")
@@ -844,6 +850,152 @@ async def check_run_llm_resolves_properties_then_frame_then_yes():
             got[name] = len(asked) > before
     want = {name: ran for name, _, _, ran in cases}
     assert got == want, f"inference after a result: {got}, expected {want}"
+
+
+async def check_the_answer_to_a_result_is_pushed_up_unless_a_turn_is_open():
+    """UserTurn.tla, POSTTOOL (#17), `PushAnswer`: the assistant aggregator asks for the
+    answer to a tool's result by pushing an LLMContextFrame UPSTREAM -- past
+    FollowupGate, which sits above it -- and skips it for an open user TURN
+    (UserStartedSpeakingFrame), however long the VAD has heard the caller. It defers
+    the push to BotStoppedSpeakingFrame while the bot is audible, and pushes then under
+    the same rule.
+
+    If it goes: if the push stopped going upstream (or went another way), FollowupGate
+    would never see the answer and the caller's speech could be talked over again; if
+    pipecat started skipping it on the VAD, the gate's hold is dead weight; if it
+    stopped skipping it for an open turn, the turn's commit and the answer would both
+    run -- the result answered twice."""
+    def result(cid):
+        return [FunctionCallInProgressFrame(function_name="f", tool_call_id=cid,
+                                            arguments={}, cancel_on_interruption=True),
+                FunctionCallResultFrame(function_name="f", tool_call_id=cid, arguments={},
+                                        result={"ok": cid})]
+
+    def started(cid):
+        return FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+            function_name="f", tool_call_id=cid, arguments={}, context=None)])
+
+    context = LLMContext([{"role": "user", "content": "q"}])
+    below = Tap()
+    assistant = LLMContextAggregatorPair(context).assistant()
+    asked = []
+    push_frame = assistant.push_frame
+
+    async def recording(frame, direction=DOWN):
+        if isinstance(frame, LLMContextFrame):
+            asked.append(direction)
+        await push_frame(frame, direction)
+    assistant.push_frame = recording
+    async with Run(assistant, below) as run:
+        # The VAD hears the caller; no turn has started.
+        await run.send(VADUserStartedSpeakingFrame(), started("a"))
+        await _marked(run, below)
+        await run.send(*result("a"))
+        await _marked(run, below)
+        under_vad = list(asked)
+        # The bot audible: deferred, then pushed at its stop.
+        await run.send(BotStartedSpeakingFrame(), started("b"))
+        await _marked(run, below)
+        await run.send(*result("b"))
+        await _marked(run, below)
+        deferred = list(asked)
+        await run.send(BotStoppedSpeakingFrame())
+        await _marked(run, below)
+        at_stop = list(asked)
+        # A turn open: skipped.
+        await run.send(UserStartedSpeakingFrame(), started("c"))
+        await _marked(run, below)
+        await run.send(*result("c"))
+        await _marked(run, below)
+        in_turn = list(asked)
+    assert under_vad == [UP], f"under VAD speech, no turn: {under_vad} (expected one push up)"
+    assert deferred == [UP], f"with the bot audible the push was not deferred: {deferred}"
+    assert at_stop == [UP, UP], f"the deferred push did not go up at the stop: {at_stop}"
+    assert in_turn == [UP, UP], f"a turn was open and the answer was asked anyway: {in_turn}"
+
+
+async def check_run_frames_stop_at_the_user_aggregator():
+    """FollowupGate (#17): every context frame that comes up past the gate is the answer
+    to a tool's result, because an LLMRunFrame or LLMMessagesAppendFrame(run_llm) the
+    brain queues at the top is taken by the USER aggregator -- it pushes its context
+    frame down and passes the run frame no further -- and so never reaches the
+    assistant aggregator, which would push one UP for it. And frames are numbered as
+    they are made (Frame.id increases): the gate tells speech a commit took from
+    speech begun after it by the two frames' ids, not by when they reach it.
+
+    If it goes: a run frame reaching the assistant aggregator would be held (or
+    dropped at a turn) by the gate as if it were a tool's answer -- a follow-up delayed
+    or lost; with ids out of order, a commit could end the gate's wait for words that
+    are not in it."""
+    context, pair, _stop = _user_pair()
+    between = Tap()
+    up = []
+    push_frame = pair.assistant().push_frame
+
+    async def recording(frame, direction=DOWN):
+        if isinstance(frame, LLMContextFrame) and direction == UP:
+            up.append(frame)
+        await push_frame(frame, direction)
+    pair.assistant().push_frame = recording
+    from pipecat.frames.frames import LLMMessagesAppendFrame
+    async with Run(pair.user(), between, pair.assistant()) as run:
+        await run.send(LLMRunFrame(),
+                       LLMMessagesAppendFrame(messages=[{"role": "user", "content": "x"}],
+                                              run_llm=True))
+        await _marked(run, between)
+    passed = _kinds(between, DOWN, (LLMRunFrame, LLMMessagesAppendFrame))
+    down = _kinds(between, DOWN, LLMContextFrame)
+    assert passed == [], f"the user aggregator passed run frames on: {passed}"
+    assert len(down) == 2, f"expected two context frames down from the user aggregator: {down}"
+    assert up == [], "the assistant aggregator pushed a context frame up for a run frame"
+    a, b = TextFrame("a"), TextFrame("b")
+    assert a.id < b.id, "frame ids no longer increase in creation order"
+
+
+async def check_a_vad_start_discards_the_stop_strategys_conclusion():
+    """UserTurn.tla, `Inference`'s ordering fact (the commit runs with the VAD quiet) and
+    POSTTOOL's `InferenceUnderSpeech`, which drops it: pipecat guards only the FINALIZE
+    on the caller speaking, not the inference. What keeps the brain's own strategy from
+    committing under VAD speech is the stock strategy: a VAD start discards any
+    conclusion reached so far (_discard_pending_end_of_turn: `_turn_complete` False), and
+    every path to the commit passes _maybe_trigger_user_turn_stopped, which returns
+    without one. Checked on the stock strategy and on the brain's subclass.
+
+    If it goes: commits under the caller's speech become routine rather than a narrow
+    race -- each one a commit missing the words still being said. FollowupGate does not
+    rest on it (it lets go only of speech whose VAD STOP is older than the commit), but
+    Inference's ordering fact, which every row before POSTTOOL keeps, does."""
+    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+    from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
+        TurnAnalyzerUserTurnStopStrategy,
+    )
+    from test_barge_commit_order import IN_SR, Scripted as ScriptedTurn
+
+    from teaport_brain.endpointing import LateStartTurnStopStrategy
+    def concluded(cls):
+        strategy = cls(turn_analyzer=ScriptedTurn(sample_rate=IN_SR,
+                                                  params=SmartTurnParams(stop_secs=1.0)))
+        fired = []
+
+        async def record(*_a, **_k):
+            fired.append(1)
+        for event in ("on_user_turn_stopped", "on_user_turn_inference_triggered"):
+            strategy.add_event_handler(event, record)
+        # A conclusion reached, with words in hand: what the commit fires on.
+        strategy._turn_complete = True
+        strategy._text = "what's the time"
+        strategy._transcript_finalized = True
+        return strategy, fired
+
+    for cls in (TurnAnalyzerUserTurnStopStrategy, LateStartTurnStopStrategy):
+        control, fired = concluded(cls)
+        await control._maybe_trigger_user_turn_stopped()
+        assert fired, f"{cls.__name__}: the control did not commit -- the check is vacuous"
+        strategy, fired = concluded(cls)
+        await strategy.process_frame(VADUserStartedSpeakingFrame(start_secs=0.2))
+        assert not strategy._turn_complete, f"{cls.__name__}: a VAD start kept the conclusion"
+        await strategy._maybe_trigger_user_turn_stopped()
+        assert fired == [], f"{cls.__name__}: committed under the caller's speech"
 
 
 async def check_a_tool_result_reaches_the_gate_below_the_transport():
