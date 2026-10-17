@@ -39,13 +39,22 @@ run() {  # run <module> <config> <expectation>
   printf '  %-12s %-32s %-26s ' "$1" "$2" "$3"
   # -deadlock: a state with no successor is not a finding here. The bounds every model
   # carries (stops, faults, the engine's closes) make terminal states ordinary, and
-  # the properties are invariants over the states reached, not liveness.
+  # the properties are invariants over the states reached -- except Owed.tla's liveness
+  # rows, whose fair spec reads a terminal state as stuttering, which is what they mean.
   out=$(java -XX:+UseParallelGC -cp "$JAR" tlc2.TLC -nowarning -deadlock -workers auto \
           -config "$2.cfg" "$1" 2>&1)
 
   # The verdict TLC actually produced, and a human label for it.
   if grep -qi "no error has been found" <<<"$out"; then
     verdict=holds; label=holds
+  elif grep -q "Temporal properties were violated" <<<"$out"; then
+    # TLC does not name the temporal property that fell. A liveness row checks exactly
+    # one PROPERTY, so that is the one; a cfg with two cannot name it and the gate below
+    # reports the row as WRONG PROPERTY.
+    verdict=fails
+    props=$(sed -En 's/^[[:space:]]*PROPERTY[[:space:]]+([A-Za-z][A-Za-z0-9_]*).*/\1/p' "$2.cfg")
+    if [ "$(wc -w <<<"$props")" -eq 1 ]; then label="Property $props is violated"
+    else label="a temporal property is violated"; fi
   elif grep -qE "is violated|were violated" <<<"$out"; then
     verdict=fails
     label=$(grep -oE "(Invariant|Property) [A-Za-z0-9_]+ is violated" <<<"$out" | head -1)
@@ -113,6 +122,29 @@ run Followup.tla fu_heard_fixed_all         "(expected: holds — void, retireUn
 run Followup.tla fu_heard_fixed_timed_loss  "(expected: FAILS NoSilentLoss — the fix with the timers: the ACCEPTED RESIDUAL, a reply still playing at 45 s)"
 run Followup.tla fu_heard_fixed_timed_repeat "(expected: FAILS NoRepeatRecital — the fix with the timers: the ACCEPTED RESIDUAL, a completion slower than 20 s)"
 run Followup.tla fu_heard_fixed_timed_rest  "(expected: holds — the fix with the timers: the budget, the one live trigger, the narrator)"
+echo
+echo "Owed.tla — owed until heard (#203): the record, the note rendered per request, closed on evidence"
+echo "  (the model leads the code: replaces Followup.tla's delivery loop once owed.py lands)"
+run Owed.tla ow_design            "(expected: holds — the design as the model corrected it (anyMiss, terms), runs that tell part or nothing, every safety property)"
+run Owed.tla ow_design_live       "(expected: holds — OwedResolves under FairSpec: heard, the session ends, or the one re-offer is spent)"
+run Owed.tla ow_asWritten_closed  "(expected: FAILS ClosedOnEvidence — DESIGN §3 as written: an uncut run closes, and a run that told one item of two played through)"
+run Owed.tla ow_asWritten_live    "(expected: FAILS OwedResolves — DESIGN §4 as written: a run with no audio (or dropped at the hold cap) arms no re-offer, owed for good)"
+run Owed.tla ow_fraction          "(expected: FAILS ClosedOnEvidence — today's >= 1/3 of the words: a run cut before its items closes (#203))"
+run Owed.tla ow_countSettle       "(expected: FAILS ClosedOnEvidence — two uncut noted replies close, neither with every item (X2-Igone))"
+run Owed.tla ow_singleWord        "(expected: FAILS ClosedOnEvidence — no common-word list: \"Sure, take your time.\" closes)"
+run Owed.tla ow_oneItem           "(expected: FAILS ClosedOnEvidence — one item's terms close a two-item outcome)"
+run Owed.tla ow_ledgerMax         "(expected: FAILS ClosedOnEvidence — the ledger's heard_text as it is (the longer of the pts prefix and an estimate): a cut reads as more than played)"
+run Owed.tla ow_storeNote         "(expected: FAILS NoStoredNote — the note stored at landing: rendered to the turn after it was heard)"
+run Owed.tla ow_renderInGet       "(expected: FAILS NoteWhileOwed — the hook in get_chat_completions: the speculative reply goes out bare)"
+run Owed.tla ow_runAfterCut       "(expected: FAILS OneReoffer — no bound on runs after a cut or a turn (today's 3-attempt loop, §4 (c)))"
+run Owed.tla ow_lagSettle         "(expected: FAILS NoRunAfterHeard — the lull reads the record before the settle feed: a re-offer after a full telling)"
+run Owed.tla ow_lagSettle_repeat  "(expected: FAILS NoRepeatRecital — the same: the re-offer recites what the caller just heard (08-26 08:17))"
+run Owed.tla ow_askOnly           "(expected: FAILS NoRunAfterHeard — the run validated only at gate.ask: a post-tool answer ahead of it told it)"
+run Owed.tla ow_oneSlot           "(expected: FAILS HoldNoLoss — the hold's single slot: a held run and a held post-tool answer, the newer displaces the older)"
+run Owed.tla ow_turnLevel         "(expected: FAILS NoRunUnderSpeech — a turn-level window: the run goes into speech whose words have not come (#197))"
+run Owed.tla ow_vadLevel          "(expected: FAILS NoRunMidTurn — a VAD-level window: the run goes between a tool call and its answer)"
+run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"
+run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other property; a re-lookup costs time, never a lost or repeated answer)"
 echo
 echo "UserTurn.tla — whether the user can interrupt the bot at all"
 echo "  (the precondition Ledger/LedgerPlayout's Interrupt action takes for granted)"
