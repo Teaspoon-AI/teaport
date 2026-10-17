@@ -79,8 +79,11 @@ dependencies = [
   # Exact: llm_dns sets the backend on httpx's private pool attributes (test_llm_dns pins
   # them). Bump deliberately, with that test.
   "httpx==0.28.1",
-  # llm_dns's network backend (the model's last known address when DNS stalls).
+  # llm_dns's network backend (the model's last known address when DNS stalls); also
+  # exact for llm_http2's patch to its HTTP/2 connection (test_llm_http2 pins it).
   "httpcore==1.0.9",
+  # HTTP/2 to the model (llm_http2): cancelled streams share one connection, not close it.
+  "h2==4.4.1",
   "openai<3",
   # The face mood from a reply's words (face_mood.py), when the model gave none.
   "vaderSentiment==3.3.2",
