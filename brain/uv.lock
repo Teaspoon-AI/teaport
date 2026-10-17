@@ -1654,6 +1654,7 @@ version = "0.0.0"
 source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
+    { name = "httpcore" },
     { name = "httpx" },
     { name = "loguru" },
     { name = "numpy" },
@@ -1672,7 +1673,8 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "fastapi", specifier = "==0.136.3" },
-    { name = "httpx" },
+    { name = "httpcore", specifier = "==1.0.9" },
+    { name = "httpx", specifier = "==0.28.1" },
     { name = "loguru", specifier = "==0.7.3" },
     { name = "numpy", specifier = ">=2,<3" },
     { name = "openai", specifier = "<3" },

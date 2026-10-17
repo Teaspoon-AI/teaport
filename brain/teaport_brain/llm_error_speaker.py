@@ -51,7 +51,8 @@ ENABLED = setting("TEAPORT_LLM_ERROR_SPEECH")
 
 # Deliberately vague about the cause: the caller cannot act on "402" or "read timeout",
 # and guessing wrong is worse than saying nothing specific. The journal has the detail.
-ERROR_TEXT = "Sorry, I couldn't reach my language model just then. Could you try again?"
+# Plain words, as everything the caller hears: no "language model".
+ERROR_TEXT = "Sorry, I couldn't get an answer just then. Could you try again?"
 
 # One spoken notice per window, however many frames arrive.
 _DEBOUNCE_SECS = setting("TEAPORT_LLM_ERROR_SPEECH_DEBOUNCE")

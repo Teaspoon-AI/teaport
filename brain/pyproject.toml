@@ -76,7 +76,11 @@ dependencies = [
   "loguru==0.7.3",
   "numpy>=2,<3",
   "websockets>=16,<17",
-  "httpx",
+  # Exact: llm_dns sets the backend on httpx's private pool attributes (test_llm_dns pins
+  # them). Bump deliberately, with that test.
+  "httpx==0.28.1",
+  # llm_dns's network backend (the model's last known address when DNS stalls).
+  "httpcore==1.0.9",
   "openai<3",
   # The face mood from a reply's words (face_mood.py), when the model gave none.
   "vaderSentiment==3.3.2",
