@@ -90,6 +90,11 @@
 (*                    it put a sync tool call out with its text ("Let me    *)
 (*                    check." + get_weather): the run goes between the call *)
 (*                    and its answer (FollowupGate before the review round).*)
+(*   "staleFlag"   -- the gate's tool round is ONE flag, set by a call's     *)
+(*                    in-progress frame: uninterruptible, it can reach the  *)
+(*                    gate after the barge-in that cancelled the call, and  *)
+(*                    with no completion after it nothing clears the flag   *)
+(*                    (FollowupGate before the second review round).        *)
 (*   "ledgerMax"   -- the feed reads the ledger's heard_text as it is: the  *)
 (*                    longer of the pts-exact prefix and an audio-fraction  *)
 (*                    estimate, so a cut can read as more than played.      *)
@@ -157,6 +162,12 @@ VARIABLES
     tres,         \* a sync tool's call is out and its result not yet back
     tend,         \* ...and the completion that put it out has ended at the gate (it
                   \*   had text: "Let me check." + the call); only endClearsTool reads it
+    mark,         \* the call's FunctionCallInProgressFrame is still on its way to the
+                  \*   gate: uninterruptible, it waits in the TTS's and the transport's
+                  \*   queues behind the line's audio, and survives the barge-in's reset
+    gtool,        \* the gate's own record of a call out (the design: its ids, an id
+                  \*   added by its in-progress frame unless already settled or
+                  \*   cancelled; staleFlag: one flag)
     \* --- the request in flight and its reply (one at a time) ---
     req,          \* "none" | "caller" | "post" | "run" | "reoffer"
     rst,          \* the record's state when the request was rendered
@@ -176,7 +187,7 @@ VARIABLES
 
 rec   == <<st, fed, uncut, missed, reoffers>>
 line  == <<vad, pend, turn, speech>>
-door  == <<q, hPost, rloc, rk, tres, tend>>
+door  == <<q, hPost, rloc, rk, tres, tend, mark, gtool>>
 reply == <<req, rst, noted, say, ph>>
 mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, got>>
 vars  == <<rec, heard, repeat, line, door, reply, ended, mons>>
@@ -191,7 +202,7 @@ Init ==
     /\ heard = FALSE /\ repeat = FALSE
     /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0
     /\ q = "none" /\ hPost = FALSE /\ rloc = "none" /\ rk = "none" /\ tres = FALSE
-    /\ tend = FALSE
+    /\ tend = FALSE /\ mark = FALSE /\ gtool = FALSE
     /\ req = "none" /\ rst = "none" /\ noted = FALSE /\ say = "none" /\ ph = "none"
     /\ ended = FALSE
     /\ runUnder = FALSE /\ runMid = FALSE /\ displaced = FALSE /\ staleNote = FALSE
@@ -293,7 +304,7 @@ Land ==
     /\ IF turn \/ q = "caller"
          THEN missed' = TRUE /\ UNCHANGED <<rloc, rk, hPost, displaced>>
          ELSE Ask("run") /\ UNCHANGED missed
-    /\ UNCHANGED <<fed, uncut, reoffers, heard, repeat, line, q, tres, tend, reply, ended,
+    /\ UNCHANGED <<fed, uncut, reoffers, heard, repeat, line, q, tres, tend, mark, gtool, reply, ended,
                    runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
 
 \* The settle feed: owed.py hears how the reply ended and closes the record on the
@@ -313,7 +324,7 @@ Settle ==
 \* One re-offer per record, and only once the re-offer is armed (`missed`). An
 \* environment action, enabled only on a quiet line with no turn open; it is time
 \* passing, so it is fair (FairSpec).
-Quiet == ~vad /\ ~pend /\ ~turn /\ q = "none" /\ req = "none" /\ ~tres
+Quiet == ~vad /\ ~pend /\ ~turn /\ q = "none" /\ req = "none" /\ ~tres /\ ~gtool
          /\ rloc = "none" /\ ~hPost
 Lull ==
     /\ ~ended /\ st = "owed" /\ missed /\ Quiet
@@ -322,7 +333,7 @@ Lull ==
     /\ reoffers' = reoffers + 1
     /\ missed' = FALSE                         \* runAfterCut: re-armed by the next cut
     /\ Ask("reoffer")
-    /\ UNCHANGED <<st, fed, uncut, heard, repeat, line, q, tres, tend, reply, ended,
+    /\ UNCHANGED <<st, fed, uncut, heard, repeat, line, q, tres, tend, mark, gtool, reply, ended,
                    runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
 
 (* ============================ the door (FollowupGate) ============================ *)
@@ -333,7 +344,8 @@ Lull ==
 \* sees an upstream run).
 Window ==
     /\ Mut("turnLevel") \/ (~vad /\ ~pend)
-    /\ Mut("vadLevel")  \/ (~turn /\ q = "none" /\ (~tres \/ (Mut("endClearsTool") /\ tend)))
+    /\ Mut("vadLevel")  \/ (~turn /\ q = "none" /\ (~tres \/ (Mut("endClearsTool") /\ tend))
+                            /\ ~gtool)
 
 \* The run goes: the gate pushes it up to the LLM and claims the window. At this door,
 \* not at gate.ask, owed.py is asked again whether the record is still owed: between the
@@ -353,7 +365,7 @@ RunGo ==
               /\ noNote'     = (noNote \/ (st = "owed" /\ ~Noted(st)))
               /\ staleHeard' = (staleHeard \/ (Noted(st) /\ heard))
          ELSE UNCHANGED <<reply, runUnder, runMid, staleNote, noNote, staleHeard>>
-    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, tend, ended, displaced, relook, got>>
+    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, tend, mark, gtool, ended, displaced, relook, got>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S) on a held run: DROPPED, never released (room
 \* TV noise holds it forever otherwise; §4). A timer: never forced (not in FairSpec).
@@ -361,7 +373,7 @@ Cap ==
     /\ ~ended /\ rloc = "wait" /\ (vad \/ pend)
     /\ rloc' = "none" /\ rk' = "none"
     /\ missed' = (missed \/ (REOFFER = "anyMiss" /\ st = "owed"))
-    /\ UNCHANGED <<st, fed, uncut, reoffers, heard, repeat, line, q, hPost, tres, tend, reply,
+    /\ UNCHANGED <<st, fed, uncut, reoffers, heard, repeat, line, q, hPost, tres, tend, mark, gtool, reply,
                    ended, mons>>
 
 \* The caller's VAD stopped and no words came within TEAPORT_REPLY_HOLD_RELEASE_S (a
@@ -372,22 +384,33 @@ GateQuiet ==
     /\ ~ended /\ pend /\ ~vad /\ ~turn
     /\ pend' = FALSE
     /\ IF hPost THEN hPost' = FALSE /\ q' = "post" ELSE UNCHANGED <<hPost, q>>
-    /\ UNCHANGED <<rec, heard, repeat, vad, turn, speech, rloc, rk, tres, tend, reply, ended, mons>>
+    /\ UNCHANGED <<rec, heard, repeat, vad, turn, speech, rloc, rk, tres, tend, mark, gtool, reply, ended, mons>>
 
 \* A sync tool's result lands and the assistant aggregator pushes the answer UP
 \* (_maybe_push_context_after_function_result): held while speech is pending, else asked.
 \* (A turn start cancelled the call: TurnStart clears `tres`.)
 ToolResult ==
     /\ ~ended /\ tres
-    /\ tres' = FALSE /\ tend' = FALSE
+    /\ tres' = FALSE /\ tend' = FALSE /\ gtool' = FALSE      \* the result settles its id
     /\ IF vad \/ pend
          THEN /\ hPost' = TRUE /\ UNCHANGED q
               /\ IF Mut("oneSlot") /\ rloc = "wait"
                    THEN rloc' = "none" /\ rk' = "none" /\ displaced' = TRUE
                    ELSE UNCHANGED <<rloc, rk, displaced>>
          ELSE q' = "post" /\ UNCHANGED <<hPost, rloc, rk, displaced>>
-    /\ UNCHANGED <<rec, heard, repeat, line, reply, ended, runUnder, runMid, staleNote,
+    /\ UNCHANGED <<rec, heard, repeat, line, mark, reply, ended, runUnder, runMid, staleNote,
                    noNote, staleHeard, relook, got>>
+
+\* The call's in-progress frame reaches the gate. It is uninterruptible, so it may come
+\* after the barge-in that cancelled the call (TurnStart) or after its result. The
+\* design keeps the gate's call ids: an id already settled or cancelled is not added
+\* (`gtool` follows `tres`). staleFlag sets its one flag whatever happened meanwhile.
+Mark ==
+    /\ ~ended /\ mark
+    /\ mark' = FALSE
+    /\ gtool' = IF Mut("staleFlag") THEN TRUE ELSE (gtool \/ tres)
+    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, rloc, rk, tres, tend, reply, ended,
+                   mons>>
 
 (* ============================ the LLM and the reply ============================ *)
 
@@ -409,8 +432,10 @@ Issue ==
          /\ staleNote'  = (staleNote \/ (n /\ st = "closed"))
          /\ noNote'     = (noNote \/ (st = "owed" /\ ~n))
          /\ staleHeard' = (staleHeard \/ (n /\ heard))
-    /\ UNCHANGED <<say, rec, heard, repeat, line, hPost, rloc, rk, tres, tend, ended, runUnder,
-                   runMid, displaced, relook, got>>
+    \* staleFlag: any completion's start clears the one flag (LLMFullResponseStartFrame).
+    /\ gtool' = IF Mut("staleFlag") THEN FALSE ELSE gtool
+    /\ UNCHANGED <<say, rec, heard, repeat, line, hPost, rloc, rk, tres, tend, mark, ended,
+                   runUnder, runMid, displaced, relook, got>>
 
 \* What the model may say, by who asked and what the request carried (header; DESIGN.md
 \* "What the evidence supports"). "tool" is a sync tool call (get_current_time, ...),
@@ -437,13 +462,13 @@ Say ==
          /\ relook' = (relook \/ (s = "lookup" /\ rst # "none"))
          /\ IF s \in {"silent", "stay", "tool"}
               THEN /\ Finish(FALSE, "nothing")
-                   /\ tres' = (s = "tool")
+                   /\ tres' = (s = "tool") /\ mark' = (s = "tool")
                    /\ missed' = (missed \/ MissedRun(FALSE, "nothing"))
               ELSE /\ say' = s /\ ph' = "play"
-                   /\ tres' = (s = "texttool")
+                   /\ tres' = (s = "texttool") /\ mark' = (s = "texttool")
                    /\ UNCHANGED <<req, rst, noted, heard, fed, uncut, missed, got>>
-    /\ UNCHANGED <<st, reoffers, line, q, hPost, rloc, rk, tend, ended, runUnder, runMid,
-                   displaced, staleNote, noNote, staleHeard>>
+    /\ UNCHANGED <<st, reoffers, line, q, hPost, rloc, rk, tend, gtool, ended, runUnder,
+                   runMid, displaced, staleNote, noNote, staleHeard>>
 
 \* BotStoppedSpeaking: the reply played to its end. A "texttool" reply's End passes the
 \* gate here with its call still out (tend).
@@ -452,7 +477,7 @@ Played ==
     /\ Finish(FALSE, PlayGot(say))
     /\ missed' = (missed \/ MissedRun(FALSE, PlayGot(say)))
     /\ tend' = (tres /\ say = "texttool")
-    /\ UNCHANGED <<st, reoffers, repeat, line, q, hPost, rloc, rk, tres, ended, runUnder,
+    /\ UNCHANGED <<st, reoffers, repeat, line, q, hPost, rloc, rk, tres, mark, gtool, ended, runUnder,
                    runMid, displaced, staleNote, noNote, staleHeard, relook>>
 
 (* ============================ the caller ============================ *)
@@ -478,12 +503,12 @@ TurnStart ==
     /\ turn' = TRUE /\ pend' = FALSE
     /\ missed' = (missed \/ st = "owed")
     /\ q' = "none" /\ hPost' = FALSE /\ rloc' = "none" /\ rk' = "none" /\ tres' = FALSE
-    /\ tend' = FALSE
+    /\ tend' = FALSE /\ gtool' = FALSE  \* the cancel; a queued in-progress frame stays (mark)
     /\ IF req # "none"
          THEN \E g \in CutGot(say, ph) : Finish(TRUE, g)
          ELSE UNCHANGED <<reply, heard, fed, uncut, got>>
-    /\ UNCHANGED <<st, reoffers, repeat, vad, speech, ended, runUnder, runMid, displaced,
-                   staleNote, noNote, staleHeard, relook>>
+    /\ UNCHANGED <<st, reoffers, repeat, vad, speech, mark, ended, runUnder, runMid,
+                   displaced, staleNote, noNote, staleHeard, relook>>
 
 \* The turn ends: its words are committed and the LLM asked (TurnCommitMark claims the
 \* window). The commit takes the words of speech that has stopped (UserTurn's
@@ -493,7 +518,7 @@ Commit ==
     /\ ~ended /\ turn /\ ~vad
     /\ turn' = FALSE /\ pend' = FALSE
     /\ \E words \in BOOLEAN : q' = IF words THEN "caller" ELSE "none"
-    /\ UNCHANGED <<rec, heard, repeat, vad, speech, hPost, rloc, rk, tres, tend, reply, ended, mons>>
+    /\ UNCHANGED <<rec, heard, repeat, vad, speech, hPost, rloc, rk, tres, tend, mark, gtool, reply, ended, mons>>
 
 \* The client disconnects or the call hangs up. Nothing is owed to nobody: the escape in
 \* the liveness property, never forced.
@@ -504,7 +529,7 @@ SessionEnd ==
 
 Next ==
     \/ Land \/ Settle \/ Lull
-    \/ RunGo \/ Cap \/ GateQuiet \/ ToolResult
+    \/ RunGo \/ Cap \/ GateQuiet \/ ToolResult \/ Mark
     \/ Issue \/ Say \/ Played
     \/ VadStart \/ VadStop \/ TurnStart \/ Commit \/ SessionEnd
 
@@ -520,7 +545,7 @@ FairSpec ==
     /\ Spec
     /\ WF_vars(Settle) /\ WF_vars(Lull) /\ WF_vars(RunGo) /\ WF_vars(GateQuiet)
     /\ WF_vars(ToolResult) /\ WF_vars(Issue) /\ WF_vars(Say) /\ WF_vars(Played)
-    /\ WF_vars(VadStop) /\ WF_vars(Commit)
+    /\ WF_vars(VadStop) /\ WF_vars(Commit) /\ WF_vars(Mark)
 
 (* ============================ properties ============================ *)
 
@@ -574,6 +599,7 @@ TypeOK ==
     /\ q \in {"none", "caller", "post"} /\ hPost \in BOOLEAN
     /\ rloc \in {"none", "wait"} /\ rk \in {"none", "run", "reoffer"} /\ tres \in BOOLEAN
     /\ tend \in BOOLEAN /\ (tend => tres)
+    /\ mark \in BOOLEAN /\ gtool \in BOOLEAN /\ (Mut("staleFlag") \/ (gtool => tres))
     /\ (rloc = "wait") = (rk # "none")
     /\ req \in {"none", "caller", "post", "run", "reoffer"}
     /\ rst \in {"none", "owed", "closed"} /\ noted \in BOOLEAN
@@ -586,6 +612,7 @@ TypeOK ==
     /\ ended \in BOOLEAN /\ got \in {"none", "nothing", "lead", "filler", "some", "all"}
     /\ MUT \subseteq {"fraction", "countSettle", "singleWord", "oneItem", "storeNote",
                       "runAfterCut", "lagSettle", "oneSlot", "askOnly", "turnLevel",
-                      "vadLevel", "renderInGet", "ledgerMax", "endClearsTool"}
+                      "vadLevel", "renderInGet", "ledgerMax", "endClearsTool",
+                      "staleFlag"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms"}
 =============================================================================
