@@ -173,9 +173,9 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_NATIVE_CONSULT_TIMEOUT` | **45** s (≥ 5) | How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves. |
 | `TEAPORT_ASK_OPENCLAW_TIMEOUT` | **55** s (≥ 5) | The function-call timeout for ask_openclaw. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only. |
 | `TEAPORT_ASYNC_CONSULT_TIMEOUT` | **130** s (≥ 5) | Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a "that took too long" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive. |
-| `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a follow-up window counts; rejects mid-thought pauses and between-turn gaps. |
-| `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on holding a follow-up for a gap; past this, speak anyway. |
-| `TEAPORT_FOLLOWUP_MIN_HEARD` | **0.3** (0–1) | Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment. |
+| `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
+| `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
+| `TEAPORT_REOFFER_AFTER_QUIET_S` | **10** s (≥ 1) | How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked. |
 | `TEAPORT_THINKING_SOUND` | **on** | The typing bed during a long agent consult. |
 | `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Silence before the bed starts. |
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the synthesized peak. |

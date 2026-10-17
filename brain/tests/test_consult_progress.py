@@ -67,8 +67,8 @@ async def _run(consult_result):
     delivered = []
 
     async def followup(request, text, tool_call_id=None, failure=None, detail=""):
-        # Stands in for speak_followup, which now blocks until the reply has been
-        # spoken in full — long enough for the narrator to fire twice if it is alive.
+        # Stands in for the landing (owed.Owed), held open long enough for the
+        # narrator to fire twice if it is alive.
         llm.delivering = True
         delivered.append(text)
         await asyncio.sleep(0.2)

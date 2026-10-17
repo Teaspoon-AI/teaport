@@ -64,8 +64,11 @@
 #     final, and puts it AFTER one taken on the interim -- so the snapshot includes the
 #     note MemoryRecall would inject now (Speculator's `pending`), and a fresher hit
 #     that replaces it before the final is a ctx-changed miss, never a stale reply. The
-#     consult follow-up and ClientNotes (a Talk client's context notes) post only with
-#     the turn free, and a speculation only exists inside an open turn. ClientNotes
+#     landing of a consult (owed.py: it rewrites the placeholder tool result in place)
+#     makes it a ctx-changed miss -- the adopted request would otherwise carry a note
+#     rendered before the answer landed (formal/Owed.tla, DESIGN v3 #9). ClientNotes
+#     (a Talk client's context notes) posts only with the turn free, and a speculation
+#     only exists inside an open turn. ClientNotes
 #     also folds pending notes into the context at the commit, after the snapshot: that
 #     turn is a miss, never a stale reply. The one writer that is OURS and ran at the
 #     commit, the heard-context corrector, is run before the snapshot instead so its
@@ -354,8 +357,8 @@ class Speculator:
         if self._before_snapshot is not None:
             self._before_snapshot()
         ctx = self._agg.context
-        # Deep, not shallow: the follow-up injector retires its trigger by rewriting a
-        # message IN PLACE, which a shallow copy would share and equality would miss.
+        # Deep, not shallow: a consult's landing rewrites its placeholder tool result IN
+        # PLACE (owed.py), which a shallow copy would share and equality would miss.
         asked = copy.deepcopy(ctx.messages) + copy.deepcopy(
             self._pending() if self._pending is not None else [])
         live = self._current

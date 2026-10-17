@@ -54,7 +54,6 @@
 # drives nothing.
 #
 
-import asyncio
 import re
 from collections import OrderedDict, deque
 from dataclasses import dataclass
@@ -237,11 +236,17 @@ class TranscriptLedger(BaseObserver):
     def __init__(self, tts=None, output=None):
         super().__init__()
         self.events: List[Utterance] = []
-        # Futures handed out by next_assistant(), resolved by _add. The consult
-        # follow-up injector is the caller: it can tell that the model ANSWERED from
-        # its trigger, but not whether the caller HEARD the answer, and only the
-        # ledger knows that (heard_fraction). See next_assistant.
-        self._assistant_waiters: List[tuple] = []   # (future, min_turn_seq)
+        # The settle feed (owed.py, #203): called as on_reply_end(reply, heard, cut=,
+        # audio=) at each LLM reply's OWN end -- the interruption that cut it, or the
+        # window close its own audio played out in -- with `reply` the owed.Reply its
+        # LLMFullResponseStartFrame carried and `heard` its pts-exact heard text (all of
+        # it when it played through; None when cut with no per-word pts). Never the
+        # heard_text charted below, which on a cut is the LONGER of that prefix and an
+        # audio-fraction estimate: right for the corrector, which must not delete words
+        # that were heard, and unsafe for closing a record (formal/Owed.tla,
+        # ow_ledgerMax). A reply that never reaches the TTS as text (a tool call, one
+        # the guard emptied) or never plays is settled as heard nothing.
+        self.on_reply_end = None
         self._turn_seq = 0
         self._tts = tts
         self._output = output
@@ -460,6 +465,10 @@ class TranscriptLedger(BaseObserver):
         if isinstance(f, LLMFullResponseStartFrame):
             self._seq += 1
             self._gen = self._new_entry("llm")
+            reply = getattr(f, "owed_reply", None)
+            if reply is not None:
+                reply.claimed = True
+                self._gen["reply"] = reply
         elif isinstance(f, LLMTextFrame):
             if self._gen is not None:
                 self._gen["parts"].append(f.text or "")
@@ -475,6 +484,7 @@ class TranscriptLedger(BaseObserver):
             if not gen["text"]:
                 # A tool-call response, or one the guard emptied: the TTS opens
                 # no context for it, so nothing will claim it.
+                self._reply_end(gen, None, cut=False, audio=False)
                 return
             # Any other text opens a context, synthesizable or not:
             # _push_tts_frames queues the TTSStartedFrame before run_tts, whose
@@ -531,6 +541,7 @@ class TranscriptLedger(BaseObserver):
                     logger.warning(
                         f"LEDGER response {entry['seq']} drained with no turn open; "
                         f"dropped {entry['text'][:40]!r}")
+                    self._reply_end(entry, None, cut=False, audio=False)
                 return
             old = cand["entry"]
             if old is not None and old is not entry:
@@ -538,6 +549,7 @@ class TranscriptLedger(BaseObserver):
                     f"LEDGER response {old['seq']} was never synthesized; its context "
                     f"was response {entry['seq']}'s. Dropped {old['text'][:40]!r}")
                 old["turn"] = None
+                self._reply_end(old, None, cut=False, audio=False)
             if entry in self._queue:
                 self._queue.remove(entry)
             cand["entry"] = entry
@@ -554,9 +566,35 @@ class TranscriptLedger(BaseObserver):
 
     # ------------------------------------------------------------ bookkeeping
 
+    def reply_played(self, ctx) -> None:
+        """The settle feed for a reply that played to its end, at that end: FollowupGate,
+        below the transport, saw context `ctx`'s TTSStoppedFrame pass after the context's
+        own audio. Not this ledger's chart of the turn, which waits for the window to
+        close on its layout and can come only at the next bot activity -- the readers of
+        owed.py would read a stale record meanwhile (formal/Owed.tla, ow_lagSettle; the
+        2026-09-11 14:23 loss). The chart stays the fallback (_finish); a reply settles
+        once."""
+        turn = self._turn_for(ctx) if ctx is not None else None
+        entry = turn["entry"] if turn is not None else None
+        if entry is None or not entry["ended"] or not entry["text"]:
+            return
+        self._reply_end(entry, entry["text"], cut=False, audio=True)
+
     def _new_entry(self, kind: str) -> dict:
         return {"seq": self._seq, "kind": kind, "parts": [], "text": "",
-                "ended": False, "drained": False, "turn": None}
+                "ended": False, "drained": False, "turn": None, "reply": None}
+
+    def _reply_end(self, entry, heard: Optional[str], *, cut: bool, audio: bool):
+        """The settle feed (on_reply_end), once per entry."""
+        reply = entry.get("reply") if entry is not None else None
+        if reply is None:
+            return
+        entry["reply"] = None
+        if self.on_reply_end is not None:
+            try:
+                self.on_reply_end(reply, heard, cut=cut, audio=audio)
+            except Exception as e:  # noqa: BLE001 -- an observer must never raise
+                logger.warning(f"LEDGER: the settle feed raised {e!r}")
 
     def _enqueue(self, entry: dict):
         self._queue.append(entry)
@@ -643,7 +681,7 @@ class TranscriptLedger(BaseObserver):
             entry = self._gen  # live: the entry completes on the response end
         self._turn_seq += 1
         turn = {"ctx": fctx, "entry": entry,  # entry None: anonymous, charts nothing
-                "seq": self._turn_seq,  # opening order; next_assistant() keys on it
+                "seq": self._turn_seq,  # opening order (Utterance.turn_seq)
                 "t_open": t,          # when the ledger saw the turn begin
                 "audio_start": None,  # when its first chunk started playing
                 "last_end": None,     # when its last played-out chunk ended
@@ -812,6 +850,10 @@ class TranscriptLedger(BaseObserver):
         for turn in list(self._turns):
             self._finish(turn, t, heard=turn["played"] + portions.get(id(turn), 0.0),
                          interrupted=True)
+        # Replies cut before their TTS context opened -- still streaming, or queued for
+        # one: heard nothing (Owed.tla CutGot "gen").
+        for entry in [self._gen, *self._queue]:
+            self._reply_end(entry, None, cut=True, audio=False)
         self._turns.clear()
         self._gen = None
         self._queue.clear()
@@ -838,6 +880,7 @@ class TranscriptLedger(BaseObserver):
             intended = ""
         if not intended:
             # Nothing was ever attributed to this turn: there is nothing to chart.
+            self._reply_end(entry, None, cut=interrupted, audio=False)
             return
         if turn["pushed"] <= 0 and not has_speech(intended) and (never or entry["ended"]):
             # No audio, and nothing synthesizable in its text (tts_text.has_speech,
@@ -852,6 +895,7 @@ class TranscriptLedger(BaseObserver):
             # follow-up loop reads that cut.
             logger.warning(f"LEDGER response {entry['seq']} had nothing synthesizable; "
                            f"not charted: {intended[:40]!r}")
+            self._reply_end(entry, None, cut=interrupted, audio=False)
             return
         audio_dur = turn["pushed"]
         # If synthesis was cut short, audio_dur underestimates the intended
@@ -878,6 +922,9 @@ class TranscriptLedger(BaseObserver):
         # (a single whole-reply frame, the legacy ctx-less shape).
         spoken = turn["spoken"]
         est = _prefix(intended, frac)  # reliable played-audio-fraction estimate
+        # What the settle feed reads: the whole reply when it played through; on a cut,
+        # the pts prefix alone, or nothing at all without per-word pts (_reply_end).
+        exact = intended if not interrupted else None
         if any(p is not None for _, p in spoken):
             # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
             # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
@@ -900,6 +947,8 @@ class TranscriptLedger(BaseObserver):
             # would silently drop words the user did hear). Compared by characters,
             # not words, so a voice whose tokens are characters compares too.
             heard_text = pts_heard if len(_nospace(pts_heard)) >= len(_nospace(est)) else est
+            if interrupted:
+                exact = pts_heard
             if _TRACE:
                 logger.info(
                     f"TRACE cut t={t:.2f} audio_start={turn['audio_start']} "
@@ -934,50 +983,17 @@ class TranscriptLedger(BaseObserver):
                             interrupted=interrupted, heard_fraction=frac,
                             heard_text=heard_text, turn_seq=turn["seq"],
                             committed=(not interrupted or never or turn["synth_done"]
-                                       or heard > 0)),
-                  turn_seq=turn["seq"])
+                                       or heard > 0)))
+        played_any = (not never and audio_dur > 0 and (not interrupted or heard > 0))
+        self._reply_end(entry, exact if played_any else None, cut=interrupted,
+                        audio=played_any)
 
-    def next_assistant(self) -> "asyncio.Future":
-        """A future resolved with the next assistant utterance charted.
-
-        Exists for the consult follow-up injector. Its delivery loop can tell that a
-        completion READ its trigger, and used to treat that as success — but a reply
-        the caller was talking over never reaches them. Live 2026-09-10 17:13: the
-        follow-up was delivered into a 10 ms race with the caller starting to speak,
-        cut 84 ms into playout at heard~0%, and retired as delivered; the caller then
-        asked for the same answer three more times. `heard_fraction` is the only
-        signal that separates those two outcomes and it is charted here.
-
-        Resolves only for a reply whose turn OPENED after this was armed — arm it
-        before queueing the turn. "The next utterance charted" was the first version,
-        and it was wrong: the ledger charts a reply that simply finished LATE, at the
-        next bot activity, so on 2026-09-11 14:23 the interruption that cut the pastry
-        answer at 0% heard first charted the previous, fully heard "Seventeen." one
-        line above it; the waiter took that, the injector read heard~100% and returned
-        as delivered, and the caller never got the answer — the second time this
-        exact failure was reported. The gate's "no assistant turn in flight" only
-        means none is PLAYING; a finished-but-uncharted one is still in the ledger.
-        """
-        fut = asyncio.get_running_loop().create_future()
-        self._assistant_waiters.append((fut, self._turn_seq + 1))
-        return fut
-
-    def _add(self, u: Utterance, turn_seq: Optional[int] = None):
+    def _add(self, u: Utterance):
         for e in self.events:
             if e.speaker != u.speaker and u.t_start < e.t_end and e.t_start < u.t_end:
                 u.overlap = True
                 e.overlap = True
         self.events.append(u)
-        if u.speaker == "assistant" and self._assistant_waiters:
-            keep = []
-            for fut, min_seq in self._assistant_waiters:
-                if fut.done():              # a caller that timed out cancelled its own
-                    continue
-                if turn_seq is not None and turn_seq >= min_seq:
-                    fut.set_result(u)
-                else:
-                    keep.append((fut, min_seq))   # a stale reply charted late: not ours
-            self._assistant_waiters = keep
         self._log(u)
 
     def _log(self, u: Utterance):

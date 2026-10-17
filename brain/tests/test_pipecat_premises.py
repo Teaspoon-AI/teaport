@@ -952,6 +952,106 @@ async def check_run_frames_stop_at_the_user_aggregator():
     assert a.id < b.id, "frame ids no longer increase in creation order"
 
 
+async def check_an_upstream_context_frame_is_answered_by_the_llm():
+    """Owed.tla `RunGo` (#203): the gate pushes a run UP from below the LLM as a RunFrame,
+    an LLMContextFrame subclass, and the LLM answers it as it answers the post-tool
+    answer -- base_llm's process_frame takes any LLMContextFrame, whatever its
+    direction, runs a completion on ITS context (downstream: Start, text, End), and
+    pushes the frame no further.
+
+    If it goes: a run of ours is never answered (pipecat passes it on up and nothing
+    asks the model), or it is answered on another context; the record stays owed with
+    nothing said, which OwedResolves leaves to the lull alone."""
+    from dataclasses import dataclass as _dataclass
+    from types import SimpleNamespace as NS
+
+    @_dataclass
+    class RunLike(LLMContextFrame):
+        purpose: str = "run"
+
+    asked = []
+
+    async def text_stream():
+        yield NS(usage=None, model=None, choices=[NS(finish_reason=None, delta=NS(
+            content="Tesla Roadster.", tool_calls=None))])
+
+    class Scripted(BoundedOpenAILLMService):
+        async def _open_stream(self, context):
+            asked.append(context)
+            return text_stream()
+
+    llm, above, below = _llm(Scripted), Tap(), Tap()
+    context = LLMContext([{"role": "user", "content": "q"}])
+    async with Run(above, llm, below) as run:
+        await llm.queue_frame(RunLike(context=context), UP)
+        await _until(lambda: _kinds(below, DOWN, LLMFullResponseEndFrame))
+        await _marked(run, below)
+    assert asked == [context], f"the upstream context frame was not answered on its context: {asked}"
+    assert _kinds(below, DOWN, (LLMFullResponseStartFrame, LLMTextFrame,
+                                LLMFullResponseEndFrame)) == [
+        "LLMFullResponseStartFrame", "LLMTextFrame", "LLMFullResponseEndFrame"]
+    assert not _kinds(above, UP, LLMContextFrame), "the LLM passed the context frame on up"
+
+
+async def check_the_answer_to_a_result_asks_on_the_live_context():
+    """Owed.tla `HoldNoLoss` (#203; UserTurn.tla POSTTOOL): FollowupGate's hold keeps ONE
+    post-tool answer -- a newer one replaces the older -- beside a run's slot of its own.
+    Replacing loses nothing only because each answer the assistant aggregator pushes up
+    asks on the aggregator's own, live context (every result in it), not a snapshot.
+
+    If it goes: a held answer replaced by a newer one would drop the older result's
+    question; the post-tool slot would need to be a queue of its own."""
+    def result(cid):
+        return [FunctionCallInProgressFrame(function_name="f", tool_call_id=cid,
+                                            arguments={}, cancel_on_interruption=True),
+                FunctionCallResultFrame(function_name="f", tool_call_id=cid, arguments={},
+                                        result={"ok": cid})]
+
+    def started(cid):
+        return FunctionCallsStartedFrame(function_calls=[FunctionCallFromLLM(
+            function_name="f", tool_call_id=cid, arguments={}, context=None)])
+
+    context = LLMContext([{"role": "user", "content": "q"}])
+    below = Tap()
+    assistant = LLMContextAggregatorPair(context).assistant()
+    asked = []
+    push_frame = assistant.push_frame
+
+    async def recording(frame, direction=DOWN):
+        if isinstance(frame, LLMContextFrame) and direction == UP:
+            asked.append(frame)
+        await push_frame(frame, direction)
+    assistant.push_frame = recording
+    async with Run(assistant, below) as run:
+        for cid in ("a", "b"):
+            await run.send(VADUserStartedSpeakingFrame(), started(cid))
+            await _marked(run, below)
+            await run.send(*result(cid))
+            await _marked(run, below)
+    assert len(asked) == 2, f"expected an answer asked per result: {asked}"
+    assert all(f.context is context for f in asked), "an answer asked on a context copy"
+    tools = [m.get("tool_call_id") for m in context.get_messages() if m.get("role") == "tool"]
+    assert tools == ["a", "b"], f"the live context does not hold every result: {tools}"
+
+
+async def check_a_text_less_completions_end_is_held_by_the_tts():
+    """FollowupGate's RunSilentFrame (#203): a completion with no text -- a re-offer that
+    called stay_silent, a run that came back empty -- opens no TTS context, and the TTS
+    HOLDS its LLMFullResponseEndFrame (keyed to the turn's context id, re-pushed only
+    when a context of that id ends). The gate, which ends a turn at the End, would read
+    the turn in flight until the next interruption; the LLM service tells it instead.
+
+    If it goes (the End passes): RunSilentFrame is dead weight, never wrong."""
+    tts, probe = _tts(), Probe()
+    end = LLMFullResponseEndFrame()
+    async with Run(tts, probe) as run:
+        await run.send(LLMFullResponseStartFrame(), end, Mark())
+        await _until(lambda: any(isinstance(f, Mark) for _, f in probe.seen))
+        await asyncio.sleep(0.3)
+    assert not any(f is end for _, f in probe.seen), (
+        "the TTS passed a text-less completion's End: RunSilentFrame is no longer needed")
+
+
 async def check_a_vad_start_discards_the_stop_strategys_conclusion():
     """UserTurn.tla, `Inference`'s ordering fact (the commit runs with the VAD quiet) and
     POSTTOOL's `InferenceUnderSpeech`, which drops it: pipecat guards only the FINALIZE

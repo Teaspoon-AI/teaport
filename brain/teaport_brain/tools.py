@@ -289,8 +289,8 @@ _BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mi
 # LLM after every function-call result by default, which is right when the result
 # carries an answer and wrong when it carries a placeholder: the model has nothing
 # to say, so it invents something. Used by the async ask_openclaw path, whose real
-# answer is spoken later by the follow-up injector (it rewrites the tool result and
-# queues an LLMRunFrame, so inference happens once, on real data).
+# answer lands later (owed.py rewrites the tool result, and its run asks the model
+# then, so inference happens once, on real data).
 #
 # A FUNCTION, not a module-level constant. FunctionCallResultProperties is a plain
 # mutable dataclass carrying an on_context_updated callback field; one shared instance
@@ -415,8 +415,8 @@ _NATIVE_CONSULT_ACK_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT")
 # SYNC path; the ASYNC path returns in <1s — its wait is off the turn.)
 _ASK_OPENCLAW_TIMEOUT = setting("TEAPORT_ASK_OPENCLAW_TIMEOUT")
 # ASYNC path: the consult runs off the turn as a background task, so it can wait far
-# longer than a voice turn ever could — the answer is spoken as an unprompted
-# follow-up whenever it lands (or an honest "couldn't get it" past this ceiling).
+# longer than a voice turn ever could — the answer is told by a run of ours whenever
+# it lands (or an honest "couldn't get it" past this ceiling; owed.py).
 #
 # ONE budget for every lane, sized to the slowest one we cannot change. A Talk consult
 # runs in OpenClaw's Control UI, which gives up at a hard-coded 120 s and submits "OpenClaw
@@ -430,7 +430,7 @@ _ASYNC_CONSULT_TIMEOUT = setting("TEAPORT_ASYNC_CONSULT_TIMEOUT")
 
 
 # What the model is told while a consult is still running. The placeholder stays in
-# the context, as this tool's result, on EVERY turn until the follow-up rewrites it --
+# the context, as this tool's result, on EVERY turn until the outcome replaces it --
 # not just the turn that started the consult -- so it has to cover the turns the caller
 # takes in the meantime. "Do not respond now" alone covered only the first one: asked
 # "did you get any news on that?" mid-consult, the model filled the gap from its own
@@ -440,10 +440,14 @@ _ASYNC_CONSULT_TIMEOUT = setting("TEAPORT_ASYNC_CONSULT_TIMEOUT")
 # while that consult was still running and later timed out (#80). Replaying the 04:33
 # contexts against the live model: 5/12 invented results with the old wording, 0/12
 # with this. It does not forbid general knowledge -- only passing it off as results.
+#
+# It promises no "separate notice" any more (#203): when the outcome lands it REPLACES
+# this result (owed.Owed.land), and until the caller has heard it a note listing it rides
+# on every request (owed.render). Nothing else arrives.
 _PENDING_RULE = (
-    "Its outcome will arrive later as a separate notice. Until it does, you have NO "
-    "results for this request: if the user asks about it, say you're still waiting on "
-    "it, and never present your own knowledge as something you found.")
+    "Until its outcome comes back, you have NO results for this request: if the user "
+    "asks about it, say you're still waiting on it, and never present your own knowledge "
+    "as something you found.")
 
 
 def _consult_outcome(result) -> oc.ConsultOutcome:
@@ -462,7 +466,7 @@ def _describe(outcome: oc.ConsultOutcome) -> str:
 
 # How long past each line's moment the narrator will wait for a conversational gap
 # before giving up on that line. Short: a status update is worth saying in a lull,
-# never worth cutting in for -- the answer itself arrives as the follow-up regardless.
+# never worth cutting in for -- the answer itself is told when it lands regardless.
 _PROGRESS_GAP_WAIT = 6.0
 # WHEN each line is due, in seconds from the start of the consult. Wall-clock
 # instants, not countdowns between lines: a gap wait for one line counts against the
@@ -534,15 +538,15 @@ async def _consult_progress(llm, request=None, gate=None):
     conversational gap before speaking, up to _PROGRESS_GAP_WAIT past the line's
     moment: if the user is mid-conversation it stays quiet and skips that line rather
     than talking over them — under- is better than over-communicating here, because
-    the answer lands as the follow-up either way. That means a conversation with no
+    the answer is told when it lands either way. That means a conversation with no
     gap at all hears NO lines (every session built by build_agent_session, SIP
     included, passes a gate); only a caller that passes gate=None keeps the
     unconditional schedule. The lines are due at wall-clock instants from the
     consult's start (_PROGRESS_SCHEDULE), so a gap wait never delays the next line.
 
-    The graceful COMPLETION ('...and by the way, that's done, reattached to what you
-    asked') is not here: it is the follow-up injector, which the LLM writes grounded
-    in the real answer, so it already fits task/research/action without hardcoding.
+    The graceful COMPLETION (the answer, reattached to what was asked) is not here: it
+    is owed.py's run, which the LLM writes grounded in the real answer, so it already
+    fits task/research/action without hardcoding.
 
     Singleton per session: overlapping consults share ONE narrator — two narrators
     doubled every line audibly (observed live)."""
@@ -575,11 +579,11 @@ async def _consult_progress(llm, request=None, gate=None):
 async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, llm=None,
                                 gate=None):
     """Background waiter for the ASYNC ask_openclaw path. The turn already ended, so
-    there's no tight voice deadline: wait out the consult, then hand the answer to
-    the follow-up injector, which runs a fresh LLM turn so the bot SPEAKS it. Runs as
-    a session-lifecycle task (params.llm.create_task) — a barge-in or the user moving
-    on to another topic does NOT cancel the in-flight consult. tool_call_id lets the
-    injector rewrite the placeholder tool result once the real outcome is known."""
+    there's no tight voice deadline: wait out the consult, then land its outcome
+    (`followup`, the session's owed.Owed): the placeholder tool result is rewritten to
+    it, and it is owed to the caller until they hear it. Runs as a session-lifecycle
+    task (params.llm.create_task) — a barge-in or the user moving on to another topic
+    does NOT cancel the in-flight consult."""
     from teaport_brain import consult_bridge
 
     progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
@@ -591,9 +595,10 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
         # is on its way (local_audio.KeepAlive). `secs` bounds the wait. Best effort: a
         # client that ignores it loses nothing, and a torn-down pipeline cannot take it.
         if gate is not None:
-            # The session's own count of answers owed (a no-wake room session is not idle
-            # while one is: gateway_server.room_idle).
-            gate.owed = max(0, getattr(gate, "owed", 0) + (-1 if done else 1))
+            # The session's own count of consults running (a no-wake room session is not
+            # idle while one is: gateway_server.room_idle).
+            gate.consults_running = max(0, getattr(gate, "consults_running", 0)
+                                        + (-1 if done else 1))
         if llm is None:
             return
         message = {"type": "working", "call_id": call_id}
@@ -606,14 +611,12 @@ async def _consult_and_followup(call_id, fut, request, followup, tool_call_id, l
     await working(False)
 
     async def deliver(outcome: oc.ConsultOutcome):
-        """Hand the outcome to the injector, narrator first."""
-        # Stop the narrator BEFORE the answer is spoken, not in the finally below. It
-        # is a countdown against dead air, and there is no dead air once the outcome is
-        # known. Cancelling it afterwards used to be harmless because the injector
-        # returned as soon as it had queued the LLM run; it now waits for the delivered
-        # turn to finish speaking so it can retire its one-shot trigger, which left the
-        # narrator running for the whole delivery. Observed live 2026-08-26 09:44: the
-        # shop list was spoken at :25.0 and "Almost there — hang tight." landed at :37.3.
+        """Land the outcome (owed.Owed), narrator first."""
+        # Stop the narrator BEFORE the answer is told, not in the finally below. It is a
+        # countdown against dead air, and there is no dead air once the outcome is
+        # known. Observed live 2026-08-26 09:44, when the follow-up waited for its
+        # delivery to play: the shop list was spoken at :25.0 and "Almost there — hang
+        # tight." landed at :37.3.
         if progress is not None:
             progress.cancel()
         await followup(request, outcome.text, tool_call_id,
@@ -687,13 +690,17 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
     # sometimes emits the same ask_openclaw twice a few seconds apart (observed
     # live), which doubled every ack, progress line, and follow-up. One
     # in-flight consult per exact request text; the duplicate resolves silently
-    # and the original's follow-up reports for both.
+    # and the original's record answers for both (its landing rewrites both results).
     if followup is not None:
         inflight = getattr(params.llm, "_teaport_consults", None)
         if inflight is None:
             inflight = params.llm._teaport_consults = {}
         prior = inflight.get(request)
         if prior is not None and not prior.done():
+            dispatched = getattr(followup, "dispatched", None)
+            if dispatched is not None:
+                dispatched(params.tool_call_id, request,
+                           duplicate_of=getattr(prior, "teaport_tool_call_id", None))
             # No inference on a placeholder result — see no_inference() below.
             await params.result_callback(
                 {"status": "duplicate",
@@ -709,25 +716,29 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
                  "name": "openclaw_agent_consult",
                  "args": {"question": request}}))
 
-    # ASYNC path (a follow-up injector is wired — the OpenClaw relay). A full agent
-    # turn can take 30-60s+, which can't block a voice turn (that was the whole
-    # timeout-race that dropped answers). So hand the consult to a background waiter,
-    # acknowledge NOW so the turn ends and the user can keep talking, and speak the
-    # answer as an unprompted follow-up when it lands. This is the pattern mature
-    # voice platforms use for slow sub-agent delegation.
+    # ASYNC path (the session's owed records are wired: every session but agent-first).
+    # A full agent turn can take 30-60s+, which can't block a voice turn (that was the
+    # whole timeout-race that dropped answers). So hand the consult to a background
+    # waiter, acknowledge NOW so the turn ends and the user can keep talking, and tell
+    # the answer when it lands (owed.py). This is the pattern mature voice platforms use
+    # for slow sub-agent delegation.
     if followup is not None:
         task = params.llm.create_task(_consult_and_followup(
             call_id, fut, request, followup, params.tool_call_id, llm=params.llm,
             gate=gate))
         inflight[request] = task
+        task.teaport_tool_call_id = params.tool_call_id
+        dispatched = getattr(followup, "dispatched", None)
+        if dispatched is not None:
+            dispatched(params.tool_call_id, request)
         # Identity-checked pop: a same-text consult started AFTER this one
         # finished must not be evicted by this one's completion callback.
         task.add_done_callback(
             lambda t, r=request: inflight.pop(r, None) if inflight.get(r) is t else None)
         # Run NO inference on this placeholder (no_inference()). There is nothing for
         # the model to say: the user already heard the deterministic "I'll work on
-        # that" ack, and the real outcome arrives later via the follow-up injector,
-        # which rewrites this tool result and runs the LLM then. Asking the model to
+        # that" ack, and the real outcome lands later (owed.py), rewriting this tool
+        # result, and a run of ours tells it then. Asking the model to
         # respond here and discarding what it says is what produced fabricated
         # answers — prompt-level "don't claim it's done" failed three times live
         # (it announced "posted!" ~4s in), and a speech mute over the discarded
@@ -740,7 +751,7 @@ async def _ask_openclaw(params: FunctionCallParams, followup=None, gate=None):
             properties=no_inference())
         return
 
-    # SYNC path (no follow-up injector — e.g. the WebRTC dev client): ack-gated wait,
+    # SYNC path (nothing to land into — agent-first, a dev client): ack-gated wait,
     # CLI fallback only if the consult is never acked.
     try:
         try:
@@ -874,6 +885,8 @@ class ToolContext:
     tts: object = None
     has_tts: bool = False
     client_features: frozenset = frozenset()
+    # The session's owed records (owed.Owed): called with a consult's outcome to land
+    # it. None: ask_openclaw consults synchronously on the turn.
     followup: Callable | None = None
     gate: object = None
     # The session's WifiSetupVoice (wifi_voice.py), which the wifi_setup tool hands to.
@@ -969,8 +982,8 @@ async def _answer_phone_call(params: FunctionCallParams, prompt=None):
 
 
 def _bind_ask_openclaw(ctx: ToolContext):
-    # ASYNC consult (answer spoken later as a follow-up) when the session gave us the
-    # injector; agent-first passes none and consults synchronously on the turn.
+    # ASYNC consult (its outcome lands later, owed.py) when the session gave us its
+    # owed records; agent-first passes none and consults synchronously on the turn.
     if ctx.followup is not None:
         return functools.partial(_ask_openclaw, followup=ctx.followup, gate=ctx.gate)
     return _ask_openclaw
@@ -1229,10 +1242,11 @@ def register_tools(llm, lang: str = "en-us", tts=None, followup=None, gate=None,
                    call_prompt=None) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `followup`, if
-    given, is an async `(request, text|None) -> None` injector that speaks a background
-    consult's answer as an unprompted turn; providing it switches ask_openclaw to the
-    ASYNC path. `gate` (a FollowupGate), if given, lets the consult narrator wait for a
-    conversational gap before speaking its progress lines."""
+    given, is the session's owed records (owed.Owed: an async `(request, text|None,
+    tool_call_id, failure=, detail=)` that lands a background consult's outcome, plus
+    `dispatched`); providing it switches ask_openclaw to the ASYNC path. `gate` (a
+    FollowupGate), if given, lets the consult narrator wait for a conversational gap
+    before speaking its progress lines."""
     _install_spoke_tracker(llm)
     if tts is not None:
         # Live language: read the TTS service at call time, so a mid-session

@@ -8,9 +8,9 @@
 # comes either), the TTS service holds the end frame waiting for an audio context
 # that empty text never creates; and an interruption discards a held one outright.
 # Either way the gate read "mid-response" forever: every consult narrator line
-# timed out its 6s gap wait and was skipped, and the follow-up injector burned its
-# full 60s max_wait — total dead air in genuine silence, the exact condition the
-# narrator exists to fill.
+# timed out its 6s gap wait and was skipped, and the consult follow-up (since #203,
+# owed.py's run) burned its full 60s max_wait — total dead air in genuine silence, the
+# exact condition the narrator exists to fill.
 #
 # The release points asserted here: a FunctionCallInProgressFrame (the completion
 # is done producing speech; any audio it did produce is tracked via the bot
@@ -39,7 +39,6 @@ from pipecat.frames.frames import (  # noqa: E402
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
     BotStartedSpeakingFrame,
-    OutputAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
     BotStoppedSpeakingFrame,
@@ -56,7 +55,9 @@ from pipecat.processors.frame_processor import FrameDirection, FrameProcessor  #
 
 from pipecat.utils.utils import obj_id  # noqa: E402
 
-from teaport_brain.followup_gate import FollowupGate, TurnCommitMark  # noqa: E402
+from teaport_brain.followup_gate import (  # noqa: E402
+    FollowupGate, RunFrame, RunSilentFrame, TurnCommitMark,
+)
 
 
 def _gate(quiet_secs=0.01):
@@ -132,31 +133,31 @@ async def test_an_interruption_releases_the_latch():
 
 # --- the budget: one deadline for the whole call ---
 
-async def test_the_injector_waits_out_a_synchronous_tool_call():
+async def test_a_turn_free_wait_waits_out_a_synchronous_tool_call():
     """The two waits across a tool call whose result IS answered: the narrator
     reads idle the moment the call starts (its silence is the gap to fill), but
-    the follow-up injector must not -- appended now, its trigger would be read by
-    the tool's own answering completion. The turn is over when that completion
-    ends. Found by Followup.tla (LATCH = "clearedOnToolCall", NoInterjectMidTurn)."""
+    a turn-free waiter must not -- a client note appended now would be read by the
+    tool's own answering completion. The turn is over when that completion ends.
+    Found by Followup.tla (LATCH = "clearedOnToolCall", NoInterjectMidTurn)."""
     gate = _gate()
     await _feed(gate, LLMFullResponseStartFrame(), _tool_call())
     assert await gate.wait_until_idle(max_wait=0.5), "narrator: gate busy during the call"
     assert not await gate.wait_until_idle(max_wait=0.05, turn_free=True), (
-        "injector: the gate read turn-free during a tool call whose answer is pending")
+        "turn-free: the gate read turn-free during a tool call whose answer is pending")
     await _feed(gate, _tool_result(), LLMFullResponseStartFrame())
     assert not await gate.wait_until_idle(max_wait=0.05, turn_free=True)
     await _feed(gate, LLMFullResponseEndFrame())
     assert await gate.wait_until_idle(max_wait=0.5, turn_free=True), (
-        "injector: still held after the answering completion ended")
+        "turn-free: still held after the answering completion ended")
 
 
 async def test_a_no_inference_result_ends_the_turn():
     """The async ask_openclaw shape: the placeholder result runs no inference, so
-    nothing will answer from it -- the turn is over and the injector may speak."""
+    nothing will answer from it -- the turn is over."""
     gate = _gate()
     await _feed(gate, LLMFullResponseStartFrame(), _tool_call(), _tool_result(run_llm=False))
     assert await gate.wait_until_idle(max_wait=0.5, turn_free=True), (
-        "injector: held after a no-inference result -- the turn never closes")
+        "turn-free: held after a no-inference result -- the turn never closes")
 
 
 async def test_an_interruption_ends_the_turn_too():
@@ -196,17 +197,11 @@ async def test_a_pause_shorter_than_the_quiet_window_is_not_a_window():
 
 
 
-# --- watching a delivery to completion -----------------------------------------
+# --- watching a line to completion ------------------------------------------------
 #
-# The follow-up injector needs to know whether the caller got the answer. It used to
-# ask the ledger, which charts a CUT immediately but does not chart a reply that simply
-# FINISHED until the bot next speaks: _window_closed advances playout from a layout
-# anchored on BotStartedSpeaking, ~0.2s after the audio really starts, so the estimate
-# overshoots the end and the last fraction is never accounted.
-#
-# Live 2026-09-10 17:37: a 27.9s delivery played in full and the injector sat on the
-# ledger for its whole 45s timeout before reporting "unknown". Completion now comes from
-# the transport's own frames, which are prompt and mean what they say.
+# say_last_line, resume's line and the call prompt watch a line they speak themselves
+# (AgentSession, call_prompt.py): completion comes from the transport's own frames,
+# which are prompt and mean what they say.
 
 
 async def test_a_delivery_that_finishes_settles_as_not_interrupted():
@@ -215,9 +210,7 @@ async def test_a_delivery_that_finishes_settles_as_not_interrupted():
     await _feed(gate, TTSStartedFrame(), BotStartedSpeakingFrame())
     assert not d.done.is_set(), "settled while the bot was still speaking"
     await _feed(gate, BotStoppedSpeakingFrame())
-    assert d.done.is_set(), (
-        "a reply that played to the end never settled — the injector waits out its "
-        "whole timeout and calls every quiet delivery unverified")
+    assert d.done.is_set(), "a line that played to the end never settled"
     assert not d.interrupted
 
 
@@ -226,42 +219,7 @@ async def test_a_delivery_that_is_cut_settles_as_interrupted():
     d = gate.watch_delivery()
     await _feed(gate, TTSStartedFrame(), BotStartedSpeakingFrame(), InterruptionFrame())
     assert d.done.is_set() and d.interrupted, "a barged-over reply must read as cut"
-    assert d.spoke, "our reply's audio had started"
-
-
-async def test_a_filler_line_does_not_speak_for_the_reply():
-    """brain/formal/Followup.tla, fu_heard_no_ownAudio_loss. The follow-up's completion
-    calls a tool first: the tool-ack line plays (append_to_context=False) and the
-    transport reports it like any audio. That must neither mark our reply spoken nor
-    settle it as played -- the answer has not made a sound yet."""
-    gate = _gate()
-    d = gate.watch_delivery(replies_only=True)
-    await _feed(gate, TTSStartedFrame(append_to_context=False), BotStartedSpeakingFrame(),
-                BotStoppedSpeakingFrame())
-    assert not d.spoke and not d.done.is_set(), (
-        "a filler line settled the follow-up as played before the answer had any audio")
-    await _feed(gate, TTSStartedFrame(), BotStartedSpeakingFrame(), _audio(),
-                TTSStoppedFrame(), BotStoppedSpeakingFrame())
-    assert d.spoke and d.done.is_set() and not d.interrupted
-
-
-def _audio():
-    return OutputAudioRawFrame(audio=b"\0\0" * 160, sample_rate=16000, num_channels=1)
-
-
-async def test_a_reply_context_that_never_plays_is_not_spoken():
-    """brain/formal/Followup.tla, fu_heard_ownStart_loss. pipecat opens a TTS context for
-    any non-blank text: an emoji-only reply, or one whose every clause the engine failed,
-    opens one and never plays. Its TTSStartedFrame alone must not count as the follow-up
-    having spoken -- that rode the heard timeout to "delivered"."""
-    gate = _gate()
-    d = gate.watch_delivery(replies_only=True)
-    await _feed(gate, TTSStartedFrame(), TTSStoppedFrame())
-    assert not d.spoke, "a reply context with no audio counted as the answer playing"
-    await _feed(gate, TTSStartedFrame(append_to_context=False), _audio(), TTSStoppedFrame())
-    assert not d.spoke, "a filler's audio counted as the reply's"
-    await _feed(gate, TTSStartedFrame(), _audio())
-    assert d.spoke
+    assert d.spoke, "the line's audio had started"
 
 
 async def test_a_watcher_of_its_own_line_counts_any_audio():
@@ -290,8 +248,7 @@ async def test_someone_elses_bot_turn_does_not_settle_our_watch():
     d = gate.watch_delivery()
     await _feed(gate, BotStoppedSpeakingFrame())
     assert not d.done.is_set(), (
-        "a BotStopped from a turn our reply never started settled it anyway — the "
-        "injector would call an undelivered answer delivered")
+        "a BotStopped from a turn our line never started settled it anyway")
 
 
 async def test_a_dropped_watch_is_forgotten():
@@ -302,7 +259,7 @@ async def test_a_dropped_watch_is_forgotten():
     assert not d.done.is_set(), "a dropped watch still settled"
 
 
-# --- the claim: one turn-free window, one injector ---
+# --- the claim: one turn-free window, one waiter ---
 
 async def _two_waiters(gate, **kw):
     a = asyncio.ensure_future(gate.wait_until_idle(turn_free=True, **kw))
@@ -310,11 +267,12 @@ async def _two_waiters(gate, **kw):
     return a, b
 
 
-async def test_one_window_goes_to_one_injector():
+async def test_one_window_goes_to_one_waiter():
     """The consult follow-up and a client-note reaction waiting together used to both
     get the same quiet window: two LLMRunFrames, two completions, and the first one's
     text retired both one-shot triggers. The window is now claimed by the first waiter
-    it is reported to, until that waiter's completion has started and ended."""
+    it is reported to, until that waiter's completion has started and ended (owed.py's
+    run takes the same claim at its door)."""
     gate = _gate(quiet_secs=0.02)
     await _feed(gate, BotStartedSpeakingFrame())
     a, b = await _two_waiters(gate, max_wait=2.0)
@@ -323,9 +281,9 @@ async def test_one_window_goes_to_one_injector():
     done, _ = await asyncio.wait({a, b}, timeout=0.3, return_when=asyncio.FIRST_COMPLETED)
     assert len(done) == 1 and done.pop().result() is True
     await asyncio.sleep(0.1)
-    assert sum(t.done() for t in (a, b)) == 1, "both injectors took the same window"
+    assert sum(t.done() for t in (a, b)) == 1, "both waiters took the same window"
     # The winner's completion starts (the claim ends; the turn holds the window) and
-    # ends: the other injector gets the next window.
+    # ends: the other waiter gets the next window.
     await _feed(gate, LLMFullResponseStartFrame())
     await asyncio.sleep(0.1)
     assert sum(t.done() for t in (a, b)) == 1, "the window reopened mid-completion"
@@ -358,7 +316,8 @@ async def test_a_forgotten_claim_expires():
 
 
 async def test_the_narrator_wait_neither_claims_nor_heeds_a_claim():
-    """The narrator speaks during a tool call's silence; the claim is the injectors'."""
+    """The narrator speaks during a tool call's silence; the claim is the turn-free
+    waiters'."""
     gate = _gate(quiet_secs=0.02)
     assert await gate.wait_until_idle(max_wait=0.5)
     assert gate.is_clear(), "a narrator wait claimed the window"
@@ -378,7 +337,7 @@ async def _commit(gate):
 
 async def test_a_committed_turn_holds_the_window_until_its_completion_starts():
     """Review of #74: the gate learned of a turn only at its LLMFullResponseStartFrame,
-    so the moment between a commit and that frame read as turn-free, and an injector
+    so the moment between a commit and that frame read as turn-free, and a waiter
     could post after the user's unanswered words and queue a second completion."""
     gate = _gate(quiet_secs=0.02)
     await _commit(gate)
@@ -391,39 +350,6 @@ async def test_a_committed_turn_holds_the_window_until_its_completion_starts():
     assert not await gate.wait_until_idle(max_wait=0.1, turn_free=True)
     await _feed(gate, LLMFullResponseEndFrame())
     assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)
-
-
-async def test_a_waiter_that_ran_out_waits_out_a_claimed_window():
-    """Review of #74: the consult follow-up goes ahead when its wait runs out. If a
-    window is claimed right then, it now waits for the claimant's completion to start
-    and end, rather than queue a second completion into the same window."""
-    gate = _gate(quiet_secs=0.02)
-    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)  # someone's claim
-    waiter = asyncio.ensure_future(gate.wait_out_claim(max_wait=2.0))
-    await asyncio.sleep(0.05)
-    assert not waiter.done(), "went ahead into a claimed window"
-    await _feed(gate, LLMFullResponseStartFrame())  # the claimant's completion
-    await asyncio.sleep(0.05)
-    assert not waiter.done(), "went ahead while the claimant's completion ran"
-    await _feed(gate, LLMFullResponseEndFrame())
-    await asyncio.wait_for(waiter, timeout=0.5)
-    # Nothing claimed and no completion running: no wait, however much speech.
-    await _feed(gate, BotStartedSpeakingFrame())
-    await asyncio.wait_for(gate.wait_out_claim(max_wait=2.0), timeout=0.05)
-
-
-async def test_a_waiter_that_ran_out_waits_out_a_completion_already_running():
-    """Second review of #74: a claim ends when its completion STARTS. A waiter that
-    gives up while that completion runs must still wait for it to end: its first text
-    would retire the waiter's freshly armed trigger unread."""
-    gate = _gate(quiet_secs=0.02)
-    assert await gate.wait_until_idle(max_wait=0.5, turn_free=True)  # someone's claim
-    await _feed(gate, LLMFullResponseStartFrame())  # ...its completion started: claim gone
-    waiter = asyncio.ensure_future(gate.wait_out_claim(max_wait=2.0))
-    await asyncio.sleep(0.05)
-    assert not waiter.done(), "went ahead while a completion was running"
-    await _feed(gate, LLMFullResponseEndFrame())
-    await asyncio.wait_for(waiter, timeout=0.5)
 
 
 # ---- the answer after a tool (#17): the push held while the caller's speech is pending
@@ -679,6 +605,219 @@ async def test_the_re_applied_stops_commit_leaves_its_flush_pending():
         await agg.push_aggregation()
         assert not r.gate._speech_pending, "a commit with the close paid did not clear it"
         assert frame not in r.top.up
+
+
+# ---- the run (#203): owed.py's own request, through the same door ------------------
+#
+# brain/formal/Owed.tla: Ask, RunGo, Cap; HoldNoLoss, NoRunUnderSpeech, NoRunMidTurn,
+# NoRunAfterHeard (re-validated at the go: ow_askOnly).
+
+class _Book:
+    """owed.Owed as the gate sees it."""
+
+    def __init__(self, owed=("k1",)):
+        self.context = LLMContext([{"role": "user", "content": "q"}])
+        self.owed = set(owed)
+        self.dropped = []
+        self.turns = 0
+        self.closed = 0
+
+    async def still_owed(self, keys):
+        return [k for k in keys if k in self.owed]
+
+    def run_dropped(self, keys, why):
+        self.dropped.append((list(keys), why))
+
+    def caller_turn(self):
+        self.turns += 1
+
+    def close_session(self):
+        self.closed += 1
+
+
+def _runs(r):
+    return [f for f in r.top.up if isinstance(f, RunFrame)]
+
+
+async def test_a_run_goes_up_to_the_llm_and_claims_the_window():
+    async with _GateRun() as r:
+        r.gate.book = _Book()
+        r.gate.ask("k1", "run")
+        assert await r.until(lambda: _runs(r)), "the run never went"
+        run = _runs(r)[0]
+        assert run.keys == ("k1",) and run.purpose == "run" and run.context is r.gate.book.context
+        # The gate takes the claim itself: TurnCommitMark never sees a frame pushed up.
+        assert not r.gate.is_clear(), "the run went without claiming the window"
+        await r.down(LLMFullResponseStartFrame(), LLMFullResponseEndFrame())
+        assert r.gate.is_clear()
+
+
+async def test_a_run_waits_out_caller_speech_with_no_words():
+    """#198's hold, at the VAD level (ow_turnLevel: a turn-level window alone goes into
+    speech whose words have not made a turn yet, #197)."""
+    async with _GateRun(release=0.2) as r:
+        r.gate.book = _Book()
+        await r.down(VADUserStartedSpeakingFrame())
+        r.gate.ask("k1", "run")
+        assert not await r.until(lambda: _runs(r), timeout=0.3), "a run went under speech"
+        await r.down(VADUserStoppedSpeakingFrame())
+        stopped = time.monotonic()
+        assert await r.until(lambda: _runs(r)), "a cough's run never went"
+        assert time.monotonic() - stopped >= 0.15, "went before the words could come"
+
+
+async def test_a_run_reaching_the_hold_cap_is_dropped_not_sent():
+    """Room TV noise holds the VAD up: the post-tool answer is released at the cap, a
+    run is DROPPED (Owed.tla Cap) and the re-offer armed (run_dropped)."""
+    async with _GateRun(release=0.2, cap=0.4) as r:
+        r.gate.book = _Book()
+        await r.down(VADUserStartedSpeakingFrame())
+        r.gate.ask("k1", "run")
+        assert await r.until(lambda: r.gate.book.dropped), "the cap never dropped it"
+        assert not _runs(r), "the cap sent the run on"
+        assert r.gate.book.dropped[0][0] == ["k1"]
+        assert r.gate._run is None and r.gate.runs_dropped == 1
+
+
+async def test_a_run_and_a_held_answer_do_not_displace_each_other():
+    """HoldNoLoss (ow_oneSlot is the single slot, where the second replaced the first).
+    The answer goes first; the run waits for its turn to end."""
+    async with _GateRun(release=0.2) as r:
+        r.gate.book = _Book()
+        await r.down(VADUserStartedSpeakingFrame(), LLMFullResponseStartFrame(), _tool_call())
+        answer = await r.answer()
+        await r.until(lambda: r.gate.answers_held == 1)
+        r.gate.ask("k1", "run")
+        await r.down(VADUserStoppedSpeakingFrame())
+        assert await r.until(lambda: answer in r.top.up), "the held answer was lost"
+        assert not await r.until(lambda: _runs(r), timeout=0.3), (
+            "the run went before the answer it queued behind had been answered")
+        await r.down(_tool_result(), LLMFullResponseStartFrame(), LLMFullResponseEndFrame())
+        assert await r.until(lambda: _runs(r)), "the run was lost behind the answer"
+
+
+async def test_a_caller_turn_drops_the_waiting_run():
+    """Owed.tla TurnStart: the turn's own request carries the note, and the re-offer is
+    armed (caller_turn)."""
+    async with _GateRun(release=0.3) as r:
+        r.gate.book = _Book()
+        await r.down(VADUserStartedSpeakingFrame())
+        r.gate.ask("k1", "run")
+        await r.down(UserStartedSpeakingFrame(), InterruptionFrame(),
+                     VADUserStoppedSpeakingFrame(), UserStoppedSpeakingFrame())
+        assert not await r.until(lambda: _runs(r), timeout=0.6), "the run went after the turn"
+        assert r.gate.book.turns == 1 and r.gate._run is None
+
+
+async def test_a_run_waits_out_a_tool_round():
+    """NoRunMidTurn: the VAD alone would let it go between a sync call and its answer
+    (ow_vadLevel)."""
+    async with _GateRun() as r:
+        r.gate.book = _Book()
+        await r.down(LLMFullResponseStartFrame(), _tool_call())
+        r.gate.ask("k1", "run")
+        assert not await r.until(lambda: _runs(r), timeout=0.3), "went into a tool round"
+        await r.down(_tool_result(), LLMFullResponseStartFrame(), LLMFullResponseEndFrame())
+        assert await r.until(lambda: _runs(r))
+
+
+async def test_a_run_waits_out_a_commit_not_yet_answered():
+    async with _GateRun() as r:
+        r.gate.book = _Book()
+        await _commit(r.gate)
+        assert r.gate.caller_request_pending, "a commit not yet rendered is pending"
+        r.gate.ask("k1", "run")
+        assert not await r.until(lambda: _runs(r), timeout=0.3), (
+            "went between a commit and its completion")
+        r.gate.request_rendered()
+        assert not r.gate.caller_request_pending
+        await r.down(LLMFullResponseStartFrame(), LLMFullResponseEndFrame())
+        assert await r.until(lambda: _runs(r))
+
+
+async def test_a_run_whose_answer_was_heard_meanwhile_is_dropped_at_the_go():
+    """ow_askOnly: re-validated where it goes, not only where it was asked."""
+    async with _GateRun() as r:
+        r.gate.book = _Book(owed=())
+        r.gate.ask("k1", "run")
+        assert await r.until(lambda: r.gate._run is None)
+        assert not await r.until(lambda: _runs(r), timeout=0.2), "a heard answer's run went"
+        assert r.gate.is_clear(), "a dropped run kept the window claimed"
+
+
+async def test_a_second_ask_joins_the_waiting_run():
+    async with _GateRun(release=0.2) as r:
+        r.gate.book = _Book(owed=("k1", "k2"))
+        await r.down(VADUserStartedSpeakingFrame())
+        r.gate.ask("k1", "reoffer")
+        r.gate.ask(["k2"], "run")
+        await r.down(VADUserStoppedSpeakingFrame())
+        assert await r.until(lambda: _runs(r))
+        assert len(_runs(r)) == 1
+        assert _runs(r)[0].keys == ("k1", "k2") and _runs(r)[0].purpose == "run"
+
+
+async def test_a_silent_run_ends_its_turn():
+    """A re-offer that called stay_silent (or came back empty) leaves its End held at the
+    TTS: RunSilentFrame ends the turn at the gate instead."""
+    gate = _gate()
+    await _feed(gate, LLMFullResponseStartFrame())
+    assert not gate.is_clear()
+    await _feed(gate, RunSilentFrame())
+    assert gate.is_clear(), "the silent run's turn stayed open"
+
+
+def _audio_out():
+    from pipecat.frames.frames import OutputAudioRawFrame
+    return OutputAudioRawFrame(audio=b"\0\0" * 160, sample_rate=16000, num_channels=1)
+
+
+async def test_a_reply_that_played_to_its_end_is_reported_at_its_own_stop():
+    """The settle feed's played-through half (Owed.tla Settle; ow_lagSettle): a reply's
+    own context, its own audio, then its stop -- not a filler's, not a context that
+    never played, not one cut."""
+    played = []
+    gate = _gate()
+    gate.on_reply_played = played.append
+    await _feed(gate, TTSStartedFrame(context_id="filler", append_to_context=False),
+                _audio_out(), TTSStoppedFrame(context_id="filler"))
+    assert played == [], "a filler's audio settled a reply"
+    await _feed(gate, TTSStartedFrame(context_id="emoji"), TTSStoppedFrame(context_id="emoji"))
+    assert played == [], "a context with no audio counted as played"
+    await _feed(gate, TTSStartedFrame(context_id="cut"), _audio_out(), InterruptionFrame(),
+                TTSStoppedFrame(context_id="cut"))
+    assert played == [], "a cut reply counted as played through"
+    await _feed(gate, TTSStartedFrame(context_id="r1"), _audio_out(), _audio_out(),
+                TTSStoppedFrame(context_id="r1"), BotStoppedSpeakingFrame())
+    assert played == ["r1"], played
+
+
+async def test_quiet_for_counts_only_a_quiet_line():
+    """owed.py's lull (Owed.tla Quiet): caller speech, pending words, a turn or a run
+    waiting all count as not quiet, and quiet counts from when they ended."""
+    async with _GateRun(release=0.2) as r:
+        await asyncio.sleep(0.05)
+        assert r.gate.quiet_for() >= 0.04
+        await r.down(VADUserStartedSpeakingFrame())
+        assert r.gate.quiet_for() == 0.0, "caller speech counted as quiet"
+        await r.down(VADUserStoppedSpeakingFrame())
+        assert r.gate.quiet_for() == 0.0, "speech still pending counted as quiet"
+        assert await r.until(lambda: r.gate.quiet_for() > 0.0), "never quiet again"
+        assert r.gate.quiet_for() < 0.2, "quiet counted from before the speech"
+        await r.down(LLMFullResponseStartFrame())
+        assert r.gate.quiet_for() == 0.0, "a reply in flight counted as quiet"
+
+
+async def test_caller_request_pending_tracks_the_turn_and_the_unrendered_commit():
+    gate = _gate()
+    assert not gate.caller_request_pending
+    await _feed(gate, UserStartedSpeakingFrame())
+    assert gate.caller_request_pending, "an open turn is a request still to be rendered"
+    await _feed(gate, UserStoppedSpeakingFrame())
+    await _commit(gate)
+    assert gate.caller_request_pending
+    await _feed(gate, InterruptionFrame())
+    assert not gate.caller_request_pending, "a flushed commit stayed pending"
 
 
 def test_every_run_frame_the_brain_sends_enters_above_the_user_aggregator():

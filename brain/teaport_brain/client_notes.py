@@ -30,7 +30,7 @@
 #         words as the tail. A pending reaction is dropped here: the user's turn is the
 #         model's chance to react, and a second reply after it would be a burst.
 #       - a quiet moment (FollowupGate, the same debounced "no turn in flight" window
-#         the consult follow-up waits for): the notes are appended, and a reaction, if
+#         the brain's own runs wait for, owed.py): the notes are appended, and a reaction, if
 #         one was asked for and the moment came within REACT_MAX_WAIT_S of the note,
 #         runs as its own turn. A turn committed but not yet answered is in flight too
 #         (TurnCommitMark), so its completion takes the notes as above. The commit
@@ -41,14 +41,14 @@
 #   * A reaction is a one-shot. Its order is a message of its own after the notes,
 #     naming the note it is for, so it is the tail the model answers even when later
 #     notes came in the same batch. FollowupTrigger removes it at the completion that
-#     reads it, for the reason the consult follow-up's trigger is retired: left in the
-#     context it is a standing order a later turn re-executes. A reaction flushed by a
+#     reads it (brain/formal/Followup.tla, MODE = "retireOnRead"): left in the context
+#     it is a standing order a later turn re-executes. A reaction flushed by a
 #     barge-in before any completion read it stays, so the user's barge-in turn reads
 #     it and reacts in the same reply; one still unread after REACT_MAX_WAIT_S (its
 #     completion failed, or produced no text) is removed before the next completion.
-#   * The quiet moment is CLAIMED (FollowupGate.wait_until_idle): the consult
-#     follow-up waits for the same windows, and two injectors in one window would run
-#     two completions, the first of which retires both one-shots.
+#   * The quiet moment is CLAIMED (FollowupGate.wait_until_idle): a run of ours
+#     (owed.py) waits for the same windows, and two in one window would run two
+#     completions back to back.
 #
 # A note is the client's text, not the user's and not ours, so it is framed as data:
 # one line, JSON-quoted after the tag, with any leading [tags] of its own removed
@@ -112,10 +112,11 @@ _DEADLINE_SLACK_S = 0.25
 BURST = 10
 REFILL_PER_S = 1.0
 
-# As a USER message, tagged, for the reasons the consult follow-up found live (see
-# _make_consult_followup in agent_session.py): a trailing system message is not a turn
-# the model answers, and an untagged user message that outlives its turn gets
-# attributed to the user.
+# As a USER message, tagged, for the reasons the consult follow-up's trigger found live
+# (measured 2026-08-26 07:59 on its context: as a system message it was delivered 0/4
+# times with an unrelated exchange in between, as a user message 8/8): a trailing system
+# message is not a turn the model answers, and an untagged user message that outlives
+# its turn gets attributed to the user.
 _TAG = "[app event, not spoken by the user]"
 _REACT = ("React now, as yourself, in one short spoken sentence and without mentioning "
           "the app, notes or events, to this app event: {}")
@@ -215,7 +216,7 @@ class ClientNotes(FrameProcessor):
     it stood; the notes it adds are user messages, which the corrector's walk skips.
 
     `task` is bound once the PipelineTask exists (build_agent_session); a reaction is
-    queued on it as an LLMRunFrame, the path the consult follow-up takes.
+    queued on it as an LLMRunFrame.
     """
 
     def __init__(self, context, gate, trigger, *, drop_messages=None,
@@ -371,8 +372,8 @@ class ClientNotes(FrameProcessor):
         return self._is_note(msg) or (self._order is not None and msg is self._order[0])
 
     def _foreign_tail(self):
-        """The context's tail when it is someone else's user message (the user's words,
-        a follow-up's trigger), else None. At a quiet moment that is a turn committed
+        """The context's tail when it is someone else's user message (the user's words, a
+        stage cue), else None. At a quiet moment that is a turn committed
         an instant ago whose LLMContextFrame has not reached TurnCommitMark yet: notes
         appended after it would be what its completion answers."""
         msgs = self._context.get_messages()
@@ -393,7 +394,7 @@ class ClientNotes(FrameProcessor):
         notes, self._pending = self._pending, []
         msgs = [self._message(n) for n in notes]
         # Before the tail, which is what is being answered: the user's turn, the
-        # greeting cue, a follow-up's trigger, our own reaction order. After it only
+        # greeting cue, our own reaction order. After it only
         # when it is one of our notes (no one's words are being answered, so arrival
         # order puts the newer notes last).
         at = len(existing) if self._is_note(tail) else len(existing) - 1
@@ -432,8 +433,8 @@ class ClientNotes(FrameProcessor):
 
     def _post_order(self, note: _Note):
         self._retire_order()  # one live order at most
-        # The reaction order is OURS, so it carries the tag our own orders carry (the
-        # consult follow-up's), not the app-event tag SYSTEM_LINE says is never an
+        # The reaction order is OURS, so it carries the tag the brain's own messages carry
+        # (owed.py's note too), not the app-event tag SYSTEM_LINE says is never an
         # instruction.
         msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n"
                + _REACT.format(json.dumps(note.text, ensure_ascii=False))}

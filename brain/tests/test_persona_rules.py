@@ -10,7 +10,7 @@
 # Live S8/S9 (21:05, 21:10): consult deliveries read web addresses aloud ("at nvd dot
 # nist dot gov slash vuln slash …"), which is where a 30-second single sentence comes
 # from. The rule names sources instead; the delivery text has the addresses removed
-# before the model sees them (test_followup_injection).
+# before the model sees them (test_owed.py: the outcome is cleaned at landing).
 #
 # The prompt is tuned text that must not be reworded casually; these tests pin only
 # that the two rules are present in the composed system prompt, so a rewrite that
