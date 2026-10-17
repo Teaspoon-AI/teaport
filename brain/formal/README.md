@@ -174,8 +174,10 @@ properties do not gate this.
 `FunctionCallInProgressFrame`. A second flag, `_turn`, is set on
 `LLMFullResponseStartFrame` and cleared by the answering completion's End frame, by a
 `FunctionCallResultFrame` whose `run_llm` is False (`tools.no_inference()`, the async
-placeholder nothing answers from), by a run that says nothing (`RunSilentFrame`, #203),
-or by an interruption. `wait_until_idle(turn_free=True)` waits on idle *and* `~_turn`;
+placeholder nothing answers from) once no other call is out, by a run that says nothing
+(`RunSilentFrame`, #203), or by an interruption. Since #203 the gate also keeps the calls
+out by id (`_calls_out`; `Owed.tla`'s `endClearsTool` and `staleFlag` rows): a turn whose
+line ended with its call still out stays shut. `wait_until_idle(turn_free=True)` waits on idle *and* `~_turn`;
 `ClientNotes` passes it (the follow-up injector did), the narrator does not, and the
 run's door (`FollowupGate.ask`) waits on the same window. The gate sits before the
 assistant aggregator, so it sees the result frame. `test_followup_gate.py` covers the

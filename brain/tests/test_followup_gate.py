@@ -82,16 +82,19 @@ async def _feed(gate, *frames):
         await gate.process_frame(f, FrameDirection.DOWNSTREAM)
 
 
-def _tool_call():
+def _tool_call(call_id="tc-1", name="ask_openclaw"):
+    """A call's in-progress frame, as the LLM broadcasts it for every tool here
+    (cancel_on_interruption: pipecat's default)."""
     return FunctionCallInProgressFrame(
-        function_name="ask_openclaw", tool_call_id="tc-1", arguments={})
+        function_name=name, tool_call_id=call_id, arguments={},
+        cancel_on_interruption=True)
 
 
-def _tool_result(run_llm=None):
+def _tool_result(run_llm=None, call_id="tc-1"):
     """The call's result. run_llm=False is tools.no_inference() -- the async
     placeholder nothing answers from; None means the answering completion follows."""
     return FunctionCallResultFrame(
-        function_name="ask_openclaw", tool_call_id="tc-1", arguments={},
+        function_name="ask_openclaw", tool_call_id=call_id, arguments={},
         result={"status": "queued"},
         properties=FunctionCallResultProperties(run_llm=False) if run_llm is False else None)
 
@@ -723,6 +726,45 @@ async def test_a_run_waits_out_a_tool_call_put_out_with_a_line():
         assert not await r.until(lambda: _runs(r), timeout=0.2), "went into the answer"
         await r.down(LLMFullResponseEndFrame())
         assert await r.until(lambda: _runs(r))
+
+
+async def test_a_cancelled_calls_late_in_progress_frame_opens_no_round():
+    """Owed.tla staleFlag (OwedResolves): "Let me check." + get_weather, the caller barges
+    in during the line and their turn commits no words. The call's in-progress frame is
+    uninterruptible -- it waits behind the line's audio -- and reaches the gate after the
+    interruption and the call's cancel. As one flag it shut the door and the lull for
+    good; as an id already cancelled it is ignored, and the re-offer comes."""
+    from teaport_brain.owed import Owed
+    async with _GateRun(release=0.1) as r:
+        owed = Owed(CTX, gate=r.gate, reoffer_quiet_s=0.3)
+        await r.down(LLMFullResponseStartFrame(), BotStartedSpeakingFrame())   # the line
+        owed.land("Fetch the top story.", "Tesla Roadster", "call-hn")         # run waits
+        from pipecat.frames.frames import FunctionCallCancelFrame
+        await r.down(VADUserStartedSpeakingFrame(), UserStartedSpeakingFrame(),
+                     InterruptionFrame(),
+                     FunctionCallCancelFrame(function_name="get_weather", tool_call_id="tc-w"),
+                     _tool_call("tc-w", "get_weather"),          # stale, after the cut
+                     BotStoppedSpeakingFrame(), VADUserStoppedSpeakingFrame(),
+                     UserStoppedSpeakingFrame())                 # no words: no completion
+        assert r.gate.is_clear(), "a cancelled call's late in-progress frame shut the door"
+        assert await r.until(lambda: [f for f in _runs(r) if f.purpose == "reoffer"]), (
+            "the lull never fired")
+        r.gate.ask(["call-hn"], "run", CTX)
+        assert await r.until(lambda: len(_runs(r)) == 2), "the door did not reopen"
+
+
+async def test_two_calls_out_end_the_turn_only_when_both_are_answered():
+    """ask_openclaw (its placeholder runs no inference) beside a sync tool in one
+    completion: the placeholder's result does not end the turn or the round while the
+    sync tool runs."""
+    gate = _gate()
+    await _feed(gate, LLMFullResponseStartFrame(), _tool_call("tc-a"),
+                _tool_call("tc-b", "get_weather"), _tool_result(run_llm=False, call_id="tc-a"))
+    assert not gate.is_clear(), "the placeholder's result ended a turn with a call still out"
+    await _feed(gate, _tool_result(call_id="tc-b"))
+    assert not gate.is_clear(), "the sync tool's answering completion has not run"
+    await _feed(gate, LLMFullResponseStartFrame(), LLMFullResponseEndFrame())
+    assert gate.is_clear()
 
 
 async def test_a_no_inference_result_ends_the_tool_round():

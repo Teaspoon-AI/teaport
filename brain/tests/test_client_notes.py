@@ -50,6 +50,7 @@ from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     FunctionCallInProgressFrame,
+    FunctionCallResultFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -431,14 +432,17 @@ async def test_no_note_lands_while_a_tool_call_turn_is_in_flight():
     h = _harness()
     for f in (LLMFullResponseStartFrame(),
               FunctionCallInProgressFrame(function_name="ask_openclaw",
-                                          tool_call_id="tc-1", arguments={})):
+                                          tool_call_id="tc-1", arguments={},
+                                          cancel_on_interruption=True)):
         await h.gate.process_frame(f, FrameDirection.DOWNSTREAM)
     await _send(h, "The user opened the map.")
     assert _results(h)[-1]["status"] == "queued"
     await asyncio.sleep(0.15)
     assert _notes_in(h.context) == [], "a note landed inside a tool-call turn"
-    # The tool's answering completion: its start ends the tool round, its end the turn.
-    for f in (LLMFullResponseStartFrame(), LLMFullResponseEndFrame()):
+    # The tool's result, then its answering completion, whose end ends the turn.
+    for f in (FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="tc-1",
+                                      arguments={}, result={"ok": True}),
+              LLMFullResponseStartFrame(), LLMFullResponseEndFrame()):
         await h.gate.process_frame(f, FrameDirection.DOWNSTREAM)
     await _settle(h)
     assert len(_notes_in(h.context)) == 1

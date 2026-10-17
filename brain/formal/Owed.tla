@@ -292,7 +292,7 @@ Ask(k) ==
          THEN hPost' = FALSE /\ displaced' = TRUE
          ELSE UNCHANGED <<hPost, displaced>>
 
-\* The consult lands (tools._consult_and_followup -> owed.land): the placeholder tool
+\* The consult lands (tools._consult_and_land -> Owed.land): the placeholder tool
 \* result is rewritten once to the cleaned outcome (the code from agent_session.py:331-345,
 \* moved), the record is owed, and the landing run is asked -- unless a caller request
 \* is still to be RENDERED (their turn is open, or committed and not yet asked): that

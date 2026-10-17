@@ -55,6 +55,7 @@
 #
 import asyncio
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from loguru import logger
@@ -65,6 +66,7 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
+    FunctionCallCancelFrame,
     FunctionCallInProgressFrame,
     FunctionCallResultFrame,
     InterruptionFrame,
@@ -90,6 +92,9 @@ from teaport_brain.settings import setting
 _QUIET_SECS = setting("TEAPORT_FOLLOWUP_QUIET_S")
 # Ceiling on how long to hold an answer waiting for a gap; past this, speak anyway.
 _MAX_WAIT = setting("TEAPORT_FOLLOWUP_MAX_WAIT_S")
+# Call ids settled or cancelled, kept so a late in-progress frame for one is ignored.
+_MAX_CALLS_DONE = 64
+
 # How long a turn-free window stays claimed by the waiter it was given to, at most. The
 # claim ends when the claimant's completion starts (LLMFullResponseStartFrame, which
 # follows its queued LLMRunFrame within milliseconds), at an interruption, or when the
@@ -346,12 +351,19 @@ class FollowupGate(FrameProcessor):
         # None. Its own, beside the post-tool answer's _held_answer: HoldNoLoss.
         self._run = None
         self.runs_dropped = 0
-        # A function call is out and nothing has answered it yet: set by its
-        # FunctionCallInProgressFrame, cleared by the answering completion's start, a
-        # result that runs no inference, or an interruption. _turn alone does not cover
-        # it: a completion with text AND a call ("Let me check." + get_weather) ends --
-        # its End reaches here -- while the call is out (formal/Owed.tla, endClearsTool).
-        self._tool_round = False
+        # The function calls out: tool_call_id -> whether an interruption cancels it. Added
+        # by a call's FunctionCallInProgressFrame, removed by its result or its
+        # FunctionCallCancelFrame, and by an interruption when it cancels the call
+        # (pipecat's default, every tool here: Owed.tla TurnStart). _turn alone
+        # does not cover a call: a completion with text AND a call ("Let me check." +
+        # get_weather) ends -- its End reaches here -- while the call is out
+        # (formal/Owed.tla, endClearsTool). Ids, not a flag: the in-progress frame is
+        # uninterruptible, so it can reach here AFTER the barge-in that cancelled its call
+        # (it waits in the TTS's and the transport's queues), and one for an id already
+        # settled or cancelled (_calls_done) is ignored. As one flag it set the round
+        # again for good when no completion followed (staleFlag: OwedResolves).
+        self._calls_out: dict = {}
+        self._calls_done: OrderedDict = OrderedDict()
         # A commit's LLMContextFrame passed TurnCommitMark and the LLM has not rendered it
         # yet (request_rendered): with _user, "a caller request is still to be rendered"
         # (owed.Owed.land; Owed.tla Land).
@@ -478,7 +490,7 @@ class FollowupGate(FrameProcessor):
         else:
             self._idle.set()
             self._busy.clear()
-        if busy or self._turn or self._claimed or self._tool_round:
+        if busy or self._turn or self._claimed or self._calls_out:
             self._clear.clear()
         else:
             self._clear.set()
@@ -559,7 +571,6 @@ class FollowupGate(FrameProcessor):
         elif isinstance(frame, LLMFullResponseStartFrame):
             self._llm = True
             self._turn = True
-            self._tool_round = False   # the answering completion (or a new one) is here
             # A claimant's completion has started; _turn holds the window shut from here.
             self.release_claim()
             self._refresh()
@@ -578,12 +589,19 @@ class FollowupGate(FrameProcessor):
             # directions) and this gate sits before the assistant aggregator, so the
             # frame is seen. getattr for both fields:
             # run_llm is the legacy duplicate of properties.run_llm.
+            #
+            # With another call still out (ask_openclaw's placeholder beside a sync tool,
+            # in one completion) the turn goes on: that call's answering completion ends it.
+            self._call_settled(frame.tool_call_id)
             props = getattr(frame, "properties", None)
             if (getattr(frame, "run_llm", None) is False
                     or (props is not None and getattr(props, "run_llm", None) is False)):
-                self._turn = False
-                self._tool_round = False
-                self._refresh()
+                if not self._calls_out:
+                    self._turn = False
+            self._refresh()
+        elif isinstance(frame, FunctionCallCancelFrame):
+            self._call_settled(frame.tool_call_id)
+            self._refresh()
         elif isinstance(frame, InterruptionFrame):
             # A held answer goes with it: the turn behind the interruption commits, and
             # that commit reads the result. (Only what is held here: a push already past
@@ -595,7 +613,9 @@ class FollowupGate(FrameProcessor):
             self._llm = False
             self._turn = False
             self._commit_unrendered = False   # a commit still queued is flushed with it
-            self._tool_round = False          # a sync call is cancelled
+            for call, cancels in list(self._calls_out.items()):
+                if cancels:                       # the barge-in cancels a sync call
+                    self._call_settled(call)
             # Every watched line is cut — including one queued but not yet speaking,
             # which the caller heard none of. A claimant's queued completion is flushed
             # with it, so its claim goes too.
@@ -625,7 +645,8 @@ class FollowupGate(FrameProcessor):
             # found the interleaving in 7 steps (LATCH = "clearedOnToolCall",
             # invariant NoInterjectMidTurn); Owed.tla's ow_vadLevel is the run's.
             self._llm = False
-            self._tool_round = True
+            if frame.tool_call_id not in self._calls_done:
+                self._calls_out[frame.tool_call_id] = frame.cancel_on_interruption is not False
             self._refresh()
         self._mark_unquiet()
         await self.push_frame(frame, direction)
@@ -699,6 +720,12 @@ class FollowupGate(FrameProcessor):
 
     # ------------------------------------------------------------ the run (#203)
 
+    def _call_settled(self, call_id) -> None:
+        self._calls_out.pop(call_id, None)
+        self._calls_done[call_id] = None
+        while len(self._calls_done) > _MAX_CALLS_DONE:
+            self._calls_done.popitem(last=False)
+
     def _speech_changed(self) -> None:
         if self._vad or self._speech_pending:
             self._speech_clear.clear()
@@ -727,7 +754,7 @@ class FollowupGate(FrameProcessor):
     def _door_open(self) -> bool:
         """The run's window (Owed.tla Window): VAD-level AND turn-level -- no caller
         speech pending, no turn open, no request or reply in flight, no tool round out
-        (_turn, _tool_round), nothing claimed (a commit not yet answered: TurnCommitMark; a client
+        (_turn, _calls_out), nothing claimed (a commit not yet answered: TurnCommitMark; a client
         note's reaction), nothing held for a phone call, the post-tool answer's slot
         empty (it goes first)."""
         return (self._clear.is_set() and not self._vad and not self._speech_pending
