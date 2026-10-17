@@ -145,8 +145,14 @@ class _Speculation:
         self.task: asyncio.Task | None = None
         self._stream = None
         self._iter = None
+        # The owed records its request's note carried (owed.py), written by the render
+        # in this speculation's task; the commit that adopts it registers them.
+        self.owed_noted: list = []
 
     async def run(self, llm, ctx: LLMContext):
+        from teaport_brain.services import SPECULATION_NOTED
+
+        SPECULATION_NOTED.set(self.owed_noted)   # this task's context only
         try:
             self._stream = await llm._open_stream(ctx)
             self._iter = self._stream.__aiter__()
@@ -195,6 +201,11 @@ class _AdoptedStream:
     def __init__(self, spec: _Speculation):
         self._spec = spec
         self._iter = self._replay()
+
+    @property
+    def owed_noted(self) -> tuple:
+        """The record keys the speculation's note carried (services.SPECULATION_NOTED)."""
+        return tuple(self._spec.owed_noted)
 
     async def _replay(self):
         spec = self._spec

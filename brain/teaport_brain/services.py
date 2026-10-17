@@ -38,6 +38,7 @@ from teaport_brain.followup_gate import RunFrame, RunSilentFrame
 from teaport_brain.llm_dns import prime, use_stale_dns
 from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
+from teaport_brain.tts_text import has_speech
 
 TEAPORT_URL = setting("TEAPORT_URL")
 
@@ -338,14 +339,11 @@ class _RenumberedStream:
     then close() reaches the SDK stream.
     """
 
-    __slots__ = ("_stream", "_iter", "owed_noted")
+    __slots__ = ("_stream", "_iter")
 
-    def __init__(self, stream, owed_noted=()):
+    def __init__(self, stream):
         self._stream = stream
         self._iter = _sequential_tool_call_indices(_watch_completion_identity(stream))
-        # The owed records its request carried the note for (owed.py): read back when a
-        # speculation's stream is adopted, whose request was rendered in its own task.
-        self.owed_noted = owed_noted
 
     def __aiter__(self):
         return self._iter
@@ -357,8 +355,6 @@ class _RenumberedStream:
 class _NothingToSay:
     """The stream of a run whose records were all heard by the time it rendered: no
     request is sent, and the completion ends empty (owed.Owed.view; Owed.tla RunGo)."""
-
-    owed_noted = ()
 
     def __aiter__(self):
         return self._none()
@@ -373,8 +369,15 @@ class _NothingToSay:
 
 
 # The request the LLM is answering now, in the task answering it (process_frame): an
-# owed.Reply. A speculation's request runs in a task of its own and reads None.
+# owed.Reply. A speculation's request runs in a task of its own and reads None. Set
+# around the WHOLE process_frame: a task spawned inside it (a function call's) inherits
+# this Reply, stale once the completion is over -- read it only on the completion's path.
 _REPLY: contextvars.ContextVar = contextvars.ContextVar("teaport_owed_reply", default=None)
+# In a speculation's task (speculate._Speculation.run): the list its render writes the
+# record keys its note carried into, for the commit that adopts its stream
+# (speculate._AdoptedStream.owed_noted; formal/Owed.tla, adoptDropsKeys).
+SPECULATION_NOTED: contextvars.ContextVar = contextvars.ContextVar(
+    "teaport_speculation_noted", default=None)
 
 
 # Connect timeout. Separate from the read timeout below because they fail differently:
@@ -611,7 +614,9 @@ class BoundedOpenAILLMService(OpenAILLMService):
             if isinstance(frame, LLMFullResponseStartFrame):
                 # The ledger reads it at the TTS's sighting, and settles the reply by it.
                 frame.owed_reply = reply
-            elif isinstance(frame, LLMTextFrame) and (frame.text or "").strip():
+            elif isinstance(frame, LLMTextFrame) and has_speech(frame.text):
+                # The TTS's own test: text it would speak. A reply of zero-width spaces
+                # (#70) is none, and its run is silent (RunSilentFrame).
                 reply.texts += 1
         await super().push_frame(frame, direction)
 
@@ -635,7 +640,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
             adopted = await self.speculator.take(context)
             if adopted is not None:
                 if self.owed is not None:
-                    self._rendered(reply, getattr(adopted, "owed_noted", ()))
+                    self._rendered(reply, adopted.owed_noted)
                 return adopted
         return await self._open_stream(context)
 
@@ -668,12 +673,14 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 return _NothingToSay()
             context = view
             self._rendered(reply, noted)
+            if reply is None and (into := SPECULATION_NOTED.get()) is not None:
+                into[:] = noted
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
         # _RenumberedStream, not the bare generator — see the class docstring: a
         # generator has no close(), so wrapping in one silently disabled base_llm's
         # socket release.
-        return _RenumberedStream(stream, noted)
+        return _RenumberedStream(stream)
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):

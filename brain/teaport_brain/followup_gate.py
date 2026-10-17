@@ -229,11 +229,7 @@ class Delivery:
     (AgentSession, call_prompt.py). Completion comes from the transport's own frames,
     which are prompt and mean exactly what they say: BotStoppedSpeaking once it spoke,
     or any interruption. Any audio counts as it speaking -- the line may well be
-    append_to_context=False itself.
-
-    (The consult follow-up's watch of a model REPLY was here too, with the reply's own
-    audio telling it from a filler's. A reply's end now reaches owed.py through the
-    transcript ledger, which charts each reply by its own audio; see owed.py.)
+    append_to_context=False itself. (A model reply's end is the ledger's: owed.py.)
     """
 
     __slots__ = ("spoke", "interrupted", "done")
@@ -648,7 +644,6 @@ class FollowupGate(FrameProcessor):
             if frame.tool_call_id not in self._calls_done:
                 self._calls_out[frame.tool_call_id] = frame.cancel_on_interruption is not False
             self._refresh()
-        self._mark_unquiet()
         await self.push_frame(frame, direction)
 
     # ------------------------------------------------------------ the answer after a tool
@@ -740,6 +735,10 @@ class FollowupGate(FrameProcessor):
                 and self._held_answer is None and self._run is None)
 
     def _mark_unquiet(self) -> None:
+        """At every change the quiet depends on: _refresh (who speaks, the turn, the
+        claim, the calls out) and _speech_changed (the VAD). A run or a held answer
+        waiting is only ever set inside a stretch those already mark (speech, a turn),
+        and quiet_for() marks whatever it reads as not quiet."""
         if not self._quiet():
             self._last_unquiet = time.monotonic()
 
@@ -778,7 +777,6 @@ class FollowupGate(FrameProcessor):
             logger.info(f"FOLLOWUP-GATE: no run for {keys}: the session is over ({e!r})")
             return
         self._run = (keys, purpose, context, task)
-        self._mark_unquiet()
 
     def _drop_run(self, why: str | None) -> None:
         run, self._run = self._run, None
@@ -837,15 +835,9 @@ class FollowupGate(FrameProcessor):
         """Wait for the next stretch of activity to start and then finish.
 
         Used by the SIP front-end to let the busy line play before hanging up, where
-        nothing else is talking and "any activity" is precisely the right signal.
-
-        NOT sound for retiring a one-shot context order, which is what it was
-        originally written for. _busy is set by ANY activity — the user's speech as
-        readily as the turn the caller queued — so this returns on someone else's
-        turn and the order is retired having never been read. TLC found the
-        interleaving in 8 steps (brain/formal/Followup.tla, MODE = "asWritten",
-        invariant NoSilentLoss). Retirement belongs to FollowupTrigger, which keys on
-        the completion that actually read the order.
+        nothing else is talking and "any activity" is precisely the right signal. Not
+        for a reply's end, which is the ledger's (owed.py), nor for retiring a one-shot
+        order (FollowupTrigger; Followup.tla MODE = "asWritten" is why).
         """
         try:
             await asyncio.wait_for(self._busy.wait(), timeout=start_timeout)

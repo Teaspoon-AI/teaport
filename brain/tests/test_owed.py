@@ -164,8 +164,8 @@ def test_the_203_cut_closes_answer_first_and_not_after_the_lead_in():
     """Owed.tla ow_fraction (#203): 1.1 s of the lead-in was 31% of the words and none
     of the answer. Answer first, the same 1.1 s carries two terms."""
     rec = hn_record()
-    assert not rec.closes_on(LEAD_IN, uncut_run=False)
-    assert rec.closes_on("Tesla Roadster is the top", uncut_run=False)
+    assert not rec.closes_on(LEAD_IN, whole=False, run=False)
+    assert rec.closes_on("Tesla Roadster is the top", whole=False, run=False)
 
 
 def test_a_deferral_closes_nothing():
@@ -175,7 +175,7 @@ def test_a_deferral_closes_nothing():
     assert "time" not in rec.items[0][1] and "sure" not in rec.items[0][1]
     for line in ("Sure, take your time.", "No rush, just let me know when you're ready.",
                  "Okay, I'll wait."):
-        assert not rec.closes_on(line, uncut_run=False), line
+        assert not rec.closes_on(line, whole=False, run=False), line
 
 
 def test_present_does_not_contain_sent():
@@ -187,34 +187,42 @@ def test_one_story_of_five_does_not_close_the_list():
     """ow_oneItem: every item, not one."""
     rec = Record.make("k", TOP5_REQ, clean_outcome(TOP5_RAW))
     assert len(rec.items) == 5
-    assert not rec.closes_on("The top story is Tesla Roadster.", uncut_run=False)
-    assert not rec.closes_on("The top story is Tesla Roadster.", uncut_run=True), (
+    assert not rec.closes_on("The top story is Tesla Roadster.", whole=False, run=False)
+    assert not rec.closes_on("The top story is Tesla Roadster.", whole=True, run=True), (
         "an uncut run that named one item closed five (ow_asWritten_closed)")
     told = ("Tesla Roadster, then Ultramarine One Flash, then Llama dot cpp on a jailbroken "
             "PS5, then Claude reveals ECDSA curve origins, and Butlerian Jihad.")
-    assert rec.closes_on(told, uncut_run=False), [sorted(t) for _, t in rec.items]
+    assert rec.closes_on(told, whole=False, run=False), [sorted(t) for _, t in rec.items]
 
 
 def test_an_item_with_one_term_needs_that_term():
     rec = Record.make("k", "Is the pharmacy open?", "Yes.")
     assert rec.items[0][1] == {"yes"}
-    assert rec.closes_on("Yes, it is.", uncut_run=False)
-    assert not rec.closes_on("Let me know when you're ready.", uncut_run=False)
+    assert rec.closes_on("Yes, it is.", whole=False, run=False)
+    assert not rec.closes_on("Let me know when you're ready.", whole=False, run=False)
 
 
-def test_a_failure_closes_only_by_an_uncut_run():
-    """A failure is one item with no terms (Owed.tla RUNCLOSE = "terms")."""
+def test_a_failure_closes_when_a_reply_about_it_is_heard_to_its_end():
+    """A failure is one item with no terms (Owed.tla OUTCOME = "failure"). It closes on a
+    run heard to its end, or -- RUNCLOSE = "about", Fable's final review -- on any noted
+    reply heard to its end that is about the record: the caller's own turn told it, and
+    the lull must not tell it again (ow_failure_runOnly). An unrelated reply is about
+    nothing the request named and closes nothing; a cut closes nothing."""
     status, outcome = owed.failure_outcome("timeout")
     rec = Record.make("k", HN_REQ, outcome, failure=status)
     assert rec.items[0][1] == frozenset()
-    assert not rec.closes_on("It ran out of time before it finished.", uncut_run=False)
-    assert rec.closes_on("Sorry, that one ran out of time.", uncut_run=True)
+    told = "Sorry, that Hacker News lookup ran out of time before it finished."
+    assert rec.closes_on(told, whole=True, run=False), "the caller's turn told it in full"
+    assert not rec.closes_on(told, whole=False, run=False), "cut before its end"
+    assert not rec.closes_on("It's eleven twenty-two at night.", whole=True, run=False), (
+        "an unrelated reply closed the failure")
+    assert rec.closes_on("Sorry, that one ran out of time.", whole=True, run=True)
 
 
 def test_no_pts_prefix_closes_nothing_with_terms():
     """A cut reply whose words carried no pts closes only by playing through (DESIGN v3
     #4): heard None."""
-    assert not hn_record().closes_on(None, uncut_run=False)
+    assert not hn_record().closes_on(None, whole=False, run=False)
 
 
 # =============================================================== the note
@@ -374,6 +382,20 @@ async def test_only_a_reply_that_carried_the_note_counts():
     b.land(HN_REQ, HN_RAW, "call-hn")
     b.settle(Reply("caller"), "Tesla Roadster, by shekhar101.", cut=False, audio=True)
     assert b.record("call-hn").state == OWED
+
+
+async def test_a_failure_the_callers_turn_told_is_not_reoffered():
+    """Fable's final review (Owed.tla ow_failure_runOnly): the consult fails while the
+    caller is mid-turn, so no landing run; their turn tells it in full. Closed, and the
+    lull has nothing to say."""
+    b, _, gate = book(pending=True, reoffer_quiet_s=0.05)
+    b.land(HN_REQ, None, "call-hn", failure="timeout")
+    b.settle(noted_reply(b, "caller"), "Sorry, that Hacker News lookup ran out of time, so "
+             "I don't have an answer.", cut=False, audio=True)
+    assert b.record("call-hn").state == CLOSED
+    gate.quiet = 1.0
+    await asyncio.sleep(0.3)
+    assert gate.asked == [], gate.asked
 
 
 async def test_a_run_that_ends_without_closing_arms_the_reoffer():
@@ -578,8 +600,8 @@ async def test_the_feed_reads_the_pts_prefix_not_the_ledgers_heard_text():
     u = [e for e in ledger.events if e.speaker == "assistant"][-1]
     assert "Roadster" in u.heard_text, f"the control: the estimate reads more ({u.heard_text!r})"
     assert got == [(reply, "Tesla", True, True)], got
-    assert not hn_record().closes_on(got[0][1], uncut_run=False)
-    assert hn_record().closes_on(u.heard_text, uncut_run=False), "the control would close it"
+    assert not hn_record().closes_on(got[0][1], whole=False, run=False)
+    assert hn_record().closes_on(u.heard_text, whole=False, run=False), "the control would close it"
 
 
 async def test_a_reply_that_played_through_settles_at_its_own_window_close():
@@ -628,6 +650,18 @@ async def test_a_filler_lines_end_settles_nothing():
     await ledger.feed([(TTSStoppedFrame(context_id="r"), 2.0),
                        (BotStoppedSpeakingFrame(), 3.0)])
     assert got == [(reply, TELLING, False, True)], got
+
+
+async def test_a_reply_cut_after_its_last_word_was_heard_to_its_end():
+    """Every word's pts before the cut: the reply heard to its end (Owed.tla g = "all"
+    for a cut), which closes a failure the way playing through does."""
+    reply = Reply("run")
+    _, got = await _ledger([
+        (LLMTextFrame("It timed out."), 0.0), (LLMFullResponseEndFrame(), 0.0),
+        (TTSStartedFrame(), 1.0), (_audio(3.0), 1.0), (BotStartedSpeakingFrame(), 1.0),
+        (_word("It", 1.1), 1.05), (_word("timed", 1.3), 1.05), (_word("out.", 1.5), 1.05),
+        (InterruptionFrame(), 2.5)], reply)
+    assert got == [(reply, "It timed out.", False, True)], got
 
 
 async def test_a_reply_with_no_text_settles_as_no_audio():

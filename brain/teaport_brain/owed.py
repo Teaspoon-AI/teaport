@@ -347,20 +347,30 @@ class Record:
         rec.items = _record_items(outcome, request, failure)
         return rec
 
-    def closes_on(self, heard_text: Optional[str], uncut_run: bool) -> bool:
+    def closes_on(self, heard_text: Optional[str], *, whole: bool, run: bool) -> bool:
         """The close rule, on one reply that carried the note: every item heard -- an
-        item with terms by its terms in the reply's pts-exact heard text, one without
-        (a failure, a bare "done") only by an uncut run of ours with audio (Owed.tla
-        Closes, RUNCLOSE = "terms"). `heard_text` None: no pts-exact prefix (the reply
-        was cut and its words carried no pts), which closes nothing with terms."""
+        item with terms by its terms in the reply's pts-exact heard text; one without (a
+        failure, a bare "done") when the reply was heard to its end (`whole`: it played
+        through with audio, or was cut after its last word) and was a run of ours or is
+        about this record (Owed.tla Closes, RUNCLOSE = "about": the failure the caller's
+        own turn told in full is not re-offered; an unrelated reply shares nothing with
+        the request). `heard_text` None: no pts-exact prefix (the reply was cut and its
+        words carried no pts), which closes nothing."""
         heard = set(spoken_tokens(heard_text)) if heard_text else set()
         for _, terms in self.items:
             if terms:
                 if not item_heard(terms, heard):
                     return False
-            elif not uncut_run:
+            elif not (whole and heard_text and (run or self.about(heard_text))):
                 return False
         return True
+
+    def about(self, heard_text: str) -> bool:
+        """Whether a reply's words are about this record: a non-common spoken token
+        shared with its request or its terms."""
+        toks = {t for t in spoken_tokens(heard_text) if not _is_common(t)}
+        about = set(spoken_tokens(self.request)) | {t for _, ts in self.items for t in ts}
+        return bool(toks & about)
 
     def to_saved(self) -> dict:
         return {"key": self.key, "request": self.request, "outcome": self.outcome,
@@ -640,7 +650,7 @@ class Owed:
         try:
             while self._due():
                 await asyncio.sleep(_LULL_TICK_S)
-                if self._settled.is_set() and self.gate.quiet_for() >= self._reoffer_quiet_s:
+                if self.is_settled() and self.gate.quiet_for() >= self._reoffer_quiet_s:
                     due = self._due()
                     for r in due:
                         r.missed = False
@@ -674,13 +684,15 @@ class Owed:
             rec = self._records.get(key)
             if rec is None or rec.state != OWED:
                 continue
-            if rec.closes_on(heard, uncut_run=run and not cut and audio):
+            if rec.closes_on(heard, whole=audio and not cut, run=run):
                 rec.state = CLOSED
                 rec.missed = False
                 logger.info(f"OWED: {key} closed -- heard by the {reply.purpose} reply "
                             f"({'cut' if cut else 'played through'}): {(heard or '')[:80]!r}")
                 continue
-            if cut and heard and heard.strip() and (run or self._about(rec, heard)):
+            # Quoted only when about the record: the #203 session would otherwise have
+            # quoted a clarifying question as the answer (test_owed_corpus.py).
+            if cut and heard and heard.strip() and (run or rec.about(heard)):
                 rec.heard_quote = heard.strip()
             if run or (cut and audio):
                 # A run that ended without closing (no audio, partial) and an audible cut
@@ -690,15 +702,6 @@ class Owed:
                         f"({'cut' if cut else 'played through' if audio else 'no audio'}; "
                         f"heard {(heard or '')[:60]!r})")
         self._arm(missed)
-
-    @staticmethod
-    def _about(rec: Record, heard: str) -> bool:
-        """Whether a cut reply's words are about this record (a non-common spoken token
-        shared with its request or its terms): the #203 session quoted a clarifying
-        question otherwise (test_owed_corpus.py)."""
-        toks = {t for t in spoken_tokens(heard) if not _is_common(t)}
-        about = set(spoken_tokens(rec.request)) | {t for _, ts in rec.items for t in ts}
-        return bool(toks & about)
 
     # ---- the session's end, and the room's sleep -----------------------------------
 

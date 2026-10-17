@@ -25,6 +25,7 @@ require_pinned()
 
 from pipecat.processors.aggregators.llm_context import LLMContext  # noqa: E402
 
+from teaport_brain import owed as owed_mod  # noqa: E402
 from teaport_brain.owed import Owed, Record, Reply, clean_outcome  # noqa: E402
 
 # ---- the outcomes, as OpenClaw returned them --------------------------------------
@@ -93,8 +94,20 @@ OTHER = [NO_RUSH, GLAD, ONE_STORY, WAITING, HOST, HAMLET, WEATHER, SORRY,
          "Hello, great to have you here.", "Glad to hear it!",
          "You're welcome. Would you like me to continue with the rest of the soliloquy?"]
 
+# A failure record (one term-less item, Owed.tla OUTCOME = "failure") for the first
+# request, as the session would have landed it had the consult timed out: closed by a
+# reply about it heard to its end (RUNCLOSE = "about"), never by an unrelated one. The
+# session's own lines are its negative controls; the told line is its telling.
+FAILED = (TOP[0], owed_mod.failure_outcome("timeout")[1], "timeout")
+TOLD_FAILURE = "Sorry, that Hacker News lookup ran out of time before it finished."
+
 CORPUS = (
-    [(TOP, LEAD_IN, "owed"), (TOP, TOLD_SUMMARY, "heard"), (TOP, FIVE_TOLD, "heard"),
+    [(FAILED, TOLD_FAILURE, "heard")]
+    # The story itself, told from another lookup: the caller has what the failed
+    # request was for, and "it timed out" is nothing they still need.
+    + [(FAILED, TOLD_SUMMARY, "heard"), (FAILED, FIVE_TOLD, "heard")]
+    + [(FAILED, line, "owed") for line in OTHER]
+    + [(TOP, LEAD_IN, "owed"), (TOP, TOLD_SUMMARY, "heard"), (TOP, FIVE_TOLD, "heard"),
      (TOP, FIVE_CUT, "heard"),
      (SUMMARY, TOLD_SUMMARY, "owed"),            # the HN reaction half never told
      (SUMMARY, LEAD_IN, "owed"),
@@ -104,8 +117,10 @@ CORPUS = (
 
 
 def _closes(outcome, line):
-    request, raw = outcome
-    return Record.make("k", request, clean_outcome(raw)).closes_on(line, uncut_run=False)
+    request, raw = outcome[:2]
+    failure = outcome[2] if len(outcome) > 2 else None
+    rec = Record.make("k", request, clean_outcome(raw), failure=failure)
+    return rec.closes_on(line, whole=True, run=False)
 
 
 def test_no_false_close():

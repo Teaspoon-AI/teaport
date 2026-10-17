@@ -176,26 +176,52 @@ async def test_nothing_owed_nothing_rendered():
 
 
 async def test_a_speculation_renders_in_its_own_task_and_the_commit_adopts_its_note():
-    """ow_renderInGet: the speculation opens through _open_stream, so its request carries
-    the note; the commit that adopts it registers what it carried."""
+    """ow_renderInGet: the speculation opens through _open_stream in its own task, so its
+    request carries the note; ow_adoptDropsKeys: the commit that adopts it -- through the
+    real Speculator.take and its _AdoptedStream -- registers the keys that note carried,
+    and its telling closes the record (Fable's final review: it read them off the wrong
+    object, and a full telling on an adopted turn closed nothing)."""
+    from teaport_brain.speculate import Speculator, _AdoptedStream
     provider = _Provider()
     llm = _llm(provider)
-    ctx = _context({"role": "user", "content": "I'm ready."})
+    ctx = _context()
     llm.owed, _ = _book(ctx)
-    spec_stream = await asyncio.ensure_future(llm._open_stream(ctx))   # no Reply: its own task
+    aggregator = SimpleNamespace(context=ctx, _aggregation=[],
+                                 _user_turn_controller=SimpleNamespace(_user_turn=True))
+    llm.speculator = Speculator(llm=llm, aggregator=aggregator)
+    assert await llm.speculator.start("I'm ready.", "test")
+    for _ in range(200):
+        if llm.speculator._current is not None and llm.speculator._current.done:
+            break
+        await asyncio.sleep(0.01)
     assert _notes(provider.requests[0]), "the speculation went out bare"
-    llm.speculator = SimpleNamespace(take=lambda c: _adopt(spec_stream))
-    reply = owed.Reply("caller")
+    ctx.add_message({"role": "user", "content": "I'm ready."})     # the commit
+    reply = owed.Reply("caller", commit=True)
     token = services._REPLY.set(reply)
     try:
-        assert await llm.get_chat_completions(ctx) is spec_stream
+        adopted = await llm.get_chat_completions(ctx)
     finally:
         services._REPLY.reset(token)
-    assert reply.noted == ("call-hn",) and len(provider.requests) == 1
+    assert isinstance(adopted, _AdoptedStream) and llm.speculator.hits == 1
+    assert len(provider.requests) == 1, "the commit opened a request of its own"
+    assert reply.noted == ("call-hn",), f"the adopted note's keys were lost: {reply.noted}"
+    llm.owed.settle(reply, "Tesla Roadster is the top story on Hacker News right now.",
+                    cut=False, audio=True)
+    assert llm.owed.record("call-hn").state == owed.CLOSED
+    await adopted.close()
 
 
-async def _adopt(stream):
-    return stream
+async def test_a_run_of_zero_width_spaces_is_a_silent_run():
+    """#70: a run whose text is only U+200B gives the TTS nothing to speak, so no context
+    opens and its End is held: it must count as a run that said nothing (the TTS's own
+    has_speech), or the gate's turn stays set for good (Owed.tla SILENT)."""
+    provider = _Provider(reply=lambda p: [_chunk("\u200b\u200b\u200b")])
+    llm = _llm(provider)
+    ctx = _context()
+    llm.owed, _ = _book(ctx)
+    frames = await _run(llm, RunFrame(context=ctx, keys=("call-hn",), purpose="run"))
+    assert any(isinstance(f, RunSilentFrame) for f in frames), (
+        "a run of zero-width spaces kept the gate's turn")
 
 
 class _Sink(FrameProcessor):

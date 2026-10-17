@@ -32,6 +32,9 @@ import time
 os.environ.setdefault("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime")
 os.environ.setdefault("LLM_BASE_URL", "http://127.0.0.1:9/v1")
 os.environ.setdefault("LLM_API_KEY", "not-a-real-key")
+# The speculative reply ON: "I'm ready." goes through an adopted speculation, the path
+# the note's keys must survive (Owed.tla adoptDropsKeys).
+os.environ["TEAPORT_SPECULATIVE_REPLY"] = "1"
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
@@ -187,14 +190,19 @@ class Rig:
         await until(lambda: len(self.provider.requests) >= n)
         return self.provider.requests[n - 1]
 
-    async def say(self, text):
-        """The caller's turn: speech, its words, the verdict."""
+    async def say(self, text, speculate=False):
+        """The caller's turn: speech, its words, the verdict -- after a speculative
+        reply on those words has come back, when `speculate`."""
         stops = self.bot_stops
         await self.task.queue_frames([VADUserStartedSpeakingFrame()])
         f = TranscriptionFrame(text, "caller", "t")
         f.finalized = True
         await self.task.queue_frames([f, VADUserStoppedSpeakingFrame()])
         await until(lambda: self.user._user_turn_controller._user_turn)
+        if speculate:
+            spec = self.session.llm.speculator
+            assert await spec.start(text, "test"), "no speculation started"
+            await until(lambda: spec._current is not None and spec._current.done)
         await self.stop.commit()
         return stops
 
@@ -271,11 +279,13 @@ async def test_203_a_lead_in_cut_stays_owed_until_the_caller_hears_it():
         assert len(rig.session.context.get_messages()) == n, "stay_silent entered the context"
         assert rec.state == owed.OWED and rec.reoffers == 1
         # "I'm ready."
-        stops = await rig.say("I'm ready.")
+        stops = await rig.say("I'm ready.", speculate=True)
         ready = await rig.requests(4)
         assert "Tesla Roadster" in (_note(ready) or ""), "the caller's turn went without the note"
         await rig.played_out(stops)
-        assert rec.state == owed.CLOSED
+        assert rig.session.llm.speculator.hits == 1, "the commit did not adopt the speculation"
+        assert len(rig.provider.requests) == 4, "the commit asked again"
+        assert rec.state == owed.CLOSED, "a full telling through an adopted stream left it owed"
 
 
 def main():

@@ -570,6 +570,14 @@ class TranscriptLedger(BaseObserver):
         return {"seq": self._seq, "kind": kind, "parts": [], "text": "",
                 "ended": False, "drained": False, "turn": None, "reply": None}
 
+    # The settle feed's call sites -- every distinct end an LLM reply can have, each
+    # settling it once (_reply_end drops the entry's reply after the first):
+    #   _llm_side      its End with no text at the TTS: a tool call, or emptied
+    #   _end_drained   its context drained with no turn open, or another response's
+    #                  context took its place: never synthesized
+    #   _interrupt     cut while still streaming, or queued for a context: heard nothing
+    #   _finish        its turn charted with no text, or nothing synthesizable in it
+    #   _finish        charted: played through, cut (the pts-exact prefix), or never played
     def _reply_end(self, entry, heard: Optional[str], *, cut: bool, audio: bool):
         """The settle feed (on_reply_end), once per entry."""
         reply = entry.get("reply") if entry is not None else None
@@ -975,8 +983,12 @@ class TranscriptLedger(BaseObserver):
         # played (_close_ready) -- not at a BotStoppedSpeaking that came mid-reply, which
         # the transport's 3 s idle fallback sends on a TTS stall.
         played_any = (not never and audio_dur > 0 and (not interrupted or heard > 0))
-        self._reply_end(entry, exact if played_any else None, cut=interrupted,
-                        audio=played_any)
+        # Cut after its last word: every word of it was heard, which is the reply heard
+        # to its end (formal/Owed.tla, RUNCLOSE = "about": g = "all" for a cut too).
+        whole = (interrupted and played_any and exact is not None
+                 and len(_nospace(exact)) >= len(_nospace(intended)))
+        self._reply_end(entry, exact if played_any else None,
+                        cut=interrupted and not whole, audio=played_any)
 
     def _add(self, u: Utterance):
         for e in self.events:

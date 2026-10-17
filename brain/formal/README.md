@@ -257,6 +257,14 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   sleep): a consult still running has its placeholder rewritten to its failure record,
   owed, with no run. **Room sleep and wake** save and restore the owed records with the
   conversation (`wake_gate`).
+- **A run that says nothing** (`SILENT`, `stay`): the model ends its turn there. The
+  code tells the gate (`RunSilentFrame`) when the run's completion gave the TTS nothing it
+  would speak -- counted with the TTS's own test (`tts_text.has_speech`), so a reply of
+  zero-width spaces (#70) is silent -- and called nothing. What it cannot see: text the
+  LLM pushed that a processor below it then swallowed without a word in its place. The
+  guard speaks its recovery line for anything it empties; `MoodTag` alone could take a
+  reply that is only a mood tag, and that run's turn would stay set until the next
+  interruption.
 - **The note's placement and texts** (`render`): the measured texts; the run line first,
   the re-offer line last (where rounds 4 and 5 measured it).
 - **The heard quote.** A cut reply that carried the note and closed nothing has its
