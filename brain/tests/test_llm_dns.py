@@ -258,7 +258,8 @@ def test_the_model_client_uses_the_remembered_addresses():
                                   settings=OpenAILLMService.Settings(model="m"))
     pool = svc._client._client._transport._pool
     assert isinstance(pool._network_backend, StaleDNSBackend), pool._network_backend
-    assert pool._keepalive_expiry is None and pool._max_keepalive_connections == 100
+    from teaport_brain.services import _KEEPALIVE_SECS
+    assert pool._keepalive_expiry == _KEEPALIVE_SECS and pool._max_keepalive_connections == 100
 
 
 async def test_a_black_holed_ipv6_route_does_not_spend_the_budget():

@@ -16,6 +16,7 @@ import time
 from dataclasses import dataclass
 from typing import Sequence
 
+import httpcore
 import httpx
 from loguru import logger
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
@@ -23,6 +24,7 @@ from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 from pipecat.frames.frames import FunctionCallFromLLM, SystemFrame
 from pipecat.services.openai.llm import OpenAILLMService
 
+from teaport_brain import llm_http2
 from teaport_brain.llm_dns import prime, use_stale_dns
 from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
@@ -318,8 +320,8 @@ class _RenumberedStream:
     is the exact reverse. So returning the generator from get_chat_completions sent
     base_llm down the `elif aclose` branch, where it closed the WRAPPER and left the real
     AsyncStream to the garbage collector: one leaked httpx response per interrupted
-    completion, and in a voice pipeline every barge-in interrupts one. With
-    keepalive_expiry=None below, nothing reclaims them on a timer either.
+    completion, and in a voice pipeline every barge-in interrupts one. A connection with a
+    response still open is never idle, so the keepalive timer below never reclaims it.
 
     A small class rather than a generator keeps base_llm on the branch it intends: the
     iterator still acloses first (cascading cleanup through httpx's nested generators),
@@ -342,6 +344,72 @@ class _RenumberedStream:
 # Connect timeout. Separate from the read timeout below because they fail differently:
 # an unreachable endpoint should fail fast, a slow-but-alive one should not.
 _CONNECT_SECS = 5.0
+
+# How long an idle connection to the model is kept. OpenRouter closes an idle HTTP/2
+# connection somewhere between 5 and 10 minutes (open at 300 s, closed by 600 s, measured
+# 2026-10-16); retired before that, the connection is never found closed by a request,
+# and the next turn's warm-up (warm_connection) opens its successor while the caller
+# speaks. (A close found by a request costs nothing more than a reconnect -- httpcore
+# reads the server's GOAWAY and moves the request -- but on the turn's own time.)
+_KEEPALIVE_SECS = 240.0
+
+
+# One HTTP client for the model per event loop, shared by every session on it (#201). Over
+# HTTP/2 one connection carries them all -- a phone call's greeting, a room session's
+# turns, a speculation beside the real request -- so a session starts on a connection
+# the last one left open instead of a lookup and a handshake of its own (65-100 ms from
+# the box), and each session no longer leaves a client behind that nothing closes
+# (pipecat never closes its own). Each session's requests carry its own timeout
+# (AsyncOpenAI's, which the SDK sets on every request: create_client) -- with one
+# coupling: streams sharing a connection share its reads, and httpcore fails them all
+# when one's read times out. A silent connection is a silent connection for every stream
+# on it, so that only moves the failure to the shortest bound among them; the warm-up's
+# is the turn's own for that reason. Per loop because a connection belongs to the loop
+# that opened it; a closed loop's client is dropped (its sockets with it) the next time
+# one is asked for. Without a running loop (a test building a service synchronously)
+# each call gets a client of its own.
+_HTTP_CLIENTS: dict = {}    # loop -> client
+
+
+def _model_http_client(base_url) -> httpx.AsyncClient:
+    for closed in [loop for loop in _HTTP_CLIENTS if loop.is_closed()]:
+        del _HTTP_CLIENTS[closed]
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    client = _HTTP_CLIENTS.get(loop) if loop is not None else None
+    if client is None:
+        # The model's last known address, used when a lookup stalls (llm_dns). HTTP/2
+        # where the server offers it: a cancelled reply ends its stream, not the
+        # connection, and a speculation shares it with the real request (llm_http2).
+        client = use_stale_dns(DefaultAsyncHttpxClient(
+            http2=llm_http2.enable(),
+            timeout=httpx.Timeout(_llm_timeout_secs(), connect=_CONNECT_SECS),
+            limits=httpx.Limits(
+                max_keepalive_connections=100, max_connections=1000,
+                keepalive_expiry=_KEEPALIVE_SECS,
+            ),
+        ), base_url)
+        if loop is not None:
+            _HTTP_CLIENTS[loop] = client
+    return client
+
+
+def _has_live_connection(client: httpx.AsyncClient, url) -> bool:
+    """Is a connection to url's server open in client's pool, and able to take a request
+    now? (One with a stream running counts, over HTTP/2.) Read from the pool httpx uses
+    for url (a proxy's, where one is configured); a pool that cannot be read counts as
+    yes: no warm-up is better than a guess."""
+    url = httpx.URL(str(url))
+    transport_for = getattr(client, "_transport_for_url", None)
+    pool = getattr(transport_for(url) if transport_for else None, "_pool", None)
+    if not isinstance(pool, httpcore.AsyncConnectionPool):
+        return True
+    origin = httpcore.Origin(url.raw_scheme, url.raw_host,
+                             url.port or (443 if url.scheme == "https" else 80))
+    return any(c.can_handle_request(origin) and c.is_available() and not c.has_expired()
+               for c in pool.connections)
 
 
 @dataclass
@@ -473,20 +541,70 @@ class BoundedOpenAILLMService(OpenAILLMService):
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):
+        self._http = _model_http_client(base_url)
         return AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             organization=organization,
             project=project,
             default_headers=default_headers,
-            # The model's last known address, used when a lookup stalls (llm_dns).
-            http_client=use_stale_dns(DefaultAsyncHttpxClient(
-                timeout=httpx.Timeout(_llm_timeout_secs(), connect=_CONNECT_SECS),
-                limits=httpx.Limits(
-                    max_keepalive_connections=100, max_connections=1000, keepalive_expiry=None
-                ),
-            ), base_url),
+            # This session's bound on each request: the SDK passes it with every one,
+            # so the shared client's own does not apply (but see _HTTP_CLIENTS).
+            timeout=httpx.Timeout(_llm_timeout_secs(), connect=_CONNECT_SECS),
+            http_client=self._http,
         )
+
+    # --- the connection, open before the turn's request needs it (#201) ------------------
+    # Over HTTP/2 the connection outlives cancelled replies and is kept _KEEPALIVE_SECS
+    # idle, and the client is shared across sessions, so it is usually open already. When
+    # it is not -- the brain's first session, or after a silence longer than that -- it
+    # is opened at the session's start and when the caller starts speaking: a HEAD to the model's base URL (any answer will do; it is the connection
+    # that counts), in the background. Over HTTP/2 it shares that connection with whatever
+    # request comes next -- the greeting asked for at the same moment joins it while it is
+    # still connecting -- rather than competing with it, which is what made this unsafe
+    # over HTTP/1.1. Nothing runs while a connection is open.
+    _http = None
+    _warm_task = None
+    _warm_closed = False
+
+    def warm_connection(self):
+        """Open the connection to the model's server now, in the background, unless one is
+        open. Called at the session's start and when a user turn starts (agent_session)."""
+        if self._warm_closed or self._http is None:
+            return
+        if self._warm_task is not None and not self._warm_task.done():
+            return
+        url = self._client.base_url
+        if _has_live_connection(self._http, url):
+            return
+        self._warm_task = self.create_task(self._warm(str(url)), "llm-warm")
+
+    async def _warm(self, url: str):
+        started = time.monotonic()
+        try:
+            # The turn's own bound: on a shared HTTP/2 connection a shorter one would fail
+            # the turn's request with it if the server went silent (_HTTP_CLIENTS).
+            await self._http.head(url, timeout=httpx.Timeout(_llm_timeout_secs(),
+                                                             connect=_CONNECT_SECS))
+        except Exception as e:  # noqa: BLE001 -- a warm-up must never break the session
+            logger.warning(f"{self}: could not open the connection to the language model's "
+                           f"server ahead of the turn ({type(e).__name__} after "
+                           f"{time.monotonic() - started:.1f}s); the request opens its own")
+            return
+        logger.debug(f"{self}: connection to the language model opened ahead of the turn "
+                     f"in {time.monotonic() - started:.2f}s")
+
+    async def start(self, frame):
+        await super().start(frame)
+        self.warm_connection()
+
+    async def cleanup(self):
+        # Closed for good: a turn-start event already scheduled must not start one after.
+        self._warm_closed = True
+        if self._warm_task is not None:
+            await self.cancel_task(self._warm_task)
+            self._warm_task = None
+        await super().cleanup()
 
 
 def prime_model_dns() -> None:

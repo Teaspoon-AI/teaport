@@ -1242,6 +1242,13 @@ def build_agent_session(transport, *, voice: str | None = None,
             # one and armed the gate for whatever spoke next.
             await reply_gate.arm()
 
+    # The caller started speaking: open the model's connection now if it is not open, so
+    # the request carrying their words does not wait on a lookup and a handshake after
+    # they stop (services.warm_connection; nothing happens while it is open).
+    @context_aggregator.user().event_handler("on_user_turn_started")
+    async def _warm_llm(_aggregator, _strategy):
+        llm.warm_connection()
+
     activity = VoiceActivity()  # shared: user-interim stamps gate assistant partials (captions.py)
     turn_marks: dict = {}  # shared by the three TurnTimer taps (per-session, see TurnTimer)
     # Opt-in live endpointing probe (TEAPORT_ENDPOINT_DEBUG=1): two taps sharing
