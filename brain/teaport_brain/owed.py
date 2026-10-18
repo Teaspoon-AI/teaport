@@ -67,7 +67,7 @@ from teaport_brain.common_words import COMMON
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 from teaport_brain.settings import setting
 from teaport_brain.transcript_ledger import _SPACELESS_SCRIPT
-from teaport_brain.tts_text import _normalize_for_tts, strip_urls_for_speech
+from teaport_brain.tts_text import _normalize_for_tts, has_speech, strip_urls_for_speech
 
 # ------------------------------------------------------------------------- constants
 
@@ -298,25 +298,33 @@ def spoken_tokens(text: str) -> list:
     return out
 
 
+_INFLECTIONS = (("s", ""), ("es", ""), ("ed", ""), ("ed", "e"), ("ing", ""), ("ing", "e"),
+                ("ly", ""))
+
+
+def _forms(tok: str) -> set:
+    """`tok` and what a regular inflection of it folds back to ("stores" -> "store")."""
+    out = {tok}
+    for suffix, back in _INFLECTIONS:
+        if tok.endswith(suffix) and len(tok) > len(suffix) + 2:
+            out.add(tok[: -len(suffix)] + back)
+    return out
+
+
 def _is_common(tok: str) -> bool:
-    if tok in COMMON:
-        return True
     if len(tok) == 1 and tok.isascii() and tok.isalpha():
         return True
-    # A regular inflection of a listed word ("stories" is listed; "answering" is not).
-    for suffix, back in (("s", ""), ("es", ""), ("ed", ""), ("ed", "e"), ("ing", ""),
-                         ("ing", "e"), ("ly", "")):
-        if tok.endswith(suffix) and len(tok) > len(suffix) + 2 \
-                and tok[: -len(suffix)] + back in COMMON:
-            return True
-    return False
+    # A regular inflection of a listed word counts ("stories" is listed; "answering" is not).
+    return not _forms(tok).isdisjoint(COMMON)
 
 
 def terms_of(item: str, request: str) -> frozenset:
     """An item's terms: its spoken tokens outside the common-word list, minus the
-    request's own tokens (a lead-in that restates the question names none: #203)."""
-    asked = set(spoken_tokens(request))
-    return frozenset(t for t in spoken_tokens(item) if t not in asked and not _is_common(t))
+    request's own tokens, a regular inflection of one included (a lead-in that restates
+    the question names none: #203; "a Toy Joy store" against "any toy stores", #204)."""
+    asked = set().union(*(_forms(t) for t in spoken_tokens(request)))
+    return frozenset(t for t in spoken_tokens(item)
+                     if _forms(t).isdisjoint(asked) and not _is_common(t))
 
 
 def item_heard(terms: frozenset, heard: set) -> bool:
@@ -401,6 +409,17 @@ def is_caller_message(m) -> bool:
         text.startswith("(") and text.endswith(")"))
 
 
+def last_caller_words(messages: list) -> str:
+    """The caller's last words in `messages` (is_caller_message), "" if none."""
+    for m in reversed(messages):
+        if is_caller_message(m):
+            c = m.get("content")
+            if isinstance(c, list):
+                c = "".join(p.get("text", "") for p in c if isinstance(p, dict))
+            return (c or "").strip()
+    return ""
+
+
 def note_text(records: list, purpose: str) -> str:
     """The note for `records` (oldest first), as the replay rounds measured it. The
     re-offer's says NOT heard whatever was quoted: with the lead-in quoted it stayed
@@ -449,13 +468,16 @@ class Reply:
     request carried the note for (record keys), filled by the render or, for an adopted
     speculation, from the stream; the ledger settles it at the reply's own end."""
 
-    __slots__ = ("purpose", "keys", "commit", "noted", "settled", "claimed", "texts",
-                 "calls")
+    __slots__ = ("purpose", "keys", "commit", "asked", "noted", "settled", "claimed",
+                 "texts", "calls")
 
-    def __init__(self, purpose: str, keys=(), commit: bool = False):
+    def __init__(self, purpose: str, keys=(), commit: bool = False, asked=None):
         self.purpose = purpose        # "caller" | "run" | "reoffer"
         self.keys = tuple(keys)       # a run's records
         self.commit = commit          # a context frame on its way down (a commit, mostly)
+        # The answer to a sync tool's result (a context frame pushed up): the caller's
+        # words of the turn that called the tool. None for every other request.
+        self.asked = asked
         self.noted: tuple = ()
         self.settled = False
         self.claimed = False          # the ledger has its LLMFullResponseStartFrame
@@ -541,12 +563,15 @@ class Owed:
                 tuple(r.key for r in records))
 
     def noted(self, reply: Optional[Reply], keys) -> None:
-        """`reply`'s request carried the note for `keys`: it is evidence when it ends."""
-        if reply is None or not keys or reply.noted:
+        """`reply`'s request carried the note for `keys`: it is evidence when it ends. A
+        sync tool's answer is waited for too, note or not: its cut is a record the next
+        render must carry (cut_answer)."""
+        if reply is None or reply.settled or reply in self._pending:
             return
         reply.noted = tuple(keys)
-        self._pending.append(reply)
-        self._settled.clear()
+        if reply.noted or reply.asked:
+            self._pending.append(reply)
+            self._settled.clear()
 
     # ---- Land ---------------------------------------------------------------------
 
@@ -665,12 +690,13 @@ class Owed:
     # ---- Settle -------------------------------------------------------------------
 
     def settle(self, reply: Optional[Reply], heard: Optional[str], *, cut: bool,
-               audio: bool) -> None:
+               audio: bool, text: Optional[str] = None) -> None:
         """A reply ended (the settle feed: TranscriptLedger, at the interruption that cut
         it or once all of its audio has played). `heard`: its pts-exact heard text -- all
-        of it when it played through, None when cut with no per-word pts. Applies the
-        close rule to every record its request carried the note for (Owed.tla Finish ->
-        Settle)."""
+        of it when it played through, None when cut with no per-word pts; `text`: all of
+        it, as far as it got. Applies the close rule to every record its request carried
+        the note for (Owed.tla Finish -> Settle), and makes the record of a cut sync
+        answer (cut_answer)."""
         if reply is None or reply.settled:
             return
         reply.settled = True
@@ -702,6 +728,34 @@ class Owed:
                         f"({'cut' if cut else 'played through' if audio else 'no audio'}; "
                         f"heard {(heard or '')[:60]!r})")
         self._arm(missed)
+        if cut and reply.asked and not reply.calls and text:
+            self.cut_answer(reply.asked, text, heard)
+
+    def cut_answer(self, request: str, text: str, heard: Optional[str]) -> Optional[Record]:
+        """A sync tool's answer, cut before it was heard (#204; Owed.tla SOURCE = "sync",
+        TurnStart's `made`): the post-tool reply's whole text (as far as it got) is owed,
+        to `request`, the caller's words of the turn that called the tool -- not the
+        tool's query (the replay: 19/20 wait at "hold on" with the caller's words, 15/20
+        with the query). The close rule is applied to the cut's own heard prefix first: a
+        cut after the answer was heard makes nothing. No run: the caller's turn that cut
+        it carries the note; the cut arms the one re-offer. One record per request: a
+        later cut of a retelling replaces it. None when nothing is owed."""
+        outcome = clean_outcome(text)
+        if not request or not has_speech(outcome):
+            return None
+        rec = Record.make(f"cut:{request}", request, outcome,
+                          heard_quote=(heard or "").strip())
+        if rec.closes_on(heard, whole=False, run=False):
+            logger.info(f"OWED: a sync answer cut after it was heard: {(heard or '')[:60]!r}")
+            return None
+        self._records.pop(rec.key, None)
+        self._records[rec.key] = rec
+        self._evict()
+        logger.info(f"OWED: a sync answer to {request[:60]!r} cut at {(heard or '')[:60]!r} "
+                    f"-- owed ({len(rec.items)} item(s), terms "
+                    f"{[sorted(t) for _, t in rec.items]})")
+        self._arm([rec])
+        return rec
 
     # ---- the session's end, and the room's sleep -----------------------------------
 

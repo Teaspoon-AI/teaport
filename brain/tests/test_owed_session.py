@@ -288,6 +288,39 @@ async def test_203_a_lead_in_cut_stays_owed_until_the_caller_hears_it():
         assert rec.state == owed.CLOSED, "a full telling through an adopted stream left it owed"
 
 
+TOY = ("There's a Toy Joy store at five-five-zero-one Burnet Road in Austin. Toy Joy at "
+       "five-five-zero-one Burnet Road, Austin, Texas.")
+T_REQ = "Can you look if there are any toy stores on Burnett Road in Austin, Texas?"
+
+
+async def test_204_a_sync_answer_cut_at_hold_on_is_owed_until_heard():
+    """Call 3 of 2026-10-18 (17:27): a sync tool's answer, cut at "There's a Toy Joy
+    store at" by "Hold on, hold on.". Live: "Got it, pausing." and 64 s of silence. Now:
+    the cut answer is owed with its whole text, the caller's turn carries the note
+    before their words, the lull's one re-offer goes, and its full telling closes it."""
+    async with Rig() as rig:
+        rig.owed._reoffer_quiet_s = 0.6
+        rig.provider.replies = [("call", "get_current_time"), TOY, "Got it, pausing.", TOY]
+        await rig.say(T_REQ)
+        await rig.requests(2)                                # the post-tool answer
+        await until(lambda: len(rig.played) >= 6)            # "There's a Toy Joy store at"
+        await rig.say("Hold on, hold on.")
+        hold_on = await rig.requests(3)
+        rec = rig.owed.record(f"cut:{T_REQ}")
+        assert rec is not None and rec.state == owed.OWED, "the cut answer was owed to nobody"
+        assert rec.outcome == owed.clean_outcome(TOY) and rec.request == T_REQ
+        assert rec.heard_quote.startswith("There's a Toy Joy"), rec.heard_quote
+        msgs = hold_on["messages"]
+        assert msgs[-1]["content"] == "Hold on, hold on.", msgs[-1]
+        assert msgs[-2]["content"].startswith(SYSTEM_NOTICE_TAG + "\nResults you have")
+        assert f'They asked: "{T_REQ}"' in msgs[-2]["content"]
+        reoffer = await rig.requests(4)                      # the lull, after "pausing"
+        assert reoffer["messages"][-1]["content"].endswith(owed.REOFFER_LINE)
+        stops = rig.bot_stops
+        await rig.played_out(stops)
+        assert rec.state == owed.CLOSED, "the re-offer's full telling left it owed"
+
+
 def main():
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and asyncio.iscoroutinefunction(v)]

@@ -523,6 +523,77 @@ async def test_a_duplicate_dispatch_is_answered_by_the_original():
     assert [r.key for r in b.owed()] == ["a"]
 
 
+# =============================================================== a sync tool's answer (#204)
+
+TOY = ("There's a Toy Joy store at five-five-zero-one Burnet Road in Austin. Toy Joy at "
+       "five-five-zero-one Burnet Road, Austin, Texas.")
+T_REQ = "Can you look if there are any toy stores on Burnett Road in Austin, Texas?"
+
+
+def sync_reply(b, asked=T_REQ):
+    """The post-tool reply's Reply, as the LLM service makes it for a context frame
+    pushed up, registered at its render."""
+    r = Reply("caller", asked=asked)
+    b.noted(r, ())
+    return r
+
+
+async def test_a_sync_answer_cut_before_it_was_heard_is_owed():
+    """Owed.tla SOURCE = "sync" (call 3, 2026-10-18 17:27): cut at "There's a Toy Joy
+    store at" by "Hold on, hold on.". The whole text is owed to the caller's words, the
+    cut is quoted, no run is asked, and the re-offer is armed."""
+    b, _, gate = book(msgs=[{"role": "user", "content": T_REQ}], reoffer_quiet_s=0.05)
+    r = sync_reply(b)
+    assert not b.is_settled(), "the next render would not wait for the cut's record"
+    b.settle(r, "There's a Toy Joy store at", cut=True, audio=True, text=TOY)
+    rec = b.record(f"cut:{T_REQ}")
+    assert rec is not None and rec.state == OWED and rec.outcome == clean_outcome(TOY)
+    assert rec.heard_quote == "There's a Toy Joy store at" and rec.missed
+    note = render([{"role": "user", "content": "Hold on, hold on."}], b.owed(), "caller")
+    assert f"They asked: \"{T_REQ}\"" in note[0]["content"] and note[1]["content"] == "Hold on, hold on."
+    gate.quiet = 1.0
+    await asyncio.sleep(0.3)
+    assert gate.asked == [([f"cut:{T_REQ}"], "reoffer")], "no landing run, one re-offer"
+
+
+async def test_a_sync_answer_cut_after_it_was_heard_makes_no_record():
+    b, _, _ = book()
+    b.settle(sync_reply(b), "There's a Toy Joy store at five-five-zero-one Burnet Road",
+             cut=True, audio=True, text=TOY)
+    assert b.owed() == [], "a cut after the answer was heard made a record"
+
+
+async def test_a_sync_answer_discarded_before_any_text_makes_no_record():
+    """Call 1: "Hold on." arrived while the answer was being generated."""
+    b, _, _ = book()
+    b.settle(sync_reply(b), None, cut=True, audio=False, text="")
+    assert b.owed() == []
+
+
+async def test_only_a_sync_answer_cut_is_owed():
+    """A commit's reply cut is not the tool's answer (its words are the caller's own
+    exchange), and neither is a post-tool reply that put another call out."""
+    b, _, _ = book()
+    commit = Reply("caller", commit=True)
+    b.noted(commit, ())
+    b.settle(commit, "There's a", cut=True, audio=True, text=TOY)
+    more = sync_reply(b)
+    more.calls = 1
+    b.settle(more, "Let me", cut=True, audio=True, text="Let me check one more thing.")
+    assert b.owed() == []
+    played = sync_reply(b)
+    b.settle(played, TOY, cut=False, audio=True, text=TOY)
+    assert b.owed() == [], "an answer that played through was made a record"
+
+
+def test_the_callers_words_are_the_request():
+    msgs = [{"role": "user", "content": T_REQ},
+            {"role": "assistant", "content": None, "tool_calls": [{"id": "c"}]},
+            {"role": "tool", "tool_call_id": "c", "content": "{}"},
+            {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\nReact now"}]
+    assert owed.last_caller_words(msgs) == T_REQ
+
+
 # =============================================================== the room's sleep
 
 async def test_the_records_sleep_and_wake_with_the_conversation():
@@ -571,7 +642,7 @@ async def _ledger(seq, reply, tts=None):
     sighted at the TTS (a reply's synthesis is over only at its own TTSStoppedFrame)."""
     ledger = TranscriptLedger(tts=tts)
     got = []
-    ledger.on_reply_end = lambda r, heard, *, cut, audio: got.append((r, heard, cut, audio))
+    ledger.on_reply_end = lambda r, heard, *, cut, audio, text=None: got.append((r, heard, cut, audio))
     start = LLMFullResponseStartFrame()
     start.owed_reply = reply
     ledger.feed = lambda more: _feed_ledger(ledger, more, tts)

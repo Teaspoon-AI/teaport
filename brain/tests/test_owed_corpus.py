@@ -101,8 +101,21 @@ OTHER = [NO_RUSH, GLAD, ONE_STORY, WAITING, HOST, HAMLET, WEATHER, SORRY,
 FAILED = (TOP[0], owed_mod.failure_outcome("timeout")[1], "timeout")
 TOLD_FAILURE = "Sorry, that Hacker News lookup ran out of time before it finished."
 
+# The sync answers of the 2026-10-18 calls (box journal 17:24-17:28, #204): the post-tool
+# reply's whole text as the outcome, the caller's words as the request, cut where the
+# ledger charted the cut.
+WEATHER = ("Hey, can you check what the weather is going to be in Austin tomorrow?",
+           "Tomorrow in Austin looks warm with highs near seventy-two and lows in the "
+           "fifties, and only a slight chance of rain.")
+TOYS = ("Can you look if there are any toy stores on Burnett Road in Austin, Texas?",
+        "There's a Toy Joy store at five-five-zero-one Burnet Road in Austin. Toy Joy at "
+        "five-five-zero-one Burnet Road, Austin, Texas.")
+
 CORPUS = (
-    [(FAILED, TOLD_FAILURE, "heard")]
+    [(WEATHER, "Tomorrow in Austin looks", "owed"), (WEATHER, WEATHER[1], "heard"),
+     (TOYS, "There's a Toy Joy store at", "owed"), (TOYS, TOYS[1], "heard"),
+     (WEATHER, "Got it, pausing.", "owed"), (TOYS, "Got it, pausing.", "owed")]
+    + [(FAILED, TOLD_FAILURE, "heard")]
     # The story itself, told from another lookup: the caller has what the failed
     # request was for, and "it timed out" is nothing they still need.
     + [(FAILED, TOLD_SUMMARY, "heard"), (FAILED, FIVE_TOLD, "heard")]

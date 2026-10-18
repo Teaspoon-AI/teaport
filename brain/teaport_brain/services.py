@@ -601,7 +601,11 @@ class BoundedOpenAILLMService(OpenAILLMService):
         if isinstance(frame, RunFrame):
             reply = owed_mod.Reply(frame.purpose, frame.keys)
         else:
-            reply = owed_mod.Reply("caller", commit=direction == FrameDirection.DOWNSTREAM)
+            down = direction == FrameDirection.DOWNSTREAM
+            # Up from the assistant aggregator: the answer to a sync tool's result. Its
+            # caller's words are what a cut of it is owed as having been asked (#204).
+            reply = owed_mod.Reply("caller", commit=down, asked=None if down else
+                                   owed_mod.last_caller_words(frame.context.get_messages()))
         token = _REPLY.set(reply)
         try:
             await super().process_frame(frame, direction)

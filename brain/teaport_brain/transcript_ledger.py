@@ -237,7 +237,7 @@ class TranscriptLedger(BaseObserver):
         super().__init__()
         self.events: List[Utterance] = []
         # The settle feed (owed.py, #203): called as on_reply_end(reply, heard, cut=,
-        # audio=) at each LLM reply's OWN end -- the interruption that cut it, or once its
+        # audio=, text=) at each LLM reply's OWN end -- the interruption that cut it, or once its
         # synthesis is done and all of its audio has played -- with `reply` the owed.Reply its
         # LLMFullResponseStartFrame carried and `heard` its pts-exact heard text (all of
         # it when it played through; None when cut with no per-word pts). Never the
@@ -579,14 +579,16 @@ class TranscriptLedger(BaseObserver):
     #   _finish        its turn charted with no text, or nothing synthesizable in it
     #   _finish        charted: played through, cut (the pts-exact prefix), or never played
     def _reply_end(self, entry, heard: Optional[str], *, cut: bool, audio: bool):
-        """The settle feed (on_reply_end), once per entry."""
+        """The settle feed (on_reply_end), once per entry, with the reply's whole text as
+        far as it got (what a cut post-tool answer is owed as: owed.Owed.cut_answer)."""
         reply = entry.get("reply") if entry is not None else None
         if reply is None:
             return
         entry["reply"] = None
+        text = entry["text"] if entry["ended"] else "".join(entry["parts"]).strip()
         if self.on_reply_end is not None:
             try:
-                self.on_reply_end(reply, heard, cut=cut, audio=audio)
+                self.on_reply_end(reply, heard, cut=cut, audio=audio, text=text)
             except Exception as e:  # noqa: BLE001 -- an observer must never raise
                 logger.warning(f"LEDGER: the settle feed raised {e!r}")
 
