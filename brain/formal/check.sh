@@ -133,6 +133,9 @@ run Owed.tla ow_adoptDropsKeys     "(expected: FAILS NoRepeatRecital — the com
 run Owed.tla ow_failure           "(expected: holds — a failure record (one term-less item) under the design (about): every safety property)"
 run Owed.tla ow_failure_live      "(expected: holds — a failure record: OwedResolves under FairSpec)"
 run Owed.tla ow_failure_runOnly   "(expected: FAILS NoRepeatRecital — a failure closed only by an uncut run: heard to its end on any other path, it is re-offered)"
+run Owed.tla ow_sync              "(expected: holds — a sync tool's answer (#204): a cut post-tool reply makes the record, every safety property)"
+run Owed.tla ow_sync_live         "(expected: holds — a sync tool's answer: OwedResolves under FairSpec)"
+run Owed.tla ow_sync_noCutRecord  "(expected: FAILS NoRedundantLookup — no record from a cut sync answer: the caller's next turn looks it up again (W-goahead 20/20))"
 run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"
 run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other property; a re-lookup costs time, never a lost or repeated answer)"
 echo

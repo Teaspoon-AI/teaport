@@ -346,6 +346,9 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 20,566 states |
 | `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 16,314 states |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
+| `ow_sync` | `SOURCE = "sync"` (#204): no consult; a sync tool's answer told by the post-tool reply, and a cut of that reply before every item was heard makes the record (no run) | holds, every safety property | 4,840 states |
+| `ow_sync_live` | the same under `FairSpec`, `MaxSpeech = 4` | holds `OwedResolves` | 2,990 states |
+| `ow_sync_noCutRecord` | no record from a cut sync answer (the code before #204's extension) | ✗ `NoRedundantLookup` | the caller asks, the tool answers, the post-tool reply is cut mid-answer; the caller's next turn has only the cut prefix and the result, and the model looks it up again (16 steps; live 2026-10-18 17:25, the weather re-fetched) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
 | `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 34,884 states |
 
@@ -424,6 +427,19 @@ The model was written to lead the design, and it found these:
    corpus test's to check: a failure is one statement, told whole or not at all, and the
    telling is the reply. An unrelated reply shares nothing with the request and closes
    nothing.
+11. **A sync tool's answer cut before it was heard was owed to nobody** (`ow_sync_noCutRecord`,
+   #204). On the box on 2026-10-18 the calls used only web_search and web_fetch: the
+   weather answer was cut at "Tomorrow in Austin looks" by "Hold on, hold on.", and the
+   next turn re-fetched it and told it with new numbers; the toy-store answer was cut at
+   "There's a Toy Joy store at", and after "Got it, pausing." the call sat silent for
+   64 s. The replay (spec_sync, 20 trials each): with the note, 19/20 wait at "hold on"
+   (10/20 re-fetched without it), 20/20 tell at "go ahead" (20/20 re-fetched without),
+   the re-offer after "Got it, pausing." stays silent 20/20. Fix (`SOURCE = "sync"`): a
+   post-tool reply cut before every item was heard makes the record -- the reply's full
+   text as the outcome, the caller's words of the turn that called the tool as the
+   request (the query as the request waited 15/20, the caller's words 19/20) -- with no
+   run, since the caller's turn that cut it carries the note, and the one re-offer
+   armed. The model has one sync answer (one tool round).
 10. **An adopted speculation's keys must reach the evidence** (`ow_adoptDropsKeys`). The
    speculation renders its note in its own task, and the adopting commit is the reply
    whose ending is the evidence: if it registers none of the keys, a full telling never
