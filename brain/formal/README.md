@@ -533,21 +533,34 @@ ends.
   pts-exact heard text" is taken to mean the caller heard every item. Two partial
   tellings that together cover the items count as not heard. The rule errs the same way:
   towards owed, which costs a mention.
-- **The sync telling premise.** `Say`'s "tell" is exact. In the code the post-tool reply
-  that calls nothing is a telling by position; where position cannot decide (the
-  caller's own turn reading a fresh result; a reply that calls again), a reply tells it
-  when its own words carry at least two terms outside the caller's question and the
-  common words (`owed.tells`; for a reply that calls again, its words before the last
-  sentence, the line before the call). A deferral ("Sure, take your time.",
-  "Understood -- let me know when you'd like me to continue.") and a one-sentence line
-  before a call carry none; the live weather and toy tellings carry three or more. It
-  errs both ways: a one-term telling ("It'll be sunny.") is no telling (cut, no record:
-  the B0 re-lookup), and a substantive non-telling with no call ("I'm still pulling the
-  details.") is one (cut: a record of it). `test_owed.py` holds the cases.
-- **The request.** A sync record's question is the latest caller words before its tool
-  round; a round put out under the note is the noted records'. A re-lookup put out by
-  a reply that did not carry the note (no record was made of the first telling: a
-  stream cut, a missed telling) takes the interjection before it as its question.
+- **The sync telling premise.** `Say`'s "tell" is exact (here and in `OwedAnswers.tla`,
+  where a reply tells one question or another). In the code the post-tool reply that
+  calls nothing tells its own round's answer by position; anywhere else -- the caller's
+  own turn reading a fresh result, a reply that calls again, an older fresh answer a
+  later reply carries -- a reply tells a question when it is about that question's
+  request (a non-common word in common, `Record.about`'s reading) and carries two terms
+  of its own outside it and the common words (`owed.tells`; a reply that calls again is
+  read without its last sentence, the line before the call). The residuals
+  (`test_owed.py`, the third review's table):
+  - **one-term tellings** ("It'll be sunny.", "Seventy-two.", "Canberra.", "Yes, it's
+    open.") are no telling: cut, no record (the B0 re-lookup, a cost); heard, the answer
+    stays fresh -- it **lingers**, carried by later replies until one about its question
+    tells it, with the session (nothing expires it);
+  - **told on hearing**: a non-telling about the question with two terms of its own
+    ("Got it -- I'll keep the Austin forecast handy for when you're ready.", "Which
+    Austin -- Texas or Minnesota?") reads as one: cut, a record of it; heard in full,
+    the answer is filed as told, and no note or record will carry it (the result stays
+    in the context).
+- **The request.** A sync record's question is the caller's words that started its
+  round (the latest user message before the result; "" when a notice or a cue did:
+  nobody asked, no record). A round whose words ask nothing beyond an owed record's
+  question ("Hold on, hold on.", or the question again) is that record's re-lookup:
+  its result is no fresh answer of its own -- under several owed records, any one's
+  (`Owed._question`). Words that ask nothing beyond a still-fresh answer's question
+  join it (one question, one group). The lexical premise again: a new question put in
+  the record's own words ("and the weather in Austin the day after?") reads as a
+  re-lookup, and its cut telling is evidence for the old record, not a record of its
+  own.
 - **A chain's second answer.** A sync chain has at most two rounds, and the record is
   the first answer's: when it was told before the second call, the second result's
   answer is another record, which the model does not hold. `STREAMCUT` is off in the
@@ -573,6 +586,37 @@ ends.
   on the live context, so its one slot loses nothing (`check_the_answer_to_a_result_asks_on_the_live_context`);
   the TTS holds a text-less completion's End, which is why a silent run tells the gate
   itself (`check_a_text_less_completions_end_is_held_by_the_tts`).
+
+## `OwedAnswers.tla` — the sync answers' book, two answers to two questions (#204)
+
+`Owed.tla` holds one answer, so it cannot ask which answer a reply tells when two are
+about: the third #204 review's two main defects were both a second question asked
+while the first was owed or still fresh. This module is that question alone, on a
+reduced action set with none of the door: the caller asks question 1, then 2 (each
+round started by the caller's words or by a notice), an action tool's round may come
+between, the post-tool request may be dropped by the caller's turn, replies tell a
+question, defer, say something else, confirm the action, or -- a telling cut with no
+note for it -- look it up again. owed.py's book files each answer `fresh`, `told`, a
+record, `held` (another record's re-lookup) or `gone` (nobody asked).
+
+| property | meaning |
+|---|---|
+| `ToldOnHearing` | an answer filed as told was heard in full |
+| `RecordIsOwn` | a record's outcome is a telling of its own question |
+| `NoRedundantLookup` | no answer is looked up again (a cut telling with no record: B0) |
+
+| row | what | verdict | the counterexample, or the state count |
+|---|---|---|---|
+| `oa_design` | each round its own question (`Owed._question`); the post-tool position tells only the answer new at its render; any other answer only a telling of it (`owed.tells`); carried answers grouped by question | holds | 4,776 states |
+| `oa_relookAll` | ab7dd29's `Owed.called`: every round put out under the note is the noted record's | ✗ `NoRedundantLookup` | question 1's telling is cut (owed); question 2's round is filed as its re-lookup; question 2's telling is cut, no record, and it is looked up again (13 steps: the review's case C) |
+| `oa_positionAll` | ab7dd29's `_resolve`: the position rule on every fresh answer the reply carries | ✗ `RecordIsOwn` | question 1's post-tool request is dropped and the caller's turn defers; question 2's telling is cut, and both are recorded with it (10 steps: cases A, B) |
+| `oa_positionAll_told` | the same | ✗ `ToldOnHearing` | the same, heard in full: question 1 filed as told |
+| `oa_oneRequest` | ab7dd29's `_resolve`: the carried answers take the first one's question | ✗ `NoRedundantLookup` | a notice's round lingers fresh; the caller's question 2 is cut and filed under the notice's empty question: no record (13 steps: finding 4) |
+
+Known limits: two questions and one action round; one reply at a time; no runs, notes
+on the wire, or late settles (all `Owed.tla`'s); the lexical premise as in `Owed.tla`'s
+limits ("tell" is exact; the re-lookup reading of a round's words is the code's,
+`test_owed.py`).
 
 ## `SttSlot.tla` — arbitration of the engine's single STT slot
 

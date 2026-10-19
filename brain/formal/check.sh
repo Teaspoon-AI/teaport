@@ -151,6 +151,13 @@ run Owed.tla ow_action_owed       "(expected: FAILS NoRunAfterHeard — an actio
 run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"
 run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other property; a re-lookup costs time, never a lost or repeated answer)"
 echo
+echo "OwedAnswers.tla — the sync answers' book with two answers to two questions (#204, the third review)"
+run OwedAnswers.tla oa_design           "(expected: holds — a round asks its own question; the post-tool position tells only its round's answer; an older one only a telling of it)"
+run OwedAnswers.tla oa_relookAll        "(expected: FAILS NoRedundantLookup — every round started while a record is owed taken for its re-lookup: a new question's cut telling makes no record)"
+run OwedAnswers.tla oa_positionAll      "(expected: FAILS RecordIsOwn — the post-tool position applied to every fresh answer carried: a later round's cut reply becomes an older question's record)"
+run OwedAnswers.tla oa_positionAll_told "(expected: FAILS ToldOnHearing — the same, heard in full: the older answer filed as told, never heard)"
+run OwedAnswers.tla oa_oneRequest       "(expected: FAILS NoRedundantLookup — the carried answers take the first one's question: a caller's cut answer filed under a notice's round, no record)"
+echo
 echo "UserTurn.tla — whether the user can interrupt the bot at all"
 echo "  (the precondition Ledger/LedgerPlayout's Interrupt action takes for granted)"
 run UserTurn.tla ut_asWritten_nostrandedturn    "(expected: FAILS NoStrandedTurn)"
