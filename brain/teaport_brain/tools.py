@@ -892,7 +892,7 @@ class Tool:
     # confirmation of something done: a telling of it cut before the caller heard it
     # is owed to them (owed.Owed._resolve, #204). An action's (the volume, the voice,
     # a fact remembered) never is: they asked for it, and its effect or its "done" is
-    # nothing still to hear (formal/Owed.tla, SOURCE = "action").
+    # nothing still to hear (formal/OwedAnswers.tla, actionOwed).
     answers: bool = False
 
     @property
