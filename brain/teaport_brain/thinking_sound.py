@@ -61,77 +61,110 @@ _TRIGGER = {"ask_openclaw"}
 def _synthesize(seconds: float = 15.0) -> np.ndarray:
     """Procedural keyboard-typing loop → int16 PCM at _SR, modelled on a close-miked
     clicky mechanical keyboard (an ASMR typing recording, measured, not sampled):
-    steady touch typing at ~8 keys/s. A keystroke on a clicky switch is two kinds of
-    sound. The CLICK is the switch: a 1-2 ms burst whose energy sits at 2.5-3.4 and
-    ~10 kHz with the mids scooped out, the brightest thing in the recording. The
-    THOCK is the key: a duller knock centred on 1.1 kHz with almost nothing above
-    4 kHz. A keystroke: the finger lands (a soft thock), the switch clicks, the key
-    bottoms out 4-12 ms later (a thock over a ~50 Hz desk thump), bounces, and on the
-    release thocks again, often with a softer click. The clicks come at a steady
-    level and the thocks vary widely, so some keystrokes are mostly click and some
-    mostly thock. Resonances are bands of noise, not sines (sines ring as pitches).
-    A dozen keys with their own resonances, and a deeper space bar every few. No
-    reverb wash: the recording's gaps are dark, and a long tail blurs the clicks into
-    hiss. Fixed seed = reproducible; every tail wraps past the end, so the loop has
-    no seam."""
+    steady touch typing at ~8 keys/s.
+
+    A key is a physical object, so it is built as one: a set of damped sinusoids
+    (modes) that ring the same way every time it is struck. In the recording, presses
+    of the same key are near-identical (0-12 ms waveforms correlate ~0.9), and that
+    repeatable ring is what reads as a plastic shell rather than noise. Two kinds of
+    sound per key. The SHELL is the keycap and housing: modes at 0.6-3.4 kHz (most
+    near 1.1-1.7 and 2.1-3.4 kHz) that die in 1-4 ms, over the case's ~870 Hz ring.
+    The CLICK is the switch: short modes at 2-12 kHz, the brightest thing in the
+    recording, that also set the shell ringing a little and a third of the time
+    strike twice. Each key draws its modes from the recording's per-band statistics
+    (how many modes, how loud, how fast they die), so no two keys are alike.
+
+    A keystroke: the finger lands (the shell, softly), the switch clicks, the key
+    bottoms out 4-12 ms later (the shell over a ~50 Hz desk thump), bounces, and on
+    the release rings the shell again, often with a softer click; landing, bottom-out
+    and release each strike the shell in their own way. The clicks come at a steady
+    level and the thocks vary widely, as in the recording. Twenty keys used as
+    unevenly as letters, and a deeper space bar every few. No reverb wash: the
+    recording's gaps are dark, and a long tail blurs the clicks into hiss. Fixed seed
+    = reproducible; every tail wraps past the end, so the loop has no seam."""
     rng = np.random.default_rng(7)
     out = np.zeros(int(_SR * seconds))
-    t = np.arange(int(_SR * 0.08)) / _SR                  # one sound's span
-    tf = np.maximum(np.fft.rfftfreq(len(t), 1 / _SR), 1.0)  # ... and its frequencies
-    pool = _SR // 2                                       # noise per resonance
-    freqs = np.maximum(np.fft.rfftfreq(pool, 1 / _SR), 1.0)
-    # (centre Hz, key-to-key spread, width in octaves, decay range s, level[, rise s])
-    click_modes = ((1100, 0.1, 0.25, (0.002, 0.004), 0.5, 0.002),
-                   (2550, 0.08, 0.15, (0.0008, 0.0015), 0.8),
-                   (3400, 0.08, 0.15, (0.001, 0.002), 1.0),
-                   (5500, 0.08, 0.3, (0.0006, 0.0012), 1.3),
-                   (9800, 0.06, 0.25, (0.0006, 0.0012), 1.5))
-    thock_modes = ((1100, 0.1, 0.22, (0.004, 0.006), 1.0),
-                   (620, 0.12, 0.2, (0.003, 0.005), 0.2),
-                   (2500, 0.08, 0.2, (0.002, 0.003), 0.8))
-    # Each sound opens with a snap of noise (decay s, level, band): above 3 kHz for
-    # the click, 0.7-4.5 kHz for the thock.
-    click_snap = (0.00015, 0.7, 1 / np.sqrt(1 + (3000 / tf) ** 4))
-    thock_snap = (0.0004, 0.7, 1 / np.sqrt((1 + (tf / 4500) ** 4) * (1 + (700 / tf) ** 4)))
+    t = np.arange(int(_SR * 0.04)) / _SR                  # one strike's span
+    tt = np.arange(int(_SR * 0.08)) / _SR                 # the desk thump's
+    # The recording's modes, per band: (lo Hz, hi Hz, modes per key, level, decay ms).
+    # A key's lead mode (level 1) comes from one of the bands in the *_lead tuple.
+    shell_bands = ((600, 800, 0.4, (0.3, 0.6), (1.3, 1.95)),
+                   (800, 950, 0.5, (0.3, 0.7), (1.9, 3.75)),
+                   (950, 1250, 1.0, (0.3, 1.0), (1.35, 2.6)),
+                   (1250, 1700, 1.7, (0.25, 0.6), (1.5, 2.4)),
+                   (1700, 2100, 0.15, (0.3, 0.6), (0.9, 1.65)),
+                   (2100, 2700, 1.4, (0.25, 0.6), (1.1, 2.25)),
+                   (2700, 3400, 1.2, (0.3, 0.7), (0.75, 1.5)),
+                   (3400, 4500, 0.4, (0.3, 0.6), (0.5, 0.9)),
+                   (4500, 8000, 0.15, (0.4, 0.6), (0.3, 0.45)),
+                   (8000, 11500, 0.15, (0.35, 0.65), (0.3, 0.5)))
+    shell_lead = (1, 2, 2, 3)                             # 0.8-1.7 kHz, mostly ~1.1
+    click_bands = ((950, 1700, 0.6, (0.2, 0.5), (1.3, 3.0)),
+                   (2100, 2700, 0.65, (0.15, 0.5), (0.7, 1.7)),
+                   (2700, 3400, 0.9, (0.2, 0.7), (0.7, 1.7)),
+                   (3400, 4500, 0.65, (0.3, 0.8), (0.6, 1.2)),
+                   (4500, 8000, 2.5, (0.5, 1.2), (0.5, 1.0)),
+                   (8000, 11500, 2.0, (0.6, 1.3), (0.3, 0.8)))
+    click_lead = (1, 2, 3, 5, 5)
+    case = (870, 0.004, 0.3)                              # under every key: Hz, decay s, level
 
-    def modes(spec, scale=1.0):
-        """A key's resonances: each a pool of band noise and its envelope."""
-        res = []
-        for hz, spread, width, decay, level, *rise in spec:
-            hz *= scale * np.exp(rng.normal(0, spread))
-            b = np.fft.irfft(np.fft.rfft(rng.standard_normal(pool))
-                             * np.exp(-0.5 * (np.log2(freqs / hz) / width) ** 2), pool)
-            env = level * np.exp(-t / rng.uniform(*decay))
-            if rise:
-                env *= 1 - np.exp(-t / rise[0])
-            res.append((b / np.sqrt(np.mean(b ** 2)), env))
-        return res
+    def modes(bands, lead, scale=1.0):
+        """A key's modes [(Hz, decay s, level)], drawn band by band."""
+        j0 = lead[rng.integers(len(lead))]
+        ms = []
+        for j, (lo, hi, n, level, decay) in enumerate(bands):
+            for c in range(max(rng.poisson(n), j == j0)):
+                hz = np.exp(rng.uniform(np.log(lo), np.log(hi))) * scale
+                ms.append((hz, rng.uniform(*decay) / 1000,
+                           1.0 if j == j0 and c == 0 else rng.uniform(*level)))
+        return ms
+
+    def bank(ms, rise):
+        """The modes' damped sines and cosines, precomputed: a strike weighs and sums
+        them, so every strike of a key rings its same modes. `rise`: the impact's rise
+        time, s."""
+        hz, decay, level = (np.array(v)[:, None] for v in zip(*ms))
+        env = np.exp(-t / decay) * (1 - np.exp(-t / rise))
+        return (level[:, 0], rng.uniform(0, 2 * np.pi, len(ms)),
+                env * np.sin(2 * np.pi * hz * t), env * np.cos(2 * np.pi * hz * t))
+
+    def strike(b):
+        """One strike of a bank, at unit level. Each mode comes out a little louder or
+        softer and a little shifted in phase from strike to strike, as no two presses
+        of a real key are identical."""
+        level, phase, sin, cos = b
+        level = level * np.maximum(0.1, 1 + rng.normal(0, 0.1, len(level)))
+        phase = phase + rng.normal(0, 0.15, len(phase))
+        s = (level * np.cos(phase)) @ sin + (level * np.sin(phase)) @ cos
+        return s / np.sqrt(np.mean(s[:int(_SR * 0.004)] ** 2))
 
     def key(space=False):
-        """One key: its click's and its thock's resonances, and its bottom-out thump.
-        The space bar clicks a little lower and thocks lower and longer."""
+        """One key: its shell as rung by the landing, the bottom-out and the release,
+        its click, and its bottom-out thump. The space bar is lower and rings longer."""
+        shell = [(hz, decay * (1.5 if space else 1.0), level)
+                 for hz, decay, level in modes(shell_bands, shell_lead, 0.65 if space else 1.0)]
+        hits = [bank([(hz, decay, level * rng.uniform(0.5, 1.0)) for hz, decay, level in shell] + [case],
+                     0.00015) for _ in range(3)]
+        click = bank(modes(click_bands, click_lead, 0.93 if space else 1.0), 0.00003)
         hz = rng.uniform(44, 58) * (0.9 if space else 1.0)
-        thump = ((0.8 if space else 0.5) * np.exp(-t / 0.012)
-                 * (np.sin(2 * np.pi * hz * t) + 0.2 * np.sin(2 * np.pi * 2.4 * hz * t))
-                 * (1 - np.exp(-t / 0.001)))
-        thock = thock_modes + (((560, 0, 0.2, (0.008, 0.008), 0.5),) if space else ())
-        return modes(click_modes, 0.93 if space else 1.0), modes(thock), thump
-
-    def sound(res, snap):
-        decay, level, band = snap
-        s = np.fft.irfft(np.fft.rfft(rng.standard_normal(len(t)) * np.exp(-t / decay)) * band, len(t))
-        s *= level / np.sqrt(np.mean(s[:max(4, int(decay * _SR))] ** 2))
-        for b, env in res:
-            i = rng.integers(pool - len(t))
-            s += b[i:i + len(t)] * env
-        return s
+        thump = ((0.28 if space else 0.18) * np.exp(-tt / 0.012)
+                 * (np.sin(2 * np.pi * hz * tt) + 0.2 * np.sin(2 * np.pi * 2.4 * hz * tt))
+                 * (1 - np.exp(-tt / 0.001)))
+        return hits, click, thump
 
     def click(k):
-        return sound(k[0], click_snap)
+        s = strike(k[1]) + 0.2 * strike(k[0][1])          # the snap shakes the keycap too
+        if rng.random() < 0.35:                           # and the switch strikes twice
+            d = int(rng.uniform(0.0006, 0.0015) * _SR)
+            s[d:] += 10 ** (rng.normal(-4, 2) / 20) * strike(k[1])[:len(s) - d]
+        grit = np.diff(rng.standard_normal(len(t)) * np.exp(-t / 0.00015), prepend=0)
+        s += 0.3 * grit / np.sqrt(np.mean(grit[:int(_SR * 0.001)] ** 2))
+        return 10 ** (2 / 20) * s
 
-    def thock(k, bottom_out=False):
-        s = sound(k[1], thock_snap)
-        return s + k[2] if bottom_out else s
+    def thock(k, hit, bottom_out=False):
+        """The key's shell, rung by the landing (0), the bottom-out (1) or the release (2)."""
+        s = strike(k[0][hit]) + 0.15 * rng.standard_normal(len(t)) * np.exp(-t / 0.0008)
+        return np.pad(s, (0, len(tt) - len(t))) + k[2] if bottom_out else s
 
     def add(s, at, db):
         i = int(at * _SR) % len(out)
@@ -140,29 +173,31 @@ def _synthesize(seconds: float = 15.0) -> np.ndarray:
         out[i:i + n] += s[:n]
         out[:len(s) - n] += s[n:]                         # wrap: the loop has no seam
 
-    keys = [key() for _ in range(12)]
+    keys = [key() for _ in range(20)]
     space = key(space=True)
+    usage = 1 / np.arange(1, len(keys) + 1) ** 0.8        # some keys far more than others
+    usage /= usage.sum()
     pos, to_space = 0.0, rng.integers(4, 7)
     while pos < seconds:
         to_space -= 1
         if to_space == 0:
             k, to_space = space, rng.integers(4, 7)
         else:
-            k = keys[rng.integers(len(keys))]
+            k = keys[rng.choice(len(keys), p=usage)]
         db = rng.normal(0, 2)
         if rng.random() < 0.8:
-            add(thock(k), pos - rng.uniform(0.004, 0.045), db + rng.normal(-11, 5))     # landing
+            add(thock(k, 0), pos - rng.uniform(0.004, 0.045), db + rng.normal(-11, 5))  # landing
         add(click(k), pos, db + rng.normal(0, 1.5))
-        add(thock(k, bottom_out=True), pos + rng.uniform(0.004, 0.012), db + rng.normal(-3, 5))
+        add(thock(k, 1, bottom_out=True), pos + rng.uniform(0.004, 0.012), db + rng.normal(-2, 7))
         if rng.random() < 0.8:
-            add(thock(k), pos + rng.uniform(0.013, 0.025), db + rng.normal(-7, 5))      # bounce
+            add(thock(k, 1), pos + rng.uniform(0.013, 0.025), db + rng.normal(-7, 5))   # bounce
         if rng.random() < 0.8:
             at = pos + rng.uniform(0.05, 0.11)
-            add(thock(k), at, db + rng.normal(-8, 5))                                 # release
+            add(thock(k, 2), at, db + rng.normal(-8, 5))                              # release
             if rng.random() < 0.6:
                 add(click(k), at - 0.004, db + rng.normal(-7, 3))
-        for _ in range(rng.poisson(2)):
-            add(thock(k), pos + rng.uniform(-0.03, 0.08), db + rng.normal(-20, 5))     # rattle
+        for _ in range(rng.poisson(2)):                   # rattle
+            add(thock(k, rng.integers(3)), pos + rng.uniform(-0.03, 0.08), db + rng.normal(-20, 5))
         pos += float(np.clip(0.115 * np.exp(rng.normal(0, 0.35)), 0.045, 0.26))
         if rng.random() < 0.035:
             pos += rng.uniform(0.15, 0.45)                # a rare pause between words
@@ -225,7 +260,7 @@ def _get_chunks() -> list:
 def warm() -> None:
     """Build the bed at the brain's start, not in the first session's pipeline build:
     with no cached wav (the first start, or an install whose package dir is read-only)
-    synthesizing it holds the event loop ~0.4 s on an Orin NX."""
+    synthesizing it holds the event loop ~0.3 s on an Orin NX."""
     if ENABLED:
         _get_chunks()
 
