@@ -60,46 +60,78 @@ _TRIGGER = {"ask_openclaw"}
 
 def _synthesize(seconds: float = 15.0) -> np.ndarray:
     """Procedural keyboard-typing loop → int16 PCM at _SR, modelled on a close-miked
-    mechanical keyboard (an ASMR typing recording, measured, not sampled): steady
-    touch typing at ~8 keys/s. A key is up to five clicks — the finger landing, the
-    bottom-out with a ~50 Hz desk thump, the keycap's bounce, the release, switch
-    rattle — and a click is a broadband snap over noisy resonances near 0.9, 1.5,
-    2.9 and 9.6 kHz (bands of noise, not sines: sines ring as pitches). A dozen keys
-    with their own resonances, and a deeper space bar every few. Fixed seed =
-    reproducible; every tail wraps past the end, so the loop has no seam."""
+    clicky mechanical keyboard (an ASMR typing recording, measured, not sampled):
+    steady touch typing at ~8 keys/s. A keystroke on a clicky switch is two kinds of
+    sound. The CLICK is the switch: a 1-2 ms burst whose energy sits at 2.5-3.4 and
+    ~10 kHz with the mids scooped out, the brightest thing in the recording. The
+    THOCK is the key: a duller knock centred on 1.1 kHz with almost nothing above
+    4 kHz. A keystroke: the finger lands (a soft thock), the switch clicks, the key
+    bottoms out 4-12 ms later (a thock over a ~50 Hz desk thump), bounces, and on the
+    release thocks again, often with a softer click. The clicks come at a steady
+    level and the thocks vary widely, so some keystrokes are mostly click and some
+    mostly thock. Resonances are bands of noise, not sines (sines ring as pitches).
+    A dozen keys with their own resonances, and a deeper space bar every few. No
+    reverb wash: the recording's gaps are dark, and a long tail blurs the clicks into
+    hiss. Fixed seed = reproducible; every tail wraps past the end, so the loop has
+    no seam."""
     rng = np.random.default_rng(7)
     out = np.zeros(int(_SR * seconds))
-    t = np.arange(int(_SR * 0.08)) / _SR                  # one click's span
+    t = np.arange(int(_SR * 0.08)) / _SR                  # one sound's span
+    tf = np.maximum(np.fft.rfftfreq(len(t), 1 / _SR), 1.0)  # ... and its frequencies
     pool = _SR // 2                                       # noise per resonance
     freqs = np.maximum(np.fft.rfftfreq(pool, 1 / _SR), 1.0)
-    snap = 3.6 * np.exp(-t / 0.0004) + 0.5 * np.exp(-t / 0.004)
-    # (centre Hz, key-to-key spread, decay range s, level): the recording's ring peaks
-    rings = ((900, 0.15, (0.005, 0.009), 0.5), (900, 0.15, (0.005, 0.009), 0.5),
-             (1500, 0.15, (0.004, 0.007), 0.64), (2850, 0.12, (0.0035, 0.006), 0.67),
-             (9600, 0.06, (0.0015, 0.003), 0.5))
+    # (centre Hz, key-to-key spread, width in octaves, decay range s, level[, rise s])
+    click_modes = ((1100, 0.1, 0.25, (0.002, 0.004), 0.5, 0.002),
+                   (2550, 0.08, 0.15, (0.0008, 0.0015), 0.8),
+                   (3400, 0.08, 0.15, (0.001, 0.002), 1.0),
+                   (5500, 0.08, 0.3, (0.0006, 0.0012), 1.3),
+                   (9800, 0.06, 0.25, (0.0006, 0.0012), 1.5))
+    thock_modes = ((1100, 0.1, 0.22, (0.004, 0.006), 1.0),
+                   (620, 0.12, 0.2, (0.003, 0.005), 0.2),
+                   (2500, 0.08, 0.2, (0.002, 0.003), 0.8))
+    # Each sound opens with a snap of noise (decay s, level, band): above 3 kHz for
+    # the click, 0.7-4.5 kHz for the thock.
+    click_snap = (0.00015, 0.7, 1 / np.sqrt(1 + (3000 / tf) ** 4))
+    thock_snap = (0.0004, 0.7, 1 / np.sqrt((1 + (tf / 4500) ** 4) * (1 + (700 / tf) ** 4)))
+
+    def modes(spec, scale=1.0):
+        """A key's resonances: each a pool of band noise and its envelope."""
+        res = []
+        for hz, spread, width, decay, level, *rise in spec:
+            hz *= scale * np.exp(rng.normal(0, spread))
+            b = np.fft.irfft(np.fft.rfft(rng.standard_normal(pool))
+                             * np.exp(-0.5 * (np.log2(freqs / hz) / width) ** 2), pool)
+            env = level * np.exp(-t / rng.uniform(*decay))
+            if rise:
+                env *= 1 - np.exp(-t / rise[0])
+            res.append((b / np.sqrt(np.mean(b ** 2)), env))
+        return res
 
     def key(space=False):
-        """One key: its resonances (each a pool of 0.3-octave band noise and a decay
-        envelope) and its bottom-out thump. The space bar rings lower and longer."""
-        res = []
-        for hz, spread, decay, level in rings + (((560, 0, (0.008, 0.008), 0.35),) if space else ()):
-            hz *= np.exp(rng.normal(0, spread))
-            b = np.fft.irfft(np.fft.rfft(rng.standard_normal(pool))
-                             * np.exp(-0.5 * (np.log2(freqs / hz) / 0.3) ** 2), pool)
-            res.append((b / np.sqrt(np.mean(b ** 2)), level * np.exp(-t / rng.uniform(*decay))))
+        """One key: its click's and its thock's resonances, and its bottom-out thump.
+        The space bar clicks a little lower and thocks lower and longer."""
         hz = rng.uniform(44, 58) * (0.9 if space else 1.0)
-        thump = ((0.83 if space else 0.55) * np.exp(-t / (0.018 if space else 0.012))
+        thump = ((0.8 if space else 0.5) * np.exp(-t / 0.012)
                  * (np.sin(2 * np.pi * hz * t) + 0.2 * np.sin(2 * np.pi * 2.4 * hz * t))
                  * (1 - np.exp(-t / 0.001)))
-        return res, thump
+        thock = thock_modes + (((560, 0, 0.2, (0.008, 0.008), 0.5),) if space else ())
+        return modes(click_modes, 0.93 if space else 1.0), modes(thock), thump
 
-    def click(k, bottom_out=False):
-        res, thump = k
-        s = rng.standard_normal(len(t)) * snap
+    def sound(res, snap):
+        decay, level, band = snap
+        s = np.fft.irfft(np.fft.rfft(rng.standard_normal(len(t)) * np.exp(-t / decay)) * band, len(t))
+        s *= level / np.sqrt(np.mean(s[:max(4, int(decay * _SR))] ** 2))
         for b, env in res:
             i = rng.integers(pool - len(t))
             s += b[i:i + len(t)] * env
-        return s + thump if bottom_out else s
+        return s
+
+    def click(k):
+        return sound(k[0], click_snap)
+
+    def thock(k, bottom_out=False):
+        s = sound(k[1], thock_snap)
+        return s + k[2] if bottom_out else s
 
     def add(s, at, db):
         i = int(at * _SR) % len(out)
@@ -117,25 +149,31 @@ def _synthesize(seconds: float = 15.0) -> np.ndarray:
             k, to_space = space, rng.integers(4, 7)
         else:
             k = keys[rng.integers(len(keys))]
-        db = rng.normal(0, 2.5)
-        if rng.random() < 0.7:
-            add(click(k), pos - rng.uniform(0.015, 0.045), db + rng.normal(-11, 4))  # landing
-        add(click(k, bottom_out=True), pos, db)
-        if rng.random() < 0.85:
-            add(click(k), pos + rng.uniform(0.005, 0.014), db + rng.normal(-7, 3))   # bounce
+        db = rng.normal(0, 2)
         if rng.random() < 0.8:
-            add(click(k), pos + rng.uniform(0.04, 0.1), db + rng.normal(-5, 4))      # release
-        for _ in range(rng.poisson(3)):
-            add(click(k), pos + rng.uniform(0, 0.08), db + rng.normal(-22, 5))      # rattle
+            add(thock(k), pos - rng.uniform(0.004, 0.045), db + rng.normal(-11, 5))     # landing
+        add(click(k), pos, db + rng.normal(0, 1.5))
+        add(thock(k, bottom_out=True), pos + rng.uniform(0.004, 0.012), db + rng.normal(-3, 5))
+        if rng.random() < 0.8:
+            add(thock(k), pos + rng.uniform(0.013, 0.025), db + rng.normal(-7, 5))      # bounce
+        if rng.random() < 0.8:
+            at = pos + rng.uniform(0.05, 0.11)
+            add(thock(k), at, db + rng.normal(-8, 5))                                 # release
+            if rng.random() < 0.6:
+                add(click(k), at - 0.004, db + rng.normal(-7, 3))
+        for _ in range(rng.poisson(2)):
+            add(thock(k), pos + rng.uniform(-0.03, 0.08), db + rng.normal(-20, 5))     # rattle
         pos += float(np.clip(0.115 * np.exp(rng.normal(0, 0.35)), 0.045, 0.26))
         if rng.random() < 0.035:
             pos += rng.uniform(0.15, 0.45)                # a rare pause between words
-    # The room: a 0.3 s decaying-noise tail at -19 dB, convolved circularly so it too
-    # carries over the seam.
-    m = int(_SR * 0.3)
+    # The room: a short, dark tail (0.12 s, under 3 kHz, -18 dB), convolved circularly
+    # so it too carries over the seam.
+    m = int(_SR * 0.12)
+    tail = rng.standard_normal(m) * np.exp(-6.9 * np.arange(m) / m)
+    fm = np.maximum(np.fft.rfftfreq(m, 1 / _SR), 1.0)
+    tail = np.fft.irfft(np.fft.rfft(tail) / np.sqrt(1 + (fm / 3000) ** 4), m)
     room = np.zeros(len(out))
-    room[:m] = rng.standard_normal(m) * np.exp(-6.9 * np.arange(m) / m)
-    room *= 10 ** (-19 / 20) / np.sqrt(np.sum(room ** 2))
+    room[:m] = tail * 10 ** (-18 / 20) / np.sqrt(np.sum(tail ** 2))
     room[0] = 1.0
     out = np.fft.irfft(np.fft.rfft(out) * np.fft.rfft(room), len(out))
     # As loud as the sparser bed this replaced (~-34 LKFS), so TEAPORT_THINKING_GAIN
@@ -187,7 +225,7 @@ def _get_chunks() -> list:
 def warm() -> None:
     """Build the bed at the brain's start, not in the first session's pipeline build:
     with no cached wav (the first start, or an install whose package dir is read-only)
-    synthesizing it holds the event loop ~0.2 s on an Orin."""
+    synthesizing it holds the event loop ~0.4 s on an Orin NX."""
     if ENABLED:
         _get_chunks()
 
