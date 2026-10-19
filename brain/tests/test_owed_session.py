@@ -291,6 +291,8 @@ async def test_203_a_lead_in_cut_stays_owed_until_the_caller_hears_it():
 TOY = ("There's a Toy Joy store at five-five-zero-one Burnet Road in Austin. Toy Joy at "
        "five-five-zero-one Burnet Road, Austin, Texas.")
 T_REQ = "Can you look if there are any toy stores on Burnett Road in Austin, Texas?"
+T_RESULTS = [{"title": "Toy Joy - Austin's Coolest Toy Store",
+              "snippet": "Toy Joy, 5501 Burnet Rd, Austin, TX 78756. Open daily 10am-9pm."}]
 
 
 async def test_204_a_sync_answer_cut_at_hold_on_is_owed_until_heard():
@@ -299,14 +301,17 @@ async def test_204_a_sync_answer_cut_at_hold_on_is_owed_until_heard():
     the cut answer is owed with its whole text, the caller's turn carries the note
     before their words, the lull's one re-offer goes, and its full telling closes it."""
     async with Rig() as rig:
+        async def web_search(params):                        # the box's: no agent here
+            await params.result_callback({"results": T_RESULTS})
+        rig.session.llm.register_function("web_search", web_search)
         rig.owed._reoffer_quiet_s = 0.6
-        rig.provider.replies = [("call", "get_current_time"), TOY, "Got it, pausing.", TOY]
+        rig.provider.replies = [("call", "web_search"), TOY, "Got it, pausing.", TOY]
         await rig.say(T_REQ)
         await rig.requests(2)                                # the post-tool answer
         await until(lambda: len(rig.played) >= 6)            # "There's a Toy Joy store at"
         await rig.say("Hold on, hold on.")
         hold_on = await rig.requests(3)
-        rec = rig.owed.record(f"cut:{T_REQ}")
+        rec = rig.owed.record("call-web_search")
         assert rec is not None and rec.state == owed.OWED, "the cut answer was owed to nobody"
         assert rec.outcome == owed.clean_outcome(TOY) and rec.request == T_REQ
         assert rec.heard_quote.startswith("There's a Toy Joy"), rec.heard_quote

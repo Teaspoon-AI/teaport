@@ -233,7 +233,7 @@ the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
 | `ToolResult` | pipecat's `_maybe_push_context_after_function_result`, as in `UserTurn.tla`'s POSTTOOL. The gate keeps the ids of the calls out (`_calls_out`, `gtool`): an id is added by its `FunctionCallInProgressFrame` unless it has already settled or been cancelled (`Mark`: the frame is uninterruptible and can come after the barge-in, `staleFlag`), and removed by its result or its `FunctionCallCancelFrame`. A call out keeps the window shut although a line before it ended `_turn` (`tend`, `endClearsTool`) |
 | `Issue` | the LLM takes a caller commit or a post-tool answer; `_open_stream` asks `Owed.view` (which waits for every pending settle) and sends the view. Only then is a commit no longer "still to be rendered" (`request_rendered`), so a consult landing during that wait leaves the note to it. The commit passed `HeardContextCorrector` first; `sp` is the speculative reply, opened through `_open_stream` directly (`speculate.py`), its noted keys carried on the stream to the commit that adopts it |
 | `Say`, `Played` | the completion and its playout. `stay_silent` is offered only in the re-offer's view, and `run_function_calls` consumes it: no call, no result in the context, a `RunSilentFrame` to end the gate's turn (only with no other call out) |
-| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
+| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled). `made` (Sync): `Owed.settle` → `Owed._cut_answer` for a reply whose render found a fresh answer in its context (`owed.fresh_answers`, registered by `Owed.noted`: `Reply.fresh`), cut with audio played (`audio`) after its stream ended (the ledger's `text`, None before), whose text names the result (`owed.names`, the telling); keyed by the round's tool_call_ids, its request the round's caller words (`""` for a round a notice started: no record). Only tools with `Tool.answers` (`tools.ANSWER_TOOLS`) |
 | `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame` |
 | `Lull` | `Owed._lull_loop`: every reply settled, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
 | `Commit` | the user aggregator's commit (an empty final commits nothing) |
@@ -245,14 +245,21 @@ Each is outside what the model checks, and each errs toward owed or toward silen
 - **Several records.** At most `MAX_RENDERED` (3) owed records render; a fourth evicts the
   oldest as `dropped` (not heard, its tool result kept, no note): never `closed`, which
   would break `ClosedOnEvidence`. One run renders every owed record, so a second ask
-  joins the waiting run.
+  joins the waiting run. Consult and sync records share the book (the model holds one
+  of either kind); every record is made through `Owed._owe` (land, a cut sync answer, a
+  wake's restore).
 - **The bounded settle wait: an accepted residual.** The render waits `SETTLE_WAIT_S`
-  (2 s) for pending settles; past it every reply still pending is settled as heard
-  nothing, with a warning (errs owed; one lost reply does not hold every later render).
-  The model's readers wait unboundedly. If the bound is ever hit by a reply that the
-  caller did hear, a run rendered right after can tell it again: `ow_lagSettle`'s
-  repeat, in practice, behind a 2 s timer. The lull does not take the bound: it waits
-  for the settle itself.
+  (2 s) for pending settles; past it the readers go on without the replies still
+  pending, with a warning (one lost reply does not hold every later render). Each still
+  settles when its end arrives, so its evidence still counts and a cut sync answer still
+  makes its record (errs owed; the #204 review's finding 7); only a reply the ledger
+  never saw (unclaimed: never played) is settled there as heard nothing. The model's
+  readers wait unboundedly. If the bound is ever hit by a reply that the caller did
+  hear, a run rendered right after can tell it again: `ow_lagSettle`'s repeat, in
+  practice, behind a 2 s timer. The lull does not take the bound: it waits for the
+  settle itself. A reply that put a call out holds no reader unless its request carried
+  the note (`Owed.called`): its round's answer is a request of its own after it, and a
+  cut of it cancels the call.
 - **The session's end** (`Owed.close_session`, from the gate's cleanup and the room's
   sleep): a consult still running has its placeholder rewritten to its failure record,
   owed, with no run. **Room sleep and wake** save and restore the owed records with the

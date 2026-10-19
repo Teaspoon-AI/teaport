@@ -548,7 +548,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
         (test_pipecat_premises.py), so the gate is told the turn is over
         (RunSilentFrame). Not with a call out: that is a tool round the gate keeps."""
         reply = _REPLY.get()
-        if (reply is not None and reply.purpose in owed_mod.RUNS and not reply.texts
+        if (reply is not None and reply.kind in owed_mod.RUNS and not reply.texts
                 and not reply.calls):
             await self.push_frame(RunSilentFrame())
 
@@ -563,7 +563,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
         which base_llm broadcasts from inside a task it schedules and never awaits.
         """
         reply = _REPLY.get()
-        if reply is not None and reply.purpose == owed_mod.REOFFER:
+        if reply is not None and reply.kind == owed_mod.REOFFER:
             # The re-offer's stay_silent (owed.STAY_SILENT): consumed HERE, so neither the
             # call nor a result enters the context -- the run said nothing, which is all
             # it means. The broadcast still tells the guard a call was the answer, so a
@@ -579,6 +579,8 @@ class BoundedOpenAILLMService(OpenAILLMService):
         if function_calls:
             if reply is not None:
                 reply.calls += len(function_calls)
+                if self.owed is not None:
+                    self.owed.called(reply)
             await self.broadcast_frame(
                 FunctionCallsDispatchedFrame, function_calls=function_calls
             )
@@ -594,18 +596,17 @@ class BoundedOpenAILLMService(OpenAILLMService):
     async def process_frame(self, frame, direction):
         """Every request the LLM answers gets an owed.Reply: what it is for (a caller's
         commit, a post-tool answer pushed up, a run of ours), carried on its
-        LLMFullResponseStartFrame to the ledger, which settles it at the reply's end."""
+        LLMFullResponseStartFrame to the ledger, which settles it at the reply's end.
+        Whether it carries a sync tool's answer is read from its context at the render
+        (owed.fresh_answers), not from the frame's direction (#204)."""
         if not isinstance(frame, LLMContextFrame) or self.owed is None:
             await super().process_frame(frame, direction)
             return
         if isinstance(frame, RunFrame):
             reply = owed_mod.Reply(frame.purpose, frame.keys)
         else:
-            down = direction == FrameDirection.DOWNSTREAM
-            # Up from the assistant aggregator: the answer to a sync tool's result. Its
-            # caller's words are what a cut of it is owed as having been asked (#204).
-            reply = owed_mod.Reply("caller", commit=down, asked=None if down else
-                                   owed_mod.last_caller_words(frame.context.get_messages()))
+            reply = owed_mod.Reply(owed_mod.COMMIT if direction == FrameDirection.DOWNSTREAM
+                                   else owed_mod.POST)
         token = _REPLY.set(reply)
         try:
             await super().process_frame(frame, direction)
@@ -624,13 +625,14 @@ class BoundedOpenAILLMService(OpenAILLMService):
                 reply.texts += 1
         await super().push_frame(frame, direction)
 
-    def _rendered(self, reply, noted) -> None:
-        """`reply`'s request is built: what its note carried is evidence when it ends, and
-        a commit is no longer one still to be rendered -- told only now, after the view
-        (which waits for the settles), so a consult landing meanwhile still finds it
-        pending and leaves the note to it (Owed.tla Land)."""
-        self.owed.noted(reply, noted)
-        if reply is not None and reply.commit and self.owed.gate is not None:
+    def _rendered(self, reply, noted, context) -> None:
+        """`reply`'s request is built from `context`: what its note carried is evidence
+        when it ends, and so is a fresh answer in it; and a commit is no longer one still
+        to be rendered -- told only now, after the view (which waits for the settles), so
+        a consult landing meanwhile still finds it pending and leaves the note to it
+        (Owed.tla Land)."""
+        self.owed.noted(reply, noted, context.get_messages())
+        if reply is not None and reply.kind == owed_mod.COMMIT and self.owed.gate is not None:
             self.owed.gate.request_rendered()
 
     async def get_chat_completions(self, context):
@@ -640,11 +642,11 @@ class BoundedOpenAILLMService(OpenAILLMService):
         # path below is what the speculation itself went through, so the two are the
         # same request either way; only WHEN it was opened differs. A run of ours is
         # never one: no speculation lives outside a caller's turn.
-        if self.speculator is not None and (reply is None or reply.purpose not in owed_mod.RUNS):
+        if self.speculator is not None and (reply is None or reply.kind not in owed_mod.RUNS):
             adopted = await self.speculator.take(context)
             if adopted is not None:
                 if self.owed is not None:
-                    self._rendered(reply, adopted.owed_noted)
+                    self._rendered(reply, adopted.owed_noted, context)
                 return adopted
         return await self._open_stream(context)
 
@@ -669,14 +671,14 @@ class BoundedOpenAILLMService(OpenAILLMService):
         reply = _REPLY.get()
         noted = ()
         if self.owed is not None:
-            purpose = reply.purpose if reply is not None else "caller"
-            view, noted = await self.owed.view(context, purpose,
+            kind = reply.kind if reply is not None else "caller"
+            view, noted = await self.owed.view(context, kind,
                                                reply.keys if reply is not None else ())
             if view is None:
-                logger.info(f"{self}: the {purpose} has nothing owed to tell -- no request")
+                logger.info(f"{self}: the {kind} has nothing owed to tell -- no request")
                 return _NothingToSay()
+            self._rendered(reply, noted, context)
             context = view
-            self._rendered(reply, noted)
             if reply is None and (into := SPECULATION_NOTED.get()) is not None:
                 into[:] = noted
         stream = await super().get_chat_completions(context)

@@ -111,8 +111,22 @@ TOYS = ("Can you look if there are any toy stores on Burnett Road in Austin, Tex
         "There's a Toy Joy store at five-five-zero-one Burnet Road in Austin. Toy Joy at "
         "five-five-zero-one Burnet Road, Austin, Texas.")
 
+# Contractions (the #204 review): split on the apostrophe, "they're" and "you'll" left
+# the terms "re" and "ll", which any "I'll" or "they're" in a reply carried. A clitic
+# contraction is a function word now, never a term (owed.spoken_tokens).
+PHARMACY = ("Is the pharmacy on Lamar open tonight?",
+            "They're open until nine tonight, and you'll find them next to the H-E-B.")
+REMEMBERED = ("Remember that my wife's name is Ann.",
+              "Got it, I'll remember that Ann is your wife.")
+
 CORPUS = (
-    [(WEATHER, "Tomorrow in Austin looks", "owed"), (WEATHER, WEATHER[1], "heard"),
+    [(PHARMACY, "Sorry, they're still checking -- you'll hear back in a moment.", "owed"),
+     (PHARMACY, "They'll get back to you, I'm sure.", "owed"),
+     (PHARMACY, "They're open until nine tonight, next to the H-E-B.", "heard"),
+     (REMEMBERED, "I'll take care of it.", "owed"), (REMEMBERED, "Okay, I'll do that.", "owed"),
+     (REMEMBERED, REMEMBERED[1], "heard"),
+     (TOYS, "You'll find it, I've checked, they're there.", "owed")]
+    + [(WEATHER, "Tomorrow in Austin looks", "owed"), (WEATHER, WEATHER[1], "heard"),
      (TOYS, "There's a Toy Joy store at", "owed"), (TOYS, TOYS[1], "heard"),
      (WEATHER, "Got it, pausing.", "owed"), (TOYS, "Got it, pausing.", "owed")]
     + [(FAILED, TOLD_FAILURE, "heard")]

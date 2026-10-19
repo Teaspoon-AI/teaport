@@ -888,6 +888,12 @@ class Tool:
     # How the system prompt names the tool when it composes the tools paragraph
     # (persona.build_system_prompt). The default sets keep their tuned paragraphs.
     hint: str = ""
+    # Its result is information the caller asked for -- an answer -- not the
+    # confirmation of something done: a telling of it cut before the caller heard it
+    # is owed to them (owed.fresh_answers, #204). An action's (the volume, the voice,
+    # a fact remembered) never is: they asked for it, and its effect or its "done" is
+    # nothing still to hear (formal/Owed.tla, SOURCE = "action").
+    answers: bool = False
 
     @property
     def name(self) -> str:
@@ -973,18 +979,23 @@ def _bind_ask_openclaw(ctx: ToolContext):
 TOOLS: tuple[Tool, ...] = (
     Tool(HOST_STATUS, _plain(_get_host_status),
          setting("TEAPORT_TOOL_GET_HOST_STATUS"),
+         answers=True,
          hint="get_host_status (this machine's live free memory, CPU load, decode speed)"),
     Tool(CURRENT_TIME, _plain(_get_current_time),
          setting("TEAPORT_TOOL_GET_CURRENT_TIME"),
+         answers=True,
          hint="get_current_time"),
     Tool(WEB_SEARCH, _plain(_web_search),
          setting("TEAPORT_TOOL_WEB_SEARCH"), frozenset({"agent"}),
+         answers=True,
          hint="web_search (search the web for anything current, factual, or that you don't know)"),
     Tool(WEB_FETCH, _plain(_web_fetch),
          setting("TEAPORT_TOOL_WEB_FETCH"), frozenset({"agent"}),
+         answers=True,
          hint="web_fetch (read a specific web page)"),
     Tool(SEARCH_MEMORY, _plain(_search_memory),
          setting("TEAPORT_TOOL_SEARCH_MEMORY"), frozenset({"agent"}),
+         answers=True,
          hint="search_memory (recall what the user told you before, by voice or text)"),
     Tool(REMEMBER, _plain(_remember),
          setting("TEAPORT_TOOL_REMEMBER"), frozenset({"agent"}),
@@ -995,11 +1006,12 @@ TOOLS: tuple[Tool, ...] = (
     # handler's own consult caps; the fast tools keep pipecat's 10s.
     Tool(ASK_OPENCLAW, _bind_ask_openclaw,
          setting("TEAPORT_TOOL_ASK_OPENCLAW"), frozenset({"agent"}),
-         timeout_secs=_ASK_OPENCLAW_TIMEOUT,
+         answers=True, timeout_secs=_ASK_OPENCLAW_TIMEOUT,
          hint="ask_openclaw (your full desktop agent — every tool, deeper thinking; for "
               "multi-step or open-ended requests your quick tools can't handle)"),
     Tool(LIST_VOICES, lambda ctx: functools.partial(_list_voices, tts=ctx.tts),
          setting("TEAPORT_TOOL_LIST_VOICES"), frozenset({"tts"}),
+         answers=True,
          hint="list_voices (your speaking voices)"),
     Tool(SWITCH_VOICE, lambda ctx: functools.partial(_switch_voice, tts=ctx.tts),
          setting("TEAPORT_TOOL_SWITCH_VOICE"), frozenset({"tts"}),
@@ -1034,6 +1046,8 @@ TOOLS: tuple[Tool, ...] = (
               "goodnight or go to sleep; once it returns, say one short goodbye)"),
 )
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
+# The tools whose result is an answer (Tool.answers): owed.Owed reads which replies tell one.
+ANSWER_TOOLS = frozenset(t.name for t in TOOLS if t.answers)
 # The same guard for the switch: agent-first with ask_openclaw switched off would route
 # every turn to a tool the model is not offered.
 if AGENT_FIRST and not TOOLS_BY_NAME["ask_openclaw"].enabled:

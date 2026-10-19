@@ -97,6 +97,7 @@ from teaport_brain.thinking_sound import ThinkingSound
 from teaport_brain.wifi_voice import SetupTurnCloser, WifiSetupVoice
 from teaport_brain.tools import (
     AGENT_FIRST,
+    ANSWER_TOOLS,
     ToolContext,
     active_tools,
     build_tools_schema,
@@ -870,11 +871,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # of speech that had stopped by then (the answer after a tool, followup_gate.py).
     cut_fence.on_words_committed = followup_gate.words_committed
     cut_fence.close_owed = stop_strategy.close_owed
-    # What the caller is still owed of the async consults (owed.py, #203): the LLM
-    # renders its note into every request, the ledger settles each reply into it, the
-    # gate is the door its runs go through, and a room's sleep keeps it with the
-    # conversation.
-    owed = Owed(context, gate=followup_gate)
+    # What the caller is still owed of the async consults and of the sync answer tools'
+    # cut tellings (owed.py, #203/#204): the LLM renders its note into every request, the
+    # ledger settles each reply into it, the gate is the door its runs go through, and a
+    # room's sleep keeps it with the conversation.
+    owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS)
     llm.owed = owed
     ledger.on_reply_end = owed.settle
     if wake_gate is not None:

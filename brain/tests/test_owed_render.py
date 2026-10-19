@@ -144,6 +144,38 @@ def _notes(params):
             and isinstance(m.get("content"), str) and m["content"].startswith(SYSTEM_NOTICE_TAG)]
 
 
+async def test_whether_a_reply_tells_a_sync_answer_is_read_from_its_context():
+    """#204 review finding 4: the LLM service registers each request's fresh answers from
+    the context it was rendered with (owed.fresh_answers), whatever the frame's
+    direction: a caller's commit that reads a fresh web_search result carries it, as the
+    post-tool request does; a request after it was told carries none."""
+    round_ = [{"role": "user", "content": "Any toy stores on Burnet Road?"},
+              {"role": "assistant", "content": None, "tool_calls": [
+                  {"id": "call-ws", "type": "function",
+                   "function": {"name": "web_search", "arguments": "{}"}}]},
+              {"role": "tool", "tool_call_id": "call-ws", "content": json.dumps(
+                  {"results": [{"snippet": "Toy Joy, 5501 Burnet Rd, Austin."}]})}]
+    llm = _llm(_Provider())
+    llm.owed = owed.Owed(LLMContext([]), gate=_Gate(), answer_tools={"web_search"})
+
+    async def render(kind, msgs):
+        reply = owed.Reply(kind)
+        token = services._REPLY.set(reply)
+        try:
+            await llm.get_chat_completions(LLMContext(msgs))
+        finally:
+            services._REPLY.reset(token)
+        return reply
+    commit = await render(owed.COMMIT, round_ + [{"role": "user", "content": "Hold on."}])
+    assert commit.fresh is not None and commit.fresh.ids == ("call-ws",), commit.fresh
+    post = await render(owed.POST, round_)
+    assert post.fresh is not None and post.fresh.request == "Any toy stores on Burnet Road?"
+    told = await render(owed.COMMIT, round_ + [
+        {"role": "assistant", "content": "There's a Toy Joy at 5501 Burnet Road."},
+        {"role": "user", "content": "Thanks."}])
+    assert told.fresh is None
+
+
 async def test_a_caller_request_carries_the_note_before_their_words():
     provider = _Provider()
     llm = _llm(provider)
@@ -151,7 +183,7 @@ async def test_a_caller_request_carries_the_note_before_their_words():
                    {"role": "user", "content": "I'm ready."})
     llm.owed, gate = _book(ctx)
     before = json.dumps(ctx.get_messages())
-    reply = owed.Reply("caller", commit=True)
+    reply = owed.Reply(owed.COMMIT)
     token = services._REPLY.set(reply)
     try:
         await llm.get_chat_completions(ctx)
@@ -196,7 +228,7 @@ async def test_a_speculation_renders_in_its_own_task_and_the_commit_adopts_its_n
         await asyncio.sleep(0.01)
     assert _notes(provider.requests[0]), "the speculation went out bare"
     ctx.add_message({"role": "user", "content": "I'm ready."})     # the commit
-    reply = owed.Reply("caller", commit=True)
+    reply = owed.Reply(owed.COMMIT)
     token = services._REPLY.set(reply)
     try:
         adopted = await llm.get_chat_completions(ctx)
@@ -263,7 +295,7 @@ async def test_a_run_goes_with_the_note_at_the_tail_and_the_run_line_first():
     assert msgs[-1]["content"].startswith(SYSTEM_NOTICE_TAG + "\n" + owed.RUN_LINE), msgs[-1]
     assert gate.rendered == 0, "a run is not a caller request"
     start = next(f for f in frames if isinstance(f, LLMFullResponseStartFrame))
-    assert start.owed_reply.purpose == "run" and start.owed_reply.noted == ("call-hn",)
+    assert start.owed_reply.kind == "run" and start.owed_reply.noted == ("call-hn",)
     assert any(isinstance(f, LLMTextFrame) for f in frames)
 
 
@@ -294,7 +326,7 @@ async def test_a_commit_is_rendered_only_once_its_view_is_built():
     gate.caller_request_pending = True               # the commit passed TurnCommitMark
     earlier = owed.Reply("caller")
     llm.owed.noted(earlier, ("x",))                  # a reply still to settle
-    reply = owed.Reply("caller", commit=True)
+    reply = owed.Reply(owed.COMMIT)
 
     async def render():
         token = services._REPLY.set(reply)
@@ -311,7 +343,7 @@ async def test_a_commit_is_rendered_only_once_its_view_is_built():
     await task
     notes = _notes(provider.requests[0])
     assert gate.rendered == 1 and notes and "Tesla Roadster" in notes[0]["content"]
-    post = owed.Reply("caller")                      # a context frame on its way up
+    post = owed.Reply(owed.POST)                        # a context frame on its way up
     token = services._REPLY.set(post)
     try:
         await llm.get_chat_completions(ctx)
