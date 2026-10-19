@@ -678,14 +678,16 @@ async def test_a_reply_that_does_not_settle_it_leaves_one_more_then_it_is_histor
         logger.remove(sink)
     assert b.owed() == []
     assert any("cut before its stream ended" in x and "STREAMCUT" in x for x in lines), lines
-    nxt = answer_reply(b, round_msgs(), owed.COMMIT)
+    nxt = answer_reply(b, round_msgs() + [{"role": "user", "content": "Sorry, go on."}],
+                       owed.COMMIT)
     assert nxt.fresh == ("call-ws",)
     b.settle(nxt, "There's a", cut=True, audio=True, text=TOY)
     assert [r.key for r in b.owed()] == ["call-ws"]
     b, _, _ = sync_book()
     for _ in range(2):
         b.settle(answer_reply(b, round_msgs()), None, cut=True, audio=False, text=TOY)
-    late = answer_reply(b, round_msgs(), owed.COMMIT)
+    late = answer_reply(b, round_msgs() + [{"role": "user", "content": "Sorry, go on."}],
+                        owed.COMMIT)
     assert late.fresh == ()
     b.settle(late, "There's a", cut=True, audio=True, text=TOY)
     assert b.owed() == [], "a third reply settled it"
@@ -730,25 +732,65 @@ async def test_the_callers_turn_that_reads_a_fresh_result_and_is_cut_is_owed():
     assert rec is not None and rec.state == OWED and rec.request == T_REQ, "who asked is the round's caller"
 
 
-async def test_what_the_position_takes_for_the_telling_when_the_caller_moves_on():
-    """The accepted degradation to before #204 (formal/README.md, OwedAnswers.tla
-    oa_lose_told), pinned so a change to it is seen: something else heard in the
-    answer's position counts as told -- "Sure, take your time." after "Hold on."
-    (ctx-172525), or another question's answer -- and the telling after it, cut, is no
-    record; cut, the deferral itself is recorded as it stands."""
+async def test_a_reply_with_nothing_of_its_own_settles_nothing():
+    """The fifth review's J1 (OwedAnswers.tla fillerSettles): the post-tool request
+    dropped by "Hold on.", the turn's reply defers. A reply with no terms of its own
+    settles nothing -- cut, no record of "Sure, take your time."; heard, the answer is
+    not told -- and the reply after it tells the answer: cut, its record. ctx-172525
+    (2026-10-18 17:25): "Understood -- let me know when you'd like me to continue.",
+    then "Oh, continue." got the telling."""
+    for defer, cut in [("Sure, take your time.", True),
+                       ("Understood—let me know when you'd like me to continue.", False)]:
+        b, _, gate = sync_book(reoffer_quiet_s=0.05)
+        gate.quiet = 99.0
+        msgs = round_msgs() + [{"role": "user", "content": "Hold on."}]
+        b.settle(answer_reply(b, msgs, owed.COMMIT), defer.split()[0] if cut else defer,
+                 cut=cut, audio=True, text=defer)
+        await asyncio.sleep(0.15)
+        assert b.owed() == [] and gate.asked == [], (defer, b.owed())
+        msgs += [{"role": "assistant", "content": defer},
+                 {"role": "user", "content": "Oh, continue."}]
+        told = answer_reply(b, msgs, owed.COMMIT)
+        assert told.fresh == ("call-ws",), defer
+        b.settle(told, "There's a Toy Joy", cut=True, audio=True, text=TOY)
+        assert [r.key for r in b.owed()] == ["call-ws"], defer
+
+
+async def test_a_caller_turn_in_words_of_their_own_moves_on():
+    """The fifth review's J2 (OwedAnswers.tla ownWordsKeep): the weather's post-tool
+    reply went unheard; "Never mind. What's the capital of Australia?" moves on. The
+    answer to it, cut or heard, is no record of the weather, nor its telling."""
+    for cut in (True, False):
+        b, _, _ = sync_book()
+        msgs = round_msgs(W_REQ, W_RESULT)
+        b.settle(answer_reply(b, msgs), None, cut=True, audio=False, text=None)
+        msgs += [{"role": "user", "content": "Never mind. What's the capital of Australia?"}]
+        c = answer_reply(b, msgs, owed.COMMIT)
+        assert c.fresh == ()
+        text = "The capital of Australia is Canberra, not Sydney."
+        b.settle(c, "The capital" if cut else text, cut=cut, audio=True, text=text)
+        assert b.owed() == []
+
+
+async def test_what_is_still_misread():
+    """The residuals left (formal/README.md, OwedAnswers.tla ASIDE), pinned so a change
+    is seen: a deferral that says something of its own is taken for the telling (heard:
+    told, and the telling after it is no record); a caller turn in words of their own
+    that dropped the post-tool request, answered with something else and cut, is the
+    dropped answer's record."""
     b, _, _ = sync_book()
-    msgs = round_msgs() + [{"role": "user", "content": "Hold on."}]
-    defer = "Understood—let me know when you'd like me to continue."
+    msgs = round_msgs(W_REQ, W_RESULT) + [{"role": "user", "content": "Hold on."}]
+    defer = "Got it, I'll keep the Austin forecast handy for when you're ready."
     b.settle(answer_reply(b, msgs, owed.COMMIT), defer, cut=False, audio=True, text=defer)
-    msgs += [{"role": "assistant", "content": defer}, {"role": "user", "content": "Oh, continue."}]
+    msgs += [{"role": "assistant", "content": defer}, {"role": "user", "content": "Go on."}]
     told = answer_reply(b, msgs, owed.COMMIT)
     assert told.fresh == ()
-    b.settle(told, "There's a Toy Joy", cut=True, audio=True, text=TOY)
-    assert b.owed() == []
     b, _, _ = sync_book()
-    b.settle(answer_reply(b, round_msgs() + [{"role": "user", "content": "Hold on."}],
-                          owed.COMMIT), "Sure,", cut=True, audio=True, text="Sure, take your time.")
-    assert [r.outcome for r in b.owed()] == ["Sure, take your time."]
+    msgs = round_msgs(W_REQ, W_RESULT) + [{"role": "user", "content": "What time is it?"}]
+    c = answer_reply(b, msgs, owed.COMMIT)
+    assert c.fresh == ("call-ws",)
+    b.settle(c, "It's three", cut=True, audio=True, text="It's three fifteen in the afternoon.")
+    assert [r.outcome for r in b.owed()] == ["It's three fifteen in the afternoon."]
 
 
 async def test_a_later_rounds_reply_never_settles_an_older_answer():
@@ -885,6 +927,50 @@ async def test_a_re_lookup_is_the_turn_right_after_the_records_cut():
     p = Reply(owed.POST)
     b.noted(p, ("w1",), msgs)
     assert p.fresh == ("f1",)
+
+
+async def test_a_re_lookups_chain_stays_the_re_lookup():
+    """The fifth review's J3: "Hold on, hold on." right after the weather's cut starts a
+    re-lookup (web_search), whose reply calls web_fetch. The re-lookup is passed on to
+    the call its reply chains: the fetch is no answer to "Hold on, hold on.", and its
+    telling, cut, is evidence for the weather record, not a second record."""
+    b, _, _ = sync_book()
+    msgs = await _owed_weather(b)
+    msgs = _commit_calls(b, msgs, "Hold on, hold on.", "s2")
+    msgs += round_msgs(result='{"results": []}', cid="s2")[1:]
+    p2 = Reply(owed.POST)
+    b.noted(p2, ("w1",), msgs)
+    p2.calls = 1
+    b.called(p2, ["f3"])
+    b.settle(p2, None, cut=False, audio=False, text="")
+    msgs += round_msgs(result='{"content": "Tomorrow: high 74."}', cid="f3", tool="web_fetch")[1:]
+    p3 = Reply(owed.POST)
+    b.noted(p3, ("w1",), msgs)
+    assert p3.fresh == ()
+    b.settle(p3, "Tomorrow in", cut=True, audio=True,
+             text="Tomorrow in Austin should be warm and dry, with a high near seventy-four.")
+    assert [(r.key, r.request) for r in b.owed()] == [("w1", W_REQ)]
+
+
+async def test_a_late_settle_opens_no_re_lookup_turn():
+    """The fifth review's J8: the post-tool reply's settle is late, and the caller's turn
+    right after its cut ("Hold on.") rendered before it. The window opens only if no
+    caller turn has rendered since the cut, so the NEXT turn's round ("What time is
+    it?" -- or any words) is its own question."""
+    b, _, _ = sync_book()
+    msgs = round_msgs(W_REQ, W_RESULT, cid="w1")
+    p = answer_reply(b, msgs)
+    p.claimed = True
+    await b.settled(timeout=0.05)
+    msgs += [{"role": "assistant", "content": "Tomorrow in"}, {"role": "user", "content": "Hold on."}]
+    c = answer_reply(b, msgs, owed.COMMIT)
+    b.settle(c, None, cut=False, audio=False, text="")
+    b.settle(p, "Tomorrow in", cut=True, audio=True, text=W_TOLD)
+    assert [r.key for r in b.owed()] == ["w1"]
+    msgs += [{"role": "assistant", "content": "Sure."}, {"role": "user", "content": "Okay."}]
+    c2 = Reply(owed.COMMIT)
+    b.noted(c2, ("w1",), msgs)
+    assert c2.relook is None, "a late settle opened the re-lookup turn a turn late"
 
 
 async def test_a_telling_that_calls_again_is_no_record_and_its_chain_is_one_answer():

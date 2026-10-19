@@ -507,6 +507,12 @@ def new_results(messages: list, known) -> list:
             and m.get("tool_call_id") not in known and msg_text(m).strip() not in _NOT_A_RESULT]
 
 
+def _newest_result(messages: list) -> Optional[str]:
+    """The newest tool result's id in `messages`, None if there is none."""
+    return next((m.get("tool_call_id") for m in reversed(messages)
+                 if isinstance(m, dict) and m.get("role") == "tool"), None)
+
+
 def tool_call_ids(messages: list) -> set:
     """Every tool result's id in `messages` (a conversation continued after the room's
     sleep: its results are history)."""
@@ -549,8 +555,8 @@ class Reply:
     of ours (RUN, REOFFER, for the records `keys`). Every kind but a run's is "caller" to
     the render."""
 
-    __slots__ = ("kind", "keys", "noted", "fresh", "relook", "settled", "claimed", "texts",
-                 "calls")
+    __slots__ = ("kind", "keys", "noted", "fresh", "relook", "turn", "settled", "claimed",
+                 "texts", "calls")
 
     def __init__(self, kind: str, keys=()):
         self.kind = kind
@@ -558,6 +564,7 @@ class Reply:
         self.noted: tuple = ()
         self.fresh: tuple = ()          # the sync answers it may settle (Owed._resolve)
         self.relook: Optional[str] = None   # the record its calls would re-look up
+        self.turn = 0                   # the caller turns rendered by its render
         self.settled = False
         self.claimed = False          # the ledger has its LLMFullResponseStartFrame
         self.texts = 0                # LLMTextFrames with text the completion pushed
@@ -592,6 +599,7 @@ class Owed:
         # re-lookup's put out under the note, its record's key from the start.
         self._answers: dict = {}
         self._relook: Optional[str] = None    # the record cut last: its re-lookup turn
+        self._turn = 0                        # caller turns rendered (COMMIT renders)
         # Replies the readers wait for: rendered with the note, or with a fresh answer
         # whose cut makes a record, and not settled yet.
         self._pending: list = []
@@ -685,20 +693,34 @@ class Owed:
         evidence when it ends. Each tool result in `messages` the book has not seen is
         filed here (new_results) -- an answer tool's open for its two replies, to the
         words that started its round -- and a new round ends any open answer to other
-        words. A request rendered while answers are open may settle them (`fresh`): it
-        is waited for too, note or not, since a cut telling of them is a record the next
-        render must carry (OwedAnswers.tla)."""
+        words, as does a caller's turn in words of their own. A request rendered while
+        answers are open may settle them (`fresh`): it is waited for too, note or not,
+        since a cut telling of them is a record the next render must carry
+        (OwedAnswers.tla). Words "of their own" carry a term outside the common words
+        (terms_of): the one test the book reads words by."""
         if reply is None or reply.settled or reply in self._pending:
             return
         reply.noted = tuple(keys)
         if reply.kind not in RUNS:
             if reply.kind == COMMIT:
-                # The caller's turn right after a record's cut: words that ask nothing
-                # of their own make its round that record's re-lookup. One turn only.
+                self._turn += 1
                 words = _asked(messages, len(messages))
-                if self._relook is not None and words and not terms_of(words, ""):
+                if terms_of(words, ""):
+                    # The caller moves on (OwedAnswers.tla ownWordsKeep): an answer
+                    # carried already is ended; one new at this render stays its own.
+                    for a in self._answers.values():
+                        a.replies = 0
+                elif words and self._relook is not None:
+                    # The turn right after a record's cut, in words that ask nothing of
+                    # their own: its round is that record's re-lookup. One turn only.
                     reply.relook = self._relook
                 self._relook = None
+            elif reply.kind == POST and (last := _newest_result(messages)) is not None:
+                # A re-lookup round's own reply passes it on to a call it chains.
+                a = self._answers.get(last)
+                if a is not None and a.record is not None and not a.replies:
+                    reply.relook = a.record
+            reply.turn = self._turn
             for tid, tool, words in new_results(messages, self._answers):
                 for a in self._answers.values():
                     if a.replies and a.request != words:
@@ -878,15 +900,18 @@ class Owed:
                  text: Optional[str]) -> None:
         """The sync answers `reply` may settle, as the LIVE book holds them now (a late
         settle reads them after other replies may have: OwedAnswers.tla lateReplace).
-        By position only: a reply that calls nothing and played audio settles them --
-        heard in full, told; cut after its stream ended, the record (_cut_answer).
-        Any other reply -- no audio, a line before another call, a telling cut before
-        its stream ended (a fragment: partialRecord; the residual streamCut, logged so it
-        can be measured) -- spends one of their replies."""
+        By position only: a reply that calls nothing, played audio and says something
+        of its own settles them -- heard in full, told; cut after its stream ended, the
+        record (_cut_answer). Any other reply -- no audio, a line before another call,
+        nothing of its own ("Sure, take your time.": OwedAnswers.tla fillerSettles), a
+        telling cut before its stream ended (a fragment: partialRecord; the residual
+        streamCut, logged so it can be measured) -- spends one of their replies."""
         ids = [t for t in reply.fresh if self._answers[t].replies]
         if not ids:
             return
-        if not audio or reply.calls or (cut and not text):
+        request = self._answers[ids[-1]].request
+        if (not audio or reply.calls or (cut and not text)
+                or not terms_of(text or "", request)):
             if audio and cut and not text and not reply.calls:
                 logger.info(f"OWED: a reply carrying {ids} cut before its stream ended "
                             f"(audio played, heard {(heard or '')[:60]!r}) -- no record "
@@ -894,8 +919,10 @@ class Owed:
             for t in ids:
                 self._answers[t].replies -= 1
             return
-        rec = (self._cut_answer(tuple(ids), self._answers[ids[-1]].request, text, heard)
-               if cut else None)
+        rec = self._cut_answer(tuple(ids), request, text, heard) if cut else None
+        if rec is not None and reply.turn == self._turn:
+            # No caller turn has rendered since the cut (a late settle opens none).
+            self._relook = rec.key
         for t in ids:
             self._answers[t].replies = 0
             self._answers[t].record = rec.key if rec is not None else None
@@ -908,8 +935,8 @@ class Owed:
         caller's words, 15/20 with the query) -- keyed by the round's tool_call_ids. The
         close rule on the cut's own heard prefix first: a cut after the answer was heard
         makes nothing; so does a round nobody asked for. No run: the caller's turn that
-        cut it carries the note; the cut arms the one re-offer, and opens the re-lookup
-        turn (Owed.noted). None when nothing is owed (the answer is then told)."""
+        cut it carries the note; the cut arms the one re-offer. None when nothing is owed
+        (the answer is then told)."""
         outcome = clean_outcome(text)
         if not request or not has_speech(outcome):
             return None
@@ -919,7 +946,6 @@ class Owed:
             return None
         self._owe(rec, f"a sync answer to {request[:60]!r} cut at {(heard or '')[:60]!r}")
         self._arm([rec])
-        self._relook = rec.key
         return rec
 
     # ---- the session's end, and the room's sleep -----------------------------------
