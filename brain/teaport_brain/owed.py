@@ -705,12 +705,13 @@ class Owed:
             if reply.kind == COMMIT:
                 self._turn += 1
                 words = _asked(messages, len(messages))
-                if terms_of(words, ""):
-                    # The caller moves on (OwedAnswers.tla ownWordsKeep): an answer
-                    # carried already is ended; one new at this render stays its own.
-                    for a in self._answers.values():
+                # The caller moves on (OwedAnswers.tla ownWordsKeep): an answer carried
+                # already is ended by words of their own beyond ITS question ("Wait,
+                # Austin tomorrow?" restates it); one new at this render stays its own.
+                for a in self._answers.values():
+                    if a.replies and terms_of(words, a.request):
                         a.replies = 0
-                elif words and self._relook is not None:
+                if words and self._relook is not None and not terms_of(words, ""):
                     # The turn right after a record's cut, in words that ask nothing of
                     # their own: its round is that record's re-lookup. One turn only.
                     reply.relook = self._relook

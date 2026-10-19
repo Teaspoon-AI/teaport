@@ -772,6 +772,22 @@ async def test_a_caller_turn_in_words_of_their_own_moves_on():
         assert b.owed() == []
 
 
+async def test_restating_the_question_does_not_move_on():
+    """The final review: words of their own are judged against the open answer's own
+    question. Restating it ("Wait, Austin tomorrow?") is no new question, so the answer
+    stays open and the reply that tells it, cut, is its record; "Hold on." and "Hello?"
+    carry nothing at all (the controls)."""
+    for words in ["The weather in Austin, go on.", "Sorry, what about tomorrow's weather?",
+                  "Wait, Austin tomorrow?", "Hold on.", "Hello?"]:
+        b, _, _ = sync_book()
+        msgs = round_msgs(W_REQ, W_RESULT)
+        b.settle(answer_reply(b, msgs), None, cut=True, audio=False, text=None)
+        c = answer_reply(b, msgs + [{"role": "user", "content": words}], owed.COMMIT)
+        assert c.fresh == ("call-ws",), words
+        b.settle(c, "Tomorrow in Austin", cut=True, audio=True, text=W_TOLD)
+        assert [r.key for r in b.owed()] == ["call-ws"], words
+
+
 async def test_what_is_still_misread():
     """The residuals left (formal/README.md, OwedAnswers.tla ASIDE), pinned so a change
     is seen: a deferral that says something of its own is taken for the telling (heard:

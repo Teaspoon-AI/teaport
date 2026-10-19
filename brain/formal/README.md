@@ -531,8 +531,10 @@ position only:
   question.
 
 "Terms of its own" is one test, `terms_of(words, question)` empty or not (the close
-rule's reading), used three times: a reply with none settles nothing, a caller turn with
-some moves on, a round started right after a cut with none is the re-lookup.
+rule's reading), used three times: a reply with none beyond the answer's question settles
+nothing, a caller turn with some beyond an open answer's question moves on (restating
+it -- "Wait, Austin tomorrow?" -- does not), a round started right after a cut with none
+at all is the re-lookup.
 
 | property | meaning |
 |---|---|
@@ -585,6 +587,19 @@ forecast handy.") is taken for the telling -- heard, told; cut, recorded as it s
 words right after a cut that start a new question are taken for the re-lookup (one
 turn). The re-lookup window opens only if no caller turn has rendered since the cut (a
 late settle opens none); a re-lookup's chain is not modelled (`test_owed.py`).
+
+Two lexical residuals of that test, kept as they are. **A short negative answer says
+nothing of its own** ("No, it's closed tonight.", "No, it won't rain tomorrow."): "no"
+is a common word -- it is the Spanish and Portuguese lists' (Portuguese "no" is "em o",
+a function word), and the lists are one set -- while "yes" is a term, as the list's
+charter says of polarity words. So a "yes" answer settles its answer and a bare "no"
+answer spends a reply (heard, the answer is not told; cut, no record). Making "no" a term
+would make a Portuguese function word one, the unsafe side for the close rule; making
+"yes" common would leave a yes/no answer term-less. **The deferral fillers weaken a
+contrived close**: "continue", "pause", "understand(ood)" are common words (they keep
+"Understood -- let me know when you'd like me to continue." a deferral), so a consult
+outcome like "No. The strike will continue through Friday." is left one term, "friday",
+and any heard "Friday" closes it.
 
 **What neither model covers.** A re-lookup round's own answer against the old record
 (its telling is evidence for the record, never a record of its own; whether that
