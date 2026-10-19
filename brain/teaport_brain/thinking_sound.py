@@ -19,15 +19,13 @@
 # filler (before) from the reply (after); the ~1-2s until reply audio is a natural
 # beat, not dead air.
 #
-# The bed is synthesized procedurally (royalty-free, no external asset) and cached
-# to assets/typing-v2.wav next to this file. The name changes with the synthesis: a
-# cached wav is used whenever it exists (and the wheel packages whatever sits in
-# assets/), so an older bed under the same name would keep playing. Drop your own
-# 24 kHz mono wav at TEAPORT_THINKING_WAV to override it. Kill switch:
-# TEAPORT_THINKING_SOUND=0.
+# The bed is synthesized procedurally (royalty-free, no external asset) when the brain
+# starts — warm(), ~0.3 s on an Orin NX — and held in memory. Nothing is cached on
+# disk: a cache outlives the code that wrote it, so an older bed would keep playing
+# after the synthesis changed. Point TEAPORT_THINKING_WAV at your own 24 kHz mono
+# 16-bit wav to play that instead. Kill switch: TEAPORT_THINKING_SOUND=0.
 #
 import asyncio
-import os
 import wave
 
 import numpy as np
@@ -51,8 +49,7 @@ _CHUNK_MS = 40
 _GRACE_S = setting("TEAPORT_THINKING_GRACE_S")   # silence before the bed starts
 _GAIN = setting("TEAPORT_THINKING_GAIN")         # 1.0 = the synthesized peak
 _MAX_S = setting("TEAPORT_THINKING_MAX_S")        # hard cap (> ask_openclaw timeout)
-_WAV = setting("TEAPORT_THINKING_WAV",
-               default=os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "typing-v2.wav"))
+_WAV = setting("TEAPORT_THINKING_WAV")            # "" = the synthesized bed
 # Only genuinely-long tool calls get a thinking bed; the fast tools resolve before
 # the grace period even elapses, so a bed there would just be a blip.
 _TRIGGER = {"ask_openclaw"}
@@ -143,28 +140,31 @@ def _synthesize(seconds: float = 15.0) -> np.ndarray:
         its click, and its bottom-out thump. The space bar is lower and rings longer."""
         shell = [(hz, decay * (1.5 if space else 1.0), level)
                  for hz, decay, level in modes(shell_bands, shell_lead, 0.65 if space else 1.0)]
-        hits = [bank([(hz, decay, level * rng.uniform(0.5, 1.0)) for hz, decay, level in shell] + [case],
-                     0.00015) for _ in range(3)]
-        click = bank(modes(click_bands, click_lead, 0.93 if space else 1.0), 0.00003)
+        hits = [bank([(hz, decay, level * rng.uniform(0.5, 1.0)) for hz, decay, level in shell]
+                     + [case], 0.00015) for _ in range(3)]
+        click_bank = bank(modes(click_bands, click_lead, 0.93 if space else 1.0), 0.00003)
         hz = rng.uniform(44, 58) * (0.9 if space else 1.0)
         thump = ((0.28 if space else 0.18) * np.exp(-tt / 0.012)
                  * (np.sin(2 * np.pi * hz * tt) + 0.2 * np.sin(2 * np.pi * 2.4 * hz * tt))
                  * (1 - np.exp(-tt / 0.001)))
-        return hits, click, thump
+        return hits, click_bank, thump
 
     def click(k):
-        s = strike(k[1]) + 0.2 * strike(k[0][1])          # the snap shakes the keycap too
+        hits, click_bank, _ = k
+        s = strike(click_bank) + 0.2 * strike(hits[1])    # the snap shakes the keycap too
         if rng.random() < 0.35:                           # and the switch strikes twice
             d = int(rng.uniform(0.0006, 0.0015) * _SR)
-            s[d:] += 10 ** (rng.normal(-4, 2) / 20) * strike(k[1])[:len(s) - d]
+            s[d:] += 10 ** (rng.normal(-4, 2) / 20) * strike(click_bank)[:len(s) - d]
         grit = np.diff(rng.standard_normal(len(t)) * np.exp(-t / 0.00015), prepend=0)
         s += 0.3 * grit / np.sqrt(np.mean(grit[:int(_SR * 0.001)] ** 2))
         return 10 ** (2 / 20) * s
 
     def thock(k, hit, bottom_out=False):
-        """The key's shell, rung by the landing (0), the bottom-out (1) or the release (2)."""
-        s = strike(k[0][hit]) + 0.15 * rng.standard_normal(len(t)) * np.exp(-t / 0.0008)
-        return np.pad(s, (0, len(tt) - len(t))) + k[2] if bottom_out else s
+        """The key's shell, rung by the landing (0), the bottom-out (1) or the release (2);
+        the bottom-out lands on the desk too. (The bounce rings hit 1 without the thump.)"""
+        hits, _, thump = k
+        s = strike(hits[hit]) + 0.15 * rng.standard_normal(len(t)) * np.exp(-t / 0.0008)
+        return np.pad(s, (0, len(tt) - len(t))) + thump if bottom_out else s
 
     def add(s, at, db):
         i = int(at * _SR) % len(out)
@@ -205,7 +205,7 @@ def _synthesize(seconds: float = 15.0) -> np.ndarray:
     # so it too carries over the seam.
     m = int(_SR * 0.12)
     tail = rng.standard_normal(m) * np.exp(-6.9 * np.arange(m) / m)
-    fm = np.maximum(np.fft.rfftfreq(m, 1 / _SR), 1.0)
+    fm = np.fft.rfftfreq(m, 1 / _SR)
     tail = np.fft.irfft(np.fft.rfft(tail) / np.sqrt(1 + (fm / 3000) ** 4), m)
     room = np.zeros(len(out))
     room[:m] = tail * 10 ** (-18 / 20) / np.sqrt(np.sum(tail ** 2))
@@ -219,26 +219,20 @@ def _synthesize(seconds: float = 15.0) -> np.ndarray:
 
 
 def _load_pcm() -> np.ndarray:
-    """Load the override/cached wav; synthesize (and cache) if absent/mismatched."""
-    try:
-        with wave.open(_WAV, "rb") as w:
-            if w.getframerate() == _SR and w.getnchannels() == 1 and w.getsampwidth() == 2:
-                return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
-        logger.warning(f"thinking_sound: {_WAV} not 24kHz/mono/16-bit — regenerating")
-    except (FileNotFoundError, wave.Error, EOFError):
-        pass
-    pcm = _synthesize()
-    try:
-        os.makedirs(os.path.dirname(_WAV), exist_ok=True)
-        with wave.open(_WAV, "wb") as w:
-            w.setnchannels(1)
-            w.setsampwidth(2)
-            w.setframerate(_SR)
-            w.writeframes(pcm.tobytes())
-        logger.info(f"thinking_sound: synthesized typing bed → {_WAV}")
-    except OSError as e:
-        logger.warning(f"thinking_sound: could not cache wav ({e}); using in-memory")
-    return pcm
+    """The TEAPORT_THINKING_WAV override if one is set and playable, else the
+    synthesized bed. Never raises — warm() runs this at the brain's start, where an
+    exception would crash-loop the service over one bad path — and never writes: the
+    override is the user's own file."""
+    if _WAV:
+        try:
+            with wave.open(_WAV, "rb") as w:
+                if (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (_SR, 1, 2):
+                    return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
+            logger.warning(f"thinking_sound: {_WAV} is not 24 kHz mono 16-bit; "
+                           "playing the synthesized bed")
+        except (OSError, EOFError, wave.Error, ValueError) as e:   # ValueError: a torn file
+            logger.warning(f"thinking_sound: can't read {_WAV} ({e}); playing the synthesized bed")
+    return _synthesize()
 
 
 # Chunked once, process-wide — every session reuses the same immutable byte chunks.
@@ -259,7 +253,6 @@ def _get_chunks() -> list:
 
 def warm() -> None:
     """Build the bed at the brain's start, not in the first session's pipeline build:
-    with no cached wav (the first start, or an install whose package dir is read-only)
     synthesizing it holds the event loop ~0.3 s on an Orin NX."""
     if ENABLED:
         _get_chunks()
