@@ -511,18 +511,28 @@ position only:
 
 - **The answer's first reply settles it.** The first reply rendered with a result, of
   whatever kind -- the post-tool reply, or the caller's turn that dropped it -- settles
-  it if it calls nothing and plays audio: heard in full, told; cut after its stream
+  it if it calls nothing, plays audio and says something of its own (a term outside the
+  question and the common words: "Sure, take your time." says nothing, settles nothing):
+  heard in full, told; cut after its stream
   ended, a record of its whole text (unless the heard prefix already carries the
   answer), to the caller's words that started the round ("" when a notice or a cue
   did: nobody asked, no record).
 - **One more reply, then history.** A first reply that did not settle it -- no audio,
-  cut mid-stream, a line before another call -- leaves it one more. Then it is history,
-  as before #204; a new round (another question, an action) ends it at once. The
-  result stays in the context either way.
+  cut mid-stream, a line before another call, a reply with nothing of its own -- leaves
+  it one more. Then it is history, as before #204; a new round (another question, an
+  action), or a caller's turn in words of their own ("Never mind. What's the capital of
+  Australia?"), ends an answer some render already carried at once. The result stays in
+  the context either way.
 - **The re-lookup, narrowly.** A round is an owed record's re-lookup -- no answer of its
   own -- only when it starts in the caller's turn right after that record's cut, before
   any reply played through, and the caller's words carry no terms of their own ("Hold
-  on, hold on." and web_fetch, 2026-10-18 17:26). Every other round is its own question.
+  on, hold on." and web_fetch, 2026-10-18 17:26) -- or continues such a round's chain (a
+  re-lookup's reply that calls again passes it on). Every other round is its own
+  question.
+
+"Terms of its own" is one test, `terms_of(words, question)` empty or not (the close
+rule's reading), used three times: a reply with none settles nothing, a caller turn with
+some moves on, a round started right after a cut with none is the re-lookup.
 
 | property | meaning |
 |---|---|
@@ -533,20 +543,26 @@ position only:
 | `OwedUnheard` | no record is owed for an answer the caller heard (made after they did) |
 | `NoConfirmationOwed` | an action's confirmation is never owed |
 
-`LOSE` is the caller moving on before the answer's position settled it: a deferral or
-another question's answer heard in its place, both replies unheard, a new round started
-over it, vague words right after a cut that ask something new. The design rows assume
-it away (the position premise: the reply in the answer's position tells it), and check
-what the rule guarantees then; `oa_lose` checks what it keeps anyway.
+`LOSE` is the caller moving on before the answer was settled: both replies unheard or
+saying nothing of their own, a new round or a turn in words of their own over it, vague
+words right after a cut that ask something new. The design rows assume it away; with it
+(`oa_lose`), every property but `NoRedundantLookup` still holds -- the answer is lost to
+history, never misfiled. `ASIDE` is the one case that misfiles: a caller turn in words
+of their own drops the post-tool request (the answer is new at its render, so it is not
+ended), and its reply answers the caller's words instead -- taken for the telling
+(`oa_lose_aside`).
 
 | row | what | verdict | the counterexample, or the state count |
 |---|---|---|---|
-| `oa_design` | the rule; vague consent ("Sure, go ahead.") to a new round while a record is owed is its own question | holds, every property | 4,921 states |
-| `oa_lose` | `LOSE` | holds `NoLaterRoundFiling`, `OwedUnheard`, `NoConfirmationOwed` | 33,999 states |
-| `oa_lose_told` | `LOSE`: the accepted degradation to before #204 | ✗ `ToldOnHearing` | question 2's post-tool request is dropped; the caller's turn is answered with question 1; question 2 is filed as told, unheard (8 steps). A heard deferral does the same |
-| `oa_streamCut_rest` | `STREAMCUT`: a telling cut mid-stream spends a reply | holds, all but `NoRedundantLookup` | 7,085 states |
+| `oa_design` | the rule; vague consent ("Sure, go ahead.") to a new round while a record is owed is its own question; deferrals | holds, every property | 9,730 states |
+| `oa_lose` | `LOSE` | holds every property but `NoRedundantLookup` | 41,213 states |
+| `oa_lose_lookup` | the same | ✗ `NoRedundantLookup` | what remains of before #204: the answer the caller moved on from is history; a telling of it later, cut, leaves no record (11 steps) |
+| `oa_lose_aside` | `LOSE`, `ASIDE` | ✗ `RecordIsOwn` | the result lands under the caller's own new question; their turn's reply answers that question and is cut: the record of the dropped answer is its text (6 steps) |
+| `oa_fillerSettles` | a reply with no terms of its own settles (74c3509) | ✗ `RecordIsOwn` | "Sure, take your time." in the answer's position, cut: its record (6 steps: the fifth review's J1) |
+| `oa_ownWordsKeep` | a caller turn in words of their own leaves an older answer open (74c3509) | ✗ `RecordIsOwn` | the post-tool reply unheard; "Never mind. What's the capital of Australia?" answered and cut: the weather's record (9 steps: J2) |
+| `oa_streamCut_rest` | `STREAMCUT`: a telling cut mid-stream spends a reply | holds, all but `NoRedundantLookup` | 13,742 states |
 | `oa_streamCut` | the same | ✗ `NoRedundantLookup` | the residual: both replies end unsettled (unheard, then cut mid-stream), no record, the B0 shape (12 steps) |
-| `oa_late` | `LATE`: the bounded settle wait runs out; the settle re-reads the live book | holds, every property | 10,531 states |
+| `oa_late` | `LATE`: the bounded settle wait runs out; the settle re-reads the live book | holds, every property | 19,092 states |
 | `oa_noCutRecord` | no record from a cut answer (before #204's extension) | ✗ `NoRedundantLookup` | the telling is cut; the next turn looks it up again (9 steps; W-goahead 20/20) |
 | `oa_postOnly` | only the post-tool request carries the answer (5327336) | ✗ `NoRedundantLookup` | the caller's turn that dropped it tells it and is cut: no record (9 steps) |
 | `oa_noSecondChance` | the first reply only | ✗ `NoRedundantLookup` | the post-tool reply is unheard; the caller's turn tells it, cut: no record (12 steps) |
@@ -559,12 +575,16 @@ what the rule guarantees then; `oa_lose` checks what it keeps anyway.
 | `oa_lateReplace` | the late settle makes its record whatever the book holds (c8e046a) | ✗ `OwedUnheard` | the caller's turn told it in full meanwhile (12 steps) |
 | `oa_lateNoEvidence` | a reply rendered with the open answer is no evidence for the record made of it since | ✗ `OwedUnheard` | (12 steps) |
 
-**The degradations, accepted** (`LOSE`, `STREAMCUT`; `test_owed.py` pins each): a
-deferral or another answer heard in the answer's position counts as told, and cut, is
-recorded as it stands; a telling that also calls again ("There's a Toy Joy at 5501
-Burnet. Let me get their hours." + web_fetch), cut, is no record; both replies unheard
-or cut mid-stream leave no record; vague words right after a cut that start a new
-question are taken for the re-lookup (one turn). Each is the behaviour before #204.
+**What is accepted** (`test_owed.py` pins each). As before #204, no record: both replies
+unheard, said nothing of their own, or cut mid-stream; a telling that also calls again
+("There's a Toy Joy at 5501 Burnet. Let me get their hours." + web_fetch), cut; an answer
+the caller moved on from in words of their own. Unlike before #204, misfiled: `ASIDE`
+(above); a deferral that says something of its own ("Got it, I'll keep the Austin
+forecast handy.") is taken for the telling -- heard, told; cut, recorded as it stands
+(the lexical reading: the model's "defer" is a reply with nothing of its own); vague
+words right after a cut that start a new question are taken for the re-lookup (one
+turn). The re-lookup window opens only if no caller turn has rendered since the cut (a
+late settle opens none); a re-lookup's chain is not modelled (`test_owed.py`).
 
 **What neither model covers.** A re-lookup round's own answer against the old record
 (its telling is evidence for the record, never a record of its own; whether that

@@ -12,26 +12,30 @@
 (* The rule (the fourth #204 review's cut, replacing four rounds of        *)
 (* lexical rules):                                                          *)
 (*  - POSITION. A result's first reply -- the first rendered with it, of   *)
-(*    whatever kind -- settles it if it calls nothing and plays audio:     *)
-(*    heard in full, told; cut after its stream ended, a record (unless    *)
-(*    its heard prefix already carries the answer). A reply that did not   *)
-(*    settle it (no audio, a cut mid-stream, a line before a call) leaves  *)
+(*    whatever kind -- settles it if it calls nothing, plays audio and says *)
+(*    something of its own: heard in full, told; cut after its stream      *)
+(*    ended, a record (unless its heard prefix already carries the answer). *)
+(*    A reply that did not settle it (no audio, a cut mid-stream, a line   *)
+(*    before a call, nothing of its own: "Sure, take your time.") leaves    *)
 (*    it ONE more reply, then it is history, as before #204; a new round   *)
-(*    (another question, an action) ends it at once.                       *)
+(*    (another question, an action), or a caller's turn in words of their  *)
+(*    own, ends an answer a render already carried at once.                *)
 (*  - A round is an owed record's RE-LOOKUP only when it starts in the     *)
 (*    caller's turn right after that record's cut, before any reply played *)
 (*    through, and the caller's words carry no terms of their own ("Hold   *)
 (*    on, hold on." and web_fetch, 2026-10-18 17:26). Every other round is *)
 (*    its own question -- "Sure, go ahead.", "When do they close?" asked   *)
 (*    while a record is owed included.                                      *)
+(*  "Of its own" is one test (terms_of: a term outside the question and    *)
+(*  the common words), here a reply's or the caller's words' choice.        *)
 (*                                                                          *)
-(* LOSE: the caller moves on before an answer's position settled it -- a   *)
-(*   deferral or another question's answer heard in its place, both its    *)
-(*   replies unheard, a new round started over it, vague words right after  *)
-(*   a cut that ask something new. The design then degrades to before #204 *)
-(*   (oa_lose_told: a heard deferral counts as told); the design rows      *)
-(*   assume it away and check what the rule guarantees, oa_lose what it    *)
-(*   keeps anyway.                                                          *)
+(* LOSE: the caller moves on before the answer was settled -- both replies *)
+(*   unheard or saying nothing, a new round or a turn in words of their    *)
+(*   own over it, vague words right after a cut that ask something new.    *)
+(*   The answer is history then (oa_lose_lookup), never misfiled (oa_lose). *)
+(* ASIDE: the one case that misfiles -- a caller turn in words of their    *)
+(*   own drops the post-tool request (the answer is new at its render) and *)
+(*   its reply answers those words instead (oa_lose_aside).                *)
 (* STREAMCUT: a telling is cut before its stream ended (a fragment, no     *)
 (*   record: the next reply has the answer, and the B0 shape).              *)
 (* LATE: the readers' bounded settle wait runs out before a cut telling's  *)
@@ -60,10 +64,15 @@
 (*                     holds (after a full telling).                       *)
 (*   lateNoEvidence -- a reply rendered with the open answer is no evidence *)
 (*                     for the record made of it since.                    *)
+(*   fillerSettles  -- a reply with no terms of its own settles it         *)
+(*                     (74c3509): "Sure, take your time." cut is a record.  *)
+(*   ownWordsKeep   -- a caller turn in words of their own leaves an older *)
+(*                     answer open (74c3509): another question's answer,   *)
+(*                     cut, is its record.                                 *)
 (***************************************************************************)
 EXTENDS Naturals, FiniteSets
 
-CONSTANTS MaxTurns, MUT, LOSE, LATE, STREAMCUT
+CONSTANTS MaxTurns, MUT, LOSE, LATE, STREAMCUT, ASIDE
 
 Mut(m) == m \in MUT
 Qs  == {1, 2}                                  \* the two questions
@@ -84,6 +93,9 @@ VARIABLES
     chain,     \* a line before a call put a chain round out (once)
     pending,   \* the next request: "none" | "post" | "caller"
     turns,     \* caller turns that started no round
+    cown,      \* the waiting caller turn's words carry terms of their own
+    seen,      \* the questions some render has carried already
+    nu,        \* ...of the request in flight's carried ones, those new at its render
     win,       \* the record whose re-lookup window is open (its cut's next turn), 0 none
     req,       \* the request in flight: "none" | "post" | "caller"
     pos,       \* the post-tool request's round, 0 for a caller's
@@ -99,7 +111,7 @@ VARIABLES
     actRec     \* ghost: an action's confirmation made a record
 
 vars == <<asked, ctx, res, ch, rec, own, heard, tail, act, chain, pending, turns, win,
-          req, pos, carried, noted, say, lq, lown, gone, relook, cross, actRec>>
+          req, pos, carried, noted, say, lq, lown, gone, relook, cross, actRec, cown, seen, nu>>
 
 None == <<"none", 0>>
 
@@ -111,7 +123,7 @@ Init ==
     /\ tail = 0 /\ act = FALSE /\ chain = 0 /\ pending = "none" /\ turns = 0 /\ win = 0
     /\ req = "none" /\ pos = 0 /\ carried = {} /\ noted = {} /\ say = None
     /\ lq = 0 /\ lown = TRUE /\ gone = FALSE
-    /\ relook = FALSE /\ cross = FALSE /\ actRec = FALSE
+    /\ relook = FALSE /\ cross = FALSE /\ actRec = FALSE /\ cown = FALSE /\ seen = {} /\ nu = {}
 
 Open  == {q \in Qs : res[q] = "open"}
 Owing == \E q \in Qs : rec[q] = "owed"
@@ -142,7 +154,7 @@ Round(q) ==
     /\ ctx' = [ctx EXCEPT ![q] = "fresh"]
     /\ tail' = q /\ pending' = "post" /\ win' = 0
     /\ UNCHANGED <<rec, own, heard, act, chain, turns, req, pos, carried, noted, say, lq, lown,
-                   gone, relook, cross, actRec>>
+                   gone, relook, cross, actRec, cown, seen, nu>>
 
 \* An action tool's round (set_volume): its post-tool reply confirms it.
 ActionRound ==
@@ -150,33 +162,44 @@ ActionRound ==
     /\ act' = TRUE /\ res' = Older /\ ch' = OlderCh
     /\ tail' = ACT /\ pending' = "post" /\ win' = 0
     /\ UNCHANGED <<asked, ctx, rec, own, heard, chain, turns, req, pos, carried, noted, say,
-                   lq, lown, gone, relook, cross, actRec>>
+                   lq, lown, gone, relook, cross, actRec, cown, seen, nu>>
 
 \* The caller takes a turn that starts no round ("Hold on.", "go on", "thanks"); before the
 \* post-tool reply went, it drops it, and the turn reads the fresh result.
+\* Its words may carry terms of their own ("Never mind. What's the capital of Australia?"):
+\* the caller moves on, and an answer a render already carried is ended (Owed.noted).
+\* Without LOSE they do not, over such an answer.
 CallerTurn ==
     /\ req = "none" /\ pending # "caller" /\ turns < MaxTurns
+    /\ \E w \in BOOLEAN : /\ cown' = w
+                          /\ (w /\ Open \cap seen # {}) => LOSE
     /\ pending' = "caller" /\ turns' = turns + 1 /\ win' = 0
     /\ UNCHANGED <<asked, ctx, res, ch, rec, own, heard, tail, act, chain, req, pos, carried,
-                   noted, say, lq, lown, gone, relook, cross, actRec>>
+                   noted, say, lq, lown, gone, relook, cross, actRec, seen, nu>>
 
 \* The request is rendered: it carries every open answer (postOnly: only the post-tool
 \* request does), and the note for every owed record. The readers wait for a pending
 \* settle (LATE: unless that wait ran out).
 Issue ==
     /\ req = "none" /\ pending # "none" /\ (lq = 0 \/ gone)
+    /\ LET ends == pending = "caller" /\ cown /\ ~Mut("ownWordsKeep")
+            res2 == [q \in Qs |-> IF ends /\ res[q] = "open" /\ q \in seen THEN "past" ELSE res[q]]
+            open2 == {q \in Qs : res2[q] = "open"}
+            car == IF Mut("postOnly") /\ pending # "post" THEN {} ELSE open2 IN
+       /\ res' = res2 /\ carried' = car /\ seen' = seen \cup car /\ nu' = car \ seen
     /\ req' = pending /\ pending' = "none"
     /\ pos' = IF pending = "post" THEN tail ELSE 0
-    /\ carried' = IF Mut("postOnly") /\ pending # "post" THEN {} ELSE Open
     /\ noted' = {q \in Qs : rec[q] = "owed"}
-    /\ UNCHANGED <<asked, ctx, res, ch, rec, own, heard, tail, act, chain, turns, win, say, lq,
-                   lown, gone, relook, cross, actRec>>
+    /\ UNCHANGED <<asked, ctx, ch, rec, own, heard, tail, act, chain, turns, win, say, lq,
+                   lown, gone, relook, cross, actRec, cown>>
 
 \* What the reply says. The post-tool reply tells its round's answer, or says nothing a
-\* caller hears, or puts a line before another call of its chain. A caller's turn: anything
-\* -- but without LOSE, a reply rendered with an open answer tells it (the position
-\* premise), unheard at most once. With a telling cut and no note for it (B0), the model
-\* may look it up again.
+\* caller hears, or puts a line before another call of its chain. A caller's turn rendered
+\* with an open answer tells it, says something with no terms of its own ("Sure, take
+\* your time."), or nothing heard -- without LOSE, those last two at most once; answers
+\* something else only when the caller's words were their own (the answer was new at this
+\* render, a post-tool request their turn dropped) and ASIDE. With nothing open: anything.
+\* With a telling cut and no note for it (B0), the model may look it up again.
 Look == {<<"look", q>> : q \in {q2 \in Qs : ctx[q2] = "cut" /\ rec[q2] # "owed"}}
 \* The answer's first reply: the one that may go unheard (or put a line before a call).
 First == \A q \in carried : ch[q] = (IF Mut("noSecondChance") THEN 1 ELSE 2)
@@ -187,20 +210,24 @@ Says ==
                 \cup (IF LOSE \/ First THEN {<<"mute", 0>>} \cup
                          (IF chain = 0 THEN {<<"line", pos>>} ELSE {}) ELSE {})
       ELSE IF carried # {} /\ ~LOSE
-             THEN {<<"tell", q>> : q \in carried} \cup (IF First THEN {<<"mute", 0>>} ELSE {})
-           ELSE {<<"defer", 0>>, <<"other", 0>>, <<"mute", 0>>} \cup Look
-                \cup {<<"tell", q>> : q \in {q2 \in Qs : ctx[q2] # "none"}}
+             THEN {<<"tell", q>> : q \in carried}
+                  \cup (IF First THEN {<<"mute", 0>>, <<"defer", 0>>} ELSE {})
+           ELSE {<<"tell", q>> : q \in carried} \cup {<<"defer", 0>>, <<"mute", 0>>} \cup Look
+                \cup (IF carried = {} \/ (cown /\ (nu = {} \/ ASIDE))
+                      THEN {<<"other", 0>>} \cup {<<"tell", q>> : q \in {q2 \in Qs : ctx[q2] # "none"}}
+                      ELSE {})
 Say ==
     /\ req # "none" /\ say = None
     /\ \E s \in Says : say' = s /\ relook' = (relook \/ s[1] = "look")
     /\ UNCHANGED <<asked, ctx, res, ch, rec, own, heard, tail, act, chain, pending, turns, win,
-                   req, pos, carried, noted, lq, lown, gone, cross, actRec>>
+                   req, pos, carried, noted, lq, lown, gone, cross, actRec, cown, seen, nu>>
 
 \* The reply ends: played through (heard in full) or cut (a prefix). Then its settle
 \* (Owed._resolve) files every answer it carried that is still open in the LIVE book: a
-\* reply that calls nothing and played audio settles it -- heard, told; cut after its
-\* stream ended, a record (made at once, or LATE at a settle still to come); any other
-\* reply spends one of its replies. A heard telling closes an owed record its request
+\* reply that calls nothing, played audio and says something of its own settles it --
+\* heard, told; cut after its stream ended, a record (made at once, or LATE at a settle
+\* still to come); any other reply -- a deferral with no terms of its own among them
+\* (fillerSettles: it settles) -- spends one of its replies. A heard telling closes an owed record its request
 \* noted, or one made of an answer it carried since (the late settle).
 End ==
     /\ req # "none" /\ say # None /\ say[1] # "look"
@@ -210,6 +237,7 @@ End ==
            Tq(q) == say = <<"tell", q>>
            audio == k # "mute"
            settles == audio /\ (k # "line" \/ Mut("callRecords"))
+                      /\ (k # "defer" \/ Mut("fillerSettles"))
                       /\ (~cut \/ sd \/ Mut("partialRecord"))
            filed(q) == q \in carried /\ res[q] = "open"
            makes(q) == filed(q) /\ settles /\ cut /\ ~Mut("noCutRecord")
@@ -247,7 +275,8 @@ End ==
        /\ chain' = IF k = "line" /\ ~cut /\ req = "post" THEN 1 ELSE chain
        /\ tail' = IF k = "line" /\ ~cut /\ req = "post" THEN tail ELSE 0
     /\ req' = "none" /\ say' = None /\ pos' = 0 /\ carried' = {} /\ noted' = {}
-    /\ UNCHANGED <<asked, act, turns, gone, relook>>
+    /\ nu' = {}
+    /\ UNCHANGED <<asked, act, turns, gone, relook, cown, seen>>
 
 \* The cut telling's late settle re-reads the live book: an answer told meanwhile, or
 \* recorded by another reply's cut, makes no record (the prefix, short of the answer, is
@@ -262,14 +291,14 @@ LateSettle ==
        /\ win' = IF mk THEN q ELSE win
     /\ lq' = 0 /\ gone' = FALSE
     /\ UNCHANGED <<asked, ctx, ch, heard, tail, act, chain, pending, turns, req, pos, carried,
-                   noted, say, lown, relook, cross, actRec>>
+                   noted, say, lown, relook, cross, actRec, cown, seen, nu>>
 
 \* SETTLE_WAIT_S passes with that settle still to come: the readers go on (a timer).
 GiveUp ==
     /\ LATE /\ lq # 0 /\ ~gone
     /\ gone' = TRUE
     /\ UNCHANGED <<asked, ctx, res, ch, rec, own, heard, tail, act, chain, pending, turns, win,
-                   req, pos, carried, noted, say, lq, lown, relook, cross, actRec>>
+                   req, pos, carried, noted, say, lq, lown, relook, cross, actRec, cown, seen, nu>>
 
 Next == \/ \E q \in Qs : Round(q)
         \/ ActionRound \/ CallerTurn \/ Issue \/ Say \/ End \/ LateSettle \/ GiveUp
@@ -309,5 +338,6 @@ TypeOK ==
     /\ lq \in 0..2 /\ lown \in BOOLEAN /\ gone \in BOOLEAN /\ (gone => lq # 0)
     /\ MUT \subseteq {"noCutRecord", "postOnly", "noSecondChance", "partialRecord",
                       "callRecords", "actionOwed", "keepOpen", "relookAll", "vagueConsent",
-                      "lateReplace", "lateNoEvidence"}
+                      "lateReplace", "lateNoEvidence", "fillerSettles", "ownWordsKeep"}
+    /\ cown \in BOOLEAN /\ seen \subseteq Qs /\ nu \subseteq carried /\ ASIDE \in BOOLEAN
 =============================================================================
