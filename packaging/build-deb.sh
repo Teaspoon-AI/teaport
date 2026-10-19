@@ -145,7 +145,7 @@ trap cleanup EXIT
 # --- source --------------------------------------------------------------------
 # Build from a copy of the files git sees under SRC_PATHS, not from the checkout: the
 # setuptools build packages whatever sits in brain/ — gitignored files included, such
-# as a test run's cached assets/typing.wav (package-data) or a stale brain/build/lib —
+# as a test run's cached assets/typing-v2.wav (package-data) or a stale brain/build/lib —
 # which the .dirty check above cannot see. The copy holds exactly what that check
 # covers, so a clean version really is the commit, and a local build matches CI's.
 SRC="$(mktemp -d "${TMPDIR:-/tmp}/teaport-deb-src.XXXXXX")"
