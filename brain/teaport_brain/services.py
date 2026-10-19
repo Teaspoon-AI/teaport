@@ -580,7 +580,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
             if reply is not None:
                 reply.calls += len(function_calls)
                 if self.owed is not None:
-                    self.owed.called(reply, [c.tool_call_id for c in function_calls])
+                    self.owed.called(reply)
             await self.broadcast_frame(
                 FunctionCallsDispatchedFrame, function_calls=function_calls
             )

@@ -233,7 +233,7 @@ the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
 | `ToolResult` | pipecat's `_maybe_push_context_after_function_result`, as in `UserTurn.tla`'s POSTTOOL. The gate keeps the ids of the calls out (`_calls_out`, `gtool`): an id is added by its `FunctionCallInProgressFrame` unless it has already settled or been cancelled (`Mark`: the frame is uninterruptible and can come after the barge-in, `staleFlag`), and removed by its result or its `FunctionCallCancelFrame`. A call out keeps the window shut although a line before it ended `_turn` (`tend`, `endClearsTool`) |
 | `Issue` | the LLM takes a caller commit or a post-tool answer; `_open_stream` asks `Owed.view` (which waits for every pending settle) and sends the view. Only then is a commit no longer "still to be rendered" (`request_rendered`), so a consult landing during that wait leaves the note to it. The commit passed `HeardContextCorrector` first; `sp` is the speculative reply, opened through `_open_stream` directly (`speculate.py`), its noted keys carried on the stream to the commit that adopts it |
 | `Say`, `Played` | the completion and its playout. `stay_silent` is offered only in the re-offer's view, and `run_function_calls` consumes it: no call, no result in the context, a `RunSilentFrame` to end the gate's turn (only with no other call out) |
-| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled). `made` (Sync) and `LateSettle`: `Owed.settle` → `Owed._resolve` → `Owed._cut_answer`. `carry` is `Reply.fresh`: the sync answers FRESH in the book (`Owed._answers`, per tool_call_id, registered from the render's context tail by `owed.new_results`), read again LIVE at the settle; a reply rendered with one is evidence for the record made of it since. A telling (the post-tool reply that calls nothing, by position; otherwise `owed.tells`) heard in full marks them TOLD; cut with audio played after its stream ended (the ledger's `text`), it makes the record (`Record.ids`), its request the round's caller words (`""`: no record). A round put out under the note is the noted records' (`Owed.called`). A cut before the stream ended logs `OWED: ... (STREAMCUT)`. Only tools with `Tool.answers` (`tools.ANSWER_TOOLS`) |
+| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled). `made` (Sync) and `LateSettle`: `Owed.settle` → `Owed._resolve` → `Owed._cut_answer`. `carry` is `Reply.fresh`: the sync answers FRESH in the book (`Owed._answers`, per tool_call_id, every result a render has not seen filed by `owed.new_results` to its question, `Owed._question`), read again LIVE at the settle and grouped by question; a reply rendered with one is evidence for the record made of it since. A telling (the post-tool reply that calls nothing, by position, of its own round's answer; otherwise `owed.tells`) heard in full marks them told; cut with audio played after its stream ended (the ledger's `text`), it makes the record (`Record.ids`), its request the round's question (`""`: no record). A round whose words ask nothing beyond an owed record's question is its re-lookup (`Owed._question`; `OwedAnswers.tla`). A cut before the stream ended logs `OWED: ... (STREAMCUT)`. Only tools with `Tool.answers` (`tools.ANSWER_TOOLS`) |
 | `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame` |
 | `Lull` | `Owed._lull_loop`: every reply settled, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
 | `Commit` | the user aggregator's commit (an empty final commits nothing) |
@@ -497,10 +497,17 @@ The model was written to lead the design, and it found these:
    result's. The record is made at the cut's settle, which re-reads the live book
    (`LateSettle`): a result told meanwhile makes none, an existing record is never
    replaced (nor its re-offer reset), and a reply rendered with the fresh answer is
-   evidence for the record made of it since. A tool round put out by a reply whose
-   request carried the note is a re-lookup of the noted records (`Owed.called`): its
-   result is theirs, not a fresh answer with the caller's interjection ("Hold on, hold
-   on.", ctx-172607) as its question.
+   evidence for the record made of it since. A tool round whose words ask nothing
+   beyond an owed record's question is its re-lookup: its result is that record's, not
+   a fresh answer with the caller's interjection ("Hold on, hold on.", ctx-172607) as
+   its question (as first built, every round put out under the note was: the third
+   review's case C, `OwedAnswers.tla` below).
+14. **Two questions at once** (the third #204 review; `OwedAnswers.tla`). A new question
+   asked while a record is owed is its own (`oa_relookAll`); the post-tool position
+   tells only its own round's answer, and an older fresh answer only a reply about its
+   question (`oa_positionAll`); the carried answers are grouped by question
+   (`oa_oneRequest`). A result is filed when a render first sees it, wherever pipecat
+   put the line before its call, so the book reads no context tail.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a
@@ -560,7 +567,9 @@ ends.
   join it (one question, one group). The lexical premise again: a new question put in
   the record's own words ("and the weather in Austin the day after?") reads as a
   re-lookup, and its cut telling is evidence for the old record, not a record of its
-  own.
+  own; so does vague consent to a new offer while a record is owed ("Sure, go ahead."
+  to "Want me to check their hours?": the question is in the bot's offer, not in the
+  caller's words), and two rounds started by the same words that carry nothing else.
 - **A chain's second answer.** A sync chain has at most two rounds, and the record is
   the first answer's: when it was told before the second call, the second result's
   answer is another record, which the model does not hold. `STREAMCUT` is off in the
