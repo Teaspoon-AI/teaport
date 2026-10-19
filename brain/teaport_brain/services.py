@@ -580,7 +580,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
             if reply is not None:
                 reply.calls += len(function_calls)
                 if self.owed is not None:
-                    self.owed.called(reply)
+                    self.owed.called(reply, [c.tool_call_id for c in function_calls])
             await self.broadcast_frame(
                 FunctionCallsDispatchedFrame, function_calls=function_calls
             )
@@ -598,7 +598,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
         commit, a post-tool answer pushed up, a run of ours), carried on its
         LLMFullResponseStartFrame to the ledger, which settles it at the reply's end.
         Whether it carries a sync tool's answer is read from its context at the render
-        (owed.fresh_answers), not from the frame's direction (#204)."""
+        (owed.Owed.noted: the book's fresh answers), not from the frame's direction (#204)."""
         if not isinstance(frame, LLMContextFrame) or self.owed is None:
             await super().process_frame(frame, direction)
             return

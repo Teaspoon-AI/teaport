@@ -145,10 +145,11 @@ def _notes(params):
 
 
 async def test_whether_a_reply_tells_a_sync_answer_is_read_from_its_context():
-    """#204 review finding 4: the LLM service registers each request's fresh answers from
-    the context it was rendered with (owed.fresh_answers), whatever the frame's
-    direction: a caller's commit that reads a fresh web_search result carries it, as the
-    post-tool request does; a request after it was told carries none."""
+    """#204 review finding 4: the LLM service registers what each request was rendered
+    with -- a new answer result at its context's tail is fresh in the book (Owed.noted)
+    -- whatever the frame's direction: a caller's commit that reads a fresh web_search
+    result carries it, as the post-tool request does; once a reply heard in full has
+    told it, a request carries none."""
     round_ = [{"role": "user", "content": "Any toy stores on Burnet Road?"},
               {"role": "assistant", "content": None, "tool_calls": [
                   {"id": "call-ws", "type": "function",
@@ -167,13 +168,14 @@ async def test_whether_a_reply_tells_a_sync_answer_is_read_from_its_context():
             services._REPLY.reset(token)
         return reply
     commit = await render(owed.COMMIT, round_ + [{"role": "user", "content": "Hold on."}])
-    assert commit.fresh is not None and commit.fresh.ids == ("call-ws",), commit.fresh
+    assert commit.fresh == ("call-ws",), commit.fresh
     post = await render(owed.POST, round_)
-    assert post.fresh is not None and post.fresh.request == "Any toy stores on Burnet Road?"
-    told = await render(owed.COMMIT, round_ + [
-        {"role": "assistant", "content": "There's a Toy Joy at 5501 Burnet Road."},
-        {"role": "user", "content": "Thanks."}])
-    assert told.fresh is None
+    assert post.fresh == ("call-ws",)
+    text = "There's a Toy Joy at 5501 Burnet Road."
+    llm.owed.settle(post, text, cut=False, audio=True, text=text)
+    told = await render(owed.COMMIT, round_ + [{"role": "assistant", "content": text},
+                                               {"role": "user", "content": "Thanks."}])
+    assert told.fresh == ()
 
 
 async def test_a_caller_request_carries_the_note_before_their_words():

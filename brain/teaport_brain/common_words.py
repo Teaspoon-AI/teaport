@@ -68,6 +68,7 @@ wasn way ways we website week weeks well went were weren what whatever when when
 where whether which while who whoever whole whom whose why will wish with within
 without won wonder wondering word words work worked working works would wouldn wow
 yeah year years yep yesterday yet you your yours yourself yourselves
+continue continuing detail details pause pull pulling understand understood
 """
 
 # Spanish, French, Italian, Portuguese: articles, prepositions, pronouns, auxiliaries,

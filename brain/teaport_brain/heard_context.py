@@ -39,7 +39,7 @@ from teaport_brain.tts_text import has_speech
 HEARD_MODE = setting("HEARD_MODE")  # truncate | note
 
 
-def _msg_text(m) -> str:
+def msg_text(m) -> str:
     """Text of a context message whose content is a string or a list of parts."""
     c = m.get("content")
     if isinstance(c, str):
@@ -61,7 +61,7 @@ def _cancelled_rounds(msgs) -> set:
     for m in msgs:
         calls = m.get("tool_calls") if m.get("role") == "assistant" else None
         ids = [c.get("id") for c in calls or []]
-        if ids and not _msg_text(m).strip() and all(i in results for i in ids):
+        if ids and not msg_text(m).strip() and all(i in results for i in ids):
             out.add(id(m))
             out.update(id(results[i]) for i in ids)
     return out
@@ -99,7 +99,7 @@ def _is_reply(m) -> bool:
     something synthesizable in its text (tts_text.has_speech, the ledger's own test).
     An emoji reply -- a tool call riding on it or not -- is charted nothing, so the
     corrector neither counts it as a reply nor takes it for one."""
-    return m.get("role") == "assistant" and has_speech(_msg_text(m))
+    return m.get("role") == "assistant" and has_speech(msg_text(m))
 
 
 def drop_from_context(context, doomed) -> None:
@@ -285,7 +285,7 @@ class HeardContextCorrector(FrameProcessor):
         if (idx is not None and last is not None and last is not prev
                 and prev.get("role") == "user" and last.get("role") == "user"
                 and all(m.get("role") == "system" or id(m) in cancelled for m in between)):
-            first, rest = _msg_text(prev).strip(), _msg_text(last).strip()
+            first, rest = msg_text(prev).strip(), msg_text(last).strip()
             if (first and rest and not first.startswith(SYSTEM_NOTICE_TAG)
                     and not rest.startswith(SYSTEM_NOTICE_TAG)):
                 _set_msg_text(prev, f"{first} {rest}")
@@ -300,7 +300,7 @@ class HeardContextCorrector(FrameProcessor):
                     msgs = self._context.get_messages()
                     self._context.set_messages(msgs[:idx] + notes + [prev])
                 logger.info(f"HeardCorrector[merge]: unanswered turn + its continuation "
-                            f"-> one user turn …{_msg_text(prev)[-60:]!r}")
+                            f"-> one user turn …{msg_text(prev)[-60:]!r}")
                 return
         logger.info("HeardCorrector[merge]: the unanswered turn is not the caller's message "
                     "before this one; left as two turns")
@@ -381,7 +381,7 @@ class HeardContextCorrector(FrameProcessor):
         # skipped: the insert path below needs it.)
         def skipped(m):
             return (m.get("role") in ("user", "system")
-                    or (m.get("role") == "assistant" and _msg_text(m).strip()
+                    or (m.get("role") == "assistant" and msg_text(m).strip()
                         and not _is_reply(m)))
         while end > start and skipped(msgs[end - 1]):
             end -= 1
@@ -402,7 +402,7 @@ class HeardContextCorrector(FrameProcessor):
         after a tool result if pipecat committed none. Tool results are kept."""
         heard = _clean_prefix(u.heard_text)
         msgs = self._context.get_messages()
-        if anchor is not None and anchor.get("role") == "assistant" and _msg_text(anchor).strip():
+        if anchor is not None and anchor.get("role") == "assistant" and msg_text(anchor).strip():
             # A spoken message was committed (possibly partial TTS text).
             if heard:
                 _set_msg_text(anchor, heard)  # in-place; dict ref is shared

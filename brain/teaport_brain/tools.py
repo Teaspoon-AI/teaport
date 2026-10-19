@@ -890,7 +890,7 @@ class Tool:
     hint: str = ""
     # Its result is information the caller asked for -- an answer -- not the
     # confirmation of something done: a telling of it cut before the caller heard it
-    # is owed to them (owed.fresh_answers, #204). An action's (the volume, the voice,
+    # is owed to them (owed.Owed._resolve, #204). An action's (the volume, the voice,
     # a fact remembered) never is: they asked for it, and its effect or its "done" is
     # nothing still to hear (formal/Owed.tla, SOURCE = "action").
     answers: bool = False

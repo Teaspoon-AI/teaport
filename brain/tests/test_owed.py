@@ -553,6 +553,18 @@ T_REQ = "Can you look if there are any toy stores on Burnett Road in Austin, Tex
 T_RESULT = json.dumps({"results": [
     {"title": "Toy Joy - Austin's Coolest Toy Store", "url": "https://toyjoy.com/",
      "snippet": "Toy Joy, 5501 Burnet Rd, Austin, TX 78756. Open daily 10am-9pm."}]})
+# The 2026-10-18 17:25 weather search (ctx-172557, box journal), cut to its first result:
+# titles and snippets, the untrusted-content wrapper -- and no forecast values at all.
+W_REQ = "Hey, can you check what the weather is going to be in Austin tomorrow?"
+W_RESULT = json.dumps({"results": [
+    {"title": "Tomorrow's Weather in Austin - Hourly Forecast and Conditions",
+     "snippet": "Get the latest hourly weather updates for Austin tomorrow. Detailed forecast "
+                "including temperature, wind, rain, snow, and UV index. Stay informed about "
+                "tomorrow's weather conditions in Austin.",
+     "site": "\n<<<EXTERNAL_UNTRUSTED_CONTENT id=\"ec645b64e3d7bc48\">>>\nSource: Web Search\n"
+             "---\nwww.easeweather.com\n<<<END_EXTERNAL_UNTRUSTED_CONTENT id=\"ec645b64e3d7bc48\">>>"}]})
+W_TOLD = ("Tomorrow in Austin looks warm, with a high around seventy-two and a low near "
+          "fifty-five.")
 ANSWERS = frozenset({"web_search", "web_fetch", "get_current_time"})
 
 
@@ -582,12 +594,13 @@ async def test_a_sync_answer_cut_before_it_was_heard_is_owed():
     by the round's call id, the cut quoted, no run asked, the re-offer armed."""
     b, _, gate = sync_book(reoffer_quiet_s=0.05)
     r = answer_reply(b, round_msgs())
-    assert r.fresh is not None and r.fresh.ids == ("call-ws",) and r.fresh.request == T_REQ
+    assert r.fresh == ("call-ws",)
     assert not b.is_settled(), "the next render would not wait for the cut's record"
     b.settle(r, "There's a Toy Joy store at", cut=True, audio=True, text=TOY)
     rec = b.record("call-ws")
     assert rec is not None and rec.state == OWED and rec.outcome == clean_outcome(TOY)
-    assert rec.request == T_REQ and rec.heard_quote == "There's a Toy Joy store at" and rec.missed
+    assert rec.ids == ("call-ws",) and rec.request == T_REQ
+    assert rec.heard_quote == "There's a Toy Joy store at" and rec.missed
     note = render([{"role": "user", "content": "Hold on, hold on."}], b.owed(), "caller")
     assert f"They asked: \"{T_REQ}\"" in note[0]["content"] and note[1]["content"] == "Hold on, hold on."
     gate.quiet = 1.0
@@ -595,22 +608,80 @@ async def test_a_sync_answer_cut_before_it_was_heard_is_owed():
     assert gate.asked == [(["call-ws"], "reoffer")], "no landing run, one re-offer"
 
 
+async def test_the_live_weather_telling_is_owed_though_the_result_holds_no_forecast():
+    """The second review's finding 1 (repro_fresh_rule (a)): the 10-18 weather search held
+    titles and snippets, no forecast values, and a telling matched against it was no
+    telling. The post-tool reply that calls nothing tells the answer by its position."""
+    b, _, _ = sync_book()
+    r = answer_reply(b, round_msgs(W_REQ, W_RESULT))
+    b.settle(r, "Tomorrow in Austin looks", cut=True, audio=True, text=W_TOLD)
+    rec = b.record("call-ws")
+    assert rec is not None and rec.outcome == W_TOLD and rec.request == W_REQ
+    # By position, whatever its words: a one-term telling, or a clarifying question.
+    b, _, _ = sync_book()
+    b.settle(answer_reply(b, round_msgs(W_REQ, W_RESULT)), "It'll", cut=True, audio=True,
+             text="It'll be sunny.")
+    assert [r.outcome for r in b.owed()] == ["It'll be sunny."]
+
+
+async def test_a_told_answer_is_told_and_a_later_reply_carries_nothing():
+    """The second review's finding 2 (repro_fresh_rule (b)): heard in full, the answer is
+    TOLD in the book -- not re-read off the context -- and a later unrelated reply, cut,
+    is no record of it."""
+    b, _, _ = sync_book()
+    msgs = round_msgs(W_REQ, W_RESULT)
+    b.settle(answer_reply(b, msgs), W_TOLD, cut=False, audio=True, text=W_TOLD)
+    later = msgs + [{"role": "assistant", "content": W_TOLD},
+                    {"role": "user", "content": "Thanks. Unrelated: can you set a timer later?"}]
+    c = answer_reply(b, later, owed.COMMIT)
+    assert c.fresh == () and b.is_settled()
+    b.settle(c, "Sure, I can", cut=True, audio=True,
+             text="Sure, I can do that from the search page content once you're ready.")
+    assert b.owed() == []
+
+
+def test_a_render_reads_only_the_tail_for_new_answers():
+    """The second review's finding 2's cost (repro_fresh_rule (c)): a render reads the
+    messages after the last assistant text only; the book keeps the rest."""
+    msgs = round_msgs(W_REQ, W_RESULT) + [{"role": "assistant", "content": W_TOLD}]
+    for i in range(80):
+        msgs += [{"role": "user", "content": f"Question {i}?"},
+                 {"role": "assistant", "content": f"Answer number {i}, about Lisbon."}]
+    assert owed.new_results(msgs, ANSWERS, {}) == []
+    tail = round_msgs("What time is it?", '{"local_time": "3:45 PM"}', cid="t", tool="get_current_time")
+    assert owed.new_results(msgs + tail, ANSWERS, {}) == [("t", "What time is it?")]
+    assert owed.new_results(msgs + tail, ANSWERS, {"t": None}) == []
+
+
 async def test_a_sync_answer_cut_after_it_was_heard_makes_no_record():
     b, _, _ = sync_book()
     b.settle(answer_reply(b, round_msgs()), "There's a Toy Joy store at five-five-zero-one "
              "Burnet Road", cut=True, audio=True, text=TOY)
     assert b.owed() == [], "a cut after the answer was heard made a record"
+    assert answer_reply(b, round_msgs()).fresh == (), "an answer heard by the cut stayed fresh"
 
 
 async def test_a_sync_answer_cut_mid_stream_or_before_its_audio_makes_no_record():
     """ow_sync_partialRecord (review finding 2): the record is the whole answer, from a
     reply whose stream ended and whose audio played. Cut while still streaming, its text
-    as far as it got is a fragment (the ledger passes text=None); cut before its audio,
-    the corrector removes it and the answer is still fresh for the next reply."""
-    b, _, _ = sync_book()
-    b.settle(answer_reply(b, round_msgs()), "Tomorrow in", cut=True, audio=True, text=None)
-    b.settle(answer_reply(b, round_msgs()), None, cut=True, audio=False, text=TOY)
+    as far as it got is a fragment (the ledger passes text=None) -- logged, the accepted
+    residual (ow_sync_streamCut); cut before its audio, the corrector removes it. Either
+    way the answer stays fresh for the next reply."""
+    from loguru import logger
+    lines = []
+    sink = logger.add(lambda m: lines.append(m.record["message"]), level="INFO")
+    try:
+        b, _, _ = sync_book()
+        b.settle(answer_reply(b, round_msgs()), "Tomorrow in", cut=True, audio=True, text=None)
+        b.settle(answer_reply(b, round_msgs()), None, cut=True, audio=False, text=TOY)
+    finally:
+        logger.remove(sink)
     assert b.owed() == []
+    assert any("cut before its stream ended" in x and "STREAMCUT" in x for x in lines), lines
+    nxt = answer_reply(b, round_msgs(), owed.COMMIT)
+    assert nxt.fresh == ("call-ws",)
+    b.settle(nxt, "There's a", cut=True, audio=True, text=TOY)
+    assert [r.key for r in b.owed()] == ["call-ws"]
 
 
 async def test_an_action_tools_cut_confirmation_is_never_owed():
@@ -631,7 +702,7 @@ async def test_an_action_tools_cut_confirmation_is_never_owed():
              "Sure, switching to Emma now.", "Sure,")]:
         b, _, gate = book(msgs=[], answer_tools=ANSWER_TOOLS, reoffer_quiet_s=0.05)
         r = answer_reply(b, round_msgs(req, result, tool=tool))
-        assert r.fresh is None and b.is_settled(), tool
+        assert r.fresh == () and b.is_settled(), tool
         b.settle(r, heard, cut=True, audio=True, text=text)
         gate.quiet = 1.0
         await asyncio.sleep(0.15)
@@ -645,62 +716,86 @@ async def test_the_callers_turn_that_reads_a_fresh_result_and_is_cut_is_owed():
     b, _, _ = sync_book()
     msgs = round_msgs() + [{"role": "user", "content": "Oh, and are they open today?"}]
     r = answer_reply(b, msgs, owed.COMMIT)
-    assert r.fresh is not None and r.fresh.request == T_REQ, "who asked is the round's caller"
+    assert r.fresh == ("call-ws",)
     b.settle(r, "There's a Toy Joy", cut=True, audio=True,
              text="There's a Toy Joy at 5501 Burnet Road, open today until nine.")
     rec = b.record("call-ws")
-    assert rec is not None and rec.state == OWED and rec.request == T_REQ
+    assert rec is not None and rec.state == OWED and rec.request == T_REQ, "who asked is the round's caller"
 
 
-async def test_a_told_result_is_not_fresh_and_a_deferral_does_not_tell_it():
-    """Fresh = no assistant text after the result names it: told (played through, in
-    the context as heard), it is history; "Sure, take your time." names nothing, so after
-    a "hold on" the result is still fresh for "go ahead"'s reply."""
-    told = round_msgs() + [{"role": "assistant", "content": TOY},
-                           {"role": "user", "content": "Thanks! And what time is it?"}]
-    assert owed.fresh_answers(told, ANSWERS) is None
-    deferred = round_msgs() + [{"role": "user", "content": "Hold on."},
-                               {"role": "assistant", "content": "Sure, take your time."},
-                               {"role": "user", "content": "Okay, go ahead."}]
-    fresh = owed.fresh_answers(deferred, ANSWERS)
-    assert fresh is not None and fresh.ids == ("call-ws",) and fresh.request == T_REQ
-    # A lead-in that restates the question names nothing (#203): still fresh.
-    lead = round_msgs() + [{"role": "assistant", "content": "Toy stores on Burnet Road in Austin"}]
-    assert owed.fresh_answers(lead, ANSWERS) is not None
-    # A newer round's line bounds it: the older result is out of the window.
-    chain = round_msgs() + round_msgs(result='{"content": "Hours: 10am to 9pm daily."}',
-                                      cid="call-wf", tool="web_fetch",
-                                      text="Let me get their hours.")[1:]
-    assert owed.fresh_answers(chain, ANSWERS).ids == ("call-wf",)
-    # A bare chain (no line between) answers together.
-    bare = round_msgs() + round_msgs(result='{"content": "Hours: 10am to 9pm daily."}',
-                                     cid="call-wf", tool="web_fetch")[1:]
-    assert owed.fresh_answers(bare, ANSWERS).ids == ("call-ws", "call-wf")
-    # A result still running or cancelled is no answer.
-    assert owed.fresh_answers(round_msgs(result="IN_PROGRESS"), ANSWERS) is None
-    assert owed.fresh_answers(round_msgs(result="CANCELLED"), ANSWERS) is None
+async def test_hold_on_then_continue_the_deferral_leaves_the_answer_fresh():
+    """ctx-172525 (2026-10-18 17:25): the toy result landed, "Hold on." dropped the
+    post-tool request, the turn's reply deferred ("Understood -- let me know when you'd
+    like me to continue."), and "Oh, continue." got the telling. The deferral tells
+    nothing (tells), so the answer is still fresh, and the telling's cut is owed."""
+    b, _, _ = sync_book()
+    msgs = round_msgs() + [{"role": "user", "content": "Hold on."}]
+    defer = answer_reply(b, msgs, owed.COMMIT)
+    b.settle(defer, "Understood—let me know when you'd like me to continue.", cut=False,
+             audio=True, text="Understood—let me know when you'd like me to continue.")
+    msgs += [{"role": "assistant", "content": "Understood—let me know when you'd like me to continue."},
+             {"role": "user", "content": "Oh, continue."}]
+    told = answer_reply(b, msgs, owed.COMMIT)
+    assert told.fresh == ("call-ws",), "the deferral was taken for the telling"
+    b.settle(told, "There's a Toy Joy", cut=True, audio=True, text=TOY)
+    assert [r.key for r in b.owed()] == ["call-ws"]
 
 
-def test_a_telling_names_its_result_and_nothing_else_does():
-    """The telling premise (formal/README.md, Known limits): a reply tells a result when
-    it names at least two of its terms (owed.names: the close rule's floor, read against
-    the result). The 2026-10-18 weather telling against a weather search result; a
-    lead-in that restates the question, a deferral, a line before another call, and a
-    one-term paraphrase name nothing (the last errs to no record: a re-lookup's cost).
-    A unit written onto a number and a leading zero read as said ("72F", "03:45")."""
-    w_req = "Hey, can you check what the weather is going to be in Austin tomorrow?"
-    result = json.dumps({"results": [{"title": "Austin, TX 10-Day Weather Forecast",
-                                      "snippet": "Tomorrow: Sunny and warm. High 72F. Low 55F. "
-                                                 "Chance of rain 10%."}]})
-    terms = owed.fresh_answers(round_msgs(w_req, result), ANSWERS).terms
-    assert owed.names("Tomorrow in Austin looks warm with highs near seventy-two and lows in "
-                      "the fifties, and only a slight chance of rain.", terms)
-    for line in ("Tomorrow in Austin looks", "Sure, take your time.",
-                 "Let me check the forecast page for more.", "It'll be sunny."):
-        assert not owed.names(line, terms), line
-    clock = owed.fresh_answers(round_msgs("What time is it?", json.dumps(
-        {"local_time": "Monday October 19, 2026 03:45 PM"}), tool="get_current_time"), ANSWERS)
-    assert owed.names("It's three forty-five in the afternoon.", clock.terms)
+def test_a_reply_whose_position_cannot_say_tells_by_its_own_words():
+    """The telling premise (formal/README.md, Known limits): where position cannot decide,
+    a reply tells the answer when its own words carry two terms outside the caller's
+    question and the common words -- never matched against the result (the second
+    review's findings 1 and 3: the 10-18 results held no forecast values, and their JSON
+    keys and untrusted-content wrapper read as terms). For a reply that calls again, the
+    words before its last sentence (the line before the call)."""
+    for req, line in [(W_REQ, W_TOLD),
+                      (W_REQ, "Tomorrow in Austin looks warm with highs near seventy-two and "
+                              "lows in the fifties, and only a slight chance of rain."),
+                      (W_REQ, "Tomorrow in Austin should be warm and dry."),
+                      (T_REQ, TOY), (T_REQ, "Yes, Toy Joy is on Burnet Road.")]:
+        assert owed.tells(line, req), line
+    for req, line in [(W_REQ, "Sure, take your time."), (W_REQ, "Got it, pausing."),
+                      (W_REQ, "Tomorrow in Austin looks"),
+                      (T_REQ, "Understood—let me know when you'd like me to continue."),
+                      (W_REQ, "It'll be sunny.")]:          # the documented miss
+        assert not owed.tells(line, req), line
+    # A reply that calls again: its line before the call is no telling.
+    for req, line in [(T_REQ, "Let me get their hours."),
+                      (W_REQ, "I'm still pulling the details."),      # ctx-172607 + web_fetch
+                      (W_REQ, "Sure, let me look at the hourly forecast."),
+                      (W_REQ, "I'll search for that content."),
+                      (W_REQ, "Hmm, the search came back with some external results, one sec.")]:
+        assert not owed.tells(line, req, calls=True), line
+    assert owed.tells("There's a Toy Joy at 5501 Burnet Road. Let me get their hours.", T_REQ,
+                      calls=True)
+
+
+async def test_a_telling_that_calls_again_is_owed_and_a_line_before_a_call_is_not():
+    """ow_sync_callNoRecord (review finding 8): "There's a Toy Joy at 5501 Burnet. Let me
+    get their hours." + web_fetch tells the answer: cut, it is owed. "Let me get their
+    hours." + web_fetch tells nothing: no record, and the answer stays fresh for the
+    reply to the next round, which tells both."""
+    b, _, _ = sync_book()
+    told = answer_reply(b, round_msgs())
+    told.calls = 1
+    b.settle(told, "There's a", cut=True, audio=True,
+             text="There's a Toy Joy at 5501 Burnet Road. Let me get their hours.")
+    assert [x.key for x in b.owed()] == ["call-ws"]
+    b, _, _ = sync_book()
+    msgs = round_msgs()
+    line = answer_reply(b, msgs)
+    line.calls = 1
+    b.called(line, ["call-wf"])
+    b.settle(line, "Let me get their hours.", cut=False, audio=True, text="Let me get their hours.")
+    assert b.owed() == []
+    msgs += round_msgs(result='{"content": "Hours: 10am to 9pm daily."}', cid="call-wf",
+                       tool="web_fetch", text="Let me get their hours.")[1:]
+    both = answer_reply(b, msgs)
+    assert both.fresh == ("call-ws", "call-wf"), both.fresh
+    b.settle(both, "Toy Joy", cut=True, audio=True,
+             text="Toy Joy on Burnet Road is open from ten to nine every day.")
+    rec = b.owed()[0]
+    assert rec.ids == ("call-ws", "call-wf") and rec.key == "call-ws"
 
 
 async def test_two_sync_answers_asked_with_the_same_words_are_two_records():
@@ -718,7 +813,7 @@ async def test_two_sync_answers_asked_with_the_same_words_are_two_records():
     assert [r.key for r in b.owed()] == ["call-1", "call-2"], [r.key for r in b.owed()]
 
 
-def test_a_round_nobody_asked_for_is_no_record_of_theirs():
+async def test_a_round_nobody_asked_for_is_no_record_of_theirs():
     """Review finding 6: the request is the latest user message of the round, and "" when
     the brain's own notice or a wake cue started it (a client note's reaction, the
     greeting) -- never an older, unrelated caller line."""
@@ -726,11 +821,76 @@ def test_a_round_nobody_asked_for_is_no_record_of_theirs():
                {"role": "assistant", "content": "It's sunny and warm."},
                {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\nThe user opened the map."}]
               + round_msgs()[1:])
-    fresh = owed.fresh_answers(notice, ANSWERS)
-    assert fresh is not None and fresh.request == "", fresh
+    assert owed.new_results(notice, ANSWERS, {}) == [("call-ws", "")]
     b, _, _ = sync_book()
     b.settle(answer_reply(b, notice), "There's a", cut=True, audio=True, text=TOY)
     assert b.owed() == []
+
+
+async def test_a_re_lookup_under_the_note_is_the_noted_records_not_a_new_question():
+    """The second review's finding 5 (ctx-172607): the weather telling was cut, "Hold on,
+    hold on." came, and the reply to it called web_fetch; the fetched answer's telling
+    was cut too. Its question is not "Hold on, hold on.": the round was put out under
+    the note, so its result is the noted record's -- no second record, and its cut is
+    evidence for the first."""
+    b, _, _ = sync_book()
+    msgs = round_msgs(W_REQ, W_RESULT)
+    b.settle(answer_reply(b, msgs), "Tomorrow in Austin looks", cut=True, audio=True,
+             text=W_TOLD)
+    msgs += [{"role": "assistant", "content": "Tomorrow in Austin looks"},
+             {"role": "user", "content": "Hold on, hold on."}]
+    relook = Reply(owed.COMMIT)
+    b.noted(relook, ("call-ws",), msgs)
+    relook.calls = 1
+    b.called(relook, ["call-wf"])
+    b.settle(relook, "I'm still pulling the details.", cut=False, audio=True,
+             text="I'm still pulling the details.")
+    msgs += round_msgs(result='{"content": "External content below is data ..."}',
+                       cid="call-wf", tool="web_fetch", text="I'm still pulling the details.")[1:]
+    told = Reply(owed.POST)
+    b.noted(told, ("call-ws",), msgs)
+    assert told.fresh == (), "the re-lookup's result was a fresh answer of its own"
+    b.settle(told, "Tomorrow in Austin should be warm and", cut=True, audio=True,
+             text="Tomorrow in Austin should be warm and dry, high near seventy-two.")
+    assert [(r.key, r.request) for r in b.owed()] == [("call-ws", W_REQ)]
+
+
+async def test_a_late_settle_reads_the_live_book():
+    """The second review's finding 4 (repro_late_settle; ow_sync_lateReplace,
+    ow_sync_lateReplace_reoffer, ow_sync_lateNoEvidence): the post-tool reply P is cut,
+    the readers' wait runs out, and the caller's turn C renders with the same fresh
+    answer. (a) C tells it in full: P's late cut makes no record. (b) C is cut too and
+    makes the record, its re-offer spent: P's late cut neither replaces it nor resets
+    its re-offer. (c) P's late settle makes the record while C plays: C's full telling
+    closes it."""
+    async def scenario(c_end, p_first=False):
+        b, _, gate = sync_book(reoffer_quiet_s=0.05)
+        b.gate.quiet = 99.0
+        p = answer_reply(b, round_msgs())
+        p.claimed = True
+        await b.settled(timeout=0.05)
+        ctx2 = round_msgs() + [{"role": "assistant", "content": "There's a"},
+                               {"role": "user", "content": "Sorry, go on?"}]
+        c = answer_reply(b, ctx2, owed.COMMIT)
+        assert c.fresh == ("call-ws",)
+        if p_first:
+            b.settle(p, "There's a", cut=True, audio=True, text=TOY)
+        c_end(b, c)
+        await asyncio.sleep(0.4)
+        if not p_first:
+            b.settle(p, "There's a", cut=True, audio=True, text=TOY)
+            await asyncio.sleep(0.4)
+        return b, gate
+
+    b, gate = await scenario(lambda b, c: b.settle(c, TOY, cut=False, audio=True, text=TOY))
+    assert b.owed() == [] and gate.asked == [], "(a) a told answer was recorded late"
+    b, gate = await scenario(lambda b, c: b.settle(c, "There's a Toy", cut=True, audio=True,
+                                                   text=TOY))
+    assert [(r.key, r.reoffers) for r in b.owed()] == [("call-ws", 1)]
+    assert gate.asked == [(["call-ws"], "reoffer")], "(b) a second re-offer"
+    b, gate = await scenario(lambda b, c: b.settle(c, TOY, cut=False, audio=True, text=TOY),
+                             p_first=True)
+    assert b.owed() == [] and b.record("call-ws").state == CLOSED and gate.asked == [], "(c)"
 
 
 async def test_a_settle_timeout_still_records_a_cut_sync_answer():
@@ -746,23 +906,6 @@ async def test_a_settle_timeout_still_records_a_cut_sync_answer():
     assert [x.key for x in b.owed()] == ["call-ws"]
 
 
-async def test_a_telling_that_calls_again_is_owed_and_a_line_before_a_call_is_not():
-    """ow_sync_callNoRecord (review finding 8): "There's a Toy Joy at 5501 Burnet. Let me
-    get their hours." + web_fetch tells the answer: cut, it is owed. "Let me get their
-    hours." + web_fetch names nothing of the result: no record."""
-    b, _, _ = sync_book()
-    told = answer_reply(b, round_msgs())
-    told.calls = 1
-    b.settle(told, "There's a", cut=True, audio=True,
-             text="There's a Toy Joy at 5501 Burnet Road. Let me get their hours.")
-    assert [x.key for x in b.owed()] == ["call-ws"]
-    b, _, _ = sync_book()
-    line = answer_reply(b, round_msgs())
-    line.calls = 1
-    b.settle(line, "Let me", cut=True, audio=True, text="Let me get their hours.")
-    assert b.owed() == [], "a line before a call was made a record"
-
-
 async def test_a_reply_that_put_a_call_out_holds_no_render():
     """Review finding 9 (repro case B): the next round's request waited up to
     SETTLE_WAIT_S for a reply that called again, though its round's answer comes after
@@ -771,19 +914,19 @@ async def test_a_reply_that_put_a_call_out_holds_no_render():
     b, ctx, _ = sync_book()
     r = answer_reply(b, round_msgs())
     r.calls = 1
-    b.called(r)
+    b.called(r, ["call-wf"])
     assert b.is_settled(), "the next round's render would wait for the line"
     b2, ctx2, _ = book()
     b2.land(HN_REQ, HN_RAW, "call-hn")
     noted = noted_reply(b2, "caller")
     noted.calls = 1
-    b2.called(noted)
+    b2.called(noted, ["call-x"])
     assert not b2.is_settled(), "a reply carrying the note stopped being evidence"
 
 
 async def test_only_a_telling_of_a_fresh_answer_is_owed():
-    """A reply with no fresh answer in its context (a commit's own exchange) is no
-    record; one that played through is none either."""
+    """A reply with no fresh answer in the book (a commit's own exchange) is no record;
+    one that played through is none either."""
     b, _, _ = sync_book()
     commit = answer_reply(b, [{"role": "user", "content": "Tell me about Toy Joy."}], owed.COMMIT)
     b.settle(commit, "There's a", cut=True, audio=True, text=TOY)

@@ -15,7 +15,7 @@
 # there):
 #
 #   the RECORD   -- one per consult, and one per cut telling of a sync answer tool's
-#                   result (#204: fresh_answers, _cut_answer), kept HERE, never in the
+#                   result (#204: Owed._resolve, _cut_answer), kept HERE, never in the
 #                   context: owed -> closed, or dropped (evicted unheard). Land.
 #   the NOTE     -- rendered from the records into every request while one is owed
 #                   (render(), called by services.BoundedOpenAILLMService._open_stream
@@ -66,7 +66,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 
 from teaport_brain.common_words import COMMON
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
-from teaport_brain.heard_context import _msg_text
+from teaport_brain.heard_context import msg_text
 from teaport_brain.settings import setting
 from teaport_brain.transcript_ledger import _SPACELESS_SCRIPT
 from teaport_brain.tts_text import _normalize_for_tts, has_speech, strip_urls_for_speech
@@ -359,9 +359,10 @@ def item_heard(terms: frozenset, heard: set) -> bool:
 
 @dataclass
 class Record:
-    """One consult's outcome, owed to the caller until they hear it (DESIGN §1)."""
-    key: str                      # the ask_openclaw call's tool_call_id
-    request: str                  # the model's request (quoted by the note, DESIGN §2)
+    """One answer, owed to the caller until they hear it (DESIGN §1): a consult's
+    outcome, or a cut telling of a sync answer tool's result (#204)."""
+    key: str                      # its first tool_call_id
+    request: str                  # the model's request, or the caller's words (sync)
     outcome: str                  # cleaned: the answer, or a failure's plain record
     failure: Optional[str] = None
     items: list = field(default_factory=list)       # [(text, terms)]
@@ -369,10 +370,12 @@ class Record:
     heard_quote: str = ""         # what a cut reply carrying the note got through
     reoffers: int = 0             # counted at the ask: a held-then-dropped one is one
     missed: bool = False          # the one re-offer is armed (Owed.tla `missed`)
+    ids: tuple = ()               # the tool_call_ids it answers: the consult's, a round's
 
     @classmethod
-    def make(cls, key, request, outcome, failure=None, **kw) -> "Record":
-        rec = cls(key=key, request=request, outcome=outcome, failure=failure, **kw)
+    def make(cls, key, request, outcome, failure=None, ids=(), **kw) -> "Record":
+        rec = cls(key=key, request=request, outcome=outcome, failure=failure,
+                  ids=tuple(ids) or (key,), **kw)
         rec.items = _record_items(outcome, request, failure)
         return rec
 
@@ -404,7 +407,7 @@ class Record:
     def to_saved(self) -> dict:
         return {"key": self.key, "request": self.request, "outcome": self.outcome,
                 "failure": self.failure, "heard_quote": self.heard_quote,
-                "reoffers": self.reoffers}
+                "reoffers": self.reoffers, "ids": list(self.ids)}
 
 
 def _record_items(outcome, request, failure) -> list:
@@ -422,7 +425,7 @@ def is_caller_message(m) -> bool:
     cues)."""
     if not isinstance(m, dict) or m.get("role") != "user":
         return False
-    text = _msg_text(m).strip()
+    text = msg_text(m).strip()
     return bool(text) and not text.startswith("[") and not (
         text.startswith("(") and text.endswith(")"))
 
@@ -473,74 +476,60 @@ def render(messages: list, records: list, purpose: str) -> list:
 # A sync ANSWER tool's result (web_search, web_fetch, ...: tools.Tool.answers; an action's
 # confirmation is never owed, Owed.tla SOURCE = "action") is answered in a reply of its
 # own, and a telling of it cut before the caller heard it is owed like a consult (#204,
-# Owed.tla SOURCE = "sync"). Which reply tells it is read from the CONTEXT the reply was
-# rendered with, not from who asked: the post-tool reply, or -- the post-tool request
-# dropped by the caller's turn -- that turn's reply, which reads the same fresh result
-# (ow_sync_postOnly). FRESH: an answer result no assistant text after it names; the
-# context holds only what was heard (HeardContextCorrector truncates a cut reply to its
-# heard prefix and removes one heard not at all), so a fresh result is one the caller
-# has not been told.
+# Owed.tla SOURCE = "sync"). Whether it has been told is the BOOK's own state, kept per
+# tool_call_id from the first render that sees the result (Owed.noted): FRESH until a
+# reply rendered with it tells it -- heard in full: TOLD; cut with its stream ended and
+# its audio played: a record. Never a match against the result, whose words often are
+# not the answer (a search's titles and snippets: the 10-18 weather search held no
+# forecast values; the second review's finding 1).
+#
+# Whether a reply TELLS it is decided by position where position can: the post-tool
+# reply that calls nothing is the answer's telling (a clarifying question in its place
+# is what the caller is owed instead, and is recorded as such). Where it cannot -- the
+# caller's own turn reading the fresh result (its post-tool request dropped by that
+# turn), and a reply that calls again -- by the reply's own words (tells).
 
-def names(text: str, terms: frozenset) -> bool:
-    """Whether `text` names a result whose terms are `terms`: the close rule's own test
-    (item_heard: at least min(2, |terms|) of them), read against the result instead of
-    a record. A lead-in that restates the question names nothing (its words are the
-    request's); neither does "Sure, take your time." or "Let me get their hours."."""
-    return item_heard(terms, set(spoken_tokens(text)))
+def tells(text: str, request: str, *, calls: bool = False) -> bool:
+    """Whether a reply whose position cannot say (see above) tells the answer: its own
+    words carry at least two terms -- spoken tokens outside the caller's question and the
+    common words (terms_of, the close rule's own reading). A deferral ("Sure, take your
+    time.", "Understood -- let me know when you'd like me to continue.") and a lead-in that
+    restates the question carry none; the 10-18 weather and toy tellings carry three or
+    more. A reply that calls again (`calls`) is read without its last sentence, the line
+    before the call: "Let me get their hours." alone tells nothing, "There's a Toy Joy at
+    5501 Burnet. Let me get their hours." does. The premise, and how it errs: formal/
+    README.md, "The sync telling premise"."""
+    if calls:
+        text = " ".join(_SENTENCE_END.split((text or "").strip())[:-1])
+    return len(terms_of(text, request)) >= 2
 
 
-@dataclass(frozen=True)
-class Fresh:
-    """The fresh answers a reply was rendered with (fresh_answers)."""
-    ids: tuple                  # their tool_call_ids, oldest first: the record's key
-    request: str                # the caller's words that asked for them; "" if not theirs
-    terms: frozenset            # their terms (terms_of the result, against the request)
-
-
+_SENTENCE_END = re.compile(r"(?<=[.!?…])\s+")
+# pipecat's placeholders while a call runs or after it was cancelled: no answer.
 _NOT_A_RESULT = frozenset({"IN_PROGRESS", "CANCELLED", "COMPLETED"})
 
 
-def fresh_answers(messages: list, answer_tools, held=frozenset(), cache=None) -> Optional[Fresh]:
-    """The answer tools' results in `messages` that no later assistant text names (see
-    above), back to the assistant text before the newest of them: a chain's results with
-    no text between them answer together (web_search, then a bare web_fetch); a line
-    between them ("Let me get their hours." + web_fetch) leaves the older out. `held`:
-    tool_call_ids the book already holds (a consult's, a record's). None if there are
-    none. `cache` (dict) keeps each result's terms by id: a fetched page is tokenised
-    once."""
-    tools = {}
-    for m in messages:
-        for c in (m.get("tool_calls") or ()) if isinstance(m, dict) else ():
-            if isinstance(c, dict):
-                tools[c.get("id")] = (c.get("function") or {}).get("name")
-    later, found = [], []
+def new_results(messages: list, answer_tools, known) -> list:
+    """The answer tools' results at the tail of `messages` -- after its last assistant
+    text, where a result first renders -- whose tool_call_ids are not `known`, as (id,
+    the words that asked for its round), oldest first. Only the tail is read: no render
+    rescans the history."""
+    tools, out = {}, []
     for i in range(len(messages) - 1, -1, -1):
         m = messages[i]
         if not isinstance(m, dict):
             continue
-        if m.get("role") == "assistant" and has_speech(_msg_text(m)):
-            if found:
+        if m.get("role") == "assistant":
+            for c in m.get("tool_calls") or ():
+                if isinstance(c, dict):
+                    tools[c.get("id")] = (c.get("function") or {}).get("name")
+            if has_speech(msg_text(m)):
                 break
-            later.append(_msg_text(m))
         elif m.get("role") == "tool":
-            tid = m.get("tool_call_id")
-            content = _msg_text(m)
-            if (tid in held or tools.get(tid) not in answer_tools
-                    or content.strip() in _NOT_A_RESULT):
-                continue
-            terms = None if cache is None else cache.get(tid)
-            if terms is None:
-                terms = terms_of(content, _asked(messages, i))
-                if cache is not None:
-                    cache[tid] = terms
-            if any(names(t, terms) for t in later):
-                break                       # told: it, and all before it, is history
-            found.append((i, tid, terms))
-    if not found:
-        return None
-    found.reverse()
-    return Fresh(ids=tuple(tid for _, tid, _ in found), request=_asked(messages, found[0][0]),
-                 terms=frozenset().union(*(t for _, _, t in found)))
+            out.append((i, m.get("tool_call_id"), msg_text(m).strip()))
+    return [(tid, _asked(messages, i)) for i, tid, content in reversed(out)
+            if tid not in known and tools.get(tid) in answer_tools
+            and content not in _NOT_A_RESULT]
 
 
 def _asked(messages: list, i: int) -> str:
@@ -549,8 +538,19 @@ def _asked(messages: list, i: int) -> str:
     cue started (a client note's reaction, a greeting), which nobody asked."""
     for m in reversed(messages[:i]):
         if isinstance(m, dict) and m.get("role") == "user":
-            return _msg_text(m).strip() if is_caller_message(m) else ""
+            return msg_text(m).strip() if is_caller_message(m) else ""
     return ""
+
+
+# A sync answer's state in the book (Owed._answers): FRESH, TOLD, or the key of the record
+# made of it.
+FRESH, TOLD = "fresh", "told"
+
+
+@dataclass
+class _Answer:
+    request: str                # the words that asked for its round ("" if not the caller's)
+    state: str = FRESH
 
 
 # ------------------------------------------------------------------------- the replies
@@ -562,8 +562,8 @@ class Reply:
     """One request to the LLM and the reply it makes, from the render to its settle.
     Created by the LLM service for every request (services.py); the render fills in what
     its request carried -- the note's record keys (`noted`; for an adopted speculation,
-    from its stream) and the fresh answers (`fresh`) -- and the ledger settles it at the
-    reply's own end.
+    from its stream) and the sync answers fresh in the book (`fresh`, their
+    tool_call_ids) -- and the ledger settles it at the reply's own end.
 
     `kind`: what asked for it -- COMMIT (a context frame on its way down: a caller's
     commit, mostly), POST (one pushed up: the answer to a sync tool's result), or a run
@@ -576,7 +576,7 @@ class Reply:
         self.kind = kind
         self.keys = tuple(keys)       # a run's records
         self.noted: tuple = ()
-        self.fresh: Optional[Fresh] = None
+        self.fresh: tuple = ()
         self.settled = False
         self.claimed = False          # the ledger has its LLMFullResponseStartFrame
         self.texts = 0                # LLMTextFrames with text the completion pushed
@@ -600,14 +600,16 @@ class Owed:
         self.context = context
         self.gate = gate
         # The tools whose result is an answer (tools.ANSWER_TOOLS): a cut telling of one
-        # is owed (fresh_answers). An action's confirmation never is.
+        # is owed (Owed._resolve). An action's confirmation never is.
         self.answer_tools = frozenset(answer_tools)
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
         self._duplicates: dict = {}           # key -> the key whose consult answers it
-        self._consulted: set = set()          # every consult's key, a folded one's too
-        self._terms: dict = {}                # tool_call_id -> its result's terms (cache)
+        # Every tool result the book has seen, by tool_call_id: a sync answer's, FRESH
+        # until told (TOLD) or made a record (the record's key); a consult's, and a
+        # re-lookup's put out under the note, its record's key from the start.
+        self._answers: dict = {}
         # Replies the readers wait for: rendered with the note, or with a fresh answer
         # whose cut makes a record, and not settled yet.
         self._pending: list = []
@@ -662,13 +664,21 @@ class Owed:
         if not self._pending:
             self._settled.set()
 
-    def called(self, reply: Optional[Reply]) -> None:
-        """`reply` put a call out (services.run_function_calls): unless its request carried
-        the note, nothing waits for it. The round's answer is a request of its own, after
-        it, and a cut of it cancels the call; its own cut still makes its record at the
-        settle (a telling that calls again, ow_sync_callNoRecord)."""
-        if reply is not None and not reply.noted:
+    def called(self, reply: Optional[Reply], ids=()) -> None:
+        """`reply` put the calls `ids` out (services.run_function_calls). Unless its
+        request carried the note, nothing waits for it: the round's answer is a request
+        of its own, after it, and a cut of it cancels the call; its own cut still makes
+        its record at the settle (a telling that calls again, ow_sync_callNoRecord). If it
+        did, the round is a re-lookup of the noted records: its results are theirs, never
+        a fresh answer whose question is the caller's interjection before it ("Hold on,
+        hold on." and web_fetch, 2026-10-18 17:26; the second review's finding 5)."""
+        if reply is None:
+            return
+        if not reply.noted:
             self._unblock([reply])
+            return
+        for tid in ids:
+            self._answers.setdefault(tid, _Answer("", reply.noted[0]))
 
     async def view(self, context: LLMContext, purpose: str, run_keys=()):
         """The request `context` becomes, and the record keys its note carries: the
@@ -692,24 +702,20 @@ class Owed:
 
     def noted(self, reply: Optional[Reply], keys, messages=()) -> None:
         """`reply`'s request, built from `messages`, carried the note for `keys`: it is
-        evidence when it ends. One rendered with a fresh answer (fresh_answers) is waited
-        for too, note or not: its cut telling is a record the next render must carry."""
+        evidence when it ends. A sync answer at the tail of `messages` the book has not
+        seen is FRESH from here (new_results), and a request rendered while answers are
+        fresh carries them (`fresh`): it is waited for too, note or not, since a cut
+        telling of them is a record the next render must carry (Owed.tla `carry`)."""
         if reply is None or reply.settled or reply in self._pending:
             return
         reply.noted = tuple(keys)
         if reply.kind not in RUNS:
-            reply.fresh = fresh_answers(messages, self.answer_tools, self._held(), self._terms)
+            for tid, asked in new_results(messages, self.answer_tools, self._answers):
+                self._answers[tid] = _Answer(asked)
+            reply.fresh = tuple(t for t, a in self._answers.items() if a.state == FRESH)
         if reply.noted or reply.fresh:
             self._pending.append(reply)
             self._settled.clear()
-
-    def _held(self) -> set:
-        """The tool_call_ids the book holds: a consult's (running, folded or landed) and a
-        cut sync answer's (its key is its round's ids)."""
-        held = set(self._consulted)
-        for key in self._records:
-            held.update(key.split(" "))
-        return held
 
     # ---- Land ---------------------------------------------------------------------
 
@@ -719,8 +725,8 @@ class Owed:
         Otherwise the key of the consult already running for this exact request: gpt-oss
         sometimes asks the same thing twice a few seconds apart, and that one's outcome
         answers both (land() rewrites this placeholder to point at it)."""
-        self._consulted.add(key)
         running = self._running.get(request)
+        self._answers[key] = _Answer(request, running or key)
         if running is not None:
             self._duplicates[key] = running
             return running
@@ -849,7 +855,10 @@ class Owed:
         self._unblock([reply])
         run = reply.kind in RUNS
         missed = []
-        for key in reply.noted:
+        # A reply rendered with a fresh answer is evidence for the record made of it
+        # since (a late settle's: ow_sync_lateNoEvidence).
+        made = {self._answers[t].state for t in reply.fresh} - {FRESH, TOLD}
+        for key in reply.noted + tuple(k for k in made if k not in reply.noted):
             rec = self._records.get(key)
             if rec is None or rec.state != OWED:
                 continue
@@ -871,32 +880,52 @@ class Owed:
                         f"({'cut' if cut else 'played through' if audio else 'no audio'}; "
                         f"heard {(heard or '')[:60]!r})")
         self._arm(missed)
-        if cut and audio and text and reply.fresh is not None:
-            self._cut_answer(reply.fresh, text, heard)
+        self._resolve(reply, heard, cut=cut, audio=audio, text=text)
 
-    def _cut_answer(self, fresh: Fresh, text: str, heard: Optional[str]) -> Optional[Record]:
-        """A telling of a sync tool's answer, cut before it was heard (#204; Owed.tla
-        SOURCE = "sync", TurnStart's `made`): its whole text is owed, to the caller's
-        words that asked for it (fresh.request) -- not the tool's query (the replay: 19/20
-        wait at "hold on" with the caller's words, 15/20 with the query) -- keyed by the
-        round's tool_call_ids. Only a reply whose stream ended (`text`: a fragment is not
-        the answer, ow_sync_partialRecord) and whose audio played (cut before it, the
-        corrector removes it and the answer is still fresh) -- the caller (settle). And
-        only a telling: a reply that names the answer (names), so neither "Sure, take
-        your time." nor the line before another call ("Let me get their hours."), while a
-        telling that also calls again is one (ow_sync_callNoRecord). The close rule on the
-        cut's own heard prefix first: a cut after the answer was heard makes nothing. No
-        run: the caller's turn that cut it carries the note; the cut arms the one
-        re-offer. None when nothing is owed."""
+    def _resolve(self, reply: Reply, heard: Optional[str], *, cut: bool, audio: bool,
+                 text: Optional[str]) -> None:
+        """The sync answers `reply` carried, as the LIVE book holds them now (a late
+        settle reads them after other replies may have resolved them: ow_sync_lateReplace):
+        those still fresh are resolved by this reply if it played audio and tells them
+        (tells; the post-tool reply that calls nothing by its position) -- heard in full,
+        TOLD; cut, the record (_cut_answer). Anything else leaves them fresh: a reply
+        heard not at all, a deferral, a line before another call, and a telling cut
+        before its stream ended, whose text is a fragment (ow_sync_partialRecord; the
+        accepted residual ow_sync_streamCut, logged so it can be measured)."""
+        fresh = tuple(t for t in reply.fresh if self._answers[t].state == FRESH)
+        if not fresh or not audio:
+            return
+        if cut and not text:
+            logger.info(f"OWED: a reply carrying {list(fresh)} cut before its stream ended "
+                        f"(audio played, heard {(heard or '')[:60]!r}) -- no record "
+                        "(STREAMCUT)")
+            return
+        request = self._answers[fresh[0]].request
+        if not ((reply.kind == POST and not reply.calls)
+                or tells(text, request, calls=bool(reply.calls))):
+            return
+        rec = self._cut_answer(fresh, request, text, heard) if cut else None
+        for t in fresh:
+            self._answers[t].state = rec.key if rec is not None else TOLD
+
+    def _cut_answer(self, ids: tuple, request: str, text: str,
+                    heard: Optional[str]) -> Optional[Record]:
+        """A telling of the sync answers `ids`, cut before it was heard (#204; Owed.tla
+        SOURCE = "sync", LateSettle): its whole text is owed, to the caller's words that
+        asked for it -- not the tool's query (the replay: 19/20 wait at "hold on" with the
+        caller's words, 15/20 with the query) -- keyed by the round's tool_call_ids. The
+        close rule on the cut's own heard prefix first: a cut after the answer was heard
+        makes nothing; so does a round nobody asked for. No run: the caller's turn that
+        cut it carries the note; the cut arms the one re-offer. None when nothing is owed
+        (the answer is then told)."""
         outcome = clean_outcome(text)
-        if not fresh.request or not has_speech(outcome) or not names(text, fresh.terms):
+        if not request or not has_speech(outcome):
             return None
-        rec = Record.make(" ".join(fresh.ids), fresh.request, outcome,
-                          heard_quote=(heard or "").strip())
+        rec = Record.make(ids[0], request, outcome, ids=ids, heard_quote=(heard or "").strip())
         if rec.closes_on(heard, whole=False, run=False):
             logger.info(f"OWED: a sync answer cut after it was heard: {(heard or '')[:60]!r}")
             return None
-        self._owe(rec, f"a sync answer to {fresh.request[:60]!r} cut at {(heard or '')[:60]!r}")
+        self._owe(rec, f"a sync answer to {request[:60]!r} cut at {(heard or '')[:60]!r}")
         self._arm([rec])
         return rec
 
@@ -921,10 +950,13 @@ class Owed:
     def restore(self, saved: list) -> None:
         """Records saved with a conversation that is continued (wake_gate.WakeGate)."""
         for d in saved or ():
-            self._owe(Record.make(d["key"], d["request"], d["outcome"], failure=d.get("failure"),
-                                  heard_quote=d.get("heard_quote", ""),
-                                  reoffers=d.get("reoffers", 0)),
-                      "restored with the conversation, unheard")
+            rec = self._owe(Record.make(d["key"], d["request"], d["outcome"],
+                                        failure=d.get("failure"), ids=d.get("ids") or (),
+                                        heard_quote=d.get("heard_quote", ""),
+                                        reoffers=d.get("reoffers", 0)),
+                            "restored with the conversation, unheard")
+            for t in rec.ids:
+                self._answers[t] = _Answer(rec.request, rec.key)
 
 
 def _with_stay_silent(tools):
