@@ -353,15 +353,20 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 20,566 states |
 | `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 16,314 states |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
-| `ow_sync` | `SOURCE = "sync"` (#204): no consult; an answer tool's result told by a reply -- the post-tool one, or the caller's turn that dropped it -- and a cut of a telling before every item was heard makes the record (no run). Chains of two tool rounds (bare, after a line, after a telling), clarifying questions, deferrals | holds, every safety property | 15,508 states |
-| `ow_sync_live` | the same under `FairSpec`, `MaxSpeech = 4` | holds `OwedResolves` | 9,470 states |
+| `ow_sync` | `SOURCE = "sync"` (#204): no consult; an answer tool's result told by a reply -- the post-tool one, or the caller's turn that dropped it -- and a cut of a telling before every item was heard makes the record at its settle (no run). Chains of two tool rounds (bare, after a line, after a telling), deferrals | holds, every safety property | 15,800 states |
+| `ow_sync_live` | the same under `FairSpec`, `MaxSpeech = 4` | holds `OwedResolves` | 9,666 states |
 | `ow_sync_noCutRecord` | no record from a cut sync answer (the code before #204's extension) | ✗ `NoRedundantLookup` | the caller asks, the tool answers, the post-tool reply is cut mid-answer; the caller's next turn has only the cut prefix and the result, and the model looks it up again (18 steps; live 2026-10-18 17:25, the weather re-fetched) |
 | `ow_sync_postOnly` | only the post-tool request carries the answer (5327336: `Reply.asked` set by the frame's direction) | ✗ `NoRedundantLookup` | the result lands under the caller's speech, their turn drops the held post-tool request, the turn's reply reads the fresh result and tells it, is cut, makes no record; the next turn looks it up again (20 steps: the #204 review's trace) |
 | `ow_sync_callNoRecord` | a telling that also calls again makes no record (5327336: `not reply.calls`) | ✗ `NoRedundantLookup` | the post-tool reply tells the answer and calls web_fetch for more; the caller cuts it mid-answer (the call cancelled), and the next turn looks it up again (16 steps) |
 | `ow_sync_partialRecord` | a record from whatever had streamed at the cut (5327336: the ledger's parts so far), `STREAMCUT` | ✗ `ClosedOnEvidence` | a telling is cut while still streaming; its fragment is the record's outcome ("everything that result contains"), and the next turn's telling of part of the answer closes it (18 steps) |
 | `ow_sync_streamCut` | the design under `STREAMCUT`: a telling cut before its stream ended makes no record | ✗ `NoRedundantLookup` | the residual: with no record the next turn has the B0 shape and may look it up again (16 steps) |
-| `ow_sync_streamCut_rest` | `STREAMCUT`, every other property | holds | 20,324 states |
-| `ow_action` | `SOURCE = "action"`: a sync action tool (set_volume, switch_voice, remember; `tools.Tool.answers` unset); its confirmation tells the caller nothing they lack (`heard` from the start) and makes no record | holds, every safety property | 8,838 states |
+| `ow_sync_streamCut_rest` | `STREAMCUT`, every other property | holds | 22,708 states |
+| `ow_sync_late_rest` | `LATE`: the readers' bounded wait (`SETTLE_WAIT_S`) runs out before a cut telling's settle (`GiveUp`); every other property | holds | 35,668 states |
+| `ow_sync_late` | the same, `NoRedundantLookup` | ✗ `NoRedundantLookup` | the bounded wait's residual: the caller's turn after the cut renders before the record exists, with the cut prefix and no note (the B0 shape) (17 steps) |
+| `ow_sync_lateReplace` | the late settle makes its record whatever the book holds (c8e046a's `_cut_answer`) | ✗ `NoRunAfterHeard` | the post-tool telling is cut, its settle late; the caller's turn tells it in full; the late settle makes the record anyway and the lull re-offers it (21 steps: the second review's finding 4 (a)) |
+| `ow_sync_lateReplace_reoffer` | the same | ✗ `OneReoffer` | the caller's turn is cut too and makes the record itself; its re-offer goes; the late settle replaces the record, its counter reset, and a second re-offer goes (28 steps: finding 4 (b)) |
+| `ow_sync_lateNoEvidence` | a reply rendered with the fresh answer is no evidence for the record made of it since | ✗ `NoRunAfterHeard` | the late settle makes the record while the caller's turn is rendered; that turn tells it in full, which closes nothing, and the lull re-offers it (23 steps) |
+| `ow_action` | `SOURCE = "action"`: a sync action tool (set_volume, switch_voice, remember; `tools.Tool.answers` unset); its confirmation tells the caller nothing they lack (`heard` from the start) and makes no record | holds, every safety property | 8,722 states |
 | `ow_action_owed` | an action's cut confirmation made a record (5327336: every post-tool reply was an answer) | ✗ `NoRunAfterHeard` | "Okay, I've turned the volume down to five" cut at "Okay, I've"; the lull re-offers it (16 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
 | `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 34,884 states |
@@ -473,6 +478,29 @@ The model was written to lead the design, and it found these:
    and the answer is still fresh; cut mid-stream, its text is a fragment (`STREAMCUT`: no
    record, and a possible re-lookup, the residual). **An action's confirmation** (volume,
    voice, remember) is never owed: tools opt in (`Tool.answers`).
+13. **Who tells it, read from the book** (the second #204 review, 2026-10-19;
+   `ow_sync_lateReplace`, `ow_sync_lateReplace_reoffer`, `ow_sync_lateNoEvidence`).
+   Finding 12's rule read "told" off the context by matching each reply against the raw
+   tool result. Search results are titles and snippets that often do not hold the answer
+   (the 10-18 weather search had no forecast values), so real tellings made no record and
+   a told result stayed fresh, re-scanned at every render. The rule is now the book's own:
+   an answer result is FRESH from the first render that sees it (`Owed.noted`) until a
+   reply rendered with it tells it -- played through: TOLD; cut with its stream ended and
+   its audio played: the record, keyed by its tool_call_ids (`Record.ids`) -- and a reply
+   that does not tell it leaves it fresh ("Understood -- let me know when you'd like me to
+   continue." after "Hold on.", ctx-172525). Whether a reply tells it is decided by
+   POSITION where position can: the post-tool reply that calls nothing is the telling
+   (`Say`: a clarifying question in its place is what is owed instead, and is recorded as
+   such). Where it cannot -- the caller's own turn reading the fresh result, and a reply
+   that calls again ("There's a Toy Joy at 5501 Burnet. Let me get their hours." against
+   "Let me get their hours.") -- by the reply's OWN words (`owed.tells`, below), never the
+   result's. The record is made at the cut's settle, which re-reads the live book
+   (`LateSettle`): a result told meanwhile makes none, an existing record is never
+   replaced (nor its re-offer reset), and a reply rendered with the fresh answer is
+   evidence for the record made of it since. A tool round put out by a reply whose
+   request carried the note is a re-lookup of the noted records (`Owed.called`): its
+   result is theirs, not a fresh answer with the caller's interjection ("Hold on, hold
+   on.", ctx-172607) as its question.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a
@@ -505,12 +533,21 @@ ends.
   pts-exact heard text" is taken to mean the caller heard every item. Two partial
   tellings that together cover the items count as not heard. The rule errs the same way:
   towards owed, which costs a mention.
-- **The sync telling premise.** `Say`'s "tell" for a fresh answer is, in the code, a
-  reply whose text names at least two of the result's terms (`owed.names`, the close
-  rule's two-term floor read against the result): a deferral, a clarifying question
-  that names nothing, a line before a call are not tellings. A one-term paraphrase ("It'll
-  be sunny.") reads as no telling, which errs towards no record: the B0 re-lookup, a
-  cost. `test_owed.py` holds the cases.
+- **The sync telling premise.** `Say`'s "tell" is exact. In the code the post-tool reply
+  that calls nothing is a telling by position; where position cannot decide (the
+  caller's own turn reading a fresh result; a reply that calls again), a reply tells it
+  when its own words carry at least two terms outside the caller's question and the
+  common words (`owed.tells`; for a reply that calls again, its words before the last
+  sentence, the line before the call). A deferral ("Sure, take your time.",
+  "Understood -- let me know when you'd like me to continue.") and a one-sentence line
+  before a call carry none; the live weather and toy tellings carry three or more. It
+  errs both ways: a one-term telling ("It'll be sunny.") is no telling (cut, no record:
+  the B0 re-lookup), and a substantive non-telling with no call ("I'm still pulling the
+  details.") is one (cut: a record of it). `test_owed.py` holds the cases.
+- **The request.** A sync record's question is the latest caller words before its tool
+  round; a round put out under the note is the noted records'. A re-lookup put out by
+  a reply that did not carry the note (no record was made of the first telling: a
+  stream cut, a missed telling) takes the interjection before it as its question.
 - **A chain's second answer.** A sync chain has at most two rounds, and the record is
   the first answer's: when it was told before the second call, the second result's
   answer is another record, which the model does not hold. `STREAMCUT` is off in the
