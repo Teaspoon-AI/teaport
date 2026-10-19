@@ -217,6 +217,10 @@ answer. The trigger was retired as "already given", and "I'm ready." got a secon
 | the **note** | rendered into every request from the record while it is owed, never stored | `owed.render(messages, records, purpose)`, called by the render hook in `BoundedOpenAILLMService._open_stream` through `Owed.view` |
 | the **evidence** | the caller heard every item of the outcome; for an item with no terms, an uncut telling run | `Record.closes_on`, fed by the settle feed (`Owed.settle`) |
 
+A sync tool's answer (web_search, web_fetch) joins the same book as a record when a
+telling of it is cut before the caller heard it (#204); how it is filed is
+`OwedAnswers.tla`, below. Its record's life from there is this model's.
+
 The brain speaks unprompted at most twice per record. It asks one **run** when the answer
 lands, and one **re-offer** at a long lull (`TEAPORT_REOFFER_AFTER_QUIET_S`, 10 s) once
 the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
@@ -233,7 +237,7 @@ the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
 | `ToolResult` | pipecat's `_maybe_push_context_after_function_result`, as in `UserTurn.tla`'s POSTTOOL. The gate keeps the ids of the calls out (`_calls_out`, `gtool`): an id is added by its `FunctionCallInProgressFrame` unless it has already settled or been cancelled (`Mark`: the frame is uninterruptible and can come after the barge-in, `staleFlag`), and removed by its result or its `FunctionCallCancelFrame`. A call out keeps the window shut although a line before it ended `_turn` (`tend`, `endClearsTool`) |
 | `Issue` | the LLM takes a caller commit or a post-tool answer; `_open_stream` asks `Owed.view` (which waits for every pending settle) and sends the view. Only then is a commit no longer "still to be rendered" (`request_rendered`), so a consult landing during that wait leaves the note to it. The commit passed `HeardContextCorrector` first; `sp` is the speculative reply, opened through `_open_stream` directly (`speculate.py`), its noted keys carried on the stream to the commit that adopts it |
 | `Say`, `Played` | the completion and its playout. `stay_silent` is offered only in the re-offer's view, and `run_function_calls` consumes it: no call, no result in the context, a `RunSilentFrame` to end the gate's turn (only with no other call out) |
-| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled). `made` (Sync) and `LateSettle`: `Owed.settle` → `Owed._resolve` → `Owed._cut_answer`. `carry` is `Reply.fresh`: the sync answers FRESH in the book (`Owed._answers`, per tool_call_id, every result a render has not seen filed by `owed.new_results` to its question, `Owed._question`), read again LIVE at the settle and grouped by question; a reply rendered with one is evidence for the record made of it since. A telling (the post-tool reply that calls nothing, by position, of its own round's answer; otherwise `owed.tells`) heard in full marks them told; cut with audio played after its stream ended (the ledger's `text`), it makes the record (`Record.ids`), its request the round's question (`""`: no record). A round whose words ask nothing beyond an owed record's question is its re-lookup (`Owed._question`; `OwedAnswers.tla`). A cut before the stream ended logs `OWED: ... (STREAMCUT)`. Only tools with `Tool.answers` (`tools.ANSWER_TOOLS`) |
+| `TurnStart` | `UserStartedSpeakingFrame` at the gate (the waiting run dropped, `on_caller_turn` → `Owed.caller_turn` arms the re-offer) and the `InterruptionFrame` (the ledger charts the cut, the gate drops the held answer, the reset drops what is queued, a sync call is cancelled) |
 | `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame` |
 | `Lull` | `Owed._lull_loop`: every reply settled, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
 | `Commit` | the user aggregator's commit (an empty final commits nothing) |
@@ -353,21 +357,6 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 20,566 states |
 | `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 16,314 states |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
-| `ow_sync` | `SOURCE = "sync"` (#204): no consult; an answer tool's result told by a reply -- the post-tool one, or the caller's turn that dropped it -- and a cut of a telling before every item was heard makes the record at its settle (no run). Chains of two tool rounds (bare, after a line, after a telling), deferrals | holds, every safety property | 15,800 states |
-| `ow_sync_live` | the same under `FairSpec`, `MaxSpeech = 4` | holds `OwedResolves` | 9,666 states |
-| `ow_sync_noCutRecord` | no record from a cut sync answer (the code before #204's extension) | ✗ `NoRedundantLookup` | the caller asks, the tool answers, the post-tool reply is cut mid-answer; the caller's next turn has only the cut prefix and the result, and the model looks it up again (18 steps; live 2026-10-18 17:25, the weather re-fetched) |
-| `ow_sync_postOnly` | only the post-tool request carries the answer (5327336: `Reply.asked` set by the frame's direction) | ✗ `NoRedundantLookup` | the result lands under the caller's speech, their turn drops the held post-tool request, the turn's reply reads the fresh result and tells it, is cut, makes no record; the next turn looks it up again (20 steps: the #204 review's trace) |
-| `ow_sync_callNoRecord` | a telling that also calls again makes no record (5327336: `not reply.calls`) | ✗ `NoRedundantLookup` | the post-tool reply tells the answer and calls web_fetch for more; the caller cuts it mid-answer (the call cancelled), and the next turn looks it up again (16 steps) |
-| `ow_sync_partialRecord` | a record from whatever had streamed at the cut (5327336: the ledger's parts so far), `STREAMCUT` | ✗ `ClosedOnEvidence` | a telling is cut while still streaming; its fragment is the record's outcome ("everything that result contains"), and the next turn's telling of part of the answer closes it (18 steps) |
-| `ow_sync_streamCut` | the design under `STREAMCUT`: a telling cut before its stream ended makes no record | ✗ `NoRedundantLookup` | the residual: with no record the next turn has the B0 shape and may look it up again (16 steps) |
-| `ow_sync_streamCut_rest` | `STREAMCUT`, every other property | holds | 22,708 states |
-| `ow_sync_late_rest` | `LATE`: the readers' bounded wait (`SETTLE_WAIT_S`) runs out before a cut telling's settle (`GiveUp`); every other property | holds | 35,668 states |
-| `ow_sync_late` | the same, `NoRedundantLookup` | ✗ `NoRedundantLookup` | the bounded wait's residual: the caller's turn after the cut renders before the record exists, with the cut prefix and no note (the B0 shape) (17 steps) |
-| `ow_sync_lateReplace` | the late settle makes its record whatever the book holds (c8e046a's `_cut_answer`) | ✗ `NoRunAfterHeard` | the post-tool telling is cut, its settle late; the caller's turn tells it in full; the late settle makes the record anyway and the lull re-offers it (21 steps: the second review's finding 4 (a)) |
-| `ow_sync_lateReplace_reoffer` | the same | ✗ `OneReoffer` | the caller's turn is cut too and makes the record itself; its re-offer goes; the late settle replaces the record, its counter reset, and a second re-offer goes (28 steps: finding 4 (b)) |
-| `ow_sync_lateNoEvidence` | a reply rendered with the fresh answer is no evidence for the record made of it since | ✗ `NoRunAfterHeard` | the late settle makes the record while the caller's turn is rendered; that turn tells it in full, which closes nothing, and the lull re-offers it (23 steps) |
-| `ow_action` | `SOURCE = "action"`: a sync action tool (set_volume, switch_voice, remember; `tools.Tool.answers` unset); its confirmation tells the caller nothing they lack (`heard` from the start) and makes no record | holds, every safety property | 8,722 states |
-| `ow_action_owed` | an action's cut confirmation made a record (5327336: every post-tool reply was an answer) | ✗ `NoRunAfterHeard` | "Okay, I've turned the volume down to five" cut at "Okay, I've"; the lull re-offers it (16 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
 | `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 34,884 states |
 
@@ -451,63 +440,6 @@ The model was written to lead the design, and it found these:
    whose ending is the evidence: if it registers none of the keys, a full telling never
    closes the record, and the lull tells it again. The code read the keys off the wrong
    object (the speculation's wrapper, not its stream) until Fable's final review.
-11. **A sync tool's answer cut before it was heard was owed to nobody** (`ow_sync_noCutRecord`,
-   #204). On the box on 2026-10-18 the calls used only web_search and web_fetch: the
-   weather answer was cut at "Tomorrow in Austin looks" by "Hold on, hold on.", and the
-   next turn re-fetched it and told it with new numbers; the toy-store answer was cut at
-   "There's a Toy Joy store at", and after "Got it, pausing." the call sat silent for
-   64 s. The replay (spec_sync, 20 trials each): with the note, 19/20 wait at "hold on"
-   (10/20 re-fetched without it), 20/20 tell at "go ahead" (20/20 re-fetched without),
-   the re-offer after "Got it, pausing." stays silent 20/20. Fix (`SOURCE = "sync"`): a
-   post-tool reply cut before every item was heard makes the record -- the reply's full
-   text as the outcome, the caller's words of the turn that called the tool as the
-   request (the query as the request waited 15/20, the caller's words 19/20) -- with no
-   run, since the caller's turn that cut it carries the note, and the one re-offer
-   armed.
-12. **The sync record, reviewed** (the #204 review, 2026-10-19; `ow_sync_postOnly`,
-   `ow_sync_callNoRecord`, `ow_sync_partialRecord`, `ow_action_owed`, each the code before
-   it). The first sync model had one tool round, a post-tool reply that was always the
-   answer, and a record made in the cut step from the whole answer. The code differed in
-   four ways, each now in the model and fixed. **Who tells it** is read from the context
-   (as first built, by matching replies against the result: finding 13 replaced that), not
-   from the frame's direction: a caller turn that dropped the held post-tool request reads
-   the fresh result and tells it, and its cut is owed too. **A telling that calls again**
-   ("There's a Toy Joy at 5501 Burnet. Let me get their hours." + web_fetch, the chain
-   the live incident used) is still a telling. **Only a reply whose stream ended and
-   whose audio played** makes the record: cut before its audio, the corrector removes it
-   and the answer is still fresh; cut mid-stream, its text is a fragment (`STREAMCUT`: no
-   record, and a possible re-lookup, the residual). **An action's confirmation** (volume,
-   voice, remember) is never owed: tools opt in (`Tool.answers`).
-13. **Who tells it, read from the book** (the second #204 review, 2026-10-19;
-   `ow_sync_lateReplace`, `ow_sync_lateReplace_reoffer`, `ow_sync_lateNoEvidence`).
-   Finding 12's rule read "told" off the context by matching each reply against the raw
-   tool result. Search results are titles and snippets that often do not hold the answer
-   (the 10-18 weather search had no forecast values), so real tellings made no record and
-   a told result stayed fresh, re-scanned at every render. The rule is now the book's own:
-   an answer result is FRESH from the first render that sees it (`Owed.noted`) until a
-   reply rendered with it tells it -- played through: TOLD; cut with its stream ended and
-   its audio played: the record, keyed by its tool_call_ids (`Record.ids`) -- and a reply
-   that does not tell it leaves it fresh ("Understood -- let me know when you'd like me to
-   continue." after "Hold on.", ctx-172525). Whether a reply tells it is decided by
-   POSITION where position can: the post-tool reply that calls nothing is the telling
-   (`Say`: a clarifying question in its place is what is owed instead, and is recorded as
-   such). Where it cannot -- the caller's own turn reading the fresh result, and a reply
-   that calls again ("There's a Toy Joy at 5501 Burnet. Let me get their hours." against
-   "Let me get their hours.") -- by the reply's OWN words (`owed.tells`, below), never the
-   result's. The record is made at the cut's settle, which re-reads the live book
-   (`LateSettle`): a result told meanwhile makes none, an existing record is never
-   replaced (nor its re-offer reset), and a reply rendered with the fresh answer is
-   evidence for the record made of it since. A tool round whose words ask nothing
-   beyond an owed record's question is its re-lookup: its result is that record's, not
-   a fresh answer with the caller's interjection ("Hold on, hold on.", ctx-172607) as
-   its question (as first built, every round put out under the note was: the third
-   review's case C, `OwedAnswers.tla` below).
-14. **Two questions at once** (the third #204 review; `OwedAnswers.tla`). A new question
-   asked while a record is owed is its own (`oa_relookAll`); the post-tool position
-   tells only its own round's answer, and an older fresh answer only a reply about its
-   question (`oa_positionAll`); the carried answers are grouped by question
-   (`oa_oneRequest`). A result is filed when a render first sees it, wherever pipecat
-   put the line before its call, so the book reads no context tail.
 
 Not a finding, but a simplification the model allows: speculation's `take()` comparing a
 records version (§2) is redundant here. `Land` rewrites the placeholder, which is a
@@ -540,41 +472,6 @@ ends.
   pts-exact heard text" is taken to mean the caller heard every item. Two partial
   tellings that together cover the items count as not heard. The rule errs the same way:
   towards owed, which costs a mention.
-- **The sync telling premise.** `Say`'s "tell" is exact (here and in `OwedAnswers.tla`,
-  where a reply tells one question or another). In the code the post-tool reply that
-  calls nothing tells its own round's answer by position; anywhere else -- the caller's
-  own turn reading a fresh result, a reply that calls again, an older fresh answer a
-  later reply carries -- a reply tells a question when it is about that question's
-  request (a non-common word in common, `Record.about`'s reading) and carries two terms
-  of its own outside it and the common words (`owed.tells`; a reply that calls again is
-  read without its last sentence, the line before the call). The residuals
-  (`test_owed.py`, the third review's table):
-  - **one-term tellings** ("It'll be sunny.", "Seventy-two.", "Canberra.", "Yes, it's
-    open.") are no telling: cut, no record (the B0 re-lookup, a cost); heard, the answer
-    stays fresh -- it **lingers**, carried by later replies until one about its question
-    tells it, with the session (nothing expires it);
-  - **told on hearing**: a non-telling about the question with two terms of its own
-    ("Got it -- I'll keep the Austin forecast handy for when you're ready.", "Which
-    Austin -- Texas or Minnesota?") reads as one: cut, a record of it; heard in full,
-    the answer is filed as told, and no note or record will carry it (the result stays
-    in the context).
-- **The request.** A sync record's question is the caller's words that started its
-  round (the latest user message before the result; "" when a notice or a cue did:
-  nobody asked, no record). A round whose words ask nothing beyond an owed record's
-  question ("Hold on, hold on.", or the question again) is that record's re-lookup:
-  its result is no fresh answer of its own -- under several owed records, any one's
-  (`Owed._question`). Words that ask nothing beyond a still-fresh answer's question
-  join it (one question, one group). The lexical premise again: a new question put in
-  the record's own words ("and the weather in Austin the day after?") reads as a
-  re-lookup, and its cut telling is evidence for the old record, not a record of its
-  own; so does vague consent to a new offer while a record is owed ("Sure, go ahead."
-  to "Want me to check their hours?": the question is in the bot's offer, not in the
-  caller's words), and two rounds started by the same words that carry nothing else.
-- **A chain's second answer.** A sync chain has at most two rounds, and the record is
-  the first answer's: when it was told before the second call, the second result's
-  answer is another record, which the model does not hold. `STREAMCUT` is off in the
-  design rows (the premise: a short spoken answer streams to its end before its first
-  audio).
 - **One request and reply at a time.** pipecat's LLM runs ahead of playout. The
   serialization is sound for runs, because a run's window waits for the bot to be quiet.
   Caller and post-tool requests follow a cut or a tool call with no audio, so no telling
@@ -596,36 +493,85 @@ ends.
   the TTS holds a text-less completion's End, which is why a silent run tells the gate
   itself (`check_a_text_less_completions_end_is_held_by_the_tts`).
 
-## `OwedAnswers.tla` — the sync answers' book, two answers to two questions (#204)
+## `OwedAnswers.tla` — how a sync tool's answer becomes owed (#204)
 
-`Owed.tla` holds one answer, so it cannot ask which answer a reply tells when two are
-about: the third #204 review's two main defects were both a second question asked
-while the first was owed or still fresh. This module is that question alone, on a
-reduced action set with none of the door: the caller asks question 1, then 2 (each
-round started by the caller's words or by a notice), an action tool's round may come
-between, the post-tool request may be dropped by the caller's turn, replies tell a
-question, defer, say something else, confirm the action, or -- a telling cut with no
-note for it -- look it up again. owed.py's book files each answer `fresh`, `told`, a
-record, `held` (another record's re-lookup) or `gone` (nobody asked).
+A consult's answer lands into a record (`Owed.land`). A sync answer tool's result
+(`tools.Tool.answers`: web_search, web_fetch, search_memory, get_current_time, ...) is
+answered in the reply after it, and becomes a record only when a telling of it is cut
+before the caller heard it (#204: on 2026-10-18 the weather and toy-store answers were
+cut at "Tomorrow in Austin looks" and "There's a Toy Joy store at", and the next turns
+re-fetched or sat silent). This module is that filing alone (`Owed.noted`,
+`Owed._resolve`, `Owed._cut_answer`), with two questions, an action tool's round,
+chains, the late settle and the stream cut, on a reduced action set: no gate, no runs.
+
+Four review rounds tried to read *which* reply tells an answer from its words (against
+the result, then the reply's own terms, then whether it was about the question); each
+reading missed tellings or took the wrong ones, and the rules piled up. The rule now is
+position only:
+
+- **The answer's first reply settles it.** The first reply rendered with a result, of
+  whatever kind -- the post-tool reply, or the caller's turn that dropped it -- settles
+  it if it calls nothing and plays audio: heard in full, told; cut after its stream
+  ended, a record of its whole text (unless the heard prefix already carries the
+  answer), to the caller's words that started the round ("" when a notice or a cue
+  did: nobody asked, no record).
+- **One more reply, then history.** A first reply that did not settle it -- no audio,
+  cut mid-stream, a line before another call -- leaves it one more. Then it is history,
+  as before #204; a new round (another question, an action) ends it at once. The
+  result stays in the context either way.
+- **The re-lookup, narrowly.** A round is an owed record's re-lookup -- no answer of its
+  own -- only when it starts in the caller's turn right after that record's cut, before
+  any reply played through, and the caller's words carry no terms of their own ("Hold
+  on, hold on." and web_fetch, 2026-10-18 17:26). Every other round is its own question.
 
 | property | meaning |
 |---|---|
 | `ToldOnHearing` | an answer filed as told was heard in full |
-| `RecordIsOwn` | a record's outcome is a telling of its own question |
-| `NoRedundantLookup` | no answer is looked up again (a cut telling with no record: B0) |
+| `RecordIsOwn` | a record's outcome is a whole telling of its own question |
+| `NoRedundantLookup` | no answer the model had is looked up again (a cut telling with no record: B0) |
+| `NoLaterRoundFiling` | a newer round's post-tool reply never files an older question |
+| `OwedUnheard` | no record is owed for an answer the caller heard (made after they did) |
+| `NoConfirmationOwed` | an action's confirmation is never owed |
+
+`LOSE` is the caller moving on before the answer's position settled it: a deferral or
+another question's answer heard in its place, both replies unheard, a new round started
+over it, vague words right after a cut that ask something new. The design rows assume
+it away (the position premise: the reply in the answer's position tells it), and check
+what the rule guarantees then; `oa_lose` checks what it keeps anyway.
 
 | row | what | verdict | the counterexample, or the state count |
 |---|---|---|---|
-| `oa_design` | each round its own question (`Owed._question`); the post-tool position tells only the answer new at its render; any other answer only a telling of it (`owed.tells`); carried answers grouped by question | holds | 4,776 states |
-| `oa_relookAll` | ab7dd29's `Owed.called`: every round put out under the note is the noted record's | ✗ `NoRedundantLookup` | question 1's telling is cut (owed); question 2's round is filed as its re-lookup; question 2's telling is cut, no record, and it is looked up again (13 steps: the review's case C) |
-| `oa_positionAll` | ab7dd29's `_resolve`: the position rule on every fresh answer the reply carries | ✗ `RecordIsOwn` | question 1's post-tool request is dropped and the caller's turn defers; question 2's telling is cut, and both are recorded with it (10 steps: cases A, B) |
-| `oa_positionAll_told` | the same | ✗ `ToldOnHearing` | the same, heard in full: question 1 filed as told |
-| `oa_oneRequest` | ab7dd29's `_resolve`: the carried answers take the first one's question | ✗ `NoRedundantLookup` | a notice's round lingers fresh; the caller's question 2 is cut and filed under the notice's empty question: no record (13 steps: finding 4) |
+| `oa_design` | the rule; vague consent ("Sure, go ahead.") to a new round while a record is owed is its own question | holds, every property | 4,921 states |
+| `oa_lose` | `LOSE` | holds `NoLaterRoundFiling`, `OwedUnheard`, `NoConfirmationOwed` | 33,999 states |
+| `oa_lose_told` | `LOSE`: the accepted degradation to before #204 | ✗ `ToldOnHearing` | question 2's post-tool request is dropped; the caller's turn is answered with question 1; question 2 is filed as told, unheard (8 steps). A heard deferral does the same |
+| `oa_streamCut_rest` | `STREAMCUT`: a telling cut mid-stream spends a reply | holds, all but `NoRedundantLookup` | 7,085 states |
+| `oa_streamCut` | the same | ✗ `NoRedundantLookup` | the residual: both replies end unsettled (unheard, then cut mid-stream), no record, the B0 shape (12 steps) |
+| `oa_late` | `LATE`: the bounded settle wait runs out; the settle re-reads the live book | holds, every property | 10,531 states |
+| `oa_noCutRecord` | no record from a cut answer (before #204's extension) | ✗ `NoRedundantLookup` | the telling is cut; the next turn looks it up again (9 steps; W-goahead 20/20) |
+| `oa_postOnly` | only the post-tool request carries the answer (5327336) | ✗ `NoRedundantLookup` | the caller's turn that dropped it tells it and is cut: no record (9 steps) |
+| `oa_noSecondChance` | the first reply only | ✗ `NoRedundantLookup` | the post-tool reply is unheard; the caller's turn tells it, cut: no record (12 steps) |
+| `oa_partialRecord` | a record from a telling cut mid-stream (5327336) | ✗ `RecordIsOwn` | its fragment is the record (5 steps) |
+| `oa_callRecords` | a reply that calls again settles | ✗ `RecordIsOwn` | "Let me get their hours." + a call, cut: a record of the line (5 steps) |
+| `oa_actionOwed` | an action's confirmation is owed (5327336) | ✗ `NoConfirmationOwed` | "Okay, I've turned the volume down" cut (5 steps) |
+| `oa_keepOpen` | a new round leaves an older answer open (ab7dd29's lingering) | ✗ `NoLaterRoundFiling` | question 1's post-tool request is dropped by the caller's next question; question 2's post-tool reply files both (7 steps: the third review's cases A, C) |
+| `oa_relookAll` | every round under the note is the record's re-lookup (ab7dd29) | ✗ `NoRedundantLookup` | a new question while a record is owed: its cut telling, no record (13 steps) |
+| `oa_vagueConsent` | words with no terms are a re-lookup whenever a record is owed (9b602f8) | ✗ `NoRedundantLookup` | a record is owed; "Sure, go ahead." starts a new round, filed as a re-lookup; its cut telling, no record (13 steps: the fourth review's trace) |
+| `oa_lateReplace` | the late settle makes its record whatever the book holds (c8e046a) | ✗ `OwedUnheard` | the caller's turn told it in full meanwhile (12 steps) |
+| `oa_lateNoEvidence` | a reply rendered with the open answer is no evidence for the record made of it since | ✗ `OwedUnheard` | (12 steps) |
 
-Known limits: two questions and one action round; one reply at a time; no runs, notes
-on the wire, or late settles (all `Owed.tla`'s); the lexical premise as in `Owed.tla`'s
-limits ("tell" is exact; the re-lookup reading of a round's words is the code's,
-`test_owed.py`).
+**The degradations, accepted** (`LOSE`, `STREAMCUT`; `test_owed.py` pins each): a
+deferral or another answer heard in the answer's position counts as told, and cut, is
+recorded as it stands; a telling that also calls again ("There's a Toy Joy at 5501
+Burnet. Let me get their hours." + web_fetch), cut, is no record; both replies unheard
+or cut mid-stream leave no record; vague words right after a cut that start a new
+question are taken for the re-lookup (one turn). Each is the behaviour before #204.
+
+**What neither model covers.** A re-lookup round's own answer against the old record
+(its telling is evidence for the record, never a record of its own; whether that
+answer and the old one agree is the model's, not the book's). Two records under the
+gate's timing (`Owed.tla` holds one; this module has no gate, runs or re-offers).
+`STREAMCUT` with two answers in flight (here one reply is in flight at a time). The
+`LATE` settle's re-offer counter (`Owed.tla`'s `OneReoffer` with one record).
 
 ## `SttSlot.tla` — arbitration of the engine's single STT slot
 

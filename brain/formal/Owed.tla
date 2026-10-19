@@ -128,62 +128,6 @@
 (*   failure is one statement, told whole or not at all (no "part"), and    *)
 (*   the telling is the reply (a question after it, cut, reads owed).       *)
 (*                                                                          *)
-(* SOURCE: where the record comes from.                                    *)
-(*   "consult" -- an async consult lands (Land): the model above.           *)
-(*   "sync"    -- no consult: an ANSWER tool's result (web_search,          *)
-(*                web_fetch: tools.Tool.answers) is told by a reply, and a  *)
-(*                CUT of a telling before every item was heard makes the    *)
-(*                record (#204, 2026-10-18: the weather and toy-store       *)
-(*                calls). No run: the caller's turn that cut it carries the *)
-(*                note. The context's own state is `sctx`: the result fresh *)
-(*                (in the context, untold), told (a telling heard in full   *)
-(*                is in the history), or cut (a telling's heard prefix).    *)
-(*                WHICH reply tells it is the BOOK's: the answer is fresh   *)
-(*                (`carry`) from the first render that sees it until a      *)
-(*                telling is heard in full or recorded -- whoever asked:    *)
-(*                the post-tool reply, or -- the post-tool request dropped  *)
-(*                by a caller turn (TurnStart) -- that turn's reply, which  *)
-(*                reads the fresh result. The record is made at the cut's   *)
-(*                settle, which re-reads the live book (LateSettle; LATE:   *)
-(*                the readers' bounded wait runs out first). Any            *)
-(*                reply may call again (a CHAIN, web_search then web_fetch, *)
-(*                at most two rounds here): bare, after a line ("Let me get *)
-(*                their hours."), or after telling it ("There's a Toy Joy   *)
-(*                at 5501 Burnet. Let me get their hours.").                *)
-(*   "action"  -- a sync ACTION tool (set_volume, switch_voice, remember):  *)
-(*                its reply confirms what the caller asked for, which is    *)
-(*                nothing they still need to hear -- the ghost `heard`      *)
-(*                holds from the start, and no record is made.              *)
-(*                                                                          *)
-(* STREAMCUT: a cut may land while the telling's stream is still going and  *)
-(*   its first audio already plays (a long reply: the LLM streams past the  *)
-(*   TTS's first clause). The design makes no record then: the text as far  *)
-(*   as it got is not the answer (`partialRecord`). FALSE in the design     *)
-(*   rows: the premise that a one-or-two-sentence answer streams to its end *)
-(*   before its first audio; TRUE, the residual is a re-lookup (B0), the    *)
-(*   cost `ow_sync_streamCut` shows -- never a lost or a repeated answer    *)
-(*   (`ow_sync_streamCut_rest`).                                            *)
-(*                                                                          *)
-(* The sync record's mutations (MUT), each the code before the #204 review: *)
-(*   noCutRecord   -- no record from a cut answer: the caller's next turn   *)
-(*                    has only the cut prefix and the result, and the model *)
-(*                    looks it up again (W-goahead 20/20 re-fetch, #204).   *)
-(*   partialRecord -- a record from whatever had streamed at the cut: a     *)
-(*                    fragment of the answer, rendered as "everything that  *)
-(*                    result contains", closed by a telling of the fragment.*)
-(*   actionOwed    -- an action's cut confirmation is a record too, and its *)
-(*                    re-offer repeats what the caller asked for.           *)
-(*   postOnly      -- only the post-tool request carries the answer (the    *)
-(*                    frame's direction decides): a caller turn's telling   *)
-(*                    of the fresh result, cut, makes no record.            *)
-(*   callNoRecord  -- a telling that also put another call out makes no     *)
-(*                    record when cut (`not reply.calls`).                  *)
-(*   lateReplace   -- the cut's late settle makes its record whatever the   *)
-(*                    book holds (c8e046a): after a full telling, or over   *)
-(*                    another reply's record, its re-offer counter reset.   *)
-(*   lateNoEvidence -- a reply rendered with the fresh answer is no         *)
-(*                    evidence for the record made of it after its render.  *)
-(*                                                                          *)
 (* adoptDropsKeys (MUT) -- the commit that adopts a speculative reply's     *)
 (*   stream does not register the keys its note carried (the note was in    *)
 (*   the request, rendered in the speculation's own task): its telling is   *)
@@ -198,20 +142,13 @@ CONSTANTS MaxSpeech,   \* bound on the caller's bursts of speech (VAD starts)
           REOFFER,     \* "cutOrTurn" | "anyMiss"
           RUNCLOSE,    \* "uncut" | "terms" | "about" (see the header)
           OUTCOME,     \* "items" | "failure" (see the header)
-          SOURCE,      \* "consult" | "sync" | "action" (see the header)
           FLAKY,       \* a request carrying the note may still re-look-up
           PARTIAL,     \* a telling run may carry only some of the items
-          SILENT,      \* a run's completion may produce no audio at all
-          STREAMCUT,   \* a cut may land mid-stream with audio playing (see the header)
-          LATE         \* the readers' bounded wait may run out before a sync cut's settle
+          SILENT       \* a run's completion may produce no audio at all
 
 Mut(m) == m \in MUT
 Runs   == {"run", "reoffer"}        \* the brain's own, unprompted requests
 Opt(b, x) == IF b THEN {x} ELSE {}
-Sync   == SOURCE \in {"sync", "action"}           \* a sync tool round, no consult
-Calls  == {"tool", "texttool", "telltool"}        \* a reply that puts a sync call out
-Tells  == {"tell", "part", "telltool"}            \* a reply that tells the answer
-MaxRounds == 2                                    \* sync tool rounds (a chain of two)
 
 VARIABLES
     \* --- the record (owed.py) ---
@@ -219,12 +156,6 @@ VARIABLES
     fed,          \* the settle feed: "close" = a reply that closes the record has
                   \*   ended and owed.py has not been told yet; "none" = settled
     uncut,        \* countSettle only: noted replies played through, up to 2
-    sctx,         \* Sync: the tool's answer in the context with no record --
-                  \*   "none" (no result yet) | "fresh" | "told" | "cut" (see the header)
-    frag,         \* partialRecord only: the record's outcome is a fragment of the answer
-    late,         \* Sync: a cut telling's settle, still to come -- the record it makes:
-                  \*   "none" | "rec" | "frag" (frag: partialRecord's fragment)
-    gone,         \* LATE: the readers' wait for that settle ran out (SETTLE_WAIT_S)
     missed,       \* the re-offer is armed (REOFFER says by what)
     reoffers,     \* re-offer runs asked (a held-then-dropped one counts)
     \* --- the ghosts ---
@@ -252,7 +183,6 @@ VARIABLES
     gtool,        \* the gate's own record of a call out (the design: its ids, an id
                   \*   added by its in-progress frame unless already settled or
                   \*   cancelled; staleFlag: one flag)
-    rounds,       \* Sync: tool rounds put out so far (MaxRounds bounds a chain)
     \* --- the request in flight and its reply (one at a time) ---
     req,          \* "none" | "caller" | "post" | "run" | "reoffer"
     rst,          \* the record's state when the request was rendered
@@ -260,9 +190,6 @@ VARIABLES
     nreg,         \* ...and the reply is registered as carrying it: its evidence counts
     say,          \* what the model chose: tell | part | defer | other | lookup
     ph,           \* "none" | "gen" (asked, no output yet) | "play" (audio playing)
-    sdone,        \* the reply's stream has ended (FALSE only while it plays, STREAMCUT)
-    carry,        \* Sync: the request was rendered with the answer fresh in the BOOK (no
-                  \*   record of it, not told): owed.Owed.noted's Reply.fresh
     ended,        \* the session ended (the client left, the call hung up)
     \* --- monitors ---
     runUnder,     \* a run went to the LLM while caller speech was pending
@@ -272,15 +199,13 @@ VARIABLES
     noNote,       \* a request rendered while owed went without the note
     staleHeard,   \* a request carried "NOT heard" to a caller who had heard it
     relook,       \* the model looked the answer up again although it had it
-    offers,       \* re-offers asked, ever (OneReoffer; a replaced record's reset counter
-                  \*   does not reset this)
     got           \* what the caller heard of the last reply that ended (for traces)
 
-rec   == <<st, fed, uncut, missed, reoffers, sctx, frag, late, gone>>
+rec   == <<st, fed, uncut, missed, reoffers>>
 line  == <<vad, pend, turn, speech>>
-door  == <<q, hPost, rloc, rk, tres, tend, mark, gtool, rounds>>
-reply == <<req, rst, noted, nreg, say, ph, sdone, carry>>
-mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, got, offers>>
+door  == <<q, hPost, rloc, rk, tres, tend, mark, gtool>>
+reply == <<req, rst, noted, nreg, say, ph>>
+mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, got>>
 vars  == <<rec, heard, repeat, line, door, reply, ended, mons>>
 
 \* What a request rendered now carries. The design renders the note from the record on
@@ -288,21 +213,13 @@ vars  == <<rec, heard, repeat, line, door, reply, ended, mons>>
 \* landing, where it stays.
 Noted(r) == IF Mut("storeNote") THEN r # "none" ELSE r = "owed"
 
-\* The readers (the render, the run's door, the lull) wait for every pending settle
-\* (owed.Owed.settled); LATE lets that bounded wait run out with a sync cut's settle
-\* still to come (`gone`). lagSettle does not wait at all.
-Settled == (fed = "none" /\ (late = "none" \/ gone)) \/ Mut("lagSettle")
-
 Init ==
     /\ st = "none" /\ fed = "none" /\ uncut = 0 /\ missed = FALSE /\ reoffers = 0
-    /\ sctx = "none" /\ frag = FALSE /\ late = "none" /\ gone = FALSE
-    \* An action's confirmation is nothing the caller lacks: they asked for it.
-    /\ heard = (SOURCE = "action") /\ repeat = FALSE
+    /\ heard = FALSE /\ repeat = FALSE
     /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0
     /\ q = "none" /\ hPost = FALSE /\ rloc = "none" /\ rk = "none" /\ tres = FALSE
-    /\ tend = FALSE /\ mark = FALSE /\ gtool = FALSE /\ rounds = 0
+    /\ tend = FALSE /\ mark = FALSE /\ gtool = FALSE
     /\ req = "none" /\ rst = "none" /\ noted = FALSE /\ nreg = FALSE /\ say = "none" /\ ph = "none"
-    /\ sdone = TRUE /\ carry = FALSE /\ offers = 0
     /\ ended = FALSE
     /\ runUnder = FALSE /\ runMid = FALSE /\ displaced = FALSE /\ staleNote = FALSE
     /\ noNote = FALSE /\ staleHeard = FALSE /\ relook = FALSE /\ got = "none"
@@ -316,12 +233,12 @@ Init ==
 \* that tells nothing shares only common words with the outcome ("Sure, take your
 \* time."). Cut before its first audio (still generating, or the TTS not yet open, #79),
 \* it was heard not at all.
-PlayGot(s) == CASE s \in {"tell", "telltool"} -> "all"
+PlayGot(s) == CASE s = "tell" -> "all"
                 [] s = "part" -> "some"
-                [] OTHER      -> "filler"          \* defer, other, a line before a call, lookup's ack
+                [] OTHER      -> "filler"          \* defer, other, lookup's ack
 CutGot(s, p) ==
     IF p = "gen" THEN {"nothing"}
-    ELSE CASE s \in {"tell", "telltool"} -> {"lead", "some", "all"}
+    ELSE CASE s = "tell" -> {"lead", "some", "all"}
            [] s = "part" -> {"lead", "some"}
            [] OTHER      -> {"filler"}
 
@@ -341,9 +258,6 @@ Closes(p, n, cut, g) ==
        ELSE IF Mut("singleWord") THEN RunUncut(p, cut, g) \/ g \in {"filler", "all"}
        ELSE IF Mut("oneItem")    THEN RunUncut(p, cut, g) \/ g \in {"some", "all"}
        ELSE IF Mut("countSettle") THEN FALSE        \* the count below decides
-       \* partialRecord: the record's items are the fragment's, which a telling of part
-       \* of the answer carries all of
-       ELSE IF frag THEN g \in {"some", "all"}
        \* one term-less item. Before "about": only a run played through uncut. "about":
        \* any noted reply about it, heard to its end -- played through, or cut after its
        \* last word (the ledger's pts-exact prefix is all of it): `g = "all"`
@@ -375,26 +289,13 @@ Finish(cut, g) ==
     \E r \in Reads(cut, g) :
       LET u  == IF Mut("countSettle") /\ nreg /\ ~cut /\ g # "nothing"
                   THEN (IF uncut < 2 THEN uncut + 1 ELSE 2) ELSE uncut
-          \* A reply rendered with the answer fresh is evidence for the record made of it
-          \* since -- a late settle's (owed.Owed.settle: Reply.fresh against the live
-          \* book); lateNoEvidence drops it.
-          ev == nreg \/ (carry /\ st = "owed" /\ ~Mut("lateNoEvidence"))
-          c  == Closes(req, ev, cut, r) \/ (Mut("countSettle") /\ u = 2)
+          c  == Closes(req, nreg, cut, r) \/ (Mut("countSettle") /\ u = 2)
       IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ nreg' = FALSE
-         /\ say' = "none" /\ ph' = "none" /\ sdone' = TRUE /\ carry' = FALSE
+         /\ say' = "none" /\ ph' = "none"
          /\ heard' = (heard \/ g = "all")
          /\ fed' = IF c /\ st = "owed" THEN "close" ELSE fed
          /\ uncut' = u
          /\ got' = g
-         \* Sync: a telling heard in full is history; a telling of the fresh answer cut
-         \* while it played leaves its heard prefix in the context (heard_context
-         \* truncates the reply to it). Anything else -- a deferral, a line before a
-         \* call, a reply cut before its audio (the corrector removes it) -- leaves the
-         \* answer as it was.
-         /\ sctx' = CASE ~Sync \/ st # "none"                                -> sctx
-                       [] g = "all"                                         -> "told"
-                       [] cut /\ ph = "play" /\ carry /\ say \in Tells       -> "cut"
-                       [] OTHER                                             -> sctx
 
 \* Did a run end without closing the record? Under "anyMiss" that arms the re-offer.
 MissedRun(cut, g) ==
@@ -421,14 +322,13 @@ Ask(k) ==
 \* request carries the note, and the run would speak over or before it. A caller request
 \* already rendered (in flight without the note) does not stop the run: it waits behind.
 Land ==
-    /\ SOURCE = "consult" /\ ~ended /\ st = "none"
+    /\ ~ended /\ st = "none"
     /\ st' = "owed"
     /\ IF turn \/ q = "caller"
          THEN missed' = TRUE /\ UNCHANGED <<rloc, rk, hPost, displaced>>
          ELSE Ask("run") /\ UNCHANGED missed
-    /\ UNCHANGED <<fed, uncut, reoffers, sctx, frag, late, gone, heard, repeat, line, q, tres, tend,
-                   mark, gtool, rounds, reply, ended, runUnder, runMid, staleNote, noNote, staleHeard,
-                   relook, got, offers>>
+    /\ UNCHANGED <<fed, uncut, reoffers, heard, repeat, line, q, tres, tend, mark, gtool, reply, ended,
+                   runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
 
 \* The settle feed: owed.py hears how the reply ended and closes the record on the
 \* evidence. Its own step, so a reader that does not wait for it reads a stale record.
@@ -440,8 +340,7 @@ Settle ==
     /\ fed = "close"
     /\ fed' = "none"
     /\ st' = IF st = "owed" THEN "closed" ELSE st
-    /\ UNCHANGED <<uncut, missed, reoffers, sctx, frag, late, gone, heard, repeat, line, door, reply,
-                   ended, mons>>
+    /\ UNCHANGED <<uncut, missed, reoffers, heard, repeat, line, door, reply, ended, mons>>
 
 \* The lull (§4 (a)): the caller's turn has been answered and the line has been quiet for
 \* LULL_S (~10 s) -- owed.py's lull timer, re-armed by every VAD start, turn and reply.
@@ -452,15 +351,13 @@ Quiet == ~vad /\ ~pend /\ ~turn /\ q = "none" /\ req = "none" /\ ~tres /\ ~gtool
          /\ rloc = "none" /\ ~hPost
 Lull ==
     /\ ~ended /\ st = "owed" /\ missed /\ Quiet
-    /\ Settled
+    /\ fed = "none" \/ Mut("lagSettle")
     /\ reoffers = 0 \/ (Mut("runAfterCut") /\ reoffers < 2)
     /\ reoffers' = reoffers + 1
-    /\ offers' = offers + 1
     /\ missed' = FALSE                         \* runAfterCut: re-armed by the next cut
     /\ Ask("reoffer")
-    /\ UNCHANGED <<st, fed, uncut, sctx, frag, late, gone, heard, repeat, line, q, tres, tend, mark,
-                   gtool, rounds, reply, ended, runUnder, runMid, staleNote, noNote, staleHeard,
-                   relook, got>>
+    /\ UNCHANGED <<st, fed, uncut, heard, repeat, line, q, tres, tend, mark, gtool, reply, ended,
+                   runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
 
 (* ============================ the door (FollowupGate) ============================ *)
 
@@ -480,20 +377,19 @@ Window ==
 \* The render is the hook in _open_stream: the run line FIRST, then the note.
 RunGo ==
     /\ ~ended /\ rloc = "wait" /\ req = "none" /\ Window
-    /\ Settled
+    /\ fed = "none" \/ Mut("lagSettle")
     /\ rloc' = "none" /\ rk' = "none"
     /\ IF st = "owed" \/ Mut("askOnly")
          THEN /\ req' = rk /\ rst' = st /\ noted' = Noted(st) /\ nreg' = Noted(st)
-              /\ ph' = "gen" /\ carry' = FALSE
-              /\ UNCHANGED <<say, sdone>>
+              /\ ph' = "gen"
+              /\ UNCHANGED say
               /\ runUnder'   = (runUnder \/ vad \/ pend)
               /\ runMid'     = (runMid \/ turn \/ q # "none" \/ tres)
               /\ staleNote'  = (staleNote \/ (Noted(st) /\ st = "closed"))
               /\ noNote'     = (noNote \/ (st = "owed" /\ ~Noted(st)))
               /\ staleHeard' = (staleHeard \/ (Noted(st) /\ heard))
          ELSE UNCHANGED <<reply, runUnder, runMid, staleNote, noNote, staleHeard>>
-    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, tend, mark, gtool, rounds, ended, displaced,
-                   relook, got, offers>>
+    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, tend, mark, gtool, ended, displaced, relook, got>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S) on a held run: DROPPED, never released (room
 \* TV noise holds it forever otherwise; §4). A timer: never forced (not in FairSpec).
@@ -501,8 +397,8 @@ Cap ==
     /\ ~ended /\ rloc = "wait" /\ (vad \/ pend)
     /\ rloc' = "none" /\ rk' = "none"
     /\ missed' = (missed \/ (REOFFER = "anyMiss" /\ st = "owed"))
-    /\ UNCHANGED <<st, fed, uncut, reoffers, sctx, frag, late, gone, heard, repeat, line, q, hPost, tres,
-                   tend, mark, gtool, rounds, reply, ended, mons>>
+    /\ UNCHANGED <<st, fed, uncut, reoffers, heard, repeat, line, q, hPost, tres, tend, mark, gtool, reply,
+                   ended, mons>>
 
 \* The caller's VAD stopped and no words came within TEAPORT_REPLY_HOLD_RELEASE_S (a
 \* cough): FollowupGate's _speech_over. The held post-tool answer goes on; a held run
@@ -512,8 +408,7 @@ GateQuiet ==
     /\ ~ended /\ pend /\ ~vad /\ ~turn
     /\ pend' = FALSE
     /\ IF hPost THEN hPost' = FALSE /\ q' = "post" ELSE UNCHANGED <<hPost, q>>
-    /\ UNCHANGED <<rec, heard, repeat, vad, turn, speech, rloc, rk, tres, tend, mark, gtool, rounds, reply,
-                   ended, mons>>
+    /\ UNCHANGED <<rec, heard, repeat, vad, turn, speech, rloc, rk, tres, tend, mark, gtool, reply, ended, mons>>
 
 \* A sync tool's result lands and the assistant aggregator pushes the answer UP
 \* (_maybe_push_context_after_function_result): held while speech is pending, else asked.
@@ -527,12 +422,8 @@ ToolResult ==
                    THEN rloc' = "none" /\ rk' = "none" /\ displaced' = TRUE
                    ELSE UNCHANGED <<rloc, rk, displaced>>
          ELSE q' = "post" /\ UNCHANGED <<hPost, rloc, rk, displaced>>
-    \* Sync: the answer is in the context now, nothing of it told. A chain's second
-    \* result leaves it as it is: fresh still when the first went untold, and when the
-    \* first was told (or cut) the second's answer is another record (not modelled).
-    /\ sctx' = IF Sync /\ sctx = "none" THEN "fresh" ELSE sctx
-    /\ UNCHANGED <<st, fed, uncut, missed, reoffers, frag, late, gone, heard, repeat, line, mark, rounds,
-                   reply, ended, runUnder, runMid, staleNote, noNote, staleHeard, relook, got, offers>>
+    /\ UNCHANGED <<rec, heard, repeat, line, mark, reply, ended, runUnder, runMid, staleNote,
+                   noNote, staleHeard, relook, got>>
 
 \* The call's in-progress frame reaches the gate. It is uninterruptible, so it may come
 \* after the barge-in that cancelled the call (TurnStart) or after its result. The
@@ -542,7 +433,7 @@ Mark ==
     /\ ~ended /\ mark
     /\ mark' = FALSE
     /\ gtool' = IF Mut("staleFlag") THEN TRUE ELSE (gtool \/ tres)
-    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, rloc, rk, tres, tend, rounds, reply, ended,
+    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, rloc, rk, tres, tend, reply, ended,
                    mons>>
 
 (* ============================ the LLM and the reply ============================ *)
@@ -562,56 +453,35 @@ Mark ==
 \* renderInGet renders no note into it; adoptDropsKeys registers none.
 Issue ==
     /\ ~ended /\ q # "none" /\ req = "none"
-    /\ Settled
+    /\ fed = "none" \/ Mut("lagSettle")
     /\ \E sp \in (IF q = "caller" THEN BOOLEAN ELSE {FALSE}) :
          LET n == ~(Mut("renderInGet") /\ sp) /\ Noted(st) IN
-         \* Sync with no record: the model reads the context as it is (`sctx`): a told
-         \* answer is history ("closed"), a fresh result is answered from ("fresh"), a
-         \* cut one is an answer not given ("owed", no note: the B0 shape) -- except an
-         \* action's: what it confirms is done, and nothing is looked up again.
-         /\ rst' = IF Sync /\ st = "none"
-                      THEN CASE sctx = "told" -> "closed"
-                             [] sctx = "cut"  -> (IF SOURCE = "action" THEN "closed" ELSE "owed")
-                             [] sctx = "fresh" -> "fresh" [] OTHER -> "none"
-                      ELSE st
-         /\ req' = q /\ noted' = n /\ ph' = "gen" /\ q' = "none"
-         \* the book's own state, not the context's: fresh until told or recorded -- a
-         \* telling cut mid-stream (STREAMCUT) or one whose settle is late leaves it so
-         /\ carry' = (Sync /\ st = "none" /\ sctx \in {"fresh", "cut"})
+         /\ req' = q /\ rst' = st /\ noted' = n /\ ph' = "gen" /\ q' = "none"
          /\ nreg' = (n /\ ~(Mut("adoptDropsKeys") /\ sp))
          /\ staleNote'  = (staleNote \/ (n /\ st = "closed"))
          /\ noNote'     = (noNote \/ (st = "owed" /\ ~n))
          /\ staleHeard' = (staleHeard \/ (n /\ heard))
     \* staleFlag: any completion's start clears the one flag (LLMFullResponseStartFrame).
     /\ gtool' = IF Mut("staleFlag") THEN FALSE ELSE gtool
-    /\ UNCHANGED <<say, sdone, rec, heard, repeat, line, hPost, rloc, rk, tres, tend, mark, rounds,
-                   ended, runUnder, runMid, displaced, relook, got, offers>>
+    /\ UNCHANGED <<say, rec, heard, repeat, line, hPost, rloc, rk, tres, tend, mark, ended,
+                   runUnder, runMid, displaced, relook, got>>
 
 \* What the model may say, by who asked and what the request carried (header; DESIGN.md
 \* "What the evidence supports"). "tool" is a sync tool call (get_current_time, ...),
 \* only on a caller's turn, and "texttool" the same call with a line before it ("Let me
-\* check." + get_weather): the line plays while the call is out; "telltool" tells the
-\* answer and then calls (Sync, a chain); "lookup" is ask_openclaw again for what the
-\* outcome answers.
+\* check." + get_weather): the line plays while the call is out; "lookup" is ask_openclaw
+\* again for what the outcome answers.
 Says(p, r, n) ==
-    LET pt == Opt(OUTCOME = "items", "part")       \* a failure is told whole or not at all
-        t  == IF p = "caller" THEN {"tool", "texttool"} ELSE {}
-    IN
+    LET pt == Opt(OUTCOME = "items", "part") IN    \* a failure is told whole or not at all
     IF p = "run"     THEN {"tell"} \cup (Opt(PARTIAL, "part") \cap pt) \cup Opt(SILENT, "silent")
     ELSE IF p = "reoffer"
                      THEN {"tell", "stay"} \cup (Opt(PARTIAL, "part") \cap pt)
                           \cup Opt(SILENT, "silent")
-    \* Sync, the answer fresh in the context: a reply answers from it. The post-tool reply
-    \* is the answer's telling by its position (a clarifying question in its place is what
-    \* the caller is owed instead, and recorded as such); a caller's turn that dropped the
-    \* post-tool request tells it, defers to "hold on", or says something else. Any reply
-    \* may call again: bare, after a line, or after telling it (the chain).
-    ELSE IF Sync /\ r = "fresh"
-                     THEN (IF p = "post" THEN {"tell"} ELSE {"tell", "defer", "other"}) \cup Calls
-    ELSE IF n            THEN {"tell", "defer", "other"} \cup pt \cup t \cup Opt(FLAKY, "lookup")
-    ELSE IF r = "none"   THEN {"other"} \cup t
-    ELSE IF r = "closed" THEN {"tell", "other"} \cup t
-    ELSE {"tell", "defer", "other", "lookup"} \cup pt \cup t
+    ELSE LET t == IF p = "caller" THEN {"tool", "texttool"} ELSE {} IN
+         IF n            THEN {"tell", "defer", "other"} \cup pt \cup t \cup Opt(FLAKY, "lookup")
+         ELSE IF r = "none"   THEN {"other"} \cup t
+         ELSE IF r = "closed" THEN {"tell", "other"} \cup t
+         ELSE {"tell", "defer", "other", "lookup"} \cup pt \cup t
 
 \* The completion's first output. stay_silent (offered only to the re-offer run; the run
 \* loop consumes the call and its result), a reply with no audio, and a bare tool call
@@ -619,9 +489,6 @@ Says(p, r, n) ==
 Say ==
     /\ ~ended /\ req # "none" /\ ph = "gen"
     /\ \E s \in Says(req, rst, noted) :
-         \* Sync: a chain of at most MaxRounds tool rounds (the state space's bound)
-         /\ (Sync /\ s \in Calls) => rounds < MaxRounds
-         /\ rounds' = IF Sync /\ s \in Calls THEN rounds + 1 ELSE rounds
          /\ repeat' = (repeat \/ (req \in Runs /\ s \in {"tell", "part"} /\ heard))
          /\ relook' = (relook \/ (s = "lookup" /\ rst # "none"))
          /\ IF s \in {"silent", "stay", "tool"}
@@ -629,32 +496,20 @@ Say ==
                    /\ tres' = (s = "tool") /\ mark' = (s = "tool")
                    /\ missed' = (missed \/ MissedRun(FALSE, "nothing"))
               ELSE /\ say' = s /\ ph' = "play"
-                   /\ tres' = (s \in {"texttool", "telltool"})
-                   /\ mark' = (s \in {"texttool", "telltool"})
-                   \* STREAMCUT: a telling of the fresh answer may still be streaming as
-                   \* its first audio plays (StreamEnd ends it)
-                   /\ sdone' \in IF STREAMCUT /\ carry /\ s \in Tells
-                                   THEN BOOLEAN ELSE {TRUE}
-                   /\ UNCHANGED <<req, rst, noted, nreg, heard, fed, uncut, missed, got, sctx, carry>>
-    /\ UNCHANGED <<st, frag, late, gone, reoffers, line, q, hPost, rloc, rk, tend, gtool, ended,
-                   runUnder, runMid, displaced, staleNote, noNote, staleHeard, offers>>
-
-\* The reply's stream ends while its audio plays (STREAMCUT).
-StreamEnd ==
-    /\ ~ended /\ ph = "play" /\ ~sdone
-    /\ sdone' = TRUE
-    /\ UNCHANGED <<rec, heard, repeat, line, door, req, rst, noted, nreg, say, ph, carry, ended, mons>>
+                   /\ tres' = (s = "texttool") /\ mark' = (s = "texttool")
+                   /\ UNCHANGED <<req, rst, noted, nreg, heard, fed, uncut, missed, got>>
+    /\ UNCHANGED <<st, reoffers, line, q, hPost, rloc, rk, tend, gtool, ended, runUnder,
+                   runMid, displaced, staleNote, noNote, staleHeard>>
 
 \* BotStoppedSpeaking: the reply played to its end. A "texttool" reply's End passes the
 \* gate here with its call still out (tend).
 Played ==
-    /\ ~ended /\ ph = "play" /\ sdone
+    /\ ~ended /\ ph = "play"
     /\ Finish(FALSE, PlayGot(say))
     /\ missed' = (missed \/ MissedRun(FALSE, PlayGot(say)))
-    /\ tend' = (tres /\ say \in {"texttool", "telltool"})
-    /\ UNCHANGED <<st, frag, late, gone, reoffers, repeat, line, q, hPost, rloc, rk, tres, mark, gtool,
-                   rounds, ended, runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook,
-                   offers>>
+    /\ tend' = (tres /\ say = "texttool")
+    /\ UNCHANGED <<st, reoffers, repeat, line, q, hPost, rloc, rk, tres, mark, gtool, ended, runUnder,
+                   runMid, displaced, staleNote, noNote, staleHeard, relook>>
 
 (* ============================ the caller ============================ *)
 
@@ -677,64 +532,14 @@ VadStop ==
 TurnStart ==
     /\ ~ended /\ pend /\ ~turn
     /\ turn' = TRUE /\ pend' = FALSE
+    /\ missed' = (missed \/ st = "owed")
     /\ q' = "none" /\ hPost' = FALSE /\ rloc' = "none" /\ rk' = "none" /\ tres' = FALSE
     /\ tend' = FALSE /\ gtool' = FALSE  \* the cancel; a queued in-progress frame stays (mark)
     /\ IF req # "none"
-         THEN \E g \in CutGot(say, ph) :
-                /\ Finish(TRUE, g)
-                \* Sync (#204): a telling of the fresh answer, cut before every item was
-                \* heard, makes the record AT ITS SETTLE (Owed.settle -> Owed._cut_answer;
-                \* LateSettle) -- whoever asked for the reply: the post-tool request, or the
-                \* caller's turn that dropped it and read the fresh result (postOnly). Only
-                \* a reply whose stream ended and whose audio played: its text is the whole
-                \* answer and the caller heard a prefix of it (partialRecord). A telling
-                \* that called again too (callNoRecord). An answer tool's, never an
-                \* action's (actionOwed). No run: this turn carries the note, and the cut
-                \* arms the one re-offer. A cut after its last item (g = "all") makes none;
-                \* noCutRecord makes none ever. One settle pending at a time here: a second
-                \* reply's, cut while the first is still late, settles at once.
-                /\ LET made == /\ Sync /\ st = "none" /\ ph = "play" /\ say \in Tells
-                               /\ g # "all" /\ ~Mut("noCutRecord")
-                               /\ IF Mut("postOnly") THEN req = "post" /\ carry ELSE carry
-                               /\ sdone \/ Mut("partialRecord")
-                               /\ say # "telltool" \/ ~Mut("callNoRecord")
-                               /\ SOURCE = "sync" \/ Mut("actionOwed")
-                       kind == IF sdone THEN "rec" ELSE "frag" IN
-                   IF made /\ late = "none"
-                     THEN /\ late' = kind /\ gone' = FALSE
-                          /\ UNCHANGED <<st, frag>> /\ missed' = (missed \/ st = "owed")
-                     ELSE /\ st' = IF made THEN "owed" ELSE st
-                          /\ frag' = (frag \/ (made /\ kind = "frag"))
-                          /\ missed' = (missed \/ st = "owed" \/ made)
-                          /\ UNCHANGED <<late, gone>>
-         ELSE /\ UNCHANGED <<reply, heard, fed, uncut, got, st, sctx, frag, late, gone>>
-              /\ missed' = (missed \/ st = "owed")
-    /\ UNCHANGED <<reoffers, repeat, vad, speech, mark, rounds, ended, runUnder, runMid,
-                   displaced, staleNote, noNote, staleHeard, relook, offers>>
-
-\* The cut telling's settle (owed.Owed.settle -> _cut_answer): it re-reads the LIVE book
-\* before it makes the record. Late (LATE: after the readers' wait ran out, GiveUp), a
-\* reply rendered meanwhile with the same fresh answer may have told it in full (the
-\* answer is told: no record) or been cut and made the record itself (this one is only
-\* evidence, its heard prefix short of the answer: nothing). lateReplace makes its record
-\* whatever the book holds -- after a full telling, and over the other's, its re-offer
-\* counter reset.
-LateSettle ==
-    /\ late # "none"
-    /\ late' = "none" /\ gone' = FALSE
-    /\ IF Mut("lateReplace") \/ (st = "none" /\ sctx # "told")
-         THEN /\ st' = "owed" /\ frag' = (late = "frag") /\ missed' = TRUE
-              /\ reoffers' = IF Mut("lateReplace") THEN 0 ELSE reoffers
-         ELSE UNCHANGED <<st, frag, missed, reoffers>>
-    /\ UNCHANGED <<fed, uncut, sctx, heard, repeat, line, door, reply, ended, mons>>
-
-\* SETTLE_WAIT_S passes with that settle still to come: the readers go on (LATE; a timer,
-\* never forced).
-GiveUp ==
-    /\ LATE /\ late # "none" /\ ~gone
-    /\ gone' = TRUE
-    /\ UNCHANGED <<st, fed, uncut, missed, reoffers, sctx, frag, late, heard, repeat, line, door,
-                   reply, ended, mons>>
+         THEN \E g \in CutGot(say, ph) : Finish(TRUE, g)
+         ELSE UNCHANGED <<reply, heard, fed, uncut, got>>
+    /\ UNCHANGED <<st, reoffers, repeat, vad, speech, mark, ended, runUnder, runMid,
+                   displaced, staleNote, noNote, staleHeard, relook>>
 
 \* The turn ends: its words are committed and the LLM asked (TurnCommitMark claims the
 \* window). The commit takes the words of speech that has stopped (UserTurn's
@@ -744,8 +549,7 @@ Commit ==
     /\ ~ended /\ turn /\ ~vad
     /\ turn' = FALSE /\ pend' = FALSE
     /\ \E words \in BOOLEAN : q' = IF words THEN "caller" ELSE "none"
-    /\ UNCHANGED <<rec, heard, repeat, vad, speech, hPost, rloc, rk, tres, tend, mark, gtool, rounds, reply,
-                   ended, mons>>
+    /\ UNCHANGED <<rec, heard, repeat, vad, speech, hPost, rloc, rk, tres, tend, mark, gtool, reply, ended, mons>>
 
 \* The client disconnects or the call hangs up. Nothing is owed to nobody: the escape in
 \* the liveness property, never forced.
@@ -755,9 +559,9 @@ SessionEnd ==
     /\ UNCHANGED <<rec, heard, repeat, line, door, reply, mons>>
 
 Next ==
-    \/ Land \/ Settle \/ LateSettle \/ GiveUp \/ Lull
+    \/ Land \/ Settle \/ Lull
     \/ RunGo \/ Cap \/ GateQuiet \/ ToolResult \/ Mark
-    \/ Issue \/ Say \/ StreamEnd \/ Played
+    \/ Issue \/ Say \/ Played
     \/ VadStart \/ VadStop \/ TurnStart \/ Commit \/ SessionEnd
 
 Spec == Init /\ [][Next]_vars
@@ -770,9 +574,8 @@ Spec == Init /\ [][Next]_vars
 \* starting to speak or to take a turn, the hold cap, the session ending.
 FairSpec ==
     /\ Spec
-    /\ WF_vars(Settle) /\ WF_vars(LateSettle) /\ WF_vars(Lull) /\ WF_vars(RunGo) /\ WF_vars(GateQuiet)
-    /\ WF_vars(ToolResult) /\ WF_vars(Issue) /\ WF_vars(Say) /\ WF_vars(StreamEnd)
-    /\ WF_vars(Played)
+    /\ WF_vars(Settle) /\ WF_vars(Lull) /\ WF_vars(RunGo) /\ WF_vars(GateQuiet)
+    /\ WF_vars(ToolResult) /\ WF_vars(Issue) /\ WF_vars(Say) /\ WF_vars(Played)
     /\ WF_vars(VadStop) /\ WF_vars(Commit) /\ WF_vars(Mark)
 
 (* ============================ properties ============================ *)
@@ -809,7 +612,7 @@ NoRunMidTurn == ~runMid
 HoldNoLoss == ~displaced
 
 \* At most one re-offer per record (§4 (a)).
-OneReoffer == offers <= 1
+OneReoffer == reoffers <= 1
 
 \* The model never re-looks-up what the outcome answers (the #203 49-second redo).
 NoRedundantLookup == ~relook
@@ -830,8 +633,8 @@ TypeOK ==
     /\ mark \in BOOLEAN /\ gtool \in BOOLEAN /\ (Mut("staleFlag") \/ (gtool => tres))
     /\ (rloc = "wait") = (rk # "none")
     /\ req \in {"none", "caller", "post", "run", "reoffer"}
-    /\ rst \in {"none", "owed", "closed", "fresh"} /\ noted \in BOOLEAN
-    /\ say \in {"none", "tell", "part", "defer", "other", "lookup", "texttool", "telltool"}
+    /\ rst \in {"none", "owed", "closed"} /\ noted \in BOOLEAN
+    /\ say \in {"none", "tell", "part", "defer", "other", "lookup", "texttool"}
     /\ ph \in {"none", "gen", "play"} /\ ((req = "none") = (ph = "none"))
     /\ (ph = "play") = (say # "none")
     \* the model's one-slot queue at the LLM is enough: a held post-tool answer and a
@@ -841,15 +644,7 @@ TypeOK ==
     /\ MUT \subseteq {"fraction", "countSettle", "singleWord", "oneItem", "storeNote",
                       "runAfterCut", "lagSettle", "oneSlot", "askOnly", "turnLevel",
                       "vadLevel", "renderInGet", "ledgerMax", "endClearsTool",
-                      "staleFlag", "adoptDropsKeys", "noCutRecord", "partialRecord",
-                      "actionOwed", "postOnly", "callNoRecord", "lateReplace",
-                      "lateNoEvidence"}
+                      "staleFlag", "adoptDropsKeys"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
-    /\ OUTCOME \in {"items", "failure"} /\ SOURCE \in {"consult", "sync", "action"}
-    /\ STREAMCUT \in BOOLEAN
-    /\ sctx \in {"none", "fresh", "told", "cut"} /\ nreg \in BOOLEAN /\ (nreg => noted)
-    /\ frag \in BOOLEAN /\ (frag => Mut("partialRecord"))
-    /\ rounds \in 0..MaxRounds /\ sdone \in BOOLEAN /\ (~sdone => ph = "play")
-    /\ late \in {"none", "rec", "frag"} /\ gone \in BOOLEAN /\ (gone => late # "none")
-    /\ carry \in BOOLEAN /\ offers \in 0..3 /\ LATE \in BOOLEAN
+    /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
 =============================================================================
