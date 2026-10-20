@@ -94,7 +94,9 @@
 # or, while the typing is not heard (the bot or the user is talking), to the moment it
 # arrives -- and each goes to the avatar KEY_LEAD_SECS before its click as
 # {"key": "e", "in_ms": ...}, between {"typing": true, ...} and {"typing": false, ...}.
-# Datagrams are fire-and-forget: no daemon, no face, nothing else changes.
+# Datagrams are fire-and-forget: no daemon, no face, nothing else changes. A daemon that
+# (re)starts writes its features file anew: within FACE_RESTART_CHECK_SECS it is sent
+# the face's state again, and the typing, rather than showing its own until they change.
 #
 # arecord/aplay (alsa-utils) rather than a Python audio binding: no new dependency in
 # the brain venv, and a dead card is a dead child process we can see and restart. No
@@ -287,6 +289,9 @@ TYPING_RESEND_SECS = 4.0
 TYPING_TTL_SECS = 10
 # How often the avatar's features file is re-read for "phonemes" (FaceTap.draws_phonemes).
 PHONES_RECHECK_SECS = 5.0
+# How often the avatar is looked at for a restart (display.started): a new daemon shows
+# its own first face until it is told ours again.
+FACE_RESTART_CHECK_SECS = 1.0
 # A model mood is shown when its reply's first words are heard, and re-sent this often
 # while that reply speaks: the avatar relaxes a mood to neutral 4 s after the last one.
 MOOD_RESEND_SECS = 2.0
@@ -345,16 +350,19 @@ class FaceTap:
     """Conversation events -> the OLED avatar's datagram protocol.
 
     {"state": idle|listening|thinking|speaking}, {"mouth": 0..1} (jaw opening, from
-    the played audio), {"text": t} (VADER mood), {"mood": m} (the model's own). States are sent only on change, mouth
-    levels when they move (and every MOUTH_KEEPALIVE_SECS while open), and only while
+    the played audio), {"text": t} (VADER mood), {"mood": m} (the model's own). States are sent only on change
+    (and again to an avatar that restarted), mouth levels when they move (and every MOUTH_KEEPALIVE_SECS while open), and only while
     speaking: leaving "speaking" shuts the mouth. {"typing": ...} and {"key": ...} while
     a consult types, to an avatar that types.
     """
 
     def __init__(self, path: str | None = None, send=None, clock=time.monotonic,
-                 features=None):
+                 features=None, started=None):
         self._path = path or FACE_SOCK
         self._features = features or (lambda: display.features(self._path))
+        self._started = started or (lambda: display.started(self._path))
+        self._daemon = self._started()    # the avatar's start we last saw (and when)
+        self._daemon_t = clock()
         self._sock = None
         self._send = send or self._sendto
         self._clock = clock
@@ -624,8 +632,27 @@ class FaceTap:
                    and now - self._audio_t < 0.5 and now - self._bed_since >= FACE_BED_SECS)
             self.state("thinking" if bed else "idle")
 
+    def _restarted(self) -> None:
+        """A new avatar is serving: it shows its own first state, not ours, and may take
+        other features. Tell it our state again, and the typing if it still types."""
+        self._drawn_at.clear()            # (its features are read afresh)
+        if self._state is not None:
+            self._emit({"state": self._state})
+        if self._typing:
+            if self.takes("typing"):
+                self._typing_t = -math.inf    # (re-sent now, by tick)
+            else:
+                self._typing = False          # (no keys either)
+
     def tick(self) -> None:
         now = self._clock()
+        if now - self._daemon_t >= FACE_RESTART_CHECK_SECS:
+            self._daemon_t = now
+            daemon = self._started()
+            if daemon != self._daemon:
+                self._daemon = daemon
+                if daemon is not None:
+                    self._restarted()
         if self._typing and now - self._typing_t >= TYPING_RESEND_SECS:
             self._typing_t = now
             self._emit({"typing": True, "ttl": TYPING_TTL_SECS})   # (no first_key_ms: no new intro)

@@ -1718,6 +1718,49 @@ def test_an_avatar_that_does_not_type_is_never_told():
     assert sent == []
 
 
+def _restarting_face(feats):
+    """A face whose avatar restarts (a new start id) when the test says, with the
+    features `feats` holds."""
+    sent, clock, daemon = [], _Clock(), ["a"]
+    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
+                      features=lambda: feats, started=lambda: daemon[0])
+    return face, sent, clock, daemon
+
+
+def test_a_restarted_avatar_is_told_the_state_again():
+    face, sent, clock, daemon = _restarting_face({"sleep": 1})
+    face.sleep()
+    clock.t += la.FACE_RESTART_CHECK_SECS
+    face.tick()                                              # the same avatar: nothing
+    daemon[0] = None                                         # it stops...
+    clock.t += la.FACE_RESTART_CHECK_SECS
+    face.tick()
+    daemon[0] = "b"                                          # ...and a new one starts
+    face.tick()                                              # (not looked at yet)
+    assert sent == [{"state": "sleeping"}]
+    clock.t += la.FACE_RESTART_CHECK_SECS
+    face.tick()
+    assert sent == [{"state": "sleeping"}, {"state": "sleeping"}]
+
+
+def test_a_restarted_avatar_is_typed_to_at_once_if_it_still_types():
+    feats = {"typing": 1}
+    face, sent, clock, daemon = _restarting_face(feats)
+    face.typing(True, 1500)
+    daemon[0] = "b"
+    clock.t += la.FACE_RESTART_CHECK_SECS                    # (well inside the re-send's 4 s)
+    face.tick()
+    face.key("e", 90)
+    assert sent[1:] == [{"typing": True, "ttl": la.TYPING_TTL_SECS}, {"key": "e", "in_ms": 90}]
+    feats.clear()                                            # one that does not type: no
+    daemon[0] = "c"                                          # keys, no end of typing
+    clock.t += la.FACE_RESTART_CHECK_SECS
+    face.tick()
+    face.key("e", 90)
+    face.typing(False, done=True)
+    assert len(sent) == 3
+
+
 def test_hiss_of_audio_pumped_before_its_caption_counts_once_vouched_for():
     play, clock, sunk = _playback()
     rng = np.random.default_rng(3)
