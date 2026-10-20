@@ -367,6 +367,26 @@ async def test_the_typing_ends_with_its_session():
     assert len(out) == n
 
 
+@_with(grace=0.05)
+async def test_a_held_reply_start_that_comes_after_its_own_call_mutes_only_briefly():
+    """The call (a system frame) can overtake its response's Start, held at the TTS
+    behind earlier audio; that Start's End is held too. A reply is on its way for at
+    most _REPLY_WAIT_S, so the typing is heard all the same."""
+    saved, ts._REPLY_WAIT_S = ts._REPLY_WAIT_S, 0.3
+    try:
+        bed, out = _bed(consults_async=False)
+        await _send(bed, FunctionCallsStartedFrame(
+            function_calls=[SimpleNamespace(function_name="ask_openclaw")]))
+        await _send(bed, LLMFullResponseStartFrame())
+        await asyncio.sleep(0.2)
+        assert not _audio(out)                               # a reply might be on its way...
+        await asyncio.sleep(0.3)
+        assert _audio(out)                                   # ...but none came
+        await _send(bed, InterruptionFrame())
+    finally:
+        ts._REPLY_WAIT_S = saved
+
+
 def _stalling_chunk():
     real, renders = ts._Typist.chunk, []
 

@@ -85,6 +85,12 @@ _TRIGGER = {"ask_openclaw"}
 # A consult's typing never outlives this, whatever its end (its answer is due within
 # TEAPORT_ASYNC_CONSULT_TIMEOUT, and the brain says so when it is in).
 _TYPING_MAX_S = 600.0
+# A reply is on its way from its LLMFullResponseStartFrame until its End -- for at most
+# this long, to cover the model's and the TTS's start before its first audio (which,
+# with the transport's BotStarted, speaks for it after). A response with no words of
+# its own has its End held at the TTS, and its Start, held there too, can reach us
+# after its own tool call (a system frame): so no frame order leaves it stuck.
+_REPLY_WAIT_S = 3.0
 
 # The keyboard, modelled on a close-miked clicky mechanical keyboard (an ASMR typing
 # recording, measured, not sampled). A key is a physical object, so it is built as
@@ -430,12 +436,14 @@ class ThinkingSound(FrameProcessor):
         self._heard = 0             # chunks heard this consult
         # The line, as this place in the pipeline sees it: who is talking, and when
         # anyone last was (or a reply was on its way).
-        self._user = self._bot = self._replying = False
+        self._user = self._bot = False
+        self._reply_t = None        # the open reply's LLMFullResponseStart (time.monotonic())
         self._spoke = 0.0
 
     def _quiet(self) -> bool:
-        return (not (self._user or self._bot or self._replying)
-                and time.monotonic() - self._spoke >= _GRACE_S)
+        now = time.monotonic()
+        replying = self._reply_t is not None and now - self._reply_t < _REPLY_WAIT_S
+        return not (self._user or self._bot or replying) and now - self._spoke >= _GRACE_S
 
     async def _say(self, message: dict, urgent: bool = False):
         if self._keys:
@@ -510,12 +518,12 @@ class ThinkingSound(FrameProcessor):
         elif isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame)):
             self._bot = isinstance(frame, BotStartedSpeakingFrame)
         elif isinstance(frame, (LLMFullResponseStartFrame, LLMFullResponseEndFrame)):
-            self._replying = isinstance(frame, LLMFullResponseStartFrame)
+            self._reply_t = now if isinstance(frame, LLMFullResponseStartFrame) else None
         elif isinstance(frame, (InterruptionFrame, FunctionCallsStartedFrame, RunSilentFrame)):
             # A response with no words of its own (cut, a tool call, a run that said
             # nothing) has its End held at the TTS until a later context ends: it is not
             # a reply on its way.
-            self._replying = False
+            self._reply_t = None
         elif not isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame)):
             return                          # (a line or a reply on its way; the typing's own is not one)
         self._spoke = now
