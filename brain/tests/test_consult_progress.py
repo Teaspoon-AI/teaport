@@ -3,17 +3,17 @@
 #
 # _consult_progress is a fixed countdown against dead air — "Still working on it." at 9s,
 # "Almost there — hang tight." at 22s — spoken while a background ask_openclaw runs. It
-# used to be cancelled in _consult_and_followup's finally, which was harmless only
-# because the follow-up injector returned as soon as it had queued the LLM run.
+# used to be cancelled in the waiter's finally, which was harmless only while the
+# follow-up injector returned as soon as it had queued the LLM run.
 #
-# The injector now waits for the delivered turn to FINISH SPEAKING, so it can retire the
-# one-shot trigger it puts in the context. That left the narrator running for the whole
+# When the injector waited for the delivered turn to FINISH SPEAKING (to retire the
+# one-shot trigger it put in the context), the narrator ran on through the whole
 # delivery. Live 2026-08-26 09:44: the consult started at :15.3, the shop list was spoken
 # at :25.0, and "Almost there — hang tight." landed at :37.3 — twelve seconds after the
 # user already had the answer.
 #
 # So the contract is an ORDER, not a cleanup: the narrator is cancelled before the
-# outcome is handed to the injector, on every path out of the waiter.
+# outcome lands (owed.Owed.land), on every path out of the waiter.
 #
 # Run: python test_consult_progress.py
 #
@@ -38,15 +38,16 @@ class _LLM:
         self.narrated_during_delivery = []
 
     async def push_frame(self, frame):
-        text = getattr(frame, "text", "")
-        self.narrated.append(text)
+        if not isinstance(frame, _Speak):
+            return                     # the client's "working" messages, not speech
+        self.narrated.append(frame.text)
         if self.delivering:
-            self.narrated_during_delivery.append(text)
+            self.narrated_during_delivery.append(frame.text)
 
 
 async def _fast_progress(llm, request=None, gate=None):
     """The real narrator's shape, on a timescale a test can wait out. Accepts the
-    request/gate kwargs _consult_and_followup now passes, and ignores them — the
+    request/gate kwargs _consult_and_land now passes, and ignores them — the
     ordering-vs-delivery contract these tests check is independent of them."""
     try:
         await asyncio.sleep(0.05)
@@ -66,21 +67,22 @@ async def _run(consult_result):
     llm = _LLM()
     delivered = []
 
-    async def followup(request, text, tool_call_id=None, failure=None, detail=""):
-        # Stands in for speak_followup, which now blocks until the reply has been
-        # spoken in full — long enough for the narrator to fire twice if it is alive.
-        llm.delivering = True
-        delivered.append(text)
-        await asyncio.sleep(0.2)
-        llm.delivering = False
+    class Owed:
+        def land(self, request, text, key, *, failure=None, detail=""):
+            # The landing (owed.Owed): from here the answer is the caller's, and the
+            # narrator must not speak again -- watched for long enough for it to fire
+            # twice if it is alive.
+            llm.delivering = True
+            delivered.append(text)
 
     fut = asyncio.get_running_loop().create_future()
     fut.set_result(consult_result)
     real_progress = tools._consult_progress
     tools._consult_progress = _fast_progress
     try:
-        await tools._consult_and_followup(
-            "call-1", fut, "pastry shops on Burnet", followup, "tc-1", llm=llm)
+        await tools._consult_and_land(
+            "call-1", fut, "pastry shops on Burnet", Owed(), "tc-1", llm=llm)
+        await asyncio.sleep(0.2)
     finally:
         tools._consult_progress = real_progress
     return llm, delivered

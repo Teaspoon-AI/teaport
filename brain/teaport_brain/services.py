@@ -11,6 +11,7 @@
 #
 
 import asyncio
+import contextvars
 import logging
 import time
 from dataclasses import dataclass
@@ -21,13 +22,23 @@ import httpx
 from loguru import logger
 from openai import AsyncOpenAI, DefaultAsyncHttpxClient
 
-from pipecat.frames.frames import FunctionCallFromLLM, SystemFrame
+from pipecat.frames.frames import (
+    FunctionCallFromLLM,
+    LLMContextFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+    SystemFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.openai.llm import OpenAILLMService
 
 from teaport_brain import llm_http2
+from teaport_brain import owed as owed_mod
+from teaport_brain.followup_gate import RunFrame, RunSilentFrame
 from teaport_brain.llm_dns import prime, use_stale_dns
 from teaport_brain.settings import secret_file, setting
 from teaport_brain.stt import TeaportSTTService
+from teaport_brain.tts_text import has_speech
 
 TEAPORT_URL = setting("TEAPORT_URL")
 
@@ -341,6 +352,39 @@ class _RenumberedStream:
         await self._stream.close()
 
 
+class _NothingToSay:
+    """The stream of a run whose records were all heard by the time it rendered: no
+    request is sent, and the completion ends empty (owed.Owed.view; Owed.tla RunGo)."""
+
+    def __aiter__(self):
+        return self._none()
+
+    @staticmethod
+    async def _none():
+        return
+        yield  # noqa: unreachable -- makes this an async generator
+
+    async def close(self):
+        pass
+
+
+# The request the LLM is answering now, in the task answering it (process_frame): an
+# owed.Reply. A speculation's request runs in a task of its own and reads None. Set
+# around the WHOLE process_frame: a task spawned inside it (a function call's) inherits
+# this Reply, stale once the completion is over -- read it only on the completion's path.
+_REPLY: contextvars.ContextVar = contextvars.ContextVar("teaport_owed_reply", default=None)
+# In a speculation's task (speculate._Speculation.run): the list its render writes the
+# record keys its note carried into, for the commit that adopts its stream
+# (speculate._AdoptedStream.owed_noted; formal/Owed.tla, adoptDropsKeys).
+SPECULATION_NOTED: contextvars.ContextVar = contextvars.ContextVar(
+    "teaport_speculation_noted", default=None)
+
+
+# The cut judge's completion budget: one word of answer, after the reasoning a reasoning
+# model spends first (gpt-oss-120b: the 241-cut measurement ran at this budget, 0 unparsed).
+_CUT_JUDGE_MAX_TOKENS = 512
+
+
 # Connect timeout. Separate from the read timeout below because they fail differently:
 # an unreachable endpoint should fail fast, a slow-but-alive one should not.
 _CONNECT_SECS = 5.0
@@ -478,11 +522,21 @@ class BoundedOpenAILLMService(OpenAILLMService):
         started = time.monotonic()
         try:
             await super()._process_context(context)
+            await self._run_said_nothing()
         except asyncio.CancelledError:
             logger.warning(
                 f"{self}: completion CANCELLED after {time.monotonic() - started:.1f}s "
                 "— this turn produces no reply and raises no error"
             )
+            reply = _REPLY.get()
+            if reply is not None and not reply.claimed and self.owed is not None:
+                # Cancelled before the ledger saw it start (its Start frame flushed with
+                # the interruption): nothing of it was heard. One the ledger has is
+                # settled there, by its own audio.
+                self.owed.settle(reply, None, cut=True, audio=False)
+            raise
+        except Exception:
+            await self._run_said_nothing()
             raise
         else:
             # The success case is logged too, because "the bot said nothing" has three
@@ -492,6 +546,16 @@ class BoundedOpenAILLMService(OpenAILLMService):
             # that never dispatched (this line, then no "Calling function"). One line
             # splits all three.
             logger.info(f"{self}: completion finished in {time.monotonic() - started:.1f}s")
+
+    async def _run_said_nothing(self):
+        """A run of ours that said nothing and called nothing (stay_silent alone, empty,
+        failed before its first text): its End will be held at the TTS
+        (test_pipecat_premises.py), so the gate is told the turn is over
+        (RunSilentFrame). Not with a call out: that is a tool round the gate keeps."""
+        reply = _REPLY.get()
+        if (reply is not None and reply.kind in owed_mod.RUNS and not reply.texts
+                and not reply.calls):
+            await self.push_frame(RunSilentFrame())
 
     async def run_function_calls(self, function_calls):
         """Broadcast FunctionCallsDispatchedFrame for every call, then dispatch as usual.
@@ -503,7 +567,25 @@ class BoundedOpenAILLMService(OpenAILLMService):
         `finally` pushes right after this method returns — unlike FunctionCallInProgressFrame,
         which base_llm broadcasts from inside a task it schedules and never awaits.
         """
+        reply = _REPLY.get()
+        if reply is not None and reply.kind == owed_mod.REOFFER:
+            # The re-offer's stay_silent (owed.STAY_SILENT): consumed HERE, so neither the
+            # call nor a result enters the context -- the run said nothing, which is all
+            # it means. The broadcast still tells the guard a call was the answer, so a
+            # stray "..." beside it is not spoken as a vanished reply.
+            silent = [c for c in function_calls if c.function_name == owed_mod.STAY_SILENT]
+            if silent:
+                logger.info(f"{self}: the re-offer called stay_silent -- saying nothing")
+                function_calls = [c for c in function_calls if c not in silent]
+                if not function_calls:
+                    await self.broadcast_frame(FunctionCallsDispatchedFrame,
+                                               function_calls=silent)
+                    return
         if function_calls:
+            if reply is not None:
+                reply.calls += len(function_calls)
+                if self.owed is not None:
+                    self.owed.called(reply, [c.tool_call_id for c in function_calls])
             await self.broadcast_frame(
                 FunctionCallsDispatchedFrame, function_calls=function_calls
             )
@@ -512,15 +594,64 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # A speculate.Speculator when TEAPORT_SPECULATIVE_REPLY is on (agent_session sets it);
     # None otherwise, and get_chat_completions is then exactly _open_stream.
     speculator = None
+    # The session's owed records (owed.Owed; agent_session sets it): the render hook in
+    # _open_stream asks it for each request's view. None: requests go as they are.
+    owed = None
+
+    async def process_frame(self, frame, direction):
+        """Every request the LLM answers gets an owed.Reply: what it is for (a caller's
+        commit, a post-tool answer pushed up, a run of ours), carried on its
+        LLMFullResponseStartFrame to the ledger, which settles it at the reply's end.
+        Whether it carries a sync tool's answer is read from its context at the render
+        (owed.Owed.noted: the book's fresh answers), not from the frame's direction (#204)."""
+        if not isinstance(frame, LLMContextFrame) or self.owed is None:
+            await super().process_frame(frame, direction)
+            return
+        if isinstance(frame, RunFrame):
+            reply = owed_mod.Reply(frame.purpose, frame.keys)
+        else:
+            reply = owed_mod.Reply(owed_mod.COMMIT if direction == FrameDirection.DOWNSTREAM
+                                   else owed_mod.POST)
+        token = _REPLY.set(reply)
+        try:
+            await super().process_frame(frame, direction)
+        finally:
+            _REPLY.reset(token)
+
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        reply = _REPLY.get()
+        if reply is not None and direction == FrameDirection.DOWNSTREAM:
+            if isinstance(frame, LLMFullResponseStartFrame):
+                # The ledger reads it at the TTS's sighting, and settles the reply by it.
+                frame.owed_reply = reply
+            elif isinstance(frame, LLMTextFrame) and has_speech(frame.text):
+                # The TTS's own test: text it would speak. A reply of zero-width spaces
+                # (#70) is none, and its run is silent (RunSilentFrame).
+                reply.texts += 1
+        await super().push_frame(frame, direction)
+
+    def _rendered(self, reply, noted, context) -> None:
+        """`reply`'s request is built from `context`: what its note carried is evidence
+        when it ends, and so is a fresh answer in it; and a commit is no longer one still
+        to be rendered -- told only now, after the view (which waits for the settles), so
+        a consult landing meanwhile still finds it pending and leaves the note to it
+        (Owed.tla Land)."""
+        self.owed.noted(reply, noted, context.get_messages())
+        if reply is not None and reply.kind == owed_mod.COMMIT and self.owed.gate is not None:
+            self.owed.gate.request_rendered()
 
     async def get_chat_completions(self, context):
+        reply = _REPLY.get()
         # A speculation opened for this very context, if there is one, is the stream --
         # its buffered chunks replay first, then it continues live. The request-building
         # path below is what the speculation itself went through, so the two are the
-        # same request either way; only WHEN it was opened differs.
-        if self.speculator is not None:
+        # same request either way; only WHEN it was opened differs. A run of ours is
+        # never one: no speculation lives outside a caller's turn.
+        if self.speculator is not None and (reply is None or reply.kind not in owed_mod.RUNS):
             adopted = await self.speculator.take(context)
             if adopted is not None:
+                if self.owed is not None:
+                    self._rendered(reply, adopted.owed_noted, context)
                 return adopted
         return await self._open_stream(context)
 
@@ -531,13 +662,52 @@ class BoundedOpenAILLMService(OpenAILLMService):
     # speculation open their stream here.
     #
     # The stream is also renumbered on the way past — see _sequential_tool_call_indices.
+    #
+    # THE RENDER HOOK (#203, owed.py). The request goes out as the view owed.Owed.view
+    # builds: the context with the note for every owed record -- before the caller's last
+    # words, or at the tail with the run line for a run of ours. HERE, not in
+    # get_chat_completions: the speculative reply opens its stream through this method
+    # directly (speculate.py), and an adopted speculation rendered anywhere else would go
+    # out bare (formal/Owed.tla, ow_renderInGet). After HeardContextCorrector's reconcile
+    # (a commit's frame passes it; a speculation runs it before its snapshot), so the
+    # note is rendered on the context as heard. The view goes to super(), so pipecat's
+    # "Generating chat from context" line logs exactly what the model saw.
     async def _open_stream(self, context):
+        reply = _REPLY.get()
+        noted = ()
+        if self.owed is not None:
+            kind = reply.kind if reply is not None else "caller"
+            view, noted = await self.owed.view(context, kind,
+                                               reply.keys if reply is not None else ())
+            if view is None:
+                logger.info(f"{self}: the {kind} has nothing owed to tell -- no request")
+                return _NothingToSay()
+            self._rendered(reply, noted, context)
+            context = view
+            if reply is None and (into := SPECULATION_NOTED.get()) is not None:
+                into[:] = noted
         stream = await super().get_chat_completions(context)
         logger.debug(f"{self}: response stream open")
         # _RenumberedStream, not the bare generator — see the class docstring: a
         # generator has no close(), so wrapping in one silently disabled base_llm's
         # socket release.
         return _RenumberedStream(stream)
+
+    async def judge_cut(self, question: str, heard: str, rest: str):
+        """The cut judge owed.Owed asks (Owed._judge): whether a reply cut while it played
+        left anything the caller still needs, on this session's own client -- the same
+        model, provider routing, key and HTTP/2 connection as the turn's requests. True
+        for HEARD, False for OWED, None for anything else. The caller bounds the time."""
+        extra = _llm_extra()
+        response = await self._client.chat.completions.create(
+            model=setting("LLM_MODEL"),
+            messages=owed_mod.cut_judge_messages(question, heard, rest),
+            max_tokens=_CUT_JUDGE_MAX_TOKENS,
+            **{k: v for k, v in extra.items() if k != "extra_body"},
+            extra_body=extra.get("extra_body"))
+        choices = getattr(response, "choices", None) or ()
+        content = choices[0].message.content if choices else ""
+        return owed_mod.cut_judge_verdict(content)
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):

@@ -15,8 +15,8 @@
 #   TEAPORT_AGENT=none       voice-only: local tools only, no recall, persona from
 #                            ~/.config/teaport/persona.md
 #
-# What `none` does NOT change: /talk, the consult plumbing (thinking bed, follow-up
-# gate and injector) which stays wired and never fires because no tool triggers it,
+# What `none` does NOT change: /talk, the consult plumbing (thinking bed, the owed
+# records and their door) which stays wired and never fires because no tool triggers it,
 # and the OpenClaw plugin, which simply has nothing to connect to. One code path.
 #
 from teaport_brain.settings import setting

@@ -410,10 +410,10 @@ async def run_relay_bot(websocket: WebSocket):
 def room_idle(followup_gate, keepalive: float) -> bool:
     """A room session without wake words counts as asleep: nobody has taken a turn yet,
     or nobody (user or bot) has spoken for `keepalive` seconds and nothing is under way
-    -- no turn, and no consult answer still owed (as the bridge's own keep-alive)."""
+    -- no turn, and no consult still running (as the bridge's own keep-alive)."""
     if not getattr(followup_gate, "user_heard", False):
         return True
-    return (followup_gate.is_clear() and not getattr(followup_gate, "owed", 0)
+    return (followup_gate.is_clear() and not getattr(followup_gate, "consults_running", 0)
             and time.monotonic() - followup_gate.last_active >= keepalive)
 
 

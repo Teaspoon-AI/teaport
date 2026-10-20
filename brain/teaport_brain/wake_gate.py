@@ -29,6 +29,13 @@
 # (a wake session of a client that says it is at the box, ?features=local) saves to or
 # restores from this store; nothing else ever reads it.
 #
+# What the caller is still owed travels with the conversation (owed.py, #203): the owed
+# records are saved and restored beside the messages, since the messages they are about
+# are. Without them the next wake meets a bare history, with the answer only in an old
+# tool result, and the model looks it up again (19/20 re-lookups in the #203 replays
+# with no note). A consult still running when the session ends cannot report back: its
+# placeholder becomes its failure record first (owed.Owed.close_session).
+#
 import time
 
 from loguru import logger
@@ -66,16 +73,19 @@ def _cap(messages: list) -> list:
 
 class MicConversation:
     """The mic path's conversation between its sessions: the messages (no system ones;
-    every session builds its own), and when the last session holding them ended."""
+    every session builds its own), the owed records (owed.Owed.snapshot), and when the
+    last session holding them ended."""
 
     def __init__(self, clock=time.monotonic):
         self._clock = clock
         self._messages: list = []
+        self.records: list = []
         self._ended: float | None = None
 
-    def save(self, messages: list) -> None:
+    def save(self, messages: list, records: list = ()) -> None:
         convo = [dict(m) for m in messages if isinstance(m, dict) and m.get("role") != "system"]
         self._messages = _cap(convo)
+        self.records = [dict(r) for r in records]
         self._ended = self._clock()
 
     def take(self, window_secs: float) -> list | None:
@@ -87,7 +97,7 @@ class MicConversation:
         return None
 
     def clear(self) -> None:
-        self._messages, self._ended = [], None
+        self._messages, self.records, self._ended = [], [], None
 
 
 # The one store: the mic path is one bridge, and this process is its one Talk brain.
@@ -107,6 +117,7 @@ class WakeGate:
         self.greeting = greeting
         self.store = store or MIC
         self.context = None   # the session's LLMContext, set by build_agent_session
+        self.owed = None      # the session's owed records (owed.Owed), likewise
         self.woke = not asleep
         self._clock = clock
         self._carry: tuple[str, float] | None = None   # (tail, when) -- see CARRY_SECS
@@ -137,6 +148,8 @@ class WakeGate:
         restored = self.store.take(self.conversation_secs)
         if restored and self.context is not None:
             self.context.add_messages(restored)
+            if self.owed is not None:
+                self.owed.restore(self.store.records)
         greet = not restored
         logger.info(f'wake word "{phrase}" heard — '
                     + (f"continuing the conversation ({len(restored)} messages)" if restored
@@ -153,4 +166,8 @@ class WakeGate:
     def ended(self) -> None:
         """The session is over: what it said is the mic conversation, to be continued."""
         if self.woke and self.context is not None:
-            self.store.save(self.context.get_messages())
+            records = []
+            if self.owed is not None:
+                self.owed.close_session()
+                records = self.owed.snapshot()
+            self.store.save(self.context.get_messages(), records)

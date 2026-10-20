@@ -1259,7 +1259,7 @@ min = 0
 default = 0.7
 read = "startup"
 tier = "tuning"
-help = "How long the conversation must stay quiet before a follow-up window counts; rejects mid-thought pauses and between-turn gaps."
+help = "How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps."
 
 [[settings]]
 name = "TEAPORT_FOLLOWUP_MAX_WAIT_S"
@@ -1271,19 +1271,19 @@ min = 1
 default = 60
 read = "startup"
 tier = "tuning"
-help = "Ceiling on holding a follow-up for a gap; past this, speak anyway."
+help = "Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn)."
 
 [[settings]]
-name = "TEAPORT_FOLLOWUP_MIN_HEARD"
+name = "TEAPORT_REOFFER_AFTER_QUIET_S"
 store = "brain_env"
 group = "agent"
 type = "float"
-min = 0
-max = 1
-default = 0.3
+unit = "s"
+min = 1
+default = 10
 read = "startup"
 tier = "tuning"
-help = "Fraction of a delegated answer the caller must have heard before it counts as delivered; below it, the answer is said again at the next quiet moment."
+help = "How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked."
 
 [[settings]]
 name = "TEAPORT_THINKING_SOUND"
