@@ -14,7 +14,9 @@
 (*  - POSITION. A result's first reply -- the first rendered with it, of   *)
 (*    whatever kind -- settles it if it calls nothing, plays audio and says *)
 (*    something of its own: heard in full, told; cut after its stream      *)
-(*    ended, a record (unless its heard prefix already carries the answer). *)
+(*    ended, a record -- unless the cut judge says the unheard rest held   *)
+(*    nothing needed (Owed._judge; prefixLexical, the lexical rule on the  *)
+(*    heard prefix it replaced).                                            *)
 (*    A reply that did not settle it (no audio, a cut mid-stream, a line   *)
 (*    before a call, nothing of its own: "Sure, take your time.") leaves    *)
 (*    it ONE more reply, then it is history, as before #204; a new round   *)
@@ -62,6 +64,8 @@
 (*                     fourth review's 12-step trace).                      *)
 (*   lateReplace    -- the late settle makes its record whatever the book   *)
 (*                     holds (after a full telling).                       *)
+(*   prefixLexical  -- a cut judged by the lexical rule on the heard prefix *)
+(*                     (a8fa2ba): "the developer kit at two hundred" heard. *)
 (*   lateNoEvidence -- a reply rendered with the open answer is no evidence *)
 (*                     for the record made of it since.                    *)
 (*   fillerSettles  -- a reply with no terms of its own settles it         *)
@@ -232,29 +236,40 @@ Say ==
 End ==
     /\ req # "none" /\ say # None /\ say[1] # "look"
     /\ \E cut \in BOOLEAN, sd \in (IF STREAMCUT THEN BOOLEAN ELSE {TRUE}),
-          late \in (IF LATE /\ lq = 0 THEN BOOLEAN ELSE {FALSE}) :
+          late \in (IF LATE /\ lq = 0 THEN BOOLEAN ELSE {FALSE}),
+          got \in {"part", "words", "all"} :
        LET k == say[1]
            Tq(q) == say = <<"tell", q>>
+           \* What a cut let through (a reply played to the end: all of it): "words" are
+           \* the answer's content words before its facts were all out ("the developer
+           \* kit at two hundred"). The judge's HEARD means all of it (the premise;
+           \* Owed.tla judgeWrong is its residual); prefixLexical, the heard prefix by
+           \* the lexical rule, also takes "words".
+           all == ~cut \/ got = "all"
+           judged == ~cut \/ got = "all" \/ (Mut("prefixLexical") /\ got = "words")
            audio == k # "mute"
            settles == audio /\ (k # "line" \/ Mut("callRecords"))
                       /\ (k # "defer" \/ Mut("fillerSettles"))
                       /\ (~cut \/ sd \/ Mut("partialRecord"))
            filed(q) == q \in carried /\ res[q] = "open"
            makes(q) == filed(q) /\ settles /\ cut /\ ~Mut("noCutRecord")
+                       /\ ~(Tq(q) /\ judged)
            ownq(q) == Tq(q) /\ sd
            mk == {q \in Qs : makes(q)}
            lateq == late /\ Cardinality(mk) = 1
            now(q) == makes(q) /\ ~lateq
            ev(q) == q \in noted \/ (q \in carried /\ ~Mut("lateNoEvidence"))
        IN
-       /\ heard' = [q \in Qs |-> heard[q] \/ (Tq(q) /\ ~cut)]
-       /\ ctx' = [q \in Qs |-> IF ~Tq(q) THEN ctx[q] ELSE IF ~cut THEN "told"
+       /\ (cut /\ ~sd) => got # "all"          \* all of it heard: its stream had ended
+       /\ heard' = [q \in Qs |-> heard[q] \/ (Tq(q) /\ all)]
+       /\ ctx' = [q \in Qs |-> IF ~Tq(q) THEN ctx[q] ELSE IF all THEN "told"
                                ELSE IF ctx[q] = "told" THEN "told" ELSE "cut"]
        /\ res' = [q \in Qs |->
                     IF k = "line" /\ ~cut /\ q = pos /\ req = "post" /\ res[q] # "held"
                       THEN "open"                       \* its chain's next result
                     ELSE IF ~filed(q) THEN res[q]
                     ELSE IF settles /\ ~cut THEN "told"
+                    ELSE IF settles /\ Tq(q) /\ judged THEN "told"
                     ELSE IF settles THEN (IF makes(q) /\ lateq THEN "open"
                                           ELSE IF makes(q) THEN "rec" ELSE "past")
                     ELSE IF ch[q] > 1 THEN "open" ELSE "past"]
@@ -262,7 +277,7 @@ End ==
                     IF k = "line" /\ ~cut /\ q = pos /\ req = "post" THEN 2
                     ELSE IF filed(q) /\ ~settles THEN ch[q] - 1 ELSE ch[q]]
        /\ rec' = [q \in Qs |-> IF now(q) THEN "owed"
-                               ELSE IF rec[q] = "owed" /\ Tq(q) /\ ~cut /\ ev(q) THEN "closed"
+                               ELSE IF rec[q] = "owed" /\ Tq(q) /\ judged /\ ev(q) THEN "closed"
                                ELSE rec[q]]
        /\ own' = [q \in Qs |-> IF now(q) THEN ownq(q) ELSE own[q]]
        /\ lq' = IF lateq THEN CHOOSE q \in mk : TRUE ELSE lq
@@ -338,6 +353,7 @@ TypeOK ==
     /\ lq \in 0..2 /\ lown \in BOOLEAN /\ gone \in BOOLEAN /\ (gone => lq # 0)
     /\ MUT \subseteq {"noCutRecord", "postOnly", "noSecondChance", "partialRecord",
                       "callRecords", "actionOwed", "keepOpen", "relookAll", "vagueConsent",
-                      "lateReplace", "lateNoEvidence", "fillerSettles", "ownWordsKeep"}
+                      "lateReplace", "lateNoEvidence", "fillerSettles", "ownWordsKeep",
+                      "prefixLexical"}
     /\ cown \in BOOLEAN /\ seen \subseteq Qs /\ nu \subseteq carried /\ ASIDE \in BOOLEAN
 =============================================================================

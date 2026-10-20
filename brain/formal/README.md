@@ -215,7 +215,7 @@ answer. The trigger was retired as "already given", and "I'm ready." got a secon
 |---|---|---|
 | the **record** | what the caller is still owed, outside the conversation: `none` (consult running) → `owed` → `closed` (or `dropped`, evicted unheard: not modelled) | `owed.Record`, kept by `owed.Owed` (one per session) |
 | the **note** | rendered into every request from the record while it is owed, never stored | `owed.render(messages, records, purpose)`, called by the render hook in `BoundedOpenAILLMService._open_stream` through `Owed.view` |
-| the **evidence** | the caller heard every item of the outcome; for an item with no terms, an uncut telling run | `Record.closes_on`, fed by the settle feed (`Owed.settle`) |
+| the **evidence** | the caller heard every item of the outcome; for an item with no terms, an uncut telling run. **Coverage is lexical, a cut is judged:** a reply played to the end closes by the lexical rule on its whole text; a cut one only if its whole text covers the record by that rule and an LLM judge, shown the question, the heard prefix and the unheard rest, answers HEARD | `Record.closes_on` (coverage), `Owed._judge` (a cut), fed by the settle feed (`Owed.settle`) |
 
 A sync tool's answer (web_search, web_fetch) joins the same book as a record when a
 telling of it is cut before the caller heard it (#204); how it is filed is
@@ -333,8 +333,8 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 
 | row | what | verdict | the counterexample, or the state count |
 |---|---|---|---|
-| `ow_design` | the design as the model corrected it (`anyMiss`, `about`), with partial and silent runs, `MaxSpeech = 6` | holds, all 11 safety properties | 21,486 states |
-| `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolves` | 17,066 states |
+| `ow_design` | the design as the model corrected it (`anyMiss`, `about`), with partial and silent runs, `MaxSpeech = 6` | holds, all 11 safety properties | 23,694 states |
+| `ow_design_live` | the same under `FairSpec`, `MaxSpeech = 5` | holds `OwedResolves` | 18,806 states |
 | `ow_asWritten_closed` | DESIGN §3 as written (`RUNCLOSE = "uncut"`) | ✗ `ClosedOnEvidence` | the landing run tells one item of two and plays through; "uncut run" closes it |
 | `ow_asWritten_live` | DESIGN §4 as written (`REOFFER = "cutOrTurn"`) | ✗ `OwedResolves` | the landing run produces no audio; with no cut and no caller turn, nothing ever arms the re-offer (the hold cap's drop does the same) |
 | `ow_fraction` | today's ≥ 1/3 of the words | ✗ `ClosedOnEvidence` | the run is cut after a lead-in or partway into the items, and the fraction closes it (#203) |
@@ -354,11 +354,15 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_endClearsTool` | the gate's turn half ends at a completion's End even with its call out (`FollowupGate` before the review round: `_turn` cleared by the `LLMFullResponseEndFrame`) | ✗ `NoRunMidTurn` | a caller request in flight without the note; the answer lands, the run waits; the reply is "Let me check." + a sync tool call, its line plays, its End clears the turn, and the run goes before the tool's answer (10 steps) |
 | `ow_staleFlag` | the gate's tool round as ONE flag, set by a call's `FunctionCallInProgressFrame` (`FollowupGate` before the second review round). The frame is uninterruptible: it waits in the TTS's and the transport's queues and reaches the gate after the barge-in that cancelled the call (`Mark` after `TurnStart`) | ✗ `OwedResolves` | the answer lands, the run waits; the caller's reply is a sync call, the caller barges in (the call cancelled, the run dropped, the re-offer armed), the stale in-progress frame sets the flag, the turn commits no words: no completion clears the flag, the door and the lull stay shut for good (13 steps) |
 | `ow_adoptDropsKeys` | the commit that adopts a speculative reply registers none of the keys its note carried (`BoundedOpenAILLMService.get_chat_completions` read `owed_noted` off `speculate._AdoptedStream`, which never had it: Fable's final review) | ✗ `NoRepeatRecital` | the caller's turn tells it all through an adopted stream; the record stays owed, the lull re-offers, and the run tells it again (12 steps) |
-| `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 20,566 states |
-| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 16,314 states |
+| `ow_failure` | `OUTCOME = "failure"` (one term-less item), the design (`RUNCLOSE = "about"`): a noted reply about the record, heard to its end, closes it | holds, every safety property | 22,678 states |
+| `ow_failure_live` | the same under `FairSpec` | holds `OwedResolves` | 17,976 states |
 | `ow_failure_runOnly` | a failure closed only by an uncut run (`RUNCLOSE = "terms"`, the code before Fable's review) | ✗ `NoRepeatRecital` | the landing run tells it and is cut after its last word (or the caller's own turn tells it in full); it stays owed, and the lull's re-offer tells it again (11 steps) |
 | `ow_flaky` | `FLAKY` | ✗ `NoRedundantLookup` | the caller's turn carries the note, and the model looks it up again anyway |
-| `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 34,884 states |
+| `ow_flaky_rest` | `FLAKY`, every other property, `MaxSpeech = 6` | holds | 38,896 states |
+| `ow_judgeWrong` | the cut judge answers HEARD with part of the answer unheard | ✗ `ClosedOnEvidence` | the run is cut after a lead-in; HEARD closes it (7 steps). The measured residual: 1/145 false closes by majority vote on 241 live cuts |
+| `ow_prefixLexical` | a cut decided by the lexical rule on the heard prefix (a8fa2ba) | ✗ `ClosedOnEvidence` | the run is cut after each item's content words, before its facts ("words"): two terms an item close it (10 steps). Measured: 89/145 false closes on the same cuts |
+| `ow_judgeOwes` | `OWES`: the judge answers OWED, or not within `SETTLE_WAIT_S`, though all was heard | ✗ `NoRunAfterHeard` | the run is cut after its last fact; OWED keeps the record owed and the lull re-offers it (10 steps). The residual: 14/96 false owes, at the trailing edge |
+| `ow_judgeOwes_rest` | `OWES`, every other property but the repeat and the stale note | holds | 42,588 states |
 
 `NoRedundantLookup` is a rate the model shows, not something the design guarantees.
 gpt-oss re-looked-up with the note in view 1/20 in round 1. The design's claim is the
@@ -368,6 +372,27 @@ loses or repeats an answer. (A second consult's own record is outside this model
 `check.sh` gates the liveness rows too. TLC does not name the temporal property that
 fell, so a liveness row's cfg checks exactly one `PROPERTY`, and the gate takes that one
 as the name.
+
+### A cut is judged, coverage is lexical (#204, 2026-10-20)
+
+On 241 cuts of 12 live tellings (each cut after every word, labelled heard once every fact
+that answers the question has been spoken), the lexical rule on the heard prefix closed
+89 of 145 that were not heard: two content words of an item close it, so "a high around
+seventy-five" closed the forecast before the low, and "the Orin Nano developer kit at two
+hundred" the price (2026-10-19 23:56, the caller's "Oren" leaving "orin" a term). An LLM
+judge shown the question, the heard prefix and the unheard rest closed 1 of 145 and kept
+14 of 96 heard ones owed, at the trailing edge (gpt-oss-120b, majority of 10; p50 0.34 s,
+p90 0.58 s). On whole tellings the lexical rule had no false owes and a whole-result judge
+over-owed 9 of 16. So the split: **a reply played to the end closes by the lexical rule
+(coverage); a cut closes only if its whole text covers the record by that rule and the
+judge answers HEARD** -- the cheap check decides with no call when the reply was not a
+telling of it. The sync record's "a cut after the answer was heard makes nothing" is the
+judge's verdict too. No verdict (no full text, no pts, a timeout at `SETTLE_WAIT_S`, an
+error, an unparsable reply) errs owed. `ow_prefixLexical`, `oa_prefixLexical`,
+`ow_judgeWrong` and `ow_judgeOwes` above. The settle now waits for the verdict: the reply
+stays pending, so the next render waits up to the call's latency (bounded by
+`SETTLE_WAIT_S`, past which the readers go on and the verdict applies on the live book --
+`OwedAnswers.tla`'s `LATE`).
 
 ### What the model changed in the design
 
@@ -564,7 +589,7 @@ ended), and its reply answers the caller's words instead -- taken for the tellin
 | `oa_ownWordsKeep` | a caller turn in words of their own leaves an older answer open (74c3509) | ✗ `RecordIsOwn` | the post-tool reply unheard; "Never mind. What's the capital of Australia?" answered and cut: the weather's record (9 steps: J2) |
 | `oa_streamCut_rest` | `STREAMCUT`: a telling cut mid-stream spends a reply | holds, all but `NoRedundantLookup` | 13,742 states |
 | `oa_streamCut` | the same | ✗ `NoRedundantLookup` | the residual: both replies end unsettled (unheard, then cut mid-stream), no record, the B0 shape (12 steps) |
-| `oa_late` | `LATE`: the bounded settle wait runs out; the settle re-reads the live book | holds, every property | 19,092 states |
+| `oa_late` | `LATE`: the bounded settle wait runs out; the settle re-reads the live book | holds, every property | 19,192 states |
 | `oa_noCutRecord` | no record from a cut answer (before #204's extension) | ✗ `NoRedundantLookup` | the telling is cut; the next turn looks it up again (9 steps; W-goahead 20/20) |
 | `oa_postOnly` | only the post-tool request carries the answer (5327336) | ✗ `NoRedundantLookup` | the caller's turn that dropped it tells it and is cut: no record (9 steps) |
 | `oa_noSecondChance` | the first reply only | ✗ `NoRedundantLookup` | the post-tool reply is unheard; the caller's turn tells it, cut: no record (12 steps) |
@@ -576,6 +601,7 @@ ended), and its reply answers the caller's words instead -- taken for the tellin
 | `oa_vagueConsent` | words with no terms are a re-lookup whenever a record is owed (9b602f8) | ✗ `NoRedundantLookup` | a record is owed; "Sure, go ahead." starts a new round, filed as a re-lookup; its cut telling, no record (13 steps: the fourth review's trace) |
 | `oa_lateReplace` | the late settle makes its record whatever the book holds (c8e046a) | ✗ `OwedUnheard` | the caller's turn told it in full meanwhile (12 steps) |
 | `oa_lateNoEvidence` | a reply rendered with the open answer is no evidence for the record made of it since | ✗ `OwedUnheard` | (12 steps) |
+| `oa_prefixLexical` | a sync cut judged by the lexical rule on the heard prefix (a8fa2ba) | ✗ `ToldOnHearing` | the telling is cut after its content words, before the price; taken for heard, no record (5 steps: 2026-10-19 23:56, "the developer kit at two hundred") |
 
 **What is accepted** (`test_owed.py` pins each). As before #204, no record: both replies
 unheard, said nothing of their own, or cut mid-stream; a telling that also calls again

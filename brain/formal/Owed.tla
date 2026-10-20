@@ -103,6 +103,17 @@
 (*                    _open_stream directly (speculate.py:148) and goes out *)
 (*                    bare.                                                 *)
 (*                                                                          *)
+(* A CUT is judged (owed.Owed._judge, #204): a reply played to the end    *)
+(* closes by the lexical rule on its whole text (coverage); a cut one only *)
+(* if its whole text covers the record and an LLM judge, shown the heard   *)
+(* prefix and the unheard rest, answers HEARD (Verdicts below).            *)
+(*   "judgeWrong"    -- the judge answers HEARD with part of the answer    *)
+(*                      unheard (the measured residual, 1/145).            *)
+(*   "prefixLexical" -- the rule before: the lexical rule on the heard     *)
+(*                      prefix (89/145 false closes on live cuts).         *)
+(* OWES: the judge answers OWED, or not in time, though all was heard     *)
+(*   (14/96, at the trailing edge): errs owed, and the lull may re-offer.  *)
+(*                                                                          *)
 (* REOFFER: what arms the one re-offer.                                     *)
 (*   "cutOrTurn" -- DESIGN.md §4 as written: an audible cut or a caller     *)
 (*                  turn since the answer landed.                           *)
@@ -144,7 +155,8 @@ CONSTANTS MaxSpeech,   \* bound on the caller's bursts of speech (VAD starts)
           OUTCOME,     \* "items" | "failure" (see the header)
           FLAKY,       \* a request carrying the note may still re-look-up
           PARTIAL,     \* a telling run may carry only some of the items
-          SILENT       \* a run's completion may produce no audio at all
+          SILENT,      \* a run's completion may produce no audio at all
+          OWES         \* the cut judge may answer OWED (or not in time) though all was heard
 
 Mut(m) == m \in MUT
 Runs   == {"run", "reoffer"}        \* the brain's own, unprompted requests
@@ -236,9 +248,12 @@ Init ==
 PlayGot(s) == CASE s = "tell" -> "all"
                 [] s = "part" -> "some"
                 [] OTHER      -> "filler"          \* defer, other, lookup's ack
+\* "words": a cut after every item's content words but before its facts were all out --
+\* "a high around seventy-five" before the low, "the developer kit at two hundred" before
+\* "forty-nine" (2026-10-19 23:56). Two content words of each item, not what answers it.
 CutGot(s, p) ==
     IF p = "gen" THEN {"nothing"}
-    ELSE CASE s = "tell" -> {"lead", "some", "all"}
+    ELSE CASE s = "tell" -> {"lead", "some", "words", "all"}
            [] s = "part" -> {"lead", "some"}
            [] OTHER      -> {"filler"}
 
@@ -248,9 +263,24 @@ CutGot(s, p) ==
 RunUncut(p, cut, g) ==
     RUNCLOSE = "uncut" /\ p \in Runs /\ ~cut /\ g \in {"some", "all"}
 
+\* A CUT is decided by the judge (owed.Owed._judge: an LLM asked whether the unheard rest
+\* holds anything the caller still needs), called only when the reply's whole text covers
+\* the record by the lexical rule (a telling of every item, `s = "tell"`): HEARD, OWED, or
+\* none (a timeout, an error -- errs owed). The premise, measured on 241 live cuts: HEARD
+\* means all was heard (1/145 false HEARD by majority; judgeWrong is that residual). OWES
+\* lets it answer OWED, or not in time, when all was heard (14/96 false OWED, at the
+\* trailing edge). prefixLexical is the rule before: the heard PREFIX by the lexical rule,
+\* which closes on "words" (89/145 false closes).
+Verdicts(s, r) ==
+    IF s # "tell" THEN {"skip"}                                  \* coverage fails: no call
+    ELSE (IF r = "all" THEN {"heard"} \cup (IF OWES THEN {"owed", "none"} ELSE {})
+          ELSE {"owed", "none"})
+         \cup (IF Mut("judgeWrong") THEN {"heard"} ELSE {})
+
 \* owed.py's close rule, on one ended reply. Only a reply whose request carried the
-\* note can close (§3: "when it carried the note in its request").
-Closes(p, n, cut, g) ==
+\* note can close (§3: "when it carried the note in its request"). A reply played through:
+\* the lexical rule on its whole text (coverage). A cut: the judge's verdict `v`.
+Closes(p, n, cut, g, v) ==
     /\ n
     /\ IF     Mut("fraction")    THEN p \in Runs /\ g \in {"lead", "some", "all"}
        \* singleWord keeps the per-item rule: only the common-word list and the "2" are gone,
@@ -258,6 +288,8 @@ Closes(p, n, cut, g) ==
        ELSE IF Mut("singleWord") THEN RunUncut(p, cut, g) \/ g \in {"filler", "all"}
        ELSE IF Mut("oneItem")    THEN RunUncut(p, cut, g) \/ g \in {"some", "all"}
        ELSE IF Mut("countSettle") THEN FALSE        \* the count below decides
+       ELSE IF cut /\ Mut("prefixLexical") THEN g \in {"words", "all"}
+       ELSE IF cut THEN v = "heard"
        \* one term-less item. Before "about": only a run played through uncut. "about":
        \* any noted reply about it, heard to its end -- played through, or cut after its
        \* last word (the ledger's pts-exact prefix is all of it): `g = "all"`
@@ -282,14 +314,15 @@ Reads(cut, g) ==
     IF Mut("ledgerMax") /\ cut
       THEN CASE g = "lead" -> {"lead", "some"}
              [] g = "some" -> {"some", "all"}
+             [] g = "words" -> {"words", "all"}
              [] OTHER      -> {g}
       ELSE {g}
 
 Finish(cut, g) ==
-    \E r \in Reads(cut, g) :
+    \E r \in Reads(cut, g) : \E v \in (IF cut THEN Verdicts(say, r) ELSE {"skip"}) :
       LET u  == IF Mut("countSettle") /\ nreg /\ ~cut /\ g # "nothing"
                   THEN (IF uncut < 2 THEN uncut + 1 ELSE 2) ELSE uncut
-          c  == Closes(req, nreg, cut, r) \/ (Mut("countSettle") /\ u = 2)
+          c  == Closes(req, nreg, cut, r, v) \/ (Mut("countSettle") /\ u = 2)
       IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ nreg' = FALSE
          /\ say' = "none" /\ ph' = "none"
          /\ heard' = (heard \/ g = "all")
@@ -300,7 +333,7 @@ Finish(cut, g) ==
 \* Did a run end without closing the record? Under "anyMiss" that arms the re-offer.
 MissedRun(cut, g) ==
     /\ REOFFER = "anyMiss" /\ req \in Runs /\ st = "owed"
-    /\ ~Closes(req, nreg, cut, g)
+    /\ ~Closes(req, nreg, cut, g, "skip")
 
 (* ============================ the record (owed.py) ============================ *)
 
@@ -640,11 +673,12 @@ TypeOK ==
     \* the model's one-slot queue at the LLM is enough: a held post-tool answer and a
     \* queued request never coexist (a turn start drops the one, a commit needs a turn)
     /\ ~(hPost /\ q # "none")
-    /\ ended \in BOOLEAN /\ got \in {"none", "nothing", "lead", "filler", "some", "all"}
+    /\ ended \in BOOLEAN /\ got \in {"none", "nothing", "lead", "filler", "some", "words", "all"}
+    /\ OWES \in BOOLEAN
     /\ MUT \subseteq {"fraction", "countSettle", "singleWord", "oneItem", "storeNote",
                       "runAfterCut", "lagSettle", "oneSlot", "askOnly", "turnLevel",
                       "vadLevel", "renderInGet", "ledgerMax", "endClearsTool",
-                      "staleFlag", "adoptDropsKeys"}
+                      "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
 =============================================================================

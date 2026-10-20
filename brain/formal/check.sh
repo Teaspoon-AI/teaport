@@ -135,6 +135,10 @@ run Owed.tla ow_failure_live      "(expected: holds — a failure record: OwedRe
 run Owed.tla ow_failure_runOnly   "(expected: FAILS NoRepeatRecital — a failure closed only by an uncut run: heard to its end on any other path, it is re-offered)"
 run Owed.tla ow_flaky             "(expected: FAILS NoRedundantLookup — FLAKY (measured 1/20 in round 1): a re-lookup with the note in view)"
 run Owed.tla ow_flaky_rest        "(expected: holds — FLAKY: every other property; a re-lookup costs time, never a lost or repeated answer)"
+run Owed.tla ow_judgeWrong        "(expected: FAILS ClosedOnEvidence — the cut judge answers HEARD when the rest held part of the answer (the residual, 1/145 measured): the record closes unheard)"
+run Owed.tla ow_prefixLexical     "(expected: FAILS ClosedOnEvidence — a cut decided by the lexical rule on the heard prefix (a8fa2ba): two content words of each item close it before its facts are out)"
+run Owed.tla ow_judgeOwes         "(expected: FAILS NoRunAfterHeard — OWES, the residual: the judge answers OWED (or not in time) though all was heard (14/96 measured, at the trailing edge); the record stays owed and the lull re-offers it)"
+run Owed.tla ow_judgeOwes_rest    "(expected: holds — OWES: every property but the re-offer's repeat of what was heard)"
 echo
 echo "OwedAnswers.tla — how a sync tool's answer becomes owed (#204): position, one more reply, the narrow re-lookup"
 run OwedAnswers.tla oa_design          "(expected: holds — position only: an answer's first reply settles it if it says something of its own, one more if it did not; a caller turn in words of their own ends it; a round is a record's re-lookup only in the turn right after its cut)"
@@ -157,6 +161,7 @@ run OwedAnswers.tla oa_relookAll       "(expected: FAILS NoRedundantLookup — e
 run OwedAnswers.tla oa_vagueConsent    "(expected: FAILS NoRedundantLookup — a round whose words carry no terms is a re-lookup whenever a record is owed (9b602f8; the fourth review's trace): \"Sure, go ahead.\" swallowed)"
 run OwedAnswers.tla oa_lateReplace     "(expected: FAILS OwedUnheard — the late settle makes its record whatever the book holds: after a full telling)"
 run OwedAnswers.tla oa_lateNoEvidence  "(expected: FAILS OwedUnheard — a reply rendered with the open answer is no evidence for the record made of it since: told in full, still owed)"
+run OwedAnswers.tla oa_prefixLexical   "(expected: FAILS ToldOnHearing — a sync cut judged by the lexical rule on the heard prefix (a8fa2ba): \"the developer kit at two hundred\" taken for heard, no record)"
 echo
 echo "UserTurn.tla — whether the user can interrupt the bot at all"
 echo "  (the precondition Ledger/LedgerPlayout's Interrupt action takes for granted)"
