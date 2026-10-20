@@ -11,6 +11,7 @@
 # Run: python test_thinking_sound.py   (or via pytest test_suite.py)
 #
 import os
+import struct
 import sys
 import wave
 
@@ -88,7 +89,17 @@ def test_a_bad_override_plays_the_bed_and_is_left_alone():
     _write_wav(torn, np.arange(4800))
     with open(torn, "r+b") as f:
         f.truncate(os.path.getsize(torn) - 1)        # an odd byte count of samples
-    for path in (d, stereo, text, torn, os.path.join(d, "missing.wav")):
+    # A LIST chunk that claims 2 bytes past the RIFF end: wave raises RuntimeError.
+    past_end = os.path.join(d, "past-riff-end.wav")
+    fmt = struct.pack("<4sIHHIIHH", b"fmt ", 16, 1, 1, ts._SR, 2 * ts._SR, 2, 16)
+    info = b"INFOISFT" + struct.pack("<I", 6) + b"Lavf\0\0"
+    with open(past_end, "wb") as f:
+        f.write(b"RIFF" + struct.pack("<I", 4 + len(fmt) + 8 + len(info)) + b"WAVE" + fmt
+                + b"LIST" + struct.pack("<I", len(info) + 2) + info
+                + b"data" + struct.pack("<I", 9600) + bytes(9600))
+    short = os.path.join(d, "short.wav")
+    _write_wav(short, np.ones(ts._SR * ts._CHUNK_MS // 1000 - 1))   # not one whole chunk
+    for path in (d, stereo, text, torn, past_end, short, os.path.join(d, "missing.wav")):
         before = _contents(path)
         assert np.array_equal(_load_with(path), BED), path
         assert _contents(path) == before, f"{path} was written"

@@ -52,9 +52,15 @@ def freeze_startup_objects() -> None:
     """Move everything alive at startup (the imported modules, the brain's own
     singletons) into gc's permanent generation, so no later collect walks it. Called
     once, when the server is up and before the first session: a session's objects must
-    stay collectable, or the cycles a torn-down pipeline leaves would never be freed."""
+    stay collectable, or the cycles a torn-down pipeline leaves would never be freed.
+
+    Then hand back the pages startup's temporaries freed (the typing bed's synthesis
+    alone leaves ~9 MB in the heap): glibc keeps them until a trim, and the first
+    session-end trim may be hours away. No session is running yet, so its stall
+    (release_heap) costs nothing here."""
     gc.collect()
     gc.freeze()
+    _malloc_trim(0)
     logger.info(f"gc: {gc.get_freeze_count()} startup objects frozen")
 
 

@@ -226,12 +226,19 @@ def _load_pcm() -> np.ndarray:
     if _WAV:
         try:
             with wave.open(_WAV, "rb") as w:
-                if (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (_SR, 1, 2):
-                    return np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16)
-            logger.warning(f"thinking_sound: {_WAV} is not 24 kHz mono 16-bit; "
-                           "playing the synthesized bed")
-        except (OSError, EOFError, wave.Error, ValueError) as e:   # ValueError: a torn file
-            logger.warning(f"thinking_sound: can't read {_WAV} ({e}); playing the synthesized bed")
+                playable = (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (_SR, 1, 2)
+                pcm = np.frombuffer(w.readframes(w.getnframes()), dtype=np.int16) if playable else None
+            if pcm is None:
+                logger.warning(f"thinking_sound: {_WAV} is not 24 kHz mono 16-bit; "
+                               "playing the synthesized bed")
+            elif len(pcm) < _SR * _CHUNK_MS // 1000:       # not one chunk: no bed at all
+                logger.warning(f"thinking_sound: {_WAV} is shorter than {_CHUNK_MS} ms; "
+                               "playing the synthesized bed")
+            else:
+                return pcm
+        except Exception as e:  # noqa: BLE001 — wave raises more than wave.Error: OSError,
+            # EOFError, ValueError (a torn file), RuntimeError (a chunk past the RIFF end)
+            logger.warning(f"thinking_sound: can't read {_WAV} ({e!r}); playing the synthesized bed")
     return _synthesize()
 
 
