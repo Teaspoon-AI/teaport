@@ -86,7 +86,7 @@
 # ({"type": "phonemes"}, engine_tts.py), and each is sent as {"phoneme": "a"} when it
 # becomes audible, beside the level's "hiss" (how much of the chunk is s, sh, f:
 # hiss_level) for a mouth that shows its teeth on them -- to an avatar that draws them. Only audio a caption has
-# vouched for counts as speech: the brain's thinking sound (a typing loop during a long
+# vouched for counts as speech: the brain's thinking sound (typing during a long
 # consult) is audio too, and it shows as "thinking", jaw shut. Datagrams are
 # fire-and-forget: no daemon, no face, nothing else changes.
 #

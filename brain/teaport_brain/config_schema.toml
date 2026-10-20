@@ -1317,7 +1317,7 @@ max = 1
 default = 0.8
 read = "startup"
 tier = "tuning"
-help = "Bed level; 1.0 is the synthesized peak."
+help = "Bed level; 1.0 is the typing's limited peak (-6 dBFS)."
 
 [[settings]]
 name = "TEAPORT_THINKING_MAX_S"
@@ -1379,7 +1379,7 @@ type = "path"
 default = ""
 read = "startup"
 tier = "tuning"
-help = "Your own 24 kHz mono 16-bit wav to play as the thinking bed. Empty = the synthesized typing bed, built when the brain starts."
+help = "Your own 24 kHz mono 16-bit wav to loop as the thinking bed. Empty = typing generated live."
 
 # ---- tools
 
