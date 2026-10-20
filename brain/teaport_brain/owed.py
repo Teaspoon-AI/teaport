@@ -55,6 +55,7 @@
 import asyncio
 import json
 import re
+import time
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -120,6 +121,42 @@ FOOTER = ("Say only what a result says. If they want something it doesn't includ
           "fill it in yourself, and never read out web addresses. Don't look up again what a "
           "result already answers. If they're busy with something else or asked you to "
           "wait, don't push it.")
+
+# The cut judge (Owed._judge): a reply cut while it played closes a record only if an LLM,
+# shown the caller's question, what they heard and the rest they did not, answers HEARD
+# (#204, 2026-10-20). Measured on 241 cuts of 12 live tellings (gpt-oss-120b, majority of
+# 10): 1/145 false HEARD, 14/96 false OWED at the trailing edge, p50 0.34 s, p90 0.58 s --
+# where the lexical rule on the heard prefix had 89/145 false closes. The text is that
+# experiment's ("rest"); tests/eval_cut_judge.py replays it.
+CUT_JUDGE_PROMPT = (
+    "A voice assistant was answering someone on a phone call and got cut off. You see "
+    "their question, what they actually heard, and the rest they did not hear. Decide "
+    "whether the unheard rest contains anything they still need: any part of the answer to "
+    "their question (a name, number, date, time, place or item) that the heard part did "
+    "not already give them, including the end of a number or name that was cut off "
+    "midway. Pleasantries, offers of more help, repetition of what they already heard and "
+    "side details beyond the question don't count. Reply with exactly one word: OWED if "
+    "the rest contains something they still need, HEARD if not.")
+
+
+def cut_judge_messages(question: str, heard: str, rest: str) -> list:
+    """The judge's request, as the experiment asked it."""
+    return [{"role": "system", "content": CUT_JUDGE_PROMPT},
+            {"role": "user", "content": f"Their question: {question}\n\nWhat they heard:\n"
+                                        f"\"{heard}\"\n\nThe rest, which they did not hear:\n"
+                                        f"\"{rest}\""}]
+
+
+def cut_judge_verdict(reply_text: str) -> Optional[bool]:
+    """The judge's answer: True for HEARD, False for OWED, None for anything else."""
+    t = (reply_text or "").strip().upper()
+    return True if t.startswith("HEARD") else False if t.startswith("OWED") else None
+
+
+def _rest(text: str, heard: str) -> str:
+    """The words of `text` after the cut: the heard prefix is the first words of it."""
+    return " ".join((text or "").split()[len((heard or "").split()):])
+
 
 # The re-offer's way to say nothing (round 5: without it the model re-offered 40/40
 # after "hold on", whatever the wait clause said). Offered only in the re-offer run's
@@ -379,21 +416,22 @@ class Record:
         rec.items = _record_items(outcome, request, failure)
         return rec
 
-    def closes_on(self, heard_text: Optional[str], *, whole: bool, run: bool) -> bool:
-        """The close rule, on one reply that carried the note: every item heard -- an
-        item with terms by its terms in the reply's pts-exact heard text; one without (a
-        failure, a bare "done") when the reply was heard to its end (`whole`: it played
-        through with audio, or was cut after its last word) and was a run of ours or is
-        about this record (Owed.tla Closes, RUNCLOSE = "about": the failure the caller's
-        own turn told in full is not re-offered; an unrelated reply shares nothing with
-        the request). `heard_text` None: no pts-exact prefix (the reply was cut and its
-        words carried no pts), which closes nothing."""
+    def closes_on(self, heard_text: Optional[str], *, run: bool) -> bool:
+        """COVERAGE, the lexical rule: does `heard_text`, heard IN FULL, tell this record
+        -- every item, an item with terms by its terms; one without (a failure, a bare
+        "done") when the reply was a run of ours or is about this record (Owed.tla
+        Closes, RUNCLOSE = "about": the failure the caller's own turn told in full is not
+        re-offered; an unrelated reply shares nothing with the request). A reply played
+        to its end closes by it; a CUT reply is judged (Owed._judge), this only gating
+        the call on the reply's whole text. Never read on a cut's heard prefix: two
+        content words close an item before its facts are out (formal/Owed.tla
+        prefixLexical; 89/145 false closes on live cuts)."""
         heard = set(spoken_tokens(heard_text)) if heard_text else set()
         for _, terms in self.items:
             if terms:
                 if not item_heard(terms, heard):
                     return False
-            elif not (whole and heard_text and (run or self.about(heard_text))):
+            elif not (heard_text and (run or self.about(heard_text))):
                 return False
         return True
 
@@ -583,10 +621,15 @@ class Owed:
     dropped at its hold cap and the session's end through its callbacks. The lull is the
     book's own task."""
 
-    def __init__(self, context, gate=None, *, answer_tools=frozenset(),
+    def __init__(self, context, gate=None, *, answer_tools=frozenset(), judge=None,
                  reoffer_quiet_s: float = None):
         self.context = context
         self.gate = gate
+        # The cut judge: async (question, heard, rest) -> True (HEARD) | False (OWED) |
+        # None (no verdict) -- services.BoundedOpenAILLMService.judge_cut. None: no
+        # verdict ever, every cut errs owed.
+        self.judge = judge
+        self._judging: set = set()            # the verdicts still to come (tasks)
         # The tools whose result is an answer (tools.ANSWER_TOOLS): a cut telling of one
         # is owed (Owed._resolve). An action's confirmation never is.
         self.answer_tools = frozenset(answer_tools)
@@ -861,15 +904,23 @@ class Owed:
         """A reply ended (the settle feed: TranscriptLedger, at the interruption that cut
         it or once all of its audio has played). `heard`: its pts-exact heard text -- all
         of it when it played through, None when cut with no per-word pts; `text`: all of
-        it, when its stream ended (None when cut before that). Applies the close rule to
-        every record its request carried the note for (Owed.tla Finish -> Settle), and
-        files the sync answers it may settle (_resolve)."""
+        it, when its stream ended (None when cut before that).
+
+        Coverage is lexical, a cut is judged (formal/Owed.tla Closes, Verdicts): a reply
+        played to its end closes every record its request carried the note for that its
+        text covers (closes_on). A cut one closes such a record only if its whole text
+        covers it AND the judge, shown the heard prefix and the unheard rest, answers
+        HEARD; the sync answers it settles (_resolve) make their record unless it does.
+        The reply stays pending -- the readers wait (settled()) -- until the verdicts
+        are in; past SETTLE_WAIT_S they go on, and the verdicts apply on the live book
+        when they come (OwedAnswers.tla LATE). No verdict -- no judge, no heard prefix,
+        no whole text, a timeout, an error -- errs owed."""
         if reply is None or reply.settled:
             return
         reply.settled = True
-        self._unblock([reply])
         run = reply.kind in RUNS
-        missed = []
+        judgeable = cut and audio and bool(heard) and bool(text)
+        missed, asks = [], []
         # A reply rendered with a fresh answer is evidence for the record made of it
         # since (a late settle's: OwedAnswers.tla lateNoEvidence).
         made = {r for t in reply.fresh if (r := self._answers[t].record) is not None}
@@ -877,12 +928,11 @@ class Owed:
             rec = self._records.get(key)
             if rec is None or rec.state != OWED:
                 continue
-            if rec.closes_on(heard, whole=audio and not cut, run=run):
-                rec.state = CLOSED
-                rec.missed = False
-                logger.info(f"OWED: {key} closed -- heard by the {reply.kind} reply "
-                            f"({'cut' if cut else 'played through'}): {(heard or '')[:80]!r}")
+            if not cut and rec.closes_on(heard, run=run):
+                self._close(rec, reply, cut, heard)
                 continue
+            if judgeable and rec.closes_on(text, run=run):
+                asks.append(rec)
             # Quoted only when about the record: the #203 session would otherwise have
             # quoted a clarifying question as the answer (test_owed_corpus.py).
             if cut and heard and heard.strip() and (run or rec.about(heard)):
@@ -892,24 +942,82 @@ class Owed:
                 # both arm the re-offer: REOFFER = "anyMiss".
                 missed.append(rec)
             logger.info(f"OWED: {key} still owed after the {reply.kind} reply "
-                        f"({'cut' if cut else 'played through' if audio else 'no audio'}; "
-                        f"heard {(heard or '')[:60]!r})")
+                        f"({'cut' if cut else 'played through' if audio else 'no audio'}"
+                        f"{', for the judge' if rec in asks else ''}; heard {(heard or '')[:60]!r})")
         self._arm(missed)
-        self._resolve(reply, heard, cut=cut, audio=audio, text=text)
+        ids, request = self._resolve(reply, heard, cut=cut, audio=audio, text=text)
+        questions = {r.request for r in asks} | ({request} if ids and cut and request else set())
+        if not (judgeable and questions and self.judge is not None):
+            self._apply(reply, asks, ids, request, heard, text, cut, {})
+            return
+        task = asyncio.get_running_loop().create_task(
+            self._judged(reply, asks, ids, request, heard, text, questions))
+        self._judging.add(task)
+        task.add_done_callback(self._judging.discard)
+
+    async def _judged(self, reply, asks, ids, request, heard, text, questions) -> None:
+        rest = _rest(text, heard)
+        qs = sorted(questions)
+        verdicts = dict(zip(qs, await asyncio.gather(*(self._judge(q, heard, rest)
+                                                       for q in qs))))
+        self._apply(reply, asks, ids, request, heard, text, True, verdicts)
+
+    async def _judge(self, question: str, heard: str, rest: str) -> Optional[bool]:
+        """One verdict, bounded by SETTLE_WAIT_S; None (errs owed) past it or on error."""
+        if not rest.strip():
+            return True                       # nothing was left unheard
+        started = time.monotonic()
+        try:
+            verdict = await asyncio.wait_for(self.judge(question, heard, rest), SETTLE_WAIT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 -- a judge failure errs owed, never breaks
+            verdict, why = None, f" ({type(e).__name__})"
+        else:
+            why = ""
+        logger.info(f"OWED: judge {'HEARD' if verdict else 'OWED' if verdict is False else 'none'}"
+                    f"{why} in {time.monotonic() - started:.2f}s on {question[:50]!r}: heard "
+                    f"{heard[-50:]!r}, rest {rest[:50]!r}")
+        return verdict
+
+    def _apply(self, reply, asks, ids, request, heard, text, cut, verdicts) -> None:
+        """The verdicts on the LIVE book: a record still owed closes on HEARD (a late
+        verdict never closes what another reply already did, nor reopens); the sync
+        answers still open are told on HEARD, else made the record (_cut_answer)."""
+        for rec in asks:
+            if verdicts.get(rec.request) and rec.state == OWED:
+                self._close(rec, reply, cut, heard)
+        if ids:
+            ids = [t for t in ids if self._answers[t].replies]
+            rec = (self._cut_answer(tuple(ids), request, text, heard)
+                   if ids and cut and not verdicts.get(request) else None)
+            if rec is not None and reply.turn == self._turn:
+                # No caller turn has rendered since the cut (a late settle opens none).
+                self._relook = rec.key
+            for t in ids:
+                self._answers[t].replies = 0
+                self._answers[t].record = rec.key if rec is not None else None
+        self._unblock([reply])
+
+    def _close(self, rec: Record, reply: Reply, cut: bool, heard: Optional[str]) -> None:
+        rec.state = CLOSED
+        rec.missed = False
+        logger.info(f"OWED: {rec.key} closed -- heard by the {reply.kind} reply "
+                    f"({'cut, judged' if cut else 'played through'}): {(heard or '')[:80]!r}")
 
     def _resolve(self, reply: Reply, heard: Optional[str], *, cut: bool, audio: bool,
-                 text: Optional[str]) -> None:
-        """The sync answers `reply` may settle, as the LIVE book holds them now (a late
-        settle reads them after other replies may have: OwedAnswers.tla lateReplace).
-        By position only: a reply that calls nothing, played audio and says something
-        of its own settles them -- heard in full, told; cut after its stream ended, the
-        record (_cut_answer). Any other reply -- no audio, a line before another call,
-        nothing of its own ("Sure, take your time.": OwedAnswers.tla fillerSettles), a
-        telling cut before its stream ended (a fragment: partialRecord; the residual
-        streamCut, logged so it can be measured) -- spends one of their replies."""
+                 text: Optional[str]) -> tuple:
+        """The sync answers `reply` settles, by position only: a reply that calls nothing,
+        played audio and says something of its own settles them -- heard in full, told;
+        cut after its stream ended, the record unless the judge says it was heard
+        (_apply). Any other reply -- no audio, a line before another call, nothing of its
+        own ("Sure, take your time.": OwedAnswers.tla fillerSettles), a telling cut
+        before its stream ended (a fragment: partialRecord; the residual streamCut, logged
+        so it can be measured) -- spends one of their replies here. Returns (ids, their
+        question), () if it settles none."""
         ids = [t for t in reply.fresh if self._answers[t].replies]
         if not ids:
-            return
+            return (), ""
         request = self._answers[ids[-1]].request
         if (not audio or reply.calls or (cut and not text)
                 or not terms_of(text or "", request)):
@@ -919,32 +1027,23 @@ class Owed:
                             "(STREAMCUT)")
             for t in ids:
                 self._answers[t].replies -= 1
-            return
-        rec = self._cut_answer(tuple(ids), request, text, heard) if cut else None
-        if rec is not None and reply.turn == self._turn:
-            # No caller turn has rendered since the cut (a late settle opens none).
-            self._relook = rec.key
-        for t in ids:
-            self._answers[t].replies = 0
-            self._answers[t].record = rec.key if rec is not None else None
+            return (), ""
+        return tuple(ids), request
 
     def _cut_answer(self, ids: tuple, request: str, text: str,
                     heard: Optional[str]) -> Optional[Record]:
         """A telling of the sync answers `ids`, cut before it was heard (#204;
         formal/OwedAnswers.tla End, LateSettle): its whole text is owed, to the caller's words that
         asked for it -- not the tool's query (the replay: 19/20 wait at "hold on" with the
-        caller's words, 15/20 with the query) -- keyed by the round's tool_call_ids. The
-        close rule on the cut's own heard prefix first: a cut after the answer was heard
-        makes nothing; so does a round nobody asked for. No run: the caller's turn that
+        caller's words, 15/20 with the query) -- keyed by the round's tool_call_ids. A cut
+        the judge found heard makes nothing (_apply), nor does a round nobody asked for.
+        No run: the caller's turn that
         cut it carries the note; the cut arms the one re-offer. None when nothing is owed
         (the answer is then told)."""
         outcome = clean_outcome(text)
         if not request or not has_speech(outcome):
             return None
         rec = Record.make(ids[0], request, outcome, ids=ids, heard_quote=(heard or "").strip())
-        if rec.closes_on(heard, whole=False, run=False):
-            logger.info(f"OWED: a sync answer cut after it was heard: {(heard or '')[:60]!r}")
-            return None
         self._owe(rec, f"a sync answer to {request[:60]!r} cut at {(heard or '')[:60]!r}")
         self._arm([rec])
         return rec
@@ -962,6 +1061,8 @@ class Owed:
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()
+        for task in list(self._judging):
+            task.cancel()
 
     def snapshot(self) -> list:
         """The owed records, for a conversation kept across the room's sleep."""

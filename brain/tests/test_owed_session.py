@@ -131,6 +131,9 @@ class Rig:
         transport = TalkTransport()
         session = build_agent_session(transport, front_end="talk")
         self.session, self.owed = session, session.owed
+        assert self.owed.judge == session.llm.judge_cut, "the session's cut judge"
+        # The scripted provider answers the turns; a cut is never judged here (errs owed).
+        self.owed.judge = None
         inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
         procs = inner.processors
         first = next(i for i, p in enumerate(procs) if isinstance(p, LLMUserAggregator))

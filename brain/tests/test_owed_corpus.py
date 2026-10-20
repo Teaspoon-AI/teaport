@@ -8,6 +8,9 @@
 # heard text as charted): every consult outcome that session landed, against every
 # telling, deferral and waiting line it had. The target is DESIGN §3's: no false close.
 # A false "still owed" costs one mention (0/60 in the replays) and is counted, not failed.
+# Since 2026-10-20 this is COVERAGE: a reply heard to its end closes by it, and a cut one is
+# judged (owed.Owed._judge), the rule only gating the call on the reply's whole text --
+# it is never read on a cut's heard prefix (tests/test_cut_judge_eval.py has the cuts).
 #
 # Labels are what the caller got: "heard" when the line carried every item of the
 # outcome, "owed" when it did not -- a lead-in, a deferral, one story of five, a summary
@@ -147,7 +150,7 @@ def _closes(outcome, line):
     request, raw = outcome[:2]
     failure = outcome[2] if len(outcome) > 2 else None
     rec = Record.make("k", request, clean_outcome(raw), failure=failure)
-    return rec.closes_on(line, whole=True, run=False)
+    return rec.closes_on(line, run=False)
 
 
 def test_no_false_close():

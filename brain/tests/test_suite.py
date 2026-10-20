@@ -57,7 +57,7 @@ TIMEOUTS: dict[str, int] = {
 # test_declared_appliance_scripts_match_their_guards below closes the gap that
 # matters: a script gains a guard and isn't added here, or is listed here after its
 # guard is removed, fails the suite instead of drifting unnoticed.
-APPLIANCE_ONLY = {"test_engine_text_stream.py", "test_remember_tool.py"}
+APPLIANCE_ONLY = {"test_cut_judge_eval.py", "test_engine_text_stream.py", "test_remember_tool.py"}
 
 
 def _discover():

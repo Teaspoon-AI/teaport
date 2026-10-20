@@ -144,6 +144,35 @@ def _notes(params):
             and isinstance(m.get("content"), str) and m["content"].startswith(SYSTEM_NOTICE_TAG)]
 
 
+async def test_the_cut_judge_asks_the_sessions_model_and_reads_one_word():
+    """BoundedOpenAILLMService.judge_cut (owed.Owed._judge's default): the session's own
+    client, model and routing; the measured prompt (owed.cut_judge_messages); a small
+    completion budget; HEARD / OWED / anything else (no verdict)."""
+    calls = []
+
+    class Completions:
+        def __init__(self, content):
+            self.content = content
+
+        async def create(self, **params):
+            calls.append(params)
+            return SimpleNamespace(choices=[SimpleNamespace(
+                message=SimpleNamespace(content=self.content))])
+
+    llm = _llm(_Provider())
+    verdicts = []
+    for content in ("HEARD", " owed.", "Maybe?", None):
+        llm._client = SimpleNamespace(chat=SimpleNamespace(completions=Completions(content)))
+        verdicts.append(await llm.judge_cut("What's the price?", "It's two hundred",
+                                            "forty-nine dollars."))
+    assert verdicts == [True, False, None, None], verdicts
+    params = calls[0]
+    assert params["messages"] == owed.cut_judge_messages("What's the price?", "It's two hundred",
+                                                         "forty-nine dollars.")
+    assert params["max_tokens"] == services._CUT_JUDGE_MAX_TOKENS and "stream" not in params
+    assert params["model"] == services.setting("LLM_MODEL")
+
+
 async def test_whether_a_reply_tells_a_sync_answer_is_read_from_its_context():
     """#204 review finding 4: the LLM service registers what each request was rendered
     with -- a new answer result at its context's tail is fresh in the book (Owed.noted)

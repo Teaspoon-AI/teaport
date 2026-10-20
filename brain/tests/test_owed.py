@@ -166,7 +166,7 @@ def test_a_contraction_is_no_term_and_a_possessive_is_its_word():
     rec = Record.make("k", "Is the pharmacy on Lamar open tonight?",
                       "They're open until nine tonight, and you'll find them next to the H-E-B.")
     assert not rec.closes_on("Sorry, they're still checking -- you'll hear back in a moment.",
-                             whole=False, run=False)
+                             run=False)
     assert terms_of("Got it, I'll remember that Ann is your wife.",
                     "Remember that my wife's name is Ann.") == frozenset()
 
@@ -177,12 +177,13 @@ def test_a_script_without_spaces_is_one_token_per_character():
 
 # =============================================================== the close rule
 
-def test_the_203_cut_closes_answer_first_and_not_after_the_lead_in():
-    """Owed.tla ow_fraction (#203): 1.1 s of the lead-in was 31% of the words and none
-    of the answer. Answer first, the same 1.1 s carries two terms."""
+def test_the_203_lead_in_covers_nothing_and_the_answer_does():
+    """Owed.tla ow_fraction (#203): the lead-in that restates the question names none of
+    the answer's terms, the answer names two. (Coverage: the text as heard in full. A
+    cut is the judge's, test_a_cut_is_closed_by_the_judge_alone.)"""
     rec = hn_record()
-    assert not rec.closes_on(LEAD_IN, whole=False, run=False)
-    assert rec.closes_on("Tesla Roadster is the top", whole=False, run=False)
+    assert not rec.closes_on(LEAD_IN, run=False)
+    assert rec.closes_on("Tesla Roadster is the top", run=False)
 
 
 def test_a_deferral_closes_nothing():
@@ -192,7 +193,7 @@ def test_a_deferral_closes_nothing():
     assert "time" not in rec.items[0][1] and "sure" not in rec.items[0][1]
     for line in ("Sure, take your time.", "No rush, just let me know when you're ready.",
                  "Okay, I'll wait."):
-        assert not rec.closes_on(line, whole=False, run=False), line
+        assert not rec.closes_on(line, run=False), line
 
 
 def test_present_does_not_contain_sent():
@@ -204,19 +205,19 @@ def test_one_story_of_five_does_not_close_the_list():
     """ow_oneItem: every item, not one."""
     rec = Record.make("k", TOP5_REQ, clean_outcome(TOP5_RAW))
     assert len(rec.items) == 5
-    assert not rec.closes_on("The top story is Tesla Roadster.", whole=False, run=False)
-    assert not rec.closes_on("The top story is Tesla Roadster.", whole=True, run=True), (
+    assert not rec.closes_on("The top story is Tesla Roadster.", run=False)
+    assert not rec.closes_on("The top story is Tesla Roadster.", run=True), (
         "an uncut run that named one item closed five (ow_asWritten_closed)")
     told = ("Tesla Roadster, then Ultramarine One Flash, then Llama dot cpp on a jailbroken "
             "PS5, then Claude reveals ECDSA curve origins, and Butlerian Jihad.")
-    assert rec.closes_on(told, whole=False, run=False), [sorted(t) for _, t in rec.items]
+    assert rec.closes_on(told, run=False), [sorted(t) for _, t in rec.items]
 
 
 def test_an_item_with_one_term_needs_that_term():
     rec = Record.make("k", "Is the pharmacy open?", "Yes.")
     assert rec.items[0][1] == {"yes"}
-    assert rec.closes_on("Yes, it is.", whole=False, run=False)
-    assert not rec.closes_on("Let me know when you're ready.", whole=False, run=False)
+    assert rec.closes_on("Yes, it is.", run=False)
+    assert not rec.closes_on("Let me know when you're ready.", run=False)
 
 
 def test_a_failure_closes_when_a_reply_about_it_is_heard_to_its_end():
@@ -224,22 +225,21 @@ def test_a_failure_closes_when_a_reply_about_it_is_heard_to_its_end():
     run heard to its end, or -- RUNCLOSE = "about", Fable's final review -- on any noted
     reply heard to its end that is about the record: the caller's own turn told it, and
     the lull must not tell it again (ow_failure_runOnly). An unrelated reply is about
-    nothing the request named and closes nothing; a cut closes nothing."""
+    nothing the request named and closes nothing. (A cut is the judge's: Owed.settle.)"""
     status, outcome = owed.failure_outcome("timeout")
     rec = Record.make("k", HN_REQ, outcome, failure=status)
     assert rec.items[0][1] == frozenset()
     told = "Sorry, that Hacker News lookup ran out of time before it finished."
-    assert rec.closes_on(told, whole=True, run=False), "the caller's turn told it in full"
-    assert not rec.closes_on(told, whole=False, run=False), "cut before its end"
-    assert not rec.closes_on("It's eleven twenty-two at night.", whole=True, run=False), (
+    assert rec.closes_on(told, run=False), "the caller's turn told it in full"
+    assert not rec.closes_on("It's eleven twenty-two at night.", run=False), (
         "an unrelated reply closed the failure")
-    assert rec.closes_on("Sorry, that one ran out of time.", whole=True, run=True)
+    assert rec.closes_on("Sorry, that one ran out of time.", run=True)
 
 
 def test_no_pts_prefix_closes_nothing_with_terms():
-    """A cut reply whose words carried no pts closes only by playing through (DESIGN v3
-    #4): heard None."""
-    assert not hn_record().closes_on(None, whole=False, run=False)
+    """No text closes nothing (DESIGN v3 #4: a cut reply whose words carried no pts is
+    never judged either, Owed.settle)."""
+    assert not hn_record().closes_on(None, run=False)
 
 
 # =============================================================== the note
@@ -343,6 +343,29 @@ def book(pending=False, msgs=None, **kw):
     ctx = LLMContext(msgs if msgs is not None else tool_round())
     gate = FakeGate(pending)
     return Owed(ctx, gate=gate, **kw), ctx, gate
+
+
+class FakeJudge:
+    """The cut judge (Owed.judge), scripted: a verdict (True HEARD, False OWED, None),
+    or an exception; held until `release` is set, when given."""
+
+    def __init__(self, verdict=True, error=None, release=None):
+        self.verdict, self.error, self.release = verdict, error, release
+        self.calls = []
+
+    async def __call__(self, question, heard, rest):
+        self.calls.append((question, heard, rest))
+        if self.release is not None:
+            await self.release.wait()
+        if self.error is not None:
+            raise self.error
+        return self.verdict
+
+
+async def judged(b):
+    """Until every verdict the book is waiting for has landed."""
+    while b._judging:
+        await asyncio.gather(*list(b._judging), return_exceptions=True)
 
 
 def noted_reply(b, purpose, keys=("call-hn",)):
@@ -656,11 +679,119 @@ def test_a_render_files_every_result_it_has_not_seen_wherever_it_lies():
 
 
 async def test_a_sync_answer_cut_after_it_was_heard_makes_no_record():
-    b, _, _ = sync_book()
-    b.settle(answer_reply(b, round_msgs()), "There's a Toy Joy store at five-five-zero-one "
-             "Burnet Road", cut=True, audio=True, text=TOY)
+    """The judge's HEARD: the rest held nothing the caller needed. Its question is the
+    caller's words, its heard the pts prefix, its rest the words after it."""
+    judge = FakeJudge(True)
+    b, _, _ = sync_book(judge=judge)
+    heard = "There's a Toy Joy store at five-five-zero-one Burnet Road"
+    b.settle(answer_reply(b, round_msgs()), heard, cut=True, audio=True, text=TOY)
+    await judged(b)
+    assert judge.calls == [(T_REQ, heard, TOY[len(heard):].strip())], judge.calls
     assert b.owed() == [], "a cut after the answer was heard made a record"
     assert answer_reply(b, round_msgs()).fresh == (), "an answer heard by the cut stayed open"
+
+
+async def test_the_amazon_cut_before_the_price_stays_owed():
+    """2026-10-19 23:56:08 (box journal): "Amazon lists the Orin Nano developer kit at two
+    hundred" -- the lexical rule on the heard prefix called it heard ("Orin", "developer",
+    "kit"; the caller's "Oren" left "orin" a term), and the price, 249, was never told.
+    Judged: OWED, the record. The lexical rule on that prefix still reads it as heard --
+    which is why a cut is never read by it (formal/Owed.tla prefixLexical)."""
+    amazon = "Can you look up the price of an NVIDIA Jetson Oren Nano on Amazon?"
+    told = ("Amazon lists the Orin Nano developer kit at two hundred forty-nine dollars, "
+            "matching the official MSRP.")
+    heard = "Amazon lists the Orin Nano developer kit at two hundred"
+    judge = FakeJudge(False)
+    b, _, _ = sync_book(judge=judge)
+    b.settle(answer_reply(b, round_msgs(amazon)), heard, cut=True, audio=True, text=told)
+    await judged(b)
+    assert [r.outcome for r in b.owed()] == [told]
+    assert judge.calls[0][2].startswith("forty-nine dollars")
+    assert Record.make("k", amazon, clean_outcome(told)).closes_on(heard, run=False)
+
+
+async def test_a_cut_is_closed_by_the_judge_alone():
+    """Coverage is lexical, a cut is judged (formal/Owed.tla Closes, Verdicts): a cut
+    reply that carried the note closes the record only if its whole text covers it and
+    the judge answers HEARD. OWED, no verdict (None, an error, a timeout) err owed; no
+    whole text (a cut mid-stream), no heard prefix, or a reply that does not cover the
+    record (a deferral) are never judged. The reply stays pending until the verdict."""
+    async def cut(judge, heard="Tesla Roadster is the top", text=TELLING):
+        b, _, _ = book(judge=judge)
+        b.land(HN_REQ, HN_RAW, "call-hn")
+        r = noted_reply(b, "caller")
+        b.settle(r, heard, cut=True, audio=True, text=text)
+        pending = not b.is_settled()
+        await judged(b)
+        assert b.is_settled()
+        return b.record("call-hn").state, pending
+
+    assert await cut(FakeJudge(True)) == (CLOSED, True)
+    assert await cut(FakeJudge(False)) == (OWED, True)
+    assert await cut(FakeJudge(None)) == (OWED, True)
+    assert await cut(FakeJudge(error=RuntimeError("503"))) == (OWED, True)
+    assert await cut(None) == (OWED, False), "no judge: errs owed at once"
+    for kw in ({"text": None}, {"heard": None}, {"text": "Sure, take your time."}):
+        judge = FakeJudge(True)
+        assert await cut(judge, **kw) == (OWED, False), kw
+        assert judge.calls == [], kw
+    # A timeout: the bound is SETTLE_WAIT_S.
+    old, owed.SETTLE_WAIT_S = owed.SETTLE_WAIT_S, 0.05
+    try:
+        assert await cut(FakeJudge(True, release=asyncio.Event())) == (OWED, True)
+    finally:
+        owed.SETTLE_WAIT_S = old
+    # Played through: the lexical rule, no judge.
+    judge = FakeJudge(False)
+    b, _, _ = book(judge=judge)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    b.settle(noted_reply(b, "caller"), TELLING, cut=False, audio=True, text=TELLING)
+    assert b.record("call-hn").state == CLOSED and judge.calls == []
+
+
+async def test_a_late_verdict_reads_the_live_book():
+    """The verdict lands after the readers' wait ran out (formal/OwedAnswers.tla LATE):
+    a reply rendered meanwhile with the same open answer told it in full -- the late
+    OWED makes no record; or the consult record a late HEARD would close was closed by a
+    reply played through meanwhile -- it stays closed, nothing reopens or re-offers."""
+    release = asyncio.Event()
+    b, _, gate = sync_book(judge=FakeJudge(False, release=release), reoffer_quiet_s=0.05)
+    gate.quiet = 99.0
+    p = answer_reply(b, round_msgs())
+    b.settle(p, "There's a", cut=True, audio=True, text=TOY)
+    await b.settled(timeout=0.05)                    # the readers go on
+    c = answer_reply(b, round_msgs() + [{"role": "user", "content": "Sorry, go on?"}],
+                     owed.COMMIT)
+    assert c.fresh == ("call-ws",)
+    b.settle(c, TOY, cut=False, audio=True, text=TOY)
+    release.set()
+    await judged(b)
+    await asyncio.sleep(0.15)
+    assert b.owed() == [] and gate.asked == [], "a late OWED recorded a told answer"
+    release = asyncio.Event()
+    b, _, gate = book(judge=FakeJudge(True, release=release))
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    b.settle(noted_reply(b, "caller"), "Tesla Roadster is the top", cut=True, audio=True,
+             text=TELLING)
+    await b.settled(timeout=0.05)
+    b.settle(noted_reply(b, "caller"), TELLING, cut=False, audio=True, text=TELLING)
+    assert b.record("call-hn").state == CLOSED
+    release.set()
+    await judged(b)
+    assert b.record("call-hn").state == CLOSED and b.is_settled()
+    # ...or dropped meanwhile (three newer answers): a late HEARD does not revive it.
+    release = asyncio.Event()
+    b, _, gate = book(judge=FakeJudge(True, release=release))
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    b.settle(noted_reply(b, "caller"), "Tesla Roadster is the top", cut=True, audio=True,
+             text=TELLING)
+    await b.settled(timeout=0.05)
+    for i in range(3):
+        b.land(f"Question {i}?", f"Answer {i}: Lisbon {i}.", f"call-{i}")
+    assert b.record("call-hn").state == DROPPED
+    release.set()
+    await judged(b)
+    assert b.record("call-hn").state == DROPPED
 
 
 async def test_a_reply_that_does_not_settle_it_leaves_one_more_then_it_is_history():
@@ -1216,8 +1347,8 @@ async def test_the_feed_reads_the_pts_prefix_not_the_ledgers_heard_text():
     u = [e for e in ledger.events if e.speaker == "assistant"][-1]
     assert "Roadster" in u.heard_text, f"the control: the estimate reads more ({u.heard_text!r})"
     assert got == [(reply, "Tesla", True, True, TELLING)], got
-    assert not hn_record().closes_on(got[0][1], whole=False, run=False)
-    assert hn_record().closes_on(u.heard_text, whole=False, run=False), "the control would close it"
+    assert not hn_record().closes_on(got[0][1], run=False)
+    assert hn_record().closes_on(u.heard_text, run=False), "the control would close it"
 
 
 async def test_a_reply_that_played_through_settles_at_its_own_window_close():

@@ -380,6 +380,11 @@ SPECULATION_NOTED: contextvars.ContextVar = contextvars.ContextVar(
     "teaport_speculation_noted", default=None)
 
 
+# The cut judge's completion budget: one word of answer, after the reasoning a reasoning
+# model spends first (gpt-oss-120b: the 241-cut measurement ran at this budget, 0 unparsed).
+_CUT_JUDGE_MAX_TOKENS = 512
+
+
 # Connect timeout. Separate from the read timeout below because they fail differently:
 # an unreachable endpoint should fail fast, a slow-but-alive one should not.
 _CONNECT_SECS = 5.0
@@ -687,6 +692,22 @@ class BoundedOpenAILLMService(OpenAILLMService):
         # generator has no close(), so wrapping in one silently disabled base_llm's
         # socket release.
         return _RenumberedStream(stream)
+
+    async def judge_cut(self, question: str, heard: str, rest: str):
+        """The cut judge owed.Owed asks (Owed._judge): whether a reply cut while it played
+        left anything the caller still needs, on this session's own client -- the same
+        model, provider routing, key and HTTP/2 connection as the turn's requests. True
+        for HEARD, False for OWED, None for anything else. The caller bounds the time."""
+        extra = _llm_extra()
+        response = await self._client.chat.completions.create(
+            model=setting("LLM_MODEL"),
+            messages=owed_mod.cut_judge_messages(question, heard, rest),
+            max_tokens=_CUT_JUDGE_MAX_TOKENS,
+            **{k: v for k, v in extra.items() if k != "extra_body"},
+            extra_body=extra.get("extra_body"))
+        choices = getattr(response, "choices", None) or ()
+        content = choices[0].message.content if choices else ""
+        return owed_mod.cut_judge_verdict(content)
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):
