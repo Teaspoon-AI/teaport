@@ -782,9 +782,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         wifi_closer.aggregator = context_aggregator.user()
 
     # The ledger reads the LLM stream at the TTS's sighting (the text the TTS is
-    # actually handed, after the guard) and tells the thinking bed's audio, pushed
-    # into the transport, from the transport's untagged copies of what it played.
-    # One instance, used three times below (pipeline, ledger, unusable handler) —
+    # actually handed, after the guard); naming the transport says the pipeline tags
+    # its TTS frames. One instance, used three times below (pipeline, ledger, unusable handler) —
     # transport.output() caches, but naming it says so rather than relying on it.
     transport_output = transport.output()
     ledger = TranscriptLedger(tts=tts, output=transport_output)

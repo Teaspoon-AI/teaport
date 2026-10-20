@@ -61,11 +61,13 @@ from pipecat.frames.frames import (
     OutputTransportMessageFrame,
     OutputTransportMessageUrgentFrame,
     TTSAudioRawFrame,
+    TTSStartedFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.followup_gate import RunSilentFrame
 from teaport_brain.settings import setting
 
 ENABLED = setting("TEAPORT_THINKING_SOUND")
@@ -473,11 +475,16 @@ class ThinkingSound(FrameProcessor):
             else:
                 # A keystroke takes a few ms to render: off the event loop.
                 chunk, pressed = await asyncio.to_thread(typist.chunk, heard)
+            # Asked again: a line that began during the render must not get a chunk of
+            # typing pushed in behind its first audio.
+            heard = heard and self._quiet()
             if pressed:
-                # Ahead of the audio that carries their clicks, pinned to it; unheard,
-                # pinned to this message (the face types on while the line talks).
+                # Ahead of the audio that carries their clicks, pinned to it. Unheard,
+                # pinned to this message, and urgent: queued behind a reply's audio
+                # they would all arrive at its end (the face types on while it talks).
                 await self._say({"type": "keys", "anchor": "audio" if heard else "now",
-                                 "keys": [[letter, round(at * 1000 / _SR)] for at, letter in pressed]})
+                                 "keys": [[letter, round(at * 1000 / _SR)] for at, letter in pressed]},
+                                urgent=not heard)
             if heard:
                 # Not a TTSAudioRawFrame: the transport plays it without calling it bot
                 # speech, so nothing waiting for the bot to finish waits on the typing.
@@ -504,11 +511,21 @@ class ThinkingSound(FrameProcessor):
             self._bot = isinstance(frame, BotStartedSpeakingFrame)
         elif isinstance(frame, (LLMFullResponseStartFrame, LLMFullResponseEndFrame)):
             self._replying = isinstance(frame, LLMFullResponseStartFrame)
-        elif isinstance(frame, InterruptionFrame):
-            self._replying = False          # (a cut response may never see its End)
-        elif not isinstance(frame, TTSAudioRawFrame):   # (a reply on its way; the typing's own is not one)
-            return
+        elif isinstance(frame, (InterruptionFrame, FunctionCallsStartedFrame, RunSilentFrame)):
+            # A response with no words of its own (cut, a tool call, a run that said
+            # nothing) has its End held at the TTS until a later context ends: it is not
+            # a reply on its way.
+            self._replying = False
+        elif not isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame)):
+            return                          # (a line or a reply on its way; the typing's own is not one)
         self._spoke = now
+
+    async def cleanup(self):
+        """The session is over: so is its typing (a task of ours, not pipecat's)."""
+        await super().cleanup()
+        if self._task is not None:
+            task, self._task = self._task, None
+            await self.cancel_task(task)
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)

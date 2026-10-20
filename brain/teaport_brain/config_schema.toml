@@ -2170,12 +2170,6 @@ rhs = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
 message = "TEAPORT_ASK_OPENCLAW_TIMEOUT must exceed the ack + native consult timeouts, or pipecat drops the late answer."
 
 [[constraints]]
-kind = "lt"
-lhs = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
-rhs = "TEAPORT_THINKING_MAX_S"
-message = "TEAPORT_THINKING_MAX_S should stay above TEAPORT_ASK_OPENCLAW_TIMEOUT so the bed outlasts the consult."
-
-[[constraints]]
 kind = "le_chain"
 names = ["TTS_FIRST_CLAUSE_CHARS", "TTS_CLAUSE_CAP", "TTS_CLAUSE_HARD_MAX"]
 message = "First clause ≤ clause cap ≤ hard max."

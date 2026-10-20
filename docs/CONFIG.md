@@ -350,7 +350,6 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 ## Settings that constrain each other
 
 - TEAPORT_ASK_OPENCLAW_TIMEOUT must exceed the ack + native consult timeouts, or pipecat drops the late answer.
-- TEAPORT_THINKING_MAX_S should stay above TEAPORT_ASK_OPENCLAW_TIMEOUT so the bed outlasts the consult.
 - First clause ≤ clause cap ≤ hard max.
 - Changing ENGINE_PORT means rewriting TEAPORT_URL and ENGINE_TTS_URL in brain.env.
 - Changing BRAIN_PORT means rewriting BRAIN_URL in bridge.env, the plugin config and Caddy.

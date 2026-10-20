@@ -37,16 +37,19 @@ from pipecat.frames.frames import (  # noqa: E402
     FunctionCallResultFrame,
     FunctionCallsStartedFrame,
     InterruptionFrame,
+    LLMFullResponseStartFrame,
     OutputAudioRawFrame,
     OutputTransportMessageFrame,
     OutputTransportMessageUrgentFrame,
     TTSAudioRawFrame,
+    TTSStartedFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 from teaport_brain import thinking_sound as ts  # noqa: E402
+from teaport_brain.followup_gate import RunSilentFrame  # noqa: E402
 
 KEYBOARD = ts._Keyboard()
 
@@ -242,7 +245,10 @@ async def test_the_typing_is_heard_only_while_the_line_is_quiet_and_seen_all_alo
     await asyncio.sleep(0.4)
     talking = out[mark:]
     assert not _audio(talking)                               # not heard...
-    assert all(k["anchor"] == "now" for k in _said(talking, "keys"))   # ...but typed
+    assert all(k["anchor"] == "now" for k in _said(talking, "keys"))   # ...but typed,
+    assert all(type(f) is OutputTransportMessageUrgentFrame  # never queued behind a reply
+               for _, f in talking if isinstance(f, (OutputTransportMessageFrame,
+                                                     OutputTransportMessageUrgentFrame)))
     assert _said(talking, "keys")
     await _send(bed, VADUserStoppedSpeakingFrame())
     await asyncio.sleep(0.1)
@@ -279,6 +285,7 @@ async def test_an_agent_first_consult_types_until_its_result_or_a_barge_in():
     started = FunctionCallsStartedFrame(function_calls=[SimpleNamespace(function_name="ask_openclaw")])
     await _send(bed, _working("c1"))                         # (not this mode's signal)
     assert not _said(out, "typing")
+    await _send(bed, LLMFullResponseStartFrame())            # the call alone: its End is held
     await _send(bed, started)
     await asyncio.sleep(0.2)
     await _send(bed, FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="t1",
@@ -310,6 +317,54 @@ async def test_a_client_that_does_not_type_hears_it_and_is_sent_no_key_presses()
     await _send(bed, _working("c1", done=True))
     assert _audio(out)
     assert not _said(out, "typing") and not _said(out, "keys")
+
+
+@_with(grace=0.1)
+async def test_a_run_that_said_nothing_is_no_reply_on_its_way():
+    bed, out = _bed()
+    await _send(bed, _working("c1"))
+    await _send(bed, LLMFullResponseStartFrame())            # a run of the brain's own...
+    await asyncio.sleep(0.3)
+    assert not _audio(out)
+    await _send(bed, RunSilentFrame())                       # ...that said nothing (End held)
+    await asyncio.sleep(0.3)
+    assert _audio(out)
+    await _send(bed, _working("c1", done=True))
+
+
+@_with(grace=0.2)
+async def test_a_line_that_starts_during_a_render_gets_no_typing_behind_it():
+    bed, out = _bed(keys=False)
+    real, calls, line = ts._Typist.chunk, [], {}
+
+    def chunk(self, heard=True):
+        calls.append(None)
+        if len(calls) == 5:                                  # a progress line begins mid-render
+            bed._track_line(TTSStartedFrame())
+            line["t"] = time.monotonic()
+        return real(self, heard)
+
+    ts._Typist.chunk = chunk
+    try:
+        await _send(bed, _working("c1"))
+        await asyncio.sleep(0.4)
+        await _send(bed, _working("c1", done=True))
+    finally:
+        ts._Typist.chunk = real
+    assert len(_audio(out)) == 4                             # the 5th was rendered, not pushed
+    assert not [t for t in _audio(out) if t >= line["t"]]
+
+
+@_with(grace=0.0)
+async def test_the_typing_ends_with_its_session():
+    bed, out = _bed()
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(0.2)
+    await bed.cleanup()                                      # the pipeline is torn down
+    assert bed._task is None
+    n = len(out)
+    await asyncio.sleep(0.2)
+    assert len(out) == n
 
 
 def _stalling_chunk():
