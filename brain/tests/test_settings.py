@@ -68,9 +68,9 @@ def test_every_schema_default_is_a_value_or_a_description():
 
 
 def test_a_described_default_is_never_returned_as_a_value():
-    # These parse as their types (a path, a URL), so only the description rule stops a
-    # read that forgot default= from dialing "ws://127.0.0.1:<BRAIN_PORT>/talk".
-    for name in ("TEAPORT_THINKING_WAV", "LOCAL_AUDIO_URL", "ENGINE_TTS_STREAM_URL"):
+    # These parse as their type (a URL), so only the description rule stops a read
+    # that forgot default= from dialing "ws://127.0.0.1:<BRAIN_PORT>/talk".
+    for name in ("LOCAL_AUDIO_URL", "ENGINE_TTS_STREAM_URL"):
         try:
             setting(name, env={})
         except ValueError as e:

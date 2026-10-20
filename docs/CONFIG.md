@@ -184,7 +184,7 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `OPENCLAW_WORKSPACE` | `~/.openclaw/workspace` | The OpenClaw workspace whose persona files the voice brain shares. *Set by the installer.* |
 | `TEAPORT_WORKSPACE_FILES` | `SOUL.md,IDENTITY.md,USER.md,MEMORY.md` | Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design. |
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |
-| `TEAPORT_THINKING_WAV` | `<package>/assets/typing.wav` | Your own 24 kHz mono wav for the thinking bed; the default is synthesized and cached next to the code. |
+| `TEAPORT_THINKING_WAV` | `""` | Your own 24 kHz mono 16-bit wav to play as the thinking bed. Empty = the synthesized typing bed, built when the brain starts. |
 
 ## Tools
 

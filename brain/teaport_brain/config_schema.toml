@@ -1376,10 +1376,10 @@ name = "TEAPORT_THINKING_WAV"
 store = "brain_env"
 group = "agent"
 type = "path"
-default = "<package>/assets/typing.wav"
+default = ""
 read = "startup"
 tier = "tuning"
-help = "Your own 24 kHz mono wav for the thinking bed; the default is synthesized and cached next to the code."
+help = "Your own 24 kHz mono 16-bit wav to play as the thinking bed. Empty = the synthesized typing bed, built when the brain starts."
 
 # ---- tools
 

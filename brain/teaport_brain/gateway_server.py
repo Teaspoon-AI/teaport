@@ -54,6 +54,7 @@ from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
+from teaport_brain import thinking_sound
 from teaport_brain.gateway_serializer import (
     PIPELINE_SAMPLE_RATE,
     RELAY_SAMPLE_RATE,
@@ -546,6 +547,7 @@ class _ReadyServer(uvicorn.Server):
             # load at first use, then freeze what is alive now (it lives as long as the
             # process).
             warm_first_use_imports()
+            thinking_sound.warm()
             prime_model_dns()
             freeze_startup_objects()
             # The phone line's front-end, in this same event loop (sip_server.serve): it
