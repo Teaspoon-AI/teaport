@@ -1,31 +1,50 @@
 #
-# thinking_sound synthesizes the typing bed a long consult plays (a seamless loop,
-# modelled on a recorded mechanical keyboard) when the brain starts, holds it in memory
-# and streams it in 40 ms chunks; TEAPORT_THINKING_WAV swaps in the user's own wav.
-# These hold the module to what it promises: the same bed every run, as loud as the
-# bed it replaced and never louder than -6 dBFS, and every chunk of it played, so the
-# wrap-around the synthesis builds is not cut at the seam. An override plays as given,
-# and a bad one plays the bed instead: it neither raises (warm() runs at the brain's
-# start, where an exception would crash-loop the service) nor is written over.
+# thinking_sound types the bed a long consult plays, live: a keyboard of modal keys
+# (modelled on a recorded mechanical keyboard) built when the brain starts, and a
+# typist per bed that schedules and renders each keystroke as it plays, in 40 ms
+# chunks; TEAPORT_THINKING_WAV loops the user's own wav instead. These hold the module
+# to what it promises: typing that a seed reproduces and that never repeats, as loud
+# as the bed it replaced and never louder than -6 dBFS, every key press reported
+# before its chunk and where its click is heard, and no numpy.random (its import
+# alone is 2-3 MB resident, and nothing else in the brain loads it). An override
+# plays as given, and a bad one plays live typing instead: it neither raises (warm()
+# runs at the brain's start, where an exception would crash-loop the service) nor is
+# written over.
 #
 # Run: python test_thinking_sound.py   (or via pytest test_suite.py)
 #
+import asyncio
 import os
 import struct
+import subprocess
 import sys
+import time
 import wave
 
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+BRAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
+sys.path.insert(0, BRAIN)
 
 from tempdirs import tempdir  # noqa: E402
 
-os.environ.pop("TEAPORT_THINKING_WAV", None)   # the synthesized bed, whatever the shell set
+os.environ.pop("TEAPORT_THINKING_WAV", None)   # live typing, whatever the shell set
 
 import numpy as np  # noqa: E402
 
 from teaport_brain import thinking_sound as ts  # noqa: E402
 
-BED = ts._synthesize()
+KEYBOARD = ts._Keyboard()
+
+
+def _typed(secs, seed):
+    """`secs` of a seeded typist: the PCM (as floats, before TEAPORT_THINKING_GAIN) and
+    every key press as (absolute sample, letter, the chunk it was reported with)."""
+    t = ts._Typist(KEYBOARD, seed=seed)
+    pcm, presses = [], []
+    for i in range(int(secs * 1000) // ts._CHUNK_MS):
+        chunk, pressed = t.chunk()
+        pcm.append(chunk)
+        presses += [(i * ts._CHUNK + at, letter, i) for at, letter in pressed]
+    return np.frombuffer(b"".join(pcm), dtype=np.int16) / 32767 / ts._GAIN, presses
 
 
 def _write_wav(path, pcm, rate=ts._SR, channels=1):
@@ -39,7 +58,7 @@ def _write_wav(path, pcm, rate=ts._SR, channels=1):
 def _load_with(path):
     saved, ts._WAV = ts._WAV, path
     try:
-        return ts._load_pcm()
+        return ts._load_override()
     finally:
         ts._WAV = saved
 
@@ -52,33 +71,133 @@ def _contents(path):
         return f.read()
 
 
-def test_the_bed_is_the_same_every_run():
-    assert BED.dtype == np.int16 and len(BED) == 15 * ts._SR
-    assert np.array_equal(BED, ts._synthesize())
+def test_the_typing_is_reproducible_and_never_repeats():
+    a, pa = _typed(35, seed=1)
+    b, pb = _typed(35, seed=1)
+    c, _ = _typed(5, seed=2)
+    assert np.array_equal(a, b) and pa == pb
+    assert not np.array_equal(a[:len(c)], c)
+    # Not a loop of any length up to 30 s: its first 5 s turn up at no later lag (a loop
+    # correlates ~1 at its own length; the 15 s loop this replaced did).
+    n = 5 * ts._SR
+    seg, rest = a[:n], a[ts._SR // 2:]
+    m = 1 << int(np.ceil(np.log2(len(rest) + n)))
+    num = np.fft.irfft(np.fft.rfft(rest, m) * np.conj(np.fft.rfft(seg, m)), m)[:len(rest) - n]
+    energy = np.concatenate([[0], np.cumsum(rest ** 2)])
+    den = np.sqrt(np.dot(seg, seg) * (energy[n:len(rest)] - energy[:len(rest) - n]))
+    assert np.max(num / den) < 0.3, np.max(num / den)
 
 
-def test_the_bed_is_as_loud_as_before_and_peaks_under_minus_6_dbfs():
-    pcm = BED.astype(np.float64) / 32767
-    rms_db = 20 * np.log10(np.sqrt(np.mean(pcm ** 2)))
-    assert -36.5 < rms_db < -34.0, rms_db               # the old bed: -36.4 RMS, a sparser loop
-    assert np.max(np.abs(pcm)) <= 0.5, np.max(np.abs(pcm))
+def test_the_typing_is_as_loud_as_before_and_peaks_under_minus_6_dbfs():
+    x, presses = _typed(60, seed=1)
+    rms_db = 20 * np.log10(np.sqrt(np.mean(x ** 2)))
+    assert -36.5 < rms_db < -34.0, rms_db           # the loop it replaced: -35.4 RMS
+    assert np.max(np.abs(x)) <= 0.5 + 1e-4, np.max(np.abs(x))
+    assert 6.5 < len(presses) / 60 < 9.5, len(presses)   # steady touch typing, ~8 keys/s
 
 
-def test_every_chunk_of_the_loop_plays():
-    chunks = ts._get_chunks()
-    assert sum(len(c) for c in chunks) == 2 * len(BED)
-    assert {len(c) for c in chunks} == {2 * ts._SR * ts._CHUNK_MS // 1000}
+def test_every_key_press_is_reported_before_its_chunk_and_heard_on_its_click():
+    x, presses = _typed(30, seed=3)
+    # The click is the brightest thing in a keystroke: above 5 kHz, its onset is the
+    # loudest sample near the press (the switch's second strike comes 0.6-1.5 ms later
+    # and ~4 dB softer).
+    f = np.fft.rfftfreq(len(x), 1 / ts._SR)
+    hp = np.abs(np.fft.irfft(np.fft.rfft(x) * (f > 5000), len(x)))
+    w, near = int(ts._SR * 0.003), int(ts._SR * 0.002)
+    on_click = 0
+    for at, letter, reported in presses:
+        assert letter in ts._LETTERS or letter == "space", letter
+        assert at >= (reported + 1) * ts._CHUNK, (at, reported)   # announced ahead of its audio
+        if w <= at < len(x) - w:
+            on_click += abs(int(np.argmax(hp[at - w:at + w])) - w) <= near
+    assert on_click >= 0.95 * len(presses), (on_click, len(presses))
 
 
-def test_an_override_wav_plays_as_given():
+def test_every_chunk_is_40_ms():
+    t = ts._Typist(KEYBOARD, seed=4)
+    assert {len(t.chunk()[0]) for _ in range(200)} == {2 * ts._CHUNK}
+
+
+def test_nothing_the_brain_starts_with_imports_numpy_random():
+    # Not the bed, nor anything else the brain imports or warms up at start: the bed's
+    # RAM saving holds only while nothing does.
+    code = ("import sys\n"
+            "from teaport_brain import gateway_server, thinking_sound as ts\n"
+            "gateway_server.warm_first_use_imports()\n"
+            "ts.warm()\n"
+            "t = ts._Typist(ts._KEYBOARD)\n"
+            "[t.chunk() for _ in range(100)]\n"
+            "print('numpy.random' in sys.modules)\n")
+    env = dict(os.environ, PYTHONPATH=BRAIN, TEAPORT_THINKING_WAV="")
+    out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
+                         text=True, check=True)
+    assert out.stdout.strip().splitlines()[-1] == "False", out.stdout
+
+
+def test_the_bed_keeps_time_and_catches_up_one_chunk_after_a_stall():
+    """Paced on the clock: a chunk every 40 ms however long each takes to render, and
+    after a stall one chunk at once, no more (a longer catch-up would queue ahead of the
+    reply)."""
+    real = ts._Typist.chunk
+    renders = []
+
+    def chunk(self):
+        renders.append(None)
+        if len(renders) == 10:
+            time.sleep(0.2)                          # a render stalls 200 ms
+        return real(self)
+
+    async def run():
+        bed = ts.ThinkingSound()
+        sent = []
+
+        async def push(frame, direction=None):
+            sent.append(time.monotonic())
+
+        bed.push_frame = push
+        bed._active = True
+        task = asyncio.ensure_future(bed._run())
+        await asyncio.sleep(1.2)
+        bed._active = False
+        await task
+        return np.diff(sent)
+
+    saved = ts._Typist.chunk, ts._GRACE_S
+    ts._Typist.chunk, ts._GRACE_S = chunk, 0.0
+    try:
+        gaps = asyncio.run(run())
+    finally:
+        ts._Typist.chunk, ts._GRACE_S = saved
+    stall = int(np.argmax(gaps))
+    assert 0.18 < gaps[stall] < 1.0, gaps[stall]          # (a loaded runner may stretch it)
+    caught_up = 0
+    for g in gaps[stall + 1:]:                      # back to back right after it, then 40 ms
+        if g >= 0.02:
+            break
+        caught_up += 1
+    assert caught_up == 1, gaps[stall:stall + 4]
+    steady = np.delete(gaps, [stall, stall + 1])
+    assert abs(np.median(steady) - 0.04) < 0.005, np.median(steady)
+
+
+def test_an_override_wav_plays_as_given_and_loops_every_chunk():
     path = os.path.join(tempdir(), "mine.wav")
     mine = (np.sin(np.arange(ts._SR) / 7) * 8000).astype(np.int16)
     _write_wav(path, mine)
     assert np.array_equal(_load_with(path), mine)
     assert _contents(path) is not None
+    saved = ts._WAV, ts._LOOP, ts._KEYBOARD
+    ts._WAV, ts._LOOP, ts._KEYBOARD = path, None, None
+    try:
+        ts._prepare()
+        assert ts._KEYBOARD is None
+        assert len(ts._LOOP) == len(mine) // ts._CHUNK      # every whole chunk, the last included
+        assert {len(c) for c in ts._LOOP} == {2 * ts._CHUNK}
+    finally:
+        ts._WAV, ts._LOOP, ts._KEYBOARD = saved
 
 
-def test_a_bad_override_plays_the_bed_and_is_left_alone():
+def test_a_bad_override_plays_live_typing_and_is_left_alone():
     d = tempdir()
     stereo = os.path.join(d, "stereo-48k.wav")
     _write_wav(stereo, np.zeros(9600), rate=48000, channels=2)
@@ -98,10 +217,10 @@ def test_a_bad_override_plays_the_bed_and_is_left_alone():
                 + b"LIST" + struct.pack("<I", len(info) + 2) + info
                 + b"data" + struct.pack("<I", 9600) + bytes(9600))
     short = os.path.join(d, "short.wav")
-    _write_wav(short, np.ones(ts._SR * ts._CHUNK_MS // 1000 - 1))   # not one whole chunk
+    _write_wav(short, np.ones(ts._CHUNK - 1))       # not one whole chunk
     for path in (d, stereo, text, torn, past_end, short, os.path.join(d, "missing.wav")):
         before = _contents(path)
-        assert np.array_equal(_load_with(path), BED), path
+        assert _load_with(path) is None, path
         assert _contents(path) == before, f"{path} was written"
 
 

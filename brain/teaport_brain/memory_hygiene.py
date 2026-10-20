@@ -54,10 +54,9 @@ def freeze_startup_objects() -> None:
     once, when the server is up and before the first session: a session's objects must
     stay collectable, or the cycles a torn-down pipeline leaves would never be freed.
 
-    Then hand back the pages startup's temporaries freed (the typing bed's synthesis
-    alone leaves ~9 MB in the heap): glibc keeps them until a trim, and the first
-    session-end trim may be hours away. No session is running yet, so its stall
-    (release_heap) costs nothing here."""
+    Then hand back the pages startup's temporaries freed (the imports' and the warm-ups'
+    scratch): glibc keeps them until a trim, and the first session-end trim may be hours
+    away. No session is running yet, so its stall (release_heap) costs nothing here."""
     gc.collect()
     gc.freeze()
     _malloc_trim(0)
