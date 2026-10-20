@@ -257,6 +257,11 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   `SETTLE_WAIT_S` (2 s), past which it is no verdict and errs owed. The call starts at the
   interruption and mostly overlaps the caller's own speech; a render that comes before it
   lands (the caller's next commit, a run, the lull) waits for it, inside the same bound.
+  The rest it is shown is the ledger's own (`transcript_ledger._unheard`, aligned by
+  characters to the heard prefix; none if it is not one -- no verdict). A session that
+  ends with a verdict still to come (`Owed.close_session`, the room's sleep before its
+  snapshot) applies it as none at once: the cut answer is owed and saved. Not modelled
+  (`Owed.tla`'s `SessionEnd` has no verdict in flight); `test_owed.py` pins it.
 - **The bounded settle wait: an accepted residual.** The render waits `SETTLE_WAIT_S`
   (2 s) for pending settles; past it the readers go on without the replies still
   pending, with a warning (one lost reply does not hold every later render). Each still

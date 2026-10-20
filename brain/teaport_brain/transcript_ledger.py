@@ -164,7 +164,8 @@ class Utterance:
 
     def unheard_tail(self) -> str:
         """The part of the reply the user did NOT hear."""
-        return _unheard(self.text, self.heard_text)
+        rest = _unheard(self.text, self.heard_text)
+        return "(the rest)" if rest is None else rest
 
 
 # A script that writes without spaces -- kana, the CJK ideographs, Thai -- arrives as ONE
@@ -193,14 +194,15 @@ def _nospace(s: str) -> str:
     return "".join((s or "").split())
 
 
-def _unheard(text: str, heard: str) -> str:
-    """The part of `text` after the heard prefix, matched IGNORING WHITESPACE.
+def _unheard(text: str, heard: str) -> Optional[str]:
+    """The part of `text` after the heard prefix, matched IGNORING WHITESPACE; None when
+    `heard` is not a prefix of it beyond spacing.
 
     The heard text is rebuilt from the TTS's per-word frames, whose spacing is the
     frames' (engine word frames carry none; a CJK voice's tokens are characters), so
     it is a prefix of the raw LLM text only up to whitespace. Comparing the two with
-    their spaces removed keeps the tail exact for both; a mismatch beyond spacing
-    falls back to a placeholder for display.
+    their spaces removed keeps the tail exact for both -- the transcript's unheard tail
+    (Utterance.unheard_tail) and the rest the cut judge is shown (the settle feed).
     """
     want = _nospace(heard)
     if not want:
@@ -211,11 +213,11 @@ def _unheard(text: str, heard: str) -> str:
             i += 1
             continue
         if text[i] != want[j]:
-            return "(the rest)"
+            return None
         i += 1
         j += 1
     if j < len(want):
-        return "(the rest)"
+        return None
     return text[i:].strip()
 
 
@@ -237,7 +239,7 @@ class TranscriptLedger(BaseObserver):
         super().__init__()
         self.events: List[Utterance] = []
         # The settle feed (owed.py, #203): called as on_reply_end(reply, heard, cut=,
-        # audio=, text=) at each LLM reply's OWN end -- the interruption that cut it, or once its
+        # audio=, text=, rest=) at each LLM reply's OWN end -- the interruption that cut it, or once its
         # synthesis is done and all of its audio has played -- with `reply` the owed.Reply its
         # LLMFullResponseStartFrame carried, `heard` its pts-exact heard text (all of
         # it when it played through; None when cut with no per-word pts) and `text` all
@@ -583,15 +585,18 @@ class TranscriptLedger(BaseObserver):
         """The settle feed (on_reply_end), once per entry, with the reply's whole text
         when its stream ended -- None when it was cut before that: the text as far as it
         got is a fragment, not the answer a cut telling is owed as
-        (owed.Owed._cut_answer; formal/Owed.tla, partialRecord)."""
+        (owed.Owed._cut_answer; formal/Owed.tla, partialRecord) -- and, for a cut with
+        a heard prefix, the rest of that text after it (_unheard; None if the prefix is
+        not one of it): what the cut judge is shown (owed.Owed._judge)."""
         reply = entry.get("reply") if entry is not None else None
         if reply is None:
             return
         entry["reply"] = None
         text = entry["text"] if entry["ended"] else None
+        rest = _unheard(text, heard) if cut and text and heard else None
         if self.on_reply_end is not None:
             try:
-                self.on_reply_end(reply, heard, cut=cut, audio=audio, text=text)
+                self.on_reply_end(reply, heard, cut=cut, audio=audio, text=text, rest=rest)
             except Exception as e:  # noqa: BLE001 -- an observer must never raise
                 logger.warning(f"LEDGER: the settle feed raised {e!r}")
 

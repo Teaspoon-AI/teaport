@@ -29,7 +29,8 @@ from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 
 from teaport_brain import services  # noqa: E402
-from teaport_brain.owed import Record, _rest, clean_outcome  # noqa: E402
+from teaport_brain.owed import Record, clean_outcome  # noqa: E402
+from teaport_brain.transcript_ledger import _unheard  # noqa: E402
 from teaport_brain.settings import setting  # noqa: E402
 
 appliance.require_reachable(setting("LLM_BASE_URL") or "", "the language model's endpoint")
@@ -123,7 +124,7 @@ async def main():
 
     all_cases = cases()
     votes = await asyncio.gather(*(
-        asyncio.gather(*(ask(q, h, _rest(t, h)) for _ in range(TRIALS)))
+        asyncio.gather(*(ask(q, h, _unheard(t, h)) for _ in range(TRIALS)))
         for _, q, t, h, _ in all_cases))
     tally = collections.Counter()
     for (name, question, text, heard, label), vs in zip(all_cases, votes):

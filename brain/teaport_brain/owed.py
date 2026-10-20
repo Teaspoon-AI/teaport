@@ -127,7 +127,7 @@ FOOTER = ("Say only what a result says. If they want something it doesn't includ
 # (#204, 2026-10-20). Measured on 241 cuts of 12 live tellings (gpt-oss-120b, majority of
 # 10): 1/145 false HEARD, 14/96 false OWED at the trailing edge, p50 0.34 s, p90 0.58 s --
 # where the lexical rule on the heard prefix had 89/145 false closes. The text is that
-# experiment's ("rest"); tests/eval_cut_judge.py replays it.
+# experiment's ("rest"); tests/test_cut_judge_eval.py replays it.
 CUT_JUDGE_PROMPT = (
     "A voice assistant was answering someone on a phone call and got cut off. You see "
     "their question, what they actually heard, and the rest they did not hear. Decide "
@@ -151,11 +151,6 @@ def cut_judge_verdict(reply_text: str) -> Optional[bool]:
     """The judge's answer: True for HEARD, False for OWED, None for anything else."""
     t = (reply_text or "").strip().upper()
     return True if t.startswith("HEARD") else False if t.startswith("OWED") else None
-
-
-def _rest(text: str, heard: str) -> str:
-    """The words of `text` after the cut: the heard prefix is the first words of it."""
-    return " ".join((text or "").split()[len((heard or "").split()):])
 
 
 # The re-offer's way to say nothing (round 5: without it the model re-offered 40/40
@@ -629,7 +624,7 @@ class Owed:
         # None (no verdict) -- services.BoundedOpenAILLMService.judge_cut. None: no
         # verdict ever, every cut errs owed.
         self.judge = judge
-        self._judging: set = set()            # the verdicts still to come (tasks)
+        self._judging: dict = {}              # verdicts still to come: task -> its _apply args
         # The tools whose result is an answer (tools.ANSWER_TOOLS): a cut telling of one
         # is owed (Owed._resolve). An action's confirmation never is.
         self.answer_tools = frozenset(answer_tools)
@@ -900,11 +895,12 @@ class Owed:
     # ---- Settle -------------------------------------------------------------------
 
     def settle(self, reply: Optional[Reply], heard: Optional[str], *, cut: bool,
-               audio: bool, text: Optional[str] = None) -> None:
+               audio: bool, text: Optional[str] = None, rest: Optional[str] = None) -> None:
         """A reply ended (the settle feed: TranscriptLedger, at the interruption that cut
         it or once all of its audio has played). `heard`: its pts-exact heard text -- all
         of it when it played through, None when cut with no per-word pts; `text`: all of
-        it, when its stream ended (None when cut before that).
+        it, when its stream ended (None when cut before that); `rest`: on a cut, the
+        text after the heard prefix (the ledger's _unheard; None if unaligned).
 
         Coverage is lexical, a cut is judged (formal/Owed.tla Closes, Verdicts): a reply
         played to its end closes every record its request carried the note for that its
@@ -919,7 +915,7 @@ class Owed:
             return
         reply.settled = True
         run = reply.kind in RUNS
-        judgeable = cut and audio and bool(heard) and bool(text)
+        judgeable = cut and audio and bool(heard) and bool(text) and rest is not None
         missed, asks = [], []
         # A reply rendered with a fresh answer is evidence for the record made of it
         # since (a late settle's: OwedAnswers.tla lateNoEvidence).
@@ -950,17 +946,17 @@ class Owed:
         if not (judgeable and questions and self.judge is not None):
             self._apply(reply, asks, ids, request, heard, text, cut, {})
             return
-        task = asyncio.get_running_loop().create_task(
-            self._judged(reply, asks, ids, request, heard, text, questions))
-        self._judging.add(task)
-        task.add_done_callback(self._judging.discard)
+        args = (reply, asks, ids, request, heard, text, True)
+        task = asyncio.get_running_loop().create_task(self._judged(args, questions, rest))
+        self._judging[task] = args
+        task.add_done_callback(lambda t: self._judging.pop(t, None))
 
-    async def _judged(self, reply, asks, ids, request, heard, text, questions) -> None:
-        rest = _rest(text, heard)
+    async def _judged(self, args, questions, rest) -> None:
+        heard = args[4]
         qs = sorted(questions)
         verdicts = dict(zip(qs, await asyncio.gather(*(self._judge(q, heard, rest)
                                                        for q in qs))))
-        self._apply(reply, asks, ids, request, heard, text, True, verdicts)
+        self._apply(*args, verdicts)
 
     async def _judge(self, question: str, heard: str, rest: str) -> Optional[bool]:
         """One verdict, bounded by SETTLE_WAIT_S; None (errs owed) past it or on error."""
@@ -1061,8 +1057,12 @@ class Owed:
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()
-        for task in list(self._judging):
+        # A verdict still to come applies as none (errs owed) NOW, before the room's sleep
+        # takes its snapshot: the cut answer is owed, and its reply settled.
+        for task, args in list(self._judging.items()):
             task.cancel()
+            self._judging.pop(task, None)
+            self._apply(*args, {})
 
     def snapshot(self) -> list:
         """The owed records, for a conversation kept across the room's sleep."""

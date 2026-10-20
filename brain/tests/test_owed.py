@@ -42,7 +42,7 @@ from teaport_brain.owed import (  # noqa: E402
     CLOSED, DROPPED, OWED, Owed, Record, Reply, clean_outcome, item_heard, render,
     spoken_tokens, split_items, terms_of,
 )
-from teaport_brain.transcript_ledger import TranscriptLedger  # noqa: E402
+from teaport_brain.transcript_ledger import TranscriptLedger, _unheard  # noqa: E402
 
 # ---- the #203 session (box .105, 2026-10-16 22:27; ctx-3263 in the design notes) ----
 HN_RAW = ("Top story right now (score 1,255 · 2,253 comments):\n\n- **Title:** Tesla "
@@ -368,6 +368,11 @@ async def judged(b):
         await asyncio.gather(*list(b._judging), return_exceptions=True)
 
 
+def cut(b, reply, heard, text):
+    """`reply` cut after `heard`, its stream ended: the settle feed, rest and all."""
+    b.settle(reply, heard, cut=True, audio=True, text=text, rest=_unheard(text, heard))
+
+
 def noted_reply(b, purpose, keys=("call-hn",)):
     r = Reply(purpose, keys if purpose in owed.RUNS else ())
     b.noted(r, keys)
@@ -684,7 +689,7 @@ async def test_a_sync_answer_cut_after_it_was_heard_makes_no_record():
     judge = FakeJudge(True)
     b, _, _ = sync_book(judge=judge)
     heard = "There's a Toy Joy store at five-five-zero-one Burnet Road"
-    b.settle(answer_reply(b, round_msgs()), heard, cut=True, audio=True, text=TOY)
+    cut(b, answer_reply(b, round_msgs()), heard, TOY)
     await judged(b)
     assert judge.calls == [(T_REQ, heard, TOY[len(heard):].strip())], judge.calls
     assert b.owed() == [], "a cut after the answer was heard made a record"
@@ -703,11 +708,38 @@ async def test_the_amazon_cut_before_the_price_stays_owed():
     heard = "Amazon lists the Orin Nano developer kit at two hundred"
     judge = FakeJudge(False)
     b, _, _ = sync_book(judge=judge)
-    b.settle(answer_reply(b, round_msgs(amazon)), heard, cut=True, audio=True, text=told)
+    cut(b, answer_reply(b, round_msgs(amazon)), heard, told)
     await judged(b)
     assert [r.outcome for r in b.owed()] == [told]
     assert judge.calls[0][2].startswith("forty-nine dollars")
     assert Record.make("k", amazon, clean_outcome(told)).closes_on(heard, run=False)
+
+
+async def test_a_verdict_still_to_come_at_the_sessions_end_errs_owed():
+    """The fourth review's J-a: the session ends (the room's sleep: close_session, then
+    the snapshot) while a sync cut's verdict is in flight. It applies as no verdict at
+    once -- the cut answer is owed, its reply settled -- so the snapshot carries it."""
+    b, _, _ = sync_book(judge=FakeJudge(False, release=asyncio.Event()))
+    p = answer_reply(b, round_msgs())
+    cut(b, p, "There's a", TOY)
+    await asyncio.sleep(0.05)
+    assert not b.is_settled() and b.owed() == []
+    b.close_session()
+    assert [d["key"] for d in b.snapshot()] == ["call-ws"]
+    assert b.is_settled() and not b._judging
+    await asyncio.sleep(0.05)
+    assert [r.key for r in b.owed()] == ["call-ws"], "applied twice, or lost"
+
+
+def test_the_rest_the_judge_is_shown_is_aligned_by_characters():
+    """One helper, the ledger's (_unheard): the heard prefix is rebuilt from per-word
+    frames whose spacing is theirs ("five- five- zero-"), so the rest is found by
+    characters, not by a word count; a prefix that is not one gives no rest (no
+    verdict: errs owed)."""
+    text = "Toy Joy is at five-five-zero-one Burnet Road, open until nine."
+    assert _unheard(text, "Toy Joy is at five- five- zero-") == "one Burnet Road, open until nine."
+    assert _unheard(text, "Toy Joy is at five- five- zero- one Burnet Road, open until") == "nine."
+    assert _unheard(text, "Tom Joy is") is None
 
 
 async def test_a_cut_is_closed_by_the_judge_alone():
@@ -716,29 +748,30 @@ async def test_a_cut_is_closed_by_the_judge_alone():
     the judge answers HEARD. OWED, no verdict (None, an error, a timeout) err owed; no
     whole text (a cut mid-stream), no heard prefix, or a reply that does not cover the
     record (a deferral) are never judged. The reply stays pending until the verdict."""
-    async def cut(judge, heard="Tesla Roadster is the top", text=TELLING):
+    async def cut_by(judge, heard="Tesla Roadster is the top", text=TELLING):
         b, _, _ = book(judge=judge)
         b.land(HN_REQ, HN_RAW, "call-hn")
         r = noted_reply(b, "caller")
-        b.settle(r, heard, cut=True, audio=True, text=text)
+        b.settle(r, heard, cut=True, audio=True, text=text,
+                 rest=_unheard(text, heard) if text and heard else None)
         pending = not b.is_settled()
         await judged(b)
         assert b.is_settled()
         return b.record("call-hn").state, pending
 
-    assert await cut(FakeJudge(True)) == (CLOSED, True)
-    assert await cut(FakeJudge(False)) == (OWED, True)
-    assert await cut(FakeJudge(None)) == (OWED, True)
-    assert await cut(FakeJudge(error=RuntimeError("503"))) == (OWED, True)
-    assert await cut(None) == (OWED, False), "no judge: errs owed at once"
+    assert await cut_by(FakeJudge(True)) == (CLOSED, True)
+    assert await cut_by(FakeJudge(False)) == (OWED, True)
+    assert await cut_by(FakeJudge(None)) == (OWED, True)
+    assert await cut_by(FakeJudge(error=RuntimeError("503"))) == (OWED, True)
+    assert await cut_by(None) == (OWED, False), "no judge: errs owed at once"
     for kw in ({"text": None}, {"heard": None}, {"text": "Sure, take your time."}):
         judge = FakeJudge(True)
-        assert await cut(judge, **kw) == (OWED, False), kw
+        assert await cut_by(judge, **kw) == (OWED, False), kw
         assert judge.calls == [], kw
     # A timeout: the bound is SETTLE_WAIT_S.
     old, owed.SETTLE_WAIT_S = owed.SETTLE_WAIT_S, 0.05
     try:
-        assert await cut(FakeJudge(True, release=asyncio.Event())) == (OWED, True)
+        assert await cut_by(FakeJudge(True, release=asyncio.Event())) == (OWED, True)
     finally:
         owed.SETTLE_WAIT_S = old
     # Played through: the lexical rule, no judge.
@@ -758,7 +791,7 @@ async def test_a_late_verdict_reads_the_live_book():
     b, _, gate = sync_book(judge=FakeJudge(False, release=release), reoffer_quiet_s=0.05)
     gate.quiet = 99.0
     p = answer_reply(b, round_msgs())
-    b.settle(p, "There's a", cut=True, audio=True, text=TOY)
+    cut(b, p, "There's a", TOY)
     await b.settled(timeout=0.05)                    # the readers go on
     c = answer_reply(b, round_msgs() + [{"role": "user", "content": "Sorry, go on?"}],
                      owed.COMMIT)
@@ -771,8 +804,7 @@ async def test_a_late_verdict_reads_the_live_book():
     release = asyncio.Event()
     b, _, gate = book(judge=FakeJudge(True, release=release))
     b.land(HN_REQ, HN_RAW, "call-hn")
-    b.settle(noted_reply(b, "caller"), "Tesla Roadster is the top", cut=True, audio=True,
-             text=TELLING)
+    cut(b, noted_reply(b, "caller"), "Tesla Roadster is the top", TELLING)
     await b.settled(timeout=0.05)
     b.settle(noted_reply(b, "caller"), TELLING, cut=False, audio=True, text=TELLING)
     assert b.record("call-hn").state == CLOSED
@@ -783,8 +815,7 @@ async def test_a_late_verdict_reads_the_live_book():
     release = asyncio.Event()
     b, _, gate = book(judge=FakeJudge(True, release=release))
     b.land(HN_REQ, HN_RAW, "call-hn")
-    b.settle(noted_reply(b, "caller"), "Tesla Roadster is the top", cut=True, audio=True,
-             text=TELLING)
+    cut(b, noted_reply(b, "caller"), "Tesla Roadster is the top", TELLING)
     await b.settled(timeout=0.05)
     for i in range(3):
         b.land(f"Question {i}?", f"Answer {i}: Lisbon {i}.", f"call-{i}")
@@ -1318,7 +1349,8 @@ async def _ledger(seq, reply, tts=None):
     sighted at the TTS (a reply's synthesis is over only at its own TTSStoppedFrame)."""
     ledger = TranscriptLedger(tts=tts)
     got = []
-    ledger.on_reply_end = lambda r, heard, *, cut, audio, text: got.append((r, heard, cut, audio, text))
+    ledger.on_reply_end = lambda r, heard, *, cut, audio, text, rest: got.append(
+        (r, heard, cut, audio, text, rest))
     start = LLMFullResponseStartFrame()
     start.owed_reply = reply
     ledger.feed = lambda more: _feed_ledger(ledger, more, tts)
@@ -1346,7 +1378,7 @@ async def test_the_feed_reads_the_pts_prefix_not_the_ledgers_heard_text():
         (InterruptionFrame(), 1.7)], reply)
     u = [e for e in ledger.events if e.speaker == "assistant"][-1]
     assert "Roadster" in u.heard_text, f"the control: the estimate reads more ({u.heard_text!r})"
-    assert got == [(reply, "Tesla", True, True, TELLING)], got
+    assert got == [(reply, "Tesla", True, True, TELLING, TELLING[len("Tesla "):])], got
     assert not hn_record().closes_on(got[0][1], run=False)
     assert hn_record().closes_on(u.heard_text, run=False), "the control would close it"
 
@@ -1359,7 +1391,7 @@ async def test_a_reply_that_played_through_settles_at_its_own_window_close():
         (LLMTextFrame(TELLING), 0.0), (LLMFullResponseEndFrame(), 0.0),
         (TTSStartedFrame(), 1.0), (_audio(3.0), 1.0), (TTSStoppedFrame(), 1.0),
         (BotStartedSpeakingFrame(), 1.0), (BotStoppedSpeakingFrame(), 4.0)], reply)
-    assert got == [(reply, TELLING, False, True, TELLING)], got
+    assert got == [(reply, TELLING, False, True, TELLING, None)], got
 
 
 def _ctx(frame, ctx):
@@ -1379,7 +1411,7 @@ async def test_a_bot_stop_mid_reply_settles_nothing():
     assert got == [], f"settled on a stall: {got}"
     await ledger.feed([(_ctx(_audio(1.0), "r"), 6.0), (TTSStoppedFrame(context_id="r"), 6.0),
                        (BotStartedSpeakingFrame(), 6.0), (BotStoppedSpeakingFrame(), 7.0)])
-    assert got == [(reply, TELLING, False, True, TELLING)], got
+    assert got == [(reply, TELLING, False, True, TELLING, None)], got
 
 
 async def test_a_filler_lines_end_settles_nothing():
@@ -1396,7 +1428,7 @@ async def test_a_filler_lines_end_settles_nothing():
     assert got == [], f"the filler's end settled the reply: {got}"
     await ledger.feed([(TTSStoppedFrame(context_id="r"), 2.0),
                        (BotStoppedSpeakingFrame(), 3.0)])
-    assert got == [(reply, TELLING, False, True, TELLING)], got
+    assert got == [(reply, TELLING, False, True, TELLING, None)], got
 
 
 async def test_a_reply_cut_after_its_last_word_was_heard_to_its_end():
@@ -1408,13 +1440,13 @@ async def test_a_reply_cut_after_its_last_word_was_heard_to_its_end():
         (TTSStartedFrame(), 1.0), (_audio(3.0), 1.0), (BotStartedSpeakingFrame(), 1.0),
         (_word("It", 1.1), 1.05), (_word("timed", 1.3), 1.05), (_word("out.", 1.5), 1.05),
         (InterruptionFrame(), 2.5)], reply)
-    assert got == [(reply, "It timed out.", False, True, "It timed out.")], got
+    assert got == [(reply, "It timed out.", False, True, "It timed out.", None)], got
 
 
 async def test_a_reply_with_no_text_settles_as_no_audio():
     reply = Reply("run")
     _, got = await _ledger([(LLMFullResponseEndFrame(), 0.0)], reply)
-    assert got == [(reply, None, False, False, "")]
+    assert got == [(reply, None, False, False, "", None)]
 
 
 async def test_a_reply_cut_before_its_tts_opened_was_heard_nothing():
@@ -1422,7 +1454,7 @@ async def test_a_reply_cut_before_its_tts_opened_was_heard_nothing():
     reply = Reply("run")
     _, got = await _ledger([(LLMTextFrame("Tesla Roadster is"), 0.0),
                             (InterruptionFrame(), 0.5)], reply)
-    assert got == [(reply, None, True, False, None)], got
+    assert got == [(reply, None, True, False, None, None)], got
 
 
 async def test_a_reply_cut_mid_stream_settles_its_heard_prefix_and_no_text():
@@ -1435,7 +1467,7 @@ async def test_a_reply_cut_mid_stream_settles_its_heard_prefix_and_no_text():
         (TTSStartedFrame(), 0.5), (_audio(3.0), 0.5), (BotStartedSpeakingFrame(), 0.5),
         (_word("Tomorrow", 0.6), 0.55), (_word("in", 1.0), 0.55),
         (LLMTextFrame("with highs near"), 0.7), (InterruptionFrame(), 0.9)], reply)
-    assert got == [(reply, "Tomorrow", True, True, None)], got
+    assert got == [(reply, "Tomorrow", True, True, None, None)], got
 
 
 def main():
