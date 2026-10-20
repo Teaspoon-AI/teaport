@@ -176,10 +176,10 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
 | `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
 | `TEAPORT_REOFFER_AFTER_QUIET_S` | **10** s (≥ 1) | How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked. |
-| `TEAPORT_THINKING_SOUND` | **on** | The typing bed during a long agent consult. |
-| `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Silence before the bed starts. |
+| `TEAPORT_THINKING_SOUND` | **on** | Typing during a long agent consult, in Talk and the room (never on a phone call); the OLED face types along. |
+| `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Quiet on the line before the typing is heard. |
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the typing's limited peak (-6 dBFS). |
-| `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Hard cap on the bed. Keep it above TEAPORT_ASK_OPENCLAW_TIMEOUT. |
+| `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Most typing heard per consult; the face types for the whole consult. |
 | `TEAPORT_PERSONA_FILE` | `~/.config/teaport/persona.md` | The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir. *Set by the installer.* |
 | `OPENCLAW_WORKSPACE` | `~/.openclaw/workspace` | The OpenClaw workspace whose persona files the voice brain shares. *Set by the installer.* |
 | `TEAPORT_WORKSPACE_FILES` | `SOUL.md,IDENTITY.md,USER.md,MEMORY.md` | Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design. |

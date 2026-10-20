@@ -1293,7 +1293,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "setup"
-help = "The typing bed during a long agent consult."
+help = "Typing during a long agent consult, in Talk and the room (never on a phone call); the OLED face types along."
 
 [[settings]]
 name = "TEAPORT_THINKING_GRACE_S"
@@ -1305,7 +1305,7 @@ min = 0
 default = 1.5
 read = "startup"
 tier = "tuning"
-help = "Silence before the bed starts."
+help = "Quiet on the line before the typing is heard."
 
 [[settings]]
 name = "TEAPORT_THINKING_GAIN"
@@ -1329,7 +1329,7 @@ min = 1
 default = 60
 read = "startup"
 tier = "tuning"
-help = "Hard cap on the bed. Keep it above TEAPORT_ASK_OPENCLAW_TIMEOUT."
+help = "Most typing heard per consult; the face types for the whole consult."
 
 [[settings]]
 name = "TEAPORT_PERSONA_FILE"

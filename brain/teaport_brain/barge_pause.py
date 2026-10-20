@@ -44,8 +44,8 @@
 #     treats the bot as silent once the audio it held back would have finished playing
 #     anyway (PlayoutPauseFrame.tail_secs): a single word then starts the turn, as it
 #     would have without the pause.
-#   * The thinking-sound bed (audio with no TTS context). Pausing it only delayed the
-#     consult answer queued behind it.
+#   * The thinking sound's typing: plain audio, not bot speech (thinking_sound.py), so
+#     no window to pause. Pausing it only delayed the consult answer queued behind it.
 #   * More than two ECHO-LIKE pauses in one bot-speaking window, on the onset test alone:
 #     after two pauses that resumed on a blip (speech under 250 ms, no words), only the
 #     VAD's start pauses until the bot stops. Bounds the stutter if echo residue trips
@@ -184,8 +184,7 @@ class BargeInPauser(FrameProcessor):
         self._near_end_secs = near_end_secs
         self._max_noword = max_noword_pauses
         self._bot_speaking = False
-        # The audio going to the transport is a reply's (it has a TTS context), not the
-        # thinking-sound bed's.
+        # The audio going to the transport is a reply's (it has a TTS context).
         self._reply_audio = False
         self._sources = {"vad": False, "onset": False}
         self._speech_t0 = None

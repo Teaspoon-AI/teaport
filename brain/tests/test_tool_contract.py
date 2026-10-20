@@ -14,7 +14,7 @@ import pytest
 from teaport_brain import config_schema, consult_bridge, persona, tools
 from teaport_brain.agent_backend import HAS_AGENT
 
-ALL_FEATURES = frozenset({"volume", "restart", "local", "sleep", "phonemes", "mood"})
+ALL_FEATURES = frozenset({"volume", "restart", "local", "sleep", "phonemes", "mood", "typing"})
 
 
 def _names(ts):
@@ -123,7 +123,7 @@ def test_a_composed_paragraph_keeps_the_rules_its_tools_need(monkeypatch):
 
 
 def test_client_features_are_parsed_strictly():
-    assert tools.parse_client_features("volume, RESTART,local,sleep,phonemes,mood,teleport") == ALL_FEATURES
+    assert tools.parse_client_features("volume, RESTART,local,sleep,phonemes,mood,typing,teleport") == ALL_FEATURES
     assert tools.parse_client_features(None) == frozenset()
     assert tools.CLIENT_FEATURES == ALL_FEATURES
 

@@ -28,7 +28,23 @@ from tempdirs import tempdir  # noqa: E402
 
 os.environ.pop("TEAPORT_THINKING_WAV", None)   # live typing, whatever the shell set
 
+from types import SimpleNamespace  # noqa: E402
+
 import numpy as np  # noqa: E402
+from pipecat.frames.frames import (  # noqa: E402
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
+    FunctionCallResultFrame,
+    FunctionCallsStartedFrame,
+    InterruptionFrame,
+    OutputAudioRawFrame,
+    OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
+    TTSAudioRawFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
+)
+from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 from teaport_brain import thinking_sound as ts  # noqa: E402
 
@@ -134,40 +150,189 @@ def test_nothing_the_brain_starts_with_imports_numpy_random():
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout
 
 
-def test_the_bed_keeps_time_and_catches_up_one_chunk_after_a_stall():
+def _bed(consults_async=True, keys=True):
+    """A ThinkingSound with what it pushes recorded as (when, frame) and its tasks run on
+    the test loop (there is no pipeline TaskManager here)."""
+    bed = ts.ThinkingSound(consults_async=consults_async, keys=keys)
+    out = []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        out.append((time.monotonic(), frame))
+
+    async def cancel(task, *a, **k):
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    bed.push_frame = push
+    bed.create_task = lambda coro, *a, **k: asyncio.get_running_loop().create_task(coro)
+    bed.cancel_task = cancel
+    return bed, out
+
+
+def _with(grace=0.1, max_s=None, chunk=None):
+    """Run an async test with TEAPORT_THINKING_GRACE_S (and _MAX_S, the typist's chunk)
+    set for it."""
+    def wrap(fn):
+        def run():
+            saved = ts._GRACE_S, ts._MAX_S, ts._Typist.chunk
+            ts._GRACE_S = grace
+            ts._MAX_S = ts._MAX_S if max_s is None else max_s
+            ts._Typist.chunk = chunk or ts._Typist.chunk
+            try:
+                asyncio.run(fn())
+            finally:
+                ts._GRACE_S, ts._MAX_S, ts._Typist.chunk = saved
+        run.__name__ = fn.__name__
+        return run
+    return wrap
+
+
+async def _send(bed, frame, direction=FrameDirection.DOWNSTREAM):
+    await bed.process_frame(frame, direction)
+
+
+def _working(call_id, done=False):
+    return OutputTransportMessageUrgentFrame(message={"type": "working", "call_id": call_id,
+                                                      **({"done": True} if done else {"secs": 145})})
+
+
+def _audio(out):
+    return [t for t, f in out if type(f) is OutputAudioRawFrame]
+
+
+def _said(out, kind):
+    return [f.message for _, f in out
+            if isinstance(f, (OutputTransportMessageFrame, OutputTransportMessageUrgentFrame))
+            and f.message.get("type") == kind]
+
+
+@_with(grace=0.1)
+async def test_a_background_consult_types_from_its_start_to_its_answer():
+    bed, out = _bed()
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(0.6)
+    await _send(bed, _working("c1", done=True))
+    assert _said(out, "typing") == [{"type": "typing", "on": True, "first_key_ms": 100},
+                                    {"type": "typing", "on": False, "done": True}]
+    assert len(_said(out, "working")) == 2                   # forwarded, as ever
+    assert 8 <= len(_audio(out)) <= 13                       # heard from 0.1 s, 40 ms a chunk
+    assert not any(isinstance(f, TTSAudioRawFrame) for _, f in out)   # never "bot speech"
+    keys = _said(out, "keys")
+    assert keys and all(k["anchor"] == "audio" for k in keys)
+    assert all(letter in ts._LETTERS or letter == "space"
+               for k in keys for letter, ms in k["keys"])
+    n = len(out)
+    await asyncio.sleep(0.2)
+    assert len(out) == n                                     # nothing once it is answered
+
+
+@_with(grace=0.15)
+async def test_the_typing_is_heard_only_while_the_line_is_quiet_and_seen_all_along():
+    bed, out = _bed()
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(0.4)
+    heard = len(_audio(out))
+    assert heard >= 4
+    await _send(bed, VADUserStartedSpeakingFrame())          # the user talks over it
+    await asyncio.sleep(0.05)
+    mark = len(out)
+    await asyncio.sleep(0.4)
+    talking = out[mark:]
+    assert not _audio(talking)                               # not heard...
+    assert all(k["anchor"] == "now" for k in _said(talking, "keys"))   # ...but typed
+    assert _said(talking, "keys")
+    await _send(bed, VADUserStoppedSpeakingFrame())
+    await asyncio.sleep(0.1)
+    assert not _audio(out[mark:])                            # the grace after them
+    await asyncio.sleep(0.25)
+    assert _audio(out[mark:])                                # quiet again: heard
+    mark = len(out)
+    await _send(bed, TTSAudioRawFrame(b"\0\0" * 960, 24000, 1))   # a reply on its way
+    await _send(bed, BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.sleep(0.3)
+    assert len(_audio(out[mark:])) <= 1                      # (one chunk may have been in flight)
+    await _send(bed, BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.sleep(0.3)
+    assert len(_audio(out[mark:])) >= 3
+    await _send(bed, _working("c1", done=True))
+
+
+@_with(grace=0.05)
+async def test_two_consults_type_until_the_last_is_answered_and_a_barge_in_types_on():
+    bed, out = _bed()
+    await _send(bed, _working("c1"))
+    await _send(bed, _working("c2"))
+    await _send(bed, InterruptionFrame())                    # a background consult goes on
+    await _send(bed, _working("c1", done=True))
+    await asyncio.sleep(0.2)
+    assert _said(out, "typing") == [{"type": "typing", "on": True, "first_key_ms": 50}]
+    await _send(bed, _working("c2", done=True))
+    assert _said(out, "typing")[-1] == {"type": "typing", "on": False, "done": True}
+
+
+@_with(grace=0.05)
+async def test_an_agent_first_consult_types_until_its_result_or_a_barge_in():
+    bed, out = _bed(consults_async=False)
+    started = FunctionCallsStartedFrame(function_calls=[SimpleNamespace(function_name="ask_openclaw")])
+    await _send(bed, _working("c1"))                         # (not this mode's signal)
+    assert not _said(out, "typing")
+    await _send(bed, started)
+    await asyncio.sleep(0.2)
+    await _send(bed, FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="t1",
+                                             arguments={}, result="the answer"))
+    await _send(bed, started)
+    await _send(bed, InterruptionFrame())
+    assert _said(out, "typing") == [
+        {"type": "typing", "on": True, "first_key_ms": 50}, {"type": "typing", "on": False, "done": True},
+        {"type": "typing", "on": True, "first_key_ms": 50}, {"type": "typing", "on": False, "done": False}]
+    assert _audio(out)
+
+
+@_with(grace=0.0, max_s=0.2)
+async def test_at_most_max_s_is_heard_and_the_face_types_on():
+    bed, out = _bed()
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(0.6)
+    await _send(bed, _working("c1", done=True))
+    assert len(_audio(out)) == 5                             # 0.2 s of 40 ms chunks
+    late = [k for k in _said(out, "keys") if k["anchor"] == "now"]
+    assert late                                              # typed on, unheard
+
+
+@_with(grace=0.0)
+async def test_a_client_that_does_not_type_hears_it_and_is_sent_no_key_presses():
+    bed, out = _bed(keys=False)
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(0.3)
+    await _send(bed, _working("c1", done=True))
+    assert _audio(out)
+    assert not _said(out, "typing") and not _said(out, "keys")
+
+
+def _stalling_chunk():
+    real, renders = ts._Typist.chunk, []
+
+    def chunk(self, heard=True):
+        renders.append(None)
+        if len(renders) == 10:
+            time.sleep(0.2)                                  # a render stalls 200 ms
+        return real(self, heard)
+    return chunk
+
+
+@_with(grace=0.0, chunk=_stalling_chunk())
+async def test_the_typing_keeps_time_and_catches_up_one_chunk_after_a_stall():
     """Paced on the clock: a chunk every 40 ms however long each takes to render, and
     after a stall one chunk at once, no more (a longer catch-up would queue ahead of the
     reply)."""
-    real = ts._Typist.chunk
-    renders = []
-
-    def chunk(self):
-        renders.append(None)
-        if len(renders) == 10:
-            time.sleep(0.2)                          # a render stalls 200 ms
-        return real(self)
-
-    async def run():
-        bed = ts.ThinkingSound()
-        sent = []
-
-        async def push(frame, direction=None):
-            sent.append(time.monotonic())
-
-        bed.push_frame = push
-        bed._active = True
-        task = asyncio.ensure_future(bed._run())
-        await asyncio.sleep(1.2)
-        bed._active = False
-        await task
-        return np.diff(sent)
-
-    saved = ts._Typist.chunk, ts._GRACE_S
-    ts._Typist.chunk, ts._GRACE_S = chunk, 0.0
-    try:
-        gaps = asyncio.run(run())
-    finally:
-        ts._Typist.chunk, ts._GRACE_S = saved
+    bed, out = _bed(keys=False)
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(1.2)
+    await _send(bed, _working("c1", done=True))
+    gaps = np.diff(_audio(out))
     stall = int(np.argmax(gaps))
     assert 0.18 < gaps[stall] < 1.0, gaps[stall]          # (a loaded runner may stretch it)
     caught_up = 0

@@ -331,7 +331,7 @@ def test_face_without_a_daemon_is_silent():
 def test_token_is_url_encoded(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "a+b&c=d %")
     monkeypatch.setattr(la, "URL", "ws://h/talk")
-    assert la._url() == ("ws://h/talk?features=volume,restart,local,phonemes,mood&client=local-audio"
+    assert la._url() == ("ws://h/talk?features=volume,restart,local,phonemes,mood,typing&client=local-audio"
                          f"&keepalive={la.KEEPALIVE_SECS:g}&token=a%2Bb%26c%3Dd%20%25")
 
 
@@ -1102,7 +1102,7 @@ def test_no_wake_words_is_the_bridge_as_before(monkeypatch):
     monkeypatch.setattr(la, "URL", "ws://h/talk")
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     assert not la.wake_mode()
-    assert la._url() == f"ws://h/talk?features=volume,restart,local,phonemes,mood&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
+    assert la._url() == f"ws://h/talk?features=volume,restart,local,phonemes,mood,typing&client=local-audio&keepalive={la.KEEPALIVE_SECS:g}"   # no sleep, no wake
 
 
 def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
@@ -1111,7 +1111,7 @@ def test_wake_words_ride_the_url_and_announce_sleep(monkeypatch):
     monkeypatch.setattr(la, "GATEWAY_TOKEN", "")
     import urllib.parse
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url()).query)
-    assert q["features"] == ["volume,restart,local,phonemes,mood,sleep"]
+    assert q["features"] == ["volume,restart,local,phonemes,mood,typing,sleep"]
     assert q["wake"] == ["hey teaport, привет чайник"] and "awake" not in q
     q = urllib.parse.parse_qs(urllib.parse.urlsplit(la._url(awake=True)).query)
     assert q["awake"] == ["1"]
@@ -1648,6 +1648,74 @@ def test_a_phoneme_the_lead_trim_cut_into_starts_at_the_anchor():
     for bad in (float("nan"), float("inf"), None, "x"):
         play.phonemes(bad, [["a", 0, 10]])                   # an unusable anchor: nothing
     assert play.phonemes_due(t0 + 10) == []
+
+
+def test_key_presses_come_due_on_the_typing_they_ride_or_after_their_message():
+    """{"type": "keys"}: ms after the first frame of the audio that comes next (the
+    typing that carries the clicks), or, with anchor "now", after the message (typing
+    that is not being played). A barge-in drops the presses of audio not yet played."""
+    play, clock, sunk = _playback()
+    play.push(_tone(24000, 0.3).tobytes())                   # 300 ms already queued
+    play.keys([["e", 60], ["t", 200], [None], "q", ["x", float("nan")], ["y", -5]])
+    play.push(_tone(24000, 0.5).tobytes())                   # the typing they belong to
+    play.pump()
+    t0 = clock.t
+    assert play.keys_due(t0 + 0.359) == []
+    assert play.keys_due(t0 + 0.361) == [("e", t0 + 0.36)]   # 300 ms in, + 60
+    assert play.keys_due(t0 + 0.6) == [("t", t0 + 0.5)]
+    assert play.keys_due(t0 + 10) == []                      # malformed ones: skipped
+    clock.t += 1.0
+    play.keys([["a", 50]], anchor="now")
+    assert play.keys_due(clock.t + 0.049) == []
+    assert [k for k, _ in play.keys_due(clock.t + 0.051)] == ["a"]
+    play.pump()
+    play.keys([["o", 5000]], anchor="now")                   # not handed to the card yet
+    play.clear()
+    assert play.keys_due(clock.t + 10) == []
+
+
+def _typing_face(clock=None, typing=True):
+    sent = []
+    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock or _Clock(),
+                      features=lambda: {"typing": 1} if typing else {})
+    return face, sent
+
+
+def test_the_face_types_from_the_consult_start_to_its_answer():
+    clock = _Clock()
+    face, sent = _typing_face(clock)
+    face.key("e", 90)                                        # no typing yet: nothing
+    face.typing(True, 1500)
+    face.typing(True, 1500)                                  # already told
+    face.key("e", 90)
+    clock.t += la.TYPING_RESEND_SECS
+    face.tick()                                              # its ttl, renewed (no new intro)
+    face.typing(False, done=True)
+    face.typing(False, done=True)                            # already told
+    assert sent == [{"typing": True, "first_key_ms": 1500, "ttl": la.TYPING_TTL_SECS},
+                    {"key": "e", "in_ms": 90},
+                    {"typing": True, "ttl": la.TYPING_TTL_SECS},
+                    {"typing": False, "done": True}]
+
+
+def test_typing_cut_short_or_a_session_end_lets_the_keyboard_go_without_the_finish():
+    face, sent = _typing_face()
+    face.typing(True, 1500)
+    face.typing(False)
+    face.typing(True, None)                                  # (no first key time: none sent)
+    face.ended()
+    assert sent[:4] == [{"typing": True, "first_key_ms": 1500, "ttl": la.TYPING_TTL_SECS},
+                        {"typing": False},
+                        {"typing": True, "ttl": la.TYPING_TTL_SECS},
+                        {"typing": False}]
+
+
+def test_an_avatar_that_does_not_type_is_never_told():
+    face, sent = _typing_face(typing=False)
+    face.typing(True, 1500)
+    face.key("e", 90)
+    face.typing(False, done=True)
+    assert sent == []
 
 
 def test_hiss_of_audio_pumped_before_its_caption_counts_once_vouched_for():

@@ -965,9 +965,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         reply_gate,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
-        # Fill the dead air of a long ask_openclaw consult with a soft typing bed;
-        # stops the instant the reply's first audio arrives. No-op for fast tools.
-        ThinkingSound() if thinking_sound.ENABLED else None,
+        # Type through a long ask_openclaw consult, heard while the line is quiet; the
+        # room's face types along (its bridge announces "typing"). Never on a phone call.
+        ThinkingSound(consults_async=not AGENT_FIRST, keys="typing" in client_features)
+        if thinking_sound.ENABLED and front_end != "sip" else None,
         # Directly above the transport: it reads the transport's upstream
         # Bot{Started,Stopped}SpeakingFrames and pauses the transport itself.
         barge_pauser,
