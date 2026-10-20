@@ -427,10 +427,10 @@ class ThinkingSound(FrameProcessor):
                 self._pushed = i
                 elapsed += _CHUNK_MS / 1000
                 # Paced on the clock, not by a sleep after each chunk: the render time
-                # would add up and starve the transport, a gap in the typing. A stall is
-                # not caught up, only skipped: the catch-up would sit queued ahead of the
-                # real reply.
-                due = max(due + _CHUNK_MS / 1000, loop.time() - _CHUNK_MS / 1000)
+                # would add up and starve the transport, a gap in the typing. After a
+                # stall one chunk is caught up, no more: a longer catch-up would sit
+                # queued ahead of the real reply.
+                due = max(due + _CHUNK_MS / 1000, loop.time())
                 await asyncio.sleep(due - loop.time())
         except asyncio.CancelledError:
             raise

@@ -13,10 +13,12 @@
 #
 # Run: python test_thinking_sound.py   (or via pytest test_suite.py)
 #
+import asyncio
 import os
 import struct
 import subprocess
 import sys
+import time
 import wave
 
 BRAIN = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..")
@@ -70,13 +72,20 @@ def _contents(path):
 
 
 def test_the_typing_is_reproducible_and_never_repeats():
-    a, pa = _typed(10, seed=1)
-    b, pb = _typed(10, seed=1)
-    c, _ = _typed(10, seed=2)
+    a, pa = _typed(35, seed=1)
+    b, pb = _typed(35, seed=1)
+    c, _ = _typed(5, seed=2)
     assert np.array_equal(a, b) and pa == pb
-    assert not np.array_equal(a, c)
-    half = len(a) // 2                           # not a loop: its second half is new typing
-    assert np.corrcoef(a[:half], a[half:])[0, 1] < 0.1
+    assert not np.array_equal(a[:len(c)], c)
+    # Not a loop of any length up to 30 s: its first 5 s turn up at no later lag (a loop
+    # correlates ~1 at its own length; the 15 s loop this replaced did).
+    n = 5 * ts._SR
+    seg, rest = a[:n], a[ts._SR // 2:]
+    m = 1 << int(np.ceil(np.log2(len(rest) + n)))
+    num = np.fft.irfft(np.fft.rfft(rest, m) * np.conj(np.fft.rfft(seg, m)), m)[:len(rest) - n]
+    energy = np.concatenate([[0], np.cumsum(rest ** 2)])
+    den = np.sqrt(np.dot(seg, seg) * (energy[n:len(rest)] - energy[:len(rest) - n]))
+    assert np.max(num / den) < 0.3, np.max(num / den)
 
 
 def test_the_typing_is_as_loud_as_before_and_peaks_under_minus_6_dbfs():
@@ -109,9 +118,12 @@ def test_every_chunk_is_40_ms():
     assert {len(t.chunk()[0]) for _ in range(200)} == {2 * ts._CHUNK}
 
 
-def test_it_never_imports_numpy_random():
+def test_nothing_the_brain_starts_with_imports_numpy_random():
+    # Not the bed, nor anything else the brain imports or warms up at start: the bed's
+    # RAM saving holds only while nothing does.
     code = ("import sys\n"
-            "from teaport_brain import thinking_sound as ts\n"
+            "from teaport_brain import gateway_server, thinking_sound as ts\n"
+            "gateway_server.warm_first_use_imports()\n"
             "ts.warm()\n"
             "t = ts._Typist(ts._KEYBOARD)\n"
             "[t.chunk() for _ in range(100)]\n"
@@ -120,6 +132,52 @@ def test_it_never_imports_numpy_random():
     out = subprocess.run([sys.executable, "-c", code], env=env, capture_output=True,
                          text=True, check=True)
     assert out.stdout.strip().splitlines()[-1] == "False", out.stdout
+
+
+def test_the_bed_keeps_time_and_catches_up_one_chunk_after_a_stall():
+    """Paced on the clock: a chunk every 40 ms however long each takes to render, and
+    after a stall one chunk at once, no more (a longer catch-up would queue ahead of the
+    reply)."""
+    real = ts._Typist.chunk
+    renders = []
+
+    def chunk(self):
+        renders.append(None)
+        if len(renders) == 10:
+            time.sleep(0.2)                          # a render stalls 200 ms
+        return real(self)
+
+    async def run():
+        bed = ts.ThinkingSound()
+        sent = []
+
+        async def push(frame, direction=None):
+            sent.append(time.monotonic())
+
+        bed.push_frame = push
+        bed._active = True
+        task = asyncio.ensure_future(bed._run())
+        await asyncio.sleep(1.2)
+        bed._active = False
+        await task
+        return np.diff(sent)
+
+    saved = ts._Typist.chunk, ts._GRACE_S
+    ts._Typist.chunk, ts._GRACE_S = chunk, 0.0
+    try:
+        gaps = asyncio.run(run())
+    finally:
+        ts._Typist.chunk, ts._GRACE_S = saved
+    stall = int(np.argmax(gaps))
+    assert 0.18 < gaps[stall] < 0.4, gaps[stall]
+    caught_up = 0
+    for g in gaps[stall + 1:]:                      # back to back right after it, then 40 ms
+        if g >= 0.02:
+            break
+        caught_up += 1
+    assert caught_up == 1, gaps[stall:stall + 4]
+    steady = np.delete(gaps, [stall, stall + 1])
+    assert abs(np.median(steady) - 0.04) < 0.005, np.median(steady)
 
 
 def test_an_override_wav_plays_as_given_and_loops_every_chunk():
