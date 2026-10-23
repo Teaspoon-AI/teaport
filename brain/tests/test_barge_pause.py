@@ -37,6 +37,7 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    OutputAudioRawFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
     TTSStartedFrame,
@@ -557,8 +558,9 @@ async def test_a_caller_already_talking_when_the_bot_starts_is_paused_at_once():
 
 
 async def test_the_thinking_bed_is_not_paused():
+    # The typing is plain audio (thinking_sound.py), not bot speech: nothing to pause.
     async with Rig() as rig:
-        await rig.task.queue_frames([TTSAudioRawFrame(_pcm(i), SR, 1) for i in range(5)])
+        await rig.task.queue_frames([OutputAudioRawFrame(_pcm(i), SR, 1) for i in range(5)])
         while not rig.wire.times:
             await asyncio.sleep(0.002)
         await asyncio.sleep(0.2)

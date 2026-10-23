@@ -31,9 +31,12 @@
 #                     (the TTSStoppedFrame queued behind the last chunk -- engine_tts
 #                     push_stop_frames; without one, pipecat's 3 s idle fallback).
 #                     The ledger keeps that FIFO:
-#                     every audio push -- tagged with its context; fillers and the
-#                     thinking-sound bed included, since they take playout time --
-#                     with its length, laid out back to back from the window's start.
+#                     every audio push -- tagged with its context; fillers included,
+#                     since they take playout time -- with its length, laid out back
+#                     to back from the window's start. (The thinking sound's typing is
+#                     plain audio, not bot speech: no window, so no part of the layout;
+#                     a reply behind it is dated by the transport's BotStarted at the
+#                     reply's own first chunk.)
 #                     A turn's playout start is where ITS first chunk lands in that
 #                     layout, never a frame that could be someone else's (BotStarted
 #                     is anonymous); heard time at a cut is the laid-out portion of
@@ -120,10 +123,6 @@ _MAX_FILLER_CTXS = 512
 _MAX_CLOSED_CTXS = 64
 _MAX_FIFO = 4096
 _MAX_SEEN = 8192
-
-# FIFO tag for the thinking-sound bed's audio: pushed into the transport by
-# thinking_sound.py with no context, it takes playout time and belongs to no turn.
-_BED = "<bed>"
 
 _EPS = 1e-6
 # How far before a chunk's modelled end a stop-frame BotStopped may arrive and still
@@ -224,12 +223,12 @@ def _unheard(text: str, heard: str) -> Optional[str]:
 class TranscriptLedger(BaseObserver):
     """Single-writer merged transcript with heard-vs-generated bot tracking.
 
-    `tts` is the pipeline's TTS service and `output` its output transport. With
-    them the ledger tells a frame's sightings apart by the processor handling it:
+    `tts` is the pipeline's TTS service and `output` its output transport: naming
+    either says the pipeline tags its TTS frames with context ids. With `tts` the
+    ledger tells a frame's sightings apart by the processor handling it:
     the LLM stream and spoken notices are read at the TTS (the text it will
     actually speak), a response's End frame sighted again downstream is pipecat's
-    post-drain re-push (see the module header), and untagged audio the transport
-    is HANDED (the thinking-sound bed) is told from the untagged copies it emits.
+    post-drain re-push (see the module header).
     Without them -- the hermetic tests, and any pipeline whose observer carries no
     processor -- every frame counts on its first sighting, the drain signal is
     absent, and a turn is assumed fully synthesized once its response has ended.
@@ -280,8 +279,8 @@ class TranscriptLedger(BaseObserver):
         self._legacy_src_set = False
         self._legacy_src = None
         # The output transport's playout FIFO: audio pushed and not yet played
-        # out, as [ctx, seconds, push time]; ctx is None on the legacy path and
-        # _BED for the thinking sound. _win_t0 is when the open window started
+        # out, as [ctx, seconds, push time]; ctx is None on the legacy path.
+        # _win_t0 is when the open window started
         # playing the head, None while no window is open.
         self._fifo: List[list] = []
         self._win_t0: Optional[float] = None
@@ -393,12 +392,6 @@ class TranscriptLedger(BaseObserver):
             fctx = getattr(f, "context_id", None)
             dur = ((getattr(f, "num_frames", 0) or 0) / f.sample_rate) if f.sample_rate else 0.0
             if fctx is None:
-                if self._output is not None and proc is self._output:
-                    # Handed TO the transport by something other than the TTS: the
-                    # thinking-sound bed. It plays, so it takes playout time; it is
-                    # nobody's reply, so it opens no turn.
-                    self._push(_BED, dur, t)
-                    return
                 if self._tagged:
                     # The transport's rebuild of a chunk it played: no context_id
                     # (base_output re-chunks the bytes into new frames). Not a push.
@@ -646,11 +639,9 @@ class TranscriptLedger(BaseObserver):
         return None
 
     def _turn_for_item(self, item) -> Optional[dict]:
-        """The open turn a FIFO item's audio belongs to (None for a filler's, the
-        bed's, or a charted turn's)."""
+        """The open turn a FIFO item's audio belongs to (None for a filler's or a
+        charted turn's)."""
         ctx = item[0]
-        if ctx == _BED:
-            return None
         if ctx is None:
             for turn in reversed(self._turns):
                 if turn["ctx"] is None:

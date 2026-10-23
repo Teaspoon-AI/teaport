@@ -87,8 +87,18 @@
 # becomes audible, beside the level's "hiss" (how much of the chunk is s, sh, f:
 # hiss_level) for a mouth that shows its teeth on them -- to an avatar that draws them. Only audio a caption has
 # vouched for counts as speech: the brain's thinking sound (typing during a long
-# consult) is audio too, and it shows as "thinking", jaw shut. Datagrams are
-# fire-and-forget: no daemon, no face, nothing else changes.
+# consult) is audio too, and it shows as "thinking", jaw shut. An avatar that types
+# ("typing": 1) types along: we announce ?features=typing, the brain says when a
+# consult starts and ends typing ({"type": "typing"}) and sends each key press ahead
+# of its click ({"type": "keys"}, thinking_sound.py) -- pinned to the typing's audio,
+# or, while the typing is not heard (the bot or the user is talking), to the moment it
+# arrives -- and each goes to the avatar KEY_LEAD_SECS before its click as
+# {"key": "e", "in_ms": ...}, between {"typing": true, ...} and {"typing": false, ...}.
+# Each {"typing": true} names who types (LOCAL_AUDIO_FACE_TYPIST: "typist": "claws") to
+# an avatar that lists that typist among its "typists".
+# Datagrams are fire-and-forget: no daemon, no face, nothing else changes. A daemon that
+# (re)starts writes its features file anew: within FACE_RESTART_CHECK_SECS it is sent
+# the face's state again, and the typing, rather than showing its own until they change.
 #
 # arecord/aplay (alsa-utils) rather than a Python audio binding: no new dependency in
 # the brain venv, and a dead card is a dead child process we can see and restart. No
@@ -226,8 +236,9 @@ DEBUG_CHIP_PREFIXES = ("🎙️ VAD:", "⏱️ turn committed", "🔊 first audi
 # phonemes asks for the words' timed phonemes with the audio, for the avatar's mouth
 # (FaceTap passes them on only to an avatar that draws them). mood asks the brain to let
 # the model tag a reply's mood (mood_tag.py), which FaceTap passes on to an avatar that
-# takes moods.
-FEATURES = ("volume", "restart", "local", "phonemes", "mood")
+# takes moods. typing asks for the thinking sound's key presses (FaceTap passes them on
+# to an avatar that types).
+FEATURES = ("volume", "restart", "local", "phonemes", "mood", "typing")
 # ...and with wake words, end_conversation (back to sleep): with none there is no sleep.
 WAKE_FEATURES = ("sleep",)
 # set_volume: a percent kept across sessions and reboots. 100 is the card's own level
@@ -271,8 +282,22 @@ FACE_STALE_SECS = 12.0
 # Send each mouth level this much before its audio is heard, to cover the avatar's own
 # delay (a 30 fps frame plus the I2C write of the panel).
 FACE_ADVANCE_SECS = setting("LOCAL_AUDIO_FACE_ADVANCE_MS") / 1000
-# How often the avatar's features file is re-read for "phonemes" (FaceTap.draws_phonemes).
-PHONES_RECHECK_SECS = 5.0
+# Each key press goes to the avatar this long before its click is heard ("in_ms" says
+# exactly when): the finger lifts for two 30 fps frames and strikes on the click's.
+KEY_LEAD_SECS = 0.1
+# While a consult types, the avatar is told so again this often; it lets the keyboard
+# go after TYPING_TTL_SECS without word (a bridge that died mid-consult).
+TYPING_RESEND_SECS = 4.0
+TYPING_TTL_SECS = 10
+# Who types ("hands" or "claws"), with each {"typing": true}, to an avatar that lists it
+# among its "typists" (a keyboard already up keeps its own until the next one comes in).
+FACE_TYPIST = setting("LOCAL_AUDIO_FACE_TYPIST")
+# How often the avatar's features file is re-read for what it takes (FaceTap.takes:
+# phonemes, moods, typing, typists).
+FEATURES_RECHECK_SECS = 5.0
+# How often the avatar is looked at for a restart (display.started): a new daemon shows
+# its own first face until it is told ours again.
+FACE_RESTART_CHECK_SECS = 1.0
 # A model mood is shown when its reply's first words are heard, and re-sent this often
 # while that reply speaks: the avatar relaxes a mood to neutral 4 s after the last one.
 MOOD_RESEND_SECS = 2.0
@@ -331,15 +356,20 @@ class FaceTap:
     """Conversation events -> the OLED avatar's datagram protocol.
 
     {"state": idle|listening|thinking|speaking}, {"mouth": 0..1} (jaw opening, from
-    the played audio), {"text": t} (VADER mood), {"mood": m} (the model's own). States are sent only on change, mouth
-    levels when they move (and every MOUTH_KEEPALIVE_SECS while open), and only while
-    speaking: leaving "speaking" shuts the mouth.
+    the played audio), {"text": t} (VADER mood), {"mood": m} (the model's own). States are sent only on change
+    (and again to an avatar that restarted), mouth levels when they move (and every MOUTH_KEEPALIVE_SECS while open), and only while
+    speaking: leaving "speaking" shuts the mouth. {"typing": ...} and {"key": ...} while
+    a consult types, to an avatar that types.
     """
 
     def __init__(self, path: str | None = None, send=None, clock=time.monotonic,
-                 features=None):
+                 features=None, started=None, typist: str | None = None):
         self._path = path or FACE_SOCK
+        self._typist = typist or FACE_TYPIST
         self._features = features or (lambda: display.features(self._path))
+        self._started = started or (lambda: display.started(self._path))
+        self._daemon = self._started()    # the avatar's start we last saw (and when)
+        self._daemon_t = clock()
         self._sock = None
         self._send = send or self._sendto
         self._clock = clock
@@ -370,6 +400,11 @@ class FaceTap:
         # VOICED_TAIL_SECS): the audio arriving meanwhile is speech.
         self._voiced = False
         self._voiced_until = 0.0
+        # A consult is typing, as the brain says; the avatar was told so (and when, last:
+        # TYPING_RESEND_SECS). One that comes up during it (a restart) is told then.
+        self._typing_wanted = False
+        self._typing = False
+        self._typing_t = 0.0
 
     def _sendto(self, data: bytes) -> None:
         try:
@@ -456,25 +491,21 @@ class FaceTap:
     def _mood_name(self, name: str) -> str:
         """The face to send for a mood: "concerned" is new to the avatar, so an avatar that
         does not list it (features "moods") is sent sad, the nearest it has."""
-        if name != "concerned":
-            return name
-        now = self._clock()
-        at = self._drawn_at.get(name)
-        if at is None or now - at >= PHONES_RECHECK_SECS:
-            self._drawn_at[name] = now
-            moods = self._features().get("moods")
-            self._drawn[name] = isinstance(moods, (list, tuple)) and name in moods
-        return name if self._drawn[name] else "sad"
+        return name if name != "concerned" or self.takes("moods", name) else "sad"
 
-    def takes(self, feature: str) -> bool:
-        """The avatar says it takes `feature` (its key in the features file), read at
-        most every PHONES_RECHECK_SECS: it may start, stop or be updated meanwhile."""
+    def takes(self, feature: str, value=None) -> bool:
+        """The avatar says it takes `feature` (its key in the features file) -- or, given
+        `value`, lists that value under it -- read at most every FEATURES_RECHECK_SECS: it
+        may start, stop or be updated meanwhile."""
+        key = feature if value is None else (feature, value)
         now = self._clock()
-        at = self._drawn_at.get(feature)
-        if at is None or now - at >= PHONES_RECHECK_SECS:
-            self._drawn_at[feature] = now
-            self._drawn[feature] = bool(self._features().get(feature))
-        return self._drawn[feature]
+        at = self._drawn_at.get(key)
+        if at is None or now - at >= FEATURES_RECHECK_SECS:
+            self._drawn_at[key] = now
+            found = self._features().get(feature)
+            self._drawn[key] = (bool(found) if value is None
+                                else isinstance(found, (list, tuple)) and value in found)
+        return self._drawn[key]
 
     @property
     def draws_phonemes(self) -> bool:
@@ -565,6 +596,35 @@ class FaceTap:
         if self._state == "speaking" and self.draws_phonemes:
             self._emit({"phoneme": symbol})
 
+    def typing(self, on: bool, first_key_ms=None, done: bool = False) -> None:
+        """A consult starts typing (the brain's {"type": "typing", "on": true}: its first
+        click is heard no sooner than first_key_ms from now) or ends ("done": its answer
+        arrived; else it was cut short). Only to an avatar that types."""
+        self._typing_wanted = on
+        if on and not self._typing and self.takes("typing"):
+            self._typing = True
+            self._typing_on(first_key_ms)
+        elif not on and self._typing:
+            self._typing = False
+            self._emit({"typing": False, "done": True} if done else {"typing": False})
+
+    def _typing_on(self, first_key_ms=None) -> None:
+        """{"typing": true}: a span starts (with first_key_ms) or goes on (a re-send, without),
+        for another ttl, typed by our typist where the avatar has it."""
+        self._typing_t = self._clock()
+        ev = {"typing": True}
+        if isinstance(first_key_ms, (int, float)) and math.isfinite(first_key_ms):
+            ev["first_key_ms"] = max(0, round(first_key_ms))
+        ev["ttl"] = TYPING_TTL_SECS
+        if self.takes("typists", self._typist):
+            ev["typist"] = self._typist
+        self._emit(ev)
+
+    def key(self, letter: str, in_ms: int) -> None:
+        """A key press of the typing: its click is heard in_ms from now."""
+        if self._typing:
+            self._emit({"key": letter, "in_ms": in_ms})
+
     def interrupted(self) -> None:
         self._activity()
         self._moods.clear()
@@ -586,8 +646,28 @@ class FaceTap:
                    and now - self._audio_t < 0.5 and now - self._bed_since >= FACE_BED_SECS)
             self.state("thinking" if bed else "idle")
 
+    def _restarted(self) -> None:
+        """A new avatar is serving: it shows its own first state, not ours, and may take
+        other features. Tell it our state again, and the typing if a consult types and
+        it types (one that has seen no typing brings its keyboard in on any send)."""
+        self._drawn_at.clear()            # (its features are read afresh)
+        if self._state is not None:
+            self._emit({"state": self._state})
+        self._typing = self._typing_wanted and self.takes("typing")
+        if self._typing:
+            self._typing_t = -math.inf    # (sent now, by tick)
+
     def tick(self) -> None:
         now = self._clock()
+        if now - self._daemon_t >= FACE_RESTART_CHECK_SECS:
+            self._daemon_t = now
+            daemon = self._started()
+            if daemon != self._daemon:
+                self._daemon = daemon
+                if daemon is not None:
+                    self._restarted()
+        if self._typing and now - self._typing_t >= TYPING_RESEND_SECS:
+            self._typing_on()                 # (no first_key_ms: no new intro)
         if (self._state == "idle" and self._bed_since is not None
                 and self._audio_t is not None and now - self._audio_t < 0.5
                 and now - self._bed_since >= FACE_BED_SECS):
@@ -596,7 +676,8 @@ class FaceTap:
             self.state("idle")
 
     def ended(self) -> None:
-        """The session is over: idle, mouth shut, whatever we thought it was."""
+        """The session is over: idle, mouth shut, no typing, whatever we thought it was."""
+        self.typing(False)
         self._caption = ""
         self._voiced, self._voiced_until = False, 0.0
         self._bed_since = self._audio_t = None
@@ -854,6 +935,9 @@ class Playback:
         # of the chunks the last mouth_due delivered.
         self._phones: deque[tuple[int, str]] = deque()
         self.hiss = 0.0
+        # (frame position, (letter, of typing played)) of every key press of the thinking
+        # sound not yet heard
+        self._keys: deque[tuple[int, tuple[str, bool]]] = deque()
         # [frame position, level dBFS as synthesized, voiced] of the chunks handed to the
         # card, the last HEARD_KEEP_SECS of them: what the speaker played when, for the
         # echo meter (xvf_echo.EchoMeter).
@@ -889,9 +973,7 @@ class Playback:
         each phoneme [symbol, start_ms, end_ms] is in that time too: it is heard where the
         next audio lands in our timeline, plus its offset. One that ended before that
         point (its audio came before the message) is dropped; one that began before it
-        (the sentence's lead trim cut into it) starts there. The next audio lands after
-        what is written, what is queued, and what the resampler still holds of earlier
-        pushes."""
+        (the sentence's lead trim cut into it) starts there."""
         if not isinstance(phones, list):
             return
         try:
@@ -900,9 +982,7 @@ class Playback:
             return
         if not math.isfinite(at):
             return
-        held = max(0, round(self._rs_in * DEVICE_RATE / RELAY_RATE) - self._rs_out)
-        anchor = self._written + self._pending_bytes // (DEVICE_CHANNELS * 2) + held
-        last = self._phones[-1][0] if self._phones else 0
+        marks = []
         for p in phones:
             try:
                 sym, start, end = str(p[0]), float(p[1]), float(p[2])
@@ -910,26 +990,80 @@ class Playback:
                 continue
             if not sym or not (math.isfinite(start) and math.isfinite(end)) or end <= at:
                 continue
-            start = max(start, at)
-            pos = max(last, anchor + round((start - at) * DEVICE_RATE / 1000))
-            self._phones.append((pos, sym))
+            marks.append((max(start, at) - at, sym))
+        self._pin(self._phones, self._landing(), marks)
+
+    def keys(self, keys, anchor=None) -> None:
+        """A {"type": "keys"} message: key presses of the thinking sound, [letter, ms]
+        each. ms is after the first sample of the audio that comes next (the typing that
+        carries their clicks), or, with anchor "now", after the message: typing that is
+        not being played (the bot or the user is talking) is still seen -- as if it
+        played: where it would land with nothing queued ahead of it, the lead the played
+        typing has too (not after the speech queued, nor ahead of the typing just played)."""
+        if not isinstance(keys, list):
+            return
+        played = anchor != "now"
+        if played:
+            base = self._landing()
+        elif self._start is None:
+            return
+        else:
+            base = max(self._landing(queued=False),
+                       round((self._clock() - self._start) * DEVICE_RATE))
+        marks = []
+        for k in keys:
+            try:
+                letter, ms = str(k[0]), float(k[1])
+            except (TypeError, ValueError, IndexError):
+                continue
+            if letter and math.isfinite(ms) and ms >= 0:
+                marks.append((ms, (letter, played)))
+        self._pin(self._keys, base, marks)
+
+    def _landing(self, queued: bool = True) -> int:
+        """Where the next pushed audio lands: after what is written, what is queued (or,
+        not `queued`, where it would with nothing queued ahead of it), and what the
+        resampler still holds of earlier pushes."""
+        held = max(0, round(self._rs_in * DEVICE_RATE / RELAY_RATE) - self._rs_out)
+        ahead = self._pending_bytes // (DEVICE_CHANNELS * 2) if queued else 0
+        return self._written + ahead + held
+
+    @staticmethod
+    def _pin(queue: deque, base: int, marks) -> None:
+        """Queue (ms after `base`, value) marks at their frame positions, in order."""
+        last = queue[-1][0] if queue else 0
+        for ms, value in marks:
+            pos = max(last, base + round(ms * DEVICE_RATE / 1000))
+            queue.append((pos, value))
             last = pos
+
+    def _due(self, queue: deque, by: float) -> list[tuple[str, float]]:
+        """The marks heard by `by` since the last call, in order, each with when."""
+        out = []
+        while queue and self._start is not None:
+            heard = self._start + queue[0][0] / DEVICE_RATE
+            if heard > by:
+                break
+            out.append((queue.popleft()[1], heard))
+        return out
 
     def phonemes_due(self, now: float) -> list[str]:
         """The phonemes heard by `now` since the last call, in order."""
-        out = []
-        while self._phones and self._start is not None and \
-                self._start + self._phones[0][0] / DEVICE_RATE <= now:
-            out.append(self._phones.popleft()[1])
-        return out
+        return [sym for sym, _ in self._due(self._phones, now)]
+
+    def keys_due(self, by: float) -> list[tuple[str, float]]:
+        """The key presses heard by `by` since the last call: (letter, when heard)."""
+        return [(letter, heard) for (letter, _), heard in self._due(self._keys, by)]
 
     def clear(self) -> None:
         """Barge-in: drop what has not been handed to the card yet."""
         self._pending.clear()
         self._pending_bytes = 0
-        # ...and the phonemes of that audio (what the card already has still plays)
+        # ...and the phonemes and key presses of that audio (what the card already has
+        # still plays; the presses of typing not played belong to no audio, and stay)
         while self._phones and self._phones[-1][0] >= self._written:
             self._phones.pop()
+        self._keys = deque(k for k in self._keys if k[0] < self._written or not k[1][1])
         # A fresh resampler: the old one holds the tail of the interrupted speech.
         self._resampler = soxr.ResampleStream(RELAY_RATE, DEVICE_RATE, 1, dtype="int16")
         self._rs_in = self._rs_out = 0
@@ -1284,13 +1418,16 @@ class Card:
             except ConnectionError:
                 await asyncio.sleep(1)  # aplay is gone; _watch says why
                 raise CardError("playback pipe closed") from None
-            heard = time.monotonic() + FACE_ADVANCE_SECS
+            fed = time.monotonic()
+            heard = fed + FACE_ADVANCE_SECS
             level = play.mouth_due(heard)
             if level is not None:
                 face.mouth(level, play.hiss)
             phones = play.phonemes_due(heard)
             if phones:
                 face.phoneme(phones[-1])   # several at once (a stall): the latest shape
+            for letter, at in play.keys_due(fed + KEY_LEAD_SECS):
+                face.key(letter, max(0, round((at - fed) * 1000)))
             if play.speaking:
                 quiet_since = None
             else:
@@ -1714,6 +1851,10 @@ async def run_session(card: Card, preroll: bool, wake: bool = False,
                 face.interrupted()
             elif kind == "phonemes":
                 play.phonemes(m.get("at_ms"), m.get("phonemes"))
+            elif kind == "keys":
+                play.keys(m.get("keys"), m.get("anchor"))
+            elif kind == "typing":
+                face.typing(bool(m.get("on")), m.get("first_key_ms"), bool(m.get("done")))
             elif kind == "ready":
                 logger.info("session ready")
                 if wake and alive is None:

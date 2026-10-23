@@ -481,8 +481,28 @@ async def test_a_pending_consult_is_announced_to_the_client_until_it_is_delivere
                                   llm=LLM())
     working = [m for m in _messages(pushed) if m["type"] == "working"]
     assert working[0]["call_id"] == "call-1" and working[0]["secs"] > tools._ASYNC_CONSULT_TIMEOUT
-    assert working[-1] == {"type": "working", "call_id": "call-1", "done": True}
+    assert working[-1] == {"type": "working", "call_id": "call-1", "done": True, "answered": True}
     assert delivered
+
+
+async def test_a_consult_that_comes_back_empty_is_done_but_not_answered():
+    from teaport_brain import tools
+    pushed = []
+
+    class LLM:
+        async def push_frame(self, frame, direction=None):
+            pushed.append(frame)
+
+    class Owed:
+        def land(self, request, text, key, *, failure=None, detail=None):
+            pass
+
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result({"ok": False, "error": "the model provider refused"})
+    await tools._consult_and_land("call-1", fut, "a long question", Owed(), "tc-1",
+                                  llm=LLM())
+    assert [m for m in _messages(pushed) if m["type"] == "working"][-1] == {
+        "type": "working", "call_id": "call-1", "done": True, "answered": False}
 
 
 def test_end_conversation_is_offered_only_to_a_client_that_can_sleep():

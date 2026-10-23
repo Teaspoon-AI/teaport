@@ -1,23 +1,33 @@
 #
-# thinking_sound.py — "assistant is thinking" comfort audio for long tool calls.
+# thinking_sound.py — "assistant is thinking" comfort audio for long agent consults.
 #
 # During an ask_openclaw consult the brain hands off to the full desktop agent and
-# waits ~15-35s for the answer (web search + fetch + reasoning). On a voice call
-# that is dead air. This processor fills ONLY that silence with a soft keyboard-
-# typing bed: a short grace period after the consult's tool call begins, then typing
-# streamed as output audio, stopped when the consult RESULT returns (or a barge-in).
-# Quick tools (time, host status, web_search) never trigger it — only the tools in
-# _TRIGGER, which is just ask_openclaw.
+# waits ~15-35 s, sometimes minutes, for the answer (web search + fetch + reasoning).
+# This processor types through it: from the consult's start until its answer is in, a
+# typist types, heard whenever the line is quiet — nobody has spoken, and no reply has
+# been on its way, for TEAPORT_THINKING_GRACE_S — and for at most TEAPORT_THINKING_MAX_S
+# of each consult. Quick tools (time, host status, web_search) never type: only the
+# tools in _TRIGGER, which is just ask_openclaw. Phone calls get no typing (agent_session
+# builds none for SIP) -- but in agent-first, where it is the only cover for the wait
+# (no "I'll work on that", no progress lines). Nor while the session is held for one.
 #
-# Placed just before transport.output(): it sees the consult's
-# FunctionCallsStartedFrame (start) and FunctionCallResultFrame (stop) coming DOWN
-# from the LLM, and injects its own audio DOWNSTREAM. Stop is keyed on the RESULT,
-# NOT on reply audio: ask_openclaw speaks a preamble/filler ("I'll work on that…")
-# right after the call starts, and that filler audio would otherwise trip an
-# audio-based stop and kill the bed during its grace period before it plays a note.
-# The result frame arrives only after the consult finishes, cleanly separating the
-# filler (before) from the reply (after); the ~1-2s until reply audio is a natural
-# beat, not dead air.
+# A consult's start and end. A background consult (the default: the turn ends at once
+# on a placeholder, owed.py) is the brain's {"type": "working"} message to the client,
+# sent when it starts and when its outcome is in (tools._consult_and_land). An
+# agent-first consult (TEAPORT_AGENT_FIRST: the turn waits for it) is its
+# FunctionCallsStartedFrame and FunctionCallResultFrame, or a barge-in, which cancels
+# it. Neither is keyed on reply audio: ask_openclaw speaks a preamble ("I'll work on
+# that…") right after the call starts, and the typing just waits for quiet again.
+#
+# Placed just before transport.output(): it sees all of that coming DOWN (and the
+# transport's Bot{Started,Stopped}SpeakingFrames coming up), and injects its own audio
+# DOWNSTREAM as plain OutputAudioRawFrames, which the transport plays without calling
+# them bot speech: nothing that waits for the bot to finish (barge-in, the door the
+# brain's own runs wait at, the ledger) takes the typing for a reply. A client that
+# types along ("typing" in its ?features=: the room's bridge, for the OLED face) is
+# also told when a consult starts and stops typing ({"type": "typing"}) and each key
+# press ahead of its click ({"type": "keys"}): pinned to the typing's audio, or, while
+# the typing is not heard, to the message itself — the face types while it talks.
 #
 # The bed is typed live (royalty-free, no external asset): a keyboard of modal keys is
 # built once when the brain starts (warm()), and each bed gets a typist that schedules
@@ -31,6 +41,7 @@
 import asyncio
 import math
 import random
+import time
 import wave
 from itertools import accumulate
 from typing import NamedTuple
@@ -39,14 +50,25 @@ import numpy as np
 from loguru import logger
 
 from pipecat.frames.frames import (
+    BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     Frame,
     FunctionCallResultFrame,
     FunctionCallsStartedFrame,
     InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    OutputAudioRawFrame,
+    OutputTransportMessageFrame,
+    OutputTransportMessageUrgentFrame,
     TTSAudioRawFrame,
+    TTSStartedFrame,
+    VADUserStartedSpeakingFrame,
+    VADUserStoppedSpeakingFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
+from teaport_brain.followup_gate import RunSilentFrame
 from teaport_brain.settings import setting
 
 ENABLED = setting("TEAPORT_THINKING_SOUND")
@@ -54,13 +76,22 @@ ENABLED = setting("TEAPORT_THINKING_SOUND")
 _SR = 24000                 # engine TTS rate; the relay is 24 kHz both ways
 _CHUNK_MS = 40
 _CHUNK = _SR * _CHUNK_MS // 1000                  # samples per chunk
-_GRACE_S = setting("TEAPORT_THINKING_GRACE_S")   # silence before the bed starts
+_GRACE_S = setting("TEAPORT_THINKING_GRACE_S")   # quiet on the line before typing is heard
 _GAIN = setting("TEAPORT_THINKING_GAIN")         # 1.0 = the typing's limited peak
-_MAX_S = setting("TEAPORT_THINKING_MAX_S")        # hard cap (> ask_openclaw timeout)
+_MAX_S = setting("TEAPORT_THINKING_MAX_S")        # most typing heard per consult
 _WAV = setting("TEAPORT_THINKING_WAV")            # "" = live typing
-# Only genuinely-long tool calls get a thinking bed; the fast tools resolve before
-# the grace period even elapses, so a bed there would just be a blip.
+# Only genuinely-long tool calls type; the fast tools resolve before the grace period
+# even elapses, so typing there would just be a blip.
 _TRIGGER = {"ask_openclaw"}
+# A consult's typing never outlives this, whatever its end (its answer is due within
+# TEAPORT_ASYNC_CONSULT_TIMEOUT, and the brain says so when it is in).
+_TYPING_MAX_S = 600.0
+# A reply is on its way from its LLMFullResponseStartFrame until its End -- for at most
+# this long, to cover the model's and the TTS's start before its first audio (which,
+# with the transport's BotStarted, speaks for it after). A response with no words of
+# its own has its End held at the TTS, and its Start, held there too, can reach us
+# after its own tool call (a system frame): so no frame order leaves it stuck.
+_REPLY_WAIT_S = 3.0
 
 # The keyboard, modelled on a close-miked clicky mechanical keyboard (an ASMR typing
 # recording, measured, not sampled). A key is a physical object, so it is built as
@@ -269,14 +300,26 @@ class _Typist:
         out[:_STRIKE] += s
         return out
 
-    def keystroke(self) -> tuple[int, str]:
-        """Render the next keystroke into the ring; its click's sample and letter."""
+    def keystroke(self, render: bool = True) -> tuple[int, str]:
+        """The next keystroke, rendered into the ring (unless `render` is off: typing
+        that is not heard); its click's sample and letter."""
         rng, kb = self.rng, self.kb
         self.to_space -= 1
         if self.to_space == 0:
             key, self.to_space = kb.space, rng.randint(4, 6)
         else:
             key = kb.keys[rng.choices(range(len(kb.keys)), cum_weights=kb.usage)[0]]
+        if render:
+            self._render(key)
+        pressed = (self.next_key, key.letter)
+        gap = min(max(0.115 * math.exp(rng.gauss(0, 0.35)), 0.045), 0.26)
+        if rng.random() < 0.035:
+            gap += rng.uniform(0.15, 0.45)                                               # between words
+        self.next_key += int(gap * _SR)
+        return pressed
+
+    def _render(self, key: _Key) -> None:
+        rng = self.rng
         buf = np.zeros(_SPAN)
 
         def add(s, at, db):
@@ -302,31 +345,27 @@ class _Typist:
         n = min(_FFT, _RING - i)
         self.ring[i:i + n] += wet[:n]
         self.ring[:_FFT - n] += wet[n:]                                                  # the ring wraps
-        pressed = (self.next_key, key.letter)
-        gap = min(max(0.115 * math.exp(rng.gauss(0, 0.35)), 0.045), 0.26)
-        if rng.random() < 0.035:
-            gap += rng.uniform(0.15, 0.45)                                               # between words
-        self.next_key += int(gap * _SR)
-        return pressed
 
-    def chunk(self) -> tuple[bytes, list]:
-        """The next 40 ms of typing (int16 PCM) and the key presses rendered for it:
+    def chunk(self, heard: bool = True) -> tuple[bytes | None, list]:
+        """The next 40 ms of typing (int16 PCM; None when not `heard`: the keystrokes
+        it schedules are not rendered) and the key presses scheduled for it:
         [(sample from this chunk's start, letter)], up to _AHEAD (+ the landing's lead)
         past its end. At most one keystroke beyond what this chunk needs, so the render
         cost stays near one keystroke per chunk."""
         pressed = []
         while self.next_key - _LEAD < self.read + _CHUNK:                # this chunk needs it
-            pressed.append(self.keystroke())
+            pressed.append(self.keystroke(heard))
         if self.next_key - _LEAD < self.read + _CHUNK + _AHEAD:          # one ahead
-            pressed.append(self.keystroke())
+            pressed.append(self.keystroke(heard))
         i = self.read % _RING
         x = self.ring[i:i + _CHUNK].copy()
         self.ring[i:i + _CHUNK] = 0
-        out = 0.5 * np.tanh(x * (_LEVEL / 0.5)) * (32767 * _GAIN)   # stacked clicks: held under -6 dBFS
-        pcm = np.clip(out, -32768, 32767).astype(np.int16).tobytes()
         pressed = [(at - self.read, letter) for at, letter in pressed]
         self.read += _CHUNK
-        return pcm, pressed
+        if not heard:
+            return None, pressed
+        out = 0.5 * np.tanh(x * (_LEVEL / 0.5)) * (32767 * _GAIN)   # stacked clicks: held under -6 dBFS
+        return np.clip(out, -32768, 32767).astype(np.int16).tobytes(), pressed
 
 
 def _load_override() -> np.ndarray | None:
@@ -381,74 +420,165 @@ def warm() -> None:
 
 
 class ThinkingSound(FrameProcessor):
-    """Streams soft typing into the output while a long consult runs, so the wait
-    isn't dead air. See module docstring for placement/stop-signal rationale."""
+    """Types while a long consult runs, so the wait isn't dead air. See the module
+    comment for what starts and ends it, when it is heard, and where it sits.
 
-    def __init__(self):
+    consults_async: the session's consults end the turn at once (owed.py) and say when
+    they start and end with {"type": "working"}; else agent-first, by the call's own
+    frames. keys: the client types along ("typing" in its ?features=). gate: the
+    session's FollowupGate, whose hold (a phone call has the box) keeps the typing
+    unheard."""
+
+    def __init__(self, consults_async: bool = False, keys: bool = False, gate=None):
         super().__init__()
         _prepare()
-        self._task = None
-        self._active = False
-        self._pushed = 0
+        self._async = consults_async
+        # (a loop of the user's own wav has no key presses to type along to)
+        self._keys = keys and _LOOP is None
+        self._gate = gate
+        self._consults = set()      # background consults typing (their call_ids)
+        self._task = None           # the typing, while a consult runs
+        self._heard = 0             # chunks heard this consult
+        # The line, as this place in the pipeline sees it: who is talking, and when
+        # anyone last was (or a reply was on its way).
+        self._user = self._bot = False
+        self._reply_t = None        # the open reply's LLMFullResponseStart (time.monotonic())
+        self._spoke = 0.0
+        # When the typing last pushed is heard out (time.monotonic()): it is no bot
+        # speech, but echoes on a line all the same (sip_server.HalfDuplexInputGate).
+        self.heard_until = -math.inf
 
-    def _start(self):
-        if self._active:
+    def _quiet(self) -> bool:
+        """Nobody talking, no reply on its way, for the grace; and not on hold. Its own
+        view of the line, not the FollowupGate's: that one is whether a run of ours may
+        start (its LLM flag held up by an End held at the TTS), this one is whether
+        anything is audible or about to be, from below the TTS (its start and audio)."""
+        now = time.monotonic()
+        replying = self._reply_t is not None and now - self._reply_t < _REPLY_WAIT_S
+        held = self._gate is not None and self._gate.held
+        return (not (self._user or self._bot or replying or held)
+                and now - self._spoke >= _GRACE_S)
+
+    async def _say(self, message: dict, urgent: bool = False):
+        if self._keys:
+            frame = (OutputTransportMessageUrgentFrame if urgent else OutputTransportMessageFrame)
+            await self.push_frame(frame(message=message), FrameDirection.DOWNSTREAM)
+
+    async def _start(self, why: str):
+        if self._task is not None:
             return
-        self._active = True
-        self._pushed = 0
+        self._heard = 0
+        self._spoke = time.monotonic()      # the consult's own turn is talking about it
+        await self._say({"type": "typing", "on": True, "first_key_ms": round(_GRACE_S * 1000)},
+                        urgent=True)
         self._task = self.create_task(self._run())
-        logger.info(f"thinking_sound: bed armed (grace {_GRACE_S}s)")
+        logger.info(f"thinking_sound: typing ({why}); heard after {_GRACE_S}s of quiet")
 
-    async def _stop(self, reason: str):
-        if not self._active and self._task is None:
+    async def _stop(self, why: str, done: bool = False):
+        if self._task is None:
             return
-        self._active = False
+        task, self._task = self._task, None
+        await self.cancel_task(task)
+        self._consults.clear()
+        await self._say({"type": "typing", "on": False, "done": done}, urgent=True)
+        logger.info(f"thinking_sound: typing stopped ({why}); "
+                    f"{self._heard * _CHUNK_MS / 1000:.1f}s heard")
+
+    async def _run(self):
+        await asyncio.sleep(_GRACE_S)
+        typist = _Typist(_KEYBOARD) if _LOOP is None else None
+        loop = asyncio.get_running_loop()
+        started = due = loop.time()
+        i = 0
+        while loop.time() - started < _TYPING_MAX_S:
+            heard = self._quiet() and self._heard * _CHUNK_MS / 1000 < _MAX_S
+            chunk, pressed = None, []
+            if typist is None:
+                chunk = _LOOP[i % len(_LOOP)] if heard else None
+            elif heard or self._keys:
+                # A keystroke takes a few ms to render: off the event loop. (Not heard,
+                # with no face typing along, there is nothing to do.)
+                chunk, pressed = await asyncio.to_thread(typist.chunk, heard)
+            # Asked again: a line that began during the render must not get a chunk of
+            # typing pushed in behind its first audio.
+            heard = heard and self._quiet()
+            if pressed:
+                # Ahead of the audio that carries their clicks, pinned to it. Unheard,
+                # pinned to this message, and urgent: queued behind a reply's audio
+                # they would all arrive at its end (the face types on while it talks).
+                await self._say({"type": "keys", "anchor": "audio" if heard else "now",
+                                 "keys": [[letter, round(at * 1000 / _SR)] for at, letter in pressed]},
+                                urgent=not heard)
+            if heard:
+                # Not a TTSAudioRawFrame: the transport plays it without calling it bot
+                # speech, so nothing waiting for the bot to finish waits on the typing.
+                await self.push_frame(OutputAudioRawFrame(chunk, _SR, 1), FrameDirection.DOWNSTREAM)
+                self._heard += 1
+                self.heard_until = time.monotonic() + _CHUNK_MS / 1000
+            i += 1
+            # Paced on the clock, not by a sleep after each chunk: the render time
+            # would add up and starve the transport, a gap in the typing. After a
+            # stall one chunk is caught up, no more: a longer catch-up would sit
+            # queued ahead of the real reply. (One such stall: MemoryReclaim's gc, at
+            # most once a minute while the line is quiet, the typing being no speech
+            # to the gate -- ~0.2 s on the box: a pause a typist makes anyway.)
+            due = max(due + _CHUNK_MS / 1000, loop.time())
+            await asyncio.sleep(due - loop.time())
+        self._task = None
+        self._consults.clear()
+        await self._say({"type": "typing", "on": False, "done": False}, urgent=True)
+        logger.info(f"thinking_sound: typing gave up after {_TYPING_MAX_S:.0f}s")
+
+    def _track_line(self, frame: Frame) -> None:
+        """Who is talking, as the frames passing here say."""
+        now = time.monotonic()
+        if isinstance(frame, (VADUserStartedSpeakingFrame, VADUserStoppedSpeakingFrame)):
+            self._user = isinstance(frame, VADUserStartedSpeakingFrame)
+        elif isinstance(frame, (BotStartedSpeakingFrame, BotStoppedSpeakingFrame)):
+            self._bot = isinstance(frame, BotStartedSpeakingFrame)
+        elif isinstance(frame, (LLMFullResponseStartFrame, LLMFullResponseEndFrame)):
+            self._reply_t = now if isinstance(frame, LLMFullResponseStartFrame) else None
+        elif isinstance(frame, (InterruptionFrame, FunctionCallsStartedFrame, RunSilentFrame)):
+            # A response with no words of its own (cut, a tool call, a run that said
+            # nothing) has its End held at the TTS until a later context ends: it is not
+            # a reply on its way.
+            self._reply_t = None
+        elif not isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame)):
+            return                          # (a line or a reply on its way; the typing's own is not one)
+        self._spoke = now
+
+    async def cleanup(self):
+        """The session is over: so is its typing (a task of ours, not pipecat's)."""
+        await super().cleanup()
         if self._task is not None:
             task, self._task = self._task, None
             await self.cancel_task(task)
-        logger.info(f"thinking_sound: bed stopped ({reason}); pushed {self._pushed} chunks")
-
-    async def _run(self):
-        try:
-            await asyncio.sleep(_GRACE_S)
-            typist = _Typist(_KEYBOARD) if _LOOP is None else None
-            loop = asyncio.get_running_loop()
-            i = 0
-            elapsed = _GRACE_S
-            due = loop.time()
-            while self._active and elapsed < _MAX_S:
-                if typist is None:
-                    chunk = _LOOP[i % len(_LOOP)]
-                else:
-                    # A keystroke takes a few ms to render: off the event loop.
-                    chunk, _ = await asyncio.to_thread(typist.chunk)
-                await self.push_frame(TTSAudioRawFrame(chunk, _SR, 1), FrameDirection.DOWNSTREAM)
-                i += 1
-                self._pushed = i
-                elapsed += _CHUNK_MS / 1000
-                # Paced on the clock, not by a sleep after each chunk: the render time
-                # would add up and starve the transport, a gap in the typing. After a
-                # stall one chunk is caught up, no more: a longer catch-up would sit
-                # queued ahead of the real reply.
-                due = max(due + _CHUNK_MS / 1000, loop.time())
-                await asyncio.sleep(due - loop.time())
-        except asyncio.CancelledError:
-            raise
-        finally:
-            self._active = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if isinstance(frame, FunctionCallsStartedFrame):
+        self._track_line(frame)
+        if self._async and isinstance(frame, (OutputTransportMessageFrame,
+                                              OutputTransportMessageUrgentFrame)):
+            m = frame.message if isinstance(frame.message, dict) else {}
+            if m.get("type") == "working":
+                if m.get("done"):
+                    self._consults.discard(m.get("call_id"))
+                    if not self._consults:
+                        # (the face finishes its typing only on an answer)
+                        answered = bool(m.get("answered"))
+                        await self._stop("consult answered" if answered else "consult over, unanswered",
+                                         done=answered)
+                else:
+                    self._consults.add(m.get("call_id"))
+                    await self._start("background consult")
+        elif not self._async and isinstance(frame, FunctionCallsStartedFrame):
             names = {getattr(c, "function_name", None) for c in (frame.function_calls or [])}
             if names & _TRIGGER:
-                self._start()
-        elif self._active and isinstance(frame, FunctionCallResultFrame) \
+                await self._start("consult")
+        elif not self._async and isinstance(frame, FunctionCallResultFrame) \
                 and frame.function_name in _TRIGGER:
-            # The consult's answer is back — stop the bed. (Keyed on the RESULT, not
-            # reply audio: the tool's own preamble/filler audio comes first and would
-            # otherwise kill the bed during its grace period.)
-            await self._stop("consult result")
-        elif self._active and isinstance(frame, InterruptionFrame):
-            await self._stop("barge-in")
+            answered = isinstance(frame.result, dict) and bool(frame.result.get("answer"))
+            await self._stop("consult result" if answered else "consult failed", done=answered)
+        elif not self._async and isinstance(frame, InterruptionFrame):
+            await self._stop("barge-in")      # (an agent-first consult is cancelled with its turn)
         await self.push_frame(frame, direction)

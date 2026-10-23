@@ -34,6 +34,7 @@
 # speak the user's language.
 #
 import json
+import os
 import socket
 import threading
 import unicodedata
@@ -63,6 +64,17 @@ def features(path: str = SOCK) -> dict:
     except (OSError, ValueError):
         return {}
     return found if isinstance(found, dict) else {}
+
+
+def started(path: str = SOCK):
+    """Which start of the avatar on `path` is serving: each one writes its features file
+    anew once its socket is bound (a new file renamed into place), so a change is a new
+    daemon, which has forgotten all it was told. None when there is no file."""
+    try:
+        st = os.stat(path + FEATURES_SUFFIX)
+    except OSError:
+        return None
+    return st.st_ino, st.st_mtime_ns
 
 
 def supports_screens(path: str = SOCK) -> bool:

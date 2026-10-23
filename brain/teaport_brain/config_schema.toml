@@ -1293,7 +1293,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "setup"
-help = "The typing bed during a long agent consult."
+help = "Typing during a long agent consult, in Talk and the room (on a phone call only in agent-first mode, where nothing else covers the wait); the OLED face types along."
 
 [[settings]]
 name = "TEAPORT_THINKING_GRACE_S"
@@ -1305,7 +1305,7 @@ min = 0
 default = 1.5
 read = "startup"
 tier = "tuning"
-help = "Silence before the bed starts."
+help = "Quiet on the line before the typing is heard."
 
 [[settings]]
 name = "TEAPORT_THINKING_GAIN"
@@ -1329,7 +1329,7 @@ min = 1
 default = 60
 read = "startup"
 tier = "tuning"
-help = "Hard cap on the bed. Keep it above TEAPORT_ASK_OPENCLAW_TIMEOUT."
+help = "Most typing heard per consult; the face types for the whole consult."
 
 [[settings]]
 name = "TEAPORT_PERSONA_FILE"
@@ -1379,7 +1379,7 @@ type = "path"
 default = ""
 read = "startup"
 tier = "tuning"
-help = "Your own 24 kHz mono 16-bit wav to loop as the thinking bed. Empty = typing generated live."
+help = "Your own 24 kHz mono 16-bit wav to loop as the thinking bed (the face does not type along to it). Empty = typing generated live."
 
 # ---- tools
 
@@ -1600,7 +1600,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
-help = "Drop the caller's mic while the bot speaks. On means no barge-in."
+help = "Drop the caller's mic while the bot speaks, and while the thinking sound types over a consult (agent-first mode). On means no barge-in."
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"
@@ -2170,12 +2170,6 @@ rhs = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
 message = "TEAPORT_ASK_OPENCLAW_TIMEOUT must exceed the ack + native consult timeouts, or pipecat drops the late answer."
 
 [[constraints]]
-kind = "lt"
-lhs = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
-rhs = "TEAPORT_THINKING_MAX_S"
-message = "TEAPORT_THINKING_MAX_S should stay above TEAPORT_ASK_OPENCLAW_TIMEOUT so the bed outlasts the consult."
-
-[[constraints]]
 kind = "le_chain"
 names = ["TTS_FIRST_CLAUSE_CHARS", "TTS_CLAUSE_CAP", "TTS_CLAUSE_HARD_MAX"]
 message = "First clause ≤ clause cap ≤ hard max."
@@ -2352,6 +2346,17 @@ unit = "ms"
 read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
+
+[[settings]]
+name = "LOCAL_AUDIO_FACE_TYPIST"
+store = "local_audio_env"
+group = "local_audio"
+type = "enum"
+values = ["hands", "claws"]
+default = "hands"
+read = "startup"
+tier = "tuning"
+help = "Who types on the OLED face while the agent works on a question: hands, or claws. Takes effect the next time it starts typing, on an avatar that has both; an older one types its own way."
 
 # ================================================================ wifi-setup.env
 

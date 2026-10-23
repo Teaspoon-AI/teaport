@@ -176,15 +176,15 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
 | `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
 | `TEAPORT_REOFFER_AFTER_QUIET_S` | **10** s (≥ 1) | How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked. |
-| `TEAPORT_THINKING_SOUND` | **on** | The typing bed during a long agent consult. |
-| `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Silence before the bed starts. |
+| `TEAPORT_THINKING_SOUND` | **on** | Typing during a long agent consult, in Talk and the room (on a phone call only in agent-first mode, where nothing else covers the wait); the OLED face types along. |
+| `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Quiet on the line before the typing is heard. |
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the typing's limited peak (-6 dBFS). |
-| `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Hard cap on the bed. Keep it above TEAPORT_ASK_OPENCLAW_TIMEOUT. |
+| `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Most typing heard per consult; the face types for the whole consult. |
 | `TEAPORT_PERSONA_FILE` | `~/.config/teaport/persona.md` | The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir. *Set by the installer.* |
 | `OPENCLAW_WORKSPACE` | `~/.openclaw/workspace` | The OpenClaw workspace whose persona files the voice brain shares. *Set by the installer.* |
 | `TEAPORT_WORKSPACE_FILES` | `SOUL.md,IDENTITY.md,USER.md,MEMORY.md` | Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design. |
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |
-| `TEAPORT_THINKING_WAV` | `""` | Your own 24 kHz mono 16-bit wav to loop as the thinking bed. Empty = typing generated live. |
+| `TEAPORT_THINKING_WAV` | `""` | Your own 24 kHz mono 16-bit wav to loop as the thinking bed (the face does not type along to it). Empty = typing generated live. |
 
 ## Tools
 
@@ -241,7 +241,7 @@ In `/etc/teaport/brain.env`. Read by teaport-brain's SIP front-end (phone calls)
 
 | Setting | Default | Description |
 |---|---|---|
-| `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks. On means no barge-in. |
+| `SIP_HALF_DUPLEX` | **off** | Drop the caller's mic while the bot speaks, and while the thinking sound types over a consult (agent-first mode). On means no barge-in. |
 | `SIP_HALF_DUPLEX_TAIL_S` | **0.8** s (≥ 0) | The tail after the bot stops, when half-duplex is on. |
 | `SIP_STT_MAKEUP_DB` | **0** dB (0–20) | Makeup gain added to the caller signal the transcriber sees, to recover the quiet speech a caller produces over the bot. 0 = off; 6 recovered the quiet barge-in "stop"s with no regressions on 205 clips. VAD and endpointing are upstream of it and unaffected. |
 | `SIP_ANSWER_AFTER_SECS` | **5** s (≥ 0) | How long a call rings before the brain answers it: a couple of rings, time it builds the call's pipeline and has the greeting worded in, so the greeting plays as soon as the caller is connected. 0 answers as soon as the pipeline is up. Needs the gateway's auto_answer off (the brain answers). |
@@ -346,11 +346,11 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 | `LOCAL_AUDIO_URL` | `ws://127.0.0.1:<BRAIN_PORT>/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
 | `LOCAL_AUDIO_FACE_SOCK` | `/run/oled-avatar/face.sock` | The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes. |
 | `LOCAL_AUDIO_FACE_ADVANCE_MS` | **50** ms (0–300) | How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads. |
+| `LOCAL_AUDIO_FACE_TYPIST` | `hands` | Who types on the OLED face while the agent works on a question: hands, or claws. Takes effect the next time it starts typing, on an avatar that has both; an older one types its own way. One of `hands`, `claws`. |
 
 ## Settings that constrain each other
 
 - TEAPORT_ASK_OPENCLAW_TIMEOUT must exceed the ack + native consult timeouts, or pipecat drops the late answer.
-- TEAPORT_THINKING_MAX_S should stay above TEAPORT_ASK_OPENCLAW_TIMEOUT so the bed outlasts the consult.
 - First clause ≤ clause cap ≤ hard max.
 - Changing ENGINE_PORT means rewriting TEAPORT_URL and ENGINE_TTS_URL in brain.env.
 - Changing BRAIN_PORT means rewriting BRAIN_URL in bridge.env, the plugin config and Caddy.

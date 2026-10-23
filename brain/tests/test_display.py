@@ -170,6 +170,19 @@ def test_features_reads_the_file_and_anything_else_is_none():
         assert display.features(path) == want
 
 
+def test_an_avatars_start_is_its_features_file():
+    path = os.path.join(tempdir(), "face.sock")
+    assert display.started(path) is None
+    for name in ("first", "next"):
+        with open(f"{path}.{name}", "w") as f:
+            f.write('{"typing": 1}')
+    os.replace(path + ".first", path + display.FEATURES_SUFFIX)   # as the avatar writes it
+    one = display.started(path)
+    assert one is not None and display.started(path) == one
+    os.replace(path + ".next", path + display.FEATURES_SUFFIX)    # a new start
+    assert display.started(path) not in (None, one)
+
+
 @pytest.mark.parametrize("feats, text, fits", [
     ({"screen": 1, "qr": 1, "qr_max_bytes": 38}, "WIFI:T:WPA;S:teaport-9e35;P:47190352;;", True),
     ({"screen": 1, "qr": 1, "qr_max_bytes": 37}, "WIFI:T:WPA;S:teaport-9e35;P:47190352;;", False),

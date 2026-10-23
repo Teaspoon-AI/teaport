@@ -14,9 +14,9 @@
 #     Its second sighting, below the TTS, tells the ledger which response a context
 #     spoke and that its synthesis is over. The engine TTS pushes no TTSStoppedFrame
 #     at all (push_stop_frames is False), so this is the only completion signal live.
-#   - Untagged audio comes from two sources the ledger must tell apart: the
-#     thinking-sound bed, pushed INTO the transport (first sighted at the transport),
-#     and the transport's own rebuild of every chunk it played (first sighted below it).
+#   - Untagged audio is the transport's own rebuild of every chunk it played (first
+#     sighted below it). The thinking sound's typing is not TTS audio at all (a plain
+#     OutputAudioRawFrame, never bot speech) and takes no part.
 #
 # Each case is one of the review's findings on PR #13's ledger, in the frame shape the
 # pipeline produces (a shape the TTS cannot produce -- a context starting while an
@@ -40,6 +40,7 @@ from pipecat.frames.frames import (  # noqa: E402
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    OutputAudioRawFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
     TTSStartedFrame,
@@ -92,9 +93,9 @@ def copy(secs):
     return TTSAudioRawFrame(b"\x00\x00" * int(secs * SR), SR, 1)
 
 
-def bed(secs):
-    """A thinking-sound chunk, pushed INTO the transport: untagged, sighted there."""
-    return TTSAudioRawFrame(b"\x00\x00" * int(secs * SR), SR, 1)
+def typing(secs):
+    """A chunk of the thinking sound's typing, handed to the transport: plain audio."""
+    return OutputAudioRawFrame(b"\x00\x00" * int(secs * SR), SR, 1)
 
 
 def at(item, t):
@@ -270,48 +271,27 @@ async def test_d_a_spoken_notice_is_charted_as_itself_and_the_reply_keeps_its_te
     assert abs(utts[1].t_start - 1.6) < 0.01, utts[1].t_start
 
 
-async def test_e_the_thinking_bed_takes_playout_time_but_opens_no_turn():
-    """The bed is untagged audio pushed INTO the transport (thinking_sound.py):
-    it belongs to no reply, so it opens no turn on the replies queued during the
-    consult -- and it occupies the queue, so a reply whose audio lands behind the
-    bed's last chunks starts after them: a barge-in half way into the reply reads
-    half, not the bed's seconds plus."""
+async def test_e_the_typing_takes_no_part_and_a_reply_behind_it_is_dated_by_its_own_start():
+    """The thinking sound's typing is plain audio handed to the transport, not bot
+    speech: no BotStarted, so no window and no part of the layout, and no turn. A
+    reply queued behind typing the transport still holds starts when the transport
+    says the bot started speaking -- at the reply's own first chunk -- so a barge-in
+    half way into the reply reads half."""
     f1, end1 = response(R1, 0.0)
-    f2, end2 = response(R2, 0.3)                    # two completions before any TTS
-    L = await feed(ledger(), f1 + f2 + [
-        (bed(0.5), 0.0, OUT), *siblings(BotStartedSpeakingFrame, 0.05),
-        (bed(0.5), 0.5, OUT), (bed(0.5), 1.0, OUT), (bed(0.5), 1.5, OUT),
-        (copy(0.5), 0.55, AFTER), (copy(0.5), 1.05, AFTER), (copy(0.5), 1.55, AFTER),
+    L = await feed(ledger(), f1 + [
+        (typing(0.5), 0.0, OUT), (typing(0.5), 0.5, OUT), (typing(0.5), 1.0, OUT),
+        (typing(0.5), 0.55, AFTER), (typing(0.5), 1.05, AFTER),
         (started("R1"), 1.6, BELOW),
-        at(audio(2.0, "R1"), 1.6),                  # behind the bed: plays 2.05-4.05
+        at(audio(2.0, "R1"), 1.6),                  # behind the typing: plays 2.05-4.05
         drained(end1, 1.7),
-        (copy(0.5), 2.05, AFTER),
+        *siblings(BotStartedSpeakingFrame, 2.05),
+        (copy(0.5), 2.55, AFTER),
         (InterruptionFrame(), 3.05),                # half way into R1
     ])
     utts = bot(L)
     assert [u.text for u in utts] == [R1], [u.text[:24] for u in utts]
     assert utts[0].interrupted and 0.45 < utts[0].heard_fraction < 0.55, utts[0].heard_fraction
     assert abs(utts[0].t_start - 2.05) < 0.01, utts[0].t_start
-
-
-async def test_e_two_replies_after_the_bed_are_charted_in_order_under_their_own_text():
-    f1, end1 = response(R1, 0.0)
-    f2, end2 = response(R2, 0.3)
-    L = await feed(ledger(), f1 + f2 + [
-        (bed(0.5), 0.0, OUT), *siblings(BotStartedSpeakingFrame, 0.05),
-        (bed(0.5), 0.5, OUT), (copy(0.5), 0.55, AFTER), (copy(0.5), 1.05, AFTER),
-        *siblings(BotStoppedSpeakingFrame, 1.4),    # the bed stopped; a gap
-        (started("R1"), 2.0, BELOW), at(audio(2.0, "R1"), 2.0), drained(end1, 2.05),
-        (started("R2"), 2.1, BELOW), at(audio(1.0, "R2"), 2.1), drained(end2, 2.15),
-        *siblings(BotStartedSpeakingFrame, 2.2),
-        (copy(2.0), 4.2, AFTER), (copy(1.0), 5.2, AFTER),
-        *siblings(BotStoppedSpeakingFrame, 5.55),
-    ])
-    utts = bot(L)
-    assert [u.text for u in utts] == [R1, R2], [u.text[:24] for u in utts]
-    assert all(u.heard_fraction >= 0.99 and not u.interrupted for u in utts)
-    assert abs(utts[0].t_start - 2.2) < 0.01 and abs(utts[1].t_start - 4.2) < 0.01
-
 
 async def test_f_a_reply_chained_behind_queued_filler_audio_is_credited_only_its_own_playout():
     """Fast tool flow: the spoken ack (a reply, context A), a narrator line queued

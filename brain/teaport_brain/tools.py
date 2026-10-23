@@ -588,11 +588,15 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
     progress = (asyncio.create_task(_consult_progress(llm, request=request, gate=gate))
                 if llm is not None else None)
 
+    answered = False    # the outcome landed is an answer (not a timeout, error or nothing)
+
     async def working(done: bool) -> None:
         # Tell the client an answer is still owed (and, at the end, that it no longer
-        # is): the local audio bridge must not put the conversation to sleep while one
-        # is on its way (local_audio.KeepAlive). `secs` bounds the wait. Best effort: a
-        # client that ignores it loses nothing, and a torn-down pipeline cannot take it.
+        # is, and whether it got one): the local audio bridge must not put the
+        # conversation to sleep while one is on its way (local_audio.KeepAlive), and
+        # the typing ends on it (thinking_sound.py: the face finishes only an answer).
+        # `secs` bounds the wait. Best effort: a client that ignores it loses nothing,
+        # and a torn-down pipeline cannot take it.
         if gate is not None:
             # The session's own count of consults running (a no-wake room session is not
             # idle while one is: gateway_server.room_idle).
@@ -601,7 +605,8 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if llm is None:
             return
         message = {"type": "working", "call_id": call_id}
-        message.update({"done": True} if done else {"secs": _ASYNC_CONSULT_TIMEOUT + 15})
+        message.update({"done": True, "answered": answered} if done
+                       else {"secs": _ASYNC_CONSULT_TIMEOUT + 15})
         try:
             await llm.push_frame(OutputTransportMessageUrgentFrame(message=message))
         except Exception:  # noqa: BLE001
@@ -616,8 +621,10 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         # known. Observed live 2026-08-26 09:44, when the follow-up waited for its
         # delivery to play: the shop list was spoken at :25.0 and "Almost there — hang
         # tight." landed at :37.3.
+        nonlocal answered
         if progress is not None:
             progress.cancel()
+        answered = bool(outcome.text)
         owed.land(request, outcome.text, tool_call_id, failure=outcome.failure,
                   detail=outcome.detail)
 
@@ -1056,10 +1063,12 @@ if AGENT_FIRST and not TOOLS_BY_NAME["ask_openclaw"].enabled:
     AGENT_FIRST = False
 # The client features a /talk client may announce (?features=): one per client tool,
 # and "phonemes": the client draws a mouth from what is said (local_audio.py, for the
-# OLED face), so the session's TTS sends each word's timed phonemes with the audio; and
-# "mood": the client shows a mood, so the model may tag its replies with one (mood_tag.py).
+# OLED face), so the session's TTS sends each word's timed phonemes with the audio;
+# "mood": the client shows a mood, so the model may tag its replies with one (mood_tag.py);
+# and "typing": the client types along to the thinking sound, so it is sent the typing's
+# start, end and key presses (thinking_sound.py).
 CLIENT_FEATURES = frozenset(n.split(":", 1)[1] for t in TOOLS for n in t.needs
-                            if n.startswith("client:")) | {"phonemes", "mood"}
+                            if n.startswith("client:")) | {"phonemes", "mood", "typing"}
 
 
 def parse_client_features(raw: str | None) -> frozenset:
