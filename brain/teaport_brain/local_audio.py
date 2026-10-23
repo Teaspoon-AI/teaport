@@ -94,6 +94,8 @@
 # or, while the typing is not heard (the bot or the user is talking), to the moment it
 # arrives -- and each goes to the avatar KEY_LEAD_SECS before its click as
 # {"key": "e", "in_ms": ...}, between {"typing": true, ...} and {"typing": false, ...}.
+# Each {"typing": true} names who types (LOCAL_AUDIO_FACE_TYPIST: "typist": "claws") to
+# an avatar that lists that typist among its "typists".
 # Datagrams are fire-and-forget: no daemon, no face, nothing else changes. A daemon that
 # (re)starts writes its features file anew: within FACE_RESTART_CHECK_SECS it is sent
 # the face's state again, and the typing, rather than showing its own until they change.
@@ -287,6 +289,9 @@ KEY_LEAD_SECS = 0.1
 # go after TYPING_TTL_SECS without word (a bridge that died mid-consult).
 TYPING_RESEND_SECS = 4.0
 TYPING_TTL_SECS = 10
+# Who types ("hands" or "claws"), with each {"typing": true}, to an avatar that lists it
+# among its "typists" (a keyboard already up keeps its own until the next one comes in).
+FACE_TYPIST = setting("LOCAL_AUDIO_FACE_TYPIST")
 # How often the avatar's features file is re-read for "phonemes" (FaceTap.draws_phonemes).
 PHONES_RECHECK_SECS = 5.0
 # How often the avatar is looked at for a restart (display.started): a new daemon shows
@@ -357,8 +362,9 @@ class FaceTap:
     """
 
     def __init__(self, path: str | None = None, send=None, clock=time.monotonic,
-                 features=None, started=None):
+                 features=None, started=None, typist: str | None = None):
         self._path = path or FACE_SOCK
+        self._typist = typist or FACE_TYPIST
         self._features = features or (lambda: display.features(self._path))
         self._started = started or (lambda: display.started(self._path))
         self._daemon = self._started()    # the avatar's start we last saw (and when)
@@ -482,25 +488,21 @@ class FaceTap:
     def _mood_name(self, name: str) -> str:
         """The face to send for a mood: "concerned" is new to the avatar, so an avatar that
         does not list it (features "moods") is sent sad, the nearest it has."""
-        if name != "concerned":
-            return name
-        now = self._clock()
-        at = self._drawn_at.get(name)
-        if at is None or now - at >= PHONES_RECHECK_SECS:
-            self._drawn_at[name] = now
-            moods = self._features().get("moods")
-            self._drawn[name] = isinstance(moods, (list, tuple)) and name in moods
-        return name if self._drawn[name] else "sad"
+        return name if name != "concerned" or self.takes("moods", name) else "sad"
 
-    def takes(self, feature: str) -> bool:
-        """The avatar says it takes `feature` (its key in the features file), read at
-        most every PHONES_RECHECK_SECS: it may start, stop or be updated meanwhile."""
+    def takes(self, feature: str, value=None) -> bool:
+        """The avatar says it takes `feature` (its key in the features file) -- or, given
+        `value`, lists that value under it -- read at most every PHONES_RECHECK_SECS: it
+        may start, stop or be updated meanwhile."""
+        key = feature if value is None else (feature, value)
         now = self._clock()
-        at = self._drawn_at.get(feature)
+        at = self._drawn_at.get(key)
         if at is None or now - at >= PHONES_RECHECK_SECS:
-            self._drawn_at[feature] = now
-            self._drawn[feature] = bool(self._features().get(feature))
-        return self._drawn[feature]
+            self._drawn_at[key] = now
+            found = self._features().get(feature)
+            self._drawn[key] = (bool(found) if value is None
+                                else isinstance(found, (list, tuple)) and value in found)
+        return self._drawn[key]
 
     @property
     def draws_phonemes(self) -> bool:
@@ -596,15 +598,23 @@ class FaceTap:
         click is heard no sooner than first_key_ms from now) or ends ("done": its answer
         arrived; else it was cut short). Only to an avatar that types."""
         if on and not self._typing and self.takes("typing"):
-            self._typing, self._typing_t = True, self._clock()
-            ev = {"typing": True}
-            if isinstance(first_key_ms, (int, float)) and math.isfinite(first_key_ms):
-                ev["first_key_ms"] = max(0, round(first_key_ms))
-            ev["ttl"] = TYPING_TTL_SECS
-            self._emit(ev)
+            self._typing = True
+            self._typing_on(first_key_ms)
         elif not on and self._typing:
             self._typing = False
             self._emit({"typing": False, "done": True} if done else {"typing": False})
+
+    def _typing_on(self, first_key_ms=None) -> None:
+        """{"typing": true}: a span starts (with first_key_ms) or goes on (a re-send, without),
+        for another ttl, typed by our typist where the avatar has it."""
+        self._typing_t = self._clock()
+        ev = {"typing": True}
+        if isinstance(first_key_ms, (int, float)) and math.isfinite(first_key_ms):
+            ev["first_key_ms"] = max(0, round(first_key_ms))
+        ev["ttl"] = TYPING_TTL_SECS
+        if self.takes("typists", self._typist):
+            ev["typist"] = self._typist
+        self._emit(ev)
 
     def key(self, letter: str, in_ms: int) -> None:
         """A key press of the typing: its click is heard in_ms from now."""
@@ -654,8 +664,7 @@ class FaceTap:
                 if daemon is not None:
                     self._restarted()
         if self._typing and now - self._typing_t >= TYPING_RESEND_SECS:
-            self._typing_t = now
-            self._emit({"typing": True, "ttl": TYPING_TTL_SECS})   # (no first_key_ms: no new intro)
+            self._typing_on()                 # (no first_key_ms: no new intro)
         if (self._state == "idle" and self._bed_since is not None
                 and self._audio_t is not None and now - self._audio_t < 0.5
                 and now - self._bed_since >= FACE_BED_SECS):

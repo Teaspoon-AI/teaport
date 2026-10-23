@@ -1718,6 +1718,34 @@ def test_an_avatar_that_does_not_type_is_never_told():
     assert sent == []
 
 
+def test_the_typist_goes_with_every_typing_send_to_an_avatar_that_has_it():
+    clock = _Clock()
+    feats = {"typing": 1, "typists": ["hands", "claws"]}
+    sent = []
+    face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
+                      features=lambda: feats, typist="claws")
+    face.typing(True, 1500)
+    clock.t += la.TYPING_RESEND_SECS
+    face.tick()                                              # the re-send names it too
+    face.typing(False, done=True)
+    assert sent == [{"typing": True, "first_key_ms": 1500, "ttl": la.TYPING_TTL_SECS,
+                     "typist": "claws"},
+                    {"typing": True, "ttl": la.TYPING_TTL_SECS, "typist": "claws"},
+                    {"typing": False, "done": True}]
+    for older in ({"typing": 1}, {"typing": 1, "typists": ["hands"]},
+                  {"typing": 1, "typists": "claws"}):        # none, not this one, garbled
+        sent.clear()
+        face = la.FaceTap(send=lambda b: sent.append(json.loads(b)), clock=clock,
+                          features=lambda older=older: older, typist="claws")
+        face.typing(True, 1500)
+        assert sent == [{"typing": True, "first_key_ms": 1500, "ttl": la.TYPING_TTL_SECS}]
+
+
+def test_the_hands_type_unless_the_setting_says_claws():
+    assert la.FACE_TYPIST == "hands"                         # (the schema's default)
+    assert la.FaceTap(send=lambda b: None)._typist == "hands"
+
+
 def _restarting_face(feats):
     """A face whose avatar restarts (a new start id) when the test says, with the
     features `feats` holds."""

@@ -346,6 +346,7 @@ In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the
 | `LOCAL_AUDIO_URL` | `ws://127.0.0.1:<BRAIN_PORT>/talk` | The brain's /talk WebSocket. GATEWAY_TOKEN, read from brain.env, is appended as ?token= when set. |
 | `LOCAL_AUDIO_FACE_SOCK` | `/run/oled-avatar/face.sock` | The OLED avatar daemon's socket (teaport-oled-avatar, `oled_face.py --serve`). The bridge sends it listening/thinking/speaking, the jaw opening from the loudness of the audio as it plays, and the reply text for its mood. No daemon there means no face; nothing else changes. |
 | `LOCAL_AUDIO_FACE_ADVANCE_MS` | **50** ms (0–300) | How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads. |
+| `LOCAL_AUDIO_FACE_TYPIST` | `hands` | Who types on the OLED face while the agent works on a question: hands, or claws. Takes effect the next time it starts typing, on an avatar that has both; an older one types its own way. One of `hands`, `claws`. |
 
 ## Settings that constrain each other
 

@@ -2347,6 +2347,17 @@ read = "startup"
 tier = "tuning"
 help = "How early the avatar's mouth is told about the audio it is about to play, to cover its own drawing delay. Raise it if the mouth lags the voice, lower it if it leads."
 
+[[settings]]
+name = "LOCAL_AUDIO_FACE_TYPIST"
+store = "local_audio_env"
+group = "local_audio"
+type = "enum"
+values = ["hands", "claws"]
+default = "hands"
+read = "startup"
+tier = "tuning"
+help = "Who types on the OLED face while the agent works on a question: hands, or claws. Takes effect the next time it starts typing, on an avatar that has both; an older one types its own way."
+
 # ================================================================ wifi-setup.env
 
 [[settings]]
