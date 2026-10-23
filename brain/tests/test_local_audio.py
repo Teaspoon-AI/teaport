@@ -1653,7 +1653,8 @@ def test_a_phoneme_the_lead_trim_cut_into_starts_at_the_anchor():
 def test_key_presses_come_due_on_the_typing_they_ride_or_after_their_message():
     """{"type": "keys"}: ms after the first frame of the audio that comes next (the
     typing that carries the clicks), or, with anchor "now", after the message (typing
-    that is not being played). A barge-in drops the presses of audio not yet played."""
+    that is not being played) -- as if played, so the two line up. A barge-in drops the
+    presses of audio not yet played, and only those."""
     play, clock, sunk = _playback()
     play.push(_tone(24000, 0.3).tobytes())                   # 300 ms already queued
     play.keys([["e", 60], ["t", 200], [None], "q", ["x", float("nan")], ["y", -5]])
@@ -1665,13 +1666,18 @@ def test_key_presses_come_due_on_the_typing_they_ride_or_after_their_message():
     assert play.keys_due(t0 + 0.6) == [("t", t0 + 0.5)]
     assert play.keys_due(t0 + 10) == []                      # malformed ones: skipped
     clock.t += 1.0
-    play.keys([["a", 50]], anchor="now")
-    assert play.keys_due(clock.t + 0.049) == []
-    assert [k for k, _ in play.keys_due(clock.t + 0.051)] == ["a"]
-    play.pump()
-    play.keys([["o", 5000]], anchor="now")                   # not handed to the card yet
-    play.clear()
-    assert play.keys_due(clock.t + 10) == []
+    play.pump()                                              # all played: nothing queued
+    play.keys([["a", 50]], anchor="now")                     # typing not played...
+    play.keys([["b", 50]])                                   # ...and the same press played
+    (a, at), (b, bt) = play.keys_due(clock.t + 1)
+    assert (a, b) == ("a", "b") and abs(at - bt) < 0.002     # line up
+    # (after the card's lead, and what the resampler still holds: its ~35 ms of delay)
+    assert clock.t + 0.05 + la.LEAD_SECS - 0.002 < at < clock.t + 0.05 + la.LEAD_SECS + 0.06
+    play.push(_tone(24000, 0.5).tobytes())                   # typing played again...
+    play.keys([["o", 100]])                                  # ...its press, not on the card yet
+    play.keys([["n", 200]], anchor="now")                    # a press of typing not played
+    play.clear()                                             # barge-in
+    assert [k for k, _ in play.keys_due(clock.t + 10)] == ["n"]
 
 
 def _typing_face(clock=None, typing=True):
@@ -1742,8 +1748,11 @@ def test_the_typist_goes_with_every_typing_send_to_an_avatar_that_has_it():
 
 
 def test_the_hands_type_unless_the_setting_says_claws():
+    from teaport_brain.settings import setting
     assert la.FACE_TYPIST == "hands"                         # (the schema's default)
     assert la.FaceTap(send=lambda b: None)._typist == "hands"
+    read = lambda value: setting("LOCAL_AUDIO_FACE_TYPIST", env={"LOCAL_AUDIO_FACE_TYPIST": value})
+    assert (read("claws"), read("Claws"), read(""), read("paws")) == ("claws", "claws", "hands", "hands")
 
 
 def _restarting_face(feats):
@@ -1789,6 +1798,23 @@ def test_a_restarted_avatar_is_typed_to_at_once_if_it_still_types():
     assert len(sent) == 3
 
 
+def test_an_avatar_that_comes_up_during_a_consult_types_for_the_rest_of_it():
+    feats = {}
+    face, sent, clock, daemon = _restarting_face(feats)
+    daemon[0] = None                                         # not serving (a restart, the boot)
+    clock.t += la.FACE_RESTART_CHECK_SECS
+    face.tick()
+    face.typing(True, 1500)                                  # the consult starts typing: unseen
+    feats["typing"] = 1
+    daemon[0] = "b"                                          # it comes up
+    clock.t += la.FACE_RESTART_CHECK_SECS
+    face.tick()
+    face.key("e", 90)
+    face.typing(False, done=True)
+    assert sent == [{"typing": True, "ttl": la.TYPING_TTL_SECS}, {"key": "e", "in_ms": 90},
+                    {"typing": False, "done": True}]
+
+
 def test_hiss_of_audio_pumped_before_its_caption_counts_once_vouched_for():
     play, clock, sunk = _playback()
     rng = np.random.default_rng(3)
@@ -1823,7 +1849,7 @@ def test_face_sends_phonemes_and_hiss_only_to_an_avatar_that_draws_them():
     face.phoneme("s")
     assert sent == [{"mouth": 0.5}]                          # an older avatar: as before
     feats["phonemes"] = 1
-    clock.t += la.PHONES_RECHECK_SECS                         # the avatar was updated
+    clock.t += la.FEATURES_RECHECK_SECS                         # the avatar was updated
     sent.clear()
     face.mouth(0.9, 0.9)
     face.phoneme("s")

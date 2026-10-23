@@ -1293,7 +1293,7 @@ type = "flag"
 default = true
 read = "startup"
 tier = "setup"
-help = "Typing during a long agent consult, in Talk and the room (never on a phone call); the OLED face types along."
+help = "Typing during a long agent consult, in Talk and the room (on a phone call only in agent-first mode, where nothing else covers the wait); the OLED face types along."
 
 [[settings]]
 name = "TEAPORT_THINKING_GRACE_S"
@@ -1379,7 +1379,7 @@ type = "path"
 default = ""
 read = "startup"
 tier = "tuning"
-help = "Your own 24 kHz mono 16-bit wav to loop as the thinking bed. Empty = typing generated live."
+help = "Your own 24 kHz mono 16-bit wav to loop as the thinking bed (the face does not type along to it). Empty = typing generated live."
 
 # ---- tools
 

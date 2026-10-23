@@ -176,7 +176,7 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
 | `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
 | `TEAPORT_REOFFER_AFTER_QUIET_S` | **10** s (≥ 1) | How long the line must stay quiet before a delegated answer the user has not heard yet (they cut it off, or spoke when it arrived) is mentioned once more, in passing. Once per answer; after that it is only given when asked. |
-| `TEAPORT_THINKING_SOUND` | **on** | Typing during a long agent consult, in Talk and the room (never on a phone call); the OLED face types along. |
+| `TEAPORT_THINKING_SOUND` | **on** | Typing during a long agent consult, in Talk and the room (on a phone call only in agent-first mode, where nothing else covers the wait); the OLED face types along. |
 | `TEAPORT_THINKING_GRACE_S` | **1.5** s (≥ 0) | Quiet on the line before the typing is heard. |
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the typing's limited peak (-6 dBFS). |
 | `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Most typing heard per consult; the face types for the whole consult. |
@@ -184,7 +184,7 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `OPENCLAW_WORKSPACE` | `~/.openclaw/workspace` | The OpenClaw workspace whose persona files the voice brain shares. *Set by the installer.* |
 | `TEAPORT_WORKSPACE_FILES` | `SOUL.md,IDENTITY.md,USER.md,MEMORY.md` | Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design. |
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |
-| `TEAPORT_THINKING_WAV` | `""` | Your own 24 kHz mono 16-bit wav to loop as the thinking bed. Empty = typing generated live. |
+| `TEAPORT_THINKING_WAV` | `""` | Your own 24 kHz mono 16-bit wav to loop as the thinking bed (the face does not type along to it). Empty = typing generated live. |
 
 ## Tools
 

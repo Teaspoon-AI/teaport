@@ -7,8 +7,9 @@
 # typist types, heard whenever the line is quiet — nobody has spoken, and no reply has
 # been on its way, for TEAPORT_THINKING_GRACE_S — and for at most TEAPORT_THINKING_MAX_S
 # of each consult. Quick tools (time, host status, web_search) never type: only the
-# tools in _TRIGGER, which is just ask_openclaw. Phone calls get no typing at all
-# (agent_session builds none for SIP).
+# tools in _TRIGGER, which is just ask_openclaw. Phone calls get no typing (agent_session
+# builds none for SIP) -- but in agent-first, where it is the only cover for the wait
+# (no "I'll work on that", no progress lines). Nor while the session is held for one.
 #
 # A consult's start and end. A background consult (the default: the turn ends at once
 # on a placeholder, owed.py) is the brain's {"type": "working"} message to the client,
@@ -424,13 +425,17 @@ class ThinkingSound(FrameProcessor):
 
     consults_async: the session's consults end the turn at once (owed.py) and say when
     they start and end with {"type": "working"}; else agent-first, by the call's own
-    frames. keys: the client types along ("typing" in its ?features=)."""
+    frames. keys: the client types along ("typing" in its ?features=). gate: the
+    session's FollowupGate, whose hold (a phone call has the box) keeps the typing
+    unheard."""
 
-    def __init__(self, consults_async: bool = False, keys: bool = False):
+    def __init__(self, consults_async: bool = False, keys: bool = False, gate=None):
         super().__init__()
         _prepare()
         self._async = consults_async
-        self._keys = keys
+        # (a loop of the user's own wav has no key presses to type along to)
+        self._keys = keys and _LOOP is None
+        self._gate = gate
         self._consults = set()      # background consults typing (their call_ids)
         self._task = None           # the typing, while a consult runs
         self._heard = 0             # chunks heard this consult
@@ -441,9 +446,15 @@ class ThinkingSound(FrameProcessor):
         self._spoke = 0.0
 
     def _quiet(self) -> bool:
+        """Nobody talking, no reply on its way, for the grace; and not on hold. Its own
+        view of the line, not the FollowupGate's: that one is whether a run of ours may
+        start (its LLM flag held up by an End held at the TTS), this one is whether
+        anything is audible or about to be, from below the TTS (its start and audio)."""
         now = time.monotonic()
         replying = self._reply_t is not None and now - self._reply_t < _REPLY_WAIT_S
-        return not (self._user or self._bot or replying) and now - self._spoke >= _GRACE_S
+        held = self._gate is not None and self._gate.held
+        return (not (self._user or self._bot or replying or held)
+                and now - self._spoke >= _GRACE_S)
 
     async def _say(self, message: dict, urgent: bool = False):
         if self._keys:
@@ -478,10 +489,12 @@ class ThinkingSound(FrameProcessor):
         i = 0
         while loop.time() - started < _TYPING_MAX_S:
             heard = self._quiet() and self._heard * _CHUNK_MS / 1000 < _MAX_S
+            chunk, pressed = None, []
             if typist is None:
-                chunk, pressed = (_LOOP[i % len(_LOOP)] if heard else None), []
-            else:
-                # A keystroke takes a few ms to render: off the event loop.
+                chunk = _LOOP[i % len(_LOOP)] if heard else None
+            elif heard or self._keys:
+                # A keystroke takes a few ms to render: off the event loop. (Not heard,
+                # with no face typing along, there is nothing to do.)
                 chunk, pressed = await asyncio.to_thread(typist.chunk, heard)
             # Asked again: a line that began during the render must not get a chunk of
             # typing pushed in behind its first audio.
@@ -502,7 +515,9 @@ class ThinkingSound(FrameProcessor):
             # Paced on the clock, not by a sleep after each chunk: the render time
             # would add up and starve the transport, a gap in the typing. After a
             # stall one chunk is caught up, no more: a longer catch-up would sit
-            # queued ahead of the real reply.
+            # queued ahead of the real reply. (One such stall: MemoryReclaim's gc, at
+            # most once a minute while the line is quiet, the typing being no speech
+            # to the gate -- ~0.2 s on the box: a pause a typist makes anyway.)
             due = max(due + _CHUNK_MS / 1000, loop.time())
             await asyncio.sleep(due - loop.time())
         self._task = None
@@ -545,7 +560,10 @@ class ThinkingSound(FrameProcessor):
                 if m.get("done"):
                     self._consults.discard(m.get("call_id"))
                     if not self._consults:
-                        await self._stop("consult answered", done=True)
+                        # (the face finishes its typing only on an answer)
+                        answered = bool(m.get("answered"))
+                        await self._stop("consult answered" if answered else "consult over, unanswered",
+                                         done=answered)
                 else:
                     self._consults.add(m.get("call_id"))
                     await self._start("background consult")
@@ -555,7 +573,8 @@ class ThinkingSound(FrameProcessor):
                 await self._start("consult")
         elif not self._async and isinstance(frame, FunctionCallResultFrame) \
                 and frame.function_name in _TRIGGER:
-            await self._stop("consult result", done=True)
+            answered = isinstance(frame.result, dict) and bool(frame.result.get("answer"))
+            await self._stop("consult result" if answered else "consult failed", done=answered)
         elif not self._async and isinstance(frame, InterruptionFrame):
             await self._stop("barge-in")      # (an agent-first consult is cancelled with its turn)
         await self.push_frame(frame, direction)

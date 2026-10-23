@@ -1248,9 +1248,9 @@ this module has the same environment with the facts the design rests on spelled 
   LLM still streams gets a fresh End the ledger ignores, and is re-created under the SAME
   id when the LLM's next sentence reaches the TTS (`Resume`).
 - Every TTS push is tagged with its context (`engine_tts.py`); the transport's untagged
-  rebuild of each chunk it played is recognised and ignored, and the thinking-sound bed
-  (untagged, pushed INTO the transport) is told from it by the processor that sighted
-  it first. The untagged legacy path is out of scope.
+  rebuild of each chunk it played is recognised and ignored. The thinking sound's
+  typing is no TTS audio at all (a plain `OutputAudioRawFrame`, never bot speech), so
+  the ledger never charts it. The untagged legacy path is out of scope.
 
 The ledger, in the model's terms: turns open only on the TTS's own frames, never on
 `BotStartedSpeaking`; a turn claims the oldest expected context (the queue of ended
@@ -2509,7 +2509,8 @@ narrower than the code:
   continuation's `InterruptionFrame` is the frame a turn start sends, and it does what one
   does to `Followup.tla`'s machinery: `FollowupTrigger` voids an armed shot,
   `FollowupGate` settles the deliveries it watches as interrupted and releases a claim,
-  the thinking bed stops. The caller did keep talking, so that is right, and it is a
+  an agent-first consult's typing stops (a background consult's goes on, unheard while
+  the caller talks). The caller did keep talking, so that is right, and it is a
   sequence `Followup.tla`'s environment already produces: on the re-applied stop's path
   the aggregator broadcasts `UserStoppedSpeakingFrame`, then the continuation's
   interruption, then the commit — `UserStop` without words, `UserStart`, `UserStop` with
