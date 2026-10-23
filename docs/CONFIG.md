@@ -554,7 +554,10 @@ So `ENDPOINT_STOP_SECS`, `SMARTTURN_STOP_SECS`, `SMARTTURN_COMPLETE_THRESHOLD` a
 them in `brain.env`: `SIP_ENDPOINT_STOP_SECS`, `TALK_ENDPOINT_STOP_SECS`, and so on
 (the interrupt count drops its `TEAPORT_` prefix: `SIP_INTERRUPT_MIN_WORDS`,
 `TALK_INTERRUPT_MIN_WORDS`). An unset or unreadable override falls back to the shared
-value. Each session logs the values it was built with (`turn-taking (sip): …`).
+value, except where the row has a default of its own (`SIP_VAD_SAMPLE_RATE`,
+`ROOM_ENDPOINT_STOP_SECS`, `ROOM_SMARTTURN_STOP_SECS`): there it falls back to that
+default, and the shared value does not reach that front-end. Each session logs the
+values it was built with (`turn-taking (sip): …`).
 
 Silero's rate is per front-end too, because it depends on the audio (issue #215).
 `VAD_SAMPLE_RATE` is the shared value, and `SIP_VAD_SAMPLE_RATE`, `TALK_VAD_SAMPLE_RATE`
@@ -562,7 +565,9 @@ and `ROOM_VAD_SAMPLE_RATE` override it. A phone call is 8 kHz G.711 that the gat
 upsampled, so `SIP_VAD_SAMPLE_RATE` defaults to `8000`, which runs Silero on the true
 narrowband signal; the phone does not take the shared value. Talk and the room mic are
 real wideband and take the shared `16000`. `SIP_VAD_SAMPLE_RATE=16000` puts the phone
-back on the upsample. The log line ends with the rate (`…, VAD at 8000 Hz`).
+back on the upsample. The log line ends with the rate (`…, VAD at 8000 Hz`). A brain
+whose `brain.env` sets `VAD_SAMPLE_RATE` to something other than `8000`, with no
+`SIP_VAD_SAMPLE_RATE`, says once at start that the value no longer reaches phone calls.
 
 The box's own microphone (the room mic, through the local audio bridge) connects as
 a Talk client, but it is a front-end of its own here, `room`, with `ROOM_*` overrides

@@ -70,6 +70,55 @@ def _check_vad():
         raise RuntimeError(f"loudness measured a speech-level tone as {volume!r}")
 
 
+class _ModelSpy:
+    """Stands in front of Silero's model and records what it was really given, and
+    whether it raised: pipecat's voice_confidence swallows the exception into a 0."""
+
+    def __init__(self, model):
+        self.model, self.calls, self.raised = model, [], []
+
+    def __call__(self, x, sr):
+        self.calls.append((int(np.shape(x)[-1]), sr))
+        try:
+            return self.model(x, sr)
+        except Exception as e:  # noqa: BLE001 — recorded, then pipecat's to swallow
+            self.raised.append(e)
+            raise
+
+    def __getattr__(self, name):
+        return getattr(self.model, name)
+
+
+def _check_narrowband_vad():
+    # The analyzer phone calls run (SIP_VAD_SAMPLE_RATE=8000, the default since #215):
+    # agent_session's own class, so the mixin is composed the way sessions compose it.
+    # Its 8 kHz conversion depends on a pipecat private (the _sample_rate behind a
+    # read-only sample_rate property), and when that assumption broke on 2026-09-10
+    # nothing failed: every frame raised inside voice_confidence, which logs and returns
+    # 0, and calls simply had no VAD. So this goes through voice_confidence -- the path
+    # that hides the break -- and asks the model itself what it ran at.
+    from teaport_brain.agent_session import _vad_cls
+    from teaport_brain.endpointing import NarrowbandSileroMixin
+
+    vad = _vad_cls(8000)(sample_rate=SAMPLE_RATE)
+    if not isinstance(vad, NarrowbandSileroMixin):
+        raise RuntimeError("the 8000 analyzer is not the narrowband one")
+    vad.set_sample_rate(SAMPLE_RATE)
+    spy = vad._model = _ModelSpy(vad._model)
+    t = np.arange(SAMPLE_RATE // 2) / SAMPLE_RATE
+    tone = (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16)
+    n = vad.num_frames_required()
+    for i in range(4):
+        conf = float(np.asarray(vad.voice_confidence(tone[i * n:(i + 1) * n].tobytes())).ravel()[0])
+        if not 0.0 <= conf <= 1.0:  # also rejects NaN
+            raise RuntimeError(f"the narrowband VAD returned an out-of-range confidence: {conf!r}")
+    if spy.raised or spy.calls != [(n // 2, 8000)] * 4:
+        raise RuntimeError(f"the narrowband VAD did not run Silero at 8 kHz: model calls "
+                           f"{spy.calls}, raised {spy.raised[:1]!r}")
+    if vad.sample_rate != SAMPLE_RATE:
+        raise RuntimeError(f"the narrowband VAD left the analyzer at {vad.sample_rate} Hz")
+
+
 def _check_smart_turn():
     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
@@ -88,6 +137,7 @@ def main() -> int:
         ("import both front-ends + the first-use warm-up", _check_imports),
         ("shared ONNX sessions (onnx_sessions)", _install_onnx_sessions),
         ("Silero VAD (onnxruntime) + loudness", _check_vad),
+        ("Silero VAD at 8 kHz (the phone's narrowband analyzer)", _check_narrowband_vad),
         ("Smart Turn v3 (onnxruntime)", _check_smart_turn),
     ]
     for name, fn in checks:

@@ -132,6 +132,43 @@ def test_silero_rate_moves_as_its_front_end_form():
     env = _env(root)
     assert (env["SIP_VAD_SAMPLE_RATE"], env["TALK_VAD_SAMPLE_RATE"]) == ("16000", "8000"), env
     assert "VAD_SAMPLE_RATE" not in env
+    # The Talk drop-in loaded nothing but per-front-end knobs, the rate now among them:
+    # parked, so it no longer reaches calls.
+    talkd = pathlib.Path(root, "sys", "teaport-brain.service.d")
+    assert list(talkd.glob("ab-stopsecs.conf.retired-2*")) and not (talkd / "ab-stopsecs.conf").exists()
+
+
+def test_a_shared_rate_in_brain_env_stays_the_phones():
+    # brain.env's VAD_SAMPLE_RATE reached the old SIP brain (and beat its drop-in's
+    # Environment= value, SHADOWED). Since #215 the phone has a default of its own, so
+    # the move writes the value as SIP_VAD_SAMPLE_RATE: calls keep the rate they ran at.
+    root = _fixture()
+    sipd = f"{root}/sys/teaport-sip-brain.service.d"
+    with open(f"{sipd}/vad-rate.conf", "w") as f:
+        f.write("[Service]\nEnvironment=VAD_SAMPLE_RATE=8000\n")
+    with open(f"{root}/etc/brain.env", "a") as f:
+        f.write("VAD_SAMPLE_RATE=16000\n")
+    rc, out = _run(root, "sip_brain_detach; sip_brain_retire")
+    assert rc == 0, out
+    env = _env(root)
+    assert (env["VAD_SAMPLE_RATE"], env["SIP_VAD_SAMPLE_RATE"]) == ("16000", "16000"), env
+    assert "TALK_VAD_SAMPLE_RATE" not in env      # Talk takes the shared value as before
+    assert "VAD_SAMPLE_RATE in" in out and "never in effect" in out, out   # SHADOWED, as before
+    assert "copied to SIP_VAD_SAMPLE_RATE" in out, out
+    assert "=16000" not in out, out                # keys in the log, never values
+    talkd = pathlib.Path(root, "sys", "teaport-brain.service.d")
+    assert list(talkd.glob("ab-stopsecs.conf.retired-2*"))     # the rest moves as before
+
+    # One the phone already has is left alone, and so is a box with no shared rate.
+    for extra, want in (("VAD_SAMPLE_RATE=16000\nSIP_VAD_SAMPLE_RATE=8000\n", "8000"),
+                        ("", None)):
+        root = _fixture()
+        with open(f"{root}/etc/brain.env", "a") as f:
+            f.write(extra)
+        rc, out = _run(root, "sip_brain_detach; sip_brain_retire")
+        assert rc == 0, out
+        assert _env(root).get("SIP_VAD_SAMPLE_RATE") == want, (extra, _env(root))
+        assert "copied to SIP_VAD_SAMPLE_RATE" not in out, out
 
 
 def test_secrets_quoting_empties_precedence_and_a_missing_newline():

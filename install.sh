@@ -2069,7 +2069,10 @@ sip_brain_retire() {
 # the last value wins; an EnvironmentFile= value beats an Environment= one; and an
 # Environment= value whose key brain.env (the unit's EnvironmentFile) also sets was never
 # in effect, so it is not moved. A key brain.env already has is left as it is; an empty
-# value is not moved. Anything without a per-front-end form is named, not moved. The log
+# value is not moved. Anything without a per-front-end form is named, not moved. One
+# brain.env key is copied too: a VAD_SAMPLE_RATE there reached phone calls, which now have
+# SIP_VAD_SAMPLE_RATE (default 8000) instead, so it is written as that when brain.env has
+# no SIP_VAD_SAMPLE_RATE and no drop-in gave the phone one (issue #215). The log
 # names keys and files only, never values (a drop-in can hold a secret).
 # The whole brain.env update is one privileged Python step: read, append the missing keys
 # (after a newline if the file lacks a final one), write a temp file beside it and
@@ -2176,6 +2179,15 @@ for prefix, d in (("SIP", sipd), ("TALK", talkd)):
             elif keys & moved:
                 say("KEEP", conf)
 
+# Silero's rate (#215) is the one shared knob whose brain.env value reached phone calls
+# and now does not: SIP_VAD_SAMPLE_RATE has a default of its own (8000), which beats the
+# shared VAD_SAMPLE_RATE. Written as the phone's own, so calls keep the rate they ran at;
+# a drop-in's own value for the phone, carried above, comes first.
+shared_rate = existing.get("VAD_SAMPLE_RATE", "")
+if shared_rate and "SIP_VAD_SAMPLE_RATE" not in existing and "SIP_VAD_SAMPLE_RATE" not in add:
+    add["SIP_VAD_SAMPLE_RATE"] = shared_rate
+    say("PHONE", "SIP_VAD_SAMPLE_RATE", "VAD_SAMPLE_RATE")
+
 def write_new(path, text, mode, uid, gid):
     """Create `path` (never an existing file) holding `text`, private while it is written,
     synced, then given its final mode and owner. Gone again if anything fails."""
@@ -2224,6 +2236,7 @@ PY
       HAVE) log "  drop-in tuning: $key already in $ETC/brain.env — left as it is (not taking the value in $src)" ;;
       SHADOWED) log "  drop-in tuning: $key in $src was never in effect (brain.env sets it, and wins) — not moved" ;;
       EMPTY) log "  drop-in tuning: $key in $src is empty — not moved" ;;
+      PHONE) log "  $src in $ETC/brain.env reached phone calls too, and now does not: copied to $key so they keep their rate" ;;
       SKIP) warn "  drop-in setting $key in $src has no per-front-end form — not moved" ;;
       BAD) warn "  unreadable Environment= line at $key — skipped; check it by hand" ;;
       BACKUP) log "  $ETC/brain.env backed up to $key" ;;

@@ -11,6 +11,7 @@
 #
 import asyncio
 import inspect
+import os
 import time
 from dataclasses import astuple, dataclass, field
 
@@ -31,6 +32,7 @@ from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
 )
 from pipecat.utils.utils import obj_id
 
+from teaport_brain import settings
 from teaport_brain.settings import setting
 
 # Endpointing silence, the VAD's: how long the user must pause before Silero VAD
@@ -158,6 +160,31 @@ VAD_MIN_VOLUME = setting("VAD_MIN_VOLUME")
 # inference rate", above NarrowbandSileroMixin. Tune via VAD_SAMPLE_RATE.
 VAD_SAMPLE_RATE = int(setting("VAD_SAMPLE_RATE"))
 
+
+def phone_rate_notice(env=os.environ) -> str | None:
+    """What to tell an operator whose VAD_SAMPLE_RATE used to reach phone calls and no
+    longer does (issue #215), or None. Until #215 the one value was the phone's too; now
+    SIP_VAD_SAMPLE_RATE has a default of its own (8000) that beats it, so a brain.env that
+    set VAD_SAMPLE_RATE=16000 to keep the phone on the upsample silently stopped doing so.
+    Only where it makes a difference: the shared value set, readable and not the phone's
+    default, and no SIP_VAD_SAMPLE_RATE set."""
+    shared, sip = settings.ROWS["VAD_SAMPLE_RATE"], settings.ROWS["SIP_VAD_SAMPLE_RATE"]
+    text = settings.normalize(shared, env.get("VAD_SAMPLE_RATE"))
+    if text is None or settings.normalize(sip, env.get("SIP_VAD_SAMPLE_RATE")) is not None:
+        return None
+    value, problem = settings.parse(shared, text)
+    if problem is not None or value == sip["default"]:
+        return None
+    return (f"VAD_SAMPLE_RATE={value} no longer applies to phone calls: they use "
+            f"SIP_VAD_SAMPLE_RATE (default {sip['default']}); set SIP_VAD_SAMPLE_RATE={value} "
+            f"to keep the old rate")
+
+
+# Once per process, here, where the shared value is read: the per-session reads
+# (turn_settings) would say it on every call.
+if (_notice := phone_rate_notice()) is not None:
+    logger.warning(_notice)
+
 # Barge-in guard. WHILE THE BOT IS SPEAKING, require the user's interrupting speech
 # to reach this many transcribed words before it counts as a real turn and cuts the
 # reply. A single-word STT garble or noise blip (a mis-heard cough) then can't
@@ -219,11 +246,15 @@ INTERRUPT_MIN_WORDS = setting("TEAPORT_INTERRUPT_MIN_WORDS")
 # had no correct setting on a box serving all three, and it was left at 16000
 # everywhere. A replay of 11 phone calls' VAD input (pipecat 1.12's Silero through its
 # own analyze_audio path, its state reset as a live call resets it) put 8000 modestly
-# ahead and no worse: over the bot the onset test fired on 49 of 59 utterances against
+# ahead on detection: over the bot the onset test fired on 49 of 59 utterances against
 # 46 (p90 0.34 s against 0.42 s), the VAD started on 137 of 145 quiet-bot utterances
-# against 132 (p90 0.70 s against 0.84 s), with false detections in the bot's audible
-# windows (0.07 per bot-minute) and the VAD stop (median 0.58 s) unchanged. Smart Turn is
-# a waveform model fed the same upsampled audio and is not touched by this knob.
+# against 132 (p90 0.70 s against 0.84 s), and false detections in the bot's audible
+# windows were unchanged (0.07 per bot-minute). The VAD stop medians were unchanged
+# (0.58 s); mid-speech splits, pooled, went 12 -> 15 at a 0.5 s stop with the model's
+# 5 s resets at phase 0, which is inside the 11-18 the same audio gives across reset
+# phases, so not a difference the replay can tell from its noise -- the live check
+# watches turn fragmentation for it. Smart Turn is a waveform model fed the same
+# upsampled audio and is not touched by this knob.
 
 
 @dataclass(frozen=True)

@@ -138,19 +138,54 @@ def test_a_front_ends_own_rate_wins():
         assert endpointing.turn_settings("room").vad_sample_rate == 16000
 
 
+# VAD_SAMPLE_RATE is read at import (TurnSettings' default), so these run in a process of
+# their own. Each reads the three front-ends' rates three times, as three calls would.
+_RATES_PROBE = ("from teaport_brain import endpointing as e\n"
+                "for _ in range(3):\n"
+                "    print(*(e.turn_settings(f).vad_sample_rate for f in ('sip', 'talk', 'room')))")
+
+
+def _rates_in_a_fresh_process(**env):
+    base = {k: v for k, v in os.environ.items() if not k.endswith("VAD_SAMPLE_RATE")}
+    p = subprocess.run([sys.executable, "-c", _RATES_PROBE], env={**base, **env},
+                       capture_output=True, text=True, check=True)
+    return p.stdout.split()[-3:], p.stderr
+
+
 def test_the_shared_rate_reaches_talk_and_the_room_but_not_the_phone():
-    # VAD_SAMPLE_RATE is read at import (TurnSettings' default), so in a process of its own.
-    env = {k: v for k, v in os.environ.items() if not k.endswith("VAD_SAMPLE_RATE")}
-    env["VAD_SAMPLE_RATE"] = "16000"
-    probe = ("from teaport_brain import endpointing as e; "
-             "print(*(e.turn_settings(f).vad_sample_rate for f in ('sip', 'talk', 'room')))")
-    def rates(**extra):
-        out = subprocess.run([sys.executable, "-c", probe], env={**env, **extra},
-                             capture_output=True, text=True, check=True).stdout
-        return out.split()[-3:]
-    assert rates(VAD_SAMPLE_RATE="8000") == ["8000", "8000", "8000"]
-    # The phone has a default of its own, so the shared value does not reach it.
-    assert rates(VAD_SAMPLE_RATE="8000", SIP_VAD_SAMPLE_RATE="16000") == ["16000", "8000", "8000"]
+    # The headline rule: the phone's own default beats the shared value, even one set
+    # explicitly -- a brain.env that says VAD_SAMPLE_RATE=16000 no longer reaches calls.
+    assert _rates_in_a_fresh_process(VAD_SAMPLE_RATE="16000")[0] == ["8000", "16000", "16000"]
+    assert _rates_in_a_fresh_process(VAD_SAMPLE_RATE="8000")[0] == ["8000", "8000", "8000"]
+    assert _rates_in_a_fresh_process()[0] == ["8000", "16000", "16000"]
+    # The phone's own setting is the only way to move it.
+    assert _rates_in_a_fresh_process(VAD_SAMPLE_RATE="8000", SIP_VAD_SAMPLE_RATE="16000")[0] == [
+        "16000", "8000", "8000"]
+
+
+NOTICE = "no longer applies to phone calls"
+
+
+def test_a_shared_rate_the_phone_no_longer_takes_is_said_once_per_process():
+    rates, err = _rates_in_a_fresh_process(VAD_SAMPLE_RATE="16000")
+    assert rates == ["8000", "16000", "16000"]
+    assert err.count(NOTICE) == 1, err      # at import, not on every call
+    assert ("VAD_SAMPLE_RATE=16000 no longer applies to phone calls: they use "
+            "SIP_VAD_SAMPLE_RATE (default 8000); set SIP_VAD_SAMPLE_RATE=16000 to keep the "
+            "old rate") in err, err
+    # Not where nothing changed: no shared value, one the phone takes anyway, one the
+    # phone overrides, or one that does not parse (that warns as a typo, already).
+    for env in ({}, {"VAD_SAMPLE_RATE": "8000"},
+                {"VAD_SAMPLE_RATE": "16000", "SIP_VAD_SAMPLE_RATE": "16000"},
+                {"VAD_SAMPLE_RATE": "22050"}):
+        assert NOTICE not in _rates_in_a_fresh_process(**env)[1], env
+    # The rule itself, without a process: blank is unset, and a set SIP value of any kind
+    # (even a typo, which warns on its own read) means the operator chose for the phone.
+    notice = endpointing.phone_rate_notice
+    assert notice({"VAD_SAMPLE_RATE": " 16000 "}) is not None
+    assert notice({"VAD_SAMPLE_RATE": "16000", "SIP_VAD_SAMPLE_RATE": " "}) is not None
+    assert notice({"VAD_SAMPLE_RATE": "16000", "SIP_VAD_SAMPLE_RATE": "8000"}) is None
+    assert notice({"VAD_SAMPLE_RATE": " "}) is None
 
 
 def test_a_call_and_a_talk_session_in_one_process_are_built_with_their_own_values():
