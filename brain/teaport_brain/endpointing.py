@@ -152,6 +152,12 @@ SMARTTURN_COMPLETE_THRESHOLD = setting("SMARTTURN_COMPLETE_THRESHOLD")
 VAD_CONFIDENCE = setting("VAD_CONFIDENCE")
 VAD_MIN_VOLUME = setting("VAD_MIN_VOLUME")
 
+# The rate Silero runs at, 16000 or 8000: the SHARED value, which Talk and the room mic
+# take unless they have their own; the phone has its own, 8000 by default (the per
+# front-end block below). Why 8000 exists, and why only the phone wants it: "Silero's
+# inference rate", above NarrowbandSileroMixin. Tune via VAD_SAMPLE_RATE.
+VAD_SAMPLE_RATE = int(setting("VAD_SAMPLE_RATE"))
+
 # Barge-in guard. WHILE THE BOT IS SPEAKING, require the user's interrupting speech
 # to reach this many transcribed words before it counts as a real turn and cuts the
 # reply. A single-word STT garble or noise blip (a mis-heard cough) then can't
@@ -170,11 +176,12 @@ INTERRUPT_MIN_WORDS = setting("TEAPORT_INTERRUPT_MIN_WORDS")
 # --- Per front-end -----------------------------------------------------------------
 # One brain process serves both the phone line and Talk (issue #58), and the two were
 # tuned apart in blind A/Bs (Talk: ENDPOINT_STOP_SECS 0.2 / SMARTTURN_STOP_SECS 0.6;
-# the phone stays on 0.5 / 1.0, with its own barge-in word count). So the four turn-taking
-# knobs above are the SHARED values, and each front-end may override them with its own
-# name: SIP_<name> for phone calls, TALK_<name> for /talk sessions, ROOM_<name> for the
-# box's own mic (the interrupt count drops its TEAPORT_ prefix: SIP_INTERRUPT_MIN_WORDS,
-# ...). They are read when a session is built (build_agent_session), not at import.
+# the phone stays on 0.5 / 1.0, with its own barge-in word count). So the turn-taking
+# knobs above (four, and Silero's rate) are the SHARED values, and each front-end may
+# override them with its own name: SIP_<name> for phone calls, TALK_<name> for /talk
+# sessions, ROOM_<name> for the box's own mic (the interrupt count drops its TEAPORT_
+# prefix: SIP_INTERRUPT_MIN_WORDS, ...). They are read when a session is built
+# (build_agent_session), not at import.
 #
 # The box's own microphone (the XVF3800 room mic, through the local audio bridge) is a
 # /talk client, but it is a third front-end here, "room", with ROOM_<name> of its own
@@ -202,6 +209,21 @@ INTERRUPT_MIN_WORDS = setting("TEAPORT_INTERRUPT_MIN_WORDS")
 # count fall back to the shared values like every other override. Everything else a Talk
 # session does (the relay, captions, context notes, the call prompt) a room session
 # still does: only the turn-taking is keyed on "room".
+#
+# The fifth knob is the rate Silero runs at, VAD_SAMPLE_RATE (issue #215), and it is per
+# front-end because the right value is a property of the AUDIO, and one process now
+# hears two kinds: a phone call is 8 kHz G.711 the gateway upsampled, /talk and the room
+# mic are real wideband. So SIP_VAD_SAMPLE_RATE has a schema default of its own, 8000,
+# and the phone no longer takes the shared value; TALK_ and ROOM_VAD_SAMPLE_RATE have
+# none, and those sessions take the shared 16000. Before this the one process-wide value
+# had no correct setting on a box serving all three, and it was left at 16000
+# everywhere. A replay of 11 phone calls' VAD input (pipecat 1.12's Silero through its
+# own analyze_audio path, its state reset as a live call resets it) put 8000 modestly
+# ahead and no worse: over the bot the onset test fired on 49 of 59 utterances against
+# 46 (p90 0.34 s against 0.42 s), the VAD started on 137 of 145 quiet-bot utterances
+# against 132 (p90 0.70 s against 0.84 s), with false detections in the bot's audible
+# windows (0.07 per bot-minute) and the VAD stop (median 0.58 s) unchanged. Smart Turn is
+# a waveform model fed the same upsampled audio and is not touched by this knob.
 
 
 @dataclass(frozen=True)
@@ -210,6 +232,12 @@ class TurnSettings:
     smartturn_stop_secs: float = SMARTTURN_STOP_SECS
     smartturn_complete_threshold: float = SMARTTURN_COMPLETE_THRESHOLD
     interrupt_min_words: int = INTERRUPT_MIN_WORDS
+    vad_sample_rate: int = VAD_SAMPLE_RATE
+
+
+def _hz(rate: str | None) -> int | None:
+    # The rate rows are enums of the two rates Silero runs at, so they read as text.
+    return None if rate is None else int(rate)
 
 
 # Each front-end's own value of each knob, in TurnSettings' field order: None where it
@@ -218,13 +246,16 @@ class TurnSettings:
 FRONT_ENDS = {
     "sip": lambda: (setting("SIP_ENDPOINT_STOP_SECS"), setting("SIP_SMARTTURN_STOP_SECS"),
                     setting("SIP_SMARTTURN_COMPLETE_THRESHOLD"),
-                    setting("SIP_INTERRUPT_MIN_WORDS")),
+                    setting("SIP_INTERRUPT_MIN_WORDS"),
+                    _hz(setting("SIP_VAD_SAMPLE_RATE"))),
     "talk": lambda: (setting("TALK_ENDPOINT_STOP_SECS"), setting("TALK_SMARTTURN_STOP_SECS"),
                      setting("TALK_SMARTTURN_COMPLETE_THRESHOLD"),
-                     setting("TALK_INTERRUPT_MIN_WORDS")),
+                     setting("TALK_INTERRUPT_MIN_WORDS"),
+                     _hz(setting("TALK_VAD_SAMPLE_RATE"))),
     "room": lambda: (setting("ROOM_ENDPOINT_STOP_SECS"), setting("ROOM_SMARTTURN_STOP_SECS"),
                      setting("ROOM_SMARTTURN_COMPLETE_THRESHOLD"),
-                     setting("ROOM_INTERRUPT_MIN_WORDS")),
+                     setting("ROOM_INTERRUPT_MIN_WORDS"),
+                     _hz(setting("ROOM_VAD_SAMPLE_RATE"))),
 }
 
 
@@ -1440,19 +1471,21 @@ class _CutFenceTail(FrameProcessor):
 # silence, so no gate above zero separates them (VAD_CONFIDENCE 0.70 -> 0.35 -> 0.15
 # changed the flicker rate by nothing).
 #
-# VAD_SAMPLE_RATE=8000 hands Silero the TRUE narrowband signal instead. Decimating back
-# to 8 kHz discards no information when the source was 8 kHz to begin with — it undoes
-# the gateway's upsampling rather than degrading anything — and 512 samples at 16 kHz
+# A rate of 8000 hands Silero the TRUE narrowband signal instead. Decimating back to
+# 8 kHz discards no information when the source was 8 kHz to begin with — it undoes the
+# gateway's upsampling rather than degrading anything — and 512 samples at 16 kHz
 # decimate to exactly the 256 Silero wants at 8 kHz, so pipecat's buffering is untouched.
 #
-# Off by default: it is a real behaviour change to the VAD and it is only correct while
-# the carrier is narrowband. On a genuinely wideband trunk it would throw away the top
-# half of the band, and the pair-averaging below (a crude half-band filter, kept cheap
-# because it runs per frame in the VAD executor) would not fully prevent aliasing.
-# Revisit this together with the SDP offer if a wideband carrier ever lands.
-VAD_SAMPLE_RATE = int(setting("VAD_SAMPLE_RATE"))
-
-
+# It is chosen per front-end (TurnSettings.vad_sample_rate: SIP_/TALK_/ROOM_VAD_SAMPLE_RATE
+# over the shared VAD_SAMPLE_RATE, issue #215), and it is ON for the phone alone:
+# SIP_VAD_SAMPLE_RATE defaults to 8000, while /talk and the room mic take the shared
+# 16000. Until #215 it was one process-wide value and off by default, because one brain
+# process serves all three (#58) and the other two are genuinely wideband: there it
+# would throw away the top half of the band, and the pair-averaging below (a crude
+# half-band filter, kept cheap because it runs per frame in the VAD executor) would not
+# fully prevent aliasing. The phone's default is only correct while the carrier is
+# narrowband: revisit SIP_VAD_SAMPLE_RATE together with the SDP offer if a wideband
+# carrier ever lands.
 class NarrowbandSileroMixin:
     """Run Silero at 8 kHz on audio the gateway upsampled from 8 kHz.
 

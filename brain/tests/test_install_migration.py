@@ -118,6 +118,22 @@ def test_the_box_migrates_its_tuning_and_retires_the_old_unit():
     assert rc == 0 and "drop-in tuning" not in out2, out2
 
 
+def test_silero_rate_moves_as_its_front_end_form():
+    # VAD_SAMPLE_RATE is a per-front-end knob since #215: a drop-in that set it for one
+    # path moves as that path's SIP_/TALK_ form rather than being named and left.
+    root = _fixture()
+    sipd = f"{root}/sys/teaport-sip-brain.service.d"
+    with open(f"{sipd}/vad-rate.conf", "w") as f:
+        f.write("[Service]\nEnvironment=VAD_SAMPLE_RATE=16000\n")
+    with open(f"{root}/etc/brain-talk.env", "a") as f:
+        f.write("VAD_SAMPLE_RATE=8000\n")
+    rc, out = _run(root, "sip_brain_detach; sip_brain_retire")
+    assert rc == 0, out
+    env = _env(root)
+    assert (env["SIP_VAD_SAMPLE_RATE"], env["TALK_VAD_SAMPLE_RATE"]) == ("16000", "8000"), env
+    assert "VAD_SAMPLE_RATE" not in env
+
+
 def test_secrets_quoting_empties_precedence_and_a_missing_newline():
     root = _fixture(adversarial=True)
     rc, out = _run(root, "sip_brain_detach; sip_brain_retire")

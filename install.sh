@@ -2084,7 +2084,7 @@ import glob, os, shlex, sys, time
 os.umask(0o077)  # nothing this step creates is readable by others, even half-written
 PER = {"ENDPOINT_STOP_SECS": "ENDPOINT_STOP_SECS", "SMARTTURN_STOP_SECS": "SMARTTURN_STOP_SECS",
        "SMARTTURN_COMPLETE_THRESHOLD": "SMARTTURN_COMPLETE_THRESHOLD",
-       "TEAPORT_INTERRUPT_MIN_WORDS": "INTERRUPT_MIN_WORDS"}
+       "TEAPORT_INTERRUPT_MIN_WORDS": "INTERRUPT_MIN_WORDS", "VAD_SAMPLE_RATE": "VAD_SAMPLE_RATE"}
 SEP = "\x1f"
 sipd, talkd, env_path, dry = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4] == "1"
 brain_env = os.path.realpath(env_path)
