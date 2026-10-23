@@ -892,6 +892,12 @@ def build_agent_session(transport, *, voice: str | None = None,
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
         # notes (no /talk), no line: the tool needs a local /talk client anyway.
         wifi.notes = client_notes
+    # Type through a long ask_openclaw consult, heard while the line is quiet; the
+    # room's face types along (its bridge announces "typing"). Not on a phone call,
+    # but in agent-first: there it is all that covers the wait (tools._fallback_line).
+    bed = (ThinkingSound(consults_async=not AGENT_FIRST, keys="typing" in client_features,
+                         gate=followup_gate)
+           if thinking_sound.ENABLED and (front_end != "sip" or AGENT_FIRST) else None)
 
     input_mute = InputMute()
     pipeline = Pipeline([p for p in [
@@ -964,12 +970,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         reply_gate,
         ep_out,  # tap (debug): first-audio bubble
         TurnTimer(turn_marks),  # tap: tts-first-audio (logs the turn line)
-        # Type through a long ask_openclaw consult, heard while the line is quiet; the
-        # room's face types along (its bridge announces "typing"). Not on a phone call,
-        # but in agent-first: there it is all that covers the wait (tools._fallback_line).
-        ThinkingSound(consults_async=not AGENT_FIRST, keys="typing" in client_features,
-                      gate=followup_gate)
-        if thinking_sound.ENABLED and (front_end != "sip" or AGENT_FIRST) else None,
+        bed,  # the thinking sound's typing (above), pushed as plain audio to the transport
         # Directly above the transport: it reads the transport's upstream
         # Bot{Started,Stopped}SpeakingFrames and pauses the transport itself.
         barge_pauser,
@@ -1083,6 +1084,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     )
     session.turns = turns  # the turn-taking knobs it was built with (per front-end)
     session.owed = owed    # what the caller is still owed (owed.py)
+    session.thinking_sound = bed   # (its typing echoes like speech: sip_server's half-duplex)
     if prompt is not None:
         prompt.session = session
         session.call_prompt = prompt

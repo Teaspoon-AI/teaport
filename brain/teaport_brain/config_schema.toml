@@ -1600,7 +1600,7 @@ type = "flag"
 default = false
 read = "startup"
 tier = "tuning"
-help = "Drop the caller's mic while the bot speaks. On means no barge-in."
+help = "Drop the caller's mic while the bot speaks, and while the thinking sound types over a consult (agent-first mode). On means no barge-in."
 
 [[settings]]
 name = "SIP_HALF_DUPLEX_TAIL_S"

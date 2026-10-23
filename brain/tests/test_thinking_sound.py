@@ -421,6 +421,34 @@ async def test_a_session_held_for_a_phone_call_types_unheard():
     assert _audio(out)
 
 
+@_with(grace=0.0)
+async def test_a_half_duplex_phone_line_drops_the_caller_while_the_typing_is_heard():
+    """In agent-first a phone call is typed through: no bot speech, but echo all the
+    same, so the half-duplex gate (SIP_HALF_DUPLEX) mutes the caller through it."""
+    from pipecat.frames.frames import InputAudioRawFrame
+    from teaport_brain.sip_server import HalfDuplexInputGate
+    bed, out = _bed(keys=False)
+    hd, passed = HalfDuplexInputGate(tail_s=0.1), []
+
+    async def push(frame, direction=FrameDirection.DOWNSTREAM):
+        passed.append(frame)
+    hd.push_frame = push
+    hd.thinking_sound = bed
+
+    async def mic():
+        await hd.process_frame(InputAudioRawFrame(b"\0\0" * 320, 16000, 1),
+                               FrameDirection.DOWNSTREAM)
+        return len(passed)
+
+    assert await mic() == 1                                  # no typing: the caller is heard
+    await _send(bed, _working("c1"))
+    await asyncio.sleep(0.15)
+    assert _audio(out) and await mic() == 1                  # typing heard: dropped
+    await _send(bed, _working("c1", done=True))
+    await asyncio.sleep(0.2)                                 # its tail is over
+    assert await mic() == 2
+
+
 def _counting_chunk():
     real = ts._Typist.chunk
 

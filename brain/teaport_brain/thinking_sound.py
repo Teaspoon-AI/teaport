@@ -444,6 +444,9 @@ class ThinkingSound(FrameProcessor):
         self._user = self._bot = False
         self._reply_t = None        # the open reply's LLMFullResponseStart (time.monotonic())
         self._spoke = 0.0
+        # When the typing last pushed is heard out (time.monotonic()): it is no bot
+        # speech, but echoes on a line all the same (sip_server.HalfDuplexInputGate).
+        self.heard_until = -math.inf
 
     def _quiet(self) -> bool:
         """Nobody talking, no reply on its way, for the grace; and not on hold. Its own
@@ -511,6 +514,7 @@ class ThinkingSound(FrameProcessor):
                 # speech, so nothing waiting for the bot to finish waits on the typing.
                 await self.push_frame(OutputAudioRawFrame(chunk, _SR, 1), FrameDirection.DOWNSTREAM)
                 self._heard += 1
+                self.heard_until = time.monotonic() + _CHUNK_MS / 1000
             i += 1
             # Paced on the clock, not by a sleep after each chunk: the render time
             # would add up and starve the transport, a gap in the typing. After a

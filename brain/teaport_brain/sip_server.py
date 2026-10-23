@@ -191,7 +191,9 @@ _CONFIRM_SECS = 10.0
 
 class HalfDuplexInputGate(FrameProcessor):
     """Swallow caller InputAudioRawFrames while the bot is speaking (+ a tail), so
-    un-cancelled line echo can't retrigger the VAD. Half-duplex: no barge-in.
+    un-cancelled line echo can't retrigger the VAD. Half-duplex: no barge-in. And while
+    the thinking sound's typing is heard (agent-first: a phone call gets none else),
+    which is no bot speech but echoes all the same.
 
     The one SIP-specific processor — passed to build_agent_session as an
     input-side processor (inserted right after transport.input())."""
@@ -201,6 +203,11 @@ class HalfDuplexInputGate(FrameProcessor):
         self._muted = False
         self._tail_s = tail_s
         self._unmute_task = None
+        self.thinking_sound = None   # the session's, once it is built (or None: no typing)
+
+    def _typing_heard(self) -> bool:
+        bed = self.thinking_sound
+        return bed is not None and time.monotonic() < bed.heard_until + self._tail_s
 
     async def _unmute_after_tail(self):
         await asyncio.sleep(self._tail_s)
@@ -223,8 +230,8 @@ class HalfDuplexInputGate(FrameProcessor):
             await self._cancel_pending()
             self._unmute_task = self.create_task(self._unmute_after_tail())
         # Drop the caller's mic while muted; pass everything else through.
-        if (self._muted and direction == FrameDirection.DOWNSTREAM
-                and isinstance(frame, InputAudioRawFrame)):
+        if (direction == FrameDirection.DOWNSTREAM and isinstance(frame, InputAudioRawFrame)
+                and (self._muted or self._typing_heard())):
             return
         await self.push_frame(frame, direction)
 
@@ -828,8 +835,9 @@ async def run_connection(sock, on_ready=None):
         input_procs = []
         if audio_dump.ENABLED:
             input_procs.append(audio_dump.CallerAudioTap(call_id))
-        if HALF_DUPLEX:
-            input_procs.append(HalfDuplexInputGate())
+        half_duplex = HalfDuplexInputGate() if HALF_DUPLEX else None
+        if half_duplex is not None:
+            input_procs.append(half_duplex)
         session = build_agent_session(
             transport,
             input_processors=input_procs or None,
@@ -838,6 +846,8 @@ async def run_connection(sock, on_ready=None):
             # The phone's own turn-taking (SIP_* over the shared knobs).
             front_end="sip",
         )
+        if half_duplex is not None:
+            half_duplex.thinking_sound = session.thinking_sound
 
         @session.task.event_handler("on_pipeline_finished")
         async def on_pipeline_finished(_task, frame):
