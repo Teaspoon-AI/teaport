@@ -120,20 +120,23 @@ In `/etc/teaport/brain.env`. Each is explained at length where it is read, in en
 | `SMARTTURN_COMPLETE_THRESHOLD` | **0.5** (0–1) | The end-of-turn probability that counts as done. Near-inert on telephony audio. |
 | `VAD_CONFIDENCE` | **0.7** (0–1) | Silero's speech-probability gate. |
 | `VAD_MIN_VOLUME` | **0.6** (0–1) | Silero's volume gate. |
-| `VAD_SAMPLE_RATE` | `16000` | 8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample. One of `16000`, `8000`. |
+| `VAD_SAMPLE_RATE` | `16000` | The rate Silero runs at, shared: /talk and the room mic take it unless TALK_VAD_SAMPLE_RATE / ROOM_VAD_SAMPLE_RATE is set; phone calls have SIP_VAD_SAMPLE_RATE (8000 by default) and do not take it. 8000 decimates to 8 kHz before the model, which is right only for narrowband audio (the phone's 8 kHz G.711, upsampled by the gateway); on real wideband it throws away the top half of the band. One of `16000`, `8000`. |
 | `TEAPORT_INTERRUPT_MIN_WORDS` | **2** (≥ 1) | Transcribed words needed to interrupt the bot. 1 makes every word a barge-in, backchannels included. On SIP, while the barge-in pause has the bot paused, an utterance made only of TEAPORT_STOP_WORDS interrupts at any length, and once the paused reply would have finished anyway one word is enough. |
 | `SIP_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. |
 | `SIP_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. |
 | `SIP_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for phone calls (the SIP front-end) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
 | `SIP_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for phone calls (the SIP front-end) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
+| `SIP_VAD_SAMPLE_RATE` | `8000` | VAD_SAMPLE_RATE for phone calls (the SIP front-end) only; it does not fall back to the shared value. The trunk offers only PCMU and G.729, so a call is 8 kHz audio the gateway upsampled to 16 kHz, and Silero, a waveform model, does better on the true narrowband signal: a replay of 11 calls (issue #215) found a few more caller utterances detected and a shorter slow tail, with no more false detections while the bot talks. 16000 runs it on the upsample, as before #215. Revisit if a wideband codec is ever offered. One of `16000`, `8000`. |
 | `TALK_ENDPOINT_STOP_SECS` | — | ENDPOINT_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared ENDPOINT_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
 | `TALK_SMARTTURN_STOP_SECS` | — | SMARTTURN_STOP_SECS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared SMARTTURN_STOP_SECS. One brain process serves both, and they were tuned apart. Blind A/B 2026-09-18 picked 0.2 / 0.6 for Talk against the phone's 0.5 / 1.0. |
 | `TALK_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. One brain process serves both, and they were tuned apart. |
 | `TALK_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart. |
+| `TALK_VAD_SAMPLE_RATE` | — | VAD_SAMPLE_RATE for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared VAD_SAMPLE_RATE. Talk audio is real wideband, so 8000 would throw away the top half of the band. One of `16000`, `8000`. |
 | `ROOM_ENDPOINT_STOP_SECS` | **0.3** s (≥ 0.1) | ENDPOINT_STOP_SECS for the box's own microphone (the room mic) only; it does not fall back to the shared value or to Talk's. People talking across a room pause mid-sentence: a replay of 20 min of room recordings (issue #159) picked 0.3 / 1.5 against the 0.2 / 0.6 the room had from Talk, cutting the mid-sentence splits from about 18 of 29 to about 6, for +0.1 s on a typical turn end. |
 | `ROOM_SMARTTURN_STOP_SECS` | **1.5** s (≥ 0) | SMARTTURN_STOP_SECS for the box's own microphone (the room mic) only; it does not fall back to the shared value or to Talk's. The ceiling is the room's main lever against mid-sentence splits (issue #159: 0.6 -> 1.5 at a 0.3 s stop took them from about 14 of 29 to about 6). Its cost falls on the turn ends Smart Turn calls unfinished, about a quarter in the replay, which wait ROOM_ENDPOINT_STOP_SECS + this (1.8 s) instead of 0.8 s; with TEAPORT_SPECULATIVE_REPLY on, the reply is already being generated under it. |
 | `ROOM_SMARTTURN_COMPLETE_THRESHOLD` | — | SMARTTURN_COMPLETE_THRESHOLD for the box's own microphone (the room mic) only. Empty: the shared SMARTTURN_COMPLETE_THRESHOLD. |
 | `ROOM_INTERRUPT_MIN_WORDS` | — | TEAPORT_INTERRUPT_MIN_WORDS for the box's own microphone (the room mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. |
+| `ROOM_VAD_SAMPLE_RATE` | — | VAD_SAMPLE_RATE for the box's own microphone (the room mic) only. Empty: the shared VAD_SAMPLE_RATE. The room mic is real wideband, so 8000 would throw away the top half of the band. One of `16000`, `8000`. |
 | `TEAPORT_REPLY_HOLD` | — | Retired, never shipped in a release: the reply hold is set per front-end by TEAPORT_REPLY_HOLD_SIP and TEAPORT_REPLY_HOLD_TALK. If it is still set, the brain ignores it and logs a warning saying so. |
 | `TEAPORT_REPLY_HOLD_SIP` | **on** | Phone calls: before a reply to the caller's turn starts playing, check the line. If they have started talking again since the turn was committed, hold the reply; if their new words arrive, drop it and answer the whole turn as one message; if none come (a cough), play it TEAPORT_REPLY_HOLD_RELEASE_S after they go quiet. A caller who stays quiet is never delayed. |
 | `TEAPORT_REPLY_HOLD_TALK` | **off** | The same reply hold for the OpenClaw Talk path. Off until a Talk session has been measured with it: the only measurement so far is a telephony call. |
@@ -551,7 +554,20 @@ So `ENDPOINT_STOP_SECS`, `SMARTTURN_STOP_SECS`, `SMARTTURN_COMPLETE_THRESHOLD` a
 them in `brain.env`: `SIP_ENDPOINT_STOP_SECS`, `TALK_ENDPOINT_STOP_SECS`, and so on
 (the interrupt count drops its `TEAPORT_` prefix: `SIP_INTERRUPT_MIN_WORDS`,
 `TALK_INTERRUPT_MIN_WORDS`). An unset or unreadable override falls back to the shared
-value. Each session logs the values it was built with (`turn-taking (sip): …`).
+value, except where the row has a default of its own (`SIP_VAD_SAMPLE_RATE`,
+`ROOM_ENDPOINT_STOP_SECS`, `ROOM_SMARTTURN_STOP_SECS`): there it falls back to that
+default, and the shared value does not reach that front-end. Each session logs the
+values it was built with (`turn-taking (sip): …`).
+
+Silero's rate is per front-end too, because it depends on the audio (issue #215).
+`VAD_SAMPLE_RATE` is the shared value, and `SIP_VAD_SAMPLE_RATE`, `TALK_VAD_SAMPLE_RATE`
+and `ROOM_VAD_SAMPLE_RATE` override it. A phone call is 8 kHz G.711 that the gateway
+upsampled, so `SIP_VAD_SAMPLE_RATE` defaults to `8000`, which runs Silero on the true
+narrowband signal; the phone does not take the shared value. Talk and the room mic are
+real wideband and take the shared `16000`. `SIP_VAD_SAMPLE_RATE=16000` puts the phone
+back on the upsample. The log line ends with the rate (`…, VAD at 8000 Hz`). A brain
+whose `brain.env` sets `VAD_SAMPLE_RATE` to something other than `8000`, with no
+`SIP_VAD_SAMPLE_RATE`, says once at start that the value no longer reaches phone calls.
 
 The box's own microphone (the room mic, through the local audio bridge) connects as
 a Talk client, but it is a front-end of its own here, `room`, with `ROOM_*` overrides

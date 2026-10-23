@@ -1,5 +1,7 @@
 #
-# Unit test: VAD_SAMPLE_RATE=8000 runs Silero on the true narrowband signal.
+# Unit test: a VAD sample rate of 8000 runs Silero on the true narrowband signal.
+# It is per front-end (issue #215; test_turn_settings.py): 8000 for the phone by
+# default, the shared 16000 for /talk and the room mic.
 #
 # The SIP media is G.711 mu-law at 8 kHz — the carrier's own SDP offer is
 # "m=audio 31720 RTP/AVP 0 18 101" (PCMU, G729, telephone-event) with no wideband codec
@@ -26,8 +28,20 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np  # noqa: E402
 
+from pinned_pipecat import require_pinned  # noqa: E402
+
+require_pinned()
+
+for k, v in (("TEAPORT_URL", "ws://127.0.0.1:9/v1/realtime"),
+             ("LLM_BASE_URL", "http://127.0.0.1:9/v1"), ("LLM_API_KEY", "not-a-real-key")):
+    os.environ.setdefault(k, v)
+
+from loguru import logger  # noqa: E402
+
 import teaport_brain  # noqa: E402, F401
+from teaport_brain import agent_session, endpoint_debug  # noqa: E402
 from teaport_brain.endpointing import NarrowbandSileroMixin  # noqa: E402
+from teaport_brain.speech_onset import SpeechOnsetMixin  # noqa: E402
 
 
 class _FakeSilero:
@@ -133,6 +147,116 @@ def test_an_odd_or_tiny_frame_does_not_crash():
     v.voice_confidence(b"\x00\x00")     # one sample: too small to decimate
     assert v.sample_rate == 16000
 
+
+def test_the_session_analyzer_is_narrowband_at_8000_alone():
+    # agent_session._vad_cls takes the session's rate (TurnSettings.vad_sample_rate), not
+    # a process-wide one: one process builds a phone call's analyzer and a Talk one's.
+    from pipecat.audio.vad.silero import SileroVADAnalyzer
+    narrow, wide = agent_session._vad_cls(8000), agent_session._vad_cls(16000)
+    assert issubclass(narrow, NarrowbandSileroMixin) and not issubclass(wide, NarrowbandSileroMixin)
+    for cls in (narrow, wide):
+        # The onset mixin is outermost, so it reads whichever confidence the rest made.
+        assert cls.__mro__[1] is SpeechOnsetMixin, cls.__mro__
+        assert issubclass(cls, SileroVADAnalyzer)
+    mro = narrow.__mro__
+    assert mro.index(NarrowbandSileroMixin) < mro.index(SileroVADAnalyzer), mro
+
+
+def test_the_narrowband_mixin_stacks_with_the_debug_analyzer():
+    saved, endpoint_debug.ENABLED = endpoint_debug.ENABLED, True
+    try:
+        cls = agent_session._vad_cls(8000)
+    finally:
+        endpoint_debug.ENABLED = saved
+    # Onset outermost, then the narrowband conversion, then the instrumented model: the
+    # debug census logs the confidence the 8 kHz model gave.
+    mro = cls.__mro__
+    order = [mro.index(c) for c in (SpeechOnsetMixin, NarrowbandSileroMixin,
+                                    endpoint_debug.InstrumentedSileroVAD)]
+    assert order == sorted(order), mro
+
+
+def test_a_rate_that_is_neither_warns_and_runs_the_stock_analyzer():
+    lines = []
+    sink = logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
+    try:
+        cls = agent_session._vad_cls(800)
+    finally:
+        logger.remove(sink)
+    assert not issubclass(cls, NarrowbandSileroMixin)
+    assert any("800 is neither 16000" in line for line in lines), lines
+    lines.clear()
+    sink = logger.add(lambda m: lines.append(m.record["message"]), level="WARNING")
+    try:
+        agent_session._vad_cls(8000), agent_session._vad_cls(16000)
+    finally:
+        logger.remove(sink)
+    assert not lines, lines
+
+
+QUESTION_WAV = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                            "test", "question.wav")
+
+
+def _real_confidences(rate):
+    """Speech through the session's analyzer class on the REAL Silero model: a 16 kHz
+    recording of a spoken question, in the 512-sample frames pipecat hands it."""
+    import wave
+    from teaport_brain import onnx_sessions
+    onnx_sessions.install()             # the shared sessions build_agent_session runs
+    with wave.open(QUESTION_WAV) as w:
+        assert (w.getframerate(), w.getnchannels(), w.getsampwidth()) == (16000, 1, 2)
+        pcm = w.readframes(w.getnframes())
+    errors = []
+    sink = logger.add(lambda m: errors.append(m.record["message"]), level="ERROR")
+    try:
+        vad = agent_session._vad_cls(rate)(sample_rate=16000)
+        vad.set_sample_rate(16000)      # what the transport does at StartFrame
+        n = vad.num_frames_required() * 2
+        confs = [float(np.asarray(vad.voice_confidence(pcm[i:i + n])).ravel()[0])
+                 for i in range(0, len(pcm) - n + 1, n)]
+    finally:
+        logger.remove(sink)
+    return vad, confs, errors
+
+
+def test_the_real_model_hears_speech_at_8k():
+    # The stub tests above pin the mixin's mechanics; this pins the result on pipecat's
+    # own model. A swap that stopped converting the rate (pipecat renaming _sample_rate,
+    # say) would hand the 16 kHz model 256 samples: it raises, pipecat's voice_confidence
+    # logs "Error analyzing audio" and returns 0 on every frame -- a VAD that never
+    # hears anyone, with nothing failing (the 2026-09-10 shape).
+    vad, confs, errors = _real_confidences(8000)
+    assert isinstance(vad, NarrowbandSileroMixin)
+    assert len(confs) > 50, len(confs)
+    assert not [e for e in errors if "Error analyzing audio" in e], errors[:3]
+    assert max(confs) > 0.7, f"speech peaked at {max(confs):.3f} through the 8 kHz analyzer"
+    assert vad.sample_rate == 16000     # the analyzer kept its pipeline rate
+
+
+def test_the_install_selfcheck_runs_the_narrowband_analyzer():
+    # selfcheck is install.sh's gate before a venv goes live: it must run the 8 kHz path
+    # too, so a pipecat bump that breaks the swap fails the install, not the phone.
+    from teaport_brain import selfcheck
+    selfcheck._install_onnx_sessions()
+    selfcheck._check_narrowband_vad()
+    # The break it is for: pipecat's rate moves off _sample_rate, so the mixin's swap
+    # writes a field nothing reads and the model gets 256 samples "at 16 kHz".
+    real = NarrowbandSileroMixin.voice_confidence
+
+    def decimates_but_the_rate_stays(self, buffer):
+        a = np.frombuffer(buffer, dtype=np.int16)
+        half = a.reshape(-1, 2).mean(axis=1).astype(np.int16)
+        return super(NarrowbandSileroMixin, self).voice_confidence(half.tobytes())
+    NarrowbandSileroMixin.voice_confidence = decimates_but_the_rate_stays
+    try:
+        selfcheck._check_narrowband_vad()
+    except RuntimeError as e:
+        assert "8 kHz" in str(e), e
+    else:
+        raise AssertionError("selfcheck passed a narrowband analyzer whose model never ran at 8 kHz")
+    finally:
+        NarrowbandSileroMixin.voice_confidence = real
 
 if __name__ == "__main__":
     for name, fn in sorted(globals().items()):

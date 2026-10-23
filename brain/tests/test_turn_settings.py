@@ -4,11 +4,15 @@
 # override of the shared knob, read when the session is built (endpointing.turn_settings).
 # The box's own mic is a third front-end, "room", with ROOM_* of its own (issue #159):
 # a stop and a ceiling with schema defaults, and no TALK_* reaching it.
+# Silero's rate is per front-end too (issue #215): the phone's audio is 8 kHz G.711 the
+# gateway upsampled, so SIP_VAD_SAMPLE_RATE defaults to 8000, while /talk and the room
+# mic are wideband and take the shared VAD_SAMPLE_RATE (16000).
 #
 # Run: python test_turn_settings.py   (or via pytest test_suite.py)
 #
 import asyncio
 import os
+import subprocess
 import sys
 from types import SimpleNamespace
 
@@ -28,6 +32,7 @@ from pipecat.transports.websocket.fastapi import (  # noqa: E402
 
 from teaport_brain import endpointing, settings  # noqa: E402
 from teaport_brain.agent_session import build_agent_session  # noqa: E402
+from teaport_brain.endpointing import NarrowbandSileroMixin  # noqa: E402
 from teaport_brain.gateway_serializer import TeaportGatewaySerializer  # noqa: E402
 
 OVERRIDES = {"TALK_ENDPOINT_STOP_SECS": "0.2", "TALK_SMARTTURN_STOP_SECS": "0.6",
@@ -84,7 +89,7 @@ def test_every_front_end_names_each_knob_once_in_field_order():
     # The one table (FRONT_ENDS): a front-end that read its knobs in another order would
     # put a stop into the ceiling with nothing to say so.
     fields = ("ENDPOINT_STOP_SECS", "SMARTTURN_STOP_SECS", "SMARTTURN_COMPLETE_THRESHOLD",
-              "INTERRUPT_MIN_WORDS")
+              "INTERRUPT_MIN_WORDS", "VAD_SAMPLE_RATE")
     for name, read in endpointing.FRONT_ENDS.items():
         seen = []
         real = endpointing.setting
@@ -108,6 +113,79 @@ def test_a_typo_falls_back_to_the_shared_value():
     with _Env({"SIP_ENDPOINT_STOP_SECS": "0,5", "TALK_INTERRUPT_MIN_WORDS": " "}):
         assert endpointing.turn_settings("sip").endpoint_stop_secs == endpointing.ENDPOINT_STOP_SECS
         assert endpointing.turn_settings("talk").interrupt_min_words == endpointing.INTERRUPT_MIN_WORDS
+    # The phone's rate has a schema default of its own: a typo falls back to it, not to
+    # the shared 16000.
+    with _Env({"SIP_VAD_SAMPLE_RATE": "800", "TALK_VAD_SAMPLE_RATE": "8k"}):
+        assert endpointing.turn_settings("sip").vad_sample_rate == 8000
+        assert endpointing.turn_settings("talk").vad_sample_rate == endpointing.VAD_SAMPLE_RATE
+
+
+def test_the_phone_runs_silero_at_8k_and_talk_and_the_room_at_16k_by_default():
+    assert endpointing.VAD_SAMPLE_RATE == 16000      # the shared value, unset
+    assert settings.ROWS["SIP_VAD_SAMPLE_RATE"]["default"] == "8000"
+    rates = {f: endpointing.turn_settings(f).vad_sample_rate for f in endpointing.FRONT_ENDS}
+    assert rates == {"sip": 8000, "talk": 16000, "room": 16000}, rates
+    assert all(type(r) is int for r in rates.values()), rates
+    assert endpointing.turn_settings(None).vad_sample_rate == 16000
+
+
+def test_a_front_ends_own_rate_wins():
+    with _Env({"SIP_VAD_SAMPLE_RATE": "16000", "TALK_VAD_SAMPLE_RATE": "8000",
+               "ROOM_VAD_SAMPLE_RATE": "8000"}):
+        rates = {f: endpointing.turn_settings(f).vad_sample_rate for f in endpointing.FRONT_ENDS}
+    assert rates == {"sip": 16000, "talk": 8000, "room": 8000}, rates
+    with _Env({"TALK_VAD_SAMPLE_RATE": "8000"}):   # Talk's does not reach the room
+        assert endpointing.turn_settings("room").vad_sample_rate == 16000
+
+
+# VAD_SAMPLE_RATE is read at import (TurnSettings' default), so these run in a process of
+# their own. Each reads the three front-ends' rates three times, as three calls would.
+_RATES_PROBE = ("from teaport_brain import endpointing as e\n"
+                "for _ in range(3):\n"
+                "    print(*(e.turn_settings(f).vad_sample_rate for f in ('sip', 'talk', 'room')))")
+
+
+def _rates_in_a_fresh_process(**env):
+    base = {k: v for k, v in os.environ.items() if not k.endswith("VAD_SAMPLE_RATE")}
+    p = subprocess.run([sys.executable, "-c", _RATES_PROBE], env={**base, **env},
+                       capture_output=True, text=True, check=True)
+    return p.stdout.split()[-3:], p.stderr
+
+
+def test_the_shared_rate_reaches_talk_and_the_room_but_not_the_phone():
+    # The headline rule: the phone's own default beats the shared value, even one set
+    # explicitly -- a brain.env that says VAD_SAMPLE_RATE=16000 no longer reaches calls.
+    assert _rates_in_a_fresh_process(VAD_SAMPLE_RATE="16000")[0] == ["8000", "16000", "16000"]
+    assert _rates_in_a_fresh_process(VAD_SAMPLE_RATE="8000")[0] == ["8000", "8000", "8000"]
+    assert _rates_in_a_fresh_process()[0] == ["8000", "16000", "16000"]
+    # The phone's own setting is the only way to move it.
+    assert _rates_in_a_fresh_process(VAD_SAMPLE_RATE="8000", SIP_VAD_SAMPLE_RATE="16000")[0] == [
+        "16000", "8000", "8000"]
+
+
+NOTICE = "no longer applies to phone calls"
+
+
+def test_a_shared_rate_the_phone_no_longer_takes_is_said_once_per_process():
+    rates, err = _rates_in_a_fresh_process(VAD_SAMPLE_RATE="16000")
+    assert rates == ["8000", "16000", "16000"]
+    assert err.count(NOTICE) == 1, err      # at import, not on every call
+    assert ("VAD_SAMPLE_RATE=16000 no longer applies to phone calls: they use "
+            "SIP_VAD_SAMPLE_RATE (default 8000); set SIP_VAD_SAMPLE_RATE=16000 to keep the "
+            "old rate") in err, err
+    # Not where nothing changed: no shared value, one the phone takes anyway, one the
+    # phone overrides, or one that does not parse (that warns as a typo, already).
+    for env in ({}, {"VAD_SAMPLE_RATE": "8000"},
+                {"VAD_SAMPLE_RATE": "16000", "SIP_VAD_SAMPLE_RATE": "16000"},
+                {"VAD_SAMPLE_RATE": "22050"}):
+        assert NOTICE not in _rates_in_a_fresh_process(**env)[1], env
+    # The rule itself, without a process: blank is unset, and a set SIP value of any kind
+    # (even a typo, which warns on its own read) means the operator chose for the phone.
+    notice = endpointing.phone_rate_notice
+    assert notice({"VAD_SAMPLE_RATE": " 16000 "}) is not None
+    assert notice({"VAD_SAMPLE_RATE": "16000", "SIP_VAD_SAMPLE_RATE": " "}) is not None
+    assert notice({"VAD_SAMPLE_RATE": "16000", "SIP_VAD_SAMPLE_RATE": "8000"}) is None
+    assert notice({"VAD_SAMPLE_RATE": " "}) is None
 
 
 def test_a_call_and_a_talk_session_in_one_process_are_built_with_their_own_values():
@@ -132,6 +210,24 @@ def test_a_call_and_a_talk_session_in_one_process_are_built_with_their_own_value
         assert session.stt.vad_analyzer is session.vad_analyzer
         assert session.vad_analyzer.voice_marks().received == 0
     assert sip.turns.interrupt_min_words == 3 and talk.turns.interrupt_min_words == endpointing.INTERRUPT_MIN_WORDS
+    # Each session's analyzer runs at its front-end's rate (issue #215): the phone's
+    # decimates to 8 kHz, Talk's and the room's run on the wideband audio as it is.
+    assert isinstance(sip.vad_analyzer, NarrowbandSileroMixin) and sip.turns.vad_sample_rate == 8000
+    for session in (talk, room):
+        assert not isinstance(session.vad_analyzer, NarrowbandSileroMixin)
+        assert session.turns.vad_sample_rate == 16000
+
+
+def test_a_session_is_built_at_its_front_ends_own_rate():
+    t = FastAPIWebsocketTransport(websocket=SimpleNamespace(), params=FastAPIWebsocketParams(
+        serializer=TeaportGatewaySerializer()))
+
+    async def run():
+        with _Env({"SIP_VAD_SAMPLE_RATE": "16000", "ROOM_VAD_SAMPLE_RATE": "8000"}):
+            return build_agent_session(t, front_end="sip"), build_agent_session(t, front_end="room")
+    sip, room = asyncio.run(run())
+    assert not isinstance(sip.vad_analyzer, NarrowbandSileroMixin)
+    assert isinstance(room.vad_analyzer, NarrowbandSileroMixin)
 
 
 def main():
