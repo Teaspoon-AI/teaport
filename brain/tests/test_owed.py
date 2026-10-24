@@ -669,9 +669,25 @@ def test_a_short_follow_up_reads_back_to_the_turn_before_it():
     assert first in question and "Check the archives." in question, question
     one = round_msgs("Who were the original founders of Orchid Labs?")
     assert owed._question(one, 2) == "Who were the original founders of Orchid Labs?"
-    many = [{"role": "user", "content": w} for w in ("A.", "Go on.", "Sure.")] + round_msgs("Yes.")
+    many = ([{"role": "user", "content": w} for w in ("A.", "Go on.", "Sure.", "Fine.")]
+            + round_msgs("Yes."))
     question = owed._question(many, len(many) - 1)
-    assert "A." not in question and all(w in question for w in ("Go on.", "Sure.", "Yes."))
+    assert "A." not in question and all(w in question for w in ("Go on.", "Fine.", "Yes."))
+
+
+def test_the_question_reads_back_to_the_turn_about_the_result():
+    """2026-10-24 03:02: a consult asked on a follow-up like "are you sure about that?"
+    was judged on those words alone -- a term of their own, five words -- and every
+    telling of it was OWED. The question reads back to the turn that shares a term with the result or the
+    lookup, whatever the words in between."""
+    turns = ["Are you sure about that?", "Make up your mind.",
+             "So it's not Dana Whitlock running it?", "Who runs the Fernway museum?"]
+    about = owed.terms_of("The Fernway museum's director is Priya Okafor; Dana Whitlock "
+                          "left in March.", "")
+    question = owed._question_of(turns, about)
+    assert question.startswith("So it's not Dana Whitlock") and "sure about that" in question
+    assert "Who runs" not in question, question
+    assert owed._question_of(None, about) == "" and owed._question_of([], about) == ""
 
 
 async def test_the_answers_first_reply_settles_it_by_its_position():
@@ -942,6 +958,19 @@ async def test_the_gist_is_asked_as_the_stream_ends():
     b.settle(r, LH_TOLD, cut=False, audio=True, text=LH_TOLD)
     await judged(b)
     assert b.record("call-lh").state == CLOSED and len(gist.calls) == 1
+
+
+async def test_a_run_renders_only_its_own_records():
+    """2026-10-24 03:02: a consult landed while an older answer was still owed; the
+    landing run's note listed both, the older first, and the model told the older one in
+    its place. A run's note carries the records it was asked for; a caller's turn carries
+    every owed record."""
+    b, ctx, _ = lighthouse_book(FakeGist(False))
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    run, keys = await b.view(ctx, owed.RUN, ("call-hn",))
+    assert keys == ("call-hn",) and "Harborview" not in run.get_messages()[-1]["content"]
+    caller, keys = await b.view(ctx, "caller")
+    assert set(keys) == {"call-lh", "call-hn"}, keys
 
 
 async def test_a_run_counts_only_for_its_own_records():

@@ -88,7 +88,7 @@ RECORDS = {
         "reading room\n   Open until midnight on weekdays.\n- Local robotics team "
         "wins regionals\n   They go to nationals in May."),
     "bakeries": (
-        "Are there any bakeries on Alder Street?", "",
+        "Which bakeries are on Alder Street?", "",
         "Bakeries on Alder Street:\n\n- Crumb & Co. — 210 Alder St\n- Sunrise Loaves — "
         "455 Alder St\n- The Rolling Pin — 812 Alder St\n- Petit Four — 1020 Alder St"),
     "no_road": (

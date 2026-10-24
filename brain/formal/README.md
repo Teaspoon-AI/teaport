@@ -446,6 +446,11 @@ URL"); shown no result it closes a wrong year. So:
 `RetellOnce` is the new property: a heard answer is re-told at most once by a request that
 carried the note.
 
+The model has one record. With several owed, a run of ours renders only the records it
+was asked for (`Owed.view`): a landing run whose note listed an older owed answer first
+told that one in its place (2026-10-24 03:02). A caller's own turn carries every owed
+record.
+
 ### What the model changed in the design
 
 The model was written to lead the design, and it found these:

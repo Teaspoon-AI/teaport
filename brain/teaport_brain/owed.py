@@ -545,11 +545,13 @@ def new_results(messages: list, known) -> list:
     result in a session is first seen by the render right after it lands, so the unknown
     ones are the new ones, wherever pipecat put the line before their call (a dict
     lookup per message)."""
-    tools = {c.get("id"): (c.get("function") or {}).get("name")
+    calls = {c.get("id"): c.get("function") or {}
              for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
              for c in m.get("tool_calls") or () if isinstance(c, dict)}
-    return [(m.get("tool_call_id"), tools.get(m.get("tool_call_id")), _asked(messages, i),
-             _question(messages, i))
+    return [(m.get("tool_call_id"), calls.get(m.get("tool_call_id"), {}).get("name"),
+             _asked(messages, i),
+             _question(messages, i, terms_of(msg_text(m), "") | terms_of(
+                 str(calls.get(m.get("tool_call_id"), {}).get("arguments") or ""), "")))
             for i, m in enumerate(messages)
             if isinstance(m, dict) and m.get("role") == "tool"
             and m.get("tool_call_id") not in known and msg_text(m).strip() not in _NOT_A_RESULT]
@@ -578,34 +580,52 @@ def _asked(messages: list, i: int) -> str:
     return ""
 
 
-# The caller's turns read back for a question, at most: the round's own and two before it.
-_QUESTION_TURNS = 3
-# A turn this short is a follow-up ("Check the archives.", "How about her sister?"): the
+# The caller's turns read back for a question, at most: the round's own and three before it.
+_QUESTION_TURNS = 4
+# With nothing to anchor on, a turn this short is a follow-up ("Check the archives."): the
 # question goes on back to the turn before it.
 _FOLLOW_UP_WORDS = 4
 
 
-def _question(messages: list, i: int) -> str:
-    """What the caller asked for the round the result at `i` belongs to -- what the judges
-    are shown, and a cut answer is owed to: the words that started it and, while those
-    carry nothing of their own (terms_of: "Yeah, please go check.", "I'm ready.",
-    "Who is on it?") or are a short follow-up ("Check the archives."), the caller's words
-    before them, back to the turn that asked something. The round's own words alone made the judge a question that asks nothing:
-    a "yes, go check" after the real question, a telling cut at its first words, judged
-    HEARD -- nothing was left to answer -- and the answer was lost (2026-10-24 01:21). "" for a round nobody asked (_asked)."""
+def _caller_turns(messages: list, i: int) -> Optional[list]:
+    """The caller's turns before `i`, newest first, at most _QUESTION_TURNS; None when the
+    round was started by a notice or a cue, which nobody asked (_asked)."""
     said = []
     for m in reversed(messages[:i]):
         if not (isinstance(m, dict) and m.get("role") == "user"):
             continue
         if not is_caller_message(m):
             if not said:
-                return ""             # a notice or a cue started the round
+                return None
             continue
-        said.insert(0, msg_text(m).strip())
-        if ((terms_of(said[0], "") and len(said[0].split()) > _FOLLOW_UP_WORDS)
-                or len(said) == _QUESTION_TURNS):
+        said.append(msg_text(m).strip())
+        if len(said) == _QUESTION_TURNS:
             break
-    return " … ".join(said)
+    return said
+
+
+def _question_of(turns: Optional[list], about=frozenset()) -> str:
+    """What the caller asked -- what the judges are shown, and a cut answer is owed to:
+    the words that started the round, and the caller's words before them back to the
+    turn that shares a term with the result (`about`: its terms and the lookup's), or,
+    without one, back to a turn of its own (terms_of, more than _FOLLOW_UP_WORDS words).
+    The round's own words alone can ask nothing of the result: a "yes, go check" after
+    the real question, judged HEARD on a telling cut at its first words (2026-10-24
+    01:21); an "are you sure about that?" kind of turn, judged OWED on every telling
+    until the answer, still owed, was told in another answer's place (2026-10-24
+    03:02)."""
+    took = []
+    for turn in turns or ():
+        took.insert(0, turn)
+        words = terms_of(turn, "")
+        if (words & about) if about else (words and len(turn.split()) > _FOLLOW_UP_WORDS):
+            break
+    return " … ".join(took)
+
+
+def _question(messages: list, i: int, about=frozenset()) -> str:
+    """_question_of the caller's turns before `i`."""
+    return _question_of(_caller_turns(messages, i), about)
 
 
 @dataclass
@@ -682,7 +702,7 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
-        self._questions: dict = {}            # key -> the caller's words that asked for it
+        self._questions: dict = {}            # key -> the caller's turns when it was asked
         self._duplicates: dict = {}           # key -> the key whose consult answers it
         # Every tool result the book has seen, by tool_call_id (_Answer): a sync
         # answer's, open for at most two replies; a consult's, and a
@@ -762,13 +782,19 @@ class Owed:
         """The request `context` becomes, and the record keys its note carries: the
         render hook (services.BoundedOpenAILLMService._open_stream), after every pending
         settle. (context, ()) when nothing is owed; (None, ()) for a run none of whose
-        records is owed any more -- it renders nothing and sends no request. This is
+        records is owed any more -- it renders nothing and sends no request. A run's note
+        carries its own records only. This is
         where a run is checked again (Owed.tla RunGo; ow_askOnly): the gate lets it go
         only into a quiet window, so nothing lies between its go and this render."""
         await self.settled()
         records = self.owed()
-        if purpose in RUNS and not any(r.key in run_keys for r in records):
-            return None, ()
+        if purpose in RUNS:
+            # A run of ours is for its own records: told in a run with another owed answer
+            # listed first, the model told that one in its place (2026-10-24 03:02). The
+            # caller's own turns carry every owed record.
+            records = [r for r in records if r.key in run_keys]
+            if not records:
+                return None, ()
         if not records:
             return context, ()
         msgs = render(context.get_messages(), records, purpose)
@@ -834,7 +860,7 @@ class Owed:
         running = self._running.get(request)
         self._answers[key] = _Answer(request, record=running or key)
         msgs = self.context.get_messages()
-        self._questions.setdefault(running or key, _question(msgs, len(msgs)))
+        self._questions.setdefault(running or key, _caller_turns(msgs, len(msgs)))
         if running is not None:
             self._duplicates[key] = running
             return running
@@ -863,8 +889,9 @@ class Owed:
                                 "note": "The same request as an earlier call; its result "
                                         "is that call's."})
             del self._duplicates[dup]
-        rec = self._owe(Record.make(key, request, outcome, failure=failure,
-                                    question=self._questions.pop(key, "")),
+        question = _question_of(self._questions.pop(key, None),
+                                terms_of(outcome, "") | terms_of(request, ""))
+        rec = self._owe(Record.make(key, request, outcome, failure=failure, question=question),
                         f"landed ({failure or 'answer'}); tool result "
                         f"{'rewritten' if rewrote else 'not found'}")
         if not ask or self._closed or self.gate is None:
