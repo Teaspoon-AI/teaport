@@ -66,7 +66,7 @@ from loguru import logger
 
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.settings import setting
-from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech
+from teaport_brain.tts_text import CAPTION_LEAD_SECS, fold_unspeakable, has_speech, unsaid_markers
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -194,29 +194,52 @@ def _nospace(s: str) -> str:
 
 
 def _unheard(text: str, heard: str) -> Optional[str]:
-    """The part of `text` after the heard prefix, matched IGNORING WHITESPACE; None when
-    `heard` is not a prefix of it beyond spacing.
+    """The part of `text` after the heard prefix, matched by its LETTERS AND DIGITS; None
+    when `heard` is not a prefix of it by those.
 
     The heard text is rebuilt from the TTS's per-word frames, whose spacing is the
-    frames' (engine word frames carry none; a CJK voice's tokens are characters), so
-    it is a prefix of the raw LLM text only up to whitespace. Comparing the two with
-    their spaces removed keeps the tail exact for both -- the transcript's unheard tail
-    (Utterance.unheard_tail) and the rest the cut judge is shown (the settle feed).
+    frames' (engine word frames carry none; a CJK voice's tokens are characters), and
+    whose text is what the engine was handed: tts_text._normalize_for_tts folds the
+    unspeakable characters ("B0‑22‑7A" with U+2011 is "B0-22-7A"), drops the markdown
+    and a list's markers ("1. ", "- ") and turns line breaks and ellipses into commas. So
+    it is a prefix of the raw LLM text only by its letters and digits. Compared up to
+    spacing alone, a typographic hyphen left a telling heard to 89% unjudged and owed
+    (2026-10-24 05:38): 17 of that session's 57 cuts aligned, 56 by this (the 57th a
+    fragment). A list's numbering may or may not be said -- the normalizer sees it at a
+    line's start only when the sentence splitter left it there ("2." alone is said) --
+    so its digits are skipped when the heard text does not have them. The heard text's
+    own trailing marks ("zero-", "two,") are matched after it, so the rest starts where
+    they end. The tail is the raw text's, for both its readers -- the transcript's
+    unheard tail (Utterance.unheard_tail) and the rest the cut judge is shown (the
+    settle feed).
     """
-    want = _nospace(heard)
+    text = text or ""
+    want = [c.casefold() for c in heard or "" if c.isalnum()]
     if not want:
-        return (text or "").strip()
+        return text.strip()
+    unsaid = unsaid_markers(text)
     i = j = 0
     while i < len(text) and j < len(want):
-        if text[i].isspace():
-            i += 1
-            continue
-        if text[i] != want[j]:
-            return None
+        c = text[i]
         i += 1
+        if not c.isalnum():
+            continue
+        if c.casefold() != want[j]:
+            if i - 1 in unsaid:
+                continue
+            return None
         j += 1
     if j < len(want):
         return None
+    last = max(k for k, c in enumerate(heard) if c.isalnum())
+    for mark in heard[last + 1:]:
+        if mark.isspace():
+            continue
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or fold_unspeakable(text[i]) != mark:
+            break
+        i += 1
     return text[i:].strip()
 
 

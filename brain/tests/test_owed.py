@@ -794,6 +794,49 @@ def test_the_rest_the_judge_is_shown_is_aligned_by_characters():
     assert _unheard(text, "Tom Joy is") is None
 
 
+def test_the_rest_is_found_whatever_the_speech_path_did_to_the_text():
+    """2026-10-24 05:38: a telling heard to 89% was never judged -- the model wrote its
+    hyphens and spaces as U+2011 and U+202F, the engine was handed plain ones, and the
+    heard prefix was no prefix of the raw text beyond spacing. Aligned by letters and
+    digits, it is; a list's numbering is matched where it was said and skipped where it
+    was not."""
+    raw = ("Found 2 devices:\n\n1. **Desk lamp** — A4‑C1‑38\n"
+           "2. Hallway sensor, it’s idle.")
+    assert _unheard(raw, "Found 2 devices: Desk lamp — A4-C1-38") == "2. Hallway sensor, it’s idle."
+    assert _unheard(raw, "Found 2 devices: 1. Desk lamp — A4-C1-38, 2. Hallway sensor, it's") == "idle."
+    assert _unheard(raw, "Found 2 devices: Desk lamp — A4-C1-38, Hallway") == "sensor, it’s idle."
+    assert _unheard(raw, "Found 3 devices") is None
+
+
+async def test_a_cut_telling_that_answers_nothing_is_not_owed():
+    """2026-10-24 05:29: a sync round's telling was an apology and an offer, cut by the
+    caller; the cut judge said OWED, and the apology was owed as the answer for 23
+    minutes -- said again unasked, and looked up again for the caller's next question.
+    The gist judge on the telling's whole text (Owed._is_answer) finds no answer in it: no
+    record, one of the answer's replies spent (OwedAnswers.tla, a cut "defer"), and the
+    next reply that tells it, cut, is the record. A telling that answers, or no verdict,
+    is the record as before."""
+    sorry = "I can't open that page right now. If you'd like, I can try another source."
+    for verdict, owes in ((False, False), (True, True), (None, True)):
+        gist = FakeGist(verdict)
+        b, _, _ = sync_book(judge=FakeJudge(False), gist=gist)
+        cut(b, answer_reply(b, round_msgs()), "I can't open that page", sorry)
+        await judged(b)
+        assert gist.calls == [(T_REQ, clean_outcome(sorry), sorry)], gist.calls
+        assert [r.outcome for r in b.owed()] == ([sorry] if owes else []), verdict
+    nxt = answer_reply(b := sync_book(judge=FakeJudge(False), gist=FakeGist(False))[0],
+                       round_msgs())
+    cut(b, nxt, "I can't open that page", sorry)
+    await judged(b)
+    b.gist = FakeGist(True)
+    again = answer_reply(b, round_msgs(), owed.COMMIT)
+    assert again.fresh == ("call-ws",), "the answer was ended by a telling that gave none"
+    found = "There's a kite shop at twelve Elm Street. It opens at nine every morning."
+    cut(b, again, "There's a kite shop at", found)
+    await judged(b)
+    assert [r.outcome for r in b.owed()] == [clean_outcome(found)]
+
+
 async def test_a_cut_is_closed_by_both_judges():
     """A cut (formal/Owed.tla Closes, CutVerdicts): a cut reply about the record that
     carried the note closes it only if the gist judge says its whole text gives the

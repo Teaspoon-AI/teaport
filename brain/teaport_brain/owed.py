@@ -994,24 +994,45 @@ class Owed:
 
     def _gist_task(self, rec: Record, heard: str):
         try:
-            return asyncio.get_running_loop().create_task(self._ask_gist(rec, heard))
+            return asyncio.get_running_loop().create_task(
+                self._ask_gist(rec.asked, rec.outcome, heard))
         except RuntimeError:
             return None
 
-    async def _ask_gist(self, rec: Record, heard: str) -> Optional[bool]:
+    async def _ask_gist(self, question: str, outcome: str, heard: str,
+                        what: str = "gist") -> Optional[bool]:
         """One gist verdict; None on an error (never raises: it may go unawaited)."""
         started = time.monotonic()
         try:
-            verdict = await self.gist(rec.asked, rec.outcome, heard)
+            verdict = await self.gist(question, outcome, heard)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 -- a judge failure is no verdict
             verdict, why = None, f" ({type(e).__name__})"
         else:
             why = ""
-        logger.info(f"OWED: gist {_said(verdict)}{why} in {time.monotonic() - started:.2f}s "
-                    f"on {rec.asked[:50]!r}: heard {heard[-60:]!r}")
+        logger.info(f"OWED: {what} {_said(verdict)}{why} in {time.monotonic() - started:.2f}s "
+                    f"on {question[:50]!r}: heard {heard[-60:]!r}")
         return verdict
+
+    async def _is_answer(self, question: str, text: str) -> Optional[bool]:
+        """Does a sync answer's cut telling, heard whole, answer the caller at all -- is it
+        an answer to owe? The gist judge with the telling as its own result: an apology,
+        an offer or a deferral ("I can't open that page right now. If you'd like, I can
+        try another source.") is OWED, and a record of it is owed nothing --
+        the model, told it owed that, said it again unasked and looked it up again for
+        the caller's next question (2026-10-24 05:29, owed 23 minutes). Measured on that
+        session's 18 cut tellings (gpt-oss-120b, 7 trials each): 0/42 HEARD on the
+        non-answers, 7/84 OWED on the answers, none wrong by majority. None (no judge, an
+        error, past SETTLE_WAIT_S) errs owed: the record is made."""
+        if self.gist is None:
+            return None
+        try:
+            return await asyncio.wait_for(
+                self._ask_gist(question, clean_outcome(text), text, "answer gate"),
+                SETTLE_WAIT_S)
+        except asyncio.TimeoutError:
+            return None
 
     async def _gist(self, rec: Record, reply: Reply, heard: str) -> Optional[bool]:
         """The gist verdict on `heard` -- asked at the stream's end if it was, else now --
@@ -1112,8 +1133,11 @@ class Owed:
             self._apply(reply, {}, ids, request, heard, text, cut, None)
             return
         args = (reply, ids, request, heard, text, cut, defaults)
-        task = asyncio.get_running_loop().create_task(
-            self._judged(args, asks, self._judge(question, heard, rest) if sync else None))
+        # A cut telling of sync answers: the cut judge on the rest, and whether it was an
+        # answer at all (_is_answer), side by side.
+        verdicts = (asyncio.gather(self._judge(question, heard, rest),
+                                   self._is_answer(question, text)) if sync else None)
+        task = asyncio.get_running_loop().create_task(self._judged(args, asks, verdicts))
         self._judging[task] = args
         task.add_done_callback(lambda t: self._judging.pop(t, None))
 
@@ -1122,8 +1146,8 @@ class Owed:
         got = await asyncio.gather(*asks.values(), *([sync] if sync is not None else []))
         decisions = dict(zip(keys, got[:len(keys)]))
         reply, ids, request, heard, text, cut, _ = args
-        self._apply(reply, decisions, ids, request, heard, text, cut,
-                    got[-1] if sync is not None else None)
+        verdict, answered = got[-1] if sync is not None else (None, None)
+        self._apply(reply, decisions, ids, request, heard, text, cut, verdict, answered)
 
     async def _judge(self, question: str, heard: str, rest: str) -> Optional[bool]:
         """One cut verdict, bounded by SETTLE_WAIT_S; None (errs owed) past it or on error."""
@@ -1145,11 +1169,13 @@ class Owed:
         return verdict
 
     def _apply(self, reply, decisions: dict, ids, request, heard, text, cut,
-               sync: Optional[bool]) -> None:
+               sync: Optional[bool], answered: Optional[bool] = None) -> None:
         """The verdicts on the LIVE book: a record still owed closes on its decision (a
         late verdict never closes what another reply already did, nor reopens); the sync
         answers still open are told on the cut judge's HEARD, else made the record
-        (_cut_answer)."""
+        (_cut_answer) -- unless the telling was no answer at all (`answered` False,
+        _is_answer): then it spends one of their replies, as any reply that did not settle
+        them (_resolve; OwedAnswers.tla, a cut "defer")."""
         for key, (close, why) in decisions.items():
             rec = self._records.get(key)
             if rec is not None and rec.state == OWED:
@@ -1159,6 +1185,12 @@ class Owed:
                     logger.info(f"OWED: {key} stays owed -- {why}")
         if ids:
             ids = [t for t in ids if self._answers[t].replies]
+            if ids and cut and not sync and answered is False:
+                logger.info(f"OWED: a reply carrying {ids} cut, and it gave no answer "
+                            f"({(text or '')[:60]!r}) -- no record")
+                for t in ids:
+                    self._answers[t].replies -= 1
+                ids = []
             question = self._answers[ids[-1]].question if ids else ""
             rec = (self._cut_answer(tuple(ids), request, text, heard, question)
                    if ids and cut and not sync else None)

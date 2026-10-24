@@ -618,6 +618,16 @@ nothing, a caller turn with some beyond an open answer's question moves on (rest
 it -- "Wait, Austin tomorrow?" -- does not), a round started right after a cut with none
 at all is the re-lookup.
 
+A cut telling is read once more, by meaning: whether it **answers at all**
+(`Owed._is_answer`, 2026-10-24). An apology and an offer -- "I can't open that page right
+now. If you'd like, I can try another source." -- has terms of its own, and was owed as
+the answer for 23 minutes: said again unasked, and looked up again for the caller's next
+question. The gist judge, shown the telling's whole text as its own result, finds no
+answer in it; the cut then spends a reply, as the model's `"defer"` does here, and makes
+no record (`oa_fillerSettles` is that record). Measured on the session's 18 cut tellings:
+0/42 trials took a non-answer for an answer, 7/84 an answer for none -- that error spends
+a reply and leaves the answer one more, the `LOSE` side. No verdict makes the record.
+
 | property | meaning |
 |---|---|
 | `ToldOnHearing` | an answer filed as told was heard in full |
@@ -674,8 +684,9 @@ unheard, said nothing of their own, or cut mid-stream; a telling that also calls
 ("There's a Toy Joy at 5501 Burnet. Let me get their hours." + web_fetch), cut; an answer
 the caller moved on from in words of their own. Unlike before #204, misfiled: `ASIDE`
 (above); a deferral that says something of its own ("Got it, I'll keep the Austin
-forecast handy.") is taken for the telling -- heard, told; cut, recorded as it stands
-(the lexical reading: the model's "defer" is a reply with nothing of its own); vague
+forecast handy.") is taken for the telling when heard in full -- told (the lexical
+reading: the model's "defer" is a reply with nothing of its own); cut, it is one only if
+the answer gate finds no answer in it (above), else recorded as it stands; vague
 words right after a cut that start a new question are taken for the re-lookup (one
 turn). The re-lookup window opens only if no caller turn has rendered since the cut (a
 late settle opens none); a re-lookup's chain is not modelled (`test_owed.py`).
