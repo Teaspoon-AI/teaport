@@ -168,23 +168,42 @@ def _snippet(item) -> str:
     return ""
 
 
+# Where OpenClaw's dreaming keeps its working notes, which memory_search indexes with the
+# memory: the light and REM sweeps stage whole past turns as "Candidate: Assistant: ..."
+# lines with a confidence and "status: staged", and the deep sweep promotes what it keeps
+# into MEMORY.md. They are not memories. Recalled, they handed the voice model earlier
+# sessions' answers as things it remembers about the user: on 2026-10-24 it told the
+# previous day's top stories as today's before its own lookup came back. Every hit on
+# five test queries that morning was one of them.
+_NOT_MEMORY = ("memory/dreaming/", "memory/.dreams/")
+
+
+def _is_memory(item) -> bool:
+    """A memory_search hit that is the agent's memory, not its dreaming's notes."""
+    path = item.get("path") if isinstance(item, dict) else None
+    return not (isinstance(path, str) and path.startswith(_NOT_MEMORY))
+
+
 async def memory_search(query: str, *, max_results: int = 3,
                         timeout: float = RECALL_TIMEOUT) -> list[str]:
     """Semantic memory recall via the gateway. Returns up to `max_results` snippet
-    strings (possibly empty). `timeout` is the search budget (default RECALL_TIMEOUT,
-    sized for the local embedder) — fire this on the INTERIM transcript so it overlaps
-    endpointing and the result is usually back before the LLM runs; the caller also
-    cancels any straggler at the final transcript, so a slow search is harmless."""
+    strings (possibly empty) from the memory itself (_is_memory). `timeout` is the search
+    budget (default RECALL_TIMEOUT, sized for the local embedder) — fire this on the
+    INTERIM transcript so it overlaps endpointing and the result is usually back before
+    the LLM runs; the caller also cancels any straggler at the final transcript, so a slow
+    search is harmless."""
     query = (query or "").strip()
     if len(query) < 4:
         return []
     details = await invoke_details("memory_search", {"query": query}, timeout=timeout)
     results = details.get("results") or []
     out = []
-    for item in results[:max_results]:
-        s = _snippet(item)
+    for item in results:
+        s = _snippet(item) if _is_memory(item) else ""
         if s:
             out.append(s)
+            if len(out) == max_results:
+                break
     return out
 
 

@@ -7,7 +7,9 @@
 #   3. freshness-rank (§4A.1): a stale short-prefix result completing LATE must not
 #      clobber a fresher long-prefix result that already landed;
 #   4. pending_messages() before the final is exactly what the final injects (the
-#      speculative reply's snapshot relies on it), and nothing once it has.
+#      speculative reply's snapshot relies on it), and nothing once it has;
+#   5. the search itself skips OpenClaw's dreaming notes (staged past turns), and its
+#      limit counts the memory's own hits.
 #
 import asyncio
 import os
@@ -190,6 +192,39 @@ async def scenario_pending_is_what_the_final_injects():
     print("OK pending: pending_messages() before the final == what the final injected")
 
 
+async def scenario_dreaming_notes_are_not_memories():
+    """The search itself (openclaw_client.memory_search, which the search_memory tool
+    shares): OpenClaw's dreaming stages past turns under memory/dreaming/ and the gateway
+    indexes them with the memory. Recalled, they were earlier sessions' answers told as
+    today's (2026-10-24). They are skipped, and the limit counts the memory's hits."""
+    from teaport_brain import openclaw_client as oc
+
+    def hit(path, text):
+        return {"path": path, "snippet": text, "source": "memory"}
+
+    results = [hit("memory/dreaming/light/2026-10-24.md", "- Candidate: Assistant: The top story is ..."),
+               hit("memory/dreaming/rem/2026-10-24.md", "- Theme: lookups"),
+               hit("memory/.dreams/session-corpus/2026-10-23.txt", "User: ..."),
+               hit("MEMORY.md", "Prefers metric units."),
+               hit("memory/2026-10-23.md", "Has a sister named Lena."),
+               hit("memory/2026-10-20.md", "Plays the cello.")]
+    calls = []
+
+    async def fake_invoke(tool, args, timeout=None):
+        calls.append((tool, args))
+        return {"results": results}
+
+    orig = oc.invoke_details
+    oc.invoke_details = fake_invoke
+    try:
+        got = await oc.memory_search("what do you remember about me", max_results=2)
+    finally:
+        oc.invoke_details = orig
+    assert calls and calls[0][0] == "memory_search", calls
+    assert got == ["Prefers metric units.", "Has a sister named Lena."], got
+    print("OK dreaming: staged notes skipped, the limit counts the memory's own hits")
+
+
 async def main():
     orig = recall_mod.memory_search
     try:
@@ -197,6 +232,7 @@ async def main():
         await scenario_cancel_at_final()
         await scenario_freshness_guard()
         await scenario_pending_is_what_the_final_injects()
+        await scenario_dreaming_notes_are_not_memories()
     finally:
         recall_mod.memory_search = orig
     print("\nALL OK")
