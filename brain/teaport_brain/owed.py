@@ -21,13 +21,16 @@
 #                   (render(), called by services.BoundedOpenAILLMService._open_stream
 #                   after HeardContextCorrector's reconcile), and never stored.
 #                   NoteWhileOwed, NoStoredNote (ow_storeNote), ow_renderInGet.
-#   the EVIDENCE -- the caller HEARD every item of the outcome: at least min(2, |terms|)
-#                   of each item's terms in one reply's pts-EXACT heard text (the
-#                   corpus premise, DESIGN §3), or, for an item with no terms, a run
-#                   of ours that played to its end uncut. Only a reply whose request
-#                   carried the note counts. ClosedOnEvidence; ow_fraction (today's
-#                   1/3 of the words, #203), ow_countSettle, ow_singleWord, ow_oneItem,
-#                   ow_ledgerMax, ow_asWritten_closed.
+#   the EVIDENCE -- the caller heard the GIST: the answer to what they asked (#210).
+#                   A reply about the record played to its end closes it on the gist
+#                   judge's HEARD -- an LLM shown the caller's words, the result and
+#                   what they heard of the record so far -- or on no verdict; the
+#                   second such reply closes it whatever the verdict (the backstop). A
+#                   cut one only on the gist judge's HEARD for its whole text AND the
+#                   cut judge's for the rest they did not hear. A failure is one
+#                   statement: a reply about it heard to its end. Only a reply whose
+#                   request carried the note counts. ClosedOnEvidence, RetellOnce;
+#                   ow_gist_*, ow_fraction (1/3 of the words, #203), ow_ledgerMax.
 #
 # The brain speaks unprompted at most twice per record: one RUN when the answer lands
 # (unless a caller request is still to be rendered: that one carries the note), and
@@ -147,8 +150,35 @@ def cut_judge_messages(question: str, heard: str, rest: str) -> list:
                                         f"\"{rest}\""}]
 
 
-def cut_judge_verdict(reply_text: str) -> Optional[bool]:
-    """The judge's answer: True for HEARD, False for OWED, None for anything else."""
+# The gist judge (#210): a reply about a record, played to its end, closes it only if an
+# LLM shown the caller's words, the result and what they heard of the record so far
+# answers HEARD (or answers nothing in time). Measured on 58 cases about a record
+# (tests/test_gist_judge_eval.py, 2026-10-23, gpt-oss-120b, majority of 10): 0/25 false
+# HEARD, 2-4/29 false OWED, p50 0.56 s one at a time -- where the lexical coverage rule
+# had 2/25 and 11/29 (a one-fact answer told in the caller's words was one term of seven,
+# and told five times). The question is the CALLER's words: the model's own request asks
+# for more than they did (a title and a link they never asked for), 9-12/29 false OWED.
+GIST_JUDGE_PROMPT = (
+    "A voice assistant had an answer to give someone and said the reply below; they heard "
+    "all of it. Decide whether the reply gave them the answer to what they asked: the gist "
+    "-- the names, numbers, dates, places or items that answer their question. You also "
+    "see the result the answer came from; a reply that says something the result does not "
+    "is not its answer. Details beyond their question (sources, scores, addresses, dates "
+    "or extra facts they didn't ask for, caveats, side notes) don't count as missing. A "
+    "reply that only acknowledges, promises, defers, asks them something, or mentions the "
+    "answer without giving it has not given it. Reply with exactly one word: HEARD if they "
+    "got the answer, OWED if not.")
+
+
+def gist_judge_messages(question: str, outcome: str, heard: str) -> list:
+    """The gist judge's request, as the eval asked it."""
+    return [{"role": "system", "content": GIST_JUDGE_PROMPT},
+            {"role": "user", "content": f"Their question: \"{question}\"\n\nThe result:\n"
+                                        f"{outcome}\n\nWhat they heard:\n\"{heard}\""}]
+
+
+def judge_verdict(reply_text: str) -> Optional[bool]:
+    """A judge's answer: True for HEARD, False for OWED, None for anything else."""
     t = (reply_text or "").strip().upper()
     return True if t.startswith("HEARD") else False if t.startswith("OWED") else None
 
@@ -163,8 +193,8 @@ STAY_SILENT_SCHEMA = FunctionSchema(
 
 # What a consult that produced no answer is recorded as: the tool result's status and
 # the record's outcome, in plain words the model can say (#80: each kind says what
-# actually happened). A failure is ONE item with no terms (_record_items), so only a run
-# of ours played uncut closes it (Owed.tla RUNCLOSE = "terms").
+# actually happened). A failure has no terms: one statement, a reply about it heard to
+# its end closes it (Owed.tla RUNCLOSE = "about").
 _ACTION_HEDGE = (" If it was something visible (a message, poll or post), it may have gone "
                  "through anyway: ask them to check rather than saying it failed.")
 
@@ -232,15 +262,6 @@ def clean_outcome(text: str) -> str:
         lines.append(line)
     out = re.sub(r"\n{3,}", "\n\n", "\n".join(lines)).strip()
     return out
-
-
-def split_items(outcome: str) -> list:
-    """The outcome's items: its list items when it is a list (two or more), else the
-    whole text as one. A five-story result is five items, so naming one story does not
-    close it (DESIGN §3; Owed.tla ow_oneItem)."""
-    items = [ln[len(_BULLET):].strip() for ln in outcome.splitlines()
-             if ln.startswith(_BULLET) and ln[len(_BULLET):].strip()]
-    return items if len(items) >= 2 else [outcome]
 
 
 # ------------------------------------------------------------------ the spoken form
@@ -372,19 +393,17 @@ def _is_common(tok: str) -> bool:
 
 
 def terms_of(item: str, request: str) -> frozenset:
-    """An item's terms: its spoken tokens outside the common-word list, minus the
+    """A text's terms: its spoken tokens outside the common-word list, minus the
     request's own tokens, a regular inflection of one included (a lead-in that restates
-    the question names none: #203; "a Toy Joy store" against "any toy stores", #204)."""
+    the question names none: #203; "a Toy Joy store" against "any toy stores", #204).
+    What makes a reply ABOUT a record (Record.about), and caller words "of their own"."""
     asked = set().union(*(_forms(t) for t in spoken_tokens(request)))
     return frozenset(t for t in spoken_tokens(item)
                      if _forms(t).isdisjoint(asked) and not _is_common(t))
 
 
-def item_heard(terms: frozenset, heard: set) -> bool:
-    """At least min(2, |terms|) of an item's terms, as whole tokens, in what was heard.
-    "present" does not contain the token "sent"; one common word cannot close anything
-    (it is no term)."""
-    return bool(terms) and len(terms & heard) >= min(2, len(terms))
+# Terms that answer yes/no and say nothing of what a reply is about (Record.about).
+_POLARITY = frozenset({"yes", "no", "not"})
 
 
 # ------------------------------------------------------------------------- the record
@@ -397,56 +416,50 @@ class Record:
     request: str                  # the model's request, or the caller's words (sync)
     outcome: str                  # cleaned: the answer, or a failure's plain record
     failure: Optional[str] = None
-    items: list = field(default_factory=list)       # [(text, terms)]
+    question: str = ""            # the caller's words that asked for it: what is judged
+    terms: frozenset = frozenset()  # the outcome's terms (terms_of): what it is about
     state: str = OWED
     heard_quote: str = ""         # what a cut reply carrying the note got through
+    heard: list = field(default_factory=list)   # what was heard of it so far, oldest first
+    told: int = 0                 # noted replies about it played to their end (the backstop)
     reoffers: int = 0             # counted at the ask: a held-then-dropped one is one
     missed: bool = False          # the one re-offer is armed (Owed.tla `missed`)
     ids: tuple = ()               # the tool_call_ids it answers: the consult's, a round's
 
     @classmethod
     def make(cls, key, request, outcome, failure=None, ids=(), **kw) -> "Record":
-        rec = cls(key=key, request=request, outcome=outcome, failure=failure,
-                  ids=tuple(ids) or (key,), **kw)
-        rec.items = _record_items(outcome, request, failure)
-        return rec
+        return cls(key=key, request=request, outcome=outcome, failure=failure,
+                   ids=tuple(ids) or (key,),
+                   terms=frozenset() if failure else terms_of(outcome, request), **kw)
 
-    def closes_on(self, heard_text: Optional[str], *, run: bool) -> bool:
-        """COVERAGE, the lexical rule: does `heard_text`, heard IN FULL, tell this record
-        -- every item, an item with terms by its terms; one without (a failure, a bare
-        "done") when the reply was a run of ours or is about this record (Owed.tla
-        Closes, RUNCLOSE = "about": the failure the caller's own turn told in full is not
-        re-offered; an unrelated reply shares nothing with the request). A reply played
-        to its end closes by it; a CUT reply is judged (Owed._judge), this only gating
-        the call on the reply's whole text. Never read on a cut's heard prefix: two
-        content words close an item before its facts are out (formal/Owed.tla
-        prefixLexical; 89/145 false closes on live cuts)."""
-        heard = set(spoken_tokens(heard_text)) if heard_text else set()
-        for _, terms in self.items:
-            if terms:
-                if not item_heard(terms, heard):
-                    return False
-            elif not (heard_text and (run or self.about(heard_text))):
-                return False
-        return True
+    @property
+    def asked(self) -> str:
+        """What the judges are shown as the caller's question."""
+        return self.question or self.request
 
-    def about(self, heard_text: str) -> bool:
-        """Whether a reply's words are about this record: a non-common spoken token
-        shared with its request or its terms."""
-        toks = {t for t in spoken_tokens(heard_text) if not _is_common(t)}
-        about = set(spoken_tokens(self.request)) | {t for _, ts in self.items for t in ts}
-        return bool(toks & about)
+    def about(self, heard_text: Optional[str]) -> bool:
+        """Whether a reply's words are about this record: a term (terms_of) shared with
+        its request, the caller's question or its result. Only a reply about it is judged,
+        or counts toward the backstop. "yes", "no" and "not" are terms -- a bare yes/no
+        answer has no others -- but say nothing of what a reply is about unless the
+        answer is one: a "not found" line about another question was about an owed
+        "not" result, and spent its backstop (2026-10-24 02:05)."""
+        if not heard_text:
+            return False
+        about = self.terms | terms_of(self.request, "") | terms_of(self.question, "")
+        if self.terms - _POLARITY:
+            about = about - _POLARITY
+        return bool(terms_of(heard_text, "") & about)
+
+    def heard_with(self, text: str) -> str:
+        """What the caller will have heard of it with `text`: what the judges read."""
+        return " ".join(self.heard + [text.strip()])
 
     def to_saved(self) -> dict:
         return {"key": self.key, "request": self.request, "outcome": self.outcome,
-                "failure": self.failure, "heard_quote": self.heard_quote,
-                "reoffers": self.reoffers, "ids": list(self.ids)}
-
-
-def _record_items(outcome, request, failure) -> list:
-    if failure:
-        return [(outcome, frozenset())]
-    return [(item, terms_of(item, request)) for item in split_items(outcome)]
+                "failure": self.failure, "question": self.question,
+                "heard_quote": self.heard_quote, "heard": list(self.heard),
+                "told": self.told, "reoffers": self.reoffers, "ids": list(self.ids)}
 
 
 # ------------------------------------------------------------------------- the note
@@ -528,13 +541,15 @@ _NOT_A_RESULT = frozenset({"IN_PROGRESS", "CANCELLED", "COMPLETED"})
 
 def new_results(messages: list, known) -> list:
     """The tool results in `messages` whose tool_call_ids are not `known`, as (id, tool
-    name, the words that started its round), oldest first. Every result in a session is
-    first seen by the render right after it lands, so the unknown ones are the new ones,
-    wherever pipecat put the line before their call (a dict lookup per message)."""
+    name, the words that started its round, what the caller asked), oldest first. Every
+    result in a session is first seen by the render right after it lands, so the unknown
+    ones are the new ones, wherever pipecat put the line before their call (a dict
+    lookup per message)."""
     tools = {c.get("id"): (c.get("function") or {}).get("name")
              for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
              for c in m.get("tool_calls") or () if isinstance(c, dict)}
-    return [(m.get("tool_call_id"), tools.get(m.get("tool_call_id")), _asked(messages, i))
+    return [(m.get("tool_call_id"), tools.get(m.get("tool_call_id")), _asked(messages, i),
+             _question(messages, i))
             for i, m in enumerate(messages)
             if isinstance(m, dict) and m.get("role") == "tool"
             and m.get("tool_call_id") not in known and msg_text(m).strip() not in _NOT_A_RESULT]
@@ -563,12 +578,43 @@ def _asked(messages: list, i: int) -> str:
     return ""
 
 
+# The caller's turns read back for a question, at most: the round's own and two before it.
+_QUESTION_TURNS = 3
+# A turn this short is a follow-up ("Check the archives.", "How about her sister?"): the
+# question goes on back to the turn before it.
+_FOLLOW_UP_WORDS = 4
+
+
+def _question(messages: list, i: int) -> str:
+    """What the caller asked for the round the result at `i` belongs to -- what the judges
+    are shown, and a cut answer is owed to: the words that started it and, while those
+    carry nothing of their own (terms_of: "Yeah, please go check.", "I'm ready.",
+    "Who is on it?") or are a short follow-up ("Check the archives."), the caller's words
+    before them, back to the turn that asked something. The round's own words alone made the judge a question that asks nothing:
+    a "yes, go check" after the real question, a telling cut at its first words, judged
+    HEARD -- nothing was left to answer -- and the answer was lost (2026-10-24 01:21). "" for a round nobody asked (_asked)."""
+    said = []
+    for m in reversed(messages[:i]):
+        if not (isinstance(m, dict) and m.get("role") == "user"):
+            continue
+        if not is_caller_message(m):
+            if not said:
+                return ""             # a notice or a cue started the round
+            continue
+        said.insert(0, msg_text(m).strip())
+        if ((terms_of(said[0], "") and len(said[0].split()) > _FOLLOW_UP_WORDS)
+                or len(said) == _QUESTION_TURNS):
+            break
+    return " … ".join(said)
+
+
 @dataclass
 class _Answer:
     """A tool result as the book holds it (Owed._answers)."""
     request: str                # the caller's words that started its round ("" nobody's)
     replies: int = 0            # replies left that may settle it (0: settled, or history)
     record: Optional[str] = None    # the key of the record made of it
+    question: str = ""          # what the caller asked (_question): the judges' question
 
 
 # ------------------------------------------------------------------------- the replies
@@ -589,7 +635,7 @@ class Reply:
     the render."""
 
     __slots__ = ("kind", "keys", "noted", "fresh", "relook", "turn", "settled", "claimed",
-                 "texts", "calls")
+                 "texts", "calls", "gist")
 
     def __init__(self, kind: str, keys=()):
         self.kind = kind
@@ -602,6 +648,7 @@ class Reply:
         self.claimed = False          # the ledger has its LLMFullResponseStartFrame
         self.texts = 0                # LLMTextFrames with text the completion pushed
         self.calls = 0                # function calls it dispatched (stay_silent not one)
+        self.gist: dict = {}          # record key -> its gist verdict, asked at stream end
 
 
 # ------------------------------------------------------------------------- the book
@@ -617,13 +664,17 @@ class Owed:
     book's own task."""
 
     def __init__(self, context, gate=None, *, answer_tools=frozenset(), judge=None,
-                 reoffer_quiet_s: float = None):
+                 gist=None, reoffer_quiet_s: float = None):
         self.context = context
         self.gate = gate
         # The cut judge: async (question, heard, rest) -> True (HEARD) | False (OWED) |
         # None (no verdict) -- services.BoundedOpenAILLMService.judge_cut. None: no
         # verdict ever, every cut errs owed.
         self.judge = judge
+        # The gist judge: async (question, outcome, heard) -> True | False | None --
+        # services.BoundedOpenAILLMService.judge_gist. None: no verdict ever, so a reply
+        # about a record played to its end closes it, and a cut errs owed.
+        self.gist = gist
         self._judging: dict = {}              # verdicts still to come: task -> its _apply args
         # The tools whose result is an answer (tools.ANSWER_TOOLS): a cut telling of one
         # is owed (Owed._resolve). An action's confirmation never is.
@@ -631,6 +682,7 @@ class Owed:
         self._reoffer_quiet_s = REOFFER_QUIET_S if reoffer_quiet_s is None else reoffer_quiet_s
         self._records: dict = {}              # key -> Record, landing order
         self._running: dict = {}              # request -> key: consults not landed yet
+        self._questions: dict = {}            # key -> the caller's words that asked for it
         self._duplicates: dict = {}           # key -> the key whose consult answers it
         # Every tool result the book has seen, by tool_call_id (_Answer): a sync
         # answer's, open for at most two replies; a consult's, and a
@@ -760,11 +812,12 @@ class Owed:
                 if a is not None and a.record is not None and not a.replies:
                     reply.relook = a.record
             reply.turn = self._turn
-            for tid, tool, words in new_results(messages, self._answers):
+            for tid, tool, words, question in new_results(messages, self._answers):
                 for a in self._answers.values():
                     if a.replies and a.request != words:
                         a.replies = 0
-                self._answers[tid] = _Answer(words, 2 if tool in self.answer_tools else 0)
+                self._answers[tid] = _Answer(words, 2 if tool in self.answer_tools else 0,
+                                             question=question)
             reply.fresh = tuple(t for t, a in self._answers.items() if a.replies)
         if reply.noted or reply.fresh:
             self._pending.append(reply)
@@ -780,6 +833,8 @@ class Owed:
         answers both (land() rewrites this placeholder to point at it)."""
         running = self._running.get(request)
         self._answers[key] = _Answer(request, record=running or key)
+        msgs = self.context.get_messages()
+        self._questions.setdefault(running or key, _question(msgs, len(msgs)))
         if running is not None:
             self._duplicates[key] = running
             return running
@@ -808,7 +863,8 @@ class Owed:
                                 "note": "The same request as an earlier call; its result "
                                         "is that call's."})
             del self._duplicates[dup]
-        rec = self._owe(Record.make(key, request, outcome, failure=failure),
+        rec = self._owe(Record.make(key, request, outcome, failure=failure,
+                                    question=self._questions.pop(key, "")),
                         f"landed ({failure or 'answer'}); tool result "
                         f"{'rewritten' if rewrote else 'not found'}")
         if not ask or self._closed or self.gate is None:
@@ -835,8 +891,8 @@ class Owed:
         self._records.pop(rec.key, None)
         self._records[rec.key] = rec
         self._evict()
-        logger.info(f"OWED: {rec.key} {how} -- {len(rec.items)} item(s), terms "
-                    f"{[sorted(t) for _, t in rec.items]}")
+        logger.info(f"OWED: {rec.key} {how} -- asked {rec.asked[:60]!r}, terms "
+                    f"{sorted(rec.terms)}")
         return rec
 
     def _evict(self) -> None:
@@ -894,6 +950,72 @@ class Owed:
 
     # ---- Settle -------------------------------------------------------------------
 
+    def reply_text(self, reply: Optional[Reply], text: str) -> None:
+        """`reply`'s stream ended with `text` (the ledger, at its LLMFullResponseEndFrame):
+        the gist judge is asked NOW, for each record its note carried that it is about,
+        on what the caller will have heard of it with this reply -- so its verdict is in
+        by the time the reply has played (p50 0.56 s against seconds of audio), and the
+        next render does not wait for it. The same verdict gates the cut judge if the
+        reply is cut (settle)."""
+        if reply is None or reply.settled or self.gist is None or not has_speech(text):
+            return
+        for key in reply.noted:
+            rec = self._records.get(key)
+            if (rec is not None and rec.state == OWED and not rec.failure
+                    and key not in reply.gist and (key in reply.keys or rec.about(text))):
+                reply.gist[key] = self._gist_task(rec, rec.heard_with(text))
+
+    def _gist_task(self, rec: Record, heard: str):
+        try:
+            return asyncio.get_running_loop().create_task(self._ask_gist(rec, heard))
+        except RuntimeError:
+            return None
+
+    async def _ask_gist(self, rec: Record, heard: str) -> Optional[bool]:
+        """One gist verdict; None on an error (never raises: it may go unawaited)."""
+        started = time.monotonic()
+        try:
+            verdict = await self.gist(rec.asked, rec.outcome, heard)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 -- a judge failure is no verdict
+            verdict, why = None, f" ({type(e).__name__})"
+        else:
+            why = ""
+        logger.info(f"OWED: gist {_said(verdict)}{why} in {time.monotonic() - started:.2f}s "
+                    f"on {rec.asked[:50]!r}: heard {heard[-60:]!r}")
+        return verdict
+
+    async def _gist(self, rec: Record, reply: Reply, heard: str) -> Optional[bool]:
+        """The gist verdict on `heard` -- asked at the stream's end if it was, else now --
+        bounded by SETTLE_WAIT_S from here; None past it."""
+        task = reply.gist.get(rec.key) or self._gist_task(rec, heard)
+        if task is None:
+            return None
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), SETTLE_WAIT_S)
+        except asyncio.TimeoutError:
+            logger.info(f"OWED: gist for {rec.key} not in after {SETTLE_WAIT_S:g}s -- no verdict")
+            return None
+
+    async def _played(self, rec: Record, reply: Reply, heard: str) -> tuple:
+        """A reply about `rec` played to its end: (close?, why). No verdict closes (the
+        user's choice, 2026-10-23: a repeat costs more than a detail, and the result stays
+        in the context; Owed.tla ow_gist_noVerdict)."""
+        verdict = await self._gist(rec, reply, heard)
+        return verdict is not False, f"gist {_said(verdict)}"
+
+    async def _cut(self, rec: Record, reply: Reply, heard_all: str, whole_all: str,
+                   rest: str) -> tuple:
+        """A reply about `rec` cut while it played: (close?, why). The gist judge on its
+        whole text -- would it have given them the answer? -- and the cut judge on the rest
+        they did not hear, both on what was heard of the record so far; no verdict errs
+        owed. A failure needs no gate: it is one statement, and the reply was about it."""
+        gate = asyncio.sleep(0, result=True) if rec.failure else self._gist(rec, reply, whole_all)
+        passed, verdict = await asyncio.gather(gate, self._judge(rec.asked, heard_all, rest))
+        return (verdict is True and passed is True,
+                f"gist {_said(passed)}, cut judge {_said(verdict)}")
+
     def settle(self, reply: Optional[Reply], heard: Optional[str], *, cut: bool,
                audio: bool, text: Optional[str] = None, rest: Optional[str] = None) -> None:
         """A reply ended (the settle feed: TranscriptLedger, at the interruption that cut
@@ -902,21 +1024,24 @@ class Owed:
         it, when its stream ended (None when cut before that); `rest`: on a cut, the
         text after the heard prefix (the ledger's _unheard; None if unaligned).
 
-        Coverage is lexical, a cut is judged (formal/Owed.tla Closes, Verdicts): a reply
-        played to its end closes every record its request carried the note for that its
-        text covers (closes_on). A cut one closes such a record only if its whole text
-        covers it AND the judge, shown the heard prefix and the unheard rest, answers
-        HEARD; the sync answers it settles (_resolve) make their record unless it does.
-        The reply stays pending -- the readers wait (settled()) -- until the verdicts
-        are in; past SETTLE_WAIT_S they go on, and the verdicts apply on the live book
-        when they come (OwedAnswers.tla LATE). No verdict -- no judge, no heard prefix,
-        no whole text, a timeout, an error -- errs owed."""
+        The gist (formal/Owed.tla, CLOSE = "gist"): for each record its request carried
+        the note for, a reply ABOUT it (Record.about; a run of ours is about its own) --
+          - played to its end: what they heard of it grows by the reply; the second such
+            reply closes it (the backstop: RetellOnce), else the gist judge's HEARD or no
+            verdict does (_played). A failure: closed on being heard to its end.
+          - cut, with a heard prefix and its whole text: closed only on both judges' HEARD
+            (_cut); the prefix joins what was heard of it.
+        Unrelated replies settle nothing. The verdicts land on the LIVE book (_apply):
+        the reply stays pending -- the readers wait (settled()) -- until they are in;
+        past SETTLE_WAIT_S they go on (OwedAnswers.tla LATE)."""
         if reply is None or reply.settled:
             return
         reply.settled = True
         run = reply.kind in RUNS
-        judgeable = cut and audio and bool(heard) and bool(text) and rest is not None
-        missed, asks = [], []
+        whole = not cut and audio and bool(heard and heard.strip())
+        judgeable = (cut and audio and bool(heard and heard.strip()) and bool(text)
+                     and rest is not None)
+        missed, asks, defaults = [], {}, {}
         # A reply rendered with a fresh answer is evidence for the record made of it
         # since (a late settle's: OwedAnswers.tla lateNoEvidence).
         made = {r for t in reply.fresh if (r := self._answers[t].record) is not None}
@@ -924,14 +1049,25 @@ class Owed:
             rec = self._records.get(key)
             if rec is None or rec.state != OWED:
                 continue
-            if not cut and rec.closes_on(heard, run=run):
-                self._close(rec, reply, cut, heard)
-                continue
-            if judgeable and rec.closes_on(text, run=run):
-                asks.append(rec)
+            mine = key in reply.keys            # a run of ours for this record
+            if whole and (mine or rec.about(heard)):
+                if rec.failure:
+                    self._close(rec, reply, cut, heard, "a failure heard to its end")
+                    continue
+                heard_all = rec.heard_with(heard)
+                rec.heard.append(heard.strip())
+                rec.told += 1
+                if rec.told >= 2:
+                    self._close(rec, reply, cut, heard, "the backstop: told twice")
+                    continue
+                asks[key], defaults[key] = self._played(rec, reply, heard_all), True
+            elif judgeable and (mine or rec.about(text)):
+                heard_all, whole_all = rec.heard_with(heard), rec.heard_with(text)
+                rec.heard.append(heard.strip())
+                asks[key], defaults[key] = self._cut(rec, reply, heard_all, whole_all, rest), False
             # Quoted only when about the record: the #203 session would otherwise have
             # quoted a clarifying question as the answer (test_owed_corpus.py).
-            if cut and heard and heard.strip() and (run or rec.about(heard)):
+            if cut and heard and heard.strip() and (mine or rec.about(heard)):
                 rec.heard_quote = heard.strip()
             if run or (cut and audio):
                 # A run that ended without closing (no audio, partial) and an audible cut
@@ -939,29 +1075,35 @@ class Owed:
                 missed.append(rec)
             logger.info(f"OWED: {key} still owed after the {reply.kind} reply "
                         f"({'cut' if cut else 'played through' if audio else 'no audio'}"
-                        f"{', for the judge' if rec in asks else ''}; heard {(heard or '')[:60]!r})")
+                        f"{', for the judges' if key in asks else ''}; "
+                        f"heard {(heard or '')[:60]!r})")
         self._arm(missed)
         ids, request = self._resolve(reply, heard, cut=cut, audio=audio, text=text)
-        questions = {r.request for r in asks} | ({request} if ids and cut and request else set())
-        if not (judgeable and questions and self.judge is not None):
-            self._apply(reply, asks, ids, request, heard, text, cut, {})
+        question = (self._answers[ids[-1]].question or request) if ids else ""
+        sync = judgeable and bool(ids) and bool(request) and self.judge is not None
+        if not asks and not sync:
+            self._apply(reply, {}, ids, request, heard, text, cut, None)
             return
-        args = (reply, asks, ids, request, heard, text, True)
-        task = asyncio.get_running_loop().create_task(self._judged(args, questions, rest))
+        args = (reply, ids, request, heard, text, cut, defaults)
+        task = asyncio.get_running_loop().create_task(
+            self._judged(args, asks, self._judge(question, heard, rest) if sync else None))
         self._judging[task] = args
         task.add_done_callback(lambda t: self._judging.pop(t, None))
 
-    async def _judged(self, args, questions, rest) -> None:
-        heard = args[4]
-        qs = sorted(questions)
-        verdicts = dict(zip(qs, await asyncio.gather(*(self._judge(q, heard, rest)
-                                                       for q in qs))))
-        self._apply(*args, verdicts)
+    async def _judged(self, args, asks: dict, sync) -> None:
+        keys = list(asks)
+        got = await asyncio.gather(*asks.values(), *([sync] if sync is not None else []))
+        decisions = dict(zip(keys, got[:len(keys)]))
+        reply, ids, request, heard, text, cut, _ = args
+        self._apply(reply, decisions, ids, request, heard, text, cut,
+                    got[-1] if sync is not None else None)
 
     async def _judge(self, question: str, heard: str, rest: str) -> Optional[bool]:
-        """One verdict, bounded by SETTLE_WAIT_S; None (errs owed) past it or on error."""
+        """One cut verdict, bounded by SETTLE_WAIT_S; None (errs owed) past it or on error."""
         if not rest.strip():
             return True                       # nothing was left unheard
+        if self.judge is None:
+            return None
         started = time.monotonic()
         try:
             verdict = await asyncio.wait_for(self.judge(question, heard, rest), SETTLE_WAIT_S)
@@ -971,22 +1113,28 @@ class Owed:
             verdict, why = None, f" ({type(e).__name__})"
         else:
             why = ""
-        logger.info(f"OWED: judge {'HEARD' if verdict else 'OWED' if verdict is False else 'none'}"
-                    f"{why} in {time.monotonic() - started:.2f}s on {question[:50]!r}: heard "
-                    f"{heard[-50:]!r}, rest {rest[:50]!r}")
+        logger.info(f"OWED: judge {_said(verdict)}{why} in {time.monotonic() - started:.2f}s "
+                    f"on {question[:50]!r}: heard {heard[-50:]!r}, rest {rest[:50]!r}")
         return verdict
 
-    def _apply(self, reply, asks, ids, request, heard, text, cut, verdicts) -> None:
-        """The verdicts on the LIVE book: a record still owed closes on HEARD (a late
-        verdict never closes what another reply already did, nor reopens); the sync
-        answers still open are told on HEARD, else made the record (_cut_answer)."""
-        for rec in asks:
-            if verdicts.get(rec.request) and rec.state == OWED:
-                self._close(rec, reply, cut, heard)
+    def _apply(self, reply, decisions: dict, ids, request, heard, text, cut,
+               sync: Optional[bool]) -> None:
+        """The verdicts on the LIVE book: a record still owed closes on its decision (a
+        late verdict never closes what another reply already did, nor reopens); the sync
+        answers still open are told on the cut judge's HEARD, else made the record
+        (_cut_answer)."""
+        for key, (close, why) in decisions.items():
+            rec = self._records.get(key)
+            if rec is not None and rec.state == OWED:
+                if close:
+                    self._close(rec, reply, cut, heard, why)
+                else:
+                    logger.info(f"OWED: {key} stays owed -- {why}")
         if ids:
             ids = [t for t in ids if self._answers[t].replies]
-            rec = (self._cut_answer(tuple(ids), request, text, heard)
-                   if ids and cut and not verdicts.get(request) else None)
+            question = self._answers[ids[-1]].question if ids else ""
+            rec = (self._cut_answer(tuple(ids), request, text, heard, question)
+                   if ids and cut and not sync else None)
             if rec is not None and reply.turn == self._turn:
                 # No caller turn has rendered since the cut (a late settle opens none).
                 self._relook = rec.key
@@ -995,11 +1143,13 @@ class Owed:
                 self._answers[t].record = rec.key if rec is not None else None
         self._unblock([reply])
 
-    def _close(self, rec: Record, reply: Reply, cut: bool, heard: Optional[str]) -> None:
+    def _close(self, rec: Record, reply: Reply, cut: bool, heard: Optional[str],
+               why: str = "") -> None:
         rec.state = CLOSED
         rec.missed = False
         logger.info(f"OWED: {rec.key} closed -- heard by the {reply.kind} reply "
-                    f"({'cut, judged' if cut else 'played through'}): {(heard or '')[:80]!r}")
+                    f"({'cut' if cut else 'played through'}{'; ' + why if why else ''}): "
+                    f"{(heard or '')[:80]!r}")
 
     def _resolve(self, reply: Reply, heard: Optional[str], *, cut: bool, audio: bool,
                  text: Optional[str]) -> tuple:
@@ -1027,7 +1177,7 @@ class Owed:
         return tuple(ids), request
 
     def _cut_answer(self, ids: tuple, request: str, text: str,
-                    heard: Optional[str]) -> Optional[Record]:
+                    heard: Optional[str], question: str = "") -> Optional[Record]:
         """A telling of the sync answers `ids`, cut before it was heard (#204;
         formal/OwedAnswers.tla End, LateSettle): its whole text is owed, to the caller's words that
         asked for it -- not the tool's query (the replay: 19/20 wait at "hold on" with the
@@ -1039,8 +1189,11 @@ class Owed:
         outcome = clean_outcome(text)
         if not request or not has_speech(outcome):
             return None
-        rec = Record.make(ids[0], request, outcome, ids=ids, heard_quote=(heard or "").strip())
-        self._owe(rec, f"a sync answer to {request[:60]!r} cut at {(heard or '')[:60]!r}")
+        prefix = (heard or "").strip()
+        asked = question or request           # what they asked, the round's words with it
+        rec = Record.make(ids[0], asked, outcome, ids=ids, question=asked,
+                          heard_quote=prefix, heard=[prefix] if prefix else [])
+        self._owe(rec, f"a sync answer to {asked[-60:]!r} cut at {(heard or '')[:60]!r}")
         self._arm([rec])
         return rec
 
@@ -1057,12 +1210,16 @@ class Owed:
         lull, self._lull = self._lull, None
         if lull is not None and not lull.done():
             lull.cancel()
-        # A verdict still to come applies as none (errs owed) NOW, before the room's sleep
-        # takes its snapshot: the cut answer is owed, and its reply settled.
+        # A verdict still to come applies as none NOW, before the room's sleep takes its
+        # snapshot: a reply played through closes its record, a cut errs owed (the cut
+        # sync answer is owed), and its reply is settled.
         for task, args in list(self._judging.items()):
             task.cancel()
             self._judging.pop(task, None)
-            self._apply(*args, {})
+            reply, ids, request, heard, text, cut, defaults = args
+            self._apply(reply, {k: (d, "no verdict at the session's end")
+                                for k, d in defaults.items()},
+                        ids, request, heard, text, cut, None)
 
     def snapshot(self) -> list:
         """The owed records, for a conversation kept across the room's sleep."""
@@ -1073,13 +1230,20 @@ class Owed:
         for d in saved or ():
             rec = self._owe(Record.make(d["key"], d["request"], d["outcome"],
                                         failure=d.get("failure"), ids=d.get("ids") or (),
+                                        question=d.get("question", ""),
                                         heard_quote=d.get("heard_quote", ""),
+                                        heard=list(d.get("heard") or ()),
+                                        told=d.get("told", 0),
                                         reoffers=d.get("reoffers", 0)),
                             "restored with the conversation, unheard")
             for t in rec.ids:
                 self._answers[t] = _Answer(rec.request, record=rec.key)
         for t in tool_call_ids(self.context.get_messages()):
             self._answers.setdefault(t, _Answer(""))
+
+
+def _said(verdict: Optional[bool]) -> str:
+    return "HEARD" if verdict else "OWED" if verdict is False else "none"
 
 
 def _with_stay_silent(tools):

@@ -144,10 +144,11 @@ def _notes(params):
             and isinstance(m.get("content"), str) and m["content"].startswith(SYSTEM_NOTICE_TAG)]
 
 
-async def test_the_cut_judge_asks_the_sessions_model_and_reads_one_word():
-    """BoundedOpenAILLMService.judge_cut (owed.Owed._judge's default): the session's own
-    client, model and routing; the measured prompt (owed.cut_judge_messages); a small
-    completion budget; HEARD / OWED / anything else (no verdict)."""
+async def test_the_judges_ask_the_sessions_model_and_read_one_word():
+    """BoundedOpenAILLMService.judge_cut and judge_gist (owed.Owed's defaults): the
+    session's own client, model and routing; the measured prompts
+    (owed.cut_judge_messages, owed.gist_judge_messages); a small completion budget;
+    HEARD / OWED / anything else (no verdict)."""
     calls = []
 
     class Completions:
@@ -165,12 +166,18 @@ async def test_the_cut_judge_asks_the_sessions_model_and_reads_one_word():
         llm._client = SimpleNamespace(chat=SimpleNamespace(completions=Completions(content)))
         verdicts.append(await llm.judge_cut("What's the price?", "It's two hundred",
                                             "forty-nine dollars."))
-    assert verdicts == [True, False, None, None], verdicts
-    params = calls[0]
-    assert params["messages"] == owed.cut_judge_messages("What's the price?", "It's two hundred",
-                                                         "forty-nine dollars.")
-    assert params["max_tokens"] == services._CUT_JUDGE_MAX_TOKENS and "stream" not in params
-    assert params["model"] == services.setting("LLM_MODEL")
+        verdicts.append(await llm.judge_gist("What year was the lighthouse first lit?",
+                                             "The lighthouse was first lit in 1871.",
+                                             "1871 is the year the lighthouse was first lit."))
+    assert verdicts == [True, True, False, False, None, None, None, None], verdicts
+    assert calls[0]["messages"] == owed.cut_judge_messages(
+        "What's the price?", "It's two hundred", "forty-nine dollars.")
+    assert calls[1]["messages"] == owed.gist_judge_messages(
+        "What year was the lighthouse first lit?", "The lighthouse was first lit in 1871.",
+        "1871 is the year the lighthouse was first lit.")
+    for params in calls[:2]:
+        assert params["max_tokens"] == services._JUDGE_MAX_TOKENS and "stream" not in params
+        assert params["model"] == services.setting("LLM_MODEL")
 
 
 async def test_whether_a_reply_tells_a_sync_answer_is_read_from_its_context():
@@ -270,6 +277,8 @@ async def test_a_speculation_renders_in_its_own_task_and_the_commit_adopts_its_n
     assert reply.noted == ("call-hn",), f"the adopted note's keys were lost: {reply.noted}"
     llm.owed.settle(reply, "Tesla Roadster is the top story on Hacker News right now.",
                     cut=False, audio=True)
+    while llm.owed._judging:                                        # the gist verdict
+        await asyncio.gather(*list(llm.owed._judging), return_exceptions=True)
     assert llm.owed.record("call-hn").state == owed.CLOSED
     await adopted.close()
 

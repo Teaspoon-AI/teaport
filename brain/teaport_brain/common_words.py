@@ -1,12 +1,13 @@
 #
 # common_words.py — the words that say nothing about an answer (owed.py, #203).
 #
-# owed.py closes an owed record only when the caller heard at least min(2, |terms|) of
-# each item's TERMS, and an item's terms are its spoken tokens outside this list (and
-# outside the request's own tokens). So this list is what keeps a reply that tells
-# nothing from closing a record: "Sure, take your time." meets an outcome that has
-# "time" in it on "time" alone, and the 2-term minimum alone does not stop a filler
-# made of two common words (formal/Owed.tla, ow_singleWord).
+# owed.py asks its judges about a reply only when it is ABOUT an owed record
+# (owed.Record.about: a word shared with its request, the caller's words or its result's
+# TERMS, all outside this list), and only such a reply counts toward the backstop that
+# closes a record told twice (#210). So this list is what keeps a reply that tells
+# nothing from spending a judge call or the backstop: "Sure, take your time." meets an
+# outcome that has "time" in it on "time" alone. The sync answers read the same terms
+# for caller words "of their own" (owed.Owed.noted).
 #
 # What belongs here: function words, pronouns, auxiliaries and their forms, the
 # conversational fillers a deferral or a waiting line is made of, generic time and
@@ -17,8 +18,9 @@
 # only a dedicated run could close it (redteam-gist #5).
 #
 # A miss here errs in one direction only: a common word left out becomes a term, and a
-# filler sharing TWO of them with an item could close it. A word added in error makes an
-# item harder to close -- owed, which costs a mention, never a silence (DESIGN §3).
+# filler sharing it with a record is judged (the judge says OWED) and could spend the
+# backstop. A word added in error can leave a telling about nothing -- owed, which costs
+# a mention, never a silence (DESIGN §3).
 # Inflections are listed where the lookup's suffix fold (owed._is_common) would not reach
 # them.
 #
@@ -35,12 +37,13 @@ away back bad be became because become been before began begin behind being beli
 below best better between big bit both bottom brief briefly bring brought but buy by
 call called came can cannot cant case certain certainly change check checked
 checking clear close come comes coming comment comments complete completed could
-couldn count course current currently day days dear did didn different do does doesn
+couldn count course current currently day days dear deeper detail details did didn different
+dig do does doesn
 doing don done down during each earlier early easy either else end enough entire
 especially etc even evening ever every everybody everyone everything exactly example
 except far feel felt few find finding finds fine finished first for found from front
 full further get gets getting give given gives giving glad go goes going gone good
-got gotten great guess had hadn half hang happen happened happens hard has hasn have
+got gotten great guess guy guys had hadn half hang happen happened happens hard has hasn have
 haven having he hear heard hearing hello help her here hers herself hey hi high him
 himself his hm hmm hold honestly hope how however huh i if im important in indeed
 info information instead interesting into is isn it its itself just keep kept kind
@@ -53,8 +56,10 @@ nobody none nope nor nothing now nowhere of off often oh ok okay old on once one
 ones only onto or other others otherwise our ours ourselves out over overall own page
 part particular past people per perhaps place please plus point points possible post
 posted posts pretty probably problem put quick quickly quite rank ranked rather read ready real
-really reason recent recently regarding remember report reported reports request
-result results right rush said same saw say saying says score scored scores second seconds see seem
+really reason recent recently recheck rechecked regarding remember report
+reported reports request
+result results right rush said same saw say saying says score scored scores search searched
+searches searching second seconds see seem
 seemed seems seen sent set several shall she short should shouldn show showed shown
 shows side similar simply since site so some somebody someone something sometime
 sometimes somewhat somewhere soon sorry sort source sources specific start started
