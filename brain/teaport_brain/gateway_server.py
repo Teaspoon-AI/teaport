@@ -286,7 +286,9 @@ async def run_relay_bot(websocket: WebSocket):
     room = "local" in features
     client = (qp.get("client") or "").strip()[:128] or None
     keepalive = _qp_float(qp.get("keepalive"), ROOM_KEEPALIVE_SECS)
-    serializer = TeaportGatewaySerializer()
+    # The plugin (and only it) announces run control; only its notes may be OpenClaw's.
+    run_controlled = qp.get("run_control") == run_control.PROTOCOL
+    serializer = TeaportGatewaySerializer(host_notes=run_controlled)
     session_holder: dict = {}
 
     def asleep() -> bool:
@@ -387,7 +389,7 @@ async def run_relay_bot(websocket: WebSocket):
         context_notes=True,
         # The plugin answers whether OpenClaw's spoken run control took a final said
         # while a consult runs (run_control.py, #230): only it, and only on Talk.
-        run_control=qp.get("run_control") == run_control.PROTOCOL,
+        run_control=run_controlled,
         # What the client can do itself (the local audio bridge: volume, restart);
         # the client tools that need it are offered only then (tools.py, THE TOOL CONTRACT).
         client_features=features,

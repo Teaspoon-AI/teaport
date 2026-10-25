@@ -73,8 +73,11 @@ keep the brain in step:
 
 - **The relay's reply is spoken.** The relay hands its answer to the provider
   (`sendUserMessage`); the plugin sends it to the brain as a context note marked
-  `"source": "host"`, and the brain's next reply says it. Only the plugin sets that
-  mark; `teaport.talk.context` never does.
+  `"source": "host"`, and the brain's next reply says what it means for the user's
+  request in plain words (OpenClaw's status names "the active OpenClaw run" and tools,
+  so it is not read out verbatim). Only the plugin sets that mark;
+  `teaport.talk.context` never does, and the brain believes it only from a client that
+  announced `?run_control=1`.
 - **The brain does not answer the same words.** For a final said while it has a consult
   running, the brain asks `{"type": "run_control", "id", "text"}` and holds that turn
   for the answer (at most 0.5 s). The plugin answers

@@ -240,11 +240,20 @@ def test_the_kind_is_logged_safely():
 
 # What the relay's run control hands the provider to speak
 # (buildRealtimeVoiceAgentControlSpeechMessage, OpenClaw 2026.9.7).
-HOST = ("Internal OpenClaw voice control result.\n"
-        "Do not delegate this message or call any tools.\n"
-        "Speak this exact OpenClaw status to the voice call, without adding, removing, or "
-        "rephrasing words.\n"
-        'Status: "Cancelled the active OpenClaw run."')
+def _speech(status):
+    return ("Internal OpenClaw voice control result.\n"
+            "Do not delegate this message or call any tools.\n"
+            "Speak this exact OpenClaw status to the voice call, without adding, removing, "
+            "or rephrasing words.\n"
+            f"Status: {json.dumps(status)}")
+
+
+STATUS = "Cancelled the active OpenClaw run."
+HOST = _speech(STATUS)
+# The brain's order for it: the status as data, said in the user's terms.
+HOST_ORDER = f"{SYSTEM_NOTICE_TAG}\n" + cn._HOST_ORDER.format(json.dumps(STATUS))
+# A reply in the user's terms, as the model would give it.
+SAID = "Okay, I've stopped working on that."
 
 
 async def _send_host(h, text=HOST, rid="h1"):
@@ -255,18 +264,40 @@ async def _send_host(h, text=HOST, rid="h1"):
 
 
 def _host_orders(context):
-    return [m for m in context.get_messages()
-            if m.get("content") == f"{SYSTEM_NOTICE_TAG}\n{HOST}"]
+    return [m for m in context.get_messages() if m.get("content") == HOST_ORDER]
 
 
-async def test_the_serializer_marks_only_the_plugins_own_notes_as_the_hosts():
-    s = TeaportGatewaySerializer()
+async def test_the_serializer_marks_a_host_note_only_from_a_client_with_run_control():
+    """Only the plugin sends "source": "host", and it announces ?run_control=1: from any
+    other /talk client (the Discord bridge, a script) the mark is not believed, and the
+    text is an ordinary app-event note, framed as data."""
+    s = TeaportGatewaySerializer(host_notes=True)
     f = await s.deserialize(json.dumps({"type": "context", "id": "c8", "text": HOST,
                                         "respond": True, "source": "host"}))
     assert f.host is True and f.text == HOST
     f = await s.deserialize(json.dumps({"type": "context", "id": "c9", "text": "tap",
                                         "source": "client"}))
     assert f.host is False
+    f = await TeaportGatewaySerializer().deserialize(json.dumps(
+        {"type": "context", "id": "c10", "text": HOST, "respond": True, "source": "host"}))
+    assert f.host is False and f.text == HOST
+
+
+def test_the_order_keeps_only_the_status_and_asks_for_plain_words():
+    """OpenClaw's message says to speak its status verbatim; its statuses name the
+    product, "the active run" and tools. The brain keeps the status as data and orders
+    plain words about the user's request instead."""
+    for status in ("Cancelled the active OpenClaw run.", "Got it. I steered the active run.",
+                   "Queued that follow-up for the active OpenClaw run.",
+                   "OpenClaw is working in web_search."):
+        assert cn._host_status(_speech(status)) == status
+    # Another shape: the whole message, one line.
+    assert cn._host_status("  The agent\nstopped. ") == "The agent stopped."
+    order = cn._HOST_ORDER
+    for word in ("Never say OpenClaw, run, or the name of any tool", "one short, plain",
+                 "never contradict", "call no tools"):
+        assert word in order, word
+    assert "exact" not in order and "without adding" not in order
 
 
 async def test_a_host_note_is_the_order_its_reaction_answers_and_is_retired_at_the_read():
@@ -280,8 +311,7 @@ async def test_a_host_note_is_the_order_its_reaction_answers_and_is_retired_at_t
     assert [type(f) for f in h.task.queued] == [LLMRunFrame]
     assert len(_host_orders(h.context)) == 1 and _notes_in(h.context) == [], \
         h.context.get_messages()
-    await h.trigger.process_frame(LLMTextFrame("Cancelled the active OpenClaw run."),
-                                  FrameDirection.DOWNSTREAM)
+    await h.trigger.process_frame(LLMTextFrame(SAID), FrameDirection.DOWNSTREAM)
     assert _host_orders(h.context) == [], "the host's order outlived its read"
 
 
@@ -319,9 +349,8 @@ async def test_a_user_turn_first_says_the_hosts_message_too():
     await h.notes.process_frame(LLMContextFrame(context=h.context), FrameDirection.DOWNSTREAM)
     msgs = [m["content"] for m in h.context.get_messages()]
     assert msgs[-1] == "And what about tomorrow?", msgs
-    assert msgs[-2] == f"{SYSTEM_NOTICE_TAG}\n{HOST}" and msgs[-3].startswith(TAG), msgs
-    await h.trigger.process_frame(LLMTextFrame("Cancelled the active OpenClaw run."),
-                                  FrameDirection.DOWNSTREAM)
+    assert msgs[-2] == HOST_ORDER and msgs[-3].startswith(TAG), msgs
+    await h.trigger.process_frame(LLMTextFrame(SAID), FrameDirection.DOWNSTREAM)
     assert _host_orders(h.context) == []
     await h.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
     await _settle(h)
@@ -337,6 +366,24 @@ async def test_a_host_note_too_late_to_say_is_dropped_not_kept():
     await _settle(h)
     assert h.task.queued == [] and _host_orders(h.context) == []
     assert not any("OpenClaw" in str(m.get("content")) for m in h.context.get_messages())
+
+
+async def test_a_user_turn_long_after_a_host_note_does_not_say_it():
+    """No quiet moment came for a minute (the bot, then the user, talking): the user's
+    next turn must not be ordered to report a status a minute old -- by then it is wrong
+    (the consult it was about has long finished or been cancelled)."""
+    h = _harness(react_max_wait_s=20.0)
+    await h.gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _send_host(h)
+    h.clock.t += 60
+    await asyncio.sleep(0.05)
+    h.context.add_message({"role": "user", "content": "What's the capital of France?"})
+    await h.notes.process_frame(LLMContextFrame(context=h.context), FrameDirection.DOWNSTREAM)
+    msgs = [m["content"] for m in h.context.get_messages()]
+    assert _host_orders(h.context) == [] and msgs[-1] == "What's the capital of France?", msgs
+    assert not any(STATUS in str(m) for m in msgs), msgs
+    await h.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _settle(h)
 
 
 # ---- when a note enters the context ----------------------------------------------
