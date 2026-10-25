@@ -32,7 +32,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.openai.llm import OpenAILLMService
 
-from teaport_brain import llm_http2
+from teaport_brain import barge_pause, llm_http2
 from teaport_brain import owed as owed_mod
 from teaport_brain.followup_gate import RunFrame, RunSilentFrame
 from teaport_brain.llm_dns import prime, use_stale_dns
@@ -705,7 +705,14 @@ class BoundedOpenAILLMService(OpenAILLMService):
         of a record gave them the answer to their question. As judge_cut."""
         return await self._judge(owed_mod.gist_judge_messages(question, outcome, heard))
 
-    async def _judge(self, messages: list):
+    async def judge_barge(self, asked: str, reply: str, heard: str, said: str):
+        """The barge-in judge barge_pause.BargeInJudgeGate asks (#224): whether the
+        caller's words over a paused reply let it carry on. barge_pause.CONTINUE, STOP,
+        ANSWER, or None for anything else. The caller bounds the time."""
+        return await self._judge(barge_pause.judge_messages(asked, reply, heard, said),
+                                 barge_pause.judge_verdict)
+
+    async def _judge(self, messages: list, parse=owed_mod.judge_verdict):
         """A judge's one-word verdict, on this session's own client -- the same model,
         provider routing, key and HTTP/2 connection as the turn's requests."""
         extra = _llm_extra()
@@ -717,7 +724,7 @@ class BoundedOpenAILLMService(OpenAILLMService):
             extra_body=extra.get("extra_body"))
         choices = getattr(response, "choices", None) or ()
         content = choices[0].message.content if choices else ""
-        return owed_mod.judge_verdict(content)
+        return parse(content)
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):

@@ -885,6 +885,49 @@ class TranscriptLedger(BaseObserver):
             if turn["pushed"] > 0:
                 turn["pts_shift"] += shift
 
+    def _pts_heard(self, turn: dict, t: float):
+        """The words of `turn` played out by `t`, by their scheduled pts, and the cut
+        instant they were read at (ns on the schedule's clock)."""
+        # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
+        # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
+        # A playout pause stops the clock the words were scheduled on: the cut is
+        # read where playout stood (the pause's start, if one is in force), on the
+        # schedule's own time (less the pausing it has had since).
+        cut_ns = (self._play_t(t) - turn["pts_shift"] - _PTS_LEAD_SECS) * 1e9
+        # Rejoin the matched words with the spacing the frames declare: a
+        # frame set that includes its inter-frame spaces (a CJK voice's
+        # character tokens) is concatenated; one that does not (the engine's
+        # per-word frames, which carry no spaces at all -- "One,","two,") is
+        # space-joined, or the count read 1 however many words matched.
+        sep = "" if turn["ifs"] else " "
+        return sep.join(
+            (txt or "").strip()
+            for txt, p in turn["spoken"]
+            if p is not None and p <= cut_ns and (txt or "").strip()), cut_ns
+
+    def paused_reply(self) -> Optional[tuple]:
+        """While playout is paused (barge_pause.py): the reply it paused, as (its text so
+        far, what of it the caller has heard), for the barge-in judge. None when nothing
+        is paused or the paused audio is no reply's."""
+        if self._paused_at is None:
+            return None
+        for turn in self._turns:
+            entry = turn["entry"]
+            if turn["pushed"] <= 0:
+                continue
+            if entry is None:
+                return None
+            text = entry["text"] if entry["ended"] else "".join(entry["parts"]).strip()
+            if not text:
+                return None
+            if any(p is not None for _, p in turn["spoken"]):
+                heard, _ = self._pts_heard(turn, self._paused_at)
+            else:
+                full = max(turn["pushed"], len(text.split()) * _SECONDS_PER_WORD)
+                heard = _prefix(text, min(1.0, turn["played"] / full))
+            return text, heard
+        return None
+
     def _close_ready(self, t: float):
         """Chart every open turn that is over -- all of its audio played out and
         its synthesis known complete -- oldest first, stopping at the first that
@@ -994,22 +1037,7 @@ class TranscriptLedger(BaseObserver):
         # the pts prefix alone, or nothing at all without per-word pts (_reply_end).
         exact = intended if not interrupted else None
         if any(p is not None for _, p in spoken):
-            # pts are shifted EARLY by the caption lead (see _PTS_LEAD_SECS): a word
-            # was truly heard only if pts + lead <= cut, i.e. pts <= cut - lead.
-            # A playout pause stops the clock the words were scheduled on: the cut is
-            # read where playout stood (the pause's start, if one is in force), on the
-            # schedule's own time (less the pausing it has had since).
-            cut_ns = (self._play_t(t) - turn["pts_shift"] - _PTS_LEAD_SECS) * 1e9
-            # Rejoin the matched words with the spacing the frames declare: a
-            # frame set that includes its inter-frame spaces (a CJK voice's
-            # character tokens) is concatenated; one that does not (the engine's
-            # per-word frames, which carry no spaces at all -- "One,","two,") is
-            # space-joined, or the count read 1 however many words matched.
-            sep = "" if turn["ifs"] else " "
-            pts_heard = sep.join(
-                (txt or "").strip()
-                for txt, p in spoken
-                if p is not None and p <= cut_ns and (txt or "").strip())
+            pts_heard, cut_ns = self._pts_heard(turn, t)
             # Prefer exact word-timing, but never report LESS than the played-audio
             # fraction implies — guards against a misaligned pts baseline (which
             # would silently drop words the user did hear). Compared by characters,
