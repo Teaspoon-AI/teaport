@@ -1,16 +1,16 @@
 #
-# The lexical premise of owed.py's close rule (#203, DESIGN §3), on real tellings.
+# The ABOUT gate of owed.py's close rule (#210), on real tellings.
 #
-# formal/Owed.tla takes it as given that "every item's terms in the pts-exact heard text"
-# means the caller heard every item: the model can only ask whether the RULE closes on
-# that. This is the premise's check, on (outcome, heard telling, label) triples from the
-# box journal of the #203 session (box .105, 2026-10-16 22:20-22:35; the ledger's lines,
-# heard text as charted): every consult outcome that session landed, against every
-# telling, deferral and waiting line it had. The target is DESIGN §3's: no false close.
-# A false "still owed" costs one mention (0/60 in the replays) and is counted, not failed.
-# Since 2026-10-20 this is COVERAGE: a reply heard to its end closes by it, and a cut one is
-# judged (owed.Owed._judge), the rule only gating the call on the reply's whole text --
-# it is never read on a cut's heard prefix (tests/test_cut_judge_eval.py has the cuts).
+# A reply closes an owed record only if it is about it (owed.Record.about: a non-common
+# word shared with its request, the caller's words or its result's terms): only then is
+# the gist judge asked, and only then does it count toward the backstop. So the gate
+# must pass every telling -- or the record is never closed by it, and the note goes on
+# saying "NOT heard" -- and should not pass chit-chat, which would spend the backstop.
+# Triples (outcome, heard telling, label) from the box journal of the #203 session (box
+# .105, 2026-10-16 22:20-22:35; the ledger's lines, heard text as charted) and the 10-18
+# calls: every consult outcome landed, against every telling, deferral and waiting line.
+# Until #210 these checked the lexical coverage rule; tests/test_gist_judge_eval.py now
+# carries them, relabelled by the gist, as cases for the judge.
 #
 # Labels are what the caller got: "heard" when the line carried every item of the
 # outcome, "owed" when it did not -- a lead-in, a deferral, one story of five, a summary
@@ -146,27 +146,29 @@ CORPUS = (
     + [(o, line, "owed") for o in (TOP, SUMMARY, TOP5, TOP5B) for line in OTHER])
 
 
-def _closes(outcome, line):
+def _about(outcome, line):
     request, raw = outcome[:2]
     failure = outcome[2] if len(outcome) > 2 else None
-    rec = Record.make("k", request, clean_outcome(raw), failure=failure)
-    return rec.closes_on(line, run=False)
+    return Record.make("k", request, clean_outcome(raw), failure=failure).about(line)
 
 
-def test_no_false_close():
-    false = [(o[0][:40], line[:60]) for o, line, label in CORPUS
-             if label == "owed" and _closes(o, line)]
-    assert not false, f"closed on a line that did not carry every item: {false}"
-
-
-def test_the_tellings_close():
+def test_every_telling_is_about_its_record():
     missed = [(o[0][:40], line[:60]) for o, line, label in CORPUS
-              if label == "heard" and not _closes(o, line)]
-    owed = sum(1 for _, _, label in CORPUS if label == "owed")
-    heard = sum(1 for _, _, label in CORPUS if label == "heard")
-    print(f"    corpus: {len(CORPUS)} triples, {owed} owed (0 false closes), {heard} heard "
-          f"({len(missed)} left owed)")
-    assert not missed, f"a full telling left the record owed: {missed}"
+              if label == "heard" and not _about(o, line)]
+    print(f"    corpus: {len(CORPUS)} triples, "
+          f"{sum(1 for _, _, label in CORPUS if label == 'heard')} tellings")
+    assert not missed, f"a telling the judge would never be asked about: {missed}"
+
+
+def test_chit_chat_is_about_nothing():
+    """Lines that say nothing of any answer never reach the judge nor spend the
+    backstop."""
+    chat = ["Goodbye!", "Hello, great to have you here.", "Glad to hear it!",
+            "Sure thing—what would you like to know or change?", "Got it, pausing.",
+            NO_RUSH, "You're welcome.", "Okay, I'll do that."]
+    about = [(o[0][:40], line) for o in (TOP, SUMMARY, TOP5, TOP5B, WEATHER, TOYS, PHARMACY)
+             for line in chat if _about(o, line)]
+    assert not about, about
 
 
 def test_a_cut_line_about_something_else_is_not_quoted():

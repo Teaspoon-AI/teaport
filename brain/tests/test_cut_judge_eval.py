@@ -8,10 +8,10 @@
 # Every cut of 12 live tellings (the box journal, 2026-10-18/19), after every word, is
 # labelled "heard" once every fact that answers the question has been spoken, else
 # "owed". Each cut is judged through the session's own client (services.make_llm()
-# .judge_cut, the brain's model, routing and key) by majority of TEAPORT_EVAL_TRIALS,
-# beside the lexical rule on the heard prefix it replaced. Measured 2026-10-20
-# (gpt-oss-120b, 10 trials): judge 1/145 false closes, 14/96 false owes; lexical 89/145,
-# 0/96. It reports; it fails only if the judge's false closes reach the lexical rule's.
+# .judge_cut, the brain's model, routing and key) by majority of TEAPORT_EVAL_TRIALS.
+# Measured 2026-10-20 (gpt-oss-120b, 10 trials): judge 1/145 false closes, 14/96 false
+# owes; the lexical rule on the heard prefix it replaced (gone since #210) 89/145, 0/96.
+# It reports; it fails if the judge's false closes reach a tenth of the owed cuts.
 #
 import asyncio
 import collections
@@ -29,7 +29,6 @@ from pinned_pipecat import require_pinned  # noqa: E402
 require_pinned()
 
 from teaport_brain import services  # noqa: E402
-from teaport_brain.owed import Record, clean_outcome  # noqa: E402
 from teaport_brain.transcript_ledger import _unheard  # noqa: E402
 from teaport_brain.settings import setting  # noqa: E402
 
@@ -102,11 +101,6 @@ def cases():
     return out
 
 
-def lexical(question, text, heard):
-    rec = Record.make("k", question, clean_outcome(text))
-    return "heard" if rec.closes_on(heard, run=False) else "owed"
-
-
 async def main():
     llm = services.make_llm()
     sem = asyncio.Semaphore(8)
@@ -131,18 +125,16 @@ async def main():
         judge = "heard" if sum(v is True for v in vs) * 2 > TRIALS else "owed"
         tally[f"n_{label}"] += 1
         tally["unparsed"] += sum(v is None for v in vs)
-        for who, said in (("judge", judge), ("lexical", lexical(question, text, heard))):
-            if said != label:
-                tally[f"{who}_false_{'close' if label == 'owed' else 'owe'}"] += 1
+        if judge != label:
+            tally[f"judge_false_{'close' if label == 'owed' else 'owe'}"] += 1
     lat.sort()
     print(f"model={setting('LLM_MODEL')} trials={TRIALS} cuts={len(all_cases)} "
           f"({tally['n_owed']} owed, {tally['n_heard']} heard)")
-    for who in ("judge", "lexical"):
-        print(f"{who:8}: false closes {tally[who + '_false_close']}/{tally['n_owed']}, "
-              f"false owes {tally[who + '_false_owe']}/{tally['n_heard']}")
+    print(f"judge   : false closes {tally['judge_false_close']}/{tally['n_owed']}, "
+          f"false owes {tally['judge_false_owe']}/{tally['n_heard']}")
     print(f"no verdict: {tally['unparsed']}; latency p50 {lat[len(lat) // 2]:.2f}s "
           f"p90 {lat[int(len(lat) * .9)]:.2f}s max {lat[-1]:.2f}s")
-    assert tally["judge_false_close"] < tally["lexical_false_close"], tally
+    assert tally["judge_false_close"] * 10 < tally["n_owed"], tally
     print("ALL PASS")
 
 

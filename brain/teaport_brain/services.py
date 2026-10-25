@@ -380,9 +380,10 @@ SPECULATION_NOTED: contextvars.ContextVar = contextvars.ContextVar(
     "teaport_speculation_noted", default=None)
 
 
-# The cut judge's completion budget: one word of answer, after the reasoning a reasoning
-# model spends first (gpt-oss-120b: the 241-cut measurement ran at this budget, 0 unparsed).
-_CUT_JUDGE_MAX_TOKENS = 512
+# The judges' completion budget: one word of answer, after the reasoning a reasoning
+# model spends first (gpt-oss-120b: the 241-cut and the gist measurements ran at this
+# budget, 0 unparsed).
+_JUDGE_MAX_TOKENS = 512
 
 
 # Connect timeout. Separate from the read timeout below because they fail differently:
@@ -695,19 +696,28 @@ class BoundedOpenAILLMService(OpenAILLMService):
 
     async def judge_cut(self, question: str, heard: str, rest: str):
         """The cut judge owed.Owed asks (Owed._judge): whether a reply cut while it played
-        left anything the caller still needs, on this session's own client -- the same
-        model, provider routing, key and HTTP/2 connection as the turn's requests. True
-        for HEARD, False for OWED, None for anything else. The caller bounds the time."""
+        left anything the caller still needs. True for HEARD, False for OWED, None for
+        anything else. The caller bounds the time."""
+        return await self._judge(owed_mod.cut_judge_messages(question, heard, rest))
+
+    async def judge_gist(self, question: str, outcome: str, heard: str):
+        """The gist judge owed.Owed asks (Owed._gist, #210): whether what the caller heard
+        of a record gave them the answer to their question. As judge_cut."""
+        return await self._judge(owed_mod.gist_judge_messages(question, outcome, heard))
+
+    async def _judge(self, messages: list):
+        """A judge's one-word verdict, on this session's own client -- the same model,
+        provider routing, key and HTTP/2 connection as the turn's requests."""
         extra = _llm_extra()
         response = await self._client.chat.completions.create(
             model=setting("LLM_MODEL"),
-            messages=owed_mod.cut_judge_messages(question, heard, rest),
-            max_tokens=_CUT_JUDGE_MAX_TOKENS,
+            messages=messages,
+            max_tokens=_JUDGE_MAX_TOKENS,
             **{k: v for k, v in extra.items() if k != "extra_body"},
             extra_body=extra.get("extra_body"))
         choices = getattr(response, "choices", None) or ()
         content = choices[0].message.content if choices else ""
-        return owed_mod.cut_judge_verdict(content)
+        return owed_mod.judge_verdict(content)
 
     def create_client(self, api_key=None, base_url=None, organization=None,
                       project=None, default_headers=None, **kwargs):

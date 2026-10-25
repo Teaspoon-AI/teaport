@@ -39,8 +39,8 @@ from teaport_brain import owed  # noqa: E402
 from teaport_brain import wake_gate  # noqa: E402
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG  # noqa: E402
 from teaport_brain.owed import (  # noqa: E402
-    CLOSED, DROPPED, OWED, Owed, Record, Reply, clean_outcome, item_heard, render,
-    spoken_tokens, split_items, terms_of,
+    CLOSED, DROPPED, OWED, Owed, Record, Reply, clean_outcome, render, spoken_tokens,
+    terms_of,
 )
 from teaport_brain.transcript_ledger import TranscriptLedger, _unheard  # noqa: E402
 
@@ -111,14 +111,14 @@ def test_the_203_answer_cleans_to_what_the_replays_measured():
     assert clean_outcome(HN_RAW) == HN_CLEAN, repr(clean_outcome(HN_RAW))
 
 
-def test_a_numbered_list_becomes_items_and_loses_its_dangling_dashes():
+def test_a_numbered_list_becomes_dash_lines_and_loses_its_dangling_dashes():
     out = clean_outcome(TOP5_RAW)
     assert "—" not in out and "**" not in out, out
     assert "1." not in out.split("\n")[2], "the list numbering would clash with the note's"
-    items = split_items(out)
-    assert items == ["Tesla Roadster", "Ultramarine 1 Flash",
-                     "Llama.cpp on a jailbroken PS5: run any GGUF model natively on the console",
-                     "Claude reveals ECDSA curve origins", "Butlerian Jihad"], items
+    assert [ln for ln in out.split("\n") if ln.startswith("- ")] == [
+        "- Tesla Roadster", "- Ultramarine 1 Flash",
+        "- Llama.cpp on a jailbroken PS5: run any GGUF model natively on the console",
+        "- Claude reveals ECDSA curve origins", "- Butlerian Jihad"], out
 
 
 def test_openclaw_meta_notes_links_and_addresses_go():
@@ -133,12 +133,6 @@ def test_openclaw_meta_notes_links_and_addresses_go():
     assert "the thread" in out and "Tesla Roadster" in out, out
 
 
-def test_a_plain_answer_is_one_item():
-    assert split_items("It's sunny and 75 in Austin tomorrow.") == [
-        "It's sunny and 75 in Austin tomorrow."]
-    assert split_items(HN_CLEAN) == [HN_CLEAN], "one bullet is not a list"
-
-
 # =============================================================== the spoken form, terms
 
 def test_a_number_is_one_token_however_it_is_written():
@@ -150,23 +144,20 @@ def test_a_number_is_one_token_however_it_is_written():
 def test_the_203_terms_are_the_answer_not_the_question():
     """DESIGN §5: terms = {tesla, roadster, shekhar101, 1255, 2253}. "top", "story",
     "hacker", "news", "title" are the request's; "score", "comments", "posted" common."""
-    rec = hn_record()
-    assert rec.items[0][1] == {"tesla", "roadster", "shekhar101", "1255", "2253"}, rec.items
+    assert hn_record().terms == {"tesla", "roadster", "shekhar101", "1255", "2253"}
 
 
 def test_a_contraction_is_no_term_and_a_possessive_is_its_word():
     """The #204 review: split on the apostrophe, "they're" and "you'll" left the terms
-    "re" and "ll", so "Sorry, they're still checking -- you'll hear back" closed "They're
-    open until nine tonight, and you'll find them ...", and any "I'll" closed "Got it,
-    I'll remember that ...". A clitic contraction is one token and common; "Joy's" is
-    "joy"; a name with an apostrophe stays whole."""
+    "re" and "ll", so "Sorry, they're still checking -- you'll hear back" was about "They're
+    open until nine tonight, and you'll find them ...". A clitic contraction is one token
+    and common; "Joy's" is "joy"; a name with an apostrophe stays whole."""
     toks = spoken_tokens("They're open, you'll see; I've, I'd, I'm, don't, Toy Joy's, O'Brien")
     assert toks == ["they're", "open", "you'll", "see", "i've", "i'd", "i'm", "don't", "toy",
                     "joy", "o'brien"], toks
     rec = Record.make("k", "Is the pharmacy on Lamar open tonight?",
                       "They're open until nine tonight, and you'll find them next to the H-E-B.")
-    assert not rec.closes_on("Sorry, they're still checking -- you'll hear back in a moment.",
-                             run=False)
+    assert not rec.about("Sorry, they're still checking -- you'll hear back in a moment.")
     assert terms_of("Got it, I'll remember that Ann is your wife.",
                     "Remember that my wife's name is Ann.") == frozenset()
 
@@ -175,71 +166,64 @@ def test_a_script_without_spaces_is_one_token_per_character():
     assert spoken_tokens("東京タワー") == ["東", "京", "タ", "ワ", "ー"]
 
 
-# =============================================================== the close rule
+# =============================================================== the about gate
 
-def test_the_203_lead_in_covers_nothing_and_the_answer_does():
-    """Owed.tla ow_fraction (#203): the lead-in that restates the question names none of
-    the answer's terms, the answer names two. (Coverage: the text as heard in full. A
-    cut is the judge's, test_a_cut_is_closed_by_the_judge_alone.)"""
+def test_a_telling_and_a_lead_in_are_about_it_and_a_deferral_is_not():
+    """Only a reply ABOUT a record is judged or counts toward the backstop (#210). The
+    #203 lead-in restates the question: about it, and the gist judge says it gave nothing.
+    "Sure, take your time." meets an outcome with "time" in it on a common word only."""
     rec = hn_record()
-    assert not rec.closes_on(LEAD_IN, run=False)
-    assert rec.closes_on("Tesla Roadster is the top", run=False)
-
-
-def test_a_deferral_closes_nothing():
-    """ow_singleWord: "Sure, take your time." against an outcome that has "time" in it."""
-    rec = Record.make("k", "When is my dentist appointment?",
-                      "Your dentist appointment is at 3 pm on Thursday; arrive in good time.")
-    assert "time" not in rec.items[0][1] and "sure" not in rec.items[0][1]
+    assert rec.about(LEAD_IN) and rec.about("Tesla Roadster is the top story.")
+    dentist = Record.make("k", "When is my dentist appointment?",
+                          "Your dentist appointment is at 3 pm on Thursday; arrive in good time.")
     for line in ("Sure, take your time.", "No rush, just let me know when you're ready.",
-                 "Okay, I'll wait."):
-        assert not rec.closes_on(line, run=False), line
+                 "Okay, I'll wait.", None, ""):
+        assert not dentist.about(line), line
 
 
-def test_present_does_not_contain_sent():
-    assert not item_heard(frozenset({"sent", "rome"}), set(spoken_tokens("I'll present it in Rome")))
-    assert item_heard(frozenset({"sent", "rome"}), set(spoken_tokens("It was sent to Rome")))
+def test_a_word_is_a_whole_token_not_a_substring():
+    rec = Record.make("k", "Where is the parcel?", "It is in Rome.")
+    assert not rec.about("Romeo called earlier.") and rec.about("It's in Rome, yes.")
 
 
-def test_one_story_of_five_does_not_close_the_list():
-    """ow_oneItem: every item, not one."""
-    rec = Record.make("k", TOP5_REQ, clean_outcome(TOP5_RAW))
-    assert len(rec.items) == 5
-    assert not rec.closes_on("The top story is Tesla Roadster.", run=False)
-    assert not rec.closes_on("The top story is Tesla Roadster.", run=True), (
-        "an uncut run that named one item closed five (ow_asWritten_closed)")
-    told = ("Tesla Roadster, then Ultramarine One Flash, then Llama dot cpp on a jailbroken "
-            "PS5, then Claude reveals ECDSA curve origins, and Butlerian Jihad.")
-    assert rec.closes_on(told, run=False), [sorted(t) for _, t in rec.items]
+def test_the_callers_words_make_a_reply_about_it_too():
+    """A consult's request is the model's, its question the caller's (2026-10-23 14:06,
+    a one-fact answer): a reply that answers in the caller's words is about it."""
+    rec = Record.make("k", "What year was the Harborview Lighthouse first lit?",
+                      "The Harborview Lighthouse was first lit in 1871.",
+                      question="Sure, go find out what year that was.")
+    assert rec.asked == "Sure, go find out what year that was."
+    assert rec.about("1871 is the year the Harborview Lighthouse was first lit.")
+    assert not rec.about("Got it—just let me know if there's anything else you'd like.")
+    assert Record.make("k", "What year?", "In 1871.").asked == "What year?"
 
 
-def test_an_item_with_one_term_needs_that_term():
-    rec = Record.make("k", "Is the pharmacy open?", "Yes.")
-    assert rec.items[0][1] == {"yes"}
-    assert rec.closes_on("Yes, it is.", run=False)
-    assert not rec.closes_on("Let me know when you're ready.", run=False)
+def test_a_reply_about_another_question_is_not_about_it():
+    """2026-10-24 02:04-02:05: two records were closed by the backstop with replies about
+    another question -- one shared the consult request's "search", the other the result's
+    "not". A meta verb is a common word, and yes/no/not say what a reply is about only
+    when the answer is a bare yes or no."""
+    consult = Record.make("k", "Search for the professional affiliation of Dana Whitlock.",
+                          "No professional affiliation for a Dana Whitlock turned up.",
+                          question="Okay, keep going.")
+    assert not consult.about("I don't have that information. Let me know if you'd like me "
+                             "to search for it.")
+    assert consult.about("No professional affiliation for a Dana Whitlock turned up.")
+    sync = Record.make("k2", "Just find out where she works.",
+                       "Dana Whitlock has no public profile; her role is not listed.")
+    assert not sync.about("I'm not finding any details on that camera setup.")
+    yes = Record.make("k3", "Is the pharmacy open?", "Yes.")
+    assert yes.about("Yes, it is.") and not yes.about("Sorry, still checking.")
 
 
-def test_a_failure_closes_when_a_reply_about_it_is_heard_to_its_end():
-    """A failure is one item with no terms (Owed.tla OUTCOME = "failure"). It closes on a
-    run heard to its end, or -- RUNCLOSE = "about", Fable's final review -- on any noted
-    reply heard to its end that is about the record: the caller's own turn told it, and
-    the lull must not tell it again (ow_failure_runOnly). An unrelated reply is about
-    nothing the request named and closes nothing. (A cut is the judge's: Owed.settle.)"""
+def test_a_failure_is_about_what_it_was_asked_for():
+    """A failure has no terms (Owed.tla OUTCOME = "failure"): a reply about it shares the
+    request; an unrelated one nothing."""
     status, outcome = owed.failure_outcome("timeout")
     rec = Record.make("k", HN_REQ, outcome, failure=status)
-    assert rec.items[0][1] == frozenset()
-    told = "Sorry, that Hacker News lookup ran out of time before it finished."
-    assert rec.closes_on(told, run=False), "the caller's turn told it in full"
-    assert not rec.closes_on("It's eleven twenty-two at night.", run=False), (
-        "an unrelated reply closed the failure")
-    assert rec.closes_on("Sorry, that one ran out of time.", run=True)
-
-
-def test_no_pts_prefix_closes_nothing_with_terms():
-    """No text closes nothing (DESIGN v3 #4: a cut reply whose words carried no pts is
-    never judged either, Owed.settle)."""
-    assert not hn_record().closes_on(None, run=False)
+    assert rec.terms == frozenset()
+    assert rec.about("Sorry, that Hacker News lookup ran out of time before it finished.")
+    assert not rec.about("It's eleven twenty-two at night.")
 
 
 # =============================================================== the note
@@ -362,6 +346,14 @@ class FakeJudge:
         return self.verdict
 
 
+class FakeGist(FakeJudge):
+    """The gist judge (Owed.gist), scripted as FakeJudge: called with (question,
+    outcome, heard)."""
+
+    async def __call__(self, question, outcome, heard):
+        return await super().__call__(question, outcome, heard)
+
+
 async def judged(b):
     """Until every verdict the book is waiting for has landed."""
     while b._judging:
@@ -417,7 +409,9 @@ async def test_a_heard_reply_closes_and_an_unheard_one_does_not():
     assert rec.missed, "an audible cut arms the re-offer"
     r2 = noted_reply(b, "caller")
     b.settle(r2, "Tesla Roadster is the top story on Hacker News right now.", cut=False, audio=True)
-    assert rec.state == CLOSED
+    assert not b.is_settled(), "the reply waits for its gist verdict"
+    await judged(b)
+    assert rec.state == CLOSED and b.is_settled()
 
 
 async def test_only_a_reply_that_carried_the_note_counts():
@@ -513,6 +507,7 @@ async def test_a_reply_that_never_settles_holds_one_render_not_every_one():
     await b.settled(timeout=2.0)
     assert asyncio.get_running_loop().time() - t0 < 0.05, "the next render waited again"
     b.settle(seen, "Tesla Roadster, by shekhar101.", cut=False, audio=True)
+    await judged(b)
     assert b.record("call-hn").state == CLOSED, "the late settle's evidence was dropped"
 
 
@@ -636,6 +631,65 @@ async def test_a_sync_answer_cut_before_it_was_heard_is_owed():
     assert gate.asked == [(["call-ws"], "reoffer")], "no landing run, one re-offer"
 
 
+async def test_a_round_started_by_words_that_ask_nothing_is_judged_on_the_question():
+    """2026-10-24 01:21: a question, an offer to look it up, and a reply that asks nothing
+    of its own ("Yeah, please go check.") started the web_search round; the telling was
+    cut at its first words. Judged on that reply alone, a question that asks nothing,
+    the cut was HEARD and the answer lost. The judges are shown the caller's words back
+    to the turn that asked something; the record is owed to them."""
+    told = ("The Lumen speech model is published by the Fernway Labs team on its model "
+            "hub.")
+    asked = "Who's the company behind the Lumen speech model?"
+    msgs = ([{"role": "user", "content": asked},
+             {"role": "assistant", "content": "I can look that up for you."}]
+            + round_msgs("Yeah, please go check.", cid="call-lu"))
+    judge = FakeJudge(False)
+    b, _, _ = sync_book(judge=judge)
+    cut(b, answer_reply(b, msgs), "The Lumen speech", told)
+    await judged(b)
+    assert len(judge.calls) == 1 and asked in judge.calls[0][0], judge.calls
+    assert judge.calls[0][2].startswith("model is published"), judge.calls
+    rec = b.record("call-lu")
+    assert rec is not None and rec.state == OWED and asked in rec.asked
+    # Words of their own are the question alone; a notice before them is nobody's.
+    assert owed._question(round_msgs(T_REQ), 2) == T_REQ
+    notice = [{"role": "user", "content": SYSTEM_NOTICE_TAG + " something"}]
+    assert owed._question(notice + round_msgs("Sure.")[1:], 2) == ""
+
+
+def test_a_short_follow_up_reads_back_to_the_turn_before_it():
+    """A short follow-up with a word of its own ("Check the archives.", 2026-10-24 02:03)
+    asks nothing alone: a turn of four words or fewer reads back to the turn before it
+    (at most three turns)."""
+    first = "I want to find out where she works these days."
+    msgs = ([{"role": "user", "content": first},
+             {"role": "assistant", "content": "I couldn't find more."}]
+            + round_msgs("Check the archives.", cid="c"))
+    question = owed._question(msgs, len(msgs) - 1)
+    assert first in question and "Check the archives." in question, question
+    one = round_msgs("Who were the original founders of Orchid Labs?")
+    assert owed._question(one, 2) == "Who were the original founders of Orchid Labs?"
+    many = ([{"role": "user", "content": w} for w in ("A.", "Go on.", "Sure.", "Fine.")]
+            + round_msgs("Yes."))
+    question = owed._question(many, len(many) - 1)
+    assert "A." not in question and all(w in question for w in ("Go on.", "Fine.", "Yes."))
+
+
+def test_the_question_reads_back_to_the_turn_about_the_result():
+    """2026-10-24 03:02: a consult asked on a follow-up like "are you sure about that?"
+    was judged on those words alone -- a term of their own, five words -- and every
+    telling of it was OWED. The question reads back to the turn that shares a term with the result or the
+    lookup, whatever the words in between."""
+    turns = ["Are you sure about that?", "Make up your mind.",
+             "So it's not Dana Whitlock running it?", "Who runs the Fernway museum?"]
+    about = owed.terms_of("The Fernway museum's director is Priya Okafor; Dana Whitlock "
+                          "left in March.", "")
+    question = owed._question_of(turns, about)
+    assert question.startswith("So it's not Dana Whitlock") and "sure about that" in question
+    assert "Who runs" not in question, question
+    assert owed._question_of(None, about) == "" and owed._question_of([], about) == ""
+
+
 async def test_the_answers_first_reply_settles_it_by_its_position():
     """The second review's finding 1 (repro_fresh_rule (a)): the 10-18 weather search held
     no forecast values, so no reading of the reply against it could find the telling.
@@ -677,7 +731,7 @@ def test_a_render_files_every_result_it_has_not_seen_wherever_it_lies():
                  {"role": "tool", "tool_call_id": "t", "content": '{"local_time": "3:45 PM"}'},
                  {"role": "assistant", "content": "Let me double-check that for you."}]
     assert owed.new_results(msgs + late_line, {"call-ws": None}) == [
-        ("t", "get_current_time", "What time is it?")]
+        ("t", "get_current_time", "What time is it?", f"{W_REQ} … What time is it?")]
     b, ctx, _ = book(msgs=msgs, answer_tools=ANSWERS)
     b.restore([])
     assert answer_reply(b, msgs + [{"role": "user", "content": "Hi again."}], owed.COMMIT).fresh == ()
@@ -700,8 +754,7 @@ async def test_the_amazon_cut_before_the_price_stays_owed():
     """2026-10-19 23:56:08 (box journal): "Amazon lists the Orin Nano developer kit at two
     hundred" -- the lexical rule on the heard prefix called it heard ("Orin", "developer",
     "kit"; the caller's "Oren" left "orin" a term), and the price, 249, was never told.
-    Judged: OWED, the record. The lexical rule on that prefix still reads it as heard --
-    which is why a cut is never read by it (formal/Owed.tla prefixLexical)."""
+    Judged: OWED, the record (formal/Owed.tla prefixLexical)."""
     amazon = "Can you look up the price of an NVIDIA Jetson Oren Nano on Amazon?"
     told = ("Amazon lists the Orin Nano developer kit at two hundred forty-nine dollars, "
             "matching the official MSRP.")
@@ -712,7 +765,6 @@ async def test_the_amazon_cut_before_the_price_stays_owed():
     await judged(b)
     assert [r.outcome for r in b.owed()] == [told]
     assert judge.calls[0][2].startswith("forty-nine dollars")
-    assert Record.make("k", amazon, clean_outcome(told)).closes_on(heard, run=False)
 
 
 async def test_a_verdict_still_to_come_at_the_sessions_end_errs_owed():
@@ -742,14 +794,59 @@ def test_the_rest_the_judge_is_shown_is_aligned_by_characters():
     assert _unheard(text, "Tom Joy is") is None
 
 
-async def test_a_cut_is_closed_by_the_judge_alone():
-    """Coverage is lexical, a cut is judged (formal/Owed.tla Closes, Verdicts): a cut
-    reply that carried the note closes the record only if its whole text covers it and
-    the judge answers HEARD. OWED, no verdict (None, an error, a timeout) err owed; no
-    whole text (a cut mid-stream), no heard prefix, or a reply that does not cover the
-    record (a deferral) are never judged. The reply stays pending until the verdict."""
-    async def cut_by(judge, heard="Tesla Roadster is the top", text=TELLING):
-        b, _, _ = book(judge=judge)
+def test_the_rest_is_found_whatever_the_speech_path_did_to_the_text():
+    """2026-10-24 05:38: a telling heard to 89% was never judged -- the model wrote its
+    hyphens and spaces as U+2011 and U+202F, the engine was handed plain ones, and the
+    heard prefix was no prefix of the raw text beyond spacing. Aligned by letters and
+    digits, it is; a list's numbering is matched where it was said and skipped where it
+    was not."""
+    raw = ("Found 2 devices:\n\n1. **Desk lamp** — A4‑C1‑38\n"
+           "2. Hallway sensor, it’s idle.")
+    assert _unheard(raw, "Found 2 devices: Desk lamp — A4-C1-38") == "2. Hallway sensor, it’s idle."
+    assert _unheard(raw, "Found 2 devices: 1. Desk lamp — A4-C1-38, 2. Hallway sensor, it's") == "idle."
+    assert _unheard(raw, "Found 2 devices: Desk lamp — A4-C1-38, Hallway") == "sensor, it’s idle."
+    assert _unheard(raw, "Found 3 devices") is None
+
+
+async def test_a_cut_telling_that_answers_nothing_is_not_owed():
+    """2026-10-24 05:29: a sync round's telling was an apology and an offer, cut by the
+    caller; the cut judge said OWED, and the apology was owed as the answer for 23
+    minutes -- said again unasked, and looked up again for the caller's next question.
+    The gist judge on the telling's whole text (Owed._is_answer) finds no answer in it: no
+    record, one of the answer's replies spent (OwedAnswers.tla, a cut "defer"), and the
+    next reply that tells it, cut, is the record. A telling that answers, or no verdict,
+    is the record as before."""
+    sorry = "I can't open that page right now. If you'd like, I can try another source."
+    for verdict, owes in ((False, False), (True, True), (None, True)):
+        gist = FakeGist(verdict)
+        b, _, _ = sync_book(judge=FakeJudge(False), gist=gist)
+        cut(b, answer_reply(b, round_msgs()), "I can't open that page", sorry)
+        await judged(b)
+        assert gist.calls == [(T_REQ, clean_outcome(sorry), sorry)], gist.calls
+        assert [r.outcome for r in b.owed()] == ([sorry] if owes else []), verdict
+    nxt = answer_reply(b := sync_book(judge=FakeJudge(False), gist=FakeGist(False))[0],
+                       round_msgs())
+    cut(b, nxt, "I can't open that page", sorry)
+    await judged(b)
+    b.gist = FakeGist(True)
+    again = answer_reply(b, round_msgs(), owed.COMMIT)
+    assert again.fresh == ("call-ws",), "the answer was ended by a telling that gave none"
+    found = "There's a kite shop at twelve Elm Street. It opens at nine every morning."
+    cut(b, again, "There's a kite shop at", found)
+    await judged(b)
+    assert [r.outcome for r in b.owed()] == [clean_outcome(found)]
+
+
+async def test_a_cut_is_closed_by_both_judges():
+    """A cut (formal/Owed.tla Closes, CutVerdicts): a cut reply about the record that
+    carried the note closes it only if the gist judge says its whole text gives the
+    answer AND the cut judge says the rest held nothing they still need. OWED or no
+    verdict (None, an error, a timeout) from either errs owed; no whole text (a cut
+    mid-stream), no heard prefix, or a reply about something else are never judged. The
+    reply stays pending until the verdicts."""
+    async def cut_by(judge, gist=None, heard="Tesla Roadster is the top", text=TELLING):
+        gist = gist if gist is not None else FakeGist(True)
+        b, _, _ = book(judge=judge, gist=gist)
         b.land(HN_REQ, HN_RAW, "call-hn")
         r = noted_reply(b, "caller")
         b.settle(r, heard, cut=True, audio=True, text=text,
@@ -763,23 +860,174 @@ async def test_a_cut_is_closed_by_the_judge_alone():
     assert await cut_by(FakeJudge(False)) == (OWED, True)
     assert await cut_by(FakeJudge(None)) == (OWED, True)
     assert await cut_by(FakeJudge(error=RuntimeError("503"))) == (OWED, True)
-    assert await cut_by(None) == (OWED, False), "no judge: errs owed at once"
+    assert (await cut_by(None))[0] == OWED, "no cut judge: errs owed"
+    assert await cut_by(FakeJudge(True), FakeGist(False)) == (OWED, True), "the gate"
+    assert await cut_by(FakeJudge(True), FakeGist(None)) == (OWED, True), "no gate verdict"
     for kw in ({"text": None}, {"heard": None}, {"text": "Sure, take your time."}):
-        judge = FakeJudge(True)
-        assert await cut_by(judge, **kw) == (OWED, False), kw
-        assert judge.calls == [], kw
+        judge, gist = FakeJudge(True), FakeGist(True)
+        assert await cut_by(judge, gist, **kw) == (OWED, False), kw
+        assert judge.calls == [] and gist.calls == [], kw
     # A timeout: the bound is SETTLE_WAIT_S.
     old, owed.SETTLE_WAIT_S = owed.SETTLE_WAIT_S, 0.05
     try:
         assert await cut_by(FakeJudge(True, release=asyncio.Event())) == (OWED, True)
     finally:
         owed.SETTLE_WAIT_S = old
-    # Played through: the lexical rule, no judge.
-    judge = FakeJudge(False)
-    b, _, _ = book(judge=judge)
+    # Played through: the gist judge alone.
+    for verdict, state in ((False, OWED), (True, CLOSED)):
+        judge, gist = FakeJudge(False), FakeGist(verdict)
+        b, _, _ = book(judge=judge, gist=gist)
+        b.land(HN_REQ, HN_RAW, "call-hn")
+        b.settle(noted_reply(b, "caller"), TELLING, cut=False, audio=True, text=TELLING)
+        await judged(b)
+        assert b.record("call-hn").state == state and judge.calls == [], verdict
+
+
+# =============================================================== the gist (#210)
+
+LH_REQ = "What year was the Harborview Lighthouse first lit?"
+LH_RAW = ("The Harborview Lighthouse was first lit in 1871 — keeper Ada Marsh lit the lamp on "
+          "May 3, 1871, in Port Ellery.")
+LH_ASKED = "Sure, go find out what year that was."
+LH_TOLD = "1871 is the year the Harborview Lighthouse was first lit."
+
+
+def lighthouse_book(gist, **kw):
+    """A consult asked in words that carry the question (2026-10-23 14:06's shape)."""
+    msgs = [{"role": "system", "content": "persona"},
+            {"role": "user", "content": "When was the Harborview Lighthouse first lit?"},
+            {"role": "assistant", "content": "I can look that up."},
+            {"role": "user", "content": LH_ASKED},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call-lh", "type": "function", "function": {
+                    "name": "ask_openclaw", "arguments": json.dumps({"request": LH_REQ})}}]},
+            {"role": "tool", "tool_call_id": "call-lh",
+             "content": json.dumps({"status": "working_in_background"})}]
+    b, ctx, gate = book(msgs=msgs, gist=gist, **kw)
+    assert b.dispatch("call-lh", LH_REQ) is None
+    b.land(LH_REQ, LH_RAW, "call-lh")
+    return b, ctx, gate
+
+
+def played(b, text, purpose="caller", keys=("call-lh",)):
+    r = noted_reply(b, purpose, keys)
+    b.settle(r, text, cut=False, audio=True, text=text)
+    return r
+
+
+async def test_a_one_fact_telling_closes_on_the_gist():
+    """Owed.tla ow_gist_lexical (2026-10-23 14:06): a one-fact answer told in the caller's
+    words, played through, was one term of seven, stayed owed and was told five times.
+    The gist judge is asked once, with what the CALLER asked (back to the turn that asked
+    it), the result and what they heard."""
+    gist = FakeGist(True)
+    b, _, _ = lighthouse_book(gist)
+    rec = b.record("call-lh")
+    assert LH_ASKED in rec.asked and "Harborview" in rec.asked, rec.asked
+    played(b, LH_TOLD)
+    await judged(b)
+    assert rec.state == CLOSED and len(gist.calls) == 1, gist.calls
+    question, outcome, heard = gist.calls[0]
+    assert question == rec.asked and outcome == clean_outcome(LH_RAW) and LH_TOLD in heard
+
+
+async def test_owed_on_a_full_telling_costs_one_retelling():
+    """The backstop (Owed.tla RetellOnce, ow_gist_noBackstop): a judge that answers OWED
+    on a full telling keeps it owed once; the second reply about it played to its end
+    closes it, unjudged. A reply about something else counts for nothing."""
+    gist = FakeGist(False)
+    b, _, _ = lighthouse_book(gist)
+    rec = b.record("call-lh")
+    played(b, LH_TOLD)
+    await judged(b)
+    assert rec.state == OWED and rec.told == 1 and rec.heard == [LH_TOLD]
+    played(b, "Got it—just let me know if there's anything else you'd like.")
+    await judged(b)
+    assert rec.state == OWED and rec.told == 1, "chit-chat spent the backstop"
+    played(b, "The Harborview Lighthouse was first lit in 1871.")
+    assert rec.state == CLOSED and len(gist.calls) == 1, gist.calls
+
+
+async def test_no_gist_verdict_closes_a_reply_played_through():
+    """The user's choice (2026-10-23; Owed.tla ow_gist_noVerdict): None, an error or a
+    timeout on a reply about the record played to its end closes it -- a repeat costs
+    more than a detail, and the result stays in the context."""
+    for gist in (FakeGist(None), FakeGist(error=RuntimeError("503")), None):
+        b, _, _ = lighthouse_book(gist)
+        played(b, LH_TOLD)
+        await judged(b)
+        assert b.record("call-lh").state == CLOSED, gist
+    old, owed.SETTLE_WAIT_S = owed.SETTLE_WAIT_S, 0.05
+    try:
+        b, _, _ = lighthouse_book(FakeGist(False, release=asyncio.Event()))
+        played(b, LH_TOLD)
+        await judged(b)
+        assert b.record("call-lh").state == CLOSED
+    finally:
+        owed.SETTLE_WAIT_S = old
+
+
+async def test_the_judges_read_what_was_heard_of_it_so_far():
+    """Owed.tla ow_gist_oneReply: a full telling judged OWED, then a re-telling the caller
+    cuts because they heard it already -- both judges read the telling they heard before
+    it with this reply, or the cut is OWED on its own prefix and the answer told a third
+    time."""
+    gist, judge = FakeGist(False), FakeJudge(True)
+    b, _, _ = lighthouse_book(gist, judge=judge)
+    played(b, LH_TOLD)
+    await judged(b)
+    gist.verdict = True
+    again = "The Harborview Lighthouse was first lit in 1871."
+    prefix = "The Harborview Lighthouse"
+    cut(b, noted_reply(b, "caller", ("call-lh",)), prefix, again)
+    await judged(b)
+    assert b.record("call-lh").state == CLOSED
+    assert LH_TOLD in gist.calls[-1][2] and again in gist.calls[-1][2], gist.calls
+    assert len(judge.calls) == 1, judge.calls
+    _, heard, rest = judge.calls[0]
+    assert LH_TOLD in heard and heard.endswith(prefix) and rest == "was first lit in 1871."
+
+
+async def test_the_gist_is_asked_as_the_stream_ends():
+    """owed.Owed.reply_text (the ledger at LLMFullResponseEndFrame): the verdict is asked
+    before the reply plays, and the settle uses it -- one call, not two."""
+    gist = FakeGist(True)
+    b, _, _ = lighthouse_book(gist)
+    r = noted_reply(b, "caller", ("call-lh",))
+    b.reply_text(r, LH_TOLD)
+    b.reply_text(r, "Got it.")                   # not about it: no call
+    await asyncio.sleep(0.01)
+    assert len(gist.calls) == 1
+    b.settle(r, LH_TOLD, cut=False, audio=True, text=LH_TOLD)
+    await judged(b)
+    assert b.record("call-lh").state == CLOSED and len(gist.calls) == 1
+
+
+async def test_a_run_renders_only_its_own_records():
+    """2026-10-24 03:02: a consult landed while an older answer was still owed; the
+    landing run's note listed both, the older first, and the model told the older one in
+    its place. A run's note carries the records it was asked for; a caller's turn carries
+    every owed record."""
+    b, ctx, _ = lighthouse_book(FakeGist(False))
     b.land(HN_REQ, HN_RAW, "call-hn")
-    b.settle(noted_reply(b, "caller"), TELLING, cut=False, audio=True, text=TELLING)
-    assert b.record("call-hn").state == CLOSED and judge.calls == []
+    run, keys = await b.view(ctx, owed.RUN, ("call-hn",))
+    assert keys == ("call-hn",) and "Harborview" not in run.get_messages()[-1]["content"]
+    caller, keys = await b.view(ctx, "caller")
+    assert set(keys) == {"call-lh", "call-hn"}, keys
+
+
+async def test_a_run_counts_only_for_its_own_records():
+    """A run of ours is about the records it was asked for, not every record its note
+    carries: the landing run for one answer is no telling of another."""
+    gist = FakeGist(False)
+    b, _, _ = lighthouse_book(gist)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    r = noted_reply(b, "run", ("call-lh", "call-hn"))
+    r.keys = ("call-hn",)
+    b.settle(r, "Tesla Roadster is the top story.", cut=False, audio=True,
+             text="Tesla Roadster is the top story.")
+    await judged(b)
+    assert b.record("call-lh").told == 0 and b.record("call-hn").told == 1
 
 
 async def test_a_late_verdict_reads_the_live_book():
@@ -802,18 +1050,19 @@ async def test_a_late_verdict_reads_the_live_book():
     await asyncio.sleep(0.15)
     assert b.owed() == [] and gate.asked == [], "a late OWED recorded a told answer"
     release = asyncio.Event()
-    b, _, gate = book(judge=FakeJudge(True, release=release))
+    b, _, gate = book(judge=FakeJudge(True, release=release), gist=FakeGist(True))
     b.land(HN_REQ, HN_RAW, "call-hn")
     cut(b, noted_reply(b, "caller"), "Tesla Roadster is the top", TELLING)
     await b.settled(timeout=0.05)
     b.settle(noted_reply(b, "caller"), TELLING, cut=False, audio=True, text=TELLING)
+    await asyncio.sleep(0.02)
     assert b.record("call-hn").state == CLOSED
     release.set()
     await judged(b)
     assert b.record("call-hn").state == CLOSED and b.is_settled()
     # ...or dropped meanwhile (three newer answers): a late HEARD does not revive it.
     release = asyncio.Event()
-    b, _, gate = book(judge=FakeJudge(True, release=release))
+    b, _, gate = book(judge=FakeJudge(True, release=release), gist=FakeGist(True))
     b.land(HN_REQ, HN_RAW, "call-hn")
     cut(b, noted_reply(b, "caller"), "Tesla Roadster is the top", TELLING)
     await b.settled(timeout=0.05)
@@ -1208,7 +1457,7 @@ async def test_a_round_nobody_asked_for_is_no_record_of_theirs():
                {"role": "assistant", "content": "It's sunny and warm."},
                {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\nThe user opened the map."}]
               + round_msgs()[1:])
-    assert owed.new_results(notice, {}) == [("call-ws", "web_search", "")]
+    assert owed.new_results(notice, {}) == [("call-ws", "web_search", "", "")]
     b, _, _ = sync_book()
     b.settle(answer_reply(b, notice), "There's a", cut=True, audio=True, text=TOY)
     assert b.owed() == []
@@ -1379,8 +1628,6 @@ async def test_the_feed_reads_the_pts_prefix_not_the_ledgers_heard_text():
     u = [e for e in ledger.events if e.speaker == "assistant"][-1]
     assert "Roadster" in u.heard_text, f"the control: the estimate reads more ({u.heard_text!r})"
     assert got == [(reply, "Tesla", True, True, TELLING, TELLING[len("Tesla "):])], got
-    assert not hn_record().closes_on(got[0][1], run=False)
-    assert hn_record().closes_on(u.heard_text, run=False), "the control would close it"
 
 
 async def test_a_reply_that_played_through_settles_at_its_own_window_close():
@@ -1468,6 +1715,47 @@ async def test_a_reply_cut_mid_stream_settles_its_heard_prefix_and_no_text():
         (_word("Tomorrow", 0.6), 0.55), (_word("in", 1.0), 0.55),
         (LLMTextFrame("with highs near"), 0.7), (InterruptionFrame(), 0.9)], reply)
     assert got == [(reply, "Tomorrow", True, True, None, None)], got
+
+
+async def test_a_reply_whose_end_reached_the_tts_before_the_cut_is_no_fragment():
+    """2026-10-24 00:24:26 (#211): a one-sentence answer's End was pushed to the TTS 0.5 s
+    before a one-word thank-you cut it at its first word, but the TTS, synthesizing, had
+    not read it: the ledger read a cut mid-stream, no record, and the answer was lost. The End at the
+    TTS's door ends the stream: the cut has its whole text and its rest; and the gist
+    judge is asked then, not when the TTS gets there."""
+    tts, reply, told = TTS, Reply(owed.POST), []
+    text = "The museum's director is Priya Okafor, who took over in March."
+    ledger = TranscriptLedger(tts=tts)
+    got = []
+    ledger.on_reply_end = lambda r, heard, *, cut, audio, text, rest: got.append(
+        (r, heard, cut, audio, text, rest))
+    ledger.on_reply_text = lambda r, t: told.append((r, t))
+    start = LLMFullResponseStartFrame()
+    start.owed_reply = reply
+    parts = [LLMTextFrame("The museum's director is Priya Okafor, "),
+             LLMTextFrame("who took over in March.")]
+    for f in [start, *parts, LLMFullResponseEndFrame()]:     # the guard pushes it all
+        await ledger.on_push_frame(SimpleNamespace(frame=f, destination=tts))
+    assert told == [(reply, text)], told
+    await _feed_ledger(ledger, [
+        (start, 0.0), (parts[0], 0.0),                       # the TTS has read this far
+        (TTSStartedFrame(context_id="r"), 0.5), (_ctx(_audio(3.0), "r"), 0.5),
+        (BotStartedSpeakingFrame(), 0.5), (_ctx(_word("The", 0.6), "r"), 0.55),
+        (_ctx(_word("museum's", 1.0), "r"), 0.55), (InterruptionFrame(), 0.9)], tts)
+    assert got == [(reply, "The", True, True, text, text[len("The "):])], got
+    # Cut while it was still being pushed: a fragment, as before.
+    ledger2 = TranscriptLedger(tts=tts)
+    got2 = []
+    ledger2.on_reply_end = lambda r, heard, *, cut, audio, text, rest: got2.append(text)
+    start2 = LLMFullResponseStartFrame()
+    start2.owed_reply = Reply(owed.POST)
+    for f in (start2, parts[0]):
+        await ledger2.on_push_frame(SimpleNamespace(frame=f, destination=tts))
+    await _feed_ledger(ledger2, [
+        (start2, 0.0), (parts[0], 0.0), (TTSStartedFrame(context_id="s"), 0.5),
+        (_ctx(_audio(3.0), "s"), 0.5), (BotStartedSpeakingFrame(), 0.5),
+        (_ctx(_word("The", 0.6), "s"), 0.55), (InterruptionFrame(), 0.9)], tts)
+    assert got2 == [None], got2
 
 
 def main():

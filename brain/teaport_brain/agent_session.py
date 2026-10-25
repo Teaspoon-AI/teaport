@@ -872,11 +872,14 @@ def build_agent_session(transport, *, voice: str | None = None,
     cut_fence.close_owed = stop_strategy.close_owed
     # What the caller is still owed of the async consults and of the sync answer tools'
     # cut tellings (owed.py, #203/#204): the LLM renders its note into every request, the
-    # ledger settles each reply into it -- a cut one judged by the session's own model
+    # ledger settles each reply into it -- judged by the session's own model for the gist
+    # (llm.judge_gist, asked as the reply's stream ends) and, cut, for the rest
     # (llm.judge_cut) --, the gate is the door its runs go through, and a room's sleep
     # keeps it with the conversation.
-    owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS, judge=llm.judge_cut)
+    owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS, judge=llm.judge_cut,
+                gist=llm.judge_gist)
     llm.owed = owed
+    ledger.on_reply_text = owed.reply_text
     ledger.on_reply_end = owed.settle
     if wake_gate is not None:
         wake_gate.owed = owed

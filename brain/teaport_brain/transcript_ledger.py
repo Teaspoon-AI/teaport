@@ -66,7 +66,7 @@ from loguru import logger
 
 from teaport_brain.barge_pause import PlayoutPauseFrame
 from teaport_brain.settings import setting
-from teaport_brain.tts_text import CAPTION_LEAD_SECS, has_speech
+from teaport_brain.tts_text import CAPTION_LEAD_SECS, fold_unspeakable, has_speech, unsaid_markers
 
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
@@ -84,7 +84,7 @@ from pipecat.frames.frames import (
     TTSTextFrame,
     VADUserStartedSpeakingFrame,
 )
-from pipecat.observers.base_observer import BaseObserver, FrameProcessed
+from pipecat.observers.base_observer import BaseObserver, FramePushed, FrameProcessed
 
 # LEDGER_TRACE=1 logs the real per-frame sequence (deduped) for diagnosis.
 _TRACE = setting("LEDGER_TRACE")
@@ -194,29 +194,52 @@ def _nospace(s: str) -> str:
 
 
 def _unheard(text: str, heard: str) -> Optional[str]:
-    """The part of `text` after the heard prefix, matched IGNORING WHITESPACE; None when
-    `heard` is not a prefix of it beyond spacing.
+    """The part of `text` after the heard prefix, matched by its LETTERS AND DIGITS; None
+    when `heard` is not a prefix of it by those.
 
     The heard text is rebuilt from the TTS's per-word frames, whose spacing is the
-    frames' (engine word frames carry none; a CJK voice's tokens are characters), so
-    it is a prefix of the raw LLM text only up to whitespace. Comparing the two with
-    their spaces removed keeps the tail exact for both -- the transcript's unheard tail
-    (Utterance.unheard_tail) and the rest the cut judge is shown (the settle feed).
+    frames' (engine word frames carry none; a CJK voice's tokens are characters), and
+    whose text is what the engine was handed: tts_text._normalize_for_tts folds the
+    unspeakable characters ("B0‑22‑7A" with U+2011 is "B0-22-7A"), drops the markdown
+    and a list's markers ("1. ", "- ") and turns line breaks and ellipses into commas. So
+    it is a prefix of the raw LLM text only by its letters and digits. Compared up to
+    spacing alone, a typographic hyphen left a telling heard to 89% unjudged and owed
+    (2026-10-24 05:38): 17 of that session's 57 cuts aligned, 56 by this (the 57th a
+    fragment). A list's numbering may or may not be said -- the normalizer sees it at a
+    line's start only when the sentence splitter left it there ("2." alone is said) --
+    so its digits are skipped when the heard text does not have them. The heard text's
+    own trailing marks ("zero-", "two,") are matched after it, so the rest starts where
+    they end. The tail is the raw text's, for both its readers -- the transcript's
+    unheard tail (Utterance.unheard_tail) and the rest the cut judge is shown (the
+    settle feed).
     """
-    want = _nospace(heard)
+    text = text or ""
+    want = [c.casefold() for c in heard or "" if c.isalnum()]
     if not want:
-        return (text or "").strip()
+        return text.strip()
+    unsaid = unsaid_markers(text)
     i = j = 0
     while i < len(text) and j < len(want):
-        if text[i].isspace():
-            i += 1
-            continue
-        if text[i] != want[j]:
-            return None
+        c = text[i]
         i += 1
+        if not c.isalnum():
+            continue
+        if c.casefold() != want[j]:
+            if i - 1 in unsaid:
+                continue
+            return None
         j += 1
     if j < len(want):
         return None
+    last = max(k for k, c in enumerate(heard) if c.isalnum())
+    for mark in heard[last + 1:]:
+        if mark.isspace():
+            continue
+        while i < len(text) and text[i].isspace():
+            i += 1
+        if i >= len(text) or fold_unspeakable(text[i]) != mark:
+            break
+        i += 1
     return text[i:].strip()
 
 
@@ -249,6 +272,19 @@ class TranscriptLedger(BaseObserver):
         # ow_ledgerMax). A reply that never reaches the TTS as text (a tool call, one
         # the guard emptied) or never plays is settled as heard nothing.
         self.on_reply_end = None
+        # Called as on_reply_text(reply, text) when a reply's stream ends with text, before
+        # any of it is heard: owed.py asks its gist judge then (#210), so the verdict is in
+        # by the time the reply has played.
+        self.on_reply_text = None
+        # What has been PUSHED to the TTS of each response (on_push_frame): the guard's
+        # output, by its LLMFullResponseStartFrame's id, as {"reply", "parts", "text"} --
+        # "text" set once its End was pushed. The TTS reads its input in order, and its
+        # synthesis holds that up: a response can have ended at the TTS's door for a
+        # second or more before the TTS reads its End (2026-10-24 00:24:26: a one-sentence
+        # answer cut at its first word 0.5 s after its End was pushed was read as cut
+        # mid-stream, no record, the answer lost -- #211).
+        self._pushed: OrderedDict = OrderedDict()
+        self._pushing: Optional[dict] = None
         self._turn_seq = 0
         self._tts = tts
         self._output = output
@@ -291,6 +327,31 @@ class TranscriptLedger(BaseObserver):
         self._paused_at: Optional[float] = None
         self._seen: OrderedDict = OrderedDict()
         self._traced = set()
+
+    async def on_push_frame(self, data: FramePushed):
+        """A response as it is handed to the TTS (self._pushed). Its End pushed, its whole
+        text is known -- the settle feed's `text` for a cut that lands before the TTS has
+        read that far (_reply_end), and the moment owed.py's gist judge is asked."""
+        if self._tts is None or data.destination is not self._tts:
+            return
+        f = data.frame
+        if isinstance(f, LLMFullResponseStartFrame):
+            self._pushing = {"reply": getattr(f, "owed_reply", None), "parts": [], "text": None}
+            self._remember(self._pushed, f.id, _MAX_SEEN, self._pushing)
+        elif isinstance(f, InterruptionFrame):
+            self._pushing = None          # a response cut while it was being pushed
+        elif self._pushing is None:
+            return
+        elif isinstance(f, LLMTextFrame):
+            self._pushing["parts"].append(f.text or "")
+        elif isinstance(f, LLMFullResponseEndFrame):
+            pushed, self._pushing = self._pushing, None
+            pushed["text"] = "".join(pushed["parts"]).strip()
+            if pushed["text"] and pushed["reply"] is not None and self.on_reply_text is not None:
+                try:
+                    self.on_reply_text(pushed["reply"], pushed["text"])
+                except Exception as e:  # noqa: BLE001 -- an observer must never raise
+                    logger.warning(f"LEDGER: the reply-text feed raised {e!r}")
 
     # ------------------------------------------------------------------ frames
 
@@ -461,6 +522,7 @@ class TranscriptLedger(BaseObserver):
         if isinstance(f, LLMFullResponseStartFrame):
             self._seq += 1
             self._gen = self._new_entry("llm")
+            self._gen["pushed"] = self._pushed.get(f.id)
             reply = getattr(f, "owed_reply", None)
             if reply is not None:
                 reply.claimed = True
@@ -477,6 +539,11 @@ class TranscriptLedger(BaseObserver):
                 return
             gen["text"] = "".join(gen["parts"]).strip()
             gen["ended"] = True
+            if gen["text"] and gen["reply"] is not None and self.on_reply_text is not None:
+                try:
+                    self.on_reply_text(gen["reply"], gen["text"])
+                except Exception as e:  # noqa: BLE001 -- an observer must never raise
+                    logger.warning(f"LEDGER: the reply-text feed raised {e!r}")
             if not gen["text"]:
                 # A tool-call response, or one the guard emptied: the TTS opens
                 # no context for it, so nothing will claim it.
@@ -564,7 +631,8 @@ class TranscriptLedger(BaseObserver):
 
     def _new_entry(self, kind: str) -> dict:
         return {"seq": self._seq, "kind": kind, "parts": [], "text": "",
-                "ended": False, "drained": False, "turn": None, "reply": None}
+                "ended": False, "drained": False, "turn": None, "reply": None,
+                "pushed": None}
 
     # The settle feed's call sites -- every distinct end an LLM reply can have, each
     # settling it once (_reply_end drops the entry's reply after the first):
@@ -576,8 +644,9 @@ class TranscriptLedger(BaseObserver):
     #   _finish        charted: played through, cut (the pts-exact prefix), or never played
     def _reply_end(self, entry, heard: Optional[str], *, cut: bool, audio: bool):
         """The settle feed (on_reply_end), once per entry, with the reply's whole text
-        when its stream ended -- None when it was cut before that: the text as far as it
-        got is a fragment, not the answer a cut telling is owed as
+        when its stream ended (at the TTS's door: on_push_frame) -- None when it was cut
+        before that: the text as far as it got is a fragment, not the answer a cut
+        telling is owed as
         (owed.Owed._cut_answer; formal/Owed.tla, partialRecord) -- and, for a cut with
         a heard prefix, the rest of that text after it (_unheard; None if the prefix is
         not one of it): what the cut judge is shown (owed.Owed._judge)."""
@@ -586,6 +655,10 @@ class TranscriptLedger(BaseObserver):
             return
         entry["reply"] = None
         text = entry["text"] if entry["ended"] else None
+        if text is None and entry.get("pushed") and entry["pushed"]["text"] is not None:
+            # Its End was pushed to the TTS before the cut, which the TTS had not read
+            # yet: the whole text is known, and the reply is no fragment.
+            text = entry["pushed"]["text"] or None
         rest = _unheard(text, heard) if cut and text and heard else None
         if self.on_reply_end is not None:
             try:

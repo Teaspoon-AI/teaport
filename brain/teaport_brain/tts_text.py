@@ -149,6 +149,15 @@ def fold_unspeakable(text: str) -> str:
 # far more common than a sentence opening with a number, so the rule stays; noting the shape.
 _LIST_MARKER = re.compile(r"(?m)^[ \t]*(?:[-*+•·]|#{1,6}|\d{1,3}[.)])[ \t]+")
 
+
+def unsaid_markers(text: str) -> set:
+    """The positions in `text` of the list markers _normalize_for_tts drops: a raw text's
+    characters the engine is never handed (transcript_ledger._unheard aligns what was
+    heard by them). Found as the normalizer finds them, after the no-break spaces fold
+    to plain ones -- one for one, so the positions are the raw text's."""
+    spaced = _NOBREAK_SPACES.sub(" ", text)
+    return {i for m in _LIST_MARKER.finditer(spaced) for i in range(m.start(), m.end())}
+
 # What a line break becomes once its marker is gone. The bullet was carrying the pause
 # between items, so an item seam speaks as a comma — unless the line already ended in
 # punctuation that pauses on its own, where a second mark is audible ("daily soups.,

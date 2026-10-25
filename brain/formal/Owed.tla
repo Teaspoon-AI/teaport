@@ -139,6 +139,50 @@
 (*   failure is one statement, told whole or not at all (no "part"), and    *)
 (*   the telling is the reply (a question after it, cut, reads owed).       *)
 (*                                                                          *)
+(* CLOSE: how a reply PLAYED TO ITS END closes an outcome with items (#210). *)
+(*   "lexical" -- the coverage rule as shipped in #204: min(2, |terms|) of  *)
+(*                each item's terms in its whole text. Exact on the corpus, *)
+(*                but LEXMISS: a full telling can read as not covering --   *)
+(*                a one-fact answer told in the caller's words is one term  *)
+(*                of seven, the request having the rest (2026-10-23 14:06,  *)
+(*                re-told five times).                                      *)
+(*   "gist"    -- an LLM judge, shown the caller's words, the result and    *)
+(*                the whole reply, asked whether it gave them the answer to *)
+(*                what they asked (owed.gist_judge_messages), on a reply    *)
+(*                ABOUT the record (a word shared with its request or       *)
+(*                result: owed.Record.about). No verdict (a timeout, an     *)
+(*                error) CLOSES: the user's choice, 2026-10-23 -- a repeat  *)
+(*                is worse than a detail lost, and the result stays in the  *)
+(*                context either way. The BACKSTOP: the second noted reply  *)
+(*                about the record played to its end closes it whatever     *)
+(*                the verdict, so a heard answer is re-told at most once.   *)
+(*                A cut keeps the cut judge; its gate (the whole text gives *)
+(*                the answer) becomes this judge, its misses folding into   *)
+(*                OWES and judgeWrong. Both judges read what the caller     *)
+(*                HEARD OF THE RECORD so far -- every noted reply about it, *)
+(*                played through or the cut's prefix (Record.heard) -- not  *)
+(*                the one reply: a re-telling cut because they heard it     *)
+(*                already is judged on the telling they heard before it.    *)
+(* What the caller got of a reply about the record that gave no answer      *)
+(* ("Want me to tell you the year?", "the summary is as provided") is       *)
+(* "mention" (MENTION). The gist premises, measured on 58 judged live and   *)
+(* written cases (tests/test_gist_judge_eval.py, 2026-10-23):               *)
+(*   PTOWES    -- the judge answers OWED on a full telling (2-4/29 by       *)
+(*                majority of 10).                                          *)
+(*   NOVERDICT -- the judge gives no verdict in time (p90 1.15 s one at a   *)
+(*                time), which closes even a mention.                       *)
+(*   TWICE     -- the second about-reply after one that gave no answer      *)
+(*                again gives none (a part, a mention), and the backstop    *)
+(*                closes it unheard. The note was in view both times (X1:   *)
+(*                18/20 answer).                                            *)
+(*   "gistWrong" (MUT) -- the judge answers HEARD on a part or a mention    *)
+(*                (0/25 by majority).                                       *)
+(*   "noBackstop" (MUT) -- no backstop: a judge that keeps answering OWED   *)
+(*                re-tells a heard answer on every turn.                    *)
+(*   "oneReply" (MUT) -- the judges read the one reply, not what was heard  *)
+(*                of the record: a re-telling cut before its facts is OWED  *)
+(*                though the telling before it was heard.                   *)
+(*                                                                          *)
 (* adoptDropsKeys (MUT) -- the commit that adopts a speculative reply's     *)
 (*   stream does not register the keys its note carried (the note was in    *)
 (*   the request, rendered in the speculation's own task): its telling is   *)
@@ -156,7 +200,13 @@ CONSTANTS MaxSpeech,   \* bound on the caller's bursts of speech (VAD starts)
           FLAKY,       \* a request carrying the note may still re-look-up
           PARTIAL,     \* a telling run may carry only some of the items
           SILENT,      \* a run's completion may produce no audio at all
-          OWES         \* the cut judge may answer OWED (or not in time) though all was heard
+          OWES,        \* the cut judge may answer OWED (or not in time) though all was heard
+          CLOSE,       \* "lexical" | "gist": how a reply played to its end closes (#210)
+          LEXMISS,     \* "lexical": a full telling may read as not covering the record
+          PTOWES,      \* "gist": the judge may answer OWED on a full telling
+          NOVERDICT,   \* "gist": the judge may give no verdict in time (closes)
+          MENTION,     \* a noted reply may be about the record and give no answer
+          TWICE        \* the about-reply after one that gave no answer may give none again
 
 Mut(m) == m \in MUT
 Runs   == {"run", "reoffer"}        \* the brain's own, unprompted requests
@@ -170,6 +220,9 @@ VARIABLES
     uncut,        \* countSettle only: noted replies played through, up to 2
     missed,       \* the re-offer is armed (REOFFER says by what)
     reoffers,     \* re-offer runs asked (a held-then-dropped one counts)
+    told,         \* "gist": noted replies about the record played to their end, up to 2
+    part1,        \* ...and the first of them gave no answer (a part, a mention)
+    hacc,         \* "gist": what the caller heard of the record so far holds the answer
     \* --- the ghosts ---
     heard,        \* the caller really has every item (some reply's heard text did)
     repeat,       \* an unprompted telling began after `heard`
@@ -211,13 +264,14 @@ VARIABLES
     noNote,       \* a request rendered while owed went without the note
     staleHeard,   \* a request carried "NOT heard" to a caller who had heard it
     relook,       \* the model looked the answer up again although it had it
+    retell,       \* noted tellings begun after the caller had heard it, up to 2
     got           \* what the caller heard of the last reply that ended (for traces)
 
-rec   == <<st, fed, uncut, missed, reoffers>>
+rec   == <<st, fed, uncut, missed, reoffers, told, part1, hacc>>
 line  == <<vad, pend, turn, speech>>
 door  == <<q, hPost, rloc, rk, tres, tend, mark, gtool>>
 reply == <<req, rst, noted, nreg, say, ph>>
-mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, got>>
+mons  == <<runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, retell, got>>
 vars  == <<rec, heard, repeat, line, door, reply, ended, mons>>
 
 \* What a request rendered now carries. The design renders the note from the record on
@@ -227,6 +281,7 @@ Noted(r) == IF Mut("storeNote") THEN r # "none" ELSE r = "owed"
 
 Init ==
     /\ st = "none" /\ fed = "none" /\ uncut = 0 /\ missed = FALSE /\ reoffers = 0
+    /\ told = 0 /\ part1 = FALSE /\ hacc = FALSE
     /\ heard = FALSE /\ repeat = FALSE
     /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0
     /\ q = "none" /\ hPost = FALSE /\ rloc = "none" /\ rk = "none" /\ tres = FALSE
@@ -234,7 +289,7 @@ Init ==
     /\ req = "none" /\ rst = "none" /\ noted = FALSE /\ nreg = FALSE /\ say = "none" /\ ph = "none"
     /\ ended = FALSE
     /\ runUnder = FALSE /\ runMid = FALSE /\ displaced = FALSE /\ staleNote = FALSE
-    /\ noNote = FALSE /\ staleHeard = FALSE /\ relook = FALSE /\ got = "none"
+    /\ noNote = FALSE /\ staleHeard = FALSE /\ relook = FALSE /\ retell = 0 /\ got = "none"
 
 (* ============================ the evidence (§3) ============================ *)
 
@@ -245,9 +300,11 @@ Init ==
 \* that tells nothing shares only common words with the outcome ("Sure, take your
 \* time."). Cut before its first audio (still generating, or the TTS not yet open, #79),
 \* it was heard not at all.
-PlayGot(s) == CASE s = "tell" -> "all"
-                [] s = "part" -> "some"
-                [] OTHER      -> "filler"          \* defer, other, lookup's ack
+PlayGot(s) == CASE s = "tell" -> {"all"}
+                [] s = "part" -> {"some"}
+                [] s \in {"defer", "other"}
+                       -> {"filler"} \cup Opt(MENTION /\ OUTCOME = "items", "mention")
+                [] OTHER      -> {"filler"}        \* lookup's ack, a line before a call
 \* "words": a cut after every item's content words but before its facts were all out --
 \* "a high around seventy-five" before the low, "the developer kit at two hundred" before
 \* "forty-nine" (2026-10-19 23:56). Two content words of each item, not what answers it.
@@ -277,9 +334,39 @@ Verdicts(s, r) ==
           ELSE {"owed", "none"})
          \cup (IF Mut("judgeWrong") THEN {"heard"} ELSE {})
 
+\* A reply ABOUT the record (owed.Record.about): one the gist judge is asked about.
+About(g) == g \in {"all", "some", "mention"}
+
+\* The verdict on a reply played to its end (CLOSE). "lexical": the coverage rule, which
+\* LEXMISS lets read a full telling as not covering (the 10-23 reply). "gist": the judge, on
+\* a reply about the record only ("skip": an unrelated reply is not judged and closes
+\* nothing); HEARD exactly on the answer, but for the measured residuals.
+\* The gist judge reads what was heard of the record so far with this reply (`hacc`).
+PtVerdicts(g) ==
+    IF CLOSE = "lexical"
+      THEN IF g = "all" THEN {"heard"} \cup Opt(LEXMISS, "owed") ELSE {"owed"}
+    ELSE IF ~About(g) THEN {"skip"}
+    ELSE (IF g = "all" \/ (hacc /\ ~Mut("oneReply")) THEN {"heard"} \cup Opt(PTOWES, "owed")
+          ELSE {"owed"} \cup Opt(Mut("gistWrong"), "heard"))
+         \cup Opt(NOVERDICT, "none")
+
+\* A cut, "gist": once what was heard of the record holds the answer, the gate passes and
+\* the judge reads all of it.
+CutVerdicts(s, r) ==
+    IF CLOSE = "gist" /\ hacc /\ ~Mut("oneReply") THEN Verdicts("tell", "all") ELSE Verdicts(s, r)
+
+\* The backstop: a noted reply about the record, played to its end, closes it when one
+\* already did not (owed.Owed.settle, Record.told).
+Backstop(cut, g) == CLOSE = "gist" /\ ~Mut("noBackstop") /\ ~cut /\ About(g) /\ told >= 1
+
+\* The gist premise ~TWICE: once a noted reply about the record played to its end with no
+\* answer, the next one gives it (the model with the note in view, X1 18/20).
+Restrained == ~TWICE /\ CLOSE = "gist" /\ told = 1 /\ part1 /\ st = "owed"
+
 \* owed.py's close rule, on one ended reply. Only a reply whose request carried the
 \* note can close (§3: "when it carried the note in its request"). A reply played through:
-\* the lexical rule on its whole text (coverage). A cut: the judge's verdict `v`.
+\* the verdict on its whole text (PtVerdicts: lexical or the gist judge; no verdict
+\* closes), or the backstop. A cut: the cut judge's verdict `v`.
 Closes(p, n, cut, g, v) ==
     /\ n
     /\ IF     Mut("fraction")    THEN p \in Runs /\ g \in {"lead", "some", "all"}
@@ -296,8 +383,8 @@ Closes(p, n, cut, g, v) ==
        ELSE IF OUTCOME = "failure"
             THEN IF RUNCLOSE = "about" THEN g = "all"
                  ELSE p \in Runs /\ ~cut /\ g \in {"some", "all"}
-       ELSE \* the design: an uncut run, or every item's terms in the heard text
-            RunUncut(p, cut, g) \/ g = "all"
+       ELSE \* the design: an uncut run, the verdict, or the backstop
+            RunUncut(p, cut, g) \/ v \in {"heard", "none"} \/ Backstop(cut, g)
 
 \* The reply ends: played through, cut, or with no audio at all. Its evidence goes to the
 \* settle feed (`fed`), which owed.py applies in a step of its own (`Settle`): until then
@@ -318,22 +405,27 @@ Reads(cut, g) ==
              [] OTHER      -> {g}
       ELSE {g}
 
-Finish(cut, g) ==
-    \E r \in Reads(cut, g) : \E v \in (IF cut THEN Verdicts(say, r) ELSE {"skip"}) :
+\* `arm`: the ending arms the re-offer whatever it closed (a caller turn's cut). Under
+\* "anyMiss" a run that ended without closing the record arms it too.
+Finish(cut, g, arm) ==
+    \E r \in Reads(cut, g) :
+    \E v \in (IF cut THEN CutVerdicts(say, r)
+              ELSE IF OUTCOME = "items" THEN PtVerdicts(r) ELSE {"skip"}) :
       LET u  == IF Mut("countSettle") /\ nreg /\ ~cut /\ g # "nothing"
                   THEN (IF uncut < 2 THEN uncut + 1 ELSE 2) ELSE uncut
           c  == Closes(req, nreg, cut, r, v) \/ (Mut("countSettle") /\ u = 2)
+          ab == CLOSE = "gist" /\ ~cut /\ nreg /\ st = "owed" /\ About(r)
       IN /\ req' = "none" /\ rst' = "none" /\ noted' = FALSE /\ nreg' = FALSE
          /\ say' = "none" /\ ph' = "none"
          /\ heard' = (heard \/ g = "all")
          /\ fed' = IF c /\ st = "owed" THEN "close" ELSE fed
          /\ uncut' = u
+         /\ told' = IF ab THEN (IF told < 2 THEN told + 1 ELSE 2) ELSE told
+         /\ part1' = IF ab /\ told = 0 THEN r # "all" ELSE part1
+         /\ hacc' = (hacc \/ (CLOSE = "gist" /\ nreg /\ st = "owed" /\ r = "all"))
+         /\ missed' = (missed \/ arm
+                       \/ (REOFFER = "anyMiss" /\ req \in Runs /\ st = "owed" /\ ~c))
          /\ got' = g
-
-\* Did a run end without closing the record? Under "anyMiss" that arms the re-offer.
-MissedRun(cut, g) ==
-    /\ REOFFER = "anyMiss" /\ req \in Runs /\ st = "owed"
-    /\ ~Closes(req, nreg, cut, g, "skip")
 
 (* ============================ the record (owed.py) ============================ *)
 
@@ -360,8 +452,9 @@ Land ==
     /\ IF turn \/ q = "caller"
          THEN missed' = TRUE /\ UNCHANGED <<rloc, rk, hPost, displaced>>
          ELSE Ask("run") /\ UNCHANGED missed
-    /\ UNCHANGED <<fed, uncut, reoffers, heard, repeat, line, q, tres, tend, mark, gtool, reply, ended,
-                   runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
+    /\ UNCHANGED <<fed, uncut, reoffers, told, part1, hacc, heard, repeat, line, q, tres, tend,
+                   mark, gtool, reply, ended, runUnder, runMid, staleNote, noNote, staleHeard,
+                   relook, retell, got>>
 
 \* The settle feed: owed.py hears how the reply ended and closes the record on the
 \* evidence. Its own step, so a reader that does not wait for it reads a stale record.
@@ -373,7 +466,8 @@ Settle ==
     /\ fed = "close"
     /\ fed' = "none"
     /\ st' = IF st = "owed" THEN "closed" ELSE st
-    /\ UNCHANGED <<uncut, missed, reoffers, heard, repeat, line, door, reply, ended, mons>>
+    /\ UNCHANGED <<uncut, missed, reoffers, told, part1, hacc, heard, repeat, line, door, reply,
+                   ended, mons>>
 
 \* The lull (§4 (a)): the caller's turn has been answered and the line has been quiet for
 \* LULL_S (~10 s) -- owed.py's lull timer, re-armed by every VAD start, turn and reply.
@@ -389,8 +483,9 @@ Lull ==
     /\ reoffers' = reoffers + 1
     /\ missed' = FALSE                         \* runAfterCut: re-armed by the next cut
     /\ Ask("reoffer")
-    /\ UNCHANGED <<st, fed, uncut, heard, repeat, line, q, tres, tend, mark, gtool, reply, ended,
-                   runUnder, runMid, staleNote, noNote, staleHeard, relook, got>>
+    /\ UNCHANGED <<st, fed, uncut, told, part1, hacc, heard, repeat, line, q, tres, tend, mark,
+                   gtool, reply, ended, runUnder, runMid, staleNote, noNote, staleHeard, relook,
+                   retell, got>>
 
 (* ============================ the door (FollowupGate) ============================ *)
 
@@ -422,7 +517,8 @@ RunGo ==
               /\ noNote'     = (noNote \/ (st = "owed" /\ ~Noted(st)))
               /\ staleHeard' = (staleHeard \/ (Noted(st) /\ heard))
          ELSE UNCHANGED <<reply, runUnder, runMid, staleNote, noNote, staleHeard>>
-    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, tend, mark, gtool, ended, displaced, relook, got>>
+    /\ UNCHANGED <<rec, heard, repeat, line, q, hPost, tres, tend, mark, gtool, ended, displaced,
+                   relook, retell, got>>
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S) on a held run: DROPPED, never released (room
 \* TV noise holds it forever otherwise; §4). A timer: never forced (not in FairSpec).
@@ -430,8 +526,8 @@ Cap ==
     /\ ~ended /\ rloc = "wait" /\ (vad \/ pend)
     /\ rloc' = "none" /\ rk' = "none"
     /\ missed' = (missed \/ (REOFFER = "anyMiss" /\ st = "owed"))
-    /\ UNCHANGED <<st, fed, uncut, reoffers, heard, repeat, line, q, hPost, tres, tend, mark, gtool, reply,
-                   ended, mons>>
+    /\ UNCHANGED <<st, fed, uncut, reoffers, told, part1, hacc, heard, repeat, line, q, hPost,
+                   tres, tend, mark, gtool, reply, ended, mons>>
 
 \* The caller's VAD stopped and no words came within TEAPORT_REPLY_HOLD_RELEASE_S (a
 \* cough): FollowupGate's _speech_over. The held post-tool answer goes on; a held run
@@ -456,7 +552,7 @@ ToolResult ==
                    ELSE UNCHANGED <<rloc, rk, displaced>>
          ELSE q' = "post" /\ UNCHANGED <<hPost, rloc, rk, displaced>>
     /\ UNCHANGED <<rec, heard, repeat, line, mark, reply, ended, runUnder, runMid, staleNote,
-                   noNote, staleHeard, relook, got>>
+                   noNote, staleHeard, relook, retell, got>>
 
 \* The call's in-progress frame reaches the gate. It is uninterruptible, so it may come
 \* after the barge-in that cancelled the call (TurnStart) or after its result. The
@@ -497,7 +593,7 @@ Issue ==
     \* staleFlag: any completion's start clears the one flag (LLMFullResponseStartFrame).
     /\ gtool' = IF Mut("staleFlag") THEN FALSE ELSE gtool
     /\ UNCHANGED <<say, rec, heard, repeat, line, hPost, rloc, rk, tres, tend, mark, ended,
-                   runUnder, runMid, displaced, relook, got>>
+                   runUnder, runMid, displaced, relook, retell, got>>
 
 \* What the model may say, by who asked and what the request carried (header; DESIGN.md
 \* "What the evidence supports"). "tool" is a sync tool call (get_current_time, ...),
@@ -521,16 +617,18 @@ Says(p, r, n) ==
 \* end here, uncut and unheard. Everything else starts playing.
 Say ==
     /\ ~ended /\ req # "none" /\ ph = "gen"
-    /\ \E s \in Says(req, rst, noted) :
+    /\ \E s \in Says(req, rst, noted) \ Opt(Restrained /\ nreg, "part") :
          /\ repeat' = (repeat \/ (req \in Runs /\ s \in {"tell", "part"} /\ heard))
+         /\ retell' = IF noted /\ heard /\ s \in {"tell", "part"}
+                        THEN (IF retell < 2 THEN retell + 1 ELSE 2) ELSE retell
          /\ relook' = (relook \/ (s = "lookup" /\ rst # "none"))
          /\ IF s \in {"silent", "stay", "tool"}
-              THEN /\ Finish(FALSE, "nothing")
+              THEN /\ Finish(FALSE, "nothing", FALSE)
                    /\ tres' = (s = "tool") /\ mark' = (s = "tool")
-                   /\ missed' = (missed \/ MissedRun(FALSE, "nothing"))
               ELSE /\ say' = s /\ ph' = "play"
                    /\ tres' = (s = "texttool") /\ mark' = (s = "texttool")
-                   /\ UNCHANGED <<req, rst, noted, nreg, heard, fed, uncut, missed, got>>
+                   /\ UNCHANGED <<req, rst, noted, nreg, heard, fed, uncut, missed, told, part1,
+                                  hacc, got>>
     /\ UNCHANGED <<st, reoffers, line, q, hPost, rloc, rk, tend, gtool, ended, runUnder,
                    runMid, displaced, staleNote, noNote, staleHeard>>
 
@@ -538,11 +636,10 @@ Say ==
 \* gate here with its call still out (tend).
 Played ==
     /\ ~ended /\ ph = "play"
-    /\ Finish(FALSE, PlayGot(say))
-    /\ missed' = (missed \/ MissedRun(FALSE, PlayGot(say)))
+    /\ \E g \in PlayGot(say) \ Opt(Restrained /\ nreg, "mention") : Finish(FALSE, g, FALSE)
     /\ tend' = (tres /\ say = "texttool")
-    /\ UNCHANGED <<st, reoffers, repeat, line, q, hPost, rloc, rk, tres, mark, gtool, ended, runUnder,
-                   runMid, displaced, staleNote, noNote, staleHeard, relook>>
+    /\ UNCHANGED <<st, reoffers, repeat, line, q, hPost, rloc, rk, tres, mark, gtool, ended,
+                   runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook, retell>>
 
 (* ============================ the caller ============================ *)
 
@@ -565,14 +662,14 @@ VadStop ==
 TurnStart ==
     /\ ~ended /\ pend /\ ~turn
     /\ turn' = TRUE /\ pend' = FALSE
-    /\ missed' = (missed \/ st = "owed")
     /\ q' = "none" /\ hPost' = FALSE /\ rloc' = "none" /\ rk' = "none" /\ tres' = FALSE
     /\ tend' = FALSE /\ gtool' = FALSE  \* the cancel; a queued in-progress frame stays (mark)
     /\ IF req # "none"
-         THEN \E g \in CutGot(say, ph) : Finish(TRUE, g)
-         ELSE UNCHANGED <<reply, heard, fed, uncut, got>>
-    /\ UNCHANGED <<st, reoffers, repeat, vad, speech, mark, ended, runUnder, runMid,
-                   displaced, staleNote, noNote, staleHeard, relook>>
+         THEN \E g \in CutGot(say, ph) : Finish(TRUE, g, st = "owed")
+         ELSE /\ missed' = (missed \/ st = "owed")
+              /\ UNCHANGED <<reply, heard, fed, uncut, told, part1, hacc, got>>
+    /\ UNCHANGED <<st, reoffers, repeat, vad, speech, mark, ended, runUnder, runMid, displaced,
+                   staleNote, noNote, staleHeard, relook, retell>>
 
 \* The turn ends: its words are committed and the LLM asked (TurnCommitMark claims the
 \* window). The commit takes the words of speech that has stopped (UserTurn's
@@ -647,6 +744,10 @@ HoldNoLoss == ~displaced
 \* At most one re-offer per record (§4 (a)).
 OneReoffer == reoffers <= 1
 
+\* A heard answer is re-told at most once by a request that carried the note (#210: the
+\* one-fact answer of 2026-10-23, told five times while the note said "NOT heard").
+RetellOnce == retell <= 1
+
 \* The model never re-looks-up what the outcome answers (the #203 49-second redo).
 NoRedundantLookup == ~relook
 
@@ -658,6 +759,7 @@ OwedResolves == (st = "owed") ~> (st = "closed" \/ ended \/ reoffers > 0)
 TypeOK ==
     /\ st \in {"none", "owed", "closed"} /\ fed \in {"none", "close"}
     /\ uncut \in 0..2 /\ missed \in BOOLEAN /\ reoffers \in 0..2
+    /\ told \in 0..2 /\ part1 \in BOOLEAN /\ hacc \in BOOLEAN /\ retell \in 0..2
     /\ heard \in BOOLEAN /\ repeat \in BOOLEAN
     /\ vad \in BOOLEAN /\ pend \in BOOLEAN /\ turn \in BOOLEAN /\ speech \in 0..MaxSpeech
     /\ q \in {"none", "caller", "post"} /\ hPost \in BOOLEAN
@@ -673,12 +775,15 @@ TypeOK ==
     \* the model's one-slot queue at the LLM is enough: a held post-tool answer and a
     \* queued request never coexist (a turn start drops the one, a commit needs a turn)
     /\ ~(hPost /\ q # "none")
-    /\ ended \in BOOLEAN /\ got \in {"none", "nothing", "lead", "filler", "some", "words", "all"}
-    /\ OWES \in BOOLEAN
+    /\ ended \in BOOLEAN
+    /\ got \in {"none", "nothing", "lead", "filler", "mention", "some", "words", "all"}
+    /\ OWES \in BOOLEAN /\ CLOSE \in {"lexical", "gist"} /\ LEXMISS \in BOOLEAN
+    /\ PTOWES \in BOOLEAN /\ NOVERDICT \in BOOLEAN /\ MENTION \in BOOLEAN /\ TWICE \in BOOLEAN
     /\ MUT \subseteq {"fraction", "countSettle", "singleWord", "oneItem", "storeNote",
                       "runAfterCut", "lagSettle", "oneSlot", "askOnly", "turnLevel",
                       "vadLevel", "renderInGet", "ledgerMax", "endClearsTool",
-                      "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical"}
+                      "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical",
+                      "gistWrong", "noBackstop", "oneReply"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
 =============================================================================

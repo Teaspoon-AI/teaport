@@ -132,8 +132,10 @@ class Rig:
         session = build_agent_session(transport, front_end="talk")
         self.session, self.owed = session, session.owed
         assert self.owed.judge == session.llm.judge_cut, "the session's cut judge"
-        # The scripted provider answers the turns; a cut is never judged here (errs owed).
-        self.owed.judge = None
+        assert self.owed.gist == session.llm.judge_gist, "the session's gist judge"
+        # The scripted provider answers the turns; nothing is judged here: a cut errs owed,
+        # a reply about a record played to its end closes it (no verdict).
+        self.owed.judge = self.owed.gist = None
         inner = next(p for p in session.task.pipeline.processors if isinstance(p, Pipeline))
         procs = inner.processors
         first = next(i for i, p in enumerate(procs) if isinstance(p, LLMUserAggregator))
