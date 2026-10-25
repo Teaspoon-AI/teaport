@@ -87,12 +87,12 @@ class _Judge:
 class GateRig:
     """top -> gate -> bottom, the start strategy fed the bot's state by hand."""
 
-    def __init__(self, judge, *, paused=True, min_words=1):
+    def __init__(self, judge, *, paused=True, min_words=1, wait=WAIT_S):
         self.strategy = PauseAwareMinWordsStrategy(min_words=min_words)
         self.holds = []
         self.judge = judge
         self.gate = BargeInJudgeGate(self.strategy, judge, hold_resume=self.holds.append,
-                                     wait_secs=WAIT_S)
+                                     wait_secs=wait)
         self.top, self.bottom = Tap(), Tap()
         self.task = PipelineTask(Pipeline([self.top, self.gate, self.bottom]),
                                  cancel_on_idle_timeout=False)
@@ -178,7 +178,7 @@ async def test_a_stop_verdict_lets_the_words_on_too():
 
 async def test_words_that_grow_while_judged_are_asked_on_whole():
     judge = _Judge({"Okay": CONTINUE, "Okay, and then what?": ANSWER}, delay=0.1)
-    async with GateRig(judge) as rig:
+    async with GateRig(judge, wait=0.6) as rig:
         await rig.task.queue_frame(interim("Okay"))
         await asyncio.sleep(0.03)
         await rig.task.queue_frames([interim("Okay, and then what?"),
@@ -203,24 +203,50 @@ async def test_a_stop_word_while_judging_takes_the_turn_at_once():
 
 
 async def test_the_hold_has_one_deadline_however_often_the_judge_is_asked():
-    judge = _Judge({"Okay": CONTINUE, "Okay so": CONTINUE}, delay=0.2)
-    async with GateRig(judge) as rig:
+    judge = _Judge({"Okay": CONTINUE, "Okay so": CONTINUE}, delay=0.35)
+    async with GateRig(judge, wait=0.6) as rig:
         t0 = time.monotonic()
         await rig.task.queue_frame(interim("Okay"))
         await asyncio.sleep(0.1)
         await rig.task.queue_frame(interim("Okay so"))
-        await asyncio.sleep(WAIT_S + 0.1)
+        await asyncio.sleep(0.65)
         assert judge.asked == ["Okay", "Okay so"], judge.asked
         let_on = [t for t, d, f in rig.bottom.frames if isinstance(f, InterimTranscriptionFrame)]
-        assert let_on and let_on[0] - t0 < WAIT_S + 0.08, (
-            f"let on {let_on[0] - t0 if let_on else None:.2f}s after the first words: the "
+        assert let_on and let_on[0] - t0 < 0.68, (
+            f"let on {let_on[0] - t0 if let_on else None}s after the first words: the "
             "asked-again judge must not get a fresh wait of its own")
         assert rig.gate.verdicts[None] == 1
 
 
+async def test_with_too_little_of_the_hold_left_the_grown_words_go_on_unasked():
+    judge = _Judge({"Okay": CONTINUE}, delay=0.2)
+    async with GateRig(judge) as rig:
+        await rig.task.queue_frame(interim("Okay"))
+        await asyncio.sleep(0.05)
+        await rig.task.queue_frame(interim("Okay so"))
+        await asyncio.sleep(0.25)
+        assert judge.asked == ["Okay"], f"{judge.asked}: 0.1 s left is no time to ask again"
+        assert rig.out() == [("interim", "Okay"), ("interim", "Okay so")], rig.out()
+
+
+async def test_words_whose_segment_closed_empty_do_not_swallow_a_later_utterance():
+    judge = _Judge({"Okay sure": CONTINUE})
+    async with GateRig(judge) as rig:
+        await rig.task.queue_frames([interim("Okay sure"), SegmentDoneFrame(stop_n=3)])
+        await asyncio.sleep(0.15)
+        assert rig.out() == [("close", 3)], rig.out()
+        await rig.strategy.process_frame(BotStoppedSpeakingFrame())
+        await rig.task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await rig.task.queue_frame(final("Okay, sure.", stop_n=4))
+        await asyncio.sleep(0.1)
+        assert rig.out() == [("close", 3), ("final", "Okay, sure.")], (
+            f"{rig.out()}: the judged segment had ended without a final; these words are "
+            "a new utterance to a silent bot")
+
+
 async def test_held_segments_are_judged_together_and_the_open_one_closes_on_its_final():
     judge = _Judge({"Okay": CONTINUE, "Okay. so": CONTINUE}, delay=0.1)
-    async with GateRig(judge) as rig:
+    async with GateRig(judge, wait=0.6) as rig:
         await rig.task.queue_frame(interim("Okay"))
         await asyncio.sleep(0.03)
         await rig.task.queue_frames([final("Okay.", stop_n=3), interim("so")])

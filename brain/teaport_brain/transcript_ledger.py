@@ -921,7 +921,7 @@ class TranscriptLedger(BaseObserver):
             if not text:
                 return None
             heard, _, _ = self._heard(turn, text, self._paused_at, turn["played"],
-                                      interrupted=True)
+                                      interrupted=True, trace=False)
             return text, heard
         return None
 
@@ -972,7 +972,7 @@ class TranscriptLedger(BaseObserver):
     # ------------------------------------------------------------------ chart
 
     def _heard(self, turn: dict, intended: str, t: float, heard: float,
-               interrupted: bool) -> tuple:
+               interrupted: bool, trace: bool = True) -> tuple:
         """What the caller heard of `turn` by `t`, `heard` seconds of its audio played:
         (heard text, heard fraction, the pts prefix or None without per-word pts). One
         reading for the chart (_finish) and the barge-in judge (paused_reply)."""
@@ -1005,7 +1005,7 @@ class TranscriptLedger(BaseObserver):
             # would silently drop words the user did hear). Compared by characters,
             # not words, so a voice whose tokens are characters compares too.
             heard_text = pts_heard if len(_nospace(pts_heard)) >= len(_nospace(est)) else est
-            if _TRACE:
+            if _TRACE and trace:
                 logger.info(
                     f"TRACE cut t={t:.2f} audio_start={turn['audio_start']} "
                     f"heard={heard:.2f} pushed={audio_dur:.2f} played_before={turn['played']:.2f} "

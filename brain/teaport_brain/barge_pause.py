@@ -187,6 +187,8 @@ JUDGE = setting("TEAPORT_BARGE_JUDGE")
 # 0.74 s (100 sequential, 2026-10-25): the tail is the call's load. Only a timeout waits
 # this long -- a verdict is acted on when it comes.
 _JUDGE_WAIT_S = 1.2
+# Less of the hold left than about a judge's p50, and asking again is not worth a request.
+_REASK_MIN_S = 0.2
 
 CONTINUE, STOP, ANSWER = "continue", "stop", "answer"
 
@@ -576,11 +578,12 @@ def _close_of(final) -> SegmentDoneFrame:
 
 
 def _open_words(held: list) -> str:
-    """The latest interim after the last final in `held`: the words of a segment still
-    open (an interim repeats its segment's words so far); "" when its final is in."""
+    """The latest interim after the last segment end in `held`: the words of a segment
+    still open (an interim repeats its segment's words so far); "" once it has ended --
+    its final, or a close or reset without one (a final the echo guard emptied)."""
     words = ""
     for f in held:
-        if isinstance(f, TranscriptionFrame):
+        if isinstance(f, (TranscriptionFrame, SegmentDoneFrame, SegmentResetFrame)):
             words = ""
         elif isinstance(f, InterimTranscriptionFrame) and f.text.strip():
             words = f.text.strip()
@@ -712,9 +715,12 @@ class BargeInJudgeGate(FrameProcessor):
             if not self._held:
                 return  # released meanwhile: the pause ended
             if verdict == CONTINUE and _key(self._said) != _key(said):
-                # They said more while it was deciding: ask on all of it.
-                self._ask(self._said)
-                return
+                # They said more while it was deciding: ask on all of it -- with time
+                # left for an answer, or the words go on now.
+                if self._deadline - time.monotonic() >= _REASK_MIN_S:
+                    self._ask(self._said)
+                    return
+                verdict = None
             if verdict == CONTINUE:
                 await self._carry_on(said)
             else:
