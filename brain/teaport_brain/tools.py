@@ -434,7 +434,10 @@ _NATIVE_CONSULT_ACK_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT")
 # worst case (ACK 5s + native 45s = 50s) or pipecat abandons the call and drops the
 # late-arriving answer. Kept as one knob so the two can't drift. (Only bounds the
 # SYNC path; the ASYNC path returns in <1s — its wait is off the turn.)
-_OPENCLAW_AGENT_CONSULT_TIMEOUT = setting("TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT")
+# (Named TEAPORT_ASK_OPENCLAW_TIMEOUT before #230: still read under that name, with a
+# warning, while the new one is unset; settings.py.)
+_OPENCLAW_AGENT_CONSULT_TIMEOUT = setting("TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT",
+                                          former="TEAPORT_ASK_OPENCLAW_TIMEOUT")
 # ASYNC path: the consult runs off the turn as a background task, so it can wait far
 # longer than a voice turn ever could — the answer is told by a run of ours whenever
 # it lands (or an honest "couldn't get it" past this ceiling; owed.py).
@@ -1095,7 +1098,10 @@ TOOLS: tuple[Tool, ...] = (
     # arrives later (the "weather never came back" bug). Its ceiling sits above the
     # handler's own consult caps; the fast tools keep pipecat's 10s.
     Tool(OPENCLAW_AGENT_CONSULT, _bind_openclaw_agent_consult,
-         setting("TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT"), frozenset({"agent"}),
+         # TEAPORT_TOOL_ASK_OPENCLAW before #230 (settings.py: a box that switched it
+         # off keeps it off).
+         setting("TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT", former="TEAPORT_TOOL_ASK_OPENCLAW"),
+         frozenset({"agent"}),
          answers=True, timeout_secs=_OPENCLAW_AGENT_CONSULT_TIMEOUT,
          hint="openclaw_agent_consult (your full desktop agent — every tool, deeper "
               "thinking; for multi-step or open-ended requests your quick tools can't "

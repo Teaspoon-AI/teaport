@@ -1279,6 +1279,17 @@ tier = "tuning"
 help = "The function-call timeout for openclaw_agent_consult. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
 
 [[settings]]
+name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 5
+read = "startup"
+tier = "diag"
+help = "Renamed TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT (#230: the consult took OpenClaw's tool name). While the new name is unset, the brain still reads this one and logs a warning saying to rename it."
+
+[[settings]]
 name = "TEAPORT_ASYNC_CONSULT_TIMEOUT"
 store = "brain_env"
 group = "agent"
@@ -1383,6 +1394,24 @@ tier = "installer"
 help = "The persona file: the source with TEAPORT_AGENT=none, and the fallback when the gateway cannot give the voice context OpenClaw composes (a Talk session's instructions, or the room/phone context from the teaport plugin; OpenClaw 2026.9.7+). The installer points it at the secrets dir."
 
 [[settings]]
+name = "OPENCLAW_WORKSPACE"
+store = "brain_env"
+group = "agent"
+type = "dir"
+read = "startup"
+tier = "diag"
+help = "Retired (#230): the brain no longer reads the OpenClaw workspace. OpenClaw composes the voice context itself (its IDENTITY, USER and SOUL profile) and the teaport plugin serves it. If it is still set, the brain ignores it and logs a warning saying so."
+
+[[settings]]
+name = "TEAPORT_WORKSPACE_FILES"
+store = "brain_env"
+group = "agent"
+type = "string"
+read = "startup"
+tier = "diag"
+help = "Retired (#230): the voice profile's files are OpenClaw's choice (IDENTITY, USER and SOUL), composed by OpenClaw and served by the teaport plugin; MEMORY.md is no longer in the prompt (search_memory reaches it). If it is still set, the brain ignores it and logs a warning saying so."
+
+[[settings]]
 name = "OPENCLAW_MEMORY_DIR"
 store = "brain_env"
 group = "agent"
@@ -1473,6 +1502,15 @@ default = true
 read = "startup"
 tier = "tuning"
 help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
+
+[[settings]]
+name = "TEAPORT_TOOL_ASK_OPENCLAW"
+store = "brain_env"
+group = "tools"
+type = "flag"
+read = "startup"
+tier = "diag"
+help = "Renamed TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT (#230: the consult took OpenClaw's tool name). While the new name is unset, the brain still reads this one (a consult switched off stays off) and logs a warning saying to rename it."
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"

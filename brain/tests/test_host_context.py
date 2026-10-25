@@ -690,8 +690,10 @@ def test_without_a_gateway_nothing_is_asked(monkeypatch):
 def test_the_old_consult_name_is_gone():
     """One consult tool, OpenClaw's, on every front end: the brain's own name for it is
     not kept anywhere, not even as an alias. The historical run logs (brain/test/RUNLOG-*)
-    record what ran then and keep it."""
+    record what ran then and keep it, and the two settings named after it keep rows
+    under their old names (settings.py: a renamed setting is still read, with a warning)."""
     old = "ask_" + "openclaw"
+    renamed = ("teaport_tool_" + old, "teaport_" + old + "_timeout")
     if not os.path.isdir(os.path.join(REPO, "plugin")):
         pytest.skip("not a repository checkout")
     hits = []
@@ -706,10 +708,13 @@ def test_the_old_consult_name_is_gone():
             path = os.path.join(root, f)
             try:
                 with open(path, encoding="utf-8") as fh:
-                    if old in fh.read().lower():
-                        hits.append(os.path.relpath(path, REPO))
+                    text = fh.read().lower()
+                for name in renamed:
+                    text = text.replace(name, "")
             except (OSError, UnicodeDecodeError):
                 continue
+            if old in text:
+                hits.append(os.path.relpath(path, REPO))
     assert not hits, hits
 
 

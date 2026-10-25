@@ -37,7 +37,12 @@
 #                      (= VOICE_OVERLAY / VOICE_OVERLAY_LOCAL for the default tools)
 #   Talk               OpenClaw's text + tools + consult (HOST_RULES) + delivery
 #   room, phone        OpenClaw's text + tools + consult (HOST_CONTEXT) + delivery
+#   (and other /talk clients: the Discord bridge)
 #
+import os
+
+from loguru import logger
+
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.settings import setting
 
@@ -370,6 +375,16 @@ def tools_paragraph(tools, host: str | None = None) -> str:
 # Shared source of truth for identity. The OpenClaw text agent should read the same
 # file (e.g. symlinked from its workspace AGENTS.md) so both surfaces are one agent.
 PERSONA_FILE = setting("TEAPORT_PERSONA_FILE")
+# The workspace settings the brain read its own persona with before #230; OpenClaw
+# composes that text now (host_context.py), so they are only warned about.
+if os.getenv("OPENCLAW_WORKSPACE") is not None:
+    logger.warning("OPENCLAW_WORKSPACE is no longer read and is ignored: OpenClaw composes "
+                   "the voice context (its IDENTITY, USER and SOUL profile) and the teaport "
+                   "plugin serves it")
+if os.getenv("TEAPORT_WORKSPACE_FILES") is not None:
+    logger.warning("TEAPORT_WORKSPACE_FILES is no longer read and is ignored: the voice "
+                   "profile's files are OpenClaw's choice (IDENTITY, USER, SOUL), and "
+                   "MEMORY.md is reached through search_memory")
 
 
 def load_persona() -> str:

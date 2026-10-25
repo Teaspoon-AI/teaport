@@ -46,8 +46,10 @@ sys.path.insert(0, str(PKG.parent))
 from teaport_brain import config_schema  # noqa: E402  (stdlib-only: tomllib)
 from tempdirs import tempdir  # noqa: E402
 
+# `former="OLD"` is a read too: setting("NEW", former="OLD") reads a renamed setting's old
+# name while the new one is unset (settings.py, RENAMED).
 READ_RE = re.compile(
-    r'(?:getenv|\bsetting|environ\.get|environ\[)\(?\s*(["\'])([A-Z][A-Z0-9_]+)\1(?!\]\s*=[^=])'
+    r'(?:getenv|\bsetting|environ\.get|environ\[|\bformer=)\(?\s*(["\'])([A-Z][A-Z0-9_]+)\1(?!\]\s*=[^=])'
 )
 SETDEFAULT = r"""\benviron\.setdefault\(\s*(["']){name}\1"""
 

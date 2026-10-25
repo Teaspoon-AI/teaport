@@ -176,6 +176,7 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT` | **1.5** s (≥ 0.2) | No ack within this means no native runner: fall back fast instead of burning the full window. A live relay acks within moments; the Discord bridge never acks. |
 | `TEAPORT_NATIVE_CONSULT_TIMEOUT` | **45** s (≥ 5) | How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves. |
 | `TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT` | **55** s (≥ 5) | The function-call timeout for openclaw_agent_consult. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only. |
+| `TEAPORT_ASK_OPENCLAW_TIMEOUT` | — | Renamed TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT (#230: the consult took OpenClaw's tool name). While the new name is unset, the brain still reads this one and logs a warning saying to rename it. |
 | `TEAPORT_ASYNC_CONSULT_TIMEOUT` | **130** s (≥ 5) | Async consult ceiling, for every lane: the native Talk consult and the gateway/CLI fallback (SIP). The consult runs off the turn; the answer is spoken as an unprompted follow-up when it lands, or a "that took too long" past this. Sized just past the Control UI's own hard 120 s consult wait, after which no Talk result can arrive. |
 | `TEAPORT_FOLLOWUP_QUIET_S` | **0.7** s (≥ 0) | How long the conversation must stay quiet before a window counts for something the brain says or adds on its own (a delegated answer as it lands, a client note); rejects mid-thought pauses and between-turn gaps. |
 | `TEAPORT_FOLLOWUP_MAX_WAIT_S` | **60** s (≥ 1) | Ceiling on one wait for such a window by a client note that asked for no reaction; past it the note waits again (it never goes in mid-turn). |
@@ -185,6 +186,8 @@ In `/etc/teaport/brain.env`. TEAPORT_AGENT says whether the box has a co-residen
 | `TEAPORT_THINKING_GAIN` | **0.8** (0–1) | Bed level; 1.0 is the typing's limited peak (-6 dBFS). |
 | `TEAPORT_THINKING_MAX_S` | **60** s (≥ 1) | Most typing heard per consult; the face types for the whole consult. |
 | `TEAPORT_PERSONA_FILE` | `~/.config/teaport/persona.md` | The persona file: the source with TEAPORT_AGENT=none, and the fallback when the gateway cannot give the voice context OpenClaw composes (a Talk session's instructions, or the room/phone context from the teaport plugin; OpenClaw 2026.9.7+). The installer points it at the secrets dir. *Set by the installer.* |
+| `OPENCLAW_WORKSPACE` | — | Retired (#230): the brain no longer reads the OpenClaw workspace. OpenClaw composes the voice context itself (its IDENTITY, USER and SOUL profile) and the teaport plugin serves it. If it is still set, the brain ignores it and logs a warning saying so. |
+| `TEAPORT_WORKSPACE_FILES` | — | Retired (#230): the voice profile's files are OpenClaw's choice (IDENTITY, USER and SOUL), composed by OpenClaw and served by the teaport plugin; MEMORY.md is no longer in the prompt (search_memory reaches it). If it is still set, the brain ignores it and logs a warning saying so. |
 | `OPENCLAW_MEMORY_DIR` | `~/.openclaw/workspace/memory` | The daily-note store a voice-saved memory is appended to, shared with the text agent so both recall it. *Set by the installer.* |
 | `TEAPORT_THINKING_WAV` | `""` | Your own 24 kHz mono 16-bit wav to loop as the thinking bed (the face does not type along to it). Empty = typing generated live. |
 
@@ -201,6 +204,7 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_SEARCH_MEMORY` | **on** | Recall from the shared long-term memory. Needs TEAPORT_AGENT=openclaw. |
 | `TEAPORT_TOOL_REMEMBER` | **on** | Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw. |
 | `TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT` | **on** | Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal). |
+| `TEAPORT_TOOL_ASK_OPENCLAW` | — | Renamed TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT (#230: the consult took OpenClaw's tool name). While the new name is unset, the brain still reads this one (a consult switched off stays off) and logs a warning saying to rename it. |
 | `TEAPORT_TOOL_LIST_VOICES` | **on** | List the speaking voices. |
 | `TEAPORT_TOOL_SWITCH_VOICE` | **on** | Change the speaking voice (and with it the reply language). |
 | `TEAPORT_TOOL_SET_VOLUME` | **on** | Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions. |

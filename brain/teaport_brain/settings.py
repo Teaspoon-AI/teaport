@@ -52,6 +52,14 @@
 # A name with no row is a KeyError at import — a setting nobody can see, document or
 # validate fails the first test that imports its module instead of shipping.
 #
+# A RENAMED setting keeps a row under its old name (tier diag, its help naming the new
+# one), and its read names both: setting("NEW", former="OLD"). While NEW is unset and OLD
+# is set, OLD's value is read, with a warning naming the rename, so an env file written
+# before it keeps meaning what it said -- a switch turned off stays off -- instead of
+# being silently ignored. A RETIRED one (nothing reads it any more) keeps a row the same
+# way, and the module that dropped it warns when it is still set (reply_hold.py's
+# TEAPORT_REPLY_HOLD).
+#
 import json
 import math
 import os
@@ -252,17 +260,23 @@ def default_of(row: dict):
 _SCHEMA_DEFAULT = object()
 
 
-def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
+def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ, *, former: str | None = None):
     """The value of setting `name`: its environment text, parsed by its schema row.
 
     Unset or empty -> the row's default, or `default` for the few rows whose default
     is computed in code; set-but-empty is "" instead where empty_is_value(row). A value
     that does not parse warns and falls back the same way: these are read at import,
     and an exception would crash-loop the service. normalize() says what text a value
-    is read as (stripped)."""
+    is read as (stripped). `former`: the name it had before a rename (module comment),
+    read in its place, with a warning, while `name` is unset."""
     row = ROWS[name]
     fallback = default_of(row) if default is _SCHEMA_DEFAULT else default
     raw = normalize(row, env.get(name))
+    if raw is None and former is not None \
+            and normalize(ROWS[former], env.get(former)) is not None:
+        logger.warning(f"{former} is renamed {name}: its value is read for now; rename it "
+                       "in the env file")
+        return setting(former, fallback, env)
     if raw is None:
         return fallback
     if raw == "":
