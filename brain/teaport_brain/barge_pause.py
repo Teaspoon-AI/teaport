@@ -40,15 +40,18 @@
 # one-word judge (the cut judge's request path, owed.py) whether the reply should carry
 # on, stop, or answer them. CONTINUE drops the words -- a final becomes the wordless
 # close a cough gives -- and the reply resumes from the sample it paused on, as it does
-# for a cough. STOP or ANSWER, or no verdict within _JUDGE_WAIT_S, lets the frames on as
-# they came, and the turn starts exactly as it would have without the judge, that much
-# later. Stop words (below) and a pause whose reply would be over by now are not
-# judged. Replayed on gpt-oss-120b (2026-10-25, 7 contexts, 1,722 trials): backchannels
-# 459/462 CONTINUE, stops and hold-ons 374/378 and questions and corrections 331/336
-# not; its first token p50 0.21 s, p90 0.40 s from the request. The in-context alternative (a continue_speaking tool in the
-# turn's own context) continued over 61 of 96 questions. A pause with no words in it
-# is no different with the judge: an empty transcript that was really a "stop" still
-# resumes (the STT's to fix, not a decision's).
+# for a cough. STOP or ANSWER, or no verdict within _JUDGE_WAIT_S of the first words,
+# lets the frames on as they came, and the turn starts exactly as it would have without
+# the judge, that much later; so does a stop word, or the reply's would-be end, arriving
+# while it decides. Stop words (below), a pause whose reply would be over by now and an
+# open user turn's own words are not judged. formal/UserTurn.tla's JUDGE rows check the
+# gate around the verdict (formal/README.md). Replayed on gpt-oss-120b (2026-10-25, 7
+# contexts, 1,722 trials): backchannels 459/462 CONTINUE, stops and hold-ons 374/378 and
+# questions and corrections 331/336 not; its first token p50 0.21 s, p90 0.40 s from the
+# request. The in-context alternative (a continue_speaking tool in the turn's own
+# context) continued over 61 of 96 questions. A pause with no words in it is no
+# different with the judge: an empty transcript that was really a "stop" still resumes
+# (the STT's to fix, not a decision's).
 #
 # Three things it does NOT pause, each because pausing there cost more than it saved:
 #
@@ -124,6 +127,8 @@ from pipecat.frames.frames import (
     SystemFrame,
     TranscriptionFrame,
     TTSAudioRawFrame,
+    UserStartedSpeakingFrame,
+    UserStoppedSpeakingFrame,
     VADUserStartedSpeakingFrame,
     VADUserStoppedSpeakingFrame,
 )
@@ -516,11 +521,17 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         """BargeInJudgeGate: would `text` start a turn now as a barge-in into a paused
         reply -- one the judge decides instead? Not a stop word, nor once the reply would
         have been over anyway: those start it here as they always did."""
+        return (self.paused_for_judging() and len(text.split()) >= self._min_words
+                and not self.stops(text))
+
+    def paused_for_judging(self) -> bool:
+        """The bot is paused mid-reply, and its held-back audio would not be over yet."""
         return (self._bot_speaking and self._playout_paused
-                and len(text.split()) >= self._min_words
-                and not is_stop_utterance(text, self._stop_words)
                 and not (self._would_end_at is not None
                          and time.monotonic() >= self._would_end_at))
+
+    def stops(self, text: str) -> bool:
+        return is_stop_utterance(text, self._stop_words)
 
     async def _notify(self):
         if self._on_final_without_turn is not None:
@@ -564,6 +575,26 @@ def _close_of(final) -> SegmentDoneFrame:
     return SegmentDoneFrame(stop_n=NO_STOP if stop_n is None else stop_n)
 
 
+def _open_words(held: list) -> str:
+    """The latest interim after the last final in `held`: the words of a segment still
+    open (an interim repeats its segment's words so far); "" when its final is in."""
+    words = ""
+    for f in held:
+        if isinstance(f, TranscriptionFrame):
+            words = ""
+        elif isinstance(f, InterimTranscriptionFrame) and f.text.strip():
+            words = f.text.strip()
+    return words
+
+
+def _held_words(held: list) -> str:
+    """Every word in `held`, as the judge is asked on them: each closed segment's final,
+    then the open one's latest interim."""
+    finals = [f.text.strip() for f in held
+              if isinstance(f, TranscriptionFrame) and f.text.strip()]
+    return " ".join(finals + [w for w in (_open_words(held),) if w])
+
+
 class BargeInJudgeGate(FrameProcessor):
     """Holds the caller's words over a paused reply while the judge decides them (see
     the module header). Place it directly above the user aggregator.
@@ -582,9 +613,14 @@ class BargeInJudgeGate(FrameProcessor):
         # judging. A lock keeps a release in one piece against frames still arriving.
         self._held: list = []
         self._lock = asyncio.Lock()
-        # The latest held words, and the judge asked now (on which words).
+        # All the held words, the judge asked now, and when the hold gives up on it:
+        # one deadline for the hold, however often the judge is asked again.
         self._said = ""
         self._task = None
+        self._deadline = 0.0
+        # A user turn is open (the aggregator below broadcasts its start and stop): its
+        # words are its own, never judged.
+        self._turn_open = False
         # Words judged CONTINUE, until their segment closes: the final that repeats an
         # interim's verdict is not asked again, nor does it cut the resumed reply.
         self._continued = None
@@ -598,16 +634,20 @@ class BargeInJudgeGate(FrameProcessor):
                 if not await self._gate(frame):
                     await self.push_frame(frame, direction)
             return
-        over = isinstance(frame, (InterruptionFrame, BotStoppedSpeakingFrame, EndFrame,
-                                  CancelFrame))
-        if over or (isinstance(frame, PlayoutPauseFrame) and not frame.paused):
+        if direction == FrameDirection.UPSTREAM and isinstance(
+                frame, (UserStartedSpeakingFrame, UserStoppedSpeakingFrame)):
+            self._turn_open = isinstance(frame, UserStartedSpeakingFrame)
+        new_turn = isinstance(frame, (InterruptionFrame, EndFrame, CancelFrame))
+        if new_turn or isinstance(frame, BotStoppedSpeakingFrame) \
+                or (isinstance(frame, PlayoutPauseFrame) and not frame.paused):
             # The turn opened some other way, the reply is over, or the pause ended (a
             # resume the judge did not ask for: its cap): what is held goes on as it
             # came, to be counted as it always was. A verdict to carry on outlives the
-            # resume it asked for -- its final may still be on its way -- but not the reply.
+            # resume it asked for and the reply's end -- its final may still be on its
+            # way, and its segment's close ends it -- but not a new turn.
             async with self._lock:
                 await self._release("the pause is over")
-                if over:
+                if new_turn:
                     self._continued = None
         await self.push_frame(frame, direction)
 
@@ -617,7 +657,14 @@ class BargeInJudgeGate(FrameProcessor):
             self._held.append(frame)
             if isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)) \
                     and frame.text.strip():
-                self._said = frame.text
+                if self._strategy.stops(frame.text) \
+                        or not self._strategy.paused_for_judging():
+                    # "Stop." while it decides, or the reply would be over by now: no
+                    # verdict to wait for, the words take the turn as they would have.
+                    await self._release("a stop word" if self._strategy.stops(frame.text)
+                                        else "the reply would be over")
+                else:
+                    self._said = _held_words(self._held)
             return True
         if not isinstance(frame, (TranscriptionFrame, InterimTranscriptionFrame)):
             if isinstance(frame, (SegmentDoneFrame, SegmentResetFrame)):
@@ -634,10 +681,11 @@ class BargeInJudgeGate(FrameProcessor):
                 await self.push_frame(_close_of(frame))
             return True
         self._continued = None
-        if not self._strategy.judges(text):
+        if self._turn_open or not self._strategy.judges(text):
             return False
         self._held = [frame]
         self._said = text
+        self._deadline = time.monotonic() + self._wait_secs
         if self._hold_resume is not None:
             self._hold_resume(True)
         self._ask(text)
@@ -649,10 +697,10 @@ class BargeInJudgeGate(FrameProcessor):
     async def _decide(self, said: str):
         t0 = time.monotonic()
         try:
-            verdict = await asyncio.wait_for(self._judge(said), self._wait_secs)
+            verdict = await asyncio.wait_for(self._judge(said), max(0.0, self._deadline - t0))
             why = ""
         except asyncio.TimeoutError:
-            verdict, why = None, f" (none within {self._wait_secs:.1f}s)"
+            verdict, why = None, f" (none within {self._wait_secs:.1f}s of the first words)"
         except Exception as e:  # noqa: BLE001 -- a judge failure is no verdict
             verdict, why = None, f" ({type(e).__name__}: {e})"
         self.verdicts[verdict] += 1
@@ -675,14 +723,14 @@ class BargeInJudgeGate(FrameProcessor):
     async def _carry_on(self, said: str):
         """CONTINUE: the held words are dropped, and the reply resumes as for a cough."""
         held, self._held = self._held, []
-        self._continued = _key(said)
+        # The open segment's words, if the held ones end in one: its final is still to
+        # come, and is that segment's close when it does.
+        self._continued = _key(_open_words(held)) or None
         for f in held:
             if isinstance(f, TranscriptionFrame):
-                if f.text.strip():
-                    self._continued = None
-                    f = _close_of(f)
-                else:
+                if not f.text.strip():
                     continue
+                f = _close_of(f)
             elif isinstance(f, InterimTranscriptionFrame):
                 continue
             await self.push_frame(f)

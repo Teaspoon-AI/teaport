@@ -2434,6 +2434,79 @@ a TTS context; the bed has none): pausing it only delayed the consult answer que
 behind it. `Followup.tla` has no bed, and the fix removes the interaction instead of
 modelling it.
 
+### The barge-in judge (`JUDGE`, #224)
+
+`BargeInJudgeGate` (`barge_pause.py`, `TEAPORT_BARGE_JUDGE`) sits directly above the user
+aggregator. Words that would start a turn over a paused reply are held there while a
+one-word judge decides them:
+- **CONTINUE:** the held words are dropped. Their final becomes the segment's wordless
+  close, as a cough's does, and the reply resumes.
+- **STOP, ANSWER or no verdict:** the held words go on as they came, and the turn
+  starts as it would have.
+
+Stop words, a reply that would be over by now, and an open user turn are never judged. A
+stop word, or the reply's would-be end passing, while the judge decides lets everything
+held on at once. The verdict itself is the environment: the model checks the gate around
+it, with any verdict at any point.
+
+The new steps:
+- `Interject`, `OneWord` and `StopWord` go through the gate.
+- `JudgeContinue`: CONTINUE, asked again on words that grew since the judge was asked.
+- `JudgeLetOn`: any other verdict, the deadline, or a pause that ended first.
+- `ResumeP` is the pause's quiet resume, which the gate holds while it waits.
+
+The new monitor is `resumeOverWords`: the reply resumed while words were held, and those
+words then started a turn. That is a question talked over while it was being judged.
+
+| JUDGE | | `NoResumeOverWords` | `NoMissedBargeIn` |
+|---|---|---|---|
+| `noHold` | the gate without `hold_resume`: the pause's 0.8 s quiet resume can come before the verdict | ✗ | ✓ |
+| `noReask` | a stop said while it decides is held with the rest, and a CONTINUE drops all of it | ✓ | ✗ |
+| `shipped` | the resume held while a verdict is awaited; a stop word releases at once; a CONTINUE on grown words is asked again | ✓ | ✓ |
+
+`shipped` holds every property the shipped pause holds:
+- `ut_judge_shipped_all`: under the hold's `WORDS_IN_TIME` assumption, 12k states.
+- `ut_judge_shipped_timed`: the timers as they are, everything but the accepted
+  `NoStaleReply` residual, 34k states.
+
+The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
+
+- `NoResumeOverWords`: **a question asked into the pause is not talked over while it is
+  judged.** `noHold`, 11 states:
+
+  ```
+  ... BotStart                 a reply plays
+  VadStart                     the caller speaks over it: paused
+  Interject                    "Wait, what's a turbine?" -- held for the judge
+  VadStop ResumeP              0.8 s of quiet: the pause resumes, the verdict not in
+  Interject                    their next words: the turn starts on all of it,
+                               after the reply has played on over the question
+  ```
+
+  The live judge's p90 is 0.45 s, so the quiet resume came first mainly on the slow
+  verdicts. A wait of 1.2 s made that most of them.
+- `NoMissedBargeIn` (the pause's, unchanged): **told stop while paused, the bot does not
+  resume.** `noReask`, 12 states:
+
+  ```
+  ... BotStart VadStart        a reply plays; the caller speaks: paused
+  Interject                    "Okay" -- held for the judge
+  StopWord                     "Stop." -- held behind it
+  VadStop JudgeContinue        CONTINUE on "Okay": both dropped
+  ResumeP                      the reply resumes after "Stop."
+  ```
+
+  As shipped, the stop word lets everything held on at once. That is also faster: as
+  first written, "Stop." waited for the verdict on "Okay" and then for a judge of its own
+  (the PR #232 review).
+
+What is not modelled:
+- The judge's latency: there is no clock here, and the deadline is a verdict.
+- The 8 s pause cap: it is far past the deadline.
+- What the CONTINUE'd final does to the stop strategy's close count. It becomes the
+  `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
+  checks.
+
 ### The cut and the commit (`FENCE`, `CutReplyFence`)
 
 A barge-in puts two messages into the context from two ends of the pipeline: the reply

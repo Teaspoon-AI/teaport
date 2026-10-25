@@ -24,9 +24,11 @@ require_pinned()
 
 from pipecat.frames.frames import (  # noqa: E402
     BotStartedSpeakingFrame,
+    BotStoppedSpeakingFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
     TranscriptionFrame,
+    UserStartedSpeakingFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline  # noqa: E402
 from pipecat.pipeline.runner import PipelineRunner  # noqa: E402
@@ -184,6 +186,74 @@ async def test_words_that_grow_while_judged_are_asked_on_whole():
         await asyncio.sleep(0.35)
         assert judge.asked == ["Okay", "Okay, and then what?"], judge.asked
         assert [k for k, _ in rig.out()] == ["interim", "interim", "final"], rig.out()
+
+
+async def test_a_stop_word_while_judging_takes_the_turn_at_once():
+    judge = _Judge({"Okay": CONTINUE}, delay=0.25)
+    async with GateRig(judge) as rig:
+        await rig.task.queue_frame(interim("Okay"))
+        await asyncio.sleep(0.03)
+        await rig.task.queue_frame(final("Stop.", stop_n=4))
+        await asyncio.sleep(0.05)
+        assert rig.out() == [("interim", "Okay"), ("final", "Stop.")], (
+            f"{rig.out()}: a stop must not wait on a verdict for the words before it")
+        assert rig.holds == [True, False], rig.holds
+        await asyncio.sleep(0.3)
+        assert judge.asked == ["Okay"] and len(rig.out()) == 2, "its verdict is dropped"
+
+
+async def test_the_hold_has_one_deadline_however_often_the_judge_is_asked():
+    judge = _Judge({"Okay": CONTINUE, "Okay so": CONTINUE}, delay=0.2)
+    async with GateRig(judge) as rig:
+        t0 = time.monotonic()
+        await rig.task.queue_frame(interim("Okay"))
+        await asyncio.sleep(0.1)
+        await rig.task.queue_frame(interim("Okay so"))
+        await asyncio.sleep(WAIT_S + 0.1)
+        assert judge.asked == ["Okay", "Okay so"], judge.asked
+        let_on = [t for t, d, f in rig.bottom.frames if isinstance(f, InterimTranscriptionFrame)]
+        assert let_on and let_on[0] - t0 < WAIT_S + 0.08, (
+            f"let on {let_on[0] - t0 if let_on else None:.2f}s after the first words: the "
+            "asked-again judge must not get a fresh wait of its own")
+        assert rig.gate.verdicts[None] == 1
+
+
+async def test_held_segments_are_judged_together_and_the_open_one_closes_on_its_final():
+    judge = _Judge({"Okay": CONTINUE, "Okay. so": CONTINUE}, delay=0.1)
+    async with GateRig(judge) as rig:
+        await rig.task.queue_frame(interim("Okay"))
+        await asyncio.sleep(0.03)
+        await rig.task.queue_frames([final("Okay.", stop_n=3), interim("so")])
+        await asyncio.sleep(0.3)
+        assert judge.asked == ["Okay", "Okay. so"], (
+            f"{judge.asked}: asked again on every held word, not the newest segment's")
+        await rig.task.queue_frame(final("So.", stop_n=4))
+        await asyncio.sleep(0.1)
+        assert judge.asked == ["Okay", "Okay. so"], "the open segment's final: no third ask"
+        assert rig.out() == [("close", 3), ("close", 4)], rig.out()
+
+
+async def test_a_backchannels_final_after_the_reply_ended_is_still_its_close():
+    judge = _Judge({"Okay sure": CONTINUE})
+    async with GateRig(judge) as rig:
+        await rig.task.queue_frame(interim("Okay sure"))
+        await asyncio.sleep(0.15)
+        await rig.strategy.process_frame(BotStoppedSpeakingFrame())
+        await rig.task.queue_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await rig.task.queue_frame(final("Okay, sure."))
+        await asyncio.sleep(0.1)
+        assert rig.out() == [("close", 3)], (
+            f"{rig.out()}: the reply ending must not turn the backchannel into a turn")
+
+
+async def test_words_of_an_open_user_turn_are_not_judged():
+    judge = _Judge({})
+    async with GateRig(judge) as rig:
+        await rig.task.queue_frame(UserStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+        await asyncio.sleep(0.05)
+        await rig.task.queue_frame(final("Okay."))
+        await asyncio.sleep(0.05)
+        assert rig.out() == [("final", "Okay.")] and judge.asked == []
 
 
 async def test_no_verdict_in_time_lets_the_words_on():

@@ -920,11 +920,8 @@ class TranscriptLedger(BaseObserver):
             text = entry["text"] if entry["ended"] else "".join(entry["parts"]).strip()
             if not text:
                 return None
-            if any(p is not None for _, p in turn["spoken"]):
-                heard, _ = self._pts_heard(turn, self._paused_at)
-            else:
-                full = max(turn["pushed"], len(text.split()) * _SECONDS_PER_WORD)
-                heard = _prefix(text, min(1.0, turn["played"] / full))
+            heard, _, _ = self._heard(turn, text, self._paused_at, turn["played"],
+                                      interrupted=True)
             return text, heard
         return None
 
@@ -974,6 +971,57 @@ class TranscriptLedger(BaseObserver):
 
     # ------------------------------------------------------------------ chart
 
+    def _heard(self, turn: dict, intended: str, t: float, heard: float,
+               interrupted: bool) -> tuple:
+        """What the caller heard of `turn` by `t`, `heard` seconds of its audio played:
+        (heard text, heard fraction, the pts prefix or None without per-word pts). One
+        reading for the chart (_finish) and the barge-in judge (paused_reply)."""
+        audio_dur = turn["pushed"]
+        # If synthesis was cut short, audio_dur underestimates the intended
+        # length; fall back to a word-count estimate so heard_fraction isn't
+        # inflated. (Also with NO audio at all, where trusting synth_done would
+        # make full_dur 0.)
+        text_dur = len(intended.split()) * _SECONDS_PER_WORD
+        full_dur = (audio_dur if turn["synth_done"] and audio_dur > 0
+                    else max(audio_dur, text_dur))
+        heard = max(0.0, heard)
+        if interrupted:
+            frac = min(1.0, heard / full_dur) if full_dur > 0 else 0.0
+        else:
+            frac = 1.0
+        # Heard text from per-word TTSTextFrames (engine TTS): keep each word whose
+        # SCHEDULED playout time (frame.pts) is at/before the cut. The frames
+        # arrive clustered (our TTS pushes the whole clip at once), so we filter
+        # by pts, not arrival order. Fall back to arrival order if frames carry
+        # no pts, and to the played-fraction estimate with no per-word frames
+        # (a single whole-reply frame, the legacy ctx-less shape).
+        spoken = turn["spoken"]
+        est = _prefix(intended, frac)  # reliable played-audio-fraction estimate
+        pts_heard = None
+        if any(p is not None for _, p in spoken):
+            pts_heard, cut_ns = self._pts_heard(turn, t)
+            # Prefer exact word-timing, but never report LESS than the played-audio
+            # fraction implies — guards against a misaligned pts baseline (which
+            # would silently drop words the user did hear). Compared by characters,
+            # not words, so a voice whose tokens are characters compares too.
+            heard_text = pts_heard if len(_nospace(pts_heard)) >= len(_nospace(est)) else est
+            if _TRACE:
+                logger.info(
+                    f"TRACE cut t={t:.2f} audio_start={turn['audio_start']} "
+                    f"heard={heard:.2f} pushed={audio_dur:.2f} played_before={turn['played']:.2f} "
+                    f"text_dur={text_dur:.2f} synth_done={turn['synth_done']} "
+                    f"full_dur={full_dur:.2f} frac={frac:.2f} "
+                    f"cut={cut_ns / 1e9:.2f} spoken={len(spoken)} "
+                    f"pts={[p / 1e9 if p is not None else None for _, p in spoken]} "
+                    f"pts_heard={len(pts_heard.split())} est={len(est.split())} "
+                    f"-> {len(heard_text.split())} words"
+                )
+        elif len(spoken) > 1:
+            heard_text = "".join(txt for txt, _ in spoken).strip()
+        else:
+            heard_text = est
+        return heard_text, frac, pts_heard
+
     def _finish(self, turn: dict, t: float, heard: float, interrupted: bool,
                 never: bool = False):
         if turn in self._turns:
@@ -1008,58 +1056,15 @@ class TranscriptLedger(BaseObserver):
                            f"not charted: {intended[:40]!r}")
             self._reply_end(entry, None, cut=interrupted, audio=False)
             return
-        audio_dur = turn["pushed"]
-        # If synthesis was cut short, audio_dur underestimates the intended
-        # length; fall back to a word-count estimate so heard_fraction isn't
-        # inflated. (Also with NO audio at all, where trusting synth_done would
-        # make full_dur 0.)
-        text_dur = len(intended.split()) * _SECONDS_PER_WORD
-        full_dur = (audio_dur if turn["synth_done"] and audio_dur > 0
-                    else max(audio_dur, text_dur))
-        heard = max(0.0, heard)
-        if interrupted and not never and turn["synth_done"] and heard >= audio_dur - _EPS > 0:
+        if (interrupted and not never and turn["synth_done"]
+                and max(0.0, heard) >= turn["pushed"] - _EPS > 0):
             # Every chunk of it had played when the cut landed (a reply queued
             # ahead of the one the user actually cut): heard in full.
             interrupted = False
-        if interrupted:
-            frac = min(1.0, heard / full_dur) if full_dur > 0 else 0.0
-        else:
-            frac = 1.0
-        # Heard text from per-word TTSTextFrames (engine TTS): keep each word whose
-        # SCHEDULED playout time (frame.pts) is at/before the cut. The frames
-        # arrive clustered (our TTS pushes the whole clip at once), so we filter
-        # by pts, not arrival order. Fall back to arrival order if frames carry
-        # no pts, and to the played-fraction estimate with no per-word frames
-        # (a single whole-reply frame, the legacy ctx-less shape).
-        spoken = turn["spoken"]
-        est = _prefix(intended, frac)  # reliable played-audio-fraction estimate
+        heard_text, frac, pts_heard = self._heard(turn, intended, t, heard, interrupted)
         # What the settle feed reads: the whole reply when it played through; on a cut,
         # the pts prefix alone, or nothing at all without per-word pts (_reply_end).
-        exact = intended if not interrupted else None
-        if any(p is not None for _, p in spoken):
-            pts_heard, cut_ns = self._pts_heard(turn, t)
-            # Prefer exact word-timing, but never report LESS than the played-audio
-            # fraction implies — guards against a misaligned pts baseline (which
-            # would silently drop words the user did hear). Compared by characters,
-            # not words, so a voice whose tokens are characters compares too.
-            heard_text = pts_heard if len(_nospace(pts_heard)) >= len(_nospace(est)) else est
-            if interrupted:
-                exact = pts_heard
-            if _TRACE:
-                logger.info(
-                    f"TRACE cut t={t:.2f} audio_start={turn['audio_start']} "
-                    f"heard={heard:.2f} pushed={audio_dur:.2f} played_before={turn['played']:.2f} "
-                    f"text_dur={text_dur:.2f} synth_done={turn['synth_done']} "
-                    f"full_dur={full_dur:.2f} frac={frac:.2f} "
-                    f"cut={cut_ns / 1e9:.2f} spoken={len(spoken)} "
-                    f"pts={[p / 1e9 if p is not None else None for _, p in spoken]} "
-                    f"pts_heard={len(pts_heard.split())} est={len(est.split())} "
-                    f"-> {len(heard_text.split())} words"
-                )
-        elif len(spoken) > 1:
-            heard_text = "".join(txt for txt, _ in spoken).strip()
-        else:
-            heard_text = est
+        exact = intended if not interrupted else pts_heard
         # The utterance's window is its PLAYOUT: from where its first chunk started
         # to where its last played-out chunk ended (a foreign filler chained after
         # it may still be playing when the closing frame arrives; the turn's own
@@ -1084,7 +1089,7 @@ class TranscriptLedger(BaseObserver):
         # through is charted only once its synthesis is done and all of its audio has
         # played (_close_ready) -- not at a BotStoppedSpeaking that came mid-reply, which
         # the transport's 3 s idle fallback sends on a TTS stall.
-        played_any = (not never and audio_dur > 0 and (not interrupted or heard > 0))
+        played_any = (not never and turn["pushed"] > 0 and (not interrupted or heard > 0))
         # Cut after its last word: every word of it was heard, which is the reply heard
         # to its end (formal/Owed.tla, RUNCLOSE = "about": g = "all" for a cut too).
         whole = (interrupted and played_any and exact is not None
