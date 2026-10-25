@@ -153,13 +153,15 @@ REMEMBER = FunctionSchema(
 
 # The consult: OpenClaw's own tool, by its name and schema, on every front end (#230).
 # OpenClaw hands it to a Talk session with the session (req.tools, the plugin's
-# session_config frame), and a session given it is offered THAT schema
-# (host_tool_schemas below). This is the copy for a session the host gave no tools to --
-# the room mic and the phone, until the plugin serves them the SDK's (issue #230, Phase
-# 3), and a plugin that predates session_config. It is REALTIME_VOICE_AGENT_CONSULT_TOOL
-# from OpenClaw's src/talk/agent-consult-tool.ts (exported from
-# openclaw/plugin-sdk/realtime-voice since 2026.9.7), copied exactly: name, description,
-# parameters. Keep it that way; a wording of our own belongs in the overlay, not here.
+# session_config frame), and the plugin serves it to the room mic and the phone with
+# their voice context (host_context.fetch); a session given it is offered THAT schema
+# (host_tool_schemas below). This is the copy for a session the host gave none to: a
+# gateway that could not answer (starting, restarting, a plugin or an OpenClaw too old),
+# a plugin that predates session_config. It is REALTIME_VOICE_AGENT_CONSULT_TOOL from
+# OpenClaw's src/talk/agent-consult-tool.ts as 2026.9.7 has it (the appliance's version;
+# exported from openclaw/plugin-sdk/realtime-voice), copied exactly: name, description,
+# parameters, confirmationId included. Keep it that way; a wording of our own belongs in
+# the overlay, not here.
 OPENCLAW_AGENT_CONSULT = FunctionSchema(
     name="openclaw_agent_consult",
     description=(
@@ -178,6 +180,12 @@ OPENCLAW_AGENT_CONSULT = FunctionSchema(
         "responseStyle": {
             "type": "string",
             "description": "Optional style hint for the spoken answer.",
+        },
+        "confirmationId": {
+            "type": "string",
+            "description": ("Server-issued confirmation id from a prior "
+                            "VOICE_CONFIRMATION_REQUIRED result, supplied only after the "
+                            "user explicitly confirms aloud."),
         },
     },
     required=["question"],
@@ -706,17 +714,26 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
 
 def _consult_args(arguments) -> dict | None:
     """The consult's arguments as OpenClaw reads them (parseRealtimeVoiceAgentConsultArgs,
-    src/talk/agent-consult-tool.ts): `question`, or the first of its aliases a model may
-    write instead (prompt, query, task), trimmed; `context` and `responseStyle` when they
-    are non-empty strings. None without a question. What the relay is sent, so it reads
-    the same call the brain does."""
+    src/talk/agent-consult-tool.ts, 2026.9.7): `question`, or the first of its aliases a
+    model may write instead (prompt, query, task), trimmed; `context`, `responseStyle` and
+    `confirmationId` when they are non-empty strings. None without a question. What the
+    relay is sent, so it reads the same call the brain does.
+
+    `confirmationId` is how a risky action goes through on Talk: the relay's consult
+    answers one with "VOICE_CONFIRMATION_REQUIRED:<id> ... Ask the user for explicit
+    spoken confirmation, then call openclaw_agent_consult again with this confirmationId"
+    (src/talk/client-voice-confirmation.ts). That text is the consult's answer, so the
+    model reads it like any (owed.py), asks, and on a yes calls again with the id; dropped
+    here, the relay would only ask again. The room's and the phone's consults never see
+    one: their /v1/chat/completions lane runs no voice confirmation, and the CLI message
+    (_consult_message) leaves the id out as OpenClaw's own chat rendering does."""
     record = arguments if isinstance(arguments, dict) else {}
     question = next((v.strip() for k in ("question", "prompt", "query", "task")
                      if isinstance(v := record.get(k), str) and v.strip()), "")
     if not question:
         return None
     args = {"question": question}
-    for key in ("context", "responseStyle"):
+    for key in ("context", "responseStyle", "confirmationId"):
         value = record.get(key)
         if isinstance(value, str) and value.strip():
             args[key] = value.strip()
@@ -1206,18 +1223,21 @@ _HOST_TOOLS_NOT_OFFERED = {
 def host_tool_schemas(host_tools) -> tuple:
     """The FunctionSchemas from the host's tool definitions (OpenClaw's RealtimeVoiceTool:
     type "function", name, description, JSON-schema parameters) that replace the brain's
-    own copy of a tool by name (build_tools_schema). A host tool is offered only where the
-    brain has a Tool record of that name -- a handler to run it, a switch, its needs; any
-    other is dropped and logged: the model must not call what nothing here runs. A
-    malformed definition is dropped too, and the brain's copy stands."""
+    own copy of a tool by name (build_tools_schema). Only the consult's: it is the one
+    tool that is OpenClaw's, which the brain runs by OpenClaw's contract (_consult_args).
+    Any other host tool is dropped and logged, even one that shares a brain tool's name:
+    the brain's handler reads the brain's schema, and a host's web_search with other
+    parameters would hand it arguments it does not read. A malformed consult definition
+    is dropped too, and the brain's copy stands."""
     out = []
     for tool in host_tools or ():
         name = tool.get("name") if isinstance(tool, dict) else None
         if name in _HOST_TOOLS_NOT_OFFERED:
             logger.info(f"host tool {name} not offered: {_HOST_TOOLS_NOT_OFFERED[name]}")
             continue
-        if name not in TOOLS_BY_NAME:
-            logger.warning(f"host tool {name!r} not offered: the brain has no handler for it")
+        if name != OPENCLAW_AGENT_CONSULT.name:
+            logger.warning(f"host tool {name!r} not offered: only the host's consult "
+                           "schema is taken")
             continue
         params = tool.get("parameters")
         if (tool.get("type", "function") != "function" or not isinstance(params, dict)

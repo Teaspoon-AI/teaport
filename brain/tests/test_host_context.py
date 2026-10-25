@@ -80,9 +80,13 @@ def test_a_session_config_frame_becomes_a_host_context():
 def test_the_host_schema_replaces_the_brains_copy_and_control_is_not_offered():
     schemas = tools.host_tool_schemas([HOST_CONSULT, HOST_CONTROL,
                                        {"type": "function", "name": "some_future_tool",
-                                        "parameters": {"type": "object"}}])
-    # Only a tool the brain can run, and never openclaw_agent_control: the relay shows
-    # a call to it as a card and runs nothing.
+                                        "parameters": {"type": "object"}},
+                                       {"type": "function", "name": "web_search",
+                                        "parameters": {"type": "object", "properties": {
+                                            "q": {"type": "string"}}}}])
+    # Only the consult's, and never openclaw_agent_control (the relay shows a call to it
+    # as a card and runs nothing). Not a host tool that shares a brain tool's name either:
+    # the brain's handler reads the brain's schema.
     assert [s.name for s in schemas] == ["openclaw_agent_consult"]
     assert schemas[0].description == HOST_CONSULT["description"]
     assert schemas[0].properties == HOST_CONSULT["parameters"]["properties"]
@@ -104,11 +108,11 @@ def test_the_host_schema_replaces_the_brains_copy_and_control_is_not_offered():
 
 
 def test_the_fallback_consult_is_openclaws_tool():
-    """The copy for a session the host gave no tools (room, phone): OpenClaw's
-    REALTIME_VOICE_AGENT_CONSULT_TOOL, by name and parameters."""
+    """The copy for a session the host gave no tools: OpenClaw 2026.9.7's
+    REALTIME_VOICE_AGENT_CONSULT_TOOL, by name and parameters (confirmationId included)."""
     s = tools.OPENCLAW_AGENT_CONSULT
     assert s.name == "openclaw_agent_consult"
-    assert list(s.properties) == ["question", "context", "responseStyle"]
+    assert list(s.properties) == ["question", "context", "responseStyle", "confirmationId"]
     assert s.required == ["question"]
     assert all(p["type"] == "string" for p in s.properties.values())
     assert tools.TOOLS_BY_NAME["openclaw_agent_consult"].schema is s
@@ -123,6 +127,14 @@ def test_the_consult_reads_openclaws_arguments():
         "question": "q", "context": "c"}
     assert tools._consult_args({"request": "q"}) is None
     assert tools._consult_args(None) is None
+    # A risky action's second call, after the user said yes aloud: the relay's id goes
+    # back to it, or the relay only asks again. Not when empty or not a string.
+    assert tools._consult_args({"question": "q", "confirmationId": " c-1 "}) == {
+        "question": "q", "confirmationId": "c-1"}
+    assert tools._consult_args({"question": "q", "confirmationId": ""}) == {"question": "q"}
+    assert tools._consult_args({"question": "q", "confirmationId": 7}) == {"question": "q"}
+    # The CLI lane's message is OpenClaw's chat rendering: no id in it.
+    assert tools._consult_message({"question": "q", "confirmationId": "c-1"}) == "q"
     assert tools._consult_message({"question": "q", "context": "c", "responseStyle": "s"}) == (
         "q\n\nContext:\nc\n\nSpoken style:\ns")
 

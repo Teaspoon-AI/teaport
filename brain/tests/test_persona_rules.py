@@ -59,9 +59,10 @@ def test_brevity_is_given_its_reason():
 
 
 def test_the_markdown_identity_text_is_not_a_style_example():
-    # Identity is loaded live from the OpenClaw workspace (SOUL/IDENTITY/USER/MEMORY.md),
-    # which is markdown by nature -- 3322 chars of headings and bullets on that call. The
-    # model reads a formatted document, then is told not to write one; this says so.
+    # The identity text is OpenClaw's profile (IDENTITY/USER/SOUL.md, composed by the
+    # host; host_context.py), which is markdown by nature -- 3322 chars of headings and
+    # bullets on that call. The model reads a formatted document, then is told not to
+    # write one; this says so.
     assert "never copy its formatting into speech" in VOICE_OVERLAY
 
 
