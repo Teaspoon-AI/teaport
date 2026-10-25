@@ -210,6 +210,11 @@ run UserTurn.tla ut_pause_noStopWord_nomissedbargein  "(expected: FAILS NoMissed
 run UserTurn.tla ut_pause_keepOnInterrupt_nostuckpause "(expected: FAILS NoStuckPause — a transport that keeps its pause through the interruption)"
 run UserTurn.tla ut_pause_shipped_all                 "(expected: holds — barge_pause.py as shipped, with the reply hold and every other property)"
 run UserTurn.tla ut_pause_shipped_timed               "(expected: holds — the shipped pause with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
+run UserTurn.tla ut_judge_noHold_resumeover           "(expected: FAILS NoResumeOverWords — the judge's gate without hold_resume: the pause resumes over a question still being judged)"
+run UserTurn.tla ut_judge_noReask_nomissedbargein     "(expected: FAILS NoMissedBargeIn — a CONTINUE on stale words drops the stop said while it was judged)"
+run UserTurn.tla ut_judge_shipped_reach               "(expected: FAILS NoJudging — witness: words held for a verdict are reachable as shipped)"
+run UserTurn.tla ut_judge_shipped_all                 "(expected: holds — the barge-in judge's gate as shipped, on the shipped pause, with every property)"
+run UserTurn.tla ut_judge_shipped_timed               "(expected: holds — the same with the reply hold's timers as they are: everything but the accepted NoStaleReply residual)"
 echo
 echo "UserTurn.tla — the cut and the commit (FENCE, CutReplyFence) and the refused finalize's second commit (EARLY_FINAL)"
 run UserTurn.tla ut_fence_none_nocutaftercommit       "(expected: FAILS NoCutAfterCommit — before 2026-10-13: the late-start barge-in's commit overtakes its cut)"

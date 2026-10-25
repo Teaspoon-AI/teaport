@@ -79,7 +79,7 @@ from teaport_brain import thinking_sound
 from teaport_brain.engine_tts import LANG_NAMES
 from teaport_brain.settings import setting
 from teaport_brain.followup_gate import FollowupGate, FollowupTrigger, TurnCommitMark
-from teaport_brain.owed import Owed
+from teaport_brain.owed import Owed, caller_asked
 from teaport_brain.heard_context import HeardContextCorrector, drop_overtaken_tool_calls
 from teaport_brain.llm_error_speaker import LLMErrorSpeaker
 from teaport_brain.llm_text_guard import LLMTextGuard
@@ -740,6 +740,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         if pauser is not None:
             await pauser.on_final_without_turn()
 
+    start_strategy = barge_pause.PauseAwareMinWordsStrategy(
+        min_words=turns.interrupt_min_words, on_final_without_turn=_final_without_turn)
+
     context_aggregator = LLMContextAggregatorPair(
         context,
         user_params=user_aggregator_params(
@@ -754,9 +757,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                 # PauseAware: the same rule, plus a single stop word while playout is
                 # paused by the barge-in pauser below (barge_pause.py); without a
                 # pause it is MinWordsUserTurnStartStrategy exactly.
-                start=[barge_pause.PauseAwareMinWordsStrategy(
-                    min_words=turns.interrupt_min_words,
-                    on_final_without_turn=_final_without_turn)],
+                start=[start_strategy],
                 # The closer FIRST: it ends the turn before the brain's strategy could
                 # speculate on the turn's earlier words; that one still sees the frame.
                 stop=[s for s in (wifi_closer, stop_strategy) if s is not None],
@@ -840,6 +841,24 @@ def build_agent_session(transport, *, voice: str | None = None,
         vad_analyzer.onset_listeners.append(barge_pauser.on_onset)
         logger.info("barge-in pause ON (TEAPORT_BARGE_PAUSE): playout pauses on caller "
                     "speech and resumes if no words follow")
+    # Words over a paused reply go to a one-word judge before they start the turn
+    # (barge_pause.py, #224): the reply carries on over a backchannel. Shown the reply as
+    # the ledger has it at the pause, and the caller's words that asked for it.
+    barge_judge = None
+    if barge_pauser is not None and barge_pause.JUDGE:
+        async def _judge_barge(said):
+            paused = ledger.paused_reply()
+            if paused is None:
+                return None  # nothing to carry on with: the words go on as they came
+            reply, heard = paused
+            messages = context.get_messages()
+            return await llm.judge_barge(caller_asked(messages, len(messages)), reply,
+                                         heard, said)
+
+        barge_judge = barge_pause.BargeInJudgeGate(
+            start_strategy, _judge_barge, hold_resume=barge_pauser.hold_resume)
+        logger.info("barge-in judge ON (TEAPORT_BARGE_JUDGE): words over a paused reply "
+                    "are judged before they interrupt it")
     if reply_gate is not None:
         vad_analyzer.onset_listeners.append(reply_gate.on_onset)
 
@@ -925,6 +944,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # fire memory_search on interim, inject before the LLM (built above, for the
         # speculator; None without a gateway).
         memory_recall,
+        # DIRECTLY above the aggregator: it holds the STT's frames for the turn
+        # strategies while the judge decides (barge_pause.py); None without it.
+        barge_judge,
         context_aggregator.user(),
         # DIRECTLY below the aggregator: it is called inside the aggregator's own push of
         # an interruption, so the frame is on record before the commit can look for it.

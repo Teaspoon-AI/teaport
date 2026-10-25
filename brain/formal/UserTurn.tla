@@ -157,6 +157,25 @@
 (* PAUSE = "keepOnInterrupt" -- a transport that keeps its pause when the   *)
 (*                              interruption cancels the reply.             *)
 (*                                                                          *)
+(* The barge-in judge (BargeInJudgeGate, #224, TEAPORT_BARGE_JUDGE). Words  *)
+(* that would start a turn over a paused reply are held while a one-word    *)
+(* judge decides them: CONTINUE drops them (their segment closes as a       *)
+(* cough's does) and the reply resumes; anything else lets them on and the  *)
+(* turn starts as it would have. Stop words and a reply that would be over  *)
+(* by now are not judged, and either, arriving while the judge decides,    *)
+(* lets everything held on at once. What the judge decides is the           *)
+(* environment: the model checks the gate around it, any verdict anywhere.  *)
+(*                                                                          *)
+(* JUDGE = "off"      -- before #224.                                       *)
+(* JUDGE = "shipped"  -- barge_pause.py: the pauser's quiet resume is held  *)
+(*                       while a verdict is awaited, and a CONTINUE on      *)
+(*                       words that grew since it was asked is asked again. *)
+(* JUDGE = "noHold"   -- the gate without hold_resume: the pause's own      *)
+(*                       resume (0.8 s of quiet) can come first.            *)
+(* JUDGE = "noReask"  -- a stop said while it decides is held with the      *)
+(*                       rest, and a CONTINUE drops all that is held,       *)
+(*                       however much came after the words it was asked on. *)
+(*                                                                          *)
 (* The cut and the commit (endpointing.CutReplyFence, 2026-10-13). A turn   *)
 (* start and its interruption are two events: the controller opens the turn *)
 (* and the aggregator only QUEUES the InterruptionFrame, which reaches the  *)
@@ -227,7 +246,8 @@ CONSTANTS MaxTurns,        \* bound on turns opened, to keep the state space fin
                            \* before the VAD stop that re-applies a refused finalize
                            \* (TRUE: as it is). FALSE: the premise, see VadStop
           CALLS,           \* a call overtaken by its own cancel (see the header)
-          POSTTOOL         \* the answer to a tool's result, under the caller's speech (#17)
+          POSTTOOL,        \* the answer to a tool's result, under the caller's speech (#17)
+          JUDGE            \* the barge-in judge's gate (#224, see the header)
 
 VARIABLES
     \* --- pipecat's UserTurnController ---
@@ -348,6 +368,14 @@ VARIABLES
     gstale           \* ghost: the gate's view is pending on speech whose words a commit
                      \* has already taken (gateNoCommit)
 postVars == <<answer, pend, gpend, asUnder, ansOver, ansLost, skipLost, gstale>>
+VARIABLES
+    \* --- the barge-in judge (BargeInJudgeGate) ---
+    judging,         \* the gate holds the caller's words while a verdict is awaited
+    grown,           \* more of their words came after the ones the judge was asked on
+    stopHeld,        \* ghost: a stop word is among the held words
+    resumedUnder,    \* ghost: the reply resumed while the words were held
+    resumeOverWords  \* monitor: the reply resumed over words that then started a turn
+judgeVars == <<judging, grown, stopHeld, resumedUnder, resumeOverWords>>
 
 NearEndRule  == PAUSE \notin {"off", "asWritten"}
 Counterfact  == PAUSE \notin {"off", "asWritten", "aOnly"}
@@ -359,7 +387,7 @@ CommitMayOvertake == FENCE \in {"none", "timed"}
 SnapshotMayOvertake == FENCE \in {"none", "commitOnly"}
 vars == <<userTurn, userSpeaking, watchdog, botSpeaking, inference,
           stopInFlight, owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply,
-          holdVars, pauseVars, fenceVars, toolVars, postVars>>
+          holdVars, pauseVars, fenceVars, toolVars, postVars, judgeVars>>
 
 Gated == HOLD /= "none"
 \* FollowupGate's designs for the answer after a tool (#17, POSTTOOL).
@@ -427,6 +455,8 @@ Init ==
     /\ lateCall = "none" /\ unsettled = FALSE /\ readUnsettled = FALSE
     /\ answer = "none" /\ pend = FALSE /\ gpend = FALSE /\ asUnder = FALSE /\ ansOver = FALSE
     /\ ansLost = FALSE /\ skipLost = FALSE /\ gstale = FALSE
+    /\ judging = FALSE /\ grown = FALSE /\ stopHeld = FALSE /\ resumedUnder = FALSE
+    /\ resumeOverWords = FALSE
 
 \* Caller speech while the bot is audible pauses playout -- not, with the near-end
 \* rule, when the reply is fully synthesized and in its last half second. The pause
@@ -485,6 +515,7 @@ VadStart ==
                    splitTurn>>
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 \* The user falls quiet: `VadStop`, below the commit it may re-apply.
 
@@ -584,6 +615,27 @@ CutLands ==
     /\ UNCHANGED <<left, synthDone, answerLost, stopHeard, cutAfterCommit>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, inference, stopInFlight, owed, turns,
                    spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED judgeVars
+
+\* PauseAwareMinWordsStrategy.judges: words that would start a turn over a paused
+\* reply, unless the reply would be over by now (the would_end_at rule). Stop words
+\* are not judged: `StopWord` starts the turn on its own.
+JudgeWindow == botSpeaking /\ pausedP /\ ~(tailKnown /\ wouldEnd)
+Judged == JUDGE /= "off" /\ JudgeWindow
+
+\* The gate lets what it holds on: the words start the turn as they would have.
+JudgeRelease ==
+    /\ judging' = FALSE /\ grown' = FALSE /\ stopHeld' = FALSE /\ resumedUnder' = FALSE
+    \* A reply that resumed while they were held has played over them.
+    /\ resumeOverWords' = (resumeOverWords \/ resumedUnder)
+
+\* The gate has the words: nothing below it sees them yet.
+HeldWords ==
+    /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED pauseVars
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED postVars
 
 \* MinWordsUserTurnStartStrategy fired: >= INTERRUPT_MIN_WORDS of transcript.
 \* This is the ONLY producer of an interruption in the brain.
@@ -609,8 +661,20 @@ Interject ==
               /\ UNCHANGED pauseVars
               /\ UNCHANGED fenceVars
               /\ UNCHANGED postVars
+              /\ UNCHANGED judgeVars
+         ELSE IF (judging /\ JudgeWindow) \/ (~judging /\ Judged)
+         THEN \* The gate holds them (more words of the held speech, or the first).
+              /\ judging' = TRUE /\ grown' = judging
+              /\ UNCHANGED <<stopHeld, resumedUnder, resumeOverWords>>
+              /\ HeldWords
+         ELSE IF judging
+         THEN \* The reply would be over by now: everything held goes on.
+              /\ StartTurn
+              /\ JudgeRelease
+              /\ UNCHANGED missedBargeIn
          ELSE /\ StartTurn
               /\ UNCHANGED missedBargeIn
+              /\ UNCHANGED judgeVars
     /\ watchdog' = FALSE
     /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED toolVars
@@ -631,6 +695,7 @@ Progress ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The reply's synthesis completes (its TTSStoppedFrame reaches the transport). During
 \* a pause, as shipped, the transport re-announces the pause with the tail it now
@@ -647,6 +712,7 @@ SynthDone ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* Ground truth: paused with the whole reply synthesized and less than a final's
 \* latency of it left, the held-back rest would have played out by now. (With a long
@@ -662,6 +728,7 @@ TailElapsed ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* No words: the line is quiet and playout resumes from where it stopped. A bot that
 \* resumes after the caller said stop to it has not been stopped: that OUTCOME is
@@ -669,8 +736,12 @@ TailElapsed ==
 ResumeP ==
     /\ ~endQueued
     /\ pausedP /\ ~userSpeaking
+    \* hold_resume: no quiet resume while a verdict is awaited (the gate's own).
+    /\ ~(judging /\ JUDGE /= "noHold")
     /\ pausedP' = FALSE /\ wouldEnd' = FALSE /\ tailKnown' = FALSE /\ stopHeard' = FALSE
     /\ missedBargeIn' = (missedBargeIn \/ stopHeard)
+    /\ resumedUnder' = (resumedUnder \/ judging)
+    /\ UNCHANGED <<judging, grown, stopHeld, resumeOverWords>>
     /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
                    owed, turns, spec, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED holdVars
@@ -690,15 +761,26 @@ OneWord ==
     /\ ~endQueued
     /\ PAUSE /= "off"
     /\ turns < MaxTurns /\ ~userTurn /\ ~userSpeaking /\ ~stopInFlight
-    /\ IF OneWordStarts
+    /\ IF judging /\ JudgeWindow
+         THEN /\ grown' = TRUE                 \* held with the rest
+              /\ UNCHANGED <<judging, stopHeld, resumedUnder, resumeOverWords>>
+              /\ HeldWords
+         ELSE IF judging
+         THEN \* The reply would be over by now: everything held goes on.
+              /\ StartTurn
+              /\ JudgeRelease
+              /\ UNCHANGED missedBargeIn
+         ELSE IF OneWordStarts
          THEN /\ StartTurn
               /\ UNCHANGED missedBargeIn
+              /\ UNCHANGED judgeVars
          ELSE /\ answerLost' = (answerLost \/ (pausedP /\ wouldEnd))
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, stopHeard>>
               /\ UNCHANGED fenceVars
               /\ UNCHANGED postVars
+              /\ UNCHANGED judgeVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
     /\ UNCHANGED toolVars
 
@@ -710,16 +792,71 @@ StopWord ==
     /\ ~endQueued
     /\ PAUSE /= "off"
     /\ turns < MaxTurns /\ ~userTurn /\ botSpeaking /\ ~stopInFlight
-    /\ IF pausedP /\ PAUSE /= "noStopWord"
+    /\ IF judging /\ JUDGE = "noReask"
+         THEN \* Held with the rest: "Okay -- stop." waits on the verdict on "Okay".
+              /\ grown' = TRUE /\ stopHeld' = TRUE
+              /\ UNCHANGED <<judging, resumedUnder, resumeOverWords>>
+              /\ HeldWords
+         ELSE IF judging
+         THEN \* As shipped, a stop word lets everything held on at once.
+              /\ StartTurn
+              /\ JudgeRelease
+              /\ UNCHANGED missedBargeIn
+         ELSE IF pausedP /\ PAUSE /= "noStopWord"
          THEN /\ StartTurn
               /\ UNCHANGED missedBargeIn
+              /\ UNCHANGED judgeVars
          ELSE /\ stopHeard' = (stopHeard \/ pausedP)
               /\ UNCHANGED <<userTurn, botSpeaking, inference, turns, spec, missedBargeIn>>
               /\ UNCHANGED holdVars
               /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
               /\ UNCHANGED fenceVars
               /\ UNCHANGED postVars
+              /\ UNCHANGED judgeVars
     /\ UNCHANGED <<userSpeaking, watchdog, stopInFlight, owed, specGen, specWords, gen, staleReply>>
+    /\ UNCHANGED toolVars
+
+(***************************************************************************)
+(* The barge-in judge's verdicts.                                           *)
+(***************************************************************************)
+
+\* CONTINUE, while the reply is still paused (a verdict after the pause ended finds
+\* nothing held: the gate let the words on when it did). On words that grew since it
+\* was asked, as shipped, the judge is asked again on all of them. Otherwise the held
+\* words are dropped -- their final becomes the segment's word-less close, which
+\* `Wordless` already is -- and the pause's resume is no longer held. A stop word among
+\* them that this drops (noReask) is a stop the bot was told while paused: `ResumeP`
+\* records the bot resuming after it, as for an unheeded `StopWord`.
+JudgeContinue ==
+    /\ ~endQueued
+    /\ judging /\ pausedP
+    /\ IF grown /\ JUDGE /= "noReask"
+         THEN /\ grown' = FALSE
+              /\ UNCHANGED <<judging, stopHeld, resumedUnder, resumeOverWords, stopHeard>>
+         ELSE /\ judging' = FALSE /\ grown' = FALSE /\ stopHeld' = FALSE
+              /\ resumedUnder' = FALSE
+              /\ stopHeard' = (stopHeard \/ stopHeld)
+              /\ UNCHANGED resumeOverWords
+    /\ UNCHANGED <<pausedP, left, synthDone, tailKnown, wouldEnd, answerLost>>
+    /\ UNCHANGED <<userTurn, userSpeaking, watchdog, botSpeaking, inference, stopInFlight,
+                   owed, turns, spec, specGen, specWords, gen, missedBargeIn, staleReply>>
+    /\ UNCHANGED holdVars
+    /\ UNCHANGED fenceVars
+    /\ UNCHANGED toolVars
+    /\ UNCHANGED postVars
+
+\* STOP, ANSWER, no verdict in time (one deadline from the first words, however often
+\* the judge is asked) -- or the pause ended first (an interruption, the reply over,
+\* playout resumed): the held words go on as they came and start the turn exactly as
+\* they would have without the judge, that much later.
+JudgeLetOn ==
+    /\ ~endQueued
+    /\ judging /\ turns < MaxTurns /\ ~userTurn
+    /\ JudgeRelease
+    /\ StartTurn
+    /\ watchdog' = FALSE
+    /\ UNCHANGED <<userSpeaking, stopInFlight, owed, specGen, specWords, gen, staleReply,
+                   missedBargeIn>>
     /\ UNCHANGED toolVars
 
 (***************************************************************************)
@@ -753,6 +890,7 @@ SpecStart ==
     /\ UNCHANGED <<cut, overtaken>>
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The words the commit will carry move after the snapshot, with the caller quiet:
 \* the decoder's lagging tail past the settle window, or the final's re-decode
@@ -770,6 +908,7 @@ Retext ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* Something else writes the context while a speculation is live. A free action,
 \* deliberately: HeardContextCorrector._reconcile on the very LLMContextFrame that
@@ -787,6 +926,7 @@ CtxChange ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* trigger_user_turn_stopped(), first await: the stop strategy has decided, the
 \* aggregation is pushed and the LLM is asked. The controller gates this on the turn
@@ -969,6 +1109,7 @@ Inference ==
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED judgeVars
 
 \* The same commit while the VAD still hears the caller. pipecat guards only the
 \* finalize on the caller speaking, not the inference: the brain's strategy does not
@@ -995,6 +1136,7 @@ InferenceUnderSpeech ==
     /\ UNCHANGED <<userTurn, userSpeaking, botSpeaking, owed, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED judgeVars
 
 \* The user falls quiet. In retryOnQuiet the owed finalization is applied HERE,
 \* inside the same process_frame() call that cleared _user_speaking -- so it is
@@ -1042,6 +1184,7 @@ VadStop ==
     /\ UNCHANGED <<botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED judgeVars
 
 \* The gap between the two awaits: push_aggregation()'s trip across the pipeline,
 \* during which the aggregator's input task can run a queued VAD start. This is
@@ -1060,6 +1203,7 @@ Resume ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 \* trigger_user_turn_stopped(), second await.
 Finalize ==
@@ -1081,6 +1225,7 @@ Finalize ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The reply the inference produced reaches the transport. It cannot overtake the
 \* finalize in practice -- an LLM round trip plus synthesis against two awaits --
@@ -1113,6 +1258,7 @@ BotStart ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 (***************************************************************************)
 (* The reply hold.                                                         *)
@@ -1136,6 +1282,7 @@ Wordless ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 \* The release timer: TEAPORT_REPLY_HOLD_RELEASE_S after the caller goes quiet, the
 \* held reply plays. A timer knows nothing of the words: under WORDS_IN_TIME they have
@@ -1157,6 +1304,7 @@ Release ==
                    [] OTHER -> {tool}) : tool' = t
     /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The hold cap (TEAPORT_REPLY_HOLD_MAX_S): ends a hold whatever the caller is doing.
 Cap ==
@@ -1176,6 +1324,7 @@ Cap ==
                    [] OTHER -> {tool}) : tool' = t
     /\ UNCHANGED <<lateTool, goodbyeLost, orphanCall, lateCall, unsettled, readUnsettled>>
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The session ends (a hang-up, Talk's close): its EndFrame reaches the gate's queue.
 \* Every other action but the caller's speech is guarded by ~endQueued: what TLC
@@ -1206,6 +1355,7 @@ Hangup ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The reply to the last commit calls a function (unconditionally here: the model
 \* decides). Its FunctionCallInProgressFrame goes on through the gate towards the
@@ -1222,6 +1372,7 @@ ToolCall ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The InProgress reaches the assistant aggregator first: the call and its IN_PROGRESS
 \* result are in the context. Behind a late frame still on its way, never ahead of it:
@@ -1237,6 +1388,7 @@ CallLands ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The InProgress its cancel overtook reaches the aggregator (#185). As written it is
 \* the call's first news there: the call and IN_PROGRESS go in, the call's task is
@@ -1258,6 +1410,7 @@ LateLands ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* Its result lands: a sync tool's (the LLM then answers from it -- the reply goes on),
 \* or the consult's placeholder (run_llm=False; the consult runs on). Through the
@@ -1279,6 +1432,7 @@ ToolDone ==
     /\ UNCHANGED holdVars
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
+    /\ UNCHANGED judgeVars
 
 BotStop ==
     /\ ~endQueued                             \* the session has not ended
@@ -1293,6 +1447,7 @@ BotStop ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 
 (***************************************************************************)
@@ -1358,6 +1513,7 @@ PushAnswer ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 \* FollowupGate lets the held push go: at the VAD stop (lullAtStop), or (gate) with
 \* nothing pending in its view -- a VAD that stopped after its timer already ran.
@@ -1373,6 +1529,7 @@ ReleaseA ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 \* FollowupGate's release timer (TEAPORT_REPLY_HOLD_RELEASE_S after the VAD stop, no
 \* turn start): the speech is taken as word-less, and a held push goes on. A timer knows
@@ -1392,6 +1549,7 @@ GateQuiet ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 \* The gate's cap (TEAPORT_REPLY_HOLD_MAX_S): the caller may still be talking.
 CapA ==
@@ -1409,6 +1567,7 @@ CapA ==
     /\ UNCHANGED pauseVars
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
+    /\ UNCHANGED judgeVars
 
 \* The answer's first audio reaches the transport, through the reply gate (it holds an
 \* armed reply: a tool round with no filler) -- as BotStart, and like it the gate is
@@ -1435,6 +1594,7 @@ AnswerReady == ~endQueued /\ answer = "asked" /\ ~botSpeaking /\ ~paused /\ cut 
 AnswerStart ==
     /\ AnswerReady /\ ~userSpeaking            \* the TTS's speech hold
     /\ StartAnswer
+    /\ UNCHANGED judgeVars
 
 \* The TTS's speech hold runs out (TTS_USER_SPEECH_HOLD_MAX_S) with the caller still
 \* talking: the answer plays -- or, capDiscard, is discarded.
@@ -1451,6 +1611,7 @@ TtsCap ==
               /\ UNCHANGED fenceVars
               /\ UNCHANGED toolVars
          ELSE StartAnswer
+    /\ UNCHANGED judgeVars
 
 (***************************************************************************)
 (* The 5s force-stop. An INACTIVITY timer: every user action above clears   *)
@@ -1469,6 +1630,7 @@ Arm ==
     /\ UNCHANGED fenceVars
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
+    /\ UNCHANGED judgeVars
 
 \* The watchdog's stop is a commit too: _trigger_user_turn_stop pushes the
 \* aggregation, which reaches get_chat_completions and Speculator.take, so a live
@@ -1494,6 +1656,7 @@ ForceStop ==
     /\ UNCHANGED <<userSpeaking, botSpeaking, stopInFlight, turns, specGen, specWords, gen,
                    missedBargeIn>>
     /\ UNCHANGED pauseVars
+    /\ UNCHANGED judgeVars
 
 Next ==
     \/ VadStart \/ Resume \/ Interject \/ OneWord \/ StopWord \/ CutLands
@@ -1503,6 +1666,7 @@ Next ==
     \/ SpecStart \/ CtxChange \/ Retext \/ Release \/ Cap \/ Hangup
     \/ ToolCall \/ CallLands \/ LateLands
     \/ Progress \/ SynthDone \/ TailElapsed \/ ResumeP
+    \/ JudgeContinue \/ JudgeLetOn
 
 Spec == Init /\ [][Next]_vars
 
@@ -1593,6 +1757,13 @@ NoSkippedAnswer == ~skipLost
 NoHoldOnCommittedSpeech == ~(answer = "held" /\ gstale)
 NoTailElapsed == ~wouldEnd
 
+\* #224. The reply never resumes over words the gate is holding that then start a
+\* turn: a question asked into the pause is not talked over while it is judged.
+NoResumeOverWords == ~resumeOverWords
+
+\* Witness: the gate holds words (a judged pause is reachable).
+NoJudging == ~judging
+
 TypeOK ==
     /\ userTurn \in BOOLEAN /\ userSpeaking \in BOOLEAN /\ watchdog \in BOOLEAN
     /\ botSpeaking \in BOOLEAN /\ inference \in BOOLEAN /\ stopInFlight \in BOOLEAN
@@ -1634,4 +1805,9 @@ TypeOK ==
     /\ pend \in BOOLEAN /\ gpend \in BOOLEAN /\ asUnder \in BOOLEAN /\ ansOver \in BOOLEAN
     /\ ansLost \in BOOLEAN /\ skipLost \in BOOLEAN /\ gstale \in BOOLEAN
     /\ (POSTTOOL = "off" => answer = "none" /\ ~pend /\ ~gpend)
+    /\ JUDGE \in {"off", "shipped", "noHold", "noReask"}
+    /\ judging \in BOOLEAN /\ grown \in BOOLEAN /\ stopHeld \in BOOLEAN
+    /\ resumedUnder \in BOOLEAN /\ resumeOverWords \in BOOLEAN
+    /\ (JUDGE = "off" => ~judging)
+    /\ ((grown \/ stopHeld \/ resumedUnder) => judging)
 =============================================================================

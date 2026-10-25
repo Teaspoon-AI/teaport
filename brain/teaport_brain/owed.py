@@ -549,7 +549,7 @@ def new_results(messages: list, known) -> list:
              for m in messages if isinstance(m, dict) and m.get("role") == "assistant"
              for c in m.get("tool_calls") or () if isinstance(c, dict)}
     return [(m.get("tool_call_id"), calls.get(m.get("tool_call_id"), {}).get("name"),
-             _asked(messages, i),
+             caller_asked(messages, i),
              _question(messages, i, terms_of(msg_text(m), "") | terms_of(
                  str(calls.get(m.get("tool_call_id"), {}).get("arguments") or ""), "")))
             for i, m in enumerate(messages)
@@ -570,7 +570,7 @@ def tool_call_ids(messages: list) -> set:
             if isinstance(m, dict) and m.get("role") == "tool"}
 
 
-def _asked(messages: list, i: int) -> str:
+def caller_asked(messages: list, i: int) -> str:
     """The words that asked for the tool round the result at `i` belongs to: the latest
     user message before it, if the caller said it -- "" for a round a notice or a wake
     cue started (a client note's reaction, a greeting), which nobody asked."""
@@ -589,7 +589,7 @@ _FOLLOW_UP_WORDS = 4
 
 def _caller_turns(messages: list, i: int) -> Optional[list]:
     """The caller's turns before `i`, newest first, at most _QUESTION_TURNS; None when the
-    round was started by a notice or a cue, which nobody asked (_asked)."""
+    round was started by a notice or a cue, which nobody asked (caller_asked)."""
     said = []
     for m in reversed(messages[:i]):
         if not (isinstance(m, dict) and m.get("role") == "user"):
@@ -820,7 +820,7 @@ class Owed:
         if reply.kind not in RUNS:
             if reply.kind == COMMIT:
                 self._turn += 1
-                words = _asked(messages, len(messages))
+                words = caller_asked(messages, len(messages))
                 # The caller moves on (OwedAnswers.tla ownWordsKeep): an answer carried
                 # already is ended by words of their own beyond ITS question ("Wait,
                 # Austin tomorrow?" restates it); one new at this render stays its own.

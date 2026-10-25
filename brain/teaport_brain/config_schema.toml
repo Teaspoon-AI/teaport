@@ -1047,6 +1047,16 @@ tier = "tuning"
 help = "The longest one pause lasts before the reply resumes anyway. Capped at 8 s: a write held past pipecat's 10 s deadline loses the call its voice."
 
 [[settings]]
+name = "TEAPORT_BARGE_JUDGE"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = false
+read = "startup"
+tier = "tuning"
+help = "SIP only, with TEAPORT_BARGE_PAUSE: words spoken over a paused reply (other than TEAPORT_STOP_WORDS) are first shown to a one-word LLM judge. If they need no answer (\"okay\", \"mm-hmm\") the reply resumes from where it paused, as for a cough; if they ask it to stop, ask something or correct it, or no verdict comes within 1.2 s of their first words, they interrupt as before, about a judge's time later. One extra short LLM request per such pause."
+
+[[settings]]
 name = "TEAPORT_STOP_WORDS"
 store = "brain_env"
 group = "turn_taking"
