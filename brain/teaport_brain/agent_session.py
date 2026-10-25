@@ -17,6 +17,7 @@
 # GAINS the full stack by adopting the factory.
 #
 import asyncio
+import dataclasses
 
 from loguru import logger
 
@@ -71,6 +72,7 @@ from teaport_brain import onnx_sessions
 from teaport_brain import agent_backend
 from teaport_brain import barge_pause
 from teaport_brain import call_prompt
+from teaport_brain import host_context
 from teaport_brain import raw_llm_capture
 from teaport_brain import reply_hold
 from teaport_brain import speculate
@@ -636,11 +638,13 @@ def build_agent_session(transport, *, voice: str | None = None,
       over the shared values). Only the turn-taking and a tool call's filler caption
       (charted ahead on "talk": captions.caption_ahead) tell "room" from "talk"; the
       call prompt below is offered to both.
-    - host: what the OpenClaw host composed for this session (host_context.HostContext;
-      a Talk session's session_config frame). Its instructions start the system prompt
-      in place of the persona, and its tools' schemas replace the brain's copies of the
-      same name (tools.host_tool_schemas). None (the room mic and the phone until issue
-      #230's Phase 3, a client that sent none): the persona and the brain's own schemas.
+    - host: what the OpenClaw host composed for this session (host_context.HostContext:
+      a Talk session's session_config frame, or what the plugin's voice-context route
+      gives every other front end, host_context.fetch). Its instructions start the
+      system prompt in place of the persona, and its consult schema replaces the brain's
+      copy (tools.host_tool_schemas). None (no gateway, or one that could not answer):
+      the persona and the brain's own schema; a wake session built so asks again when
+      it wakes (refresh_host below).
     - run_control: the client answers whether OpenClaw's spoken run control took a final
       said while a consult runs (the teaport plugin's ?run_control=1): RunControlClaims
       joins the pipeline, below the transcript emitter (run_control.py). Talk only.
@@ -688,25 +692,6 @@ def build_agent_session(transport, *, voice: str | None = None,
     llm = make_llm()
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
 
-    # Identity: the host's instructions where the host composed them (a Talk session,
-    # OpenClaw's req.instructions: its voice rules, the agent paragraph and profile),
-    # else the shared persona so voice and text feel like one agent; build_system_prompt
-    # falls back to the baked-in persona if the shared source is unreachable, so the loop
-    # never hard-fails on a persona lookup.
-    # What the host text covers decides the overlay after it (persona.HOST_RULES: a Talk
-    # session's, OpenClaw's voice rules included; HOST_CONTEXT: the room's and the
-    # phone's, the agent paragraph and profile only).
-    covers = None
-    if host is not None and host.instructions.strip():
-        persona = host.instructions
-        covers = HOST_RULES if host.voice_rules else HOST_CONTEXT
-        logger.info(f"host instructions from OpenClaw ({len(persona)} chars, {covers}) "
-                    "start the prompt")
-    else:
-        if host is not None:
-            logger.info("the host sent no instructions — using the brain's own persona")
-        persona = load_persona()
-        logger.info(f"Phase 1: loaded shared persona ({len(persona)} chars)")
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where
     # that tool is on. A call itself is never asked.
@@ -729,21 +714,59 @@ def build_agent_session(transport, *, voice: str | None = None,
     # (taken_turn.py: otherwise the stop strategy waits on words that never come, barge-in
     # dead).
     taken_closer = TakenTurnCloser() if wifi is not None or run_control else None
-    system_prompt = build_system_prompt(persona, tools=session_tools, host=covers)
     moods = mood_tag.ENABLED and "mood" in client_features
-    if moods:
-        system_prompt += " " + mood_tag.PARAGRAPH
+
+    def compose(host) -> str:
+        """The system prompt for `host`. Identity: the host's instructions where the host
+        composed them (OpenClaw's text: a Talk session's req.instructions, its voice rules
+        included; the room's and the phone's agent paragraph and profile), else the shared
+        persona; build_system_prompt falls back to the baked-in persona if that is
+        unreadable, so the loop never hard-fails on a persona lookup. What the host text
+        covers decides the overlay after it (persona.HOST_RULES / HOST_CONTEXT)."""
+        covers = None
+        if host is not None and host.instructions.strip():
+            persona = host.instructions
+            covers = HOST_RULES if host.voice_rules else HOST_CONTEXT
+            logger.info(f"host instructions from OpenClaw ({len(persona)} chars, {covers}) "
+                        "start the prompt")
+        else:
+            if host is not None:
+                logger.info("the host sent no instructions — using the brain's own persona")
+            persona = load_persona()
+            logger.info(f"loaded the persona file ({len(persona)} chars)")
+        prompt = build_system_prompt(persona, tools=session_tools, host=covers)
+        return prompt + " " + mood_tag.PARAGRAPH if moods else prompt
+
+    system_prompt = compose(host)
     # If a non-English voice/language was selected, tell the LLM to reply in it too
     # (the voice only changes pronunciation; the words still come from the LLM).
     lang_name = _TTS_LANG_NAMES.get(getattr(tts, "espeak_language", "en-us"))
-    context = LLMContext(
-        _build_initial_messages(system_prompt, lang_name, context_notes=context_notes,
-                                tools=session_tools),
-        tools=build_tools_schema(tool_ctx),
-    )
+    initial = _build_initial_messages(system_prompt, lang_name, context_notes=context_notes,
+                                      tools=session_tools)
+    context = LLMContext(initial, tools=build_tools_schema(tool_ctx))
     if wake_gate is not None:
         wake_gate.context = context
         wake_gate.greeting = AgentSession._GREETING
+    if wake_gate is not None and host is None and agent_backend.HAS_AGENT:
+        # A room session opened while the gateway could not answer (starting or
+        # restarting: teaport-brain is not ordered after it) was built from the persona
+        # file, and would keep it for the whole conversation. Its wake asks once more
+        # (wake_gate.WakeGate.refresh, with a short timeout: the user is about to be
+        # answered) and puts OpenClaw's text in place: the system message's content,
+        # mutated in place -- the context holds that dict, so nothing shifts under the
+        # corrector's positional window, and the conversation a wake restores carries
+        # no system message (wake_gate.MicConversation) -- and the consult's schema.
+        # Nothing else keeps a copy: every request reads the context's messages.
+        async def refresh_host():
+            fresh = await host_context.fetch("room", timeout=host_context.WAKE_TIMEOUT_S)
+            if fresh is None or not fresh.instructions.strip():
+                return
+            initial[0]["content"] = compose(fresh)
+            context.set_tools(build_tools_schema(dataclasses.replace(
+                tool_ctx, host_schemas=host_tool_schemas(fresh.tools))))
+            logger.info("woke with OpenClaw's voice context in place of the persona file")
+
+        wake_gate.refresh = refresh_host
     if AGENT_FIRST:
         logger.info("AGENT-FIRST mode active: every turn delegates to the OpenClaw agent")
     if lang_name:

@@ -92,6 +92,24 @@ test("the route answers with OpenClaw's agent context and consult tool", async (
   assert.ok(logs.some((m) => m.includes("for sip")), logs);
 });
 
+test("an agent the brain names is served when it is a configured one", async () => {
+  // The brain names OPENCLAW_AGENT_ID when the operator set it: the agent its CLI lane
+  // consults. Checked against the configured ids, as the gateway checks its agent header.
+  const { sdk, calls } = fakeSdk({ listAgentIds: () => ["main", "kitchen"] });
+  const handler = voiceContextHandler({ config: () => ({}), loadSdk: async () => sdk });
+  let res = await get(handler, `${VOICE_CONTEXT_PATH}?front_end=room&agent=Kitchen`);
+  assert.equal(res.statusCode, 200);
+  assert.equal(res.json().agentId, "kitchen");
+  assert.equal(calls.at(-1).agentId, "kitchen");
+  res = await get(handler, `${VOICE_CONTEXT_PATH}?front_end=room&agent=garage`);
+  assert.equal(res.statusCode, 400);
+  assert.deepEqual(res.json(), { error: "agent_unknown" });
+  assert.equal(calls.length, 1, "nothing is built for an agent that is not there");
+  // Not named: the default agent, as before.
+  res = await get(handler, `${VOICE_CONTEXT_PATH}?front_end=room`);
+  assert.equal(res.json().agentId, "main");
+});
+
 test("a host without the SDK pieces answers host_unsupported", async () => {
   for (const missing of ["resolveRealtimeVoiceAgentContextInstructions", "consultTool"]) {
     const { sdk } = fakeSdk({ [missing]: undefined });

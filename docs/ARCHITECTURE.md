@@ -52,16 +52,18 @@ operator's `talk.realtime.instructions`, the agent paragraph and the IDENTITY / 
   prompt starts with those instructions as sent, followed by the brain's voice rules,
   and the model's consult tool takes OpenClaw's schema. `openclaw_agent_control` is
   not offered: the relay already acts on spoken run control from the transcripts the
-  brain sends, and a model call to it (which the Control UI executes) would act twice. A client that announces no `session_config` gets the
-  brain's own persona, as before. What the relay's run control says goes to the brain
+  brain sends, and a model call to it (which the Control UI executes) would act twice. A client that announces no `session_config` (the Discord
+  bridge, an older plugin) is served like the room mic, below. What the relay's run control says goes to the brain
   as a host note it speaks, and a final the relay takes while a consult runs is not
   answered by the model too (`run_control.py`; plugin README, "Spoken run control").
-- **Room mic and phone.** At the start of each session the brain asks the gateway's
-  teaport plugin (`GET /teaport/voice-context`, gateway auth with the brain's token;
-  `plugin/voice-context.js`). The plugin builds the text the way OpenClaw's own phone
-  surface does, with the SDK: the agent paragraph and the IDENTITY / USER / SOUL
-  profile, at most 6,000 characters, plus the consult tool. The brain's voice rules
-  follow it. The brain never reads the OpenClaw workspace itself.
+- **Room mic, phone and other `/talk` clients.** At the start of each session the brain
+  asks the gateway's teaport plugin (`GET /teaport/voice-context`, gateway auth with the
+  brain's token; `plugin/voice-context.js`). The plugin builds the text the way
+  OpenClaw's own phone surface does, with the SDK: the agent paragraph and the IDENTITY /
+  USER / SOUL profile, at most 6,000 characters, plus the consult tool. The brain's voice
+  rules follow it. A gateway still starting is asked again briefly (a few seconds for a
+  room session opening asleep), and a room session that still got nothing asks once more
+  at its wake word. The brain never reads the OpenClaw workspace itself.
 - **No context.** With `TEAPORT_AGENT=none`, or a gateway that cannot answer
   (starting, restarting, an older plugin or OpenClaw), the session uses
   `TEAPORT_PERSONA_FILE` (else a built-in persona) and the brain's copy of OpenClaw's

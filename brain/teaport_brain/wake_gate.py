@@ -118,6 +118,10 @@ class WakeGate:
         self.store = store or MIC
         self.context = None   # the session's LLMContext, set by build_agent_session
         self.owed = None      # the session's owed records (owed.Owed), likewise
+        # Awaited once, at the wake: a session built without OpenClaw's voice context
+        # (the gateway could not answer when it opened) asks for it again
+        # (build_agent_session's refresh_host). None: nothing to ask.
+        self.refresh = None
         self.woke = not asleep
         self._clock = clock
         self._carry: tuple[str, float] | None = None   # (tail, when) -- see CARRY_SECS
@@ -145,6 +149,14 @@ class WakeGate:
         phrase, rest = found
         self.asleep = False
         self.woke = True
+        refresh, self.refresh = self.refresh, None
+        if refresh is not None:
+            # Before anything is answered: the greeting below, or the words after the
+            # phrase. Bounded by its own short timeout; a failure keeps the persona.
+            try:
+                await refresh()
+            except Exception as e:  # noqa: BLE001 — the wake must go on
+                logger.warning(f"wake: the voice context could not be asked again ({e!r})")
         restored = self.store.take(self.conversation_secs)
         if restored and self.context is not None:
             self.context.add_messages(restored)

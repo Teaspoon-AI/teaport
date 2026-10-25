@@ -1197,7 +1197,7 @@ type = "string"
 default = "main"
 read = "startup"
 tier = "tuning"
-help = "The agent consulted."
+help = "The agent the CLI consult lane runs, and, when set, the agent whose voice context (agent paragraph and profile) the room mic and the phone ask the teaport plugin for; unset, they get the gateway's default agent's, the one the /v1/chat/completions consult lane reaches."
 
 [[settings]]
 name = "OPENCLAW_BIN"

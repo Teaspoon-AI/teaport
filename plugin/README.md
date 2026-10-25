@@ -88,20 +88,26 @@ keep the brain in step:
 ### The room mic and the phone
 
 The box's own microphone and its phone line reach the brain without OpenClaw's Talk
-relay, so the brain asks the plugin for their context at the start of each session:
+relay, and so does any other `/talk` client that sends no `session_config` (the Discord
+bridge), so the brain asks the plugin for their context at the start of each session:
 
 ```
-GET /teaport/voice-context?front_end=room|sip     (gateway auth: the gateway token)
+GET /teaport/voice-context?front_end=room|sip|<client>[&agent=<id>]   (gateway auth: the gateway token)
 -> 200 {"version": 1, "agentId": "...", "instructions": "...", "tools": [...], "openclawVersion": "..."}
+-> 400 {"error": "agent_unknown"}
 -> 503 {"error": "host_unsupported" | "agent_unresolved" | "context_unavailable"}
 ```
 
 The plugin builds it with OpenClaw's SDK the way OpenClaw's own phone surface
 (voice-call) does: `resolveRealtimeVoiceAgentContextInstructions` for the default
-agent (the agent paragraph and the IDENTITY / USER / SOUL profile, at most 6,000
-characters, no session key) and `REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
-it with its own voice rules. On any failure (the gateway starting or restarting
-answers 503) the brain uses its persona file instead and logs a warning.
+agent, or the configured agent the brain names (`agent=`, its `OPENCLAW_AGENT_ID` when
+set) — the agent paragraph and the IDENTITY / USER / SOUL profile, at most 6,000
+characters, no session key — and `REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
+it with its own voice rules. A gateway still starting or restarting (503 with
+`Retry-After`, or refusing connections) is asked again for a few seconds by a room
+session opening asleep and for about one by anyone else; past that, or on any other
+failure, the brain uses its persona file and logs a warning, and a room session built
+that way asks once more when its wake word is heard.
 
 ### Why `brain` must be `"agent-consult"`
 

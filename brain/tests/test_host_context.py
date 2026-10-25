@@ -373,8 +373,9 @@ def _run_talk(query, frames, *, wait=None):
     async def send_text(text):
         order.append(json.loads(text)["type"])
 
-    async def fetch(front_end):
+    async def fetch(front_end, *, patience=0.0, timeout=None):
         order.append(f"fetch:{front_end}")
+        built["patience"] = patience
         return ROOM_HOST
 
     saved_fetch = gs.host_context.fetch
@@ -397,7 +398,7 @@ def _run_talk(query, frames, *, wait=None):
             setattr(gs, k, v)
         gs.arb.ARBITER = saved_arbiter
         gs.host_context.fetch = saved_fetch
-    return order, (built or None)
+    return order, (built if "host" in built else None)
 
 
 # What the plugin's voice-context route gives the room (synthetic).
@@ -415,16 +416,26 @@ def test_the_brain_reads_the_frame_before_it_builds_and_says_hello_after():
     assert built["host"] == host_context.from_frame(FRAME)
 
 
-def test_without_the_flag_the_brain_never_waits():
-    order, built = _run_talk({"captions": "2"}, [_text(FRAME)])
+def test_without_the_flag_the_brain_never_waits_and_asks_the_plugin():
+    """A /talk client with no session_config -- the Discord bridge, a plugin before #230
+    -- is not left with the persona file: it gets what the room gets, from the plugin's
+    route, under its own name. Nothing is waited for on the socket."""
+    order, built = _run_talk({"client": "discord", "voice": "af_nova"}, [_text(FRAME)])
     assert "receive" not in order, order
-    assert built["host"] is None
+    assert order[:3] == ["fetch:discord", "build", "hello"], order
+    assert built["host"] is ROOM_HOST and built["patience"] == host_context.PATIENCE_S
+    order, built = _run_talk({"captions": "2"}, [_text(FRAME)])
+    assert order[:2] == ["fetch:talk", "build"], order
     # Nor for the room mic, whatever it says: its bridge is not OpenClaw. The room asks
     # the gateway's teaport plugin instead (host_context.fetch), before the build.
     order, built = _run_talk({"features": "local", "session_config": "1"}, [_text(FRAME)])
     assert "receive" not in order, order
     assert order[:3] == ["fetch:room", "build", "hello"], order
-    assert built["host"] is ROOM_HOST
+    assert built["host"] is ROOM_HOST and built["patience"] == host_context.PATIENCE_S
+    # A wake session opening asleep can wait longer for a gateway still starting.
+    order, built = _run_talk({"features": "local", "wake": "hey teaport"}, [])
+    assert order[:2] == ["fetch:room", "build"], order
+    assert built["patience"] == host_context.PATIENCE_ASLEEP_S
 
 
 def test_a_frame_that_does_not_come_as_promised_builds_without_it():
@@ -447,19 +458,25 @@ def test_a_client_that_leaves_while_the_brain_waits_gets_no_session():
 class _Gateway:
     """A loopback HTTP server playing the gateway's /teaport/voice-context route."""
 
-    def __init__(self, status, body):
+    def __init__(self, status, body, *, before=()):
+        """Answers `before` first -- (status, body, headers) each, in order -- then
+        (status, body) for good."""
         import http.server
         import threading
 
         gw = self
         self.requests = []
+        queue = list(before)
 
         class Handler(http.server.BaseHTTPRequestHandler):
             def do_GET(self):  # noqa: N802
                 gw.requests.append((self.path, self.headers.get("Authorization")))
-                data = body if isinstance(body, bytes) else json.dumps(body).encode()
-                self.send_response(status)
+                code, answer, headers = queue.pop(0) if queue else (status, body, {})
+                data = answer if isinstance(answer, bytes) else json.dumps(answer).encode()
+                self.send_response(code)
                 self.send_header("Content-Type", "application/json")
+                for k, v in headers.items():
+                    self.send_header(k, v)
                 self.send_header("Content-Length", str(len(data)))
                 self.end_headers()
                 self.wfile.write(data)
@@ -476,18 +493,26 @@ class _Gateway:
         self.server.server_close()
 
 
-def _fetch(monkeypatch, status, body, front_end="sip", token="tok-1"):
+def _fetch(monkeypatch, status, body, front_end="sip", token="tok-1", *, before=(),
+           patience=0.0):
     from teaport_brain import openclaw_client as oc
 
-    gw = _Gateway(status, body)
+    gw = _Gateway(status, body, before=before)
     try:
         monkeypatch.setattr(oc, "GATEWAY_URL", gw.url)
         monkeypatch.setattr(oc, "_token", lambda: token)
         monkeypatch.setattr(host_context, "HAS_AGENT", True)
-        host = asyncio.run(host_context.fetch(front_end))
+        host = asyncio.run(host_context.fetch(front_end, patience=patience))
     finally:
         gw.close()
     return host, gw.requests
+
+
+def _warnings():
+    from loguru import logger
+
+    seen = []
+    return seen, logger.add(lambda m: seen.append(str(m)), level="INFO")
 
 
 ROUTE_BODY = {"version": 1, "agentId": "main", "openclawVersion": "2026.9.7",
@@ -528,6 +553,131 @@ def test_a_gateway_that_cannot_answer_falls_back_with_a_warning(monkeypatch):
     assert len(warnings) == 5, warnings
     assert all("persona file" in w for w in warnings), warnings
     assert any("503 (host_unsupported)" in w for w in warnings), warnings
+
+
+def test_a_gateway_still_starting_is_asked_again_within_the_patience(monkeypatch):
+    """The gateway answers 503 with Retry-After until its startup plugins are ready, and
+    teaport-brain is not ordered after it: a session opening then asks again rather than
+    keep the persona file for its whole conversation."""
+    from loguru import logger
+
+    starting = (503, {"error": {"message": "starting"}}, {"Retry-After": "0.1"})
+    seen, sink = _warnings()
+    try:
+        host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, before=[starting, starting],
+                                patience=1.0)
+        assert host is not None and len(requests) == 3, requests
+        # Without patience (or past it), one ask and the persona file.
+        host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, before=[starting])
+        assert host is None and len(requests) == 1
+        # The plugin's own 503 names a reason that stays until the host changes, and
+        # carries no Retry-After: not asked again.
+        unsupported = (503, {"error": "host_unsupported"}, {})
+        host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, before=[unsupported],
+                                patience=1.0)
+        assert host is None and len(requests) == 1
+    finally:
+        logger.remove(sink)
+    assert any("asking again in 0.1s" in w for w in seen), seen
+
+
+def test_a_gateway_not_listening_yet_is_asked_again(monkeypatch):
+    from loguru import logger
+
+    from teaport_brain import openclaw_client as oc
+
+    gw = _Gateway(200, ROUTE_BODY)
+    url = gw.url
+    gw.close()
+    monkeypatch.setattr(oc, "GATEWAY_URL", url)
+    monkeypatch.setattr(oc, "_token", lambda: "tok-1")
+    monkeypatch.setattr(host_context, "HAS_AGENT", True)
+    monkeypatch.setattr(host_context, "RETRY_REFUSED_S", 0.05)
+    seen, sink = _warnings()
+    try:
+        assert asyncio.run(host_context.fetch("room", patience=0.3)) is None
+    finally:
+        logger.remove(sink)
+    again = [w for w in seen if "refused" in w and "asking again" in w]
+    final = [w for w in seen if "refused" in w and "persona file" in w]
+    assert len(again) >= 3 and len(final) == 1, seen
+
+
+def test_a_200_that_is_not_json_says_so(monkeypatch):
+    from loguru import logger
+
+    seen, sink = _warnings()
+    try:
+        host, _ = _fetch(monkeypatch, 200, b"<html>a login page</html>")
+    finally:
+        logger.remove(sink)
+    assert host is None
+    assert any("answered 200 but not with JSON" in w for w in seen), seen
+    assert not any("JSONDecodeError" in w for w in seen), seen
+
+
+def test_the_agent_the_operator_named_is_asked_for(monkeypatch):
+    """OPENCLAW_AGENT_ID, when set, is the agent the CLI lane consults: the room and the
+    phone ask for its context too. Unset, the route's default agent (nothing sent)."""
+    monkeypatch.setattr(host_context, "AGENT_ID", "kitchen")
+    _, requests = _fetch(monkeypatch, 200, ROUTE_BODY, front_end="room")
+    assert requests[0][0] == "/teaport/voice-context?front_end=room&agent=kitchen", requests
+    monkeypatch.setattr(host_context, "AGENT_ID", None)
+    _, requests = _fetch(monkeypatch, 200, ROUTE_BODY, front_end="room")
+    assert requests[0][0] == "/teaport/voice-context?front_end=room", requests
+    from teaport_brain.settings import setting
+    assert setting("OPENCLAW_AGENT_ID", default=None, env={}) is None
+
+
+def test_a_room_built_without_the_context_takes_it_at_the_wake(monkeypatch):
+    """A room session that opened while the gateway was down was built from the persona
+    file; its wake asks again and puts OpenClaw's text in place before anything is
+    answered -- the same system message, so nothing else in the context moves."""
+    from teaport_brain import agent_backend, agent_session, wake_gate
+    from teaport_brain.agent_session import build_agent_session
+
+    monkeypatch.setattr(agent_session, "load_persona", lambda: "BRAIN PERSONA.")
+    monkeypatch.setattr(agent_backend, "HAS_AGENT", True)
+    asks = []
+
+    async def fetch(front_end, *, patience=0.0, timeout=None):
+        asks.append((front_end, timeout))
+        return ROOM_HOST
+
+    monkeypatch.setattr(host_context, "fetch", fetch)
+
+    async def run():
+        gate = wake_gate.WakeGate(wake_gate.parse_phrases("hey teaport"),
+                                  store=wake_gate.MicConversation())
+        session = build_agent_session(_Transport(), context_notes=True, front_end="room",
+                                      wake_gate=gate, client_features=frozenset({"local"}),
+                                      host=None)
+        system = session.context.get_messages()[0]
+        assert system["content"].startswith("BRAIN PERSONA."), system["content"][:80]
+        pushed = []
+
+        async def push(frame):
+            pushed.append(frame)
+
+        assert await gate.final("the radio is on", push) is None
+        assert asks == [], "asked while asleep"
+        await gate.final("hey teaport", push)
+        assert asks == [("room", host_context.WAKE_TIMEOUT_S)], asks
+        assert session.context.get_messages()[0] is system
+        assert system["content"].startswith(ROOM_HOST.instructions), system["content"][:80]
+        # Once: a second wake phrase in the conversation asks nothing.
+        await gate.final("hey teaport, again", push)
+        assert len(asks) == 1
+        # Built WITH the context: nothing to ask at the wake.
+        gate = wake_gate.WakeGate(wake_gate.parse_phrases("hey teaport"),
+                                  store=wake_gate.MicConversation())
+        build_agent_session(_Transport(), context_notes=True, front_end="room",
+                            wake_gate=gate, client_features=frozenset({"local"}),
+                            host=ROOM_HOST)
+        await gate.final("hey teaport", push)
+        assert len(asks) == 1
+
+    asyncio.run(run())
 
 
 def test_without_a_gateway_nothing_is_asked(monkeypatch):

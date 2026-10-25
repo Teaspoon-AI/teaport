@@ -848,8 +848,9 @@ async def run_connection(sock, on_ready=None):
             front_end="sip",
             # What OpenClaw tells a voice surface, from the gateway's teaport plugin
             # (host_context.fetch: loopback, milliseconds; None falls back to the persona
-            # file, with a warning).
-            host=await host_context.fetch("sip"),
+            # file, with a warning). A caller is on the line: a gateway not up yet gets
+            # the short patience, not the asleep room's.
+            host=await host_context.fetch("sip", patience=host_context.PATIENCE_S),
         )
         if half_duplex is not None:
             half_duplex.thinking_sound = session.thinking_sound

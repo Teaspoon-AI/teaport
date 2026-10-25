@@ -339,21 +339,25 @@ async def run_relay_bot(websocket: WebSocket):
     #     audio, when it announces ?session_config=1, so normally already buffered;
     #     SESSION_CONFIG_WAIT_SECS bounds it well inside the plugin's 15 s wait for the
     #     hello (plugin/context.js). Without the flag nothing is waited for.
-    #   room: the plugin's voice-context route on the gateway (host_context.fetch: loopback,
-    #     milliseconds, bounded by its FETCH_TIMEOUT_S; the bridge sends no mic audio
-    #     until the hello, so nothing is lost meanwhile).
+    #   everyone else -- the room mic, the Discord bridge (?client=discord), a plugin
+    #     before #230 -- sends no frame: the plugin's voice-context route on the gateway
+    #     (host_context.fetch: loopback, milliseconds, bounded by its FETCH_TIMEOUT_S), the
+    #     agent paragraph and profile the phone gets too, under the front end's name. A
+    #     gateway not up yet is asked again for as long as the session can wait: a few
+    #     seconds for a wake session opening asleep, about one for anyone else
+    #     (host_context.PATIENCE_*). The room's bridge sends no mic audio until the hello,
+    #     so nothing is lost meanwhile.
     # A refused connection never gets here.
-    host = None
-    if room:
-        host = await host_context.fetch("room")
-    elif qp.get("session_config") == host_context.PROTOCOL:
+    if qp.get("session_config") == host_context.PROTOCOL and not room:
         host = await _read_session_config(websocket)
         if host is False:
             logger.info("Talk client left before its session_config arrived")
             return
     else:
-        logger.info("Talk client sent no session_config (a plugin before #230, or not "
-                    "OpenClaw) — no host instructions; the brain's own persona")
+        host = await host_context.fetch(
+            "room" if room else (client or "talk"),
+            patience=(host_context.PATIENCE_ASLEEP_S if gate is not None and gate.asleep
+                      else host_context.PATIENCE_S))
     if gate is not None and awake:
         gate.store.clear()  # a fresh conversation, by request
     transport = FastAPIWebsocketTransport(

@@ -5,8 +5,10 @@
 // frame; provider.js). The room mic and the phone line never pass through OpenClaw's
 // Talk relay, so the brain asks for theirs here, at the start of each session:
 //
-//   GET /teaport/voice-context?front_end=room|sip      (gateway auth: the bearer token)
+//   GET /teaport/voice-context?front_end=room|sip|<client>[&agent=<id>]
+//                                                      (gateway auth: the bearer token)
 //   -> 200 {"version": 1, "agentId", "instructions", "tools", "openclawVersion"}
+//   -> 400 {"error": "agent_unknown"}                  (agent= names no configured agent)
 //   -> 503 {"error": "host_unsupported" | "agent_unresolved" | "context_unavailable"}
 //
 // The text is built the way OpenClaw's own phone surface builds it (voice-call,
@@ -18,7 +20,10 @@
 //   tools         [REALTIME_VOICE_AGENT_CONSULT_TOOL]: the consult, as Talk gets it.
 // No session key: room and phone consults run under a fresh key each (the brain's
 // /v1/chat/completions lane sends none), as voice-call omits it too. The agent is the
-// default agent, the one that lane's model "openclaw" reaches.
+// default agent, the one that lane's model "openclaw" reaches, unless the brain names
+// one (agent=, its OPENCLAW_AGENT_ID when the operator set it: the agent its CLI lane
+// consults); a named one must be a configured agent (listAgentIds), as the gateway's own
+// x-openclaw-agent-id header must.
 //
 // The SDK subpaths are imported on the first request, not at plugin load: discovery and
 // CLI loads never serve a request, and the realtime-voice barrel is not small. They are
@@ -63,6 +68,7 @@ export async function importVoiceContextSdk() {
     resolveRealtimeVoiceAgentContextInstructions: context.resolveRealtimeVoiceAgentContextInstructions,
     resolveDefaultAgentId: scope.resolveDefaultAgentId,
     tryResolveDefaultAgentId: scope.tryResolveDefaultAgentId,
+    listAgentIds: scope.listAgentIds,
     consultTool: voice.REALTIME_VOICE_AGENT_CONSULT_TOOL,
   };
 }
@@ -73,6 +79,19 @@ function send(res, status, body) {
   res.setHeader("Cache-Control", "no-store");
   res.end(JSON.stringify(body));
   return true;
+}
+
+// The agent the brain named, when it is a configured one: listAgentIds gives the
+// normalized (lowercase) ids, as the gateway's agent header is checked against them.
+// undefined when it is not one, or the host cannot say.
+function namedAgentId(sdk, config, requested) {
+  const wanted = requested.trim().toLowerCase();
+  try {
+    const ids = sdk.listAgentIds?.(config);
+    return Array.isArray(ids) && ids.includes(wanted) ? wanted : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 // The default agent: resolveDefaultAgentId throws when the config leaves the choice open
@@ -107,10 +126,13 @@ export function voiceContextHandler({ config, version, loadSdk = importVoiceCont
       return send(res, 405, { error: "method_not_allowed" });
     }
     let frontEnd = "";
+    let requestedAgent = "";
     try {
-      frontEnd = new URL(req.url || "", "http://gateway").searchParams.get("front_end") || "";
+      const params = new URL(req.url || "", "http://gateway").searchParams;
+      frontEnd = params.get("front_end") || "";
+      requestedAgent = params.get("agent") || "";
     } catch {
-      /* logged as unknown */
+      /* logged as unknown; the default agent */
     }
     sdkPromise ??= loadSdk().catch(() => ({}));
     const sdk = await sdkPromise;
@@ -129,7 +151,16 @@ export function voiceContextHandler({ config, version, loadSdk = importVoiceCont
       cfg = undefined;
     }
     if (!cfg) return send(res, 503, { error: "host_unsupported" });
-    const agentId = defaultAgentId(sdk, cfg);
+    let agentId;
+    if (requestedAgent.trim()) {
+      agentId = namedAgentId(sdk, cfg, requestedAgent);
+      if (!agentId) {
+        log?.warn?.(`teaport-realtime: voice context asked for agent ${JSON.stringify(requestedAgent)}, which is not a configured agent`);
+        return send(res, 400, { error: "agent_unknown" });
+      }
+    } else {
+      agentId = defaultAgentId(sdk, cfg);
+    }
     if (!agentId) {
       log?.warn?.("teaport-realtime: voice context requested, but no default agent resolves from the config");
       return send(res, 503, { error: "agent_unresolved" });
