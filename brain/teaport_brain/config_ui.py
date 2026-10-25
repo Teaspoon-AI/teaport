@@ -325,10 +325,12 @@ def _accept(row: dict, value: str | None) -> tuple[str | None, str | None]:
 
 def _effective(rows: dict[str, dict], values: dict[str, str]) -> dict[str, float]:
     """Numeric view of the settings a constraint may name: the value in the
-    file as the brain reads it, else (unset, or not a value) the row default."""
+    file as the brain reads it (a renamed one under its former name while that is the
+    one set: settings.read_name), else (unset, or not a value) the row default."""
     out: dict[str, float] = {}
     for name, row in rows.items():
-        raw, _ = settings.canonical(row, values.get(name))
+        read = settings.read_name(name, values) if "former" in row else name
+        raw, _ = settings.canonical(row, values.get(read))
         raw = row.get("default") if raw is None else raw
         try:
             out[name] = float(raw)  # type: ignore[arg-type]
@@ -570,6 +572,11 @@ async def put_config(request: Request):
     superseded = [n for n in secret_updates if n in merged]
     for n in superseded:
         env_updates[n] = None
+    # A renamed setting written or unset here takes its former name with it: left in the
+    # file, the former name would still be read while the new one is unset
+    # (settings.read_name), so choosing the default would change nothing.
+    for n in [n for n in env_updates if rows[n].get("former") in merged]:
+        env_updates.setdefault(rows[n]["former"], None)
     for k, v in env_updates.items():
         if v is None:
             merged.pop(k, None)

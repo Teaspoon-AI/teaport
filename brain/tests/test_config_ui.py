@@ -238,6 +238,21 @@ def test_a_renamed_setting_shows_what_the_brain_reads_under_its_former_name():
     assert r.status_code == 200, r.text
     body = client.get("/api/config", headers=H).json()
     assert body["values"]["brain_env"][new] == "1" and new not in body["renamed"]
+    assert old not in open(os.path.join(etc, "brain.env")).read(), "the old name went with it"
+    # Choosing the default (unset) takes the old name too: left in the file, it would
+    # still be read and the default would change nothing.
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write(f"{old}=no\n")
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {new: None}})
+    assert r.status_code == 200, r.text
+    assert old not in open(os.path.join(etc, "brain.env")).read()
+    assert new not in client.get("/api/config", headers=H).json()["values"]["brain_env"]
+    # A constraint counts a renamed setting at the value read under its old name.
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write("TEAPORT_ASK_OPENCLAW_TIMEOUT=30\n")
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
+        "TEAPORT_NATIVE_CONSULT_TIMEOUT": "40"}})
+    assert r.status_code == 400 and r.json()["constraints"], r.text
     # An old value the brain cannot read is not shown as the new one's.
     with open(os.path.join(etc, "brain.env"), "w") as f:
         f.write(f"{old}=maybe\n")
