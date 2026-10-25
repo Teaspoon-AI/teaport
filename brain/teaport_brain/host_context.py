@@ -116,10 +116,11 @@ RETRY_REFUSED_S = 0.5
 RETRY_AFTER_MAX_S = 2.0
 WAKE_TIMEOUT_S = 1.0
 # The agent whose context is asked for: OPENCLAW_AGENT_ID, the one the CLI lane consults,
-# when it is set; unset, the route's default agent (resolveDefaultAgentId, the one the
-# /v1/chat/completions lane's model "openclaw" reaches). Its own default ("main") is not
-# sent: on a gateway whose default agent is another, that would ask for an agent the
-# operator never named.
+# when it is set; unset, the agent the /v1/chat/completions lane's model "openclaw"
+# reaches (the route resolves it with resolveSessionAgentIdStrict and no owner, which is
+# that agent whenever the lane can answer; plugin/voice-context.js, resolveAgentId). Its
+# own default ("main") is not sent: on a gateway whose default agent is another, that
+# would ask for an agent the operator never named.
 AGENT_ID = setting("OPENCLAW_AGENT_ID", default=None)
 
 # A 200 whose body is not JSON (_get_sync).

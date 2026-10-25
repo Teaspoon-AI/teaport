@@ -20,10 +20,10 @@
 //   tools         [REALTIME_VOICE_AGENT_CONSULT_TOOL]: the consult, as Talk gets it.
 // No session key: room and phone consults run under a fresh key each (the brain's
 // /v1/chat/completions lane sends none), as voice-call omits it too. The agent is the
-// default agent, the one that lane's model "openclaw" reaches, unless the brain names
-// one (agent=, its OPENCLAW_AGENT_ID when the operator set it: the agent its CLI lane
-// consults); a named one must be a configured agent (listAgentIds), as the gateway's own
-// x-openclaw-agent-id header must.
+// one that lane's model "openclaw" answers with, unless the brain names one (agent=, its
+// OPENCLAW_AGENT_ID when the operator set it: the agent its CLI lane consults); a named
+// one must be a configured agent (listAgentIds), as the gateway's own x-openclaw-agent-id
+// header must. Both are resolved the way 2026.9.7 asks new plugins to (resolveAgentId).
 //
 // The SDK subpaths are imported on the first request, not at plugin load: discovery and
 // CLI loads never serve a request, and the realtime-voice barrel is not small. They are
@@ -66,8 +66,7 @@ export async function importVoiceContextSdk() {
   ]);
   return {
     resolveRealtimeVoiceAgentContextInstructions: context.resolveRealtimeVoiceAgentContextInstructions,
-    resolveDefaultAgentId: scope.resolveDefaultAgentId,
-    tryResolveDefaultAgentId: scope.tryResolveDefaultAgentId,
+    resolveSessionAgentIdStrict: scope.resolveSessionAgentIdStrict,
     listAgentIds: scope.listAgentIds,
     consultTool: voice.REALTIME_VOICE_AGENT_CONSULT_TOOL,
   };
@@ -81,33 +80,46 @@ function send(res, status, body) {
   return true;
 }
 
-// The agent the brain named, when it is a configured one: listAgentIds gives the
-// normalized (lowercase) ids, as the gateway's agent header is checked against them.
-// undefined when it is not one, or the host cannot say.
-function namedAgentId(sdk, config, requested) {
-  const wanted = requested.trim().toLowerCase();
+// The agent the context is for: { agentId } or { error }.
+//
+// OpenClaw 2026.9.7 asks new plugins to resolve a session's agent with
+// resolveSessionAgentIdStrict (or the -Ids form) and an explicit or prepared owner
+// (docs/plugins/sdk-subpaths.md, agent-scope-runtime; plugins/compatibility.md, "Session
+// agent resolution aliases"). The old names, resolveSessionAgentId(s), keep an ambient
+// system-agent fallback only through 2026-11-29; resolveDefaultAgentId, which this route
+// used, is marked deprecated in its own module ("accepts raw shipped markers only for input
+// compatibility"), though the gateway's /v1/chat/completions lane still calls it.
+//
+//   named (agent=)  the explicit owner. The strict resolver refuses an id that is not a
+//                   valid agent id (agent_unknown here), and does not look the agent up,
+//                   so listAgentIds must also know it, as the gateway's agent header is
+//                   checked (assertKnownAgentId); it gives the normalized (lowercase) id.
+//   not named       no owner: the strict resolver gives the retained legacy owner, else
+//                   the agent the config marks default, else the only agent, and throws
+//                   when the choice is open (several agents, none marked): agent_unresolved.
+//                   The brain's room and phone consults go to /v1/chat/completions with
+//                   model "openclaw" and no agent header, which answers with
+//                   resolveDefaultAgentId: the marked default, else the only agent, else an
+//                   error (src/gateway/http-utils.ts, resolveAgentIdForRequest). The two
+//                   differ only for a retained owner whose marker a migration stripped:
+//                   with one agent that is the same agent, and with several under explicit
+//                   ownership the lane cannot answer at all. So whenever the lane answers,
+//                   this is its agent.
+function resolveAgentId(sdk, config, requested) {
+  const named = requested.trim();
+  let agentId;
+  try {
+    agentId = sdk.resolveSessionAgentIdStrict(named ? { config, agentId: named } : { config });
+  } catch {
+    return { error: named ? "agent_unknown" : "agent_unresolved" };
+  }
+  if (typeof agentId !== "string" || !agentId) return { error: named ? "agent_unknown" : "agent_unresolved" };
+  if (!named) return { agentId };
   try {
     const ids = sdk.listAgentIds?.(config);
-    return Array.isArray(ids) && ids.includes(wanted) ? wanted : undefined;
+    return Array.isArray(ids) && ids.includes(agentId) ? { agentId } : { error: "agent_unknown" };
   } catch {
-    return undefined;
-  }
-}
-
-// The default agent: resolveDefaultAgentId throws when the config leaves the choice open
-// (several agents, none marked default); the try- form returns undefined instead.
-function defaultAgentId(sdk, config) {
-  try {
-    const id = sdk.resolveDefaultAgentId?.(config);
-    if (typeof id === "string" && id) return id;
-  } catch {
-    /* fall through to the non-throwing form */
-  }
-  try {
-    const id = sdk.tryResolveDefaultAgentId?.(config);
-    return typeof id === "string" && id ? id : undefined;
-  } catch {
-    return undefined;
+    return { error: "agent_unknown" };
   }
 }
 
@@ -139,7 +151,7 @@ export function voiceContextHandler({ config, version, loadSdk = importVoiceCont
     if (
       typeof sdk.resolveRealtimeVoiceAgentContextInstructions !== "function" ||
       !sdk.consultTool ||
-      (typeof sdk.resolveDefaultAgentId !== "function" && typeof sdk.tryResolveDefaultAgentId !== "function")
+      typeof sdk.resolveSessionAgentIdStrict !== "function"
     ) {
       log?.warn?.("teaport-realtime: voice context requested, but this OpenClaw lacks the realtime SDK (2026.9.7+)");
       return send(res, 503, { error: "host_unsupported" });
@@ -151,19 +163,14 @@ export function voiceContextHandler({ config, version, loadSdk = importVoiceCont
       cfg = undefined;
     }
     if (!cfg) return send(res, 503, { error: "host_unsupported" });
-    let agentId;
-    if (requestedAgent.trim()) {
-      agentId = namedAgentId(sdk, cfg, requestedAgent);
-      if (!agentId) {
-        log?.warn?.(`teaport-realtime: voice context asked for agent ${JSON.stringify(requestedAgent)}, which is not a configured agent`);
-        return send(res, 400, { error: "agent_unknown" });
-      }
-    } else {
-      agentId = defaultAgentId(sdk, cfg);
+    const { agentId, error } = resolveAgentId(sdk, cfg, requestedAgent);
+    if (error === "agent_unknown") {
+      log?.warn?.(`teaport-realtime: voice context asked for agent ${JSON.stringify(requestedAgent)}, which is not a configured agent`);
+      return send(res, 400, { error });
     }
-    if (!agentId) {
-      log?.warn?.("teaport-realtime: voice context requested, but no default agent resolves from the config");
-      return send(res, 503, { error: "agent_unresolved" });
+    if (error) {
+      log?.warn?.("teaport-realtime: voice context requested, but no agent resolves from the config (several agents, none marked default?)");
+      return send(res, 503, { error });
     }
     let instructions;
     try {

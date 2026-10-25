@@ -102,9 +102,10 @@ GET /teaport/voice-context?front_end=room|sip|<client>[&agent=<id>]   (gateway a
 ```
 
 The plugin builds it with OpenClaw's SDK the way OpenClaw's own phone surface
-(voice-call) does: `resolveRealtimeVoiceAgentContextInstructions` for the default
-agent, or the configured agent the brain names (`agent=`, its `OPENCLAW_AGENT_ID` when
-set) — the agent paragraph and the IDENTITY / USER / SOUL profile, at most 6,000
+(voice-call) does: `resolveRealtimeVoiceAgentContextInstructions` for the agent the
+brain's `/v1/chat/completions` consults answer with, or the configured agent the brain
+names (`agent=`, its `OPENCLAW_AGENT_ID` when set), resolved with
+`resolveSessionAgentIdStrict` as 2026.9.7 asks new plugins to — the agent paragraph and the IDENTITY / USER / SOUL profile, at most 6,000
 characters, no session key — and `REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
 it with its own voice rules. A gateway still starting or restarting (503 with
 `Retry-After`, or refusing connections) is asked again for a few seconds by a room

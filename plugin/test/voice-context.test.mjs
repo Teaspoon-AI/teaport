@@ -27,8 +27,9 @@ function fakeSdk(over = {}) {
         calls.push(params);
         return "Agent context: synthetic.\n\n### IDENTITY.md\nName: Test Voice";
       },
-      resolveDefaultAgentId: () => "main",
-      tryResolveDefaultAgentId: () => "main",
+      // OpenClaw's resolveSessionAgentIdStrict, enough of it: an explicit owner is
+      // normalized (lowercased), and without one the config's default agent.
+      resolveSessionAgentIdStrict: ({ agentId }) => (agentId === undefined ? "main" : agentId.trim().toLowerCase()),
       consultTool: CONSULT,
       ...over,
     },
@@ -110,8 +111,32 @@ test("an agent the brain names is served when it is a configured one", async () 
   assert.equal(res.json().agentId, "main");
 });
 
+test("the agent is resolved strictly: the brain's name as the explicit owner, else none", async () => {
+  // resolveSessionAgentIdStrict, as 2026.9.7 asks new plugins to resolve an agent: the
+  // named agent is passed as the owner, and with no name none is passed (no session key
+  // either: the room's and the phone's consults have none). An id it refuses as no agent
+  // id at all is agent_unknown, like one the config does not list.
+  const owners = [];
+  const { sdk } = fakeSdk({
+    listAgentIds: () => ["main", "kitchen"],
+    resolveSessionAgentIdStrict: (params) => {
+      owners.push(params);
+      if (params.agentId === "!!") throw new Error("Invalid explicit agent id; refusing default-agent resolution.");
+      return params.agentId === undefined ? "main" : params.agentId.toLowerCase();
+    },
+  });
+  const config = { agents: {} };
+  const handler = voiceContextHandler({ config: () => config, loadSdk: async () => sdk });
+  assert.equal((await get(handler, `${VOICE_CONTEXT_PATH}?front_end=sip&agent=Kitchen`)).json().agentId, "kitchen");
+  assert.equal((await get(handler, `${VOICE_CONTEXT_PATH}?front_end=sip`)).json().agentId, "main");
+  const bad = await get(handler, `${VOICE_CONTEXT_PATH}?front_end=sip&agent=!!`);
+  assert.equal(bad.statusCode, 400);
+  assert.deepEqual(bad.json(), { error: "agent_unknown" });
+  assert.deepEqual(owners.slice(0, 2), [{ config, agentId: "Kitchen" }, { config }]);
+});
+
 test("a host without the SDK pieces answers host_unsupported", async () => {
-  for (const missing of ["resolveRealtimeVoiceAgentContextInstructions", "consultTool"]) {
+  for (const missing of ["resolveRealtimeVoiceAgentContextInstructions", "consultTool", "resolveSessionAgentIdStrict"]) {
     const { sdk } = fakeSdk({ [missing]: undefined });
     const handler = voiceContextHandler({ config: () => ({}), loadSdk: async () => sdk });
     const res = await get(handler);
@@ -124,11 +149,12 @@ test("a host without the SDK pieces answers host_unsupported", async () => {
 });
 
 test("no default agent answers agent_unresolved", async () => {
+  // Several agents and none marked default: the strict resolver throws
+  // AgentSelectionRequiredError without an owner.
   const { sdk } = fakeSdk({
-    resolveDefaultAgentId: () => {
+    resolveSessionAgentIdStrict: () => {
       throw new Error("agent selection required");
     },
-    tryResolveDefaultAgentId: () => undefined,
   });
   const res = await get(voiceContextHandler({ config: () => ({}), loadSdk: async () => sdk }));
   assert.equal(res.statusCode, 503);
@@ -168,8 +194,7 @@ test("index.js registers the route behind gateway auth and serves it from the SD
       "export const resolveRealtimeVoiceAgentContextInstructions = async ({ agentId, maxChars }) =>\n" +
       "  `Agent context for ${agentId} within ${maxChars}.`;\n",
     "agent-scope-runtime":
-      "export const resolveDefaultAgentId = (cfg) => cfg.agents.list[0].id;\n" +
-      "export const tryResolveDefaultAgentId = (cfg) => cfg.agents.list[0].id;\n",
+      "export const resolveSessionAgentIdStrict = ({ config, agentId }) => agentId ?? config.agents.list[0].id;\n",
     "realtime-voice": `export const REALTIME_VOICE_AGENT_CONSULT_TOOL = ${JSON.stringify(CONSULT)};\n`,
   };
   const exports = {};
