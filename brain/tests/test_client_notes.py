@@ -236,6 +236,109 @@ def test_the_kind_is_logged_safely():
     assert cn._log_kind(None) == "note"
 
 
+# ---- host notes: OpenClaw's own message for the model (#230) ----------------------
+
+# What the relay's run control hands the provider to speak
+# (buildRealtimeVoiceAgentControlSpeechMessage, OpenClaw 2026.9.7).
+HOST = ("Internal OpenClaw voice control result.\n"
+        "Do not delegate this message or call any tools.\n"
+        "Speak this exact OpenClaw status to the voice call, without adding, removing, or "
+        "rephrasing words.\n"
+        'Status: "Cancelled the active OpenClaw run."')
+
+
+async def _send_host(h, text=HOST, rid="h1"):
+    await h.notes.process_frame(
+        ClientContextFrame(text=text, respond=True, kind="openclaw-voice", request_id=rid,
+                           host=True),
+        FrameDirection.DOWNSTREAM)
+
+
+def _host_orders(context):
+    return [m for m in context.get_messages()
+            if m.get("content") == f"{SYSTEM_NOTICE_TAG}\n{HOST}"]
+
+
+async def test_the_serializer_marks_only_the_plugins_own_notes_as_the_hosts():
+    s = TeaportGatewaySerializer()
+    f = await s.deserialize(json.dumps({"type": "context", "id": "c8", "text": HOST,
+                                        "respond": True, "source": "host"}))
+    assert f.host is True and f.text == HOST
+    f = await s.deserialize(json.dumps({"type": "context", "id": "c9", "text": "tap",
+                                        "source": "client"}))
+    assert f.host is False
+
+
+async def test_a_host_note_is_the_order_its_reaction_answers_and_is_retired_at_the_read():
+    """The relay's spoken run-control reply: as the host's instruction, under our tag and
+    with its lines, never as a quoted app event, and never left as a standing order."""
+    h = _harness()
+    await _send_host(h)
+    assert _results(h)[-1] == {"type": "context_result", "id": "h1", "ok": True,
+                               "status": "applied"}
+    await _settle(h)
+    assert [type(f) for f in h.task.queued] == [LLMRunFrame]
+    assert len(_host_orders(h.context)) == 1 and _notes_in(h.context) == [], \
+        h.context.get_messages()
+    await h.trigger.process_frame(LLMTextFrame("Cancelled the active OpenClaw run."),
+                                  FrameDirection.DOWNSTREAM)
+    assert _host_orders(h.context) == [], "the host's order outlived its read"
+
+
+async def test_a_host_note_is_not_held_to_a_clients_limits():
+    """The relay's control queue bounds what it sends; a respond interval or a burst
+    allowance spent by the client must not refuse the host's reply."""
+    h = _harness(respond_interval_s=15.0, burst=1, refill_per_s=0.001)
+    await _send(h, "The user waved.", respond=True, rid="c")
+    await _send_host(h, rid="h1")
+    await _send_host(h, rid="h2")
+    got = {r["id"]: r["ok"] for r in _results(h)}
+    assert got == {"c": True, "h1": True, "h2": True}, got
+    await _settle(h)
+
+
+async def test_a_host_note_wins_the_order_over_an_app_events_reaction():
+    h = _harness()
+    await h.gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _send(h, "The user tapped the character.", respond=True, rid="c")
+    await _send_host(h)
+    await h.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _settle(h)
+    assert len(_host_orders(h.context)) == 1 and _orders_in(h.context) == []
+    assert len(_notes_in(h.context)) == 1, "the app event stays as context"
+
+
+async def test_a_user_turn_first_says_the_hosts_message_too():
+    """The user speaks before the quiet moment: the host's message goes in just before
+    their words, as the order this turn's reply reads, not dropped like a reaction."""
+    h = _harness()
+    await h.gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _send(h, "The user tapped the character.", respond=True, rid="c")
+    await _send_host(h)
+    h.context.add_message({"role": "user", "content": "And what about tomorrow?"})
+    await h.notes.process_frame(LLMContextFrame(context=h.context), FrameDirection.DOWNSTREAM)
+    msgs = [m["content"] for m in h.context.get_messages()]
+    assert msgs[-1] == "And what about tomorrow?", msgs
+    assert msgs[-2] == f"{SYSTEM_NOTICE_TAG}\n{HOST}" and msgs[-3].startswith(TAG), msgs
+    await h.trigger.process_frame(LLMTextFrame("Cancelled the active OpenClaw run."),
+                                  FrameDirection.DOWNSTREAM)
+    assert _host_orders(h.context) == []
+    await h.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _settle(h)
+    assert h.task.queued == [], "a second reply ran for what the turn already said"
+
+
+async def test_a_host_note_too_late_to_say_is_dropped_not_kept():
+    h = _harness(react_max_wait_s=20.0)
+    await h.gate.process_frame(BotStartedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _send_host(h)
+    h.clock.t += 30
+    await h.gate.process_frame(BotStoppedSpeakingFrame(), FrameDirection.DOWNSTREAM)
+    await _settle(h)
+    assert h.task.queued == [] and _host_orders(h.context) == []
+    assert not any("OpenClaw" in str(m.get("content")) for m in h.context.get_messages())
+
+
 # ---- when a note enters the context ----------------------------------------------
 
 async def test_idle_context_note_is_appended_without_a_turn():

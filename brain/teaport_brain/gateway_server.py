@@ -53,6 +53,7 @@ from pipecat.transports.websocket.fastapi import (
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import host_context
+from teaport_brain import run_control
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
 from teaport_brain import thinking_sound
@@ -380,6 +381,9 @@ async def run_relay_bot(websocket: WebSocket):
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),
         context_notes=True,
+        # The plugin answers whether OpenClaw's spoken run control took a final said
+        # while a consult runs (run_control.py, #230): only it, and only on Talk.
+        run_control=qp.get("run_control") == run_control.PROTOCOL,
         # What the client can do itself (the local audio bridge: volume, restart);
         # the client tools that need it are offered only then (tools.py, THE TOOL CONTRACT).
         client_features=features,

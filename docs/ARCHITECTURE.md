@@ -53,7 +53,9 @@ operator's `talk.realtime.instructions`, the agent paragraph and the IDENTITY / 
   and the model's consult tool takes OpenClaw's schema. `openclaw_agent_control` is
   not offered: the relay already acts on spoken run control from the transcripts the
   brain sends, and a model call to it (which the Control UI executes) would act twice. A client that announces no `session_config` gets the
-  brain's own persona, as before.
+  brain's own persona, as before. What the relay's run control says goes to the brain
+  as a host note it speaks, and a final the relay takes while a consult runs is not
+  answered by the model too (`run_control.py`; plugin README, "Spoken run control").
 - **Room mic and phone.** At the start of each session the brain asks the gateway's
   teaport plugin (`GET /teaport/voice-context`, gateway auth with the brain's token;
   `plugin/voice-context.js`). The plugin builds the text the way OpenClaw's own phone

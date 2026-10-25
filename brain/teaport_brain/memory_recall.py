@@ -13,6 +13,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from teaport_brain.openclaw_client import memory_search
+from teaport_brain.taken_turn import is_taken
 
 
 class MemoryRecall(FrameProcessor):
@@ -124,7 +125,8 @@ class MemoryRecall(FrameProcessor):
         if isinstance(frame, TranscriptionFrame):
             # Inject whatever search has already completed for this turn, synchronously,
             # before forwarding the final transcript (which triggers the LLM downstream).
-            note = self._note()
+            # Not for words something else took (taken_turn.py): no turn answers them.
+            note = None if is_taken(frame) else self._note()
             if note is not None:
                 self._context.add_message(note)
                 logger.info(f"MemoryRecall injected {len(self._latest)} snippet(s)")

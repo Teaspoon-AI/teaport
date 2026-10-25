@@ -72,6 +72,21 @@
 # carry SYSTEM_NOTICE_TAG rather than the app-event tag, and no client limit or
 # context_result applies.
 #
+# HOST NOTES (#230): OpenClaw's own messages for the voice model come the same way. The
+# relay's spoken run control answers the user's "how's it going?" or "cancel that" about
+# a running consult by handing the provider a message to speak (bridge.sendUserMessage,
+# "Internal OpenClaw voice control result. ... Speak this exact OpenClaw status ...");
+# the plugin sends it as a note marked "source": "host", which only the plugin itself can
+# set (the teaport.talk.context method never does). It is not the client's text: it is
+# the host's instruction, as trusted as the instructions the session was built from. So
+# it is never an app-event note, carries no client limit but the length, and is always
+# answered: it IS the reaction order (under SYSTEM_NOTICE_TAG, retired at the read like
+# any order), at the same moments -- a quiet moment, where it is the run's tail, or a
+# user turn that comes first, where it goes just before their words and that turn's reply
+# says it too. One past REACT_MAX_WAIT_S is dropped, not kept: a status that old is
+# wrong. When an app event's reaction and a host note share a moment, the host note is
+# the order.
+#
 import json
 import re
 import time
@@ -156,6 +171,13 @@ def _clean(text: str) -> str:
     return _LEADING_TAGS.sub("", one_line).lstrip("[ ")
 
 
+def _host_text(text: str) -> str:
+    """A host note as the order carries it: text only, its lines kept (OpenClaw's message
+    is several), each line's whitespace folded."""
+    lines = (" ".join(line.split()) for line in _text_only(text).splitlines())
+    return "\n".join(line for line in lines if line)
+
+
 def _log_kind(kind) -> str:
     """The client's label, safe for a log line: printable, one line, short."""
     if not isinstance(kind, str):
@@ -175,6 +197,7 @@ class ClientContextFrame(SystemFrame):
     respond: bool = False
     kind: str | None = None
     request_id: str | None = None
+    host: bool = False  # OpenClaw's, sent by the plugin itself (module comment)
 
 
 @dataclass
@@ -184,6 +207,7 @@ class _Note:
     kind: str | None
     deadline: float  # respond only: react by then or not at all
     notice: bool = False  # the brain's own (add_notice), not a client's
+    host: bool = False  # OpenClaw's message for the model: the order itself
 
 
 class _Bucket:
@@ -289,6 +313,9 @@ class ClientNotes(FrameProcessor):
                               message=f"the note is {len(raw)} characters; the limit "
                                       f"is {self._max_chars}")
             return
+        if frame.host:
+            await self._receive_host(frame, raw, kind, now)
+            return
         text = _clean(raw)
         if not text:
             await self._reply(frame, error="empty",
@@ -325,6 +352,22 @@ class ClientNotes(FrameProcessor):
                     f"respond={bool(frame.respond)}) -> {status}")
         if endpoint_debug.ENABLED:
             logger.info(f"client note text: {text!r}")
+        await self._reply(frame, status=status)
+        self._ensure_drainer()
+
+    async def _receive_host(self, frame: ClientContextFrame, raw: str, kind: str, now: float):
+        """OpenClaw's message for the model (module comment, HOST NOTES): no client limit
+        but the length, always answered."""
+        text = _host_text(raw)
+        if not text:
+            await self._reply(frame, error="empty", message="the note has no text")
+            return
+        self._pending.append(_Note(text, True, frame.kind, now + self._react_max_wait,
+                                   host=True))
+        status = "applied" if self._gate.is_clear() else "queued"
+        logger.info(f"host note: {kind} ({len(text)} chars) -> {status}")
+        if endpoint_debug.ENABLED:
+            logger.info(f"host note text: {text!r}")
         await self._reply(frame, status=status)
         self._ensure_drainer()
 
@@ -391,7 +434,9 @@ class ClientNotes(FrameProcessor):
             # system note): appended, a note would be the tail and get the answer.
             # They keep for the next boundary; the drainer is still waiting.
             return
-        notes, self._pending = self._pending, []
+        pending, self._pending = self._pending, []
+        host = [n for n in pending if n.host]
+        notes = [n for n in pending if not n.host]
         msgs = [self._message(n) for n in notes]
         # Before the tail, which is what is being answered: the user's turn, the
         # greeting cue, our own reaction order. After it only
@@ -400,24 +445,32 @@ class ClientNotes(FrameProcessor):
         at = len(existing) if self._is_note(tail) else len(existing) - 1
         context.set_messages(existing[:at] + msgs + existing[at:])
         self._retain(msgs)
+        if host:
+            # The host's message is not dropped for the turn: it goes in as the order,
+            # after the notes and before the words being answered, so this reply says it
+            # too, and is retired at its read like any order.
+            self._post_order(host, context=context, at=at + len(msgs))
         dropped = sum(n.respond for n in notes)
-        logger.info(f"client notes: {len(notes)} folded into the turn"
-                    + (f" ({dropped} reaction(s) answered by it instead)" if dropped else ""))
+        logger.info(f"client notes: {len(pending)} folded into the turn"
+                    + (f" ({dropped} reaction(s) answered by it instead)" if dropped else "")
+                    + (f" ({len(host)} host note(s) as its order)" if host else ""))
 
     def _post(self) -> bool:
         """Append the pending notes at a quiet moment. True when a reaction should run."""
-        notes, self._pending = self._pending, []
+        pending, self._pending = self._pending, []
+        notes = [n for n in pending if not n.host]
         msgs = [self._message(n) for n in notes]
         # A reaction only for a note whose deadline this moment met. A window that
         # STARTS by the deadline is in time, and its debounce may run past it. A note
         # that arrived while the drainer was already waiting (on an earlier or no
         # deadline) is held to its own here.
         in_time = self._clock() - self._gate.quiet_secs - _DEADLINE_SLACK_S
-        late = [n for n in notes if n.respond and n.deadline < in_time]
+        late = [n for n in pending if n.respond and n.deadline < in_time]
         if late:
             logger.info(f"client notes: {len(late)} reaction(s) past "
-                        f"{self._react_max_wait:g} s dropped, the note(s) stay as context")
-        asked = [n for n in notes if n.respond and n.deadline >= in_time]
+                        f"{self._react_max_wait:g} s dropped, the note(s) stay as context"
+                        " (host notes go)")
+        asked = [n for n in pending if n.respond and n.deadline >= in_time]
         if asked and self.task is None:
             logger.warning("client notes: no task bound — adding the note without a reaction")
             asked = []
@@ -426,19 +479,29 @@ class ClientNotes(FrameProcessor):
         if asked:
             # For the note that asked, not whichever came last: a later respond:false
             # note ("the camera switched") must not be what the model reacts to.
-            self._post_order(asked[-1])
-        logger.info(f"client notes: {len(notes)} added at a quiet moment"
+            self._post_order(asked)
+        logger.info(f"client notes: {len(pending)} added at a quiet moment"
                     + (" — running a reaction" if asked else ""))
         return bool(asked)
 
-    def _post_order(self, note: _Note):
+    def _post_order(self, asked: list, *, context=None, at: int | None = None):
+        """The one live order, for the notes that asked: the host's messages when any
+        did (module comment, HOST NOTES), else a reaction to the last app event that
+        asked. Appended, or inserted at `at` in `context` (a user turn's, _fold)."""
         self._retire_order()  # one live order at most
-        # The reaction order is OURS, so it carries the tag the brain's own messages carry
-        # (owed.py's note too), not the app-event tag SYSTEM_LINE says is never an
-        # instruction.
-        msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n"
-               + _REACT.format(json.dumps(note.text, ensure_ascii=False))}
-        self._context.add_message(msg)
+        host = [n for n in asked if n.host]
+        # The order is OURS (or the host's), so it carries the tag the brain's own
+        # messages carry (owed.py's note too), not the app-event tag SYSTEM_LINE says is
+        # never an instruction.
+        body = ("\n\n".join(n.text for n in host) if host
+                else _REACT.format(json.dumps(asked[-1].text, ensure_ascii=False)))
+        msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n{body}"}
+        context = self._context if context is None else context
+        if at is None:
+            context.add_message(msg)
+        else:
+            existing = context.get_messages()
+            context.set_messages(existing[:at] + [msg] + existing[at:])
 
         def read():
             # Removed at the read, never before: see FollowupTrigger. Through _drop, so

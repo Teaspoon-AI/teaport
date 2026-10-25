@@ -14,9 +14,16 @@
 #       text {"type":"tool_result",...}                  -> None (consult_bridge: a
 #                                                           consult's answer, or a
 #                                                           client tool's result)
-#       text {"type":"context","id":...,"text":...,"respond":bool[,"kind":...]}
-#                                                        -> ClientContextFrame
-#                                                           (client_notes.py)
+#       text {"type":"context","id":...,"text":...,"respond":bool[,"kind":...]
+#             [,"source":"host"]}                       -> ClientContextFrame
+#                                                           (client_notes.py; "host":
+#                                                           OpenClaw's own message for
+#                                                           the model, which only the
+#                                                           plugin sends)
+#       text {"type":"run_control_result","id":...,"claimed":bool}
+#                                                        -> RunControlResultFrame
+#                                                           (run_control.py: did OpenClaw's
+#                                                           run control take the words)
 #
 #   us -> plugin (serialize):
 #       OutputAudioRawFrame       -> binary raw PCM16 24 kHz  (bot speech)
@@ -43,6 +50,9 @@
 #                                                           only to a client that announced
 #                                                           ?features=mood)
 #           {"type":"context_result","id":...,"ok":bool,...}  (answers a context note)
+#           {"type":"run_control","id":...,"text":...}     (is this final OpenClaw's? sent
+#                                                           only to a plugin that announced
+#                                                           ?run_control=1; run_control.py)
 #           {"type":"client_tool","call_id":...,"name":...,"args":{...}}
 #                                                         (a tool the client performs —
 #                                                           set_volume, restart_session —
@@ -173,7 +183,13 @@ class TeaportGatewaySerializer(FrameSerializer):
                 respond=msg.get("respond") is True,
                 kind=kind if isinstance(kind, str) and kind else None,
                 request_id=str(req) if req is not None else None,
+                host=msg.get("source") == "host",
             )
+        if msg.get("type") == "run_control_result":
+            from teaport_brain.run_control import RunControlResultFrame
+            req = msg.get("id")
+            return RunControlResultFrame(request_id=str(req) if req is not None else "",
+                                         claimed=msg.get("claimed") is True)
         # barge_in: the pipeline VAD already interrupts from the forwarded mic
         # audio, so an explicit signal needs no separate injection here.
         return None

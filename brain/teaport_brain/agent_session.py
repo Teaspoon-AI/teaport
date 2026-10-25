@@ -93,7 +93,9 @@ from teaport_brain.raw_llm_capture import RawLLMCapture
 from teaport_brain.services import make_llm, make_stt, make_tts
 from teaport_brain.stt import CONNECT_BUDGET_S as _STT_CONNECT_BUDGET_S
 from teaport_brain.thinking_sound import ThinkingSound
-from teaport_brain.wifi_voice import SetupTurnCloser, WifiSetupVoice
+from teaport_brain.run_control import RunControlClaims
+from teaport_brain.taken_turn import TakenTurnCloser
+from teaport_brain.wifi_voice import WifiSetupVoice
 from teaport_brain.tools import (
     AGENT_FIRST,
     ANSWER_TOOLS,
@@ -189,8 +191,9 @@ def user_aggregator_params(**kwargs) -> LLMUserAggregatorParams:
       bot speaks -- smart-turn endpointing handles turn-taking instead.
     - empty_user_turn=None: pipecat 1.12 answers a user turn that ends with no words by
       default: when it cut the bot off, it adds an "ask them to repeat" developer
-      message and runs the LLM. Here a wordless turn is often deliberate -- Wi-Fi
-      setup's closer ends the turn its taken words opened, emptied (wifi_voice.py) --
+      message and runs the LLM. Here a wordless turn is often deliberate -- the closer
+      ends the turn that words Wi-Fi setup or OpenClaw's run control took opened,
+      emptied (taken_turn.py) --
       and a noise barge-in is the pauser's to resume (barge_pause.py), so off."""
     return LLMUserAggregatorParams(user_mute_strategies=[], empty_user_turn=None, **kwargs)
 
@@ -597,7 +600,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         client_features: frozenset = frozenset(),
                         wake_gate=None,
                         front_end: str | None = None,
-                        host=None) -> AgentSession:
+                        host=None,
+                        run_control: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -637,6 +641,9 @@ def build_agent_session(transport, *, voice: str | None = None,
       in place of the persona, and its tools' schemas replace the brain's copies of the
       same name (tools.host_tool_schemas). None (the room mic and the phone until issue
       #230's Phase 3, a client that sent none): the persona and the brain's own schemas.
+    - run_control: the client answers whether OpenClaw's spoken run control took a final
+      said while a consult runs (the teaport plugin's ?run_control=1): RunControlClaims
+      joins the pipeline, below the transcript emitter (run_control.py). Talk only.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -717,9 +724,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # It speaks the voice's language, read live (a switch_voice switches it too).
     wifi = (WifiSetupVoice(lang_fn=lambda: getattr(tts, "espeak_language", "en-us"))
             if any(t.name == "wifi_setup" for t in session_tools) else None)
-    # The words it takes go on emptied, and this ends the turn they opened (wifi_voice.py:
-    # otherwise the stop strategy waits on words that never come, barge-in dead).
-    wifi_closer = SetupTurnCloser() if wifi is not None else None
+    # Words something else answers -- Wi-Fi setup's, OpenClaw's run control's (built below
+    # once the gate exists) -- go on emptied, and this ends the turn they opened
+    # (taken_turn.py: otherwise the stop strategy waits on words that never come, barge-in
+    # dead).
+    taken_closer = TakenTurnCloser() if wifi is not None or run_control else None
     system_prompt = build_system_prompt(persona, tools=session_tools, host=covers)
     moods = mood_tag.ENABLED and "mood" in client_features
     if moods:
@@ -783,7 +792,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                 start=[start_strategy],
                 # The closer FIRST: it ends the turn before the brain's strategy could
                 # speculate on the turn's earlier words; that one still sees the frame.
-                stop=[s for s in (wifi_closer, stop_strategy) if s is not None],
+                stop=[s for s in (taken_closer, stop_strategy) if s is not None],
             ),
         ),
     )
@@ -805,8 +814,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # to the assistant aggregator, which then writes the call IN_PROGRESS for good (#185):
     # it drops that frame, in the order the aggregator itself handles them.
     drop_overtaken_tool_calls(context_aggregator.assistant())
-    if wifi_closer is not None:
-        wifi_closer.aggregator = context_aggregator.user()
+    if taken_closer is not None:
+        taken_closer.aggregator = context_aggregator.user()
 
     # The ledger reads the LLM stream at the TTS's sighting (the text the TTS is
     # actually handed, after the guard); naming the transport says the pipeline tags
@@ -940,6 +949,10 @@ def build_agent_session(transport, *, voice: str | None = None,
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
         # notes (no /talk), no line: the tool needs a local /talk client anyway.
         wifi.notes = client_notes
+    # A final said while a consult runs waits for the plugin to say whether OpenClaw's
+    # spoken run control took it (run_control.py, #230); what it took leaves a notice.
+    claims = (RunControlClaims(lambda: followup_gate.consults_running, notes=client_notes)
+              if run_control else None)
     # Type through a long openclaw_agent_consult consult, heard while the line is quiet; the
     # room's face types along (its bridge announces "typing"). Not on a phone call,
     # but in agent-first: there it is all that covers the wait (tools._fallback_line).
@@ -960,6 +973,9 @@ def build_agent_session(transport, *, voice: str | None = None,
         # see the turn begin, and only one of the three may arm it.
         TurnTimer(turn_marks, watchdog=True),  # tap: user-stopped + stt-final
         UserTranscriptEmitter(activity),
+        # DIRECTLY below the emitter: the final has gone to the relay, whose run control
+        # reads it, and the turn has not ended on it yet (run_control.py). None off Talk.
+        claims,
         # Below the caption emitter (the user still sees their words), above everything
         # that feeds the LLM: while Wi-Fi setup runs, the user's words are its, not the
         # model's (wifi_voice.py).

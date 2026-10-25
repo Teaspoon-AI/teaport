@@ -32,12 +32,32 @@ export const VOICE_CONTEXT_VERSION = 1;
 // voice-call's default profile budget (extensions/voice-call/src/config.ts).
 export const PROFILE_MAX_CHARS = 6000;
 
+// The realtime-voice SDK subpath, imported once for the route and for the run-control
+// classifier (realtimeVoiceControlText); {} on a host without it.
+let realtimeVoice = null;
+function importRealtimeVoice() {
+  realtimeVoice ??= import("openclaw/plugin-sdk/realtime-voice").catch(() => ({}));
+  return realtimeVoice;
+}
+
+/**
+ * OpenClaw's run-control classifier, shouldAutoControlRealtimeVoiceAgentText (2026.9.7+):
+ * whether its relay's spoken run control acts on an utterance while a consult runs
+ * (provider.js, answerRunControl). undefined on a host without it.
+ */
+export async function realtimeVoiceControlText() {
+  const voice = await importRealtimeVoice();
+  return typeof voice.shouldAutoControlRealtimeVoiceAgentText === "function"
+    ? voice.shouldAutoControlRealtimeVoiceAgentText
+    : undefined;
+}
+
 /** The SDK pieces the route needs, from the host's published subpaths. */
 export async function importVoiceContextSdk() {
   const [context, scope, voice] = await Promise.all([
     import("openclaw/plugin-sdk/realtime-bootstrap-context").catch(() => ({})),
     import("openclaw/plugin-sdk/agent-scope-runtime").catch(() => ({})),
-    import("openclaw/plugin-sdk/realtime-voice").catch(() => ({})),
+    importRealtimeVoice(),
   ]);
   return {
     resolveRealtimeVoiceAgentContextInstructions: context.resolveRealtimeVoiceAgentContextInstructions,

@@ -56,6 +56,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     LateStartTurnStopStrategy,
 )
 from teaport_brain.stt import FinalTranscriptionFrame  # noqa: E402
+from teaport_brain.taken_turn import TakenTurnCloser  # noqa: E402
 
 EN = i18n.get("en")
 DETAILS = {"ssid": "teaport-9e35", "password": "47190352", "error": ""}
@@ -604,7 +605,7 @@ async def _turn(with_closer):
     starts and stops seen, and the aggregator's resets."""
     analyzer = Complete(sample_rate=SAMPLE_RATE, params=SmartTurnParams(stop_secs=SMARTTURN_STOP_SECS))
     analyzer.set_sample_rate(SAMPLE_RATE)
-    closer = wv.SetupTurnCloser()
+    closer = TakenTurnCloser()
     closer.aggregator = Aggregator()
     controller = UserTurnController(
         user_turn_strategies=UserTurnStrategies(

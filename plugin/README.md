@@ -39,8 +39,9 @@ Configure in `~/.openclaw/openclaw.json`:
 The plugin appends `voice`, `language`, and `token` to the brain WebSocket URL
 as query parameters for each session. The `token` value can also come from the
 `TEAPORT_GATEWAY_TOKEN` environment variable. It also appends `captions=2`, the
-caption protocol it speaks (see below), and `session_config=1` (see
-[What OpenClaw tells the voice](#what-openclaw-tells-the-voice)).
+caption protocol it speaks (see below), `session_config=1` (see
+[What OpenClaw tells the voice](#what-openclaw-tells-the-voice)), and `run_control=1`
+(see [Spoken run control](#spoken-run-control)).
 
 ## What OpenClaw tells the voice
 
@@ -62,6 +63,27 @@ OpenClaw's `openclaw_agent_consult` schema from the tool list. It does not offer
 `openclaw_agent_control`: the relay already acts on spoken run control (status, cancel,
 redirect) from the user's transcripts the brain sends, and a model call to the control
 tool, which the Control UI executes, would act a second time. A brain that gets no flag (another client) builds its own prompt, as before.
+
+### Spoken run control
+
+While a consult runs, OpenClaw's relay reads every final user transcript the brain
+sends and acts on run control itself: "cancel that" cancels the run, "how's it going?"
+reports on it, "actually ..." steers it, "also ..." queues a follow-up. Three things
+keep the brain in step:
+
+- **The relay's reply is spoken.** The relay hands its answer to the provider
+  (`sendUserMessage`); the plugin sends it to the brain as a context note marked
+  `"source": "host"`, and the brain's next reply says it. Only the plugin sets that
+  mark; `teaport.talk.context` never does.
+- **The brain does not answer the same words.** For a final said while it has a consult
+  running, the brain asks `{"type": "run_control", "id", "text"}` and holds that turn
+  for the answer (at most 0.5 s). The plugin answers
+  `{"type": "run_control_result", "id", "claimed"}`: claimed when a consult the relay
+  acknowledged is still unanswered and OpenClaw's own classifier
+  (`shouldAutoControlRealtimeVoiceAgentText`, `openclaw/plugin-sdk/realtime-voice`) calls
+  the words control. A claimed turn ends with nothing for the model to answer.
+- **A cancelled consult is owed nothing.** The relay's `{"status": "cancelled"}` result
+  closes the consult silently on the brain's side.
 
 ### The room mic and the phone
 

@@ -38,7 +38,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { TalkSessions, contextMethods } from "./context.js";
 import { buildTeaportRealtimeProvider } from "./provider.js";
-import { VOICE_CONTEXT_PATH, voiceContextHandler } from "./voice-context.js";
+import { VOICE_CONTEXT_PATH, realtimeVoiceControlText, voiceContextHandler } from "./voice-context.js";
 
 // The gateway connection a request came in on. createBridge runs inside the client's
 // talk.session.create request, so this names the connection that owns the session
@@ -116,6 +116,9 @@ export default definePluginEntry({
         log: (msg) => api.logger?.info?.(msg),
         sessions,
         clientKey: currentClientKey,
+        // OpenClaw's run-control classifier, imported when the first Talk session is
+        // made (provider.js, answerRunControl), not here: discovery and CLI loads make none.
+        controlText: realtimeVoiceControlText,
       }),
     );
     // Context notes for live sessions (context.js). operator.talk is the scope OpenClaw

@@ -24,6 +24,9 @@ const TRACE = /^(1|true)$/i.test(process.env.TEAPORT_TRACE || "");
 // soon as a note arrives, so running out means a brain too wedged to matter.
 const CONTEXT_ACK_TIMEOUT_MS = 3000;
 
+// The kind a host note (sendUserMessage) carries, for the brain's log.
+const HOST_NOTE_KIND = "openclaw-voice";
+
 // The caption protocol this plugin speaks, sent to the brain as ?captions=. From 2
 // on, the brain sends every utterance's final and leaves it to the plugin to drop a
 // repeat (TalkTranscriptAdapter). A brain that sees no flag keeps skipping the final
@@ -36,11 +39,19 @@ const CAPTIONS_PROTOCOL = 2;
 // for this voice surface. A brain that sees no flag never waits, and builds its own.
 const SESSION_CONFIG_PROTOCOL = 1;
 
+// The run-control protocol, sent to the brain as ?run_control=. With it the brain asks,
+// for a final said while a consult runs, whether OpenClaw's spoken run control took it
+// ({"type":"run_control"}), and holds that one turn for the answer (answerRunControl).
+// A brain that sees no flag never asks.
+const RUN_CONTROL_PROTOCOL = 1;
+// OpenClaw's consult tool, whose calls the relay runs (and its run control acts on).
+const CONSULT_TOOL_NAME = "openclaw_agent_consult";
+
 /**
  * Append OpenClaw-selected TTS voice/language — and the gateway auth token — to the
- * brain's WS URL as query params, plus the caption and session_config protocols and the
- * client id. The Pipecat brain reads ?voice=&language=&token=&captions=&session_config=
- * &client= per session
+ * brain's WS URL as query params, plus the caption, session_config and run_control
+ * protocols and the client id. The Pipecat brain reads ?voice=&language=&token=&captions=
+ * &session_config=&run_control=&client= per session
  * (gateway_server.py). `client` names the Talk client (the device) across its own
  * reconnects: the brain's session arbiter lets a reconnect replace that client's own
  * session, and refuses every other client while a conversation is live. A Kokoro
@@ -58,6 +69,7 @@ export function withVoiceParams(url, cfg) {
   if (cfg && cfg.client) q.push("client=" + encodeURIComponent(cfg.client));
   q.push(`captions=${CAPTIONS_PROTOCOL}`);
   q.push(`session_config=${SESSION_CONFIG_PROTOCOL}`);
+  q.push(`run_control=${RUN_CONTROL_PROTOCOL}`);
   return url + (url.includes("?") ? "&" : "?") + q.join("&");
 }
 
@@ -410,7 +422,10 @@ export class TalkTranscriptAdapter {
  *   sends assistant captions. sessions is the TalkSessions registry (context.js)
  *   every bridge joins, so the context-note gateway methods can find it. clientKey names
  *   the Talk client a session is created for (index.js: its paired device), sent as
- *   ?client=; undefined sends none.
+ *   ?client=; undefined sends none. controlText resolves to OpenClaw's
+ *   shouldAutoControlRealtimeVoiceAgentText (index.js imports it from the SDK), or to
+ *   undefined on a host without it; it is first called when a session is made, to have it
+ *   loaded before the first question.
  */
 export function buildTeaportRealtimeProvider(defaults = {}) {
   let version = null; // { value } once read
@@ -471,18 +486,46 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
         readVersion,
       );
       defaults.log?.(`teaport-realtime: assistant captions sent as ${deltas ? "deltas" : "full text"} (${reason})`);
-      const bridge = new TeaportBridge(req, url, new TalkTranscriptAdapter({ assistantDeltas: deltas }));
+      const controlText = memoControlText(defaults.controlText);
+      const bridge = new TeaportBridge(req, url, new TalkTranscriptAdapter({ assistantDeltas: deltas }), {
+        log: defaults.log,
+        controlText,
+      });
       if (defaults.sessions) bridge._onEnd = defaults.sessions.add(bridge);
       return bridge;
     },
   };
 }
 
+/**
+ * The run-control classifier, loaded once: a function returning a promise of OpenClaw's
+ * shouldAutoControlRealtimeVoiceAgentText (or undefined). Started here, at the session's
+ * creation, so it has loaded by the first question, seconds later at the earliest (a
+ * consult has to be running).
+ */
+function memoControlText(load) {
+  if (typeof load !== "function") return () => Promise.resolve(undefined);
+  let loaded;
+  try {
+    loaded = Promise.resolve(load()).catch(() => undefined);
+  } catch {
+    loaded = Promise.resolve(undefined);
+  }
+  return () => loaded;
+}
+
 // RealtimeVoiceBridge implementation. createBridge() is synchronous and callbacks
 // must not fire before it returns, so all WS work starts in connect().
 class TeaportBridge {
-  constructor(req, url, transcripts) {
+  constructor(req, url, transcripts, { log, controlText } = {}) {
     this._req = req; // RealtimeVoiceBridgeCreateRequest (callbacks + providerConfig)
+    this._log = log;
+    // OpenClaw's run-control classifier, as a promise (memoControlText).
+    this._controlText = controlText || (() => Promise.resolve(undefined));
+    // The brain's consult calls the relay is running: call_id -> whether the relay has
+    // acknowledged it (its working notice) and not answered it yet. The relay's run
+    // control acts only while one is (answerRunControl).
+    this._consults = new Map();
     this._url = url; // ws://<pipecat-host>:7861/talk
     this._transcripts = transcripts; // one per session, like the Talk view's state
     this._ws = null;
@@ -540,7 +583,7 @@ class TeaportBridge {
    * ({ok, status} or {ok: false, error, message, retry_after_ms?}). context.js sends
    * only after the brain's "ready", so the brain is up and answers at once.
    */
-  sendContext({ text, respond, kind }) {
+  sendContext({ text, respond, kind, host }) {
     if (!this._ws || this._state !== "open") {
       return Promise.reject(new Error("the voice session is not connected"));
     }
@@ -555,6 +598,9 @@ class TeaportBridge {
       try {
         const note = { type: "context", id, text, respond: Boolean(respond) };
         if (kind) note.kind = kind;
+        // Only sendUserMessage marks a note as the host's; the teaport.talk.context
+        // method (context.js) never passes `host`, so a client cannot pose as OpenClaw.
+        if (host) note.source = "host";
         this._ws.send(JSON.stringify(note));
       } catch (err) {
         clearTimeout(timer);
@@ -562,6 +608,39 @@ class TeaportBridge {
         reject(err instanceof Error ? err : new Error(String(err)));
       }
     });
+  }
+
+  /**
+   * OpenClaw -> the voice model: a message the host wants answered aloud. OpenClaw's
+   * relay calls it with its spoken run control's reply (realtime-run-control.ts: the
+   * user's "how's it going?" or "cancel that" about a running consult, answered with an
+   * "Internal OpenClaw voice control result ... Speak this exact OpenClaw status"
+   * message), and requests a response turn for it first. It goes to the brain over the
+   * context-note channel as a host note (source "host"), which the brain makes the
+   * order its next reply answers (brain/teaport_brain/client_notes.py, HOST NOTES).
+   * Fire and forget, like the relay's call: a brain that predates host notes, or one not
+   * "ready" yet, cannot take it, and it is dropped with a log line.
+   */
+  sendUserMessage(text) {
+    const message = typeof text === "string" ? text.trim() : "";
+    if (!message) return;
+    const features = this._brain;
+    if (!this._brainReady || !features?.context || this._state !== "open") {
+      this._log?.("teaport-realtime: an OpenClaw voice message was dropped: the brain cannot take notes now");
+      return;
+    }
+    this.sendContext({ text: message, respond: true, kind: HOST_NOTE_KIND, host: true }).then(
+      (ack) => {
+        if (!ack || ack.ok !== true) {
+          this._log?.(`teaport-realtime: the brain refused an OpenClaw voice message (${ack?.error ?? "no answer"})`);
+        }
+      },
+      (err) => {
+        if (this._state !== "ended") {
+          this._log?.(`teaport-realtime: an OpenClaw voice message failed: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      },
+    );
   }
 
   // The session is over, however it ended: fail the notes still waiting on the brain
@@ -574,6 +653,7 @@ class TeaportBridge {
       reject(new Error("the voice session closed"));
     }
     this._contextAcks.clear();
+    this._consults.clear();
     if (this._onEnd) this._onEnd();
     return true;
   }
@@ -581,6 +661,10 @@ class TeaportBridge {
   // Relay -> brain: consult results (and working notices, willContinue=true).
   // The brain resolves its pending openclaw_agent_consult future on the final result.
   submitToolResult(callId, result, options) {
+    if (this._consults.has(callId)) {
+      if (options && options.willContinue) this._consults.set(callId, true);
+      else this._consults.delete(callId);
+    }
     if (!this._ws || this._state !== "open") return;
     try {
       this._ws.send(JSON.stringify({
@@ -684,6 +768,8 @@ class TeaportBridge {
         this._brainReady = true;
       } else if (msg.type === "response") {
         this._onResponseMarker(msg.state);
+      } else if (msg.type === "run_control") {
+        this._answerRunControl(msg);
       } else if (msg.type === "context_result") {
         const pending = this._contextAcks.get(msg.id);
         if (pending) {
@@ -725,6 +811,7 @@ class TeaportBridge {
           msg.name
         ) {
           const callId = typeof msg.call_id === "string" && msg.call_id ? msg.call_id : undefined;
+          if (msg.name === CONSULT_TOOL_NAME && callId) this._consults.set(callId, false);
           this._req.onToolCall({
             itemId: callId,
             callId,
@@ -737,6 +824,48 @@ class TeaportBridge {
     }
     // binary: bot speech, PCM16/24k -> hand a Buffer to the relay
     if (this._req.onAudio) this._req.onAudio(Buffer.from(data));
+  }
+
+  // Brain -> plugin: was this final OpenClaw's? The brain asks for a final said while it
+  // has a consult running and holds that turn for the answer (brain/teaport_brain/
+  // run_control.py). OpenClaw's relay runs its spoken run control on every final user
+  // transcript (runControl.handleSpoken) and acts -- cancel, status, steer, follow-up --
+  // only while a consult it runs is in flight (supportsToolCalls is declared, so never
+  // idle), and only when its classifier calls the words control. The answer is that same
+  // condition: a consult acknowledged and not answered yet, and the SDK's
+  // shouldAutoControlRealtimeVoiceAgentText, which is that classifier. "claimed" tells the
+  // brain the relay answers the words itself (sendUserMessage), so the brain's model does
+  // not answer them too. Always answered, false when unsure: the brain waits on it.
+  _answerRunControl(msg) {
+    const id = msg.id;
+    const text = typeof msg.text === "string" ? msg.text.trim() : "";
+    const reply = (claimed) => {
+      if (!this._ws || this._state !== "open") return;
+      try {
+        this._ws.send(JSON.stringify({ type: "run_control_result", id, claimed }));
+      } catch {
+        /* the brain stops waiting on its own */
+      }
+    };
+    // Read as the question arrives; the relay read the same on the transcript, which
+    // reaches it within moments of the question, before or after.
+    const running = [...this._consults.values()].some(Boolean);
+    if (!text || !running) {
+      reply(false);
+      return;
+    }
+    this._controlText().then(
+      (isControl) => {
+        let claimed = false;
+        try {
+          claimed = typeof isControl === "function" && isControl(text) === true;
+        } catch {
+          claimed = false;
+        }
+        reply(claimed);
+      },
+      () => reply(false),
+    );
   }
 
   // The brain frames an utterance that may come before the relay has any turn to hang it
