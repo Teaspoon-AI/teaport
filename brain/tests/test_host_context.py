@@ -67,10 +67,10 @@ def test_a_session_config_frame_becomes_a_host_context():
     assert host.tools == (HOST_CONSULT, HOST_CONTROL)
     # An empty frame is a host that composed nothing, not a missing frame.
     assert host_context.from_frame({"type": "session_config", "instructions": "",
-                                    "tools": []}) == host_context.HostContext()
+                                    "tools": []}) == host_context.HostContext(voice_rules=True)
     # Fields of the wrong type count as absent; anything else is not a frame at all.
     assert host_context.from_frame({"type": "session_config", "instructions": 7,
-                                    "tools": "x"}) == host_context.HostContext()
+                                    "tools": "x"}) == host_context.HostContext(voice_rules=True)
     assert host_context.from_frame({"type": "context", "text": "hi"}) is None
     assert host_context.from_frame(["session_config"]) is None
 
@@ -180,6 +180,95 @@ def test_the_prompt_starts_with_exactly_the_host_text():
     assert prompt.endswith(persona.voice_overlay())
 
 
+# The consult paragraph under OpenClaw's Talk text: the #230 eval's arm B2, word for word
+# (34 synthetic cases x 10, gpt-oss-120b: no phantom control calls, grounding equal to the
+# persona-file prompt). Pinned whole: a rewording here is a new arm, to be run first.
+B2_CONSULT = (
+    "Where the instructions above differ, these win. You have no openclaw_agent_control "
+    "tool here; never call it. When the user asks how a request that is in progress is "
+    "going, or wants it cancelled or changed, just answer in words; that is taken care of "
+    "for you. Before you call openclaw_agent_consult, say one short natural sentence about "
+    "what you're doing — in your own words, specific to this request, never a stock phrase "
+    "like 'Let me check that for you' — then call it in the same response. While an "
+    "openclaw_agent_consult request is still in progress you do not yet know its answer: "
+    "never guess or make one up, even if the user says 'go ahead' or 'start' — say it is "
+    "still in progress; you will be told the moment it completes. Answer from the "
+    "conversation when the answer is already in it, such as what you just said or what a "
+    "tool already returned; call openclaw_agent_consult only for something you do not have "
+    "yet. You cannot see the agent's other sessions from this call, so never describe them: "
+    "if the user asks what else you are doing or what is running, call "
+    "openclaw_agent_consult to find out. ")
+
+
+def _default_tools():
+    return tools.active_tools(tools.ToolContext(has_tts=True))
+
+
+@pytest.mark.skipif(not HAS_AGENT, reason="the consult needs a gateway")
+def test_under_talks_text_the_overlay_is_the_evals_b2():
+    prompt = persona.build_system_prompt(HOST_TEXT, _default_tools(), host=persona.HOST_RULES)
+    assert prompt == (HOST_TEXT + "\n\n" + persona._TOOLS_HOSTED + B2_CONSULT
+                      + persona._DELIVERY)
+    # The tools paragraph is the tuned one with the consult taken out, nothing else.
+    assert persona._TOOLS_HOSTED == persona._TOOLS_WITH_AGENT.replace(
+        persona._CONSULT_HINT + ", ", "").replace(
+        "A web search, page fetch, or openclaw_agent_consult", "A web search or page fetch"
+    ).replace(persona._CONSULT_IN_PROGRESS + " ", "")
+
+
+@pytest.mark.skipif(not HAS_AGENT, reason="the consult needs a gateway")
+def test_under_the_rooms_text_the_overlay_says_when_to_consult_and_no_more():
+    """The room's and the phone's host text is the agent paragraph and profile: no rules
+    to override, no control tool, no relay run control. So none of the sentences that
+    are only true under Talk's text, and a sentence saying when to consult instead."""
+    prompt = persona.build_system_prompt(HOST_TEXT, _default_tools(), host=persona.HOST_CONTEXT)
+    overlay = prompt[len(HOST_TEXT) + 2:]
+    for talk_only in ("instructions above", "openclaw_agent_control", "taken care of for you"):
+        assert talk_only not in overlay, talk_only
+    for kept in (persona._CONSULT_WHEN, persona._CONSULT_PREAMBLE, persona._CONSULT_IN_PROGRESS,
+                 persona._FROM_THE_CONVERSATION, persona._OTHER_SESSIONS):
+        assert kept in overlay, kept
+    assert overlay.startswith(persona._TOOLS_HOSTED) and overlay.endswith(persona._DELIVERY)
+
+
+def test_the_persona_file_prompt_is_unchanged():
+    """No host text: the tuned overlay as before (#230 changes nothing there), and none of
+    the host paragraph, which speaks of instructions above that are not there."""
+    prompt = persona.build_system_prompt("BRAIN PERSONA.", _default_tools())
+    assert prompt == "BRAIN PERSONA.\n\n" + persona.voice_overlay()
+    assert "instructions above" not in prompt and persona._OTHER_SESSIONS not in prompt
+    # An empty host text is no host text.
+    assert persona.build_system_prompt("  ", _default_tools(), host=persona.HOST_RULES) == (
+        persona.build_system_prompt(None, _default_tools()))
+
+
+def test_a_consult_that_is_off_is_named_as_missing_under_talks_text(monkeypatch):
+    """Talk's text tells the model to call openclaw_agent_consult; with the consult off
+    (or no gateway) the override names it too, so the model never calls a tool it lacks."""
+    off = [t for t in _default_tools() if t.name != "openclaw_agent_consult"]
+    prompt = persona.build_system_prompt(HOST_TEXT, off, host=persona.HOST_RULES)
+    assert ("You have no openclaw_agent_control or openclaw_agent_consult tool here; never "
+            "call them.") in prompt
+    for consult_only in (persona._RUN_CONTROL_IN_WORDS, persona._CONSULT_PREAMBLE,
+                         persona._OTHER_SESSIONS):
+        assert consult_only not in prompt
+    # The room's text names no tool, so nothing is said there.
+    room = persona.build_system_prompt(HOST_TEXT, off, host=persona.HOST_CONTEXT)
+    assert "openclaw_agent" not in room[len(HOST_TEXT):]
+
+
+@pytest.mark.skipif(not HAS_AGENT, reason="the consult needs a gateway")
+def test_a_composed_tools_paragraph_under_host_text_keeps_the_lookup(monkeypatch):
+    """With the web tools off the consult is the only way to look things up: the tools
+    paragraph must not say the assistant cannot look anything up."""
+    few = [t for t in _default_tools() if t.name not in ("web_search", "web_fetch",
+                                                         "search_memory")]
+    for host in (persona.HOST_RULES, persona.HOST_CONTEXT):
+        prompt = persona.build_system_prompt(HOST_TEXT, few, host=host)
+        assert persona._CANNOT_LOOK_UP not in prompt, host
+        assert persona._CONSULT_PREAMBLE in prompt, host
+
+
 class _Stub(FrameProcessor):
     pass
 
@@ -209,10 +298,18 @@ def test_a_session_built_with_a_host_context_uses_it(monkeypatch):
     session = asyncio.run(build(host_context.from_frame(FRAME)))
     system = session.context.get_messages()[0]["content"]
     assert system.startswith(HOST_TEXT), system[:200]
+    if HAS_AGENT:
+        assert B2_CONSULT in system    # Talk's text: the overlay for HOST_RULES
     offered = {s.name: s for s in session.context.tools.standard_tools}
     assert "openclaw_agent_control" not in offered
     if HAS_AGENT:
         assert offered["openclaw_agent_consult"].description == HOST_CONSULT["description"]
+    # The room's: the overlay for HOST_CONTEXT.
+    session = asyncio.run(build(ROOM_HOST))
+    system = session.context.get_messages()[0]["content"]
+    assert system.startswith(ROOM_HOST.instructions) and "openclaw_agent_control" not in system
+    if HAS_AGENT:
+        assert persona._CONSULT_WHEN in system
 
     # A host that composed nothing: the brain's own persona, and its own schema.
     session = asyncio.run(build(host_context.HostContext()))

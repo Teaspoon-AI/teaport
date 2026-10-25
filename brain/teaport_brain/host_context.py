@@ -53,27 +53,37 @@ class HostContext:
     """What the host composed for one voice session. `instructions` may be empty (a host
     that composed nothing; the brain then uses its own persona); `tools` are the host's
     tool definitions as it sent them (RealtimeVoiceTool: type, name, description,
-    parameters), only some of which the model is offered (tools.host_tool_schemas)."""
+    parameters), only some of which the model is offered (tools.host_tool_schemas).
+    `voice_rules`: the instructions carry OpenClaw's own realtime voice rules (when to
+    consult, the control tool, the acknowledgement), as a Talk session's do; the room's
+    and the phone's are the agent paragraph and profile only. The overlay that follows
+    them differs (persona.HOST_RULES / HOST_CONTEXT)."""
     instructions: str = ""
     tools: tuple = ()
+    voice_rules: bool = False
+
+
+def _host(instructions, tools, *, voice_rules: bool, source: str) -> HostContext:
+    """A HostContext from what the plugin sent. A field of the wrong type counts as
+    absent: the plugin sends OpenClaw's values as they came."""
+    if not isinstance(instructions, str):
+        logger.warning(f"{source}: instructions is not a string — ignored")
+        instructions = ""
+    if not isinstance(tools, list):
+        logger.warning(f"{source}: tools is not a list — ignored")
+        tools = []
+    return HostContext(instructions=instructions, voice_rules=voice_rules,
+                       tools=tuple(t for t in tools if isinstance(t, dict)))
 
 
 def from_frame(msg) -> HostContext | None:
-    """The HostContext a session_config frame carries, or None for anything else. A field
-    of the wrong type counts as absent: the frame is the plugin's, which sends
-    req.instructions ?? "" and req.tools ?? [] as they came."""
+    """The HostContext a Talk session's session_config frame carries (req.instructions ??
+    "" and req.tools ?? []: OpenClaw's Talk instructions, its voice rules included), or
+    None for anything else."""
     if not isinstance(msg, dict) or msg.get("type") != FRAME_TYPE:
         return None
-    instructions = msg.get("instructions")
-    tools = msg.get("tools")
-    if not isinstance(instructions, str):
-        logger.warning("session_config: instructions is not a string — ignored")
-        instructions = ""
-    if not isinstance(tools, list):
-        logger.warning("session_config: tools is not a list — ignored")
-        tools = []
-    return HostContext(instructions=instructions,
-                       tools=tuple(t for t in tools if isinstance(t, dict)))
+    return _host(msg.get("instructions"), msg.get("tools"), voice_rules=True,
+                 source="session_config")
 
 
 # The plugin's route (plugin/voice-context.js, VOICE_CONTEXT_PATH) and the response
@@ -136,8 +146,8 @@ async def fetch(front_end: str) -> HostContext | None:
         logger.warning(f"voice context ({front_end}): unknown version "
                        f"{body.get('version')!r} — using {fallback}")
         return None
-    host = from_frame({"type": FRAME_TYPE, "instructions": body.get("instructions"),
-                       "tools": body.get("tools")})
+    host = _host(body.get("instructions"), body.get("tools"), voice_rules=False,
+                 source=f"voice context ({front_end})")
     logger.info(f"voice context ({front_end}): {len(host.instructions)} chars for agent "
                 f"{body.get('agentId')!r} (OpenClaw {body.get('openclawVersion') or '?'})")
     return host

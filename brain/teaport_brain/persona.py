@@ -1,34 +1,42 @@
 #
-# teaport — shared persona (Phase 1 of the unified voice + text agent)
+# teaport — the voice system prompt: identity + the voice overlay
 #
-# The voice brain's system prompt is composed as:   persona  +  voice_overlay()
+# The voice brain's system prompt is composed as:   identity  +  overlay
 #
-#   persona        — the assistant's IDENTITY / "soul": what OpenClaw composes for a
-#                    voice surface (host_context.py), else the shared file
-#                    TEAPORT_PERSONA_FILE (default ~/.config/teaport/persona.md). If the
-#                    file is missing/empty we fall back to FALLBACK_PERSONA so the
-#                    realtime loop never hard-fails on a persona lookup.
-#   voice_overlay() — delivery-only, voice-surface mechanics that must NOT leak into
-#                    the text agent: which local tools exist, spell-out-numbers,
-#                    one-to-two spoken sentences, and the heard-grounding /
-#                    theory-of-mind paragraph. Returns VOICE_OVERLAY (gateway box) or
-#                    VOICE_OVERLAY_LOCAL (voice-only, TEAPORT_AGENT=none) — the tools
-#                    paragraph differs, the rest is shared verbatim. The overlay text
-#                    is carefully tuned (offline theory-of-mind evals lifted grounding
-#                    4/21 -> 14/21); preserve its wording, don't reword casually.
+#   identity  — who the assistant is. OpenClaw composes it for a voice surface
+#               (host_context.py) and it heads the prompt as sent:
+#                 Talk        req.instructions: OpenClaw's realtime voice rules, the
+#                             operator's talk.realtime.instructions, the agent paragraph
+#                             and the IDENTITY / USER / SOUL profile (HOST_RULES);
+#                 room, phone the agent paragraph and the profile, from the teaport
+#                             plugin's voice-context route (HOST_CONTEXT).
+#               Without it (TEAPORT_AGENT=none, or a gateway that cannot answer) it is
+#               the persona file TEAPORT_PERSONA_FILE (default ~/.config/teaport/
+#               persona.md), else FALLBACK_PERSONA, so the realtime loop never hard-fails
+#               on a persona lookup.
+#   overlay   — the voice-surface mechanics that must NOT leak into the text agent, in
+#               three parts:
+#                 tools     tools_paragraph: which of the brain's tools this session has
+#                           and how to use them. Tuned paragraphs for the default sets
+#                           (with a gateway, _TOOLS_WITH_AGENT; voice-only, _TOOLS_LOCAL,
+#                           which says plainly what the assistant cannot do), composed from
+#                           the tools' own hints otherwise.
+#                 consult   only under OpenClaw's text (_host_paragraph): the consult leaves
+#                           the tools paragraph and gets its own, shaped by what the host
+#                           text covers (HOST_RULES overrides the Talk rules that clash with
+#                           this surface; HOST_CONTEXT says when to consult). Its wording
+#                           was chosen by the #230 eval (arm B2).
+#                 delivery  _DELIVERY: spell out numbers, one or two spoken sentences, and
+#                           the heard-grounding / theory-of-mind paragraph, shared verbatim
+#                           by every prompt.
+#               The overlay text is carefully tuned (offline theory-of-mind evals lifted
+#               grounding 4/21 -> 14/21); preserve its wording, don't reword casually.
 #
-# The tools paragraph of the overlay comes in two versions, chosen by TEAPORT_AGENT
-# (agent_backend.py): with a gateway it names web_search / search_memory /
-# openclaw_agent_consult and how to use them; without one it names only the local tools and
-# says plainly what the assistant cannot do, so the model does not promise a lookup it
-# cannot make. The delivery paragraphs are shared verbatim.
-#
-# Splitting persona out of the old monolithic SYSTEM_PROMPT is what lets OpenClaw
-# own identity while Pipecat keeps the tuned voice mechanics. OpenClaw composes the
-# identity part itself (host_context.py): a Talk session's req.instructions, and for the
-# room mic and the phone the agent paragraph and profile its teaport plugin builds with
-# the SDK. That text takes the persona's place, as sent. The persona file is read only
-# without it: TEAPORT_AGENT=none, or a gateway that cannot answer.
+# So, by source of the identity:
+#   persona file       persona + tools (consult named among them) + delivery
+#                      (= VOICE_OVERLAY / VOICE_OVERLAY_LOCAL for the default tools)
+#   Talk               OpenClaw's text + tools + consult (HOST_RULES) + delivery
+#   room, phone        OpenClaw's text + tools + consult (HOST_CONTEXT) + delivery
 #
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.settings import setting
@@ -83,22 +91,44 @@ _CANNOT_LOOK_UP = (
     "you know rather than guessing or promising to check."
 )
 
-_TOOLS_WITH_AGENT = (
+# The tuned gateway paragraph, in two versions from the same words: with the consult
+# named among the tools (no host text: the persona file), and without it, for a session
+# whose host text came from OpenClaw -- there the consult has its own paragraph after the
+# tools (_host_paragraph), and this one keeps only the brain's quick tools. The rest is
+# byte-identical between the two (the #230 eval ran the second as arm A/B2's tools part).
+_GATEWAY_TOOLS_HEAD = (
     "You have tools — use them instead of guessing: get_host_status (this "
     "machine's live free memory, CPU load, decode speed), get_current_time, "
     "web_search (search the web for anything current, factual, or that you don't "
     "know), web_fetch (read a specific web page), search_memory (recall what "
-    "the user told you before, by voice or text), openclaw_agent_consult (your full desktop "
+    "the user told you before, by voice or text), "
+)
+_CONSULT_HINT = (
+    "openclaw_agent_consult (your full desktop "
     "agent — every tool, deeper thinking; for multi-step or open-ended requests "
-    "your quick tools can't handle), and " + _VOICE_SWITCH_INSTRUCTION + " "
+    "your quick tools can't handle)"
+)
+_GATEWAY_TOOLS_WHEN = (
+    " "
     "When the user asks about your "
     "status or the time, about something recent or factual you'd need to look up, "
     "a web page, or something they told you earlier, call the matching tool "
     "directly. Quick lookups (time, host status, memory) need no preamble — just "
-    "call silently. A web search, page fetch, or openclaw_agent_consult "
-    + _PREAMBLE_INSTRUCTION
-    + " " + _NO_TOOL_NAME_INSTRUCTION + " " + _CONSULT_IN_PROGRESS + " " + _GENERAL_CHAT_CLOSER
+    "call silently. "
 )
+
+
+def _gateway_tools(consult: bool) -> str:
+    return (_GATEWAY_TOOLS_HEAD + (_CONSULT_HINT + ", " if consult else "") + "and "
+            + _VOICE_SWITCH_INSTRUCTION + _GATEWAY_TOOLS_WHEN
+            + ("A web search, page fetch, or openclaw_agent_consult " if consult
+               else "A web search or page fetch ")
+            + _PREAMBLE_INSTRUCTION + " " + _NO_TOOL_NAME_INSTRUCTION + " "
+            + (_CONSULT_IN_PROGRESS + " " if consult else "") + _GENERAL_CHAT_CLOSER)
+
+
+_TOOLS_WITH_AGENT = _gateway_tools(consult=True)
+_TOOLS_HOSTED = _gateway_tools(consult=False)
 
 # The voice-only box: the same local tools, and an honest statement of what is not
 # there. Named so the model says "I can't look that up" instead of the ack it would
@@ -162,6 +192,87 @@ _DELIVERY = (
 VOICE_OVERLAY = _TOOLS_WITH_AGENT + _DELIVERY
 VOICE_OVERLAY_LOCAL = _TOOLS_LOCAL + _DELIVERY
 
+# --- When OpenClaw's text heads the prompt (host_context.py), the consult gets a
+#     paragraph of its own, after the tools and before _DELIVERY. What it says depends on
+#     what the host text already covers:
+#
+#   HOST_RULES    a Talk session: OpenClaw's realtime voice rules lead the host text
+#                 (DEFAULT_REALTIME_INSTRUCTIONS: call openclaw_agent_consult, say "Let me
+#                 check that for you", call openclaw_agent_control for progress, cancel or
+#                 redirect), then the agent paragraph and the profile. Some of those rules
+#                 clash with this surface, so the paragraph opens by overriding them by
+#                 name: the model has no control tool (the relay acts on spoken run control
+#                 itself), and the stock acknowledgement gives way to the tuned preamble.
+#   HOST_CONTEXT  the room mic and the phone: the agent paragraph and the profile only
+#                 (the plugin's voice-context route). Nothing says when to consult and
+#                 nothing runs run control, so the paragraph says when to consult and the
+#                 override and run-control sentences are left out: they would be false.
+#
+# Both keep the tuned preamble, the in-progress rule, and two lines the #230 eval found
+# the host text needs (34 synthetic cases x 10, gpt-oss-120b, 2026-10-25, arm B2): answer
+# from the conversation instead of re-consulting for what is already in it, and never
+# describe the agent's other sessions, which the agent paragraph tells the model exist
+# but it cannot see. Without them: re-consults, and other sessions described from
+# nothing; without the override, a call to the missing control tool on 20% of
+# in-progress turns (Groq fails the whole completion, and the user hears nothing).
+HOST_RULES = "rules"
+HOST_CONTEXT = "context"
+
+_HOST_RULES_WIN = "Where the instructions above differ, these win."
+_RUN_CONTROL_IN_WORDS = (
+    "When the user asks how a request that is in progress is going, or wants it "
+    "cancelled or changed, just answer in words; that is taken care of for you."
+)
+# When to consult, for the room and the phone, whose host text does not say: the tuned
+# hint's "multi-step or open-ended", widened with the list OpenClaw's own Talk rules use
+# (DEFAULT_REALTIME_INSTRUCTIONS: code, repository state, files, current OpenClaw context,
+# tool-backed actions). The hint alone sent a repository question to web_search and left
+# an "add it to the list" unanswered: consult recall 40/60 against 50/60 with this (#230
+# eval, the room prompt, 10 reps).
+_CONSULT_WHEN = (
+    "You can also call openclaw_agent_consult: your full desktop agent, with every tool "
+    "and deeper thinking. Call it when the user asks for code, repository state, files, "
+    "current OpenClaw context, tool-backed actions, or multi-step or open-ended work your "
+    "quick tools can't handle."
+)
+_CONSULT_PREAMBLE = (
+    "Before you call openclaw_agent_consult, say one short natural sentence about what "
+    "you're doing — in your own words, specific to this request, never a stock phrase "
+    "like 'Let me check that for you' — then call it in the same response."
+)
+_FROM_THE_CONVERSATION = (
+    "Answer from the conversation when the answer is already in it, such as what you "
+    "just said or what a tool already returned; call openclaw_agent_consult only for "
+    "something you do not have yet."
+)
+_OTHER_SESSIONS = (
+    "You cannot see the agent's other sessions from this call, so never describe them: "
+    "if the user asks what else you are doing or what is running, call "
+    "openclaw_agent_consult to find out."
+)
+
+
+def _host_paragraph(host: str, consult: bool) -> str:
+    """The consult paragraph for a prompt headed by OpenClaw's text (`host`, HOST_RULES or
+    HOST_CONTEXT), `consult`: the session has openclaw_agent_consult. With HOST_RULES and
+    the consult this is the eval's arm B2 word for word."""
+    parts = []
+    if host == HOST_RULES:
+        # The host's rules name tools this session may not have: the control tool never,
+        # the consult when it is switched off (or there is no gateway).
+        missing = ["openclaw_agent_control"] + ([] if consult else ["openclaw_agent_consult"])
+        parts += [_HOST_RULES_WIN,
+                  f"You have no {' or '.join(missing)} tool here; never call "
+                  + ("it." if len(missing) == 1 else "them.")]
+        if consult:
+            parts.append(_RUN_CONTROL_IN_WORDS)
+    elif consult:
+        parts.append(_CONSULT_WHEN)
+    if consult:
+        parts += [_CONSULT_PREAMBLE, _CONSULT_IN_PROGRESS, _FROM_THE_CONVERSATION,
+                  _OTHER_SESSIONS]
+    return "".join(p + " " for p in parts)
+
 
 def voice_overlay() -> str:
     """The overlay for this box: gateway tools named only where there is a gateway."""
@@ -172,12 +283,15 @@ def voice_overlay() -> str:
 # standard tools are exactly one of these sets gets that paragraph verbatim; any other
 # set (a tool switched off with its TEAPORT_TOOL_* flag) gets one composed from the
 # tools' own hints, so a tool that is off is never named.
+# Under OpenClaw's text the consult is taken out of these sets first (tools_paragraph):
+# _TUNED_WITH_AGENT without it gets _TOOLS_HOSTED.
+_CONSULT = "openclaw_agent_consult"
 _TUNED_WITH_AGENT = frozenset({
     "get_host_status", "get_current_time", "web_search", "web_fetch", "search_memory",
-    "remember", "openclaw_agent_consult", "list_voices", "switch_voice"})
+    "remember", _CONSULT, "list_voices", "switch_voice"})
 _TUNED_LOCAL = frozenset({"get_host_status", "get_current_time", "list_voices", "switch_voice"})
-_SLOW_TOOLS = ("web_search", "web_fetch", "openclaw_agent_consult")
-_LOOKUP_TOOLS = frozenset({"web_search", "web_fetch", "search_memory", "openclaw_agent_consult"})
+_SLOW_TOOLS = ("web_search", "web_fetch", _CONSULT)
+_LOOKUP_TOOLS = frozenset({"web_search", "web_fetch", "search_memory", _CONSULT})
 
 
 def _join(items: list[str]) -> str:
@@ -186,13 +300,16 @@ def _join(items: list[str]) -> str:
     return ", ".join(items[:-1]) + ", and " + items[-1]
 
 
-def _compose_tools(tools, device: bool = False) -> str:
+def _compose_tools(tools, device: bool = False, consult_after: bool = False) -> str:
     """The paragraph for the standard tools `tools`. `device`: client tools get their
-    own sentence after it, so "you have no tools" would be untrue."""
+    own sentence after it, so "you have no tools" would be untrue. `consult_after`: the
+    consult is not among `tools` but has its own paragraph after this one (a prompt
+    headed by OpenClaw's text), so the session can look things up after all."""
     names = {t.name for t in tools}
     if not tools:
-        return (("" if device else "You have no tools in this conversation. ")
-                + _NO_TOOL_NAME_INSTRUCTION + " " + _CANNOT_LOOK_UP + " "
+        return (("" if device or consult_after else "You have no tools in this conversation. ")
+                + _NO_TOOL_NAME_INSTRUCTION + " "
+                + ("" if consult_after else _CANNOT_LOOK_UP + " ")
                 + _GENERAL_CHAT_CLOSER)
     text = ("You have tools — use them instead of guessing: "
             + _join([t.hint or t.name for t in tools]) + ". "
@@ -205,28 +322,36 @@ def _compose_tools(tools, device: bool = False) -> str:
     text += _NO_TOOL_NAME_INSTRUCTION + " "
     if "openclaw_agent_consult" in names:
         text += _CONSULT_IN_PROGRESS + " "
-    if not names & _LOOKUP_TOOLS:
+    if not names & _LOOKUP_TOOLS and not consult_after:
         text += _CANNOT_LOOK_UP + " "
     return text + _GENERAL_CHAT_CLOSER
 
 
-def tools_paragraph(tools) -> str:
-    """The tools part of the overlay for a session's active tools (tools.active_tools).
+def tools_paragraph(tools, host: str | None = None) -> str:
+    """The tools part of the overlay for a session's active tools (tools.active_tools),
+    under a prompt headed by `host` (HOST_RULES, HOST_CONTEXT, or None: the persona).
 
     Standard tools: the tuned paragraph for that exact set, else a composed one. Client
     tools (performed by the connected device) get their own sentence after it, and so does
     answer_phone_call (only for a question the brain itself puts, so it leaves the tuned
-    paragraphs alone)."""
+    paragraphs alone). Under OpenClaw's text the consult leaves the tools paragraph and
+    gets its own, last (_host_paragraph)."""
     asides = [t for t in tools if "call_prompt" in t.needs]
     tools = [t for t in tools if t not in asides]
+    consult = any(t.name == _CONSULT for t in tools)
+    if host:
+        tools = [t for t in tools if t.name != _CONSULT]
     standard = [t for t in tools if not t.client]
     names = {t.name for t in standard}
-    if names == _TUNED_WITH_AGENT:
+    if not host and names == _TUNED_WITH_AGENT:
         text = _TOOLS_WITH_AGENT
-    elif names == _TUNED_LOCAL:
+    elif host and consult and names == _TUNED_WITH_AGENT - {_CONSULT}:
+        text = _TOOLS_HOSTED
+    elif names == _TUNED_LOCAL and not (host and consult):
         text = _TOOLS_LOCAL
     else:
-        text = _compose_tools(standard, device=any(t.client for t in tools))
+        text = _compose_tools(standard, device=any(t.client for t in tools),
+                              consult_after=bool(host) and consult)
     device = [t for t in tools if t.client]
     if device:
         text += ("On the device the user is talking to you through you can "
@@ -237,6 +362,8 @@ def tools_paragraph(tools) -> str:
         text += ("When a phone call comes in, you may ask the user whether to step away "
                  "for it; give their answer with " + _join([t.hint or t.name for t in asides])
                  + ", straight away and with no line before it. ")
+    if host:
+        text += _host_paragraph(host, consult)
     return text
 
 
@@ -261,12 +388,17 @@ def load_persona() -> str:
     return FALLBACK_PERSONA
 
 
-def build_system_prompt(persona: str | None = None, tools=None) -> str:
-    """Compose the voice system prompt: shared identity + voice-only overlay.
-    Pass a persona (the host's instructions for a Talk session, host_context.py) or leave
-    None to load it. A given one starts the prompt as given, only trailing whitespace
-    trimmed: the host's text is the host's. `tools` is the session's tools.active_tools();
-    None means this box's default set."""
-    base = persona.rstrip() if (persona or "").strip() else load_persona()
-    overlay = voice_overlay() if tools is None else tools_paragraph(tools) + _DELIVERY
-    return base + "\n\n" + overlay
+def build_system_prompt(persona: str | None = None, tools=None,
+                        host: str | None = None) -> str:
+    """Compose the voice system prompt: identity + voice-only overlay.
+    Pass a persona (OpenClaw's text, host_context.py, with `host` saying what it covers:
+    HOST_RULES or HOST_CONTEXT) or leave None to load the persona file. A given one starts
+    the prompt as given, only trailing whitespace trimmed: the host's text is the host's.
+    `tools` is the session's tools.active_tools(); None means this box's default set."""
+    if not (persona or "").strip():
+        persona, host = load_persona(), None
+    if tools is None and host:
+        from teaport_brain import tools as _tools  # the default set, as a session has it
+        tools = _tools.active_tools(_tools.ToolContext(has_tts=True))
+    overlay = voice_overlay() if tools is None else tools_paragraph(tools, host) + _DELIVERY
+    return persona.rstrip() + "\n\n" + overlay

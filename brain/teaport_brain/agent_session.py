@@ -86,7 +86,7 @@ from teaport_brain.llm_text_guard import LLMTextGuard
 from teaport_brain.mood_tag import MoodTag
 from teaport_brain.memory_hygiene import MemoryReclaim
 from teaport_brain.memory_recall import MemoryRecall
-from teaport_brain.persona import build_system_prompt, load_persona
+from teaport_brain.persona import HOST_CONTEXT, HOST_RULES, build_system_prompt, load_persona
 from teaport_brain.raw_llm_capture import RawLLMCapture
 # Built from the shared service factories (services.py) — no transport/demo imports,
 # so the module stays cheap to import.
@@ -686,9 +686,15 @@ def build_agent_session(transport, *, voice: str | None = None,
     # else the shared persona so voice and text feel like one agent; build_system_prompt
     # falls back to the baked-in persona if the shared source is unreachable, so the loop
     # never hard-fails on a persona lookup.
+    # What the host text covers decides the overlay after it (persona.HOST_RULES: a Talk
+    # session's, OpenClaw's voice rules included; HOST_CONTEXT: the room's and the
+    # phone's, the agent paragraph and profile only).
+    covers = None
     if host is not None and host.instructions.strip():
         persona = host.instructions
-        logger.info(f"host instructions from OpenClaw ({len(persona)} chars) start the prompt")
+        covers = HOST_RULES if host.voice_rules else HOST_CONTEXT
+        logger.info(f"host instructions from OpenClaw ({len(persona)} chars, {covers}) "
+                    "start the prompt")
     else:
         if host is not None:
             logger.info("the host sent no instructions — using the brain's own persona")
@@ -714,7 +720,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     # The words it takes go on emptied, and this ends the turn they opened (wifi_voice.py:
     # otherwise the stop strategy waits on words that never come, barge-in dead).
     wifi_closer = SetupTurnCloser() if wifi is not None else None
-    system_prompt = build_system_prompt(persona, tools=session_tools)
+    system_prompt = build_system_prompt(persona, tools=session_tools, host=covers)
     moods = mood_tag.ENABLED and "mood" in client_features
     if moods:
         system_prompt += " " + mood_tag.PARAGRAPH
