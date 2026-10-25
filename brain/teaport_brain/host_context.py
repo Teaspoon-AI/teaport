@@ -127,6 +127,18 @@ RETRY_AFTER_MAX_S = 2.0
 RETRY_ASK_MIN_S = 0.25
 WAKE_TIMEOUT_S = 1.0
 
+# The /talk clients the route and the log lines are told by their own ?client= name: the
+# Discord bridge's fixed id. Any other client without a session_config frame -- a plugin
+# before #230, whose ?client= is a paired device's key -- is "talk": a device key is
+# nobody's front end, and it should not reach the gateway's log.
+NAMED_CLIENTS = frozenset({"discord"})
+
+
+def front_end_of(client: str | None) -> str:
+    """The front-end name a /talk session without a session_config is asked for under."""
+    return client if client in NAMED_CLIENTS else "talk"
+
+
 # A 200 whose body is not JSON (_get_sync).
 _NOT_JSON = object()
 
@@ -170,7 +182,7 @@ async def fetch(front_end: str, *, patience: float = 0.0,
                 timeout: float = FETCH_TIMEOUT_S) -> HostContext | None:
     """The voice context the gateway's teaport plugin builds for a session that gets none
     with the session itself -- the room mic ("room"), the phone ("sip"), a /talk client
-    with no session_config frame (its ?client= name) -- or None, and then a warning says
+    with no session_config frame (front_end_of: "discord", else "talk") -- or None, and then a warning says
     why and what the session uses instead. A gateway not up yet is asked again for up to
     `patience` seconds (PATIENCE_S above). Never raises: a session must start whatever
     the gateway does. No gateway configured (TEAPORT_AGENT=none) asks nothing and logs

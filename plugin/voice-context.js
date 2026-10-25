@@ -5,7 +5,7 @@
 // frame; provider.js). The room mic and the phone line never pass through OpenClaw's
 // Talk relay, so the brain asks for theirs here, at the start of each session:
 //
-//   GET /teaport/voice-context?front_end=room|sip|<client>[&agent=<id>]
+//   GET /teaport/voice-context?front_end=room|sip|discord|talk[&agent=<id>]
 //                                                      (gateway auth: the bearer token)
 //   -> 200 {"version": 1, "agentId", "instructions", "tools", "openclawVersion"}
 //   -> 400 {"error": "agent_unknown"}                  (agent= names no configured agent)

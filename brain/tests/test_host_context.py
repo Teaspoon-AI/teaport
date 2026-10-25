@@ -475,6 +475,10 @@ def test_without_the_flag_the_brain_never_waits_and_asks_the_plugin():
     assert built["host"] is ROOM_HOST and built["patience"] == host_context.PATIENCE_S
     order, built = _run_talk({"captions": "2"}, [_text(FRAME)])
     assert order[:2] == ["fetch:talk", "build"], order
+    # A plugin before #230 sends its paired device's key as ?client=: nobody's front-end
+    # name, and not for the gateway's log. It is "talk".
+    order, built = _run_talk({"client": "b6f1c0de-device-key"}, [_text(FRAME)])
+    assert order[:2] == ["fetch:talk", "build"], order
     # Nor for the room mic, whatever it says: its bridge is not OpenClaw. The room asks
     # the gateway's teaport plugin instead (host_context.fetch), before the build.
     order, built = _run_talk({"features": "local", "session_config": "1"}, [_text(FRAME)])

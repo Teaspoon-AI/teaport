@@ -120,7 +120,7 @@ relay, and so does any other `/talk` client that sends no `session_config` (the 
 bridge), so the brain asks the plugin for their context at the start of each session:
 
 ```
-GET /teaport/voice-context?front_end=room|sip|<client>[&agent=<id>]   (gateway auth: the gateway token)
+GET /teaport/voice-context?front_end=room|sip|discord|talk[&agent=<id>]   (gateway auth: the gateway token)
 -> 200 {"version": 1, "agentId": "...", "instructions": "...", "tools": [...], "openclawVersion": "..."}
 -> 400 {"error": "agent_unknown"}
 -> 503 {"error": "host_unsupported" | "agent_unresolved" | "context_unavailable"}

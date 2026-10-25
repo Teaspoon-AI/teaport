@@ -344,7 +344,8 @@ async def run_relay_bot(websocket: WebSocket):
     #   everyone else -- the room mic, the Discord bridge (?client=discord), a plugin
     #     before #230 -- sends no frame: the plugin's voice-context route on the gateway
     #     (host_context.fetch: loopback, milliseconds, bounded by its FETCH_TIMEOUT_S), the
-    #     agent paragraph and profile the phone gets too, under the front end's name. A
+    #     agent paragraph and profile the phone gets too, under the front end's name
+    #     ("discord", any other client "talk": host_context.front_end_of). A
     #     gateway not up yet is asked again for as long as the session can wait: a few
     #     seconds for a wake session opening asleep, about two for anyone else
     #     (host_context.PATIENCE_*). The room's bridge sends no mic audio until the hello,
@@ -357,7 +358,7 @@ async def run_relay_bot(websocket: WebSocket):
             return
     else:
         host = await host_context.fetch(
-            "room" if room else (client or "talk"),
+            "room" if room else host_context.front_end_of(client),
             patience=(host_context.PATIENCE_ASLEEP_S if gate is not None and gate.asleep
                       else host_context.PATIENCE_S))
     if gate is not None and awake:
