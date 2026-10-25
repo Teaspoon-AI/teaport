@@ -1164,6 +1164,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                    wifi_voice=wifi,
                    call_prompt=prompt,
                    run_control=tool_ctx.run_control,
+                   notes=client_notes,
                    # OpenClaw's Talk relay stores every final in the session a
                    # consult starts from (captions.py, caption_ahead).
                    captions_ahead=front_end == "talk")

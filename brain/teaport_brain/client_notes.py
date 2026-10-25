@@ -396,18 +396,31 @@ class ClientNotes(FrameProcessor):
     async def _receive_host(self, frame: ClientContextFrame, raw: str, kind: str, now: float):
         """OpenClaw's message for the model (module comment, HOST NOTES): no client limit
         but the length, always answered."""
-        text = _host_status(raw)
-        if not text:
+        status = self._take_host(raw, frame.kind, kind, now)
+        if status is None:
             await self._reply(frame, error="empty", message="the note has no text")
             return
-        self._pending.append(_Note(text, True, frame.kind, now + self._react_max_wait,
-                                   host=True))
+        await self._reply(frame, status=status)
+
+    def add_host_update(self, text: str, kind: str = "openclaw-control"):
+        """An update from OpenClaw that reached the brain itself rather than as the
+        plugin's note -- the result of the model's openclaw_agent_control call that a
+        barge-in cancelled after the client had acted on it (tools._openclaw_agent_control)
+        -- said the way the relay's own replies are (HOST NOTES)."""
+        self._take_host(text, kind, kind, self._clock())
+
+    def _take_host(self, raw: str, kind, log_kind: str, now: float) -> str | None:
+        """Queue a host note: "applied" or "queued", or None for one with no text."""
+        text = _host_status(raw)
+        if not text:
+            return None
+        self._pending.append(_Note(text, True, kind, now + self._react_max_wait, host=True))
         status = "applied" if self._gate.is_clear() else "queued"
-        logger.info(f"host note: {kind} ({len(text)} chars) -> {status}")
+        logger.info(f"host note: {log_kind} ({len(text)} chars) -> {status}")
         if endpoint_debug.ENABLED:
             logger.info(f"host note text: {text!r}")
-        await self._reply(frame, status=status)
         self._ensure_drainer()
+        return status
 
     async def _reply(self, frame: ClientContextFrame, *, status: str | None = None,
                      error: str | None = None, message: str | None = None,

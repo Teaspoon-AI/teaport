@@ -397,6 +397,44 @@ async def test_a_control_with_no_answer_says_it_could_not_be_confirmed():
     assert llm.pushed == [] and got[0][0] == {"ok": False, "error": "text required"}
 
 
+async def test_a_control_cancelled_by_a_barge_in_still_tells_what_it_did():
+    """The Control UI runs the steer first and the result comes later; a barge-in cancels
+    the call meanwhile. The result is still waited for, off the turn, and said as the
+    host's update when something changed; nothing is said when nothing did, or when no
+    result comes in the call's time."""
+    class Notes:
+        def __init__(self):
+            self.said = []
+
+        def add_host_update(self, text):
+            self.said.append(text)
+
+    none = {"ok": False, "mode": "cancel", "active": False,
+            "message": "There is no active OpenClaw run to cancel."}
+    saved = tools.CONTROL_TIMEOUT_S
+    tools.CONTROL_TIMEOUT_S = 0.3
+    try:
+        for late, said in ((_CANCELLED, [_CANCELLED["message"]]), (none, []), (None, [])):
+            notes, llm = Notes(), _LLM()
+            params, got = _params(llm, {"text": "scratch that", "mode": "cancel"})
+            task = asyncio.ensure_future(tools._openclaw_agent_control(params, notes=notes))
+            await asyncio.sleep(0.05)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            [call] = llm.messages("tool_call")
+            assert got == [], "a cancelled call gets no result"
+            if late is not None:
+                consult_bridge.resolve(call["call_id"], late)
+            await asyncio.wait_for(asyncio.gather(*llm.tasks), 2)
+            assert notes.said == said, (late, notes.said)
+            assert call["call_id"] not in consult_bridge._pending
+    finally:
+        tools.CONTROL_TIMEOUT_S = saved
+
+
 async def test_no_display_card_runs_a_host_run_tool_a_second_time():
     """tools._wrap sends a display tool_call for every tool; the relay runs every consult
     and the Control UI every control call it is shown, so theirs must not go."""

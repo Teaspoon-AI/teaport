@@ -1007,30 +1007,58 @@ async def _cancel_at_relay(llm, call_id: str) -> None:
 
 
 async def _ask_client(llm, kind: str, prefix: str, name: str, args: dict,
-                      timeout: float) -> tuple:
+                      timeout: float, *, after_cancel=None) -> tuple:
     """Send a call the client runs (_send_call) and wait for its tool_result:
     (result, None), or (None, "timeout") when none came in `timeout`, or (None,
     "unreachable") when the call could not be sent. A cancel of the call itself propagates
-    with no result. The one call-and-wait path for client tools and host-run tools: their
-    results come back as tool_results for their own call ids, which consult_bridge routes
-    to this future and to no other (a consult's future is keyed by its own id)."""
+    with no result; with `after_cancel`, a call already sent is still waited for, to the
+    end of `timeout`, by a task of the session's (llm.create_task), which hands a result
+    that comes to `await after_cancel(result)`. The one call-and-wait path for client
+    tools and host-run tools: their results come back as tool_results for their own call
+    ids, which consult_bridge routes to this future and to no other (a consult's future
+    is keyed by its own id)."""
     call_id = prefix + uuid.uuid4().hex[:12]
     fut = consult_bridge.create(call_id)
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    sent = kept = False
     try:
         await _send_call(llm, kind, call_id, name, args)
-        return await asyncio.wait_for(fut, timeout), None
+        sent = True
+        # Shielded: a cancel of this wait leaves the future to the task below.
+        return await asyncio.wait_for(asyncio.shield(fut), timeout), None
     except asyncio.TimeoutError:
         logger.warning(f"{name}: no answer within {timeout:g}s")
         return None, "timeout"
     except asyncio.CancelledError:
+        if after_cancel is not None and sent:
+            llm.create_task(_outlive(name, call_id, fut, deadline - loop.time(), after_cancel))
+            kept = True
         raise
     except Exception as e:  # noqa: BLE001 — the request never reached the client
         logger.warning(f"{name}: could not ask the client ({e!r})")
         return None, "unreachable"
     finally:
         # Every way out, a cancel (the call itself was cancelled: no result) among
-        # them. A no-op once the client answered: resolve already took the entry.
+        # them, unless a task waits on. A no-op once the client answered: resolve
+        # already took the entry.
+        if not kept:
+            consult_bridge.cancel(call_id)
+
+
+async def _outlive(name: str, call_id: str, fut, left: float, then) -> None:
+    """_ask_client's wait for a call whose own wait was cancelled (after_cancel)."""
+    try:
+        result = await asyncio.wait_for(fut, max(left, 0.0))
+    except asyncio.TimeoutError:
+        logger.info(f"{name}: no answer within the call's time after its cancel")
+        return
+    finally:
         consult_bridge.cancel(call_id)
+    try:
+        await then(result)
+    except Exception as e:  # noqa: BLE001 — best effort: the session may be ending
+        logger.warning(f"{name}: its late result was not passed on ({e!r})")
 
 
 def _client_tool(name: str):
@@ -1069,6 +1097,14 @@ def _client_tool(name: str):
 # which owed.Owed.land closes silently, and this call gets the control's result, which the
 # model says. The control's result comes back for the control's own call id
 # (CONTROL_CALL_PREFIX), so it is never read as the consult's.
+#
+# A barge-in during the wait cancels the call, as it does every tool's (pipecat's
+# cancel_on_interruption; the turn models in brain/formal assume no call outlives the
+# turn that made it). The steer has usually gone through by then, so the wait goes on
+# off the turn (_ask_client's after_cancel), as an async consult's does, and a result
+# that says something changed reaches the model the way the relay's own replies do: a
+# host note (ClientNotes.add_host_update), said at the next quiet moment or folded into
+# the user's turn. Nothing comes of one that changed nothing.
 #
 # The wait is bounded: the Control UI holds a tool result until the audio it is playing
 # has finished (gateway-relay.ts submitToolResult: outputPlaybackDelayMs, re-checked when
@@ -1150,13 +1186,24 @@ def _control_result(result, failure) -> dict:
     return out
 
 
-async def _openclaw_agent_control(params: FunctionCallParams):
+async def _openclaw_agent_control(params: FunctionCallParams, notes=None):
     args = _control_args(params.arguments)
     if args is None:
         await params.result_callback({"ok": False, "error": "text required"})
         return
+
+    async def told_late(result):
+        # The call was cancelled (a barge-in) and its result came after: said as the
+        # host's update when it changed or reported something (module comment above).
+        out = _control_result(result, None)
+        if notes is not None and out["ok"] and not out.get("nothing_in_progress"):
+            logger.info(f"openclaw_agent_control: result after its cancel -- "
+                        f"{out['update'][:80]!r}")
+            notes.add_host_update(out["update"])
+
     result, failure = await _ask_client(params.llm, "tool_call", CONTROL_CALL_PREFIX,
-                                        OPENCLAW_AGENT_CONTROL.name, args, CONTROL_TIMEOUT_S)
+                                        OPENCLAW_AGENT_CONTROL.name, args, CONTROL_TIMEOUT_S,
+                                        after_cancel=told_late)
     out = _control_result(result, failure)
     logger.info(f"openclaw_agent_control({args.get('mode', '?')}): "
                 f"{'ok' if out['ok'] else failure or 'not ok'} -- {out['update'][:80]!r}")
@@ -1188,6 +1235,9 @@ class ToolContext:
     # questions (?run_control=1, run_control.py) and whose Talk client runs
     # openclaw_agent_control: the need "run_control". Talk only.
     run_control: bool = False
+    # The session's ClientNotes (client_notes.py): a control result that came after its
+    # call was cancelled is said through it, as a host note.
+    notes: object = None
 
 
 @dataclass(frozen=True)
@@ -1332,7 +1382,8 @@ TOOLS: tuple[Tool, ...] = (
               "handle)"),
     # Talk only ("run_control"), and only with the consult it controls ("consult"). Its
     # ceiling sits above the handler's own wait (CONTROL_TIMEOUT_S).
-    Tool(OPENCLAW_AGENT_CONTROL, _plain(_openclaw_agent_control),
+    Tool(OPENCLAW_AGENT_CONTROL,
+         lambda ctx: functools.partial(_openclaw_agent_control, notes=ctx.notes),
          setting("TEAPORT_TOOL_OPENCLAW_AGENT_CONTROL"),
          frozenset({"agent", "consult", "run_control"}),
          timeout_secs=CONTROL_TIMEOUT_S + 5,
@@ -1613,7 +1664,7 @@ def _wrap(name, handler, lang_fn, captions_ahead: bool = False):
 
 def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
                    client_features: frozenset = frozenset(), wifi_voice=None,
-                   call_prompt=None, run_control: bool = False,
+                   call_prompt=None, run_control: bool = False, notes=None,
                    captions_ahead: bool = False) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `owed`, if given,
@@ -1622,8 +1673,8 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
     FollowupGate), if given, lets the consult narrator wait for a conversational gap
     before speaking its progress lines. `run_control`: a Talk session whose plugin answers
     run-control questions (ToolContext.run_control), where openclaw_agent_control is
-    offered. `captions_ahead` charts a tool call's filler before the call (Talk:
-    captions.caption_ahead)."""
+    offered. `notes`: the session's ClientNotes (ToolContext.notes). `captions_ahead`
+    charts a tool call's filler before the call (Talk: captions.caption_ahead)."""
     _install_spoke_tracker(llm)
     if tts is not None:
         # Live language: read the TTS service at call time, so a mid-session
@@ -1636,7 +1687,7 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
     ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                       owed=owed if HAS_AGENT else None, gate=gate,
                       wifi_voice=wifi_voice, call_prompt=call_prompt,
-                      run_control=run_control)
+                      run_control=run_control, notes=notes)
     for tool in active_tools(ctx):
         kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}
         llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn,

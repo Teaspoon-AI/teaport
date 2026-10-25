@@ -315,6 +315,17 @@ async def test_a_host_note_is_the_order_its_reaction_answers_and_is_retired_at_t
     assert _host_orders(h.context) == [], "the host's order outlived its read"
 
 
+async def test_an_update_the_brain_got_itself_is_said_as_the_hosts():
+    """A control result that came after its call was cancelled (tools.py) goes the way
+    the relay's replies do: the same order, at the next quiet moment, no reply sent."""
+    h = _harness()
+    h.notes.add_host_update(STATUS)
+    await _settle(h)
+    assert [type(f) for f in h.task.queued] == [LLMRunFrame]
+    assert len(_host_orders(h.context)) == 1
+    assert _results(h) == [], "nobody asked: nothing to answer"
+
+
 async def test_a_host_note_is_not_held_to_a_clients_limits():
     """The relay's control queue bounds what it sends; a respond interval or a burst
     allowance spent by the client must not refuse the host's reply."""
