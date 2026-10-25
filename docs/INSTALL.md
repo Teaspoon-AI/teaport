@@ -149,6 +149,10 @@ key moved is logged:
   load, such as `brain-talk.env`: the turn-taking knobs as their `TALK_` forms. A drop-in
   that set nothing else is renamed `*.retired-<date>`, so it no longer reaches calls; the
   env file stays on disk, unused. A drop-in that does more stays, with a warning.
+- `brain.env` itself: a `VAD_SAMPLE_RATE` there reached the phone too, and since #215 the
+  phone has `SIP_VAD_SAMPLE_RATE` (default `8000`) instead. So when `brain.env` has no
+  `SIP_VAD_SAMPLE_RATE` and no drop-in gave the phone one, the value is copied to
+  `SIP_VAD_SAMPLE_RATE`, and calls keep the rate they ran at.
 
 What moves is what was in effect, as systemd resolved it: the last value wins, an
 `EnvironmentFile=` beats an `Environment=`, and an `Environment=` value that `brain.env`

@@ -744,7 +744,7 @@ values = ["16000", "8000"]
 default = "16000"
 read = "startup"
 tier = "tuning"
-help = "8000 runs Silero on the true narrowband signal when the trunk is G.711; 16000 is the gateway's upsample."
+help = "The rate Silero runs at, shared: /talk and the room mic take it unless TALK_VAD_SAMPLE_RATE / ROOM_VAD_SAMPLE_RATE is set; phone calls have SIP_VAD_SAMPLE_RATE (8000 by default) and do not take it. 8000 decimates to 8 kHz before the model, which is right only for narrowband audio (the phone's 8 kHz G.711, upsampled by the gateway); on real wideband it throws away the top half of the band."
 
 [[settings]]
 name = "TEAPORT_INTERRUPT_MIN_WORDS"
@@ -801,6 +801,17 @@ tier = "tuning"
 help = "TEAPORT_INTERRUPT_MIN_WORDS for phone calls (the SIP front-end) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart."
 
 [[settings]]
+name = "SIP_VAD_SAMPLE_RATE"
+store = "brain_env"
+group = "turn_taking"
+type = "enum"
+values = ["16000", "8000"]
+default = "8000"
+read = "startup"
+tier = "tuning"
+help = "VAD_SAMPLE_RATE for phone calls (the SIP front-end) only; it does not fall back to the shared value. The trunk offers only PCMU and G.729, so a call is 8 kHz audio the gateway upsampled to 16 kHz, and Silero, a waveform model, does better on the true narrowband signal: a replay of 11 calls (issue #215) found a few more caller utterances detected and a shorter slow tail, with no more false detections while the bot talks. 16000 runs it on the upsample, as before #215. Revisit if a wideband codec is ever offered."
+
+[[settings]]
 name = "TALK_ENDPOINT_STOP_SECS"
 store = "brain_env"
 group = "turn_taking"
@@ -842,6 +853,16 @@ min = 1
 read = "startup"
 tier = "tuning"
 help = "TEAPORT_INTERRUPT_MIN_WORDS for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS. One brain process serves both, and they were tuned apart."
+
+[[settings]]
+name = "TALK_VAD_SAMPLE_RATE"
+store = "brain_env"
+group = "turn_taking"
+type = "enum"
+values = ["16000", "8000"]
+read = "startup"
+tier = "tuning"
+help = "VAD_SAMPLE_RATE for Talk sessions (/talk: the app, the dashboard, Discord; not the box's own mic, which has ROOM_*) only. Empty: the shared VAD_SAMPLE_RATE. Talk audio is real wideband, so 8000 would throw away the top half of the band."
 
 [[settings]]
 name = "ROOM_ENDPOINT_STOP_SECS"
@@ -887,6 +908,16 @@ min = 1
 read = "startup"
 tier = "tuning"
 help = "TEAPORT_INTERRUPT_MIN_WORDS for the box's own microphone (the room mic) only. Empty: the shared TEAPORT_INTERRUPT_MIN_WORDS."
+
+[[settings]]
+name = "ROOM_VAD_SAMPLE_RATE"
+store = "brain_env"
+group = "turn_taking"
+type = "enum"
+values = ["16000", "8000"]
+read = "startup"
+tier = "tuning"
+help = "VAD_SAMPLE_RATE for the box's own microphone (the room mic) only. Empty: the shared VAD_SAMPLE_RATE. The room mic is real wideband, so 8000 would throw away the top half of the band."
 
 [[settings]]
 name = "TEAPORT_REPLY_HOLD"

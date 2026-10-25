@@ -60,7 +60,6 @@ from teaport_brain.endpointing import (
     SegmentDoneSink,
     VAD_CONFIDENCE,
     VAD_MIN_VOLUME,
-    VAD_SAMPLE_RATE,
     keep_barge_in_reachable,
     turn_settings,
 )
@@ -108,22 +107,25 @@ from teaport_brain.tts_text import strip_urls_for_speech
 from teaport_brain.turn_timing import TurnTimer
 
 
-def _vad_cls():
+def _vad_cls(sample_rate: int):
     # Opt-in (TEAPORT_ENDPOINT_DEBUG=1): instrumented VAD logs volume/confidence
     # per state transition; otherwise the stock analyzer.
     base = (endpoint_debug.InstrumentedSileroVAD if endpoint_debug.ENABLED
             else SileroVADAnalyzer)
-    # Opt-in (VAD_SAMPLE_RATE=8000): run Silero on the true narrowband signal rather
-    # than the gateway's upsample of it. Composed rather than hardcoded so it stacks
-    # with the debug analyzer instead of excluding it — the two answer different
-    # questions and the session that needs one usually wants the other.
-    if VAD_SAMPLE_RATE == 8000:
+    # `sample_rate` is the session's front-end's (TurnSettings.vad_sample_rate: 8000 for
+    # the phone by default, the shared 16000 for /talk and the room mic; issue #215).
+    # 8000 runs Silero on the true narrowband signal rather than the gateway's upsample
+    # of it. Composed rather than hardcoded so it stacks with the debug analyzer instead
+    # of excluding it — the two answer different questions and the session that needs
+    # one usually wants the other.
+    if sample_rate == 8000:
         base = type("NarrowbandSileroVAD", (NarrowbandSileroMixin, base), {})
-    elif VAD_SAMPLE_RATE != 16000:
+    elif sample_rate != 16000:
         # Only 8000 selects the narrowband mixin; 16000 is the stock rate. Anything
         # else is a typo (a bare 800, say) that would otherwise silently run the stock
-        # analyzer with no hint the setting did nothing.
-        logger.warning(f"VAD_SAMPLE_RATE={VAD_SAMPLE_RATE} is neither 16000 (stock) nor "
+        # analyzer with no hint the setting did nothing. (The schema's enum refuses one
+        # at the setting() read already; this guards a caller passing its own.)
+        logger.warning(f"VAD sample rate {sample_rate} is neither 16000 (stock) nor "
                        "8000 (narrowband); using the stock 16 kHz analyzer")
     # Outermost, so it reads the confidence whichever of the above produced it: the
     # faster speech-onset signal reply_hold.py listens to. It changes nothing the VAD
@@ -641,12 +643,13 @@ def build_agent_session(transport, *, voice: str | None = None,
         logger.info(f"turn-taking ({front_end}): stop {turns.endpoint_stop_secs}s, smart-turn "
                     f"ceiling {turns.smartturn_stop_secs}s, threshold "
                     f"{turns.smartturn_complete_threshold}, barge-in "
-                    f"{turns.interrupt_min_words} word(s)")
+                    f"{turns.interrupt_min_words} word(s), VAD at "
+                    f"{turns.vad_sample_rate} Hz")
     # Every session's VAD and Smart Turn run on ONE ONNX session per model, built with
     # the CPU arena off (onnx_sessions.py); before the analyzers are built, every time
     # (it is idempotent), so no front-end can build one ahead of it.
     onnx_sessions.install()
-    vad_analyzer = _vad_cls()(
+    vad_analyzer = _vad_cls(turns.vad_sample_rate)(
         params=VADParams(
             confidence=VAD_CONFIDENCE, min_volume=VAD_MIN_VOLUME,
             stop_secs=turns.endpoint_stop_secs,
