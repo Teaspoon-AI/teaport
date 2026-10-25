@@ -916,14 +916,8 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             logger.warning(f"openclaw_agent_consult: native consult {_describe(outcome)}")
             await params.result_callback({"error": outcome.detail or "the desktop agent failed"})
     except asyncio.CancelledError:
-        # Barge-in: the turn, and the consult with it, is over for the brain. The relay's
-        # run would go on with no one waiting -- its result dropped here, and its spoken
-        # run control still acting on words about it that the model answers too, since
-        # nothing counts it any more -- so it is cancelled there, as when the wait runs
-        # out (the plugin ignores a call it does not hold).
         consult_bridge.cancel(call_id)
-        await _cancel_at_relay(params.llm, call_id)
-        raise  # propagate so the task actually cancels
+        raise  # barge-in: propagate so the task actually cancels
     finally:
         _count_consult(gate, -1)
         consult_bridge.cancel(call_id)
@@ -995,8 +989,8 @@ async def _send_call(llm, kind: str, call_id: str, name: str, args: dict) -> Non
 
 
 async def _cancel_at_relay(llm, call_id: str) -> None:
-    """The brain stopped waiting on a consult the relay has (its wait ran out, or a
-    barge-in cancelled an agent-first one): have the relay stop it too (plugin: onEvent tool.call.cancelled, which aborts the run the consult started and
+    """The brain stopped waiting on a consult the relay acknowledged: have the relay stop it
+    too (plugin: onEvent tool.call.cancelled, which aborts the run the consult started and
     retires the call). Otherwise the run went on without a waiter, and OpenClaw's spoken run
     control still acted on it -- a "cancel that" the brain no longer asked the plugin about
     (no consult running, run_control.py) was answered by the model and acted on by the

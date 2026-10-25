@@ -577,7 +577,8 @@ async def test_a_cancelled_agent_first_consult_is_not_answered_twice():
 async def test_an_agent_first_consult_counts_as_running_while_the_turn_waits():
     """The relay acts on words about an agent-first consult as on an async one's, so the
     brain asks the plugin about finals while it runs (consults_running), and stops when
-    it ends, however it ends. A barge-in that cancels the wait cancels the relay's run."""
+    it ends, however it ends. A barge-in that cancels the wait leaves the relay's run
+    alone, as it leaves an async consult's."""
     gate = SimpleNamespace(consults_running=0)
     seen = []
 
@@ -594,7 +595,7 @@ async def test_an_agent_first_consult_counts_as_running_while_the_turn_waits():
     await tools._bind_openclaw_agent_consult(tools.ToolContext(gate=gate))(params)
     assert seen == [1] and gate.consults_running == 0
     assert got[0][0] == {"answer": "It is sunny."}
-    # A barge-in cancels the wait: the count goes back, and the relay is told.
+    # A barge-in cancels the wait: the count goes back, and the relay is not told.
     llm = _LLM()
     params, got = _params(llm, {"question": "weather in Oslo"})
     task = asyncio.ensure_future(tools._openclaw_agent_consult(params, gate=gate))
@@ -607,7 +608,7 @@ async def test_an_agent_first_consult_counts_as_running_while_the_turn_waits():
         pass
     [call] = llm.messages("tool_call")
     assert gate.consults_running == 0 and got == []
-    assert llm.messages("tool_cancel") == [{"type": "tool_cancel", "call_id": call["call_id"]}]
+    assert call and llm.messages("tool_cancel") == []
 
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]

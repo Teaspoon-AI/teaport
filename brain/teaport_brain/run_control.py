@@ -61,8 +61,12 @@
 # to the next final that asks, and that final is asked about, the rest still held.
 #
 # "Running" is async and agent-first consults alike (tools._count_consult): an agent-first
-# one counts for as long as its turn waits on it. A barge-in that cancels that wait has
-# the relay cancel the run too (tools._cancel_at_relay), as below.
+# one counts for as long as its turn waits on it. Not covered: a barge-in usually ends
+# that wait before its final comes (an interim starts the turn and cancels the call), and
+# the relay's run goes on -- it is not cancelled there, as an async consult survives a
+# barge-in too -- so a spoken "cancel that" may still be acted on by the relay and
+# answered by the model as well. Agent-first only (TEAPORT_AGENT_FIRST, off by default
+# and off on the appliance).
 #
 # A CONSULT THAT TIMED OUT. The brain stops asking once its consult is over, and the plugin
 # once the relay has answered it, but the relay acts as long as the consult's RUN is still
