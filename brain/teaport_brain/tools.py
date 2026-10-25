@@ -645,6 +645,15 @@ async def _consult_progress(llm, request=None, gate=None):
         llm._teaport_progress_active = False
 
 
+def _count_consult(gate, delta: int) -> None:
+    """The session's own count of consults running (FollowupGate.consults_running), async
+    and agent-first alike: while one runs, a no-wake room session is not idle
+    (gateway_server.room_idle) and a Talk session asks the plugin about each final, which
+    the relay's spoken run control may take (run_control.py)."""
+    if gate is not None:
+        gate.consults_running = max(0, getattr(gate, "consults_running", 0) + delta)
+
+
 async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
                             message=None):
     """Background waiter for the ASYNC openclaw_agent_consult path. `request` is the
@@ -669,11 +678,7 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         # the typing ends on it (thinking_sound.py: the face finishes only an answer).
         # `secs` bounds the wait. Best effort: a client that ignores it loses nothing,
         # and a torn-down pipeline cannot take it.
-        if gate is not None:
-            # The session's own count of consults running (a no-wake room session is not
-            # idle while one is: gateway_server.room_idle).
-            gate.consults_running = max(0, getattr(gate, "consults_running", 0)
-                                        + (-1 if done else 1))
+        _count_consult(gate, -1 if done else 1)
         if llm is None:
             return
         message = {"type": "working", "call_id": call_id}
@@ -860,7 +865,11 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
         return
 
     # SYNC path (nothing to land into — agent-first, a dev client): ack-gated wait,
-    # CLI fallback only if the consult is never acked.
+    # CLI fallback only if the consult is never acked. Counted as running for as long as
+    # the turn waits on it (_count_consult), so the relay's spoken run control on a final
+    # said meanwhile -- one that did not start a turn, held by the barge-in judge or with
+    # no interim before it -- is asked about and not answered twice.
+    _count_consult(gate, 1)
     try:
         try:
             result = await asyncio.wait_for(asyncio.shield(fut),
@@ -904,9 +913,16 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             logger.warning(f"openclaw_agent_consult: native consult {_describe(outcome)}")
             await params.result_callback({"error": outcome.detail or "the desktop agent failed"})
     except asyncio.CancelledError:
+        # Barge-in: the turn, and the consult with it, is over for the brain. The relay's
+        # run would go on with no one waiting -- its result dropped here, and its spoken
+        # run control still acting on words about it that the model answers too, since
+        # nothing counts it any more -- so it is cancelled there, as when the wait runs
+        # out (the plugin ignores a call it does not hold).
         consult_bridge.cancel(call_id)
-        raise  # barge-in: propagate so the task actually cancels
+        await _cancel_at_relay(params.llm, call_id)
+        raise  # propagate so the task actually cancels
     finally:
+        _count_consult(gate, -1)
         consult_bridge.cancel(call_id)
 
 
@@ -976,8 +992,8 @@ async def _send_call(llm, kind: str, call_id: str, name: str, args: dict) -> Non
 
 
 async def _cancel_at_relay(llm, call_id: str) -> None:
-    """The brain stopped waiting on a consult the relay acknowledged: have the relay stop it
-    too (plugin: onEvent tool.call.cancelled, which aborts the run the consult started and
+    """The brain stopped waiting on a consult the relay has (its wait ran out, or a
+    barge-in cancelled an agent-first one): have the relay stop it too (plugin: onEvent tool.call.cancelled, which aborts the run the consult started and
     retires the call). Otherwise the run went on without a waiter, and OpenClaw's spoken run
     control still acted on it -- a "cancel that" the brain no longer asked the plugin about
     (no consult running, run_control.py) was answered by the model and acted on by the
@@ -1274,7 +1290,7 @@ def _bind_openclaw_agent_consult(ctx: ToolContext):
     # owed records; agent-first passes none and consults synchronously on the turn.
     if ctx.owed is not None:
         return functools.partial(_openclaw_agent_consult, owed=ctx.owed, gate=ctx.gate)
-    return _openclaw_agent_consult
+    return functools.partial(_openclaw_agent_consult, gate=ctx.gate)
 
 
 # In the order the model is offered them.

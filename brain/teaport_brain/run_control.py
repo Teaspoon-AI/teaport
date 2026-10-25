@@ -60,6 +60,10 @@
 # relay already acted on. When the first is answered, the frames held behind it go on up
 # to the next final that asks, and that final is asked about, the rest still held.
 #
+# "Running" is async and agent-first consults alike (tools._count_consult): an agent-first
+# one counts for as long as its turn waits on it. A barge-in that cancels that wait has
+# the relay cancel the run too (tools._cancel_at_relay), as below.
+#
 # A CONSULT THAT TIMED OUT. The brain stops asking once its consult is over, and the plugin
 # once the relay has answered it, but the relay acts as long as the consult's RUN is still
 # going. When the brain's own wait (tools._ASYNC_CONSULT_TIMEOUT) runs out first, it has the
