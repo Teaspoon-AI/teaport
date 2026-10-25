@@ -205,6 +205,7 @@ In `/etc/teaport/brain.env`. One switch per tool the voice model can call (tools
 | `TEAPORT_TOOL_REMEMBER` | **on** | Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw. |
 | `TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT` | **on** | Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal). |
 | `TEAPORT_TOOL_ASK_OPENCLAW` | — | Renamed TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT (#230: the consult took OpenClaw's tool name). While the new name is unset, the brain still reads this one (a consult switched off stays off) and logs a warning saying to rename it. |
+| `TEAPORT_TOOL_OPENCLAW_AGENT_CONTROL` | **on** | Let the model ask about, cancel, change or add to a request the OpenClaw agent is still working on, in any phrasing or language (OpenClaw's openclaw_agent_control; the Talk client runs it). Talk only, and only with TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT on. Off, only what OpenClaw's own spoken run control recognizes ("cancel that", "how's it going?") reaches a request in progress. |
 | `TEAPORT_TOOL_LIST_VOICES` | **on** | List the speaking voices. |
 | `TEAPORT_TOOL_SWITCH_VOICE` | **on** | Change the speaking voice (and with it the reply language). |
 | `TEAPORT_TOOL_SET_VOLUME` | **on** | Speaker louder, quieter or to a level. Only offered to a client that can do it itself (the local audio bridge); the level is kept across sessions. |

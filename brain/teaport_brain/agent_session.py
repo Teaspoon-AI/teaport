@@ -647,7 +647,9 @@ def build_agent_session(transport, *, voice: str | None = None,
       it wakes (refresh_host below).
     - run_control: the client answers whether OpenClaw's spoken run control took a final
       said while a consult runs (the teaport plugin's ?run_control=1): RunControlClaims
-      joins the pipeline, below the transcript emitter (run_control.py). Talk only.
+      joins the pipeline, below the transcript emitter (run_control.py), and the model is
+      offered openclaw_agent_control, which the Talk client runs (tools.py, run control).
+      Talk only.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -699,7 +701,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     # One tool set for the schema, the prompt and (below) the handlers: tools.active_tools.
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                            call_prompt=prompt,
-                           host_schemas=host_tool_schemas(host.tools) if host else ())
+                           host_schemas=host_tool_schemas(host.tools) if host else (),
+                           run_control=run_control)
     session_tools = active_tools(tool_ctx)
     if prompt is not None and not any(t.name == "answer_phone_call" for t in session_tools):
         prompt = None
@@ -1160,6 +1163,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                    client_features=tool_ctx.client_features,
                    wifi_voice=wifi,
                    call_prompt=prompt,
+                   run_control=tool_ctx.run_control,
                    # OpenClaw's Talk relay stores every final in the session a
                    # consult starts from (captions.py, caption_ahead).
                    captions_ahead=front_end == "talk")

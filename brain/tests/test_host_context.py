@@ -4,8 +4,8 @@ A Talk session's plugin sends OpenClaw's req.instructions and req.tools as the f
 frame on /talk ({"type": "session_config", ...}, announced with ?session_config=1). The
 brain reads it before it builds the session: the system prompt starts with the host's
 instructions, the model's consult is OpenClaw's openclaw_agent_consult with the host's
-schema, and openclaw_agent_control (which the relay does not run) is not offered. Without
-the flag nothing is waited for. And the consult is called openclaw_agent_consult
+schema, and so is openclaw_agent_control, offered only to a Talk session whose plugin runs
+run control (the Talk client runs it). Without the flag nothing is waited for. And the consult is called openclaw_agent_consult
 everywhere: the old name is gone from the repo.
 
 All host text here is synthetic."""
@@ -77,17 +77,16 @@ def test_a_session_config_frame_becomes_a_host_context():
 
 # ------------------------------------------------------------------ the tools
 
-def test_the_host_schema_replaces_the_brains_copy_and_control_is_not_offered():
+def test_the_host_schemas_replace_the_brains_copies_and_control_is_talks_only():
     schemas = tools.host_tool_schemas([HOST_CONSULT, HOST_CONTROL,
                                        {"type": "function", "name": "some_future_tool",
                                         "parameters": {"type": "object"}},
                                        {"type": "function", "name": "web_search",
                                         "parameters": {"type": "object", "properties": {
                                             "q": {"type": "string"}}}}])
-    # Only the consult's, and never openclaw_agent_control (the relay shows a call to it
-    # as a card and runs nothing). Not a host tool that shares a brain tool's name either:
-    # the brain's handler reads the brain's schema.
-    assert [s.name for s in schemas] == ["openclaw_agent_consult"]
+    # Only OpenClaw's own two tools' (tools.HOST_RUN_TOOLS). Not a host tool that shares a
+    # brain tool's name: the brain's handler reads the brain's schema.
+    assert [s.name for s in schemas] == ["openclaw_agent_consult", "openclaw_agent_control"]
     assert schemas[0].description == HOST_CONSULT["description"]
     assert schemas[0].properties == HOST_CONSULT["parameters"]["properties"]
     assert schemas[0].required == ["question"]
@@ -97,9 +96,18 @@ def test_the_host_schema_replaces_the_brains_copy_and_control_is_not_offered():
 
     ctx = tools.ToolContext(has_tts=True, host_schemas=schemas)
     offered = {s.name: s for s in tools.build_tools_schema(ctx).standard_tools}
+    # Not without run control (the room mic, the phone: no relay, no Talk client to run it).
     assert "openclaw_agent_control" not in offered
     if HAS_AGENT:
         assert offered["openclaw_agent_consult"].description == HOST_CONSULT["description"]
+        talk = {s.name: s for s in tools.build_tools_schema(
+            tools.ToolContext(has_tts=True, host_schemas=schemas, run_control=True)).standard_tools}
+        assert talk["openclaw_agent_control"].description == HOST_CONTROL["description"]
+        assert talk["openclaw_agent_control"].properties == HOST_CONTROL["parameters"]["properties"]
+        # With no host definition, the brain's copy of OpenClaw's.
+        bare = {s.name: s for s in tools.build_tools_schema(
+            tools.ToolContext(has_tts=True, run_control=True)).standard_tools}
+        assert bare["openclaw_agent_control"] is tools.OPENCLAW_AGENT_CONTROL
     # Every other tool keeps its own schema, in the same order as without a host.
     plain = tools.build_tools_schema(tools.ToolContext(has_tts=True)).standard_tools
     assert [s.name for s in plain] == list(offered)
@@ -116,6 +124,16 @@ def test_the_fallback_consult_is_openclaws_tool():
     assert s.required == ["question"]
     assert all(p["type"] == "string" for p in s.properties.values())
     assert tools.TOOLS_BY_NAME["openclaw_agent_consult"].schema is s
+
+
+def test_the_fallback_control_is_openclaws_tool():
+    """REALTIME_VOICE_AGENT_CONTROL_TOOL as 2026.9.7 has it (agent-run-control-shared.ts)."""
+    s = tools.OPENCLAW_AGENT_CONTROL
+    assert s.name == "openclaw_agent_control"
+    assert s.description.startswith("Control an active OpenClaw tool-backed voice run.")
+    assert list(s.properties) == ["text", "mode"] and s.required == ["text", "mode"]
+    assert s.properties["mode"]["enum"] == ["status", "steer", "cancel", "followup"]
+    assert tools.TOOLS_BY_NAME["openclaw_agent_control"].schema is s
 
 
 def test_the_consult_reads_openclaws_arguments():
@@ -192,34 +210,44 @@ def test_the_prompt_starts_with_exactly_the_host_text():
     assert prompt.endswith(persona.voice_overlay())
 
 
-# The consult paragraph under OpenClaw's Talk text: the #230 eval's arm B2, word for word
+# The consult paragraph under OpenClaw's Talk text, word for word: the #230 eval's arm B2
 # (34 synthetic cases x 10, gpt-oss-120b: no phantom control calls, grounding equal to the
-# persona-file prompt). Pinned whole: a rewording here is a new arm, to be run first.
-B2_CONSULT = (
-    "Where the instructions above differ, these win. You have no openclaw_agent_control "
-    "tool here; never call it. When the user asks how a request that is in progress is "
-    "going, or wants it cancelled or changed, just answer in words; that is taken care of "
-    "for you. Before you call openclaw_agent_consult, say one short natural sentence about "
-    "what you're doing — in your own words, specific to this request, never a stock phrase "
-    "like 'Let me check that for you' — then call it in the same response. While an "
-    "openclaw_agent_consult request is still in progress you do not yet know its answer: "
-    "never guess or make one up, even if the user says 'go ahead' or 'start' — say it is "
-    "still in progress; you will be told the moment it completes. Answer from the "
-    "conversation when the answer is already in it, such as what you just said or what a "
-    "tool already returned; call openclaw_agent_consult only for something you do not have "
-    "yet. You cannot see the agent's other sessions from this call, so never describe them: "
-    "if the user asks what else you are doing or what is running, call "
-    "openclaw_agent_consult to find out. ")
+# persona-file prompt) with its two control lines ("You have no openclaw_agent_control
+# tool here; never call it." and "just answer in words") taken out, and when to call the
+# control the session now has added at the end (arm final_talk3 of the re-run, 45 cases x
+# 10). Pinned whole: a rewording here is a new arm, to be run first.
+TALK_CONSULT = (
+    "Where the instructions above differ, these win. Before you call "
+    "openclaw_agent_consult, say one short natural sentence about what you're doing — in "
+    "your own words, specific to this request, never a stock phrase like 'Let me check "
+    "that for you' — then call it in the same response. While an openclaw_agent_consult "
+    "request is still in progress you do not yet know its answer: never guess or make one "
+    "up, even if the user says 'go ahead' or 'start' — say it is still in progress; you "
+    "will be told the moment it completes. Answer from the conversation when the answer is "
+    "already in it, such as what you just said or what a tool already returned; call "
+    "openclaw_agent_consult only for something you do not have yet. You cannot see the "
+    "agent's other sessions from this call, so never describe them: if the user asks what "
+    "else you are doing or what is running, call openclaw_agent_consult to find out. While "
+    "a request you gave openclaw_agent_consult is still in progress (its result has not "
+    "come back yet) and the user asks about that request, in any words or language, call "
+    "openclaw_agent_control straight away, with no line before it, with their words as "
+    "text: mode status when they ask how it is going or how long it will take, cancel to "
+    "stop it, steer to change it, followup for something to do after it. Do that instead "
+    "of answering in words or calling openclaw_agent_consult again. Everything else is "
+    "answered as usual: small talk such as 'how are you?', and any new request, even one "
+    "that says cancel or stop, like cancelling a meeting. When no request is in progress, "
+    "never call openclaw_agent_control. ")
 
 
-def _default_tools():
-    return tools.active_tools(tools.ToolContext(has_tts=True))
+def _default_tools(run_control=False):
+    return tools.active_tools(tools.ToolContext(has_tts=True, run_control=run_control))
 
 
 @pytest.mark.skipif(not HAS_AGENT, reason="the consult needs a gateway")
-def test_under_talks_text_the_overlay_is_the_evals_b2():
-    prompt = persona.build_system_prompt(HOST_TEXT, _default_tools(), host=persona.HOST_RULES)
-    assert prompt == (HOST_TEXT + "\n\n" + persona._TOOLS_HOSTED + B2_CONSULT
+def test_under_talks_text_the_overlay_is_the_evaluated_one():
+    prompt = persona.build_system_prompt(HOST_TEXT, _default_tools(run_control=True),
+                                         host=persona.HOST_RULES)
+    assert prompt == (HOST_TEXT + "\n\n" + persona._TOOLS_HOSTED + TALK_CONSULT
                       + persona._DELIVERY)
     # The tools paragraph is the tuned one with the consult taken out, nothing else.
     assert persona._TOOLS_HOSTED == persona._TOOLS_WITH_AGENT.replace(
@@ -238,9 +266,26 @@ def test_under_the_rooms_text_the_overlay_says_when_to_consult_and_no_more():
     for talk_only in ("instructions above", "openclaw_agent_control", "taken care of for you"):
         assert talk_only not in overlay, talk_only
     for kept in (persona._CONSULT_WHEN, persona._CONSULT_PREAMBLE, persona._CONSULT_IN_PROGRESS,
-                 persona._FROM_THE_CONVERSATION, persona._OTHER_SESSIONS):
+                 persona._NO_RUN_CONTROL, persona._FROM_THE_CONVERSATION,
+                 persona._OTHER_SESSIONS):
         assert kept in overlay, kept
     assert overlay.startswith(persona._TOOLS_HOSTED) and overlay.endswith(persona._DELIVERY)
+    # Honest about it: a request in progress cannot be stopped or changed from here.
+    assert "can't be stopped or changed from here" in persona._NO_RUN_CONTROL
+
+
+@pytest.mark.skipif(not HAS_AGENT, reason="the consult needs a gateway")
+def test_talk_with_the_control_switched_off_keeps_the_relay_only_lines(monkeypatch):
+    """TEAPORT_TOOL_OPENCLAW_AGENT_CONTROL off: the host's rules still name the control, so
+    it is named as missing, and only the relay's own run control is left to answer."""
+    off = [t for t in _default_tools(run_control=True) if t.name != "openclaw_agent_control"]
+    prompt = persona.build_system_prompt(HOST_TEXT, off, host=persona.HOST_RULES)
+    assert "You have no openclaw_agent_control tool here; never call it." in prompt
+    assert persona._RUN_CONTROL_IN_WORDS in prompt and persona._RUN_CONTROL_TOOL not in prompt
+    # The talk text with the control has neither.
+    on = persona.build_system_prompt(HOST_TEXT, _default_tools(run_control=True),
+                                     host=persona.HOST_RULES)
+    assert "You have no" not in on and persona._RUN_CONTROL_IN_WORDS not in on
 
 
 def test_the_persona_file_prompt_is_unchanged():
@@ -303,19 +348,22 @@ def test_a_session_built_with_a_host_context_uses_it(monkeypatch):
     # The brain's own persona, synthetic: never this machine's workspace files.
     monkeypatch.setattr(agent_session, "load_persona", lambda: "BRAIN PERSONA.")
 
-    async def build(host):
+    async def build(host, run_control=False):
         return build_agent_session(_Transport(), context_notes=True, front_end="talk",
-                                   host=host)
+                                   host=host, run_control=run_control)
 
-    session = asyncio.run(build(host_context.from_frame(FRAME)))
+    session = asyncio.run(build(host_context.from_frame(FRAME), run_control=True))
     system = session.context.get_messages()[0]["content"]
     assert system.startswith(HOST_TEXT), system[:200]
     if HAS_AGENT:
-        assert B2_CONSULT in system    # Talk's text: the overlay for HOST_RULES
+        assert TALK_CONSULT in system    # Talk's text: the overlay for HOST_RULES
     offered = {s.name: s for s in session.context.tools.standard_tools}
-    assert "openclaw_agent_control" not in offered
     if HAS_AGENT:
         assert offered["openclaw_agent_consult"].description == HOST_CONSULT["description"]
+        assert offered["openclaw_agent_control"].description == HOST_CONTROL["description"]
+    # A /talk client that runs no run control (no ?run_control=1) is not offered it.
+    session = asyncio.run(build(host_context.from_frame(FRAME)))
+    assert "openclaw_agent_control" not in {s.name for s in session.context.tools.standard_tools}
     # The room's: the overlay for HOST_CONTEXT.
     session = asyncio.run(build(ROOM_HOST))
     system = session.context.get_messages()[0]["content"]

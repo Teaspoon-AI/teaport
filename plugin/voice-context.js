@@ -38,7 +38,7 @@ export const VOICE_CONTEXT_VERSION = 1;
 export const PROFILE_MAX_CHARS = 6000;
 
 // The realtime-voice SDK subpath, imported once for the route and for the run-control
-// classifier (realtimeVoiceControlText); {} on a host without it.
+// mirror (realtimeVoiceRunControl); {} on a host without it.
 let realtimeVoice = null;
 function importRealtimeVoice() {
   realtimeVoice ??= import("openclaw/plugin-sdk/realtime-voice").catch(() => ({}));
@@ -46,15 +46,20 @@ function importRealtimeVoice() {
 }
 
 /**
- * OpenClaw's run-control classifier, shouldAutoControlRealtimeVoiceAgentText (2026.9.7+):
- * whether its relay's spoken run control acts on an utterance while a consult runs
- * (provider.js, answerRunControl). undefined on a host without it.
+ * The pieces of OpenClaw's spoken run control the bridge mirrors (provider.js,
+ * answerRunControl), from the realtime-voice SDK (2026.9.7+), each undefined on a host
+ * without it: isControl, shouldAutoControlRealtimeVoiceAgentText (whether the relay's run
+ * control acts on an utterance while a consult runs), and isEcho,
+ * isLikelyRealtimeVoiceAssistantEchoTranscript (whether its echo filter drops the
+ * utterance first).
  */
-export async function realtimeVoiceControlText() {
+export async function realtimeVoiceRunControl() {
   const voice = await importRealtimeVoice();
-  return typeof voice.shouldAutoControlRealtimeVoiceAgentText === "function"
-    ? voice.shouldAutoControlRealtimeVoiceAgentText
-    : undefined;
+  const fn = (f) => (typeof f === "function" ? f : undefined);
+  return {
+    isControl: fn(voice.shouldAutoControlRealtimeVoiceAgentText),
+    isEcho: fn(voice.isLikelyRealtimeVoiceAssistantEchoTranscript),
+  };
 }
 
 /** The SDK pieces the route needs, from the host's published subpaths. */

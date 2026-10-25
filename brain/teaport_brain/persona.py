@@ -205,28 +205,58 @@ VOICE_OVERLAY_LOCAL = _TOOLS_LOCAL + _DELIVERY
 #                 (DEFAULT_REALTIME_INSTRUCTIONS: call openclaw_agent_consult, say "Let me
 #                 check that for you", call openclaw_agent_control for progress, cancel or
 #                 redirect), then the agent paragraph and the profile. Some of those rules
-#                 clash with this surface, so the paragraph opens by overriding them by
-#                 name: the model has no control tool (the relay acts on spoken run control
-#                 itself), and the stock acknowledgement gives way to the tuned preamble.
+#                 clash with this surface, so the paragraph opens by overriding them: the
+#                 stock acknowledgement gives way to the tuned preamble. The control tool is
+#                 the model's here (tools.py, run control: the Talk client runs it), so the
+#                 paragraph says when to call it, for what OpenClaw's own spoken run control
+#                 did not already take (run_control.py).
 #   HOST_CONTEXT  the room mic and the phone: the agent paragraph and the profile only
 #                 (the plugin's voice-context route). Nothing says when to consult and
-#                 nothing runs run control, so the paragraph says when to consult and the
-#                 override and run-control sentences are left out: they would be false.
+#                 nothing runs run control, so the paragraph says when to consult, and says
+#                 plainly that a request in progress cannot be stopped or changed from here.
 #
 # Both keep the tuned preamble, the in-progress rule, and two lines the #230 eval found
 # the host text needs (34 synthetic cases x 10, gpt-oss-120b, 2026-10-25, arm B2): answer
 # from the conversation instead of re-consulting for what is already in it, and never
 # describe the agent's other sessions, which the agent paragraph tells the model exist
 # but it cannot see. Without them: re-consults, and other sessions described from
-# nothing; without the override, a call to the missing control tool on 20% of
-# in-progress turns (Groq fails the whole completion, and the user hears nothing).
+# nothing. A tool the host's rules name that the session lacks is named as missing (a
+# call to a tool not offered fails the whole completion on Groq, and the user hears
+# nothing: 20% of in-progress turns when the control was named but not offered).
 HOST_RULES = "rules"
 HOST_CONTEXT = "context"
 
 _HOST_RULES_WIN = "Where the instructions above differ, these win."
+# Talk with the control tool: when to call it, and when not. Last in the paragraph, after
+# the B2 lines: placed first (an earlier wording), it pulled the model toward tools on
+# turns that only needed the conversation (re-consults on the grounding cases 17/90
+# against 8/90 without it; 1/10 on "okay, go on" here against 6/10 there) and read small
+# talk ("how are you doing today?") as a progress question (9/10 status calls). Straight
+# away, because the Talk client holds the tool's result until the voice has finished
+# what it is saying (a line before the call delays the answer by that line). #230 eval,
+# synthetic cases x 10, gpt-oss-120b, 2026-10-25.
+_RUN_CONTROL_TOOL = (
+    "While a request you gave openclaw_agent_consult is still in progress (its result has "
+    "not come back yet) and the user asks about that request, in any words or language, "
+    "call openclaw_agent_control straight away, with no line before it, with their words "
+    "as text: mode status when they ask how it is going or how long it will take, cancel "
+    "to stop it, steer to change it, followup for something to do after it. Do that "
+    "instead of answering in words or calling openclaw_agent_consult again. Everything "
+    "else is answered as usual: small talk such as 'how are you?', and any new request, "
+    "even one that says cancel or stop, like cancelling a meeting. When no request is in "
+    "progress, never call openclaw_agent_control."
+)
+# Talk with the control switched off (TEAPORT_TOOL_OPENCLAW_AGENT_CONTROL): only the
+# relay's spoken run control is left, which answers what it recognizes itself.
 _RUN_CONTROL_IN_WORDS = (
     "When the user asks how a request that is in progress is going, or wants it "
     "cancelled or changed, just answer in words; that is taken care of for you."
+)
+# The room and the phone: no run control at all. Said, so the model neither pretends to
+# stop a request nor promises a change that never reaches it.
+_NO_RUN_CONTROL = (
+    "A request openclaw_agent_consult is already working on can't be stopped or changed "
+    "from here: if the user asks, say so plainly, and that its answer will still come."
 )
 # When to consult, for the room and the phone, whose host text does not say: the tuned
 # hint's "multi-step or open-ended", widened with the list OpenClaw's own Talk rules use
@@ -257,25 +287,30 @@ _OTHER_SESSIONS = (
 )
 
 
-def _host_paragraph(host: str, consult: bool) -> str:
+def _host_paragraph(host: str, consult: bool, control: bool = False) -> str:
     """The consult paragraph for a prompt headed by OpenClaw's text (`host`, HOST_RULES or
-    HOST_CONTEXT), `consult`: the session has openclaw_agent_consult. With HOST_RULES and
-    the consult this is the eval's arm B2 word for word."""
+    HOST_CONTEXT), `consult`: the session has openclaw_agent_consult, `control`: it has
+    openclaw_agent_control (Talk only, and only with the consult)."""
     parts = []
     if host == HOST_RULES:
-        # The host's rules name tools this session may not have: the control tool never,
-        # the consult when it is switched off (or there is no gateway).
-        missing = ["openclaw_agent_control"] + ([] if consult else ["openclaw_agent_consult"])
-        parts += [_HOST_RULES_WIN,
-                  f"You have no {' or '.join(missing)} tool here; never call "
-                  + ("it." if len(missing) == 1 else "them.")]
-        if consult:
+        # The host's rules name both tools; one this session lacks is named as missing.
+        missing = (([] if control else ["openclaw_agent_control"])
+                   + ([] if consult else ["openclaw_agent_consult"]))
+        parts.append(_HOST_RULES_WIN)
+        if missing:
+            parts.append(f"You have no {' or '.join(missing)} tool here; never call "
+                         + ("it." if len(missing) == 1 else "them."))
+        if consult and not control:
             parts.append(_RUN_CONTROL_IN_WORDS)
     elif consult:
         parts.append(_CONSULT_WHEN)
     if consult:
-        parts += [_CONSULT_PREAMBLE, _CONSULT_IN_PROGRESS, _FROM_THE_CONVERSATION,
-                  _OTHER_SESSIONS]
+        parts += [_CONSULT_PREAMBLE, _CONSULT_IN_PROGRESS]
+        if host != HOST_RULES:
+            parts.append(_NO_RUN_CONTROL)
+        parts += [_FROM_THE_CONVERSATION, _OTHER_SESSIONS]
+        if host == HOST_RULES and control:
+            parts.append(_RUN_CONTROL_TOOL)
     return "".join(p + " " for p in parts)
 
 
@@ -291,6 +326,7 @@ def voice_overlay() -> str:
 # Under OpenClaw's text the consult is taken out of these sets first (tools_paragraph):
 # _TUNED_WITH_AGENT without it gets _TOOLS_HOSTED.
 _CONSULT = "openclaw_agent_consult"
+_CONTROL = "openclaw_agent_control"
 _TUNED_WITH_AGENT = frozenset({
     "get_host_status", "get_current_time", "web_search", "web_fetch", "search_memory",
     "remember", _CONSULT, "list_voices", "switch_voice"})
@@ -340,12 +376,14 @@ def tools_paragraph(tools, host: str | None = None) -> str:
     tools (performed by the connected device) get their own sentence after it, and so does
     answer_phone_call (only for a question the brain itself puts, so it leaves the tuned
     paragraphs alone). Under OpenClaw's text the consult leaves the tools paragraph and
-    gets its own, last (_host_paragraph)."""
+    gets its own, last (_host_paragraph), and so does the control, which only a Talk
+    session has."""
     asides = [t for t in tools if "call_prompt" in t.needs]
     tools = [t for t in tools if t not in asides]
     consult = any(t.name == _CONSULT for t in tools)
+    control = any(t.name == _CONTROL for t in tools)
     if host:
-        tools = [t for t in tools if t.name != _CONSULT]
+        tools = [t for t in tools if t.name not in (_CONSULT, _CONTROL)]
     standard = [t for t in tools if not t.client]
     names = {t.name for t in standard}
     if not host and names == _TUNED_WITH_AGENT:
@@ -368,7 +406,7 @@ def tools_paragraph(tools, host: str | None = None) -> str:
                  "for it; give their answer with " + _join([t.hint or t.name for t in asides])
                  + ", straight away and with no line before it. ")
     if host:
-        text += _host_paragraph(host, consult)
+        text += _host_paragraph(host, consult, control)
     return text
 
 

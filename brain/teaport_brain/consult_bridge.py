@@ -1,10 +1,15 @@
 #
-# teaport — pending-consult registry (the brain half of in-process consults).
+# teaport — pending-call registry (the brain half of the calls the client runs).
 #
 # The consult tool, openclaw_agent_consult (tools.py), sends its call as a tool_call over /talk
 # with a call_id and parks a future here; the teaport plugin's submitToolResult
 # forwards the relay's result back as a {"type":"tool_result"} message, which
 # the serializer resolves through this module. Single event loop, no locking.
+# openclaw_agent_control (its result comes back the same way, from the Talk client) and
+# the client tools (set_volume, ...: the local bridge answers) park theirs here too
+# (tools._ask_client). Every call has its own id, and its own prefix by kind
+# (CALL_ID_PREFIX, tools.CONTROL_CALL_PREFIX, tools.CLIENT_CALL_PREFIX), so a result only
+# ever resolves the call it answers: a control's result is never read as a consult's.
 #
 # Results follow the relay's speakable-result convention: a string, or a dict
 # carrying one of text / result / output / error. Working notices arrive with
@@ -20,10 +25,11 @@ _pending: dict = {}
 # Every consult call_id starts with this (tools._openclaw_agent_consult mints them). The relay
 # also echoes tool_results for the brain's OWN tool calls -- the display-only
 # tool_call events tools._wrap sends with pipecat's "fc_..." ids -- dozens per Talk
-# consult. Those are not consults and never were, so they are dropped without a log
-# line; only a consult id that matches nothing (a result landing after its waiter
-# gave up) is worth one.
+# consult. Those are not calls of ours and never were, so they are dropped without a log
+# line; only one of our ids that matches nothing (a result landing after its waiter
+# gave up) is worth one. All of ours start with _OURS.
 CALL_ID_PREFIX = "teaport-consult-"
+_OURS = "teaport-"
 
 # What the Control UI's consult runner submits when the run ended with no text
 # (ui/src/pages/chat/talk/shared.ts, OpenClaw 2026.9.7) and when its own 120 s wait
@@ -54,7 +60,7 @@ def resolve(call_id: str, result, will_continue: bool = False) -> bool:
     """Route a tool_result message. Returns True if it matched a pending consult."""
     fut = _pending.get(call_id)
     if fut is None:
-        if call_id.startswith(CALL_ID_PREFIX):
+        if call_id.startswith(_OURS):
             logger.debug(f"consult_bridge: tool_result for unknown call_id {call_id!r}")
         return False
     if will_continue:

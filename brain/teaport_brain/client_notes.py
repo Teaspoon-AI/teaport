@@ -147,13 +147,18 @@ REFILL_PER_S = 1.0
 _TAG = "[app event, not spoken by the user]"
 _REACT = ("React now, as yourself, in one short spoken sentence and without mentioning "
           "the app, notes or events, to this app event: {}")
+# How an update from OpenClaw about a request in progress is said: one plain sentence
+# about the user's request, in the user's words, never the operator's. Shared by the host
+# notes' order below and the result of the model's own openclaw_agent_control call
+# (tools._control_result), whose statuses are the same OpenClaw messages.
+PLAIN_UPDATE = ("Tell the user in one short, plain spoken sentence what it means for their "
+                "request. Never say OpenClaw, run, or the name of any tool, never "
+                "contradict the update")
 # The order for host notes (HOST NOTES above): what the host's status means for the
 # user's request, in the user's words. {} is the status, or the statuses oldest first,
 # JSON-quoted as data.
 _HOST_ORDER = ("An update came in about the user's request that is being worked on in the "
-               "background: {}. Tell the user in one short, plain spoken sentence what it "
-               "means for their request. Never say OpenClaw, run, or the name of any tool, "
-               "never contradict the update, and call no tools.")
+               "background: {}. " + PLAIN_UPDATE + ", and call no tools.")
 # One system line, added to the /talk brain's starting context (agent_session,
 # _build_initial_messages with context_notes=True).
 SYSTEM_LINE = (f"Messages tagged {_TAG} report what happened in the user's app; they "

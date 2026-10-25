@@ -59,17 +59,28 @@ opens, before any audio, the plugin sends them as one frame:
 The frame always goes out, empty or not: `session_config=1` on the URL tells the brain
 to wait for it, so it must always come. The brain starts the session's system prompt
 with the instructions as sent, then its own voice rules, and gives its language model
-OpenClaw's `openclaw_agent_consult` schema from the tool list. It does not offer
-`openclaw_agent_control`: the relay already acts on spoken run control (status, cancel,
-redirect) from the user's transcripts the brain sends, and a model call to the control
-tool, which the Control UI executes, would act a second time. A brain that gets no flag (another client) builds its own prompt, as before.
+OpenClaw's `openclaw_agent_consult` and `openclaw_agent_control` schemas from the tool
+list. A brain that gets no flag (another client) builds its own prompt, as before.
 
 ### Spoken run control
 
-While a consult runs, OpenClaw's relay reads every final user transcript the brain
-sends and acts on run control itself: "cancel that" cancels the run, "how's it going?"
-reports on it, "actually ..." steers it, "also ..." queues a follow-up. Three things
-keep the brain in step:
+A request the agent is still working on can be asked about, cancelled, redirected or
+added to by voice, two ways, which never act on the same words:
+
+- **OpenClaw's relay** reads every final user transcript the brain sends while a consult
+  runs, and acts on what its classifier recognizes: "cancel that" cancels the run,
+  "how's it going?" reports on it, "actually ..." steers it, "also ..." queues a
+  follow-up. Those words are the relay's, not the model's (below).
+- **The model** gets `openclaw_agent_control` for everything else, in any phrasing or
+  language ("scratch that", "how much longer?", "olvídalo"), as OpenClaw's own voice
+  rules tell it to. The relay does not run it: the brain's call goes to the relay's
+  `onToolCall` like a consult's, the relay shows it to the Talk client as a `toolCall`
+  event, and the client runs it (the Control UI: `talk.session.steer`) and submits the
+  result back through the relay, which the plugin passes to the brain for that call's
+  id. The brain waits at most 10 s for it (the Control UI holds a tool result until the
+  voice it is playing has finished) and has the model say it in plain words.
+
+What keeps the brain in step:
 
 - **The relay's reply is spoken.** The relay hands its answer to the provider
   (`sendUserMessage`); the plugin sends it to the brain as a context note marked
@@ -78,15 +89,29 @@ keep the brain in step:
   so it is not read out verbatim). Only the plugin sets that mark;
   `teaport.talk.context` never does, and the brain believes it only from a client that
   announced `?run_control=1`.
-- **The brain does not answer the same words.** For a final said while it has a consult
-  running, the brain asks `{"type": "run_control", "id", "text"}` and holds that turn
-  for the answer (at most 0.5 s). The plugin answers
-  `{"type": "run_control_result", "id", "claimed"}`: claimed when a consult the relay
-  acknowledged is still unanswered and OpenClaw's own classifier
-  (`shouldAutoControlRealtimeVoiceAgentText`, `openclaw/plugin-sdk/realtime-voice`) calls
-  the words control. A claimed turn ends with nothing for the model to answer.
+- **The brain does not answer the relay's words.** For a final said while it has a
+  consult running, the brain asks `{"type": "run_control", "id", "text"}` and holds that
+  turn for the answer. The plugin answers `{"type": "run_control_result", "id",
+  "claimed"}`. Not claimed, at once: no consult the relay acknowledged is unanswered,
+  OpenClaw's classifier (`shouldAutoControlRealtimeVoiceAgentText`) does not call the
+  words control, or the relay's echo filter would drop them
+  (`isLikelyRealtimeVoiceAssistantEchoTranscript` over the finals the plugin forwarded,
+  12 s lookback, as the relay keeps them). Otherwise claimed only once the relay acts on
+  them (its reply, or a consult's `{"status": "cancelled"}` result), and not claimed if it
+  has not within 2 s: the relay counts a consult's run only once the Talk client's
+  `talk.client.toolCall` and `chat.send` are acknowledged, and forgets it just before the
+  result, so in those moments it acts on nothing and the model answers instead. A
+  claimed turn ends with nothing for the model to answer. A second final said while one
+  is held is asked about in its turn.
 - **A cancelled consult is owed nothing.** The relay's `{"status": "cancelled"}` result
-  closes the consult silently on the brain's side.
+  closes the consult silently on the brain's side, whichever way it was cancelled. A
+  control call's own result is the control's, never read as a consult's.
+- **A consult the brain gave up on stops.** Past its own wait the brain sends
+  `{"type": "tool_cancel", "call_id"}`, and the plugin tells the relay the call was
+  cancelled (`tool.call.cancelled`), which aborts the run, so the relay's run control
+  has nothing left to act on either.
+
+The room mic and the phone have no relay: no run control, and no control tool.
 
 ### The room mic and the phone
 

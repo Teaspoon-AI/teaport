@@ -1,15 +1,17 @@
 // OpenClaw's spoken run control (#230): the relay's spoken replies reach the brain
-// (sendUserMessage, as a host note), and the bridge answers the brain's question whether
-// the relay's run control took a final said while a consult runs (run_control). No
-// OpenClaw and no brain: a fake WebSocket plays the brain, and a stand-in plays the SDK's
-// shouldAutoControlRealtimeVoiceAgentText.
+// (sendUserMessage, as a host note); the bridge answers the brain's question whether the
+// relay's run control took a final said while a consult runs (run_control), claiming it
+// only once the relay acts; and the model's own openclaw_agent_control calls go to the
+// relay with their results routed back. No OpenClaw and no brain: a fake WebSocket plays
+// the brain, and stand-ins play the SDK's shouldAutoControlRealtimeVoiceAgentText and
+// isLikelyRealtimeVoiceAssistantEchoTranscript.
 //
 //   node --test test/run-control.test.mjs
 
 import assert from "node:assert/strict";
 import { afterEach, beforeEach, test } from "node:test";
 
-import { buildTeaportRealtimeProvider } from "../provider.js";
+import { CONFIRM_MS, ECHO_LOOKBACK_MS, buildTeaportRealtimeProvider } from "../provider.js";
 
 class FakeWebSocket {
   static last = null;
@@ -57,31 +59,47 @@ const STATUS = [
 // A stand-in for the SDK's classifier, over a few synthetic phrasings.
 const isControl = (text) => /^(cancel that|never mind|how's it going\??|actually\b.*)$/i.test(text);
 
-const tick = () => new Promise((r) => setTimeout(r, 0));
+// setImmediate, not setTimeout: the confirmation tests mock the timers.
+const tick = () => new Promise((r) => setImmediate(r));
+const noEcho = () => false;
 
-async function session({ controlText = async () => isControl, hello = true, ready = true } = {}) {
+async function session({ runControl = async () => ({ isControl, isEcho: noEcho }), hello = true, ready = true } = {}) {
   const logs = [];
   const toolCalls = [];
+  const events = [];
   const provider = buildTeaportRealtimeProvider({
     url: "ws://brain/talk",
     hostVersion: "2026.9.7",
     log: (m) => logs.push(m),
-    controlText,
+    runControl,
   });
-  const bridge = provider.createBridge({ providerConfig: {}, onToolCall: (c) => toolCalls.push(c) });
+  const bridge = provider.createBridge({
+    providerConfig: {},
+    onToolCall: (c) => toolCalls.push(c),
+    onEvent: (e) => events.push(e),
+    onTranscript: () => {},
+  });
   await bridge.connect();
   const ws = FakeWebSocket.last;
   if (hello) ws.reply(HELLO);
   if (hello && ready) ws.reply({ type: "ready" });
-  return { bridge, ws, logs, toolCalls };
+  return { bridge, ws, logs, toolCalls, events };
 }
 
 const notes = (ws) => ws.sent.filter((m) => m?.type === "context");
 
+const results = (ws, id) => ws.sent.filter((m) => m?.type === "run_control_result" && m.id === id);
+
 async function ask(ws, text, id = "r1") {
   ws.reply({ type: "run_control", id, text });
   for (let i = 0; i < 5; i += 1) await tick();
-  return ws.sent.filter((m) => m?.type === "run_control_result" && m.id === id);
+  return results(ws, id);
+}
+
+// The brain's user final, as UserTranscriptEmitter sends it; the bridge forwards it to the
+// relay, which reads it for run control.
+function said(ws, text) {
+  ws.reply({ type: "transcript", role: "user", text, final: true });
 }
 
 function startConsult(ws, bridge, callId = "teaport-consult-a1", { acked = true } = {}) {
@@ -137,14 +155,89 @@ test("a client's note never passes for the host's", async () => {
 
 // ── run control ─────────────────────────────────────────────────────────────────
 
-test("with a consult running, OpenClaw's control words are claimed and others are not", async () => {
+test("control words are claimed once the relay acts on them, and its reply follows the claim", async () => {
   const { bridge, ws, toolCalls } = await session();
   startConsult(ws, bridge);
   assert.equal(toolCalls.length, 1, "the consult still reaches the relay");
-  assert.deepEqual(await ask(ws, "cancel that", "r1"), [{ type: "run_control_result", id: "r1", claimed: true }]);
+  said(ws, "cancel that");
+  assert.deepEqual(await ask(ws, "cancel that", "r1"), [], "nothing until the relay acts");
+  bridge.sendUserMessage(STATUS);
+  const order = ws.sent.filter((m) => m?.type === "run_control_result" || m?.type === "context").map((m) => m.type);
+  assert.deepEqual(order, ["run_control_result", "context"], "the claim reaches the brain before the relay's reply");
+  assert.deepEqual(results(ws, "r1"), [{ type: "run_control_result", id: "r1", claimed: true }]);
+  // Other words are the model's at once.
   assert.deepEqual(await ask(ws, "What's the weather like?", "r2"), [
     { type: "run_control_result", id: "r2", claimed: false },
   ]);
+});
+
+test("a consult the relay cancelled confirms the claim, and the transcript and question may cross", async () => {
+  const { bridge, ws } = await session();
+  startConsult(ws, bridge);
+  // The question first, the transcript after: the relay acts once it reads the words.
+  assert.deepEqual(await ask(ws, "never mind", "r1"), []);
+  said(ws, "never mind");
+  bridge.submitToolResult("teaport-consult-a1", { status: "cancelled", message: "Cancelled the active OpenClaw run." });
+  assert.deepEqual(results(ws, "r1"), [{ type: "run_control_result", id: "r1", claimed: true }]);
+  // The relay already acted when the question comes (the transcript went first): at once.
+  startConsult(ws, bridge, "teaport-consult-a2");
+  said(ws, "how's it going?");
+  bridge.sendUserMessage(STATUS);
+  assert.deepEqual(await ask(ws, "how's it going?", "r2"), [{ type: "run_control_result", id: "r2", claimed: true }]);
+});
+
+test("words the relay does not act on within CONFIRM_MS are the model's", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { bridge, ws, logs } = await session();
+  startConsult(ws, bridge);
+  // An act from before the words reached the relay does not count for them.
+  bridge.sendUserMessage(STATUS);
+  said(ws, "actually make it tomorrow");
+  assert.deepEqual(await ask(ws, "actually make it tomorrow", "r1"), []);
+  t.mock.timers.tick(CONFIRM_MS - 1);
+  await tick();
+  assert.deepEqual(results(ws, "r1"), []);
+  t.mock.timers.tick(1);
+  await tick();
+  assert.deepEqual(results(ws, "r1"), [{ type: "run_control_result", id: "r1", claimed: false }]);
+  assert.match(logs.join("\n"), /did not act within 2000 ms/);
+  // A late act confirms nothing any more.
+  bridge.sendUserMessage(STATUS);
+  assert.equal(results(ws, "r1").length, 1);
+});
+
+test("what the relay takes for the assistant's echo is never claimed", async () => {
+  // The relay drops a final that overlaps the assistant's recent speech before its run
+  // control reads it (isLikelyAssistantEchoTranscript): mirrored with the SDK's check, on
+  // the finals this bridge forwarded, as they stood when the words reached the relay.
+  const seen = [];
+  const isEcho = (params) => {
+    seen.push(params);
+    return params.text === "cancel that check on the inbox";
+  };
+  const { bridge, ws } = await session({ runControl: async () => ({ isControl: () => true, isEcho }) });
+  startConsult(ws, bridge);
+  ws.reply({ type: "transcript", role: "assistant", text: "I'll cancel that check on the inbox.", final: true, utterance: "u1" });
+  said(ws, "cancel that check on the inbox");
+  assert.deepEqual(await ask(ws, "cancel that check on the inbox", "r1"), [
+    { type: "run_control_result", id: "r1", claimed: false },
+  ]);
+  const [params] = seen;
+  assert.equal(params.lookbackMs, ECHO_LOOKBACK_MS);
+  assert.equal(ECHO_LOOKBACK_MS, 12_000);
+  assert.deepEqual(
+    params.transcript.map(({ role, text }) => [role, text]),
+    [
+      ["assistant", "I'll cancel that check on the inbox."],
+      ["user", "cancel that check on the inbox"],
+    ],
+  );
+  assert.ok(params.transcript.every((e) => !Number.isNaN(Date.parse(e.at))), "entries carry ISO times, as the SDK reads them");
+  // Not an echo: claimed once the relay acts, as usual.
+  said(ws, "stop it");
+  assert.deepEqual(await ask(ws, "stop it", "r2"), []);
+  bridge.sendUserMessage(STATUS);
+  assert.equal(results(ws, "r2")[0].claimed, true);
 });
 
 test("nothing is claimed with no consult the relay is running", async () => {
@@ -155,42 +248,58 @@ test("nothing is claimed with no consult the relay is running", async () => {
   assert.equal((await ask(ws, "cancel that", "r2"))[0].claimed, false, "not acknowledged");
   // Acknowledged, then answered: over.
   bridge.submitToolResult("teaport-consult-b", { status: "working" }, { willContinue: true });
-  assert.equal((await ask(ws, "cancel that", "r3"))[0].claimed, true);
-  bridge.submitToolResult("teaport-consult-b", { status: "cancelled", message: "Cancelled." });
-  assert.equal((await ask(ws, "cancel that", "r4"))[0].claimed, false, "answered");
+  bridge.submitToolResult("teaport-consult-b", { text: "Sunny." });
+  assert.equal((await ask(ws, "cancel that", "r3"))[0].claimed, false, "answered");
   // A tool result for one of the brain's display-only calls is no consult.
   bridge.submitToolResult("fc_1", { ok: true }, { willContinue: true });
-  assert.equal((await ask(ws, "cancel that", "r5"))[0].claimed, false);
+  assert.equal((await ask(ws, "cancel that", "r4"))[0].claimed, false);
 });
 
 test("without the SDK's classifier, or when it throws, nothing is claimed, and every question is answered", async () => {
-  for (const controlText of [
+  for (const runControl of [
+    async () => ({}),
     async () => undefined,
     async () => {
       throw new Error("no realtime-voice SDK");
     },
-    async () => () => {
-      throw new Error("classifier bug");
-    },
-    null, // no classifier given at all
+    async () => ({
+      isControl: () => {
+        throw new Error("classifier bug");
+      },
+    }),
+    null, // nothing given at all
   ]) {
-    const { bridge, ws } = await session({ controlText });
+    const { bridge, ws } = await session({ runControl });
     startConsult(ws, bridge);
     assert.deepEqual(await ask(ws, "cancel that"), [{ type: "run_control_result", id: "r1", claimed: false }]);
   }
+  // Without the echo check (or with one that throws), the claim still waits for the relay.
+  const { bridge, ws } = await session({
+    runControl: async () => ({
+      isControl,
+      isEcho: () => {
+        throw new Error("echo bug");
+      },
+    }),
+  });
+  startConsult(ws, bridge);
+  assert.deepEqual(await ask(ws, "cancel that"), []);
+  bridge.sendUserMessage(STATUS);
+  assert.equal(results(ws, "r1")[0].claimed, true);
 });
 
-test("the classifier is loaded once, when the session is made", async () => {
+test("the SDK pieces are loaded once, when the session is made", async () => {
   let loads = 0;
   const { bridge, ws } = await session({
-    controlText: async () => {
+    runControl: async () => {
       loads += 1;
-      return isControl;
+      return { isControl, isEcho: noEcho };
     },
   });
   assert.equal(loads, 1);
   startConsult(ws, bridge);
   await ask(ws, "cancel that", "r1");
+  bridge.sendUserMessage(STATUS);
   await ask(ws, "never mind", "r2");
   assert.equal(loads, 1);
 });
@@ -198,4 +307,50 @@ test("the classifier is loaded once, when the session is made", async () => {
 test("the plugin tells the brain it answers run-control questions", async () => {
   const { ws } = await session();
   assert.equal(new URL(ws.url).searchParams.get("run_control"), "1");
+});
+
+// ── the model's openclaw_agent_control ─────────────────────────────────────────
+
+test("a control call goes to the relay, and its result back to the brain, never as a consult's", async () => {
+  const { bridge, ws, toolCalls } = await session();
+  startConsult(ws, bridge);
+  const args = { text: "scratch that", mode: "cancel" };
+  ws.reply({ type: "tool_call", call_id: "teaport-control-c1", name: "openclaw_agent_control", args });
+  assert.deepEqual(toolCalls.at(-1), {
+    itemId: "teaport-control-c1",
+    callId: "teaport-control-c1",
+    name: "openclaw_agent_control",
+    args,
+  });
+  // A claim is waiting when the control's own result comes back (the Control UI's
+  // talk.session.steer result: a cancel carries providerResult {status: "cancelled"}).
+  said(ws, "cancel that");
+  assert.deepEqual(await ask(ws, "cancel that", "r1"), []);
+  const result = {
+    ok: true,
+    mode: "cancel",
+    active: true,
+    aborted: true,
+    message: "Cancelled the active OpenClaw run.",
+    providerResult: { status: "cancelled", message: "Cancelled the active OpenClaw run." },
+  };
+  bridge.submitToolResult("teaport-control-c1", result);
+  assert.deepEqual(ws.sent.at(-1), { type: "tool_result", call_id: "teaport-control-c1", result, will_continue: false });
+  assert.deepEqual(results(ws, "r1"), [], "a control's result is not the relay's spoken run control acting");
+  // The consult is still open: its own cancelled result is what closes it.
+  bridge.submitToolResult("teaport-consult-a1", { status: "cancelled", message: "Cancelled the active OpenClaw run." });
+  assert.equal(results(ws, "r1")[0].claimed, true);
+  assert.equal((await ask(ws, "cancel that", "r2"))[0].claimed, false, "no consult open any more");
+});
+
+test("a consult the brain gave up on is cancelled at the relay", async () => {
+  const { bridge, ws, events } = await session();
+  startConsult(ws, bridge);
+  ws.reply({ type: "tool_cancel", call_id: "teaport-consult-a1" });
+  assert.deepEqual(events, [{ direction: "server", type: "tool.call.cancelled", itemId: "teaport-consult-a1" }]);
+  assert.equal((await ask(ws, "cancel that"))[0].claimed, false, "no consult open any more");
+  // Only a consult the relay has: anything else is ignored.
+  ws.reply({ type: "tool_cancel", call_id: "teaport-consult-gone" });
+  ws.reply({ type: "tool_cancel" });
+  assert.equal(events.length, 1);
 });

@@ -10,10 +10,28 @@
 # The brain's own LLM must not answer the same words as well: a second "okay, cancelled"
 # at best, a second consult for a steer at worst.
 #
-# Which utterances: OpenClaw's own classifier decides, not a copy of its regexes here. The
-# plugin runs the SDK's shouldAutoControlRealtimeVoiceAgentText on the text while it has a
-# consult open (one the relay acknowledged and has not answered yet), which is the
-# relay's own condition (supportsToolCalls: true, so no idle control), and answers.
+# Which utterances: the ones the relay acts on, decided by the plugin, which sees the
+# relay's side. It runs OpenClaw's own classifier (the SDK's
+# shouldAutoControlRealtimeVoiceAgentText, not a copy of its regexes) while it has a
+# consult open (one the relay acknowledged and has not answered yet; supportsToolCalls is
+# declared, so the relay never controls idle), skips what the relay drops as the
+# assistant's own echo (isLikelyRealtimeVoiceAssistantEchoTranscript, its 12 s lookback),
+# and then waits for the relay to ACT -- its reply (sendUserMessage) or a cancelled consult
+# result -- before it says "claimed" (plugin/provider.js, answerRunControl). The relay
+# counts its run a moment after the consult is acknowledged (only once the Talk client's
+# talk.client.toolCall and chat.send are acknowledged) and forgets it a moment before the
+# result is submitted; in those windows, and for an echo the classifier alone would call
+# control, it acts on nothing, and an utterance claimed on the classifier alone was
+# answered by no one. Confirmed, it cannot be. Not acted on within the plugin's window
+# (CONFIRM_MS, 2 s), the answer is "not claimed" and the model answers the words.
+#
+# Why the plugin waits and not the brain: the plugin sees both signs first hand, as they
+# happen, and on the same socket the host note then reaches the brain by, after the
+# answer. Here, a fallback would mean taking a turn back after it was closed with
+# nothing to answer (TakenTurnCloser drops the turn's earlier words with it) and building
+# it again. Held a little longer instead, the turn simply goes on unchanged when no one
+# acts. What it costs: a claimed utterance ends its turn when the relay's reply comes
+# (it says nothing before that anyway); one the relay ignores waits up to the window.
 #
 # THE ORDER. The STT's final is both what starts the brain's LLM turn (it ends the user
 # turn in the aggregator below) and what the brain sends the plugin as the transcript
@@ -25,29 +43,40 @@
 #   brain -> plugin   {"type":"run_control","id":"r1","text":"cancel that"}
 #   plugin -> brain   {"type":"run_control_result","id":"r1","claimed":true|false}
 #
-# The plugin decides from the question's own text and its own view of the open consult,
-# which is the relay's condition, so it does not matter which of the transcript and the
-# question reaches it first (UserTranscriptEmitter pushes the final down before its
-# transcript message, and the two can cross on the way). Claimed, the final goes on taken
-# (taken_turn.taken: emptied and marked) and TakenTurnCloser ends the turn with nothing
-# to answer, the way Wi-Fi setup takes words; and the words go into the context as a
-# notice at the next turn boundary (ClientNotes.add_notice), so the model knows what the
-# user said that the relay's reply answers. Not claimed, or no answer within
-# CLAIM_WAIT_S (the plugin answers on receipt, so that means a wedged plugin), the held
-# frames go on unchanged: the turn ends exactly as it would have, that much later. With
-# no consult running nothing is held.
+# The transcript and the question can cross on the way (UserTranscriptEmitter pushes the
+# final down before its transcript message); the plugin waits for the relay's act from
+# whichever reached it first. Claimed, the final goes on taken (taken_turn.taken: emptied
+# and marked) and TakenTurnCloser ends the turn with nothing to answer, the way Wi-Fi
+# setup takes words; and the words go into the context as a notice at the next turn
+# boundary (ClientNotes.add_notice), so the model knows what the user said that the
+# relay's reply answers. Not claimed, or no answer within CLAIM_WAIT_S (past the plugin's
+# own window, so that means a wedged plugin), the held frames go on unchanged: the turn
+# ends exactly as it would have, that much later. With no consult running nothing is held.
+#
+# A SECOND FINAL while one is held (the user went on talking) is asked about in its turn,
+# not let through with the first's answer: the relay reads every final, so a second
+# "cancel that" or "how much longer?" is the relay's as much as the first, and let through
+# unasked the model would answer it too, or call openclaw_agent_control on words the
+# relay already acted on. When the first is answered, the frames held behind it go on up
+# to the next final that asks, and that final is asked about, the rest still held.
+#
+# A CONSULT THAT TIMED OUT. The brain stops asking once its consult is over, and the plugin
+# once the relay has answered it, but the relay acts as long as the consult's RUN is still
+# going. When the brain's own wait (tools._ASYNC_CONSULT_TIMEOUT) runs out first, it has the
+# relay cancel the call (tools._cancel_at_relay: the relay aborts the run), so nothing is
+# left to act on. Not covered: the Control UI's own 120 s wait (shared.ts,
+# waitForChatResult) submits "OpenClaw tool call timed out" as the consult's result without
+# aborting the run, and once a result is in, the relay no longer cancels the call; the run
+# goes on until it ends by itself, and a "cancel that" said meanwhile is acted on by the
+# relay (it stops that run, and says so) and answered by the model as well, from what it
+# knows (that the request ran out of time). Rare: a consult past two minutes, then words
+# about it. Closing it would take the run's own end, which nothing on this side sees.
 #
 # Only on a Talk session whose plugin announced it (?run_control=1, plugin/provider.js):
 # the room mic and the phone line have no relay, so no run control. On a phone call the
 # barge-in judge (barge_pause.BargeInJudgeGate, #224) holds the STT's frames above the
 # aggregator the same way; the two never share a session, and if they did this one,
 # higher up, would decide first and hand the judge a taken final, which it lets pass.
-#
-# What is not covered: the relay also skips a final it takes for the assistant's own
-# echo (isLikelyAssistantEchoTranscript) and acts only while ITS run is registered, which
-# starts a moment after the consult is acknowledged and ends a moment before its result is
-# submitted. An utterance in those instants, or one it takes for echo, is claimed here
-# and acted on by no one. They are milliseconds wide (and an echo is not the user's).
 #
 import asyncio
 import json
@@ -78,9 +107,10 @@ from teaport_brain.taken_turn import is_taken, taken
 
 # The ?run_control= value a plugin that answers run_control questions sends.
 PROTOCOL = "1"
-# The longest a final waits for the plugin's answer. The plugin answers as the question
-# arrives (a classifier call), so this only bounds a plugin that is wedged or gone.
-CLAIM_WAIT_S = 0.5
+# The longest a final waits for the plugin's answer. The plugin answers at once for words
+# the relay will not act on, and within its own window (CONFIRM_MS in plugin/provider.js,
+# 2 s) for words it might, so this only bounds a plugin that is wedged or gone.
+CLAIM_WAIT_S = 2.5
 
 # What the STT pushes for the turn strategies, in its order: held together behind a final,
 # so a segment close or a decode report never overtakes the words it follows.
@@ -138,7 +168,7 @@ class RunControlClaims(FrameProcessor):
         if direction == FrameDirection.DOWNSTREAM and isinstance(frame, _STT_FRAMES):
             async with self._lock:
                 if self._held:
-                    self._held.append(frame)
+                    self._held.append(frame)  # a final among them is asked in its turn
                 elif self._asks(frame):
                     await self._ask(frame)
                 else:
@@ -159,10 +189,11 @@ class RunControlClaims(FrameProcessor):
         except Exception:  # noqa: BLE001 -- a broken count asks nothing
             return False
 
-    async def _ask(self, final: TranscriptionFrame):
+    async def _ask(self, final: TranscriptionFrame, behind=()):
+        """Hold `final` (and the frames `behind` it) and ask the plugin about it."""
         self._seq += 1
         self._id = f"r{self._seq}"
-        self._held = [final]
+        self._held = [final, *behind]
         self._t0 = time.monotonic()
         # The display copy's text: what UserTranscriptEmitter sent, which the relay read.
         await self.push_frame(OutputTransportMessageUrgentFrame(message={
@@ -203,7 +234,13 @@ class RunControlClaims(FrameProcessor):
             else:
                 self.passed += 1
                 logger.debug(f"RUN-CONTROL: {text!r} is the model's ({waited:.2f}s)")
-        for f in held:
+        # What was held behind it goes on, up to the next final that asks (module
+        # comment, A SECOND FINAL): that one is asked about, the rest held behind it. At
+        # the session's end everything goes, unasked.
+        for i, f in enumerate(held):
+            if i and not ending and self._asks(f):
+                await self._ask(f, held[i + 1:])
+                return
             await self.push_frame(f)
 
     async def cleanup(self):

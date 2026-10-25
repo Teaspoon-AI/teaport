@@ -50,12 +50,16 @@ operator's `talk.realtime.instructions`, the agent paragraph and the IDENTITY / 
   `req.tools`) as the first frame on `/talk`, a `session_config` it announces with
   `?session_config=1`. The brain reads it before it builds the session: the system
   prompt starts with those instructions as sent, followed by the brain's voice rules,
-  and the model's consult tool takes OpenClaw's schema. `openclaw_agent_control` is
-  not offered: the relay already acts on spoken run control from the transcripts the
-  brain sends, and a model call to it (which the Control UI executes) would act twice. A client that announces no `session_config` (the Discord
-  bridge, an older plugin) is served like the room mic, below. What the relay's run control says goes to the brain
-  as a host note it speaks, and a final the relay takes while a consult runs is not
-  answered by the model too (`run_control.py`; plugin README, "Spoken run control").
+  and the model's consult tool takes OpenClaw's schema. A client that announces no
+  `session_config` (the Discord bridge, an older plugin) is served like the room mic,
+  below. A request in progress is controlled two ways that never act on the same words:
+  the relay's spoken run control acts on what its classifier recognizes in the
+  transcripts the brain sends, says so as a host note the brain speaks, and the plugin
+  claims those words for it once it has acted, so the model does not answer them too
+  (`run_control.py`); the model calls `openclaw_agent_control` for everything else, which
+  the Talk client runs and answers through the relay like a consult (`tools.py`, run
+  control; plugin README, "Spoken run control"). The room mic and the phone have
+  neither: their prompt says a request in progress cannot be stopped or changed.
 - **Room mic, phone and other `/talk` clients.** At the start of each session the brain
   asks the gateway's teaport plugin (`GET /teaport/voice-context`, gateway auth with the
   brain's token; `plugin/voice-context.js`). The plugin builds the text the way

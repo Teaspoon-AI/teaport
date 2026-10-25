@@ -60,6 +60,17 @@
 #                                                           sent only to a client that
 #                                                           announced it in ?features=;
 #                                                           answered with a tool_result)
+#           {"type":"tool_call","call_id":...,"name":...,"args":{...}}
+#                                                         (a tool call for the relay's
+#                                                           onToolCall: a host-run tool,
+#                                                           openclaw_agent_consult or, on
+#                                                           Talk, openclaw_agent_control,
+#                                                           answered with a tool_result;
+#                                                           or a display-only card)
+#           {"type":"tool_cancel","call_id":...}           (the brain stopped waiting on a
+#                                                           consult the relay acknowledged:
+#                                                           the relay is to stop it too,
+#                                                           tools._cancel_at_relay)
 #
 # Pipecat serializes audio (write_audio_frame) and OutputTransportMessage frames
 # (send_message); it never serializes transcripts itself, so the emitters in
@@ -170,9 +181,9 @@ class TeaportGatewaySerializer(FrameSerializer):
         if msg.get("type") == "close":
             return EndFrame()
         if msg.get("type") == "tool_result":
-            # Relay -> brain: result of an in-process openclaw_agent_consult
-            # (see consult_bridge). Resolved here directly — no pipeline frame;
-            # the awaiting tool handler picks it up off its future.
+            # Relay -> brain: the result of a call the client runs (a consult, a
+            # control call, a client tool; see consult_bridge). Resolved here directly —
+            # no pipeline frame; the awaiting tool handler picks it up off its future.
             from teaport_brain import consult_bridge
             consult_bridge.resolve(
                 str(msg.get("call_id") or ""), msg.get("result"),
