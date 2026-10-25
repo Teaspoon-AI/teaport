@@ -103,17 +103,29 @@ FETCH_TIMEOUT_S = 2.0
 # keep the persona file for its whole conversation. So a 503 that is the gateway's (a
 # Retry-After, or no reason of the plugin's: its own 503s name one and stay until the
 # host changes) and a refused connection are asked again, after the Retry-After
-# (RETRY_AFTER_MAX_S at most) or RETRY_REFUSED_S, for as long as the caller can wait:
+# (RETRY_AFTER_MAX_S at most) or RETRY_REFUSED_S, for as long as the caller can wait.
+# `patience` is the whole wait, counted from the first ask: an ask again is made only if
+# its pause ends inside it, and is given only what is left of it to answer in (at least
+# RETRY_ASK_MIN_S; the first ask always gets FETCH_TIMEOUT_S). So a ringing call is not
+# held past it by a gateway that answered the retry no faster than the first ask.
 #   PATIENCE_ASLEEP_S  a wake session that opens asleep: nobody is waiting on it, and its
 #                      bridge waits 15 s for the hello (local_audio.HELLO_SECS).
 #   PATIENCE_S         anyone else: someone is there -- a call being answered, a room or
 #                      Discord user who just spoke -- and hears nothing until the build.
+#                      Two seconds: room for one ask again after the gateway's
+#                      Retry-After: 1 (it answers a ready request in milliseconds), and
+#                      on the phone well inside the rings before the brain answers
+#                      (SIP_ANSWER_AFTER_SECS, 5 s), or two seconds of quiet when the
+#                      gateway answered the call itself. One second was too short:
+#                      the first ask's own milliseconds put the retry past it, so a 503
+#                      was never asked about twice.
 # A session that still got nothing asks once more when it wakes (agent_session's
 # refresh_host, with WAKE_TIMEOUT_S): the room's gateway is usually up by then.
 PATIENCE_ASLEEP_S = 5.0
-PATIENCE_S = 1.0
+PATIENCE_S = 2.0
 RETRY_REFUSED_S = 0.5
 RETRY_AFTER_MAX_S = 2.0
+RETRY_ASK_MIN_S = 0.25
 WAKE_TIMEOUT_S = 1.0
 # The agent whose context is asked for: OPENCLAW_AGENT_ID, the one the CLI lane consults,
 # when it is set; unset, the agent the /v1/chat/completions lane's model "openclaw"
@@ -186,11 +198,13 @@ async def fetch(front_end: str, *, patience: float = 0.0,
     url = f"{oc.GATEWAY_URL}{VOICE_CONTEXT_PATH}?" + urllib.parse.urlencode(query)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + patience
+    ask_timeout = timeout  # the first ask's; an ask again gets what is left (above)
     while True:
         again = None  # seconds to wait before asking again, when it is worth it
         try:
             status, body, retry_after = await asyncio.wait_for(
-                loop.run_in_executor(None, _get_sync, url, token, timeout), timeout + 0.5)
+                loop.run_in_executor(None, _get_sync, url, token, ask_timeout),
+                ask_timeout + 0.5)
         except Exception as e:  # noqa: BLE001 — refused, timed out, unreachable
             if _refused(e):
                 why, again = "the gateway refused the connection (not up)", RETRY_REFUSED_S
@@ -212,9 +226,10 @@ async def fetch(front_end: str, *, patience: float = 0.0,
                 why = f"gateway answered {status}" + (f" ({reason})" if reason else "")
                 if status == 503 and (retry_after is not None or not reason):
                     again = retry_after or 1.0
-        if again is not None and loop.time() + again <= deadline:
+        if again is not None and loop.time() + again < deadline:
             logger.info(f"voice context ({front_end}): {why} — asking again in {again:g}s")
             await asyncio.sleep(again)
+            ask_timeout = min(timeout, max(deadline - loop.time(), RETRY_ASK_MIN_S))
             continue
         logger.warning(f"voice context ({front_end}): {why} — using {fallback}")
         return None

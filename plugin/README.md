@@ -134,7 +134,7 @@ names (`agent=`, its `OPENCLAW_AGENT_ID` when set), resolved with
 characters, no session key — and `REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
 it with its own voice rules. A gateway still starting or restarting (503 with
 `Retry-After`, or refusing connections) is asked again for a few seconds by a room
-session opening asleep and for about one by anyone else; past that, or on any other
+session opening asleep and for about two by anyone else; past that, or on any other
 failure, the brain uses its persona file and logs a warning, and a room session built
 that way asks once more when its wake word is heard.
 

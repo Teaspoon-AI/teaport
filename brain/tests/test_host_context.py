@@ -609,12 +609,18 @@ def test_a_gateway_still_starting_is_asked_again_within_the_patience(monkeypatch
     keep the persona file for its whole conversation."""
     from loguru import logger
 
-    starting = (503, {"error": {"message": "starting"}}, {"Retry-After": "0.1"})
+    starting = (503, {"error": {"message": "starting"}}, {"Retry-After": "1"})
     seen, sink = _warnings()
     try:
+        # The gateway's own Retry-After: 1 (server-http.ts, http-work-admission.ts):
+        # within the patience a ringing call or a speaking user gets, asked once more.
+        host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, before=[starting],
+                                patience=host_context.PATIENCE_S)
+        assert host is not None and len(requests) == 2, requests
+        # Still starting at the second ask: no third inside the same patience.
         host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, before=[starting, starting],
-                                patience=1.0)
-        assert host is not None and len(requests) == 3, requests
+                                patience=host_context.PATIENCE_S)
+        assert host is None and len(requests) == 2, requests
         # Without patience (or past it), one ask and the persona file.
         host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, before=[starting])
         assert host is None and len(requests) == 1
@@ -622,11 +628,11 @@ def test_a_gateway_still_starting_is_asked_again_within_the_patience(monkeypatch
         # carries no Retry-After: not asked again.
         unsupported = (503, {"error": "host_unsupported"}, {})
         host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, before=[unsupported],
-                                patience=1.0)
+                                patience=host_context.PATIENCE_S)
         assert host is None and len(requests) == 1
     finally:
         logger.remove(sink)
-    assert any("asking again in 0.1s" in w for w in seen), seen
+    assert any("asking again in 1s" in w for w in seen), seen
 
 
 def test_a_gateway_not_listening_yet_is_asked_again(monkeypatch):

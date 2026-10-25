@@ -346,7 +346,7 @@ async def run_relay_bot(websocket: WebSocket):
     #     (host_context.fetch: loopback, milliseconds, bounded by its FETCH_TIMEOUT_S), the
     #     agent paragraph and profile the phone gets too, under the front end's name. A
     #     gateway not up yet is asked again for as long as the session can wait: a few
-    #     seconds for a wake session opening asleep, about one for anyone else
+    #     seconds for a wake session opening asleep, about two for anyone else
     #     (host_context.PATIENCE_*). The room's bridge sends no mic audio until the hello,
     #     so nothing is lost meanwhile.
     # A refused connection never gets here.
