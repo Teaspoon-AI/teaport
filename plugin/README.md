@@ -59,9 +59,9 @@ The frame always goes out, empty or not: `session_config=1` on the URL tells the
 to wait for it, so it must always come. The brain starts the session's system prompt
 with the instructions as sent, then its own voice rules, and gives its language model
 OpenClaw's `openclaw_agent_consult` schema from the tool list. It does not offer
-`openclaw_agent_control`: the relay shows that call as a card and runs nothing, and
-spoken run control (status, cancel) already acts on the user's transcripts the brain
-sends. A brain that gets no flag (another client) builds its own prompt, as before.
+`openclaw_agent_control`: the relay already acts on spoken run control (status, cancel,
+redirect) from the user's transcripts the brain sends, and a model call to the control
+tool, which the Control UI executes, would act a second time. A brain that gets no flag (another client) builds its own prompt, as before.
 
 ### Why `brain` must be `"agent-consult"`
 

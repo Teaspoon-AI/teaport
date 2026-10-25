@@ -1183,14 +1183,16 @@ def build_tools_schema(ctx: ToolContext | None = None) -> ToolsSchema:
 
 # The host's tools the model is NOT offered, and why. openclaw_agent_control (OpenClaw's
 # REALTIME_VOICE_AGENT_CONTROL_TOOL: status, cancel or redirect a running consult) comes
-# with every Talk session, but the relay only shows a call to it as a card: nothing runs
-# it (its onToolCall executes openclaw_agent_consult alone). Spoken run control already
-# happens on the user's final transcripts the brain sends, through the relay's own
-# classifier. Offered, the model would "cancel" or "redirect" into nothing. When the relay
-# executes it, offer it and retire the brain's own control path (issue #230, open
-# question 2).
+# with every Talk session. The relay itself does not run it -- its onToolCall runs
+# openclaw_agent_consult alone -- but the Control UI does, from the tool.call event
+# (talk.session.steer). Meanwhile the relay already acts on spoken run control: its
+# classifier reads every final user transcript the brain sends (runControl.handleSpoken)
+# and cancels or steers the running consult itself. A model-issued control call would act
+# a second time on the same words, and nothing dedups the two (issue #230, comment of the
+# 2026.9.7 source check).
 _HOST_TOOLS_NOT_OFFERED = {
-    "openclaw_agent_control": "the relay does not run it; run control acts on transcripts",
+    "openclaw_agent_control": "the relay already acts on spoken run control; a model call "
+                              "would cancel or steer a second time",
 }
 
 

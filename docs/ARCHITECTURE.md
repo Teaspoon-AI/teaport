@@ -51,8 +51,8 @@ operator's `talk.realtime.instructions`, the agent paragraph and the IDENTITY / 
   `?session_config=1`. The brain reads it before it builds the session: the system
   prompt starts with those instructions as sent, followed by the brain's voice rules,
   and the model's consult tool takes OpenClaw's schema. `openclaw_agent_control` is
-  not offered: the relay runs nothing for it, and spoken run control acts on the
-  transcripts the brain sends. A client that announces no `session_config` gets the
+  not offered: the relay already acts on spoken run control from the transcripts the
+  brain sends, and a model call to it (which the Control UI executes) would act twice. A client that announces no `session_config` gets the
   brain's own persona, as before.
 - **Room mic and phone.** For now, the brain's own persona (the OpenClaw workspace
   files, or `TEAPORT_PERSONA_FILE`) and its copy of OpenClaw's consult schema
