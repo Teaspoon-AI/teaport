@@ -3,12 +3,11 @@
 #
 # The voice brain's system prompt is composed as:   persona  +  voice_overlay()
 #
-#   persona        — the assistant's IDENTITY / "soul". Single source of truth is a
-#                    shared file (TEAPORT_PERSONA_FILE, default
-#                    ~/.config/teaport/persona.md) that the OpenClaw *text* agent can
-#                    read too, so a user who talks hears the same assistant they text.
-#                    If the file is missing/empty we fall back to FALLBACK_PERSONA so
-#                    the realtime loop never hard-fails on a persona lookup.
+#   persona        — the assistant's IDENTITY / "soul": what OpenClaw composes for a
+#                    voice surface (host_context.py), else the shared file
+#                    TEAPORT_PERSONA_FILE (default ~/.config/teaport/persona.md). If the
+#                    file is missing/empty we fall back to FALLBACK_PERSONA so the
+#                    realtime loop never hard-fails on a persona lookup.
 #   voice_overlay() — delivery-only, voice-surface mechanics that must NOT leak into
 #                    the text agent: which local tools exist, spell-out-numbers,
 #                    one-to-two spoken sentences, and the heard-grounding /
@@ -22,16 +21,15 @@
 # (agent_backend.py): with a gateway it names web_search / search_memory /
 # openclaw_agent_consult and how to use them; without one it names only the local tools and
 # says plainly what the assistant cannot do, so the model does not promise a lookup it
-# cannot make. The delivery paragraphs are shared verbatim. Without a gateway the persona
-# comes from TEAPORT_PERSONA_FILE and the OpenClaw workspace is never read.
+# cannot make. The delivery paragraphs are shared verbatim.
 #
 # Splitting persona out of the old monolithic SYSTEM_PROMPT is what lets OpenClaw
-# own identity while Pipecat keeps the tuned voice mechanics. Where the host composes the
-# voice context itself (a Talk session: OpenClaw's req.instructions, host_context.py),
-# that text takes the persona's place, as sent, and nothing here is read.
+# own identity while Pipecat keeps the tuned voice mechanics. OpenClaw composes the
+# identity part itself (host_context.py): a Talk session's req.instructions, and for the
+# room mic and the phone the agent paragraph and profile its teaport plugin builds with
+# the SDK. That text takes the persona's place, as sent. The persona file is read only
+# without it: TEAPORT_AGENT=none, or a gateway that cannot answer.
 #
-import os
-
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.settings import setting
 
@@ -135,10 +133,10 @@ _DELIVERY = (
     # a single word of them was heard. tts_text._LIST_MARKER strips the marks that arrive
     # anyway; this is the half that keeps the SHAPE conversational, which no strip can.
     #
-    # The last sentence is about prompt dilution: identity is loaded live from the
-    # OpenClaw workspace (SOUL/IDENTITY/USER/MEMORY.md), which is markdown by nature —
-    # 3322 chars of headings and bullets on that call — so the model reads a formatted
-    # document and then, a page later, is told not to write one.
+    # The last sentence is about prompt dilution: identity comes from OpenClaw's profile
+    # files (IDENTITY/USER/SOUL.md; the workspace was read directly then), which are
+    # markdown by nature — 3322 chars of headings and bullets on that call — so the model
+    # reads a formatted document and then, a page later, is told not to write one.
     "Answer in one or two short spoken sentences. You are speaking, not writing: never "
     "use markdown, headings, bullet points, numbered lists, or emojis — the voice reads "
     "those marks aloud. When the answer is list-shaped, say the two or three items that "
@@ -247,45 +245,12 @@ def tools_paragraph(tools) -> str:
 PERSONA_FILE = setting("TEAPORT_PERSONA_FILE")
 
 
-# --- OpenClaw workspace context. Read the same files the OpenClaw text agent gets
-# injected, LIVE from its workspace, so an identity or user-context edit on the text
-# side is heard on the voice side at the next session — no more stale persona.md copy.
-# Deliberately NOT included by default: AGENTS.md / TOOLS.md / HEARTBEAT.md —
-# text-surface delivery mechanics; the tuned VOICE_OVERLAY owns delivery on this
-# surface and the two would fight. (Note: IDENTITY.md is agent-writable by design —
-# the agent updates its own identity in conversation — so whatever lands there is
-# injected here too; that's the intended shared-identity behavior per the user.)
-WORKSPACE_DIR = setting("OPENCLAW_WORKSPACE")
-WORKSPACE_FILES = [f.strip() for f in setting("TEAPORT_WORKSPACE_FILES").split(",") if f.strip()]
-# One runaway file (e.g. a fast-growing MEMORY.md) must not eat the prompt budget —
-# prompt tokens are prefill latency on every turn.
-_WORKSPACE_FILE_CAP = 16 * 1024
-
-
-def load_workspace_context() -> str:
-    """Concatenate the configured OpenClaw workspace files (each is a markdown
-    section with its own heading). Missing/empty files are skipped silently —
-    the caller falls back to the persona file, then FALLBACK_PERSONA."""
-    sections = []
-    for name in WORKSPACE_FILES:
-        try:
-            with open(os.path.join(WORKSPACE_DIR, name), encoding="utf-8") as f:
-                text = f.read(_WORKSPACE_FILE_CAP).strip()
-        except OSError:
-            continue
-        if text:
-            sections.append(text)
-    return "\n\n".join(sections)
-
-
 def load_persona() -> str:
-    """The shared identity + context text. With a gateway, prefers the live OpenClaw
-    workspace files (the same ones the text agent reads); without one there is no
-    workspace and TEAPORT_PERSONA_FILE is the source. Falls back to the baked-in
-    FALLBACK_PERSONA, so the voice loop never hard-fails."""
-    ws = load_workspace_context() if HAS_AGENT else ""
-    if ws:
-        return ws
+    """The persona when the host gave no voice context: TEAPORT_PERSONA_FILE (the source
+    with TEAPORT_AGENT=none, and the fallback when the gateway cannot answer), else the
+    baked-in FALLBACK_PERSONA, so the voice loop never hard-fails. The OpenClaw
+    workspace is never read here: OpenClaw composes its own profile text for a voice
+    surface (host_context.py)."""
     try:
         with open(PERSONA_FILE, encoding="utf-8") as f:
             text = f.read().strip()

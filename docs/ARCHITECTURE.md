@@ -54,9 +54,16 @@ operator's `talk.realtime.instructions`, the agent paragraph and the IDENTITY / 
   not offered: the relay already acts on spoken run control from the transcripts the
   brain sends, and a model call to it (which the Control UI executes) would act twice. A client that announces no `session_config` gets the
   brain's own persona, as before.
-- **Room mic and phone.** For now, the brain's own persona (the OpenClaw workspace
-  files, or `TEAPORT_PERSONA_FILE`) and its copy of OpenClaw's consult schema
-  (`tools.OPENCLAW_AGENT_CONSULT`).
+- **Room mic and phone.** At the start of each session the brain asks the gateway's
+  teaport plugin (`GET /teaport/voice-context`, gateway auth with the brain's token;
+  `plugin/voice-context.js`). The plugin builds the text the way OpenClaw's own phone
+  surface does, with the SDK: the agent paragraph and the IDENTITY / USER / SOUL
+  profile, at most 6,000 characters, plus the consult tool. The brain's voice rules
+  follow it. The brain never reads the OpenClaw workspace itself.
+- **No context.** With `TEAPORT_AGENT=none`, or a gateway that cannot answer
+  (starting, restarting, an older plugin or OpenClaw), the session uses
+  `TEAPORT_PERSONA_FILE` (else a built-in persona) and the brain's copy of OpenClaw's
+  consult schema (`tools.OPENCLAW_AGENT_CONSULT`), with a warning in the journal.
 
 The consult is OpenClaw's `openclaw_agent_consult` on every front end; the relay runs
 it in-process on Talk, and the gateway's agent lane runs it otherwise.

@@ -63,6 +63,24 @@ OpenClaw's `openclaw_agent_consult` schema from the tool list. It does not offer
 redirect) from the user's transcripts the brain sends, and a model call to the control
 tool, which the Control UI executes, would act a second time. A brain that gets no flag (another client) builds its own prompt, as before.
 
+### The room mic and the phone
+
+The box's own microphone and its phone line reach the brain without OpenClaw's Talk
+relay, so the brain asks the plugin for their context at the start of each session:
+
+```
+GET /teaport/voice-context?front_end=room|sip     (gateway auth: the gateway token)
+-> 200 {"version": 1, "agentId": "...", "instructions": "...", "tools": [...], "openclawVersion": "..."}
+-> 503 {"error": "host_unsupported" | "agent_unresolved" | "context_unavailable"}
+```
+
+The plugin builds it with OpenClaw's SDK the way OpenClaw's own phone surface
+(voice-call) does: `resolveRealtimeVoiceAgentContextInstructions` for the default
+agent (the agent paragraph and the IDENTITY / USER / SOUL profile, at most 6,000
+characters, no session key) and `REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
+it with its own voice rules. On any failure (the gateway starting or restarting
+answers 503) the brain uses its persona file instead and logs a warning.
+
 ### Why `brain` must be `"agent-consult"`
 
 It is the default: with no `brain` in the config, `talk.client.create` uses

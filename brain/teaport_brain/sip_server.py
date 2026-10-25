@@ -99,6 +99,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from teaport_brain import reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
+from teaport_brain import host_context
 from teaport_brain.settings import setting
 from teaport_brain import agent_backend, audio_dump, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
@@ -845,6 +846,10 @@ async def run_connection(sock, on_ready=None):
             reply_hold_enabled=reply_hold.SIP_ENABLED,
             # The phone's own turn-taking (SIP_* over the shared knobs).
             front_end="sip",
+            # What OpenClaw tells a voice surface, from the gateway's teaport plugin
+            # (host_context.fetch: loopback, milliseconds; None falls back to the persona
+            # file, with a warning).
+            host=await host_context.fetch("sip"),
         )
         if half_duplex is not None:
             half_duplex.thinking_sound = session.thinking_sound

@@ -1727,8 +1727,9 @@ phase_services() {
     "KOKORO_RESERVE_FPT=$fpt" "ENGINE_PORT=$ENGINE_PORT" "ENGINE_DELAY=480" "TTS_CTX=192" \
     "VOX_REQUIRE_DICT_G2P=1"
   # TEAPORT_AGENT tells the brain what this fork already knows: with a gateway (host
-  # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and reads
-  # the workspace persona; voice-only it advertises the local tools alone and reads
+  # OpenClaw or the sandbox) it advertises the gateway tools, runs memory recall and takes
+  # OpenClaw's voice context (identity and profile); voice-only it advertises the local
+  # tools alone and reads
   # TEAPORT_PERSONA_FILE. Before this the brain assumed a gateway on every box and a
   # voice-only one spent every turn on tools and a recall that had nothing to answer.
   #
@@ -1753,7 +1754,7 @@ phase_services() {
     "GATEWAY_TOKEN=$GATEWAY_TOKEN" "MALLOC_ARENA_MAX=2" "HF_HUB_OFFLINE=1"
 
   # TEAPORT_PERSONA_FILE points here, but nothing else ever creates it: without this a
-  # voice-only box (and a gateway box whose workspace has nothing) reads a file that
+  # voice-only box (and a gateway box whose gateway cannot answer) reads a file that
   # does not exist, load_persona() silently falls through to the baked-in
   # FALLBACK_PERSONA, and the box quietly ships the generic assistant instead of the
   # editable one docs/FAQ.md says it reads. Seed it once with that same text — never

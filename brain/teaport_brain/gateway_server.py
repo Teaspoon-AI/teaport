@@ -327,29 +327,32 @@ async def run_relay_bot(websocket: WebSocket):
         await _refuse(websocket, refusal, speak=speak_refusal, room=room,
                       voice=qp.get("voice"), language=qp.get("language"))
         return
-    # What OpenClaw composed for this Talk session (host_context.py) is read BEFORE
+    # What OpenClaw tells this voice session (host_context.py) is in hand BEFORE
     # build_agent_session: its instructions start the system prompt, and its consult
     # schema is the one the model gets. So the order is read, build, hello. The hello
     # carries the session's note limits, so it cannot go before the build, and the build
-    # cannot go before the frame; what its early send is for -- going out before the
+    # cannot go before the context; what its early send is for -- going out before the
     # arbiter's grant and the pipeline start, the waits that could hold it past the
-    # plugin's deadline -- is kept. The read adds next to nothing: the plugin sends the
-    # frame in its open handler, ahead of any audio, so it is normally already buffered,
-    # and SESSION_CONFIG_WAIT_SECS bounds it well inside the plugin's 15 s wait for the
-    # hello (plugin/context.js). Only with ?session_config=1, which promises the frame:
-    # without it nothing is waited for. Only a Talk connection: the room mic's bridge is
-    # not OpenClaw and sends none (the room gets the host's text in #230's Phase 3, through
-    # build_agent_session(host=) the same way). A refused connection never gets here.
+    # client's deadline -- is kept.
+    #   Talk: the session_config frame the plugin sends in its open handler, ahead of any
+    #     audio, when it announces ?session_config=1, so normally already buffered;
+    #     SESSION_CONFIG_WAIT_SECS bounds it well inside the plugin's 15 s wait for the
+    #     hello (plugin/context.js). Without the flag nothing is waited for.
+    #   room: the plugin's voice-context route on the gateway (host_context.fetch: loopback,
+    #     milliseconds, bounded by its FETCH_TIMEOUT_S; the bridge sends no mic audio
+    #     until the hello, so nothing is lost meanwhile).
+    # A refused connection never gets here.
     host = None
-    if not room:
-        if qp.get("session_config") == host_context.PROTOCOL:
-            host = await _read_session_config(websocket)
-            if host is False:
-                logger.info("Talk client left before its session_config arrived")
-                return
-        else:
-            logger.info("Talk client sent no session_config (a plugin before #230, or not "
-                        "OpenClaw) — no host instructions; the brain's own persona")
+    if room:
+        host = await host_context.fetch("room")
+    elif qp.get("session_config") == host_context.PROTOCOL:
+        host = await _read_session_config(websocket)
+        if host is False:
+            logger.info("Talk client left before its session_config arrived")
+            return
+    else:
+        logger.info("Talk client sent no session_config (a plugin before #230, or not "
+                    "OpenClaw) — no host instructions; the brain's own persona")
     if gate is not None and awake:
         gate.store.clear()  # a fresh conversation, by request
     transport = FastAPIWebsocketTransport(

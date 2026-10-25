@@ -90,20 +90,25 @@ def test_the_gateway_overlay_is_untouched():
     assert persona.VOICE_OVERLAY_LOCAL.endswith(shared)
 
 
-def test_the_persona_comes_from_the_persona_file_not_the_workspace():
+def test_the_persona_comes_from_the_persona_file():
+    # Never the OpenClaw workspace: the brain reads none of its files (OpenClaw composes
+    # the voice context, host_context.py), and without a gateway nothing is asked.
+    assert not hasattr(persona, "load_workspace_context")
     with tempfile.TemporaryDirectory() as d:
-        ws = os.path.join(d, "workspace")
-        os.makedirs(ws)
-        with open(os.path.join(ws, "SOUL.md"), "w") as f:
-            f.write("# WORKSPACE SOUL\n")
         pf = os.path.join(d, "persona.md")
         with open(pf, "w") as f:
             f.write("PERSONA FILE\n")
-        persona.WORKSPACE_DIR, persona.PERSONA_FILE = ws, pf
-        assert persona.load_persona() == "PERSONA FILE", (
-            "without a gateway the workspace files are not the persona source")
+        persona.PERSONA_FILE = pf
+        assert persona.load_persona() == "PERSONA FILE"
         os.remove(pf)
         assert persona.load_persona() == persona.FALLBACK_PERSONA
+
+
+def test_no_gateway_is_asked_for_a_voice_context():
+    import asyncio
+
+    from teaport_brain import host_context
+    assert asyncio.run(host_context.fetch("room")) is None
 
 
 class _Stub(FrameProcessor):

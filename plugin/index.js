@@ -38,6 +38,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { TalkSessions, contextMethods } from "./context.js";
 import { buildTeaportRealtimeProvider } from "./provider.js";
+import { VOICE_CONTEXT_PATH, voiceContextHandler } from "./voice-context.js";
 
 // The gateway connection a request came in on. createBridge runs inside the client's
 // talk.session.create request, so this names the connection that owns the session
@@ -124,6 +125,22 @@ export default definePluginEntry({
       for (const [method, handler] of Object.entries(contextMethods(sessions))) {
         api.registerGatewayMethod(method, handler, { scope: "operator.talk" });
       }
+    }
+    // The voice context for the brain's room mic and phone line (voice-context.js): what
+    // OpenClaw tells a voice surface, built with the SDK, served over the gateway's HTTP
+    // port behind its normal auth (the brain's bearer token). Config and version are read
+    // per request, like the version above: api.runtime is built lazily.
+    if (typeof api.registerHttpRoute === "function") {
+      api.registerHttpRoute({
+        path: VOICE_CONTEXT_PATH,
+        auth: "gateway",
+        match: "exact",
+        handler: voiceContextHandler({
+          config: () => api.runtime?.config?.current?.(),
+          version: () => api.runtime?.version,
+          log: api.logger,
+        }),
+      });
     }
   },
 });

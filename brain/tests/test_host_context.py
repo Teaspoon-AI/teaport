@@ -264,6 +264,12 @@ def _run_talk(query, frames, *, wait=None):
     async def send_text(text):
         order.append(json.loads(text)["type"])
 
+    async def fetch(front_end):
+        order.append(f"fetch:{front_end}")
+        return ROOM_HOST
+
+    saved_fetch = gs.host_context.fetch
+    gs.host_context.fetch = fetch
     saved = {k: getattr(gs, k) for k in
              ("FastAPIWebsocketTransport", "build_agent_session", "PipelineRunner",
               "SESSION_CONFIG_WAIT_SECS")}
@@ -281,7 +287,12 @@ def _run_talk(query, frames, *, wait=None):
         for k, v in saved.items():
             setattr(gs, k, v)
         gs.arb.ARBITER = saved_arbiter
+        gs.host_context.fetch = saved_fetch
     return order, (built or None)
+
+
+# What the plugin's voice-context route gives the room (synthetic).
+ROOM_HOST = host_context.HostContext(instructions="Agent context: synthetic room text.")
 
 
 def _text(msg):
@@ -299,9 +310,12 @@ def test_without_the_flag_the_brain_never_waits():
     order, built = _run_talk({"captions": "2"}, [_text(FRAME)])
     assert "receive" not in order, order
     assert built["host"] is None
-    # Nor for the room mic, whatever it says: its bridge is not OpenClaw.
+    # Nor for the room mic, whatever it says: its bridge is not OpenClaw. The room asks
+    # the gateway's teaport plugin instead (host_context.fetch), before the build.
     order, built = _run_talk({"features": "local", "session_config": "1"}, [_text(FRAME)])
-    assert "receive" not in order and built["host"] is None, order
+    assert "receive" not in order, order
+    assert order[:3] == ["fetch:room", "build", "hello"], order
+    assert built["host"] is ROOM_HOST
 
 
 def test_a_frame_that_does_not_come_as_promised_builds_without_it():
@@ -317,6 +331,99 @@ def test_a_frame_that_does_not_come_as_promised_builds_without_it():
 def test_a_client_that_leaves_while_the_brain_waits_gets_no_session():
     order, built = _run_talk({"session_config": "1"}, [{"type": "websocket.disconnect"}])
     assert order == ["receive"] and built is None, order
+
+
+# ------------------------------------------------------------------ the room and phone fetch
+
+class _Gateway:
+    """A loopback HTTP server playing the gateway's /teaport/voice-context route."""
+
+    def __init__(self, status, body):
+        import http.server
+        import threading
+
+        gw = self
+        self.requests = []
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):  # noqa: N802
+                gw.requests.append((self.path, self.headers.get("Authorization")))
+                data = body if isinstance(body, bytes) else json.dumps(body).encode()
+                self.send_response(status)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+
+            def log_message(self, *a):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self.url = f"http://127.0.0.1:{self.server.server_address[1]}"
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+
+    def close(self):
+        self.server.shutdown()
+        self.server.server_close()
+
+
+def _fetch(monkeypatch, status, body, front_end="sip", token="tok-1"):
+    from teaport_brain import openclaw_client as oc
+
+    gw = _Gateway(status, body)
+    try:
+        monkeypatch.setattr(oc, "GATEWAY_URL", gw.url)
+        monkeypatch.setattr(oc, "_token", lambda: token)
+        monkeypatch.setattr(host_context, "HAS_AGENT", True)
+        host = asyncio.run(host_context.fetch(front_end))
+    finally:
+        gw.close()
+    return host, gw.requests
+
+
+ROUTE_BODY = {"version": 1, "agentId": "main", "openclawVersion": "2026.9.7",
+              "instructions": "Agent context: synthetic.\n\n### IDENTITY.md\nName: Test",
+              "tools": [HOST_CONSULT]}
+
+
+def test_the_room_and_phone_ask_the_plugin_with_the_gateway_token(monkeypatch):
+    host, requests = _fetch(monkeypatch, 200, ROUTE_BODY, front_end="sip")
+    assert requests == [("/teaport/voice-context?front_end=sip", "Bearer tok-1")]
+    assert host == host_context.HostContext(instructions=ROUTE_BODY["instructions"],
+                                            tools=(HOST_CONSULT,))
+
+
+def test_a_gateway_that_cannot_answer_falls_back_with_a_warning(monkeypatch):
+    from loguru import logger
+
+    warnings = []
+    sink = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
+    try:
+        # Starting or restarting (503), an OpenClaw without the SDK, a plugin before the
+        # route (404 with no JSON), an unknown response version.
+        for status, body in [(503, {"error": "host_unsupported"}), (404, b"not found"),
+                             (200, dict(ROUTE_BODY, version=2))]:
+            host, _ = _fetch(monkeypatch, status, body)
+            assert host is None, (status, body)
+        # Nothing listening at all.
+        from teaport_brain import openclaw_client as oc
+        gw = _Gateway(200, ROUTE_BODY)
+        url = gw.url
+        gw.close()
+        monkeypatch.setattr(oc, "GATEWAY_URL", url)
+        assert asyncio.run(host_context.fetch("room")) is None
+        # No token: nothing is sent.
+        assert _fetch(monkeypatch, 200, ROUTE_BODY, token=None) == (None, [])
+    finally:
+        logger.remove(sink)
+    assert len(warnings) == 5, warnings
+    assert all("persona file" in w for w in warnings), warnings
+    assert any("503 (host_unsupported)" in w for w in warnings), warnings
+
+
+def test_without_a_gateway_nothing_is_asked(monkeypatch):
+    monkeypatch.setattr(host_context, "HAS_AGENT", False)
+    assert asyncio.run(host_context.fetch("room")) is None
 
 
 # ------------------------------------------------------------------ one name
