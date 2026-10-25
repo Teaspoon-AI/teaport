@@ -720,8 +720,8 @@ class BargeInJudgeGate(FrameProcessor):
                 if self._deadline - time.monotonic() >= _REASK_MIN_S:
                     self._ask(self._said)
                     return
-                verdict = None
-            if verdict == CONTINUE:
+                await self._release("they said more, with no time left to ask again")
+            elif verdict == CONTINUE:
                 await self._carry_on(said)
             else:
                 await self._release(f"verdict {verdict or 'none'}")
