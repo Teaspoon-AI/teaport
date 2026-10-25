@@ -93,7 +93,9 @@ _TRIGGER = {"openclaw_agent_consult"}
 # and the brain's wait (tools.CONTROL_TIMEOUT_S) ran out on a steer that had already
 # acted. The typing goes on unheard while one waits (the face keeps typing), until its
 # result or its cancel, or _CONTROL_MAX_S, past the brain's own wait, should neither
-# come by here.
+# come by here. After a cancel (a barge-in) the brain may still wait for the result off
+# the turn (tools._ask_client's after_cancel) while the typing is heard again: that wait
+# is not kept quiet, and a result held past its end says nothing.
 _CONTROL = {"openclaw_agent_control"}
 _CONTROL_MAX_S = 15.0
 # A consult's typing never outlives this, whatever its end (its answer is due within

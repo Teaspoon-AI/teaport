@@ -630,6 +630,10 @@ async def _consult_progress(llm, request=None, gate=None):
             # rather than force it over whoever is talking.
             if gate is not None and not await gate.wait_until_idle(max_wait=_PROGRESS_GAP_WAIT):
                 continue
+            # Nor while a tool call waits: a control call's result is held behind any
+            # audio playing (CONTROL_TIMEOUT_S's comment).
+            if gate is not None and gate.calls_out:
+                continue
             # append_to_context=False: a filler is audio-only UX. Committed to the
             # LLM context it becomes the tail assistant message, which is exactly
             # where HeardContextCorrector's positional anchor looks for a cut
@@ -1110,14 +1114,17 @@ def _client_tool(name: str):
 # has finished (gateway-relay.ts submitToolResult: outputPlaybackDelayMs, re-checked when
 # it runs out), the steer itself waits on the run's queue, and a relay that is cancelling
 # a response drops the result outright. What can play meanwhile is short: the run's door
-# and ClientNotes stay shut while a call is out (followup_gate._calls_out), so no landed
-# answer, progress line or host note starts; a line the model said before the call (its
-# rules say call straight away) is a sentence; and the typing bed, which would keep the
-# queue busy for as long as it types, goes unheard while a control call waits
-# (thinking_sound, _CONTROL). Past the bound the steer may still have acted -- it runs
-# before the result is held -- so the model is told it could not be confirmed, not that
-# nothing changed; only a call that never went out, or one the client refused, changed
-# nothing.
+# and ClientNotes stay shut while a call is out (followup_gate._calls_out), and the
+# consult narrator skips its line then (FollowupGate.calls_out), so no landed answer,
+# progress line or host note starts; a line the model said before the call (its rules
+# say call straight away) is a sentence; and the typing bed, which would keep the queue
+# busy for as long as it types, goes unheard while a control call waits (thinking_sound,
+# _CONTROL). Past the bound the steer may still have acted -- it runs before the result
+# is held -- so the model is told it could not be confirmed, not that nothing changed;
+# only a call that never went out, or one the client refused, changed nothing. All of
+# that is the call's own wait: once a barge-in has cancelled it, the wait off the turn
+# keeps nothing quiet (the call is no longer out, and the typing may be heard again),
+# and a result held past its end says nothing.
 CONTROL_TIMEOUT_S = 10.0
 CONTROL_CALL_PREFIX = "teaport-control-"
 _CONTROL_MODES = ("status", "steer", "cancel", "followup")

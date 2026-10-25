@@ -384,6 +384,12 @@ class FollowupGate(FrameProcessor):
         """The debounce: how long a quiet moment must last to count as a window."""
         return self._quiet_secs
 
+    @property
+    def calls_out(self) -> bool:
+        """A tool call is waiting for its result (the consult narrator skips its line
+        then: a control call's result waits behind any audio, tools.CONTROL_TIMEOUT_S)."""
+        return bool(self._calls_out)
+
     def is_clear(self) -> bool:
         """Idle, no turn in flight and no window claimed, right now -- undebounced, so a
         snapshot for reporting, not a moment to act in (wait_until_idle(turn_free=True)
@@ -857,8 +863,8 @@ class FollowupGate(FrameProcessor):
         one so it fits into a gap or gives up quickly; a client note's waits pass
         their reaction's deadline, or wait again on False. `turn_free=True`
         additionally waits for no TURN to be in flight (see the class docstring) --
-        ClientNotes' setting; the narrator leaves it False so it can
-        speak during a tool call's silence. A True with turn_free=True also CLAIMS the
+        ClientNotes' setting; the narrator leaves it False (it skips its
+        line while a call is out, calls_out, by itself). A True with turn_free=True also CLAIMS the
         window (class docstring): the caller queues its completion, or calls
         release_claim() if it decides not to. Cancellation propagates (session
         teardown).
