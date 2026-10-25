@@ -249,6 +249,11 @@ test("a host that composed nothing still gets an empty session_config frame", as
   assert.deepEqual(FakeWebSocket.last.sent, [{ type: "session_config", instructions: "", tools: [] }]);
 });
 
+test("the provider declares tool calls, so talk.catalog lists the agent-consult brain", () => {
+  const { provider } = setup();
+  assert.equal(provider.capabilities.supportsToolCalls, true);
+});
+
 // ── before the brain is ready (#71: "connecting" is not "unsupported") ─────────────
 
 test("before the brain says ready a note is refused as connecting and never sent", async () => {

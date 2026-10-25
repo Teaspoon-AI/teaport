@@ -69,7 +69,7 @@ def test_defaults_keep_todays_tools_and_offer_client_tools_only_when_announced(m
     everything = _names(tools.active_tools(tools.ToolContext(
         has_tts=True, client_features=ALL_FEATURES)))
     assert everything == base + ["set_volume", "end_conversation"]
-    gateway = {"web_search", "web_fetch", "search_memory", "remember", "ask_openclaw"}
+    gateway = {"web_search", "web_fetch", "search_memory", "remember", "openclaw_agent_consult"}
     if HAS_AGENT:
         assert gateway <= set(base)
     else:
@@ -254,14 +254,14 @@ def test_the_agent_first_directive_names_the_sessions_direct_tools():
     assert agent_first_directive([]) == AGENT_FIRST_DIRECTIVE
 
 
-def test_agent_first_is_ignored_while_ask_openclaw_is_switched_off():
+def test_agent_first_is_ignored_while_openclaw_agent_consult_is_switched_off():
     import subprocess
     import sys
     env = dict(os.environ, TEAPORT_AGENT="openclaw", TEAPORT_AGENT_FIRST="1")
     probe = "from teaport_brain import tools; print(tools.AGENT_FIRST)"
     for switch, expected in (("0", "False"), ("1", "True")):
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
-                             env=dict(env, TEAPORT_TOOL_ASK_OPENCLAW=switch), timeout=120)
+                             env=dict(env, TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT=switch), timeout=120)
         assert out.stdout.strip().splitlines()[-1] == expected, (switch, out.stderr[-500:])
 
 

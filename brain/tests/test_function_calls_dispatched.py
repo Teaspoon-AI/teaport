@@ -43,7 +43,7 @@ def _llm():
     )
 
 
-def _call(name="cancel_ask_openclaw"):
+def _call(name="cancel_openclaw_agent_consult"):
     return FunctionCallFromLLM(context=None, tool_call_id="t1", function_name=name,
                                 arguments={})
 
@@ -70,7 +70,7 @@ async def test_dispatched_frame_is_broadcast_for_a_cancel_only_call():
 
     dispatched = [f for f, _ in pushed if isinstance(f, FunctionCallsDispatchedFrame)]
     assert len(dispatched) == 2, "broadcast_frame must push one copy each direction"
-    assert [c.function_name for c in dispatched[0].function_calls] == ["cancel_ask_openclaw"]
+    assert [c.function_name for c in dispatched[0].function_calls] == ["cancel_openclaw_agent_consult"]
 
 
 async def test_dispatched_frame_precedes_the_real_dispatch():

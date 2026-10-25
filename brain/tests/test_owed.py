@@ -99,7 +99,7 @@ def tool_round(key="call-hn", request=HN_REQ, placeholder=None):
         {"role": "user", "content": "Can you look up what the top story on Hacker News is?"},
         {"role": "assistant", "content": None, "tool_calls": [
             {"id": key, "type": "function",
-             "function": {"name": "ask_openclaw", "arguments": json.dumps({"request": request})}}]},
+             "function": {"name": "openclaw_agent_consult", "arguments": json.dumps({"question": request})}}]},
         {"role": "tool", "tool_call_id": key,
          "content": placeholder or json.dumps({"status": "working_in_background"})},
     ]
@@ -900,7 +900,7 @@ def lighthouse_book(gist, **kw):
             {"role": "user", "content": LH_ASKED},
             {"role": "assistant", "content": None, "tool_calls": [
                 {"id": "call-lh", "type": "function", "function": {
-                    "name": "ask_openclaw", "arguments": json.dumps({"request": LH_REQ})}}]},
+                    "name": "openclaw_agent_consult", "arguments": json.dumps({"question": LH_REQ})}}]},
             {"role": "tool", "tool_call_id": "call-lh",
              "content": json.dumps({"status": "working_in_background"})}]
     b, ctx, gate = book(msgs=msgs, gist=gist, **kw)

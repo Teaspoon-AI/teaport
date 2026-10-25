@@ -26,7 +26,7 @@ Configure in `~/.openclaw/openclaw.json`:
     "provider": "teaport",
     "mode": "realtime",
     "transport": "gateway-relay",
-    "brain": "agent-consult",               // required — see the note below
+    "brain": "agent-consult",               // the default; never "none" — see the note below
     "providers": { "teaport": {
       "url": "ws://127.0.0.1:7861/talk",    // the teaport brain's /talk WS
       "voice": "af_heart",                   // optional: a voice id the engine provides
@@ -57,10 +57,17 @@ opens, before any audio, the plugin sends them as one frame:
 
 The frame always goes out, empty or not: `session_config=1` on the URL tells the brain
 to wait for it, so it must always come. The brain starts the session's system prompt
-with the instructions as sent, then its own voice rules. A brain that gets no flag
-(another client) builds its own prompt, as before.
+with the instructions as sent, then its own voice rules, and gives its language model
+OpenClaw's `openclaw_agent_consult` schema from the tool list. It does not offer
+`openclaw_agent_control`: the relay shows that call as a card and runs nothing, and
+spoken run control (status, cancel) already acts on the user's transcripts the brain
+sends. A brain that gets no flag (another client) builds its own prompt, as before.
 
 ### Why `brain` must be `"agent-consult"`
+
+It is the default: with no `brain` in the config, `talk.client.create` uses
+`"agent-consult"`, and `talk.catalog` lists teaport with it because the provider
+declares `supportsToolCalls: true`. Setting it to anything else breaks Talk.
 
 `brain` is OpenClaw's *tool/agent strategy for realtime sessions* — how the session
 reaches tools and the agent. It does **not** decide who speaks: the realtime provider
@@ -73,7 +80,7 @@ Two things require it:
   given and otherwise falls back to this config value, so a Talk UI client — which sends
   none — inherits whatever is set here. With `"none"`, every session fails at creation
   with `talk.client.create only supports brain="agent-consult"`.
-- **It is the path this plugin uses.** The brain's `ask_openclaw` arrives as an
+- **It is the path this plugin uses.** The brain's consult is an
   `openclaw_agent_consult` tool call, which `provider.js` hands to the relay's in-process
   agent-consult machinery (working notices, then a final `submitToolResult` back to the
   brain). With no agent strategy, a consult has nothing to reach.
@@ -183,7 +190,7 @@ in OpenClaw 2026.8.1 and later (and in the 2026.7.2 prereleases) merges assistan
 text differently from user text. It appends each assistant partial as a delta, and
 only a final replaces the bubble. 2026.7.1 and earlier, and the 2026.7.33–7.35
 maintenance releases, replace the bubble with each partial instead; there is no
-2026.7.2 stable release. The package declares `openclaw >=2026.9.0`. The captions
+2026.7.2 stable release. The package declares `openclaw >=2026.9.7`. The captions
 were checked against the Talk view code of 2026.7.1, 2026.7.35 and 2026.9.1. The
 optional `talk.realtime.providers.teaport.assistantTranscripts` setting picks what
 the plugin sends:

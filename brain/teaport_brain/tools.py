@@ -72,8 +72,8 @@ from teaport_brain.settings import setting
 # only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while docs/CONFIG.md
 # promised otherwise; setting() reads it by the documented table.
 AGENT_FIRST = setting("TEAPORT_AGENT_FIRST")
-# Agent-first routes EVERY turn through ask_openclaw; without a gateway that tool is not
-# registered, so the directive would send every turn to a tool that does not exist.
+# Agent-first routes EVERY turn through openclaw_agent_consult; without a gateway that tool
+# is not registered, so the directive would send every turn to a tool that does not exist.
 if AGENT_FIRST and not HAS_AGENT:
     logger.warning("TEAPORT_AGENT_FIRST is on but TEAPORT_AGENT=none — ignoring it "
                    "(agent-first needs a gateway to consult)")
@@ -150,25 +150,36 @@ REMEMBER = FunctionSchema(
     required=["fact"],
 )
 
-ASK_OPENCLAW = FunctionSchema(
-    name="ask_openclaw",
+# The consult: OpenClaw's own tool, by its name and schema, on every front end (#230).
+# OpenClaw hands it to a Talk session with the session (req.tools, the plugin's
+# session_config frame), and a session given it is offered THAT schema
+# (host_tool_schemas below). This is the copy for a session the host gave no tools to --
+# the room mic and the phone, until the plugin serves them the SDK's (issue #230, Phase
+# 3), and a plugin that predates session_config. It is REALTIME_VOICE_AGENT_CONSULT_TOOL
+# from OpenClaw's src/talk/agent-consult-tool.ts (exported from
+# openclaw/plugin-sdk/realtime-voice since 2026.9.7), copied exactly: name, description,
+# parameters. Keep it that way; a wording of our own belongs in the overlay, not here.
+OPENCLAW_AGENT_CONSULT = FunctionSchema(
+    name="openclaw_agent_consult",
     description=(
-        "Hand a request to your full desktop agent (OpenClaw) — every tool, deeper "
-        "thinking — for multi-step or open-ended work your quick tools can't do. It "
-        "also acts on this Discord server for you: post or announce to a channel, run "
-        "a poll, pin a message, read or search recent messages, and check who's in a "
-        "voice channel or what events are on the calendar. It can't change the server "
-        "itself by voice — creating or deleting channels, roles, kicks or bans, or new "
-        "scheduled events — so if the user asks for one of those, say it's a text or "
-        "desktop task. Give a self-contained request, naming the channel in plain "
-        "words (the agent finds the right one). Takes a few seconds; returns the "
-        "agent's answer to summarize aloud."
+        "Delegate the caller's request to the configured OpenClaw agent for normal "
+        "tool-backed work, actions, context, memory, or reasoning before speaking."
     ),
-    properties={"request": {
-        "type": "string",
-        "description": "The full request, self-contained, with any context the agent needs",
-    }},
-    required=["request"],
+    properties={
+        "question": {
+            "type": "string",
+            "description": "The concrete question or task the user asked.",
+        },
+        "context": {
+            "type": "string",
+            "description": "Optional relevant context or transcript summary.",
+        },
+        "responseStyle": {
+            "type": "string",
+            "description": "Optional style hint for the spoken answer.",
+        },
+    },
+    required=["question"],
 )
 
 LIST_VOICES = FunctionSchema(
@@ -289,7 +300,7 @@ _BG: set = set()  # keep refs to background reindex tasks so they aren't GC'd mi
 # Return a tool result WITHOUT triggering another inference pass. Pipecat runs the
 # LLM after every function-call result by default, which is right when the result
 # carries an answer and wrong when it carries a placeholder: the model has nothing
-# to say, so it invents something. Used by the async ask_openclaw path, whose real
+# to say, so it invents something. Used by the async openclaw_agent_consult path, whose real
 # answer lands later (owed.py rewrites the tool result, and its run asks the model
 # then, so inference happens once, on real data).
 #
@@ -410,11 +421,11 @@ _NATIVE_CONSULT_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_TIMEOUT")
 # old 5s was pure dead time added to EVERY delegated action before the CLI
 # fallback even started.
 _NATIVE_CONSULT_ACK_TIMEOUT = setting("TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT")
-# The pipecat function-call timeout for ask_openclaw MUST exceed the handler's own
+# The pipecat function-call timeout for openclaw_agent_consult MUST exceed the handler's own
 # worst case (ACK 5s + native 45s = 50s) or pipecat abandons the call and drops the
 # late-arriving answer. Kept as one knob so the two can't drift. (Only bounds the
 # SYNC path; the ASYNC path returns in <1s — its wait is off the turn.)
-_ASK_OPENCLAW_TIMEOUT = setting("TEAPORT_ASK_OPENCLAW_TIMEOUT")
+_OPENCLAW_AGENT_CONSULT_TIMEOUT = setting("TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT")
 # ASYNC path: the consult runs off the turn as a background task, so it can wait far
 # longer than a voice turn ever could — the answer is told by a run of ours whenever
 # it lands (or an honest "couldn't get it" past this ceiling; owed.py).
@@ -488,9 +499,10 @@ def _topic_phrase(request):
     """A short echo of the request, for the progress line: its opening phrase, cut at
     the first clause boundary or the caps, and never left hanging on a function word.
 
-    It is the MODEL's restatement of what the user asked -- ask_openclaw's `request`
-    argument, which the tool schema asks for as "the full request, self-contained" --
-    not the user's transcript, so it can misname the topic the way any paraphrase can.
+    It is the MODEL's restatement of what the user asked -- openclaw_agent_consult's
+    `question` argument, which the tool schema asks for as "the concrete question or
+    task the user asked" -- not the user's transcript, so it can misname the topic the way
+    any paraphrase can.
     But it is the same text the agent is answering, which is what a status line should
     name. Anything that is not prose (a URL, JSON, code) yields "" and the generic
     line is used instead: nine tokens of that read aloud is worse than "still working
@@ -577,8 +589,11 @@ async def _consult_progress(llm, request=None, gate=None):
         llm._teaport_progress_active = False
 
 
-async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None):
-    """Background waiter for the ASYNC ask_openclaw path. The turn already ended, so
+async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None, gate=None,
+                            message=None):
+    """Background waiter for the ASYNC openclaw_agent_consult path. `request` is the
+    caller's question, `message` the whole call for the CLI lane (_consult_message; the
+    question when not given). The turn already ended, so
     there's no tight voice deadline: wait out the consult, then land its outcome in
     `owed` (the session's owed.Owed): the placeholder tool result is rewritten to it,
     and it is owed to the caller until they hear it. Runs as a session-lifecycle
@@ -640,38 +655,40 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
                 # Never acked — the relay didn't take it; run the CLI agent instead
                 # (still async w.r.t. the turn, which already ended).
                 #
-                # Logged on both sides because this branch used to return in silence.
-                # Every other outcome below says what happened; a consult that took
-                # THIS one left no trace at all. Live 2026-09-10: two consults produced
-                # zero ask_openclaw(async) lines while the caller heard "I haven't heard
-                # back yet", and the real cause — DuckDuckGo serving a bot-detection
-                # challenge to the box, so every web_search 500'd and the consult burned
-                # its budget retrying — took a dig through the gateway journal to find.
-                # One line here would have pointed straight at it.
+                # Logged on both sides because this branch used to return in silence. Every
+                # other outcome below says what happened; a consult that took THIS one left
+                # no trace at all. Live 2026-09-10: two consults produced zero
+                # openclaw_agent_consult(async) lines while the caller heard "I haven't
+                # heard back yet", and the real cause — DuckDuckGo serving a bot-detection
+                # challenge to the box, so every web_search 500'd and the consult burned its
+                # budget retrying — took a dig through the gateway journal to find. One line
+                # here would have pointed straight at it.
                 logger.info(
-                    f"ask_openclaw(async): relay never acked in "
+                    f"openclaw_agent_consult(async): relay never acked in "
                     f"{_NATIVE_CONSULT_ACK_TIMEOUT:.0f}s; falling back to the CLI agent")
-                outcome = await oc.agent_consult(request, timeout=deadline - loop.time())
+                outcome = await oc.agent_consult(message or request,
+                                                 timeout=deadline - loop.time())
                 (logger.info if outcome.text else logger.warning)(
-                    f"ask_openclaw(async): CLI consult {_describe(outcome)}")
+                    f"openclaw_agent_consult(async): CLI consult {_describe(outcome)}")
                 await deliver(outcome)
                 return
             result = await asyncio.wait_for(fut, timeout=deadline - loop.time())
         outcome = _consult_outcome(result)
         if outcome.text:
-            logger.info(f"ask_openclaw(async): follow-up ready ({len(outcome.text)} chars)")
+            logger.info(f"openclaw_agent_consult(async): follow-up ready "
+                        f"({len(outcome.text)} chars)")
         else:
-            logger.warning(f"ask_openclaw(async): consult {_describe(outcome)}")
+            logger.warning(f"openclaw_agent_consult(async): consult {_describe(outcome)}")
         await deliver(outcome)
     except asyncio.TimeoutError:
-        logger.warning(f"ask_openclaw(async): consult unfinished after "
+        logger.warning(f"openclaw_agent_consult(async): consult unfinished after "
                        f"{_ASYNC_CONSULT_TIMEOUT:.0f}s")
         await deliver(oc.ConsultOutcome(
             None, "timeout", f"no result within {_ASYNC_CONSULT_TIMEOUT:.0f}s"))
     except asyncio.CancelledError:
         raise  # session teardown
     except Exception as e:  # noqa: BLE001
-        logger.warning(f"ask_openclaw(async) failed: {e!r}")
+        logger.warning(f"openclaw_agent_consult(async) failed: {e!r}")
         try:
             await deliver(oc.ConsultOutcome(None, "error", repr(e)))
         except Exception:  # noqa: BLE001
@@ -683,18 +700,51 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         await working(True)
 
 
-async def _ask_openclaw(params: FunctionCallParams, owed=None, gate=None):
+def _consult_args(arguments) -> dict | None:
+    """The consult's arguments as OpenClaw reads them (parseRealtimeVoiceAgentConsultArgs,
+    src/talk/agent-consult-tool.ts): `question`, or the first of its aliases a model may
+    write instead (prompt, query, task), trimmed; `context` and `responseStyle` when they
+    are non-empty strings. None without a question. What the relay is sent, so it reads
+    the same call the brain does."""
+    record = arguments if isinstance(arguments, dict) else {}
+    question = next((v.strip() for k in ("question", "prompt", "query", "task")
+                     if isinstance(v := record.get(k), str) and v.strip()), "")
+    if not question:
+        return None
+    args = {"question": question}
+    for key in ("context", "responseStyle"):
+        value = record.get(key)
+        if isinstance(value, str) and value.strip():
+            args[key] = value.strip()
+    return args
+
+
+def _consult_message(args: dict) -> str:
+    """The consult as one plain message, for the CLI lane: OpenClaw's own rendering for a
+    chat-forwarded consult (buildRealtimeVoiceAgentConsultChatMessage)."""
+    return "\n\n".join(part for part in (
+        args["question"],
+        f"Context:\n{args['context']}" if args.get("context") else None,
+        f"Spoken style:\n{args['responseStyle']}" if args.get("responseStyle") else None,
+    ) if part)
+
+
+async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=None):
     import uuid
 
     from teaport_brain import consult_bridge
 
-    request = (params.arguments or {}).get("request", "").strip()
-    if not request:
-        await params.result_callback({"error": "empty request"})
+    args = _consult_args(params.arguments)
+    if args is None:
+        await params.result_callback({"error": "question required"})
         return
+    # The question is what the caller asked, as the model put it: the key duplicate
+    # dispatches fold on, the topic the progress lines name and what owed.py anchors
+    # the outcome on. The CLI lane gets the whole call as one message.
+    request = args["question"]
 
     # Fold duplicate dispatches BEFORE creating any consult machinery: gpt-oss
-    # sometimes emits the same ask_openclaw twice a few seconds apart (observed
+    # sometimes emits the same openclaw_agent_consult twice a few seconds apart (observed
     # live), which doubled every ack, progress line, and follow-up. One
     # in-flight consult per exact request text (owed.Owed.dispatch); the duplicate
     # resolves silently and the original's record answers for both.
@@ -709,10 +759,11 @@ async def _ask_openclaw(params: FunctionCallParams, owed=None, gate=None):
 
     call_id = f"{consult_bridge.CALL_ID_PREFIX}{uuid.uuid4().hex[:12]}"
     fut = consult_bridge.create(call_id)
+    # The call the relay runs (and shows as the consult's card): OpenClaw's tool, by its
+    # own name, with the arguments as OpenClaw reads them.
     await params.llm.push_frame(OutputTransportMessageUrgentFrame(
         message={"type": "tool_call", "call_id": call_id,
-                 "name": "openclaw_agent_consult",
-                 "args": {"question": request}}))
+                 "name": OPENCLAW_AGENT_CONSULT.name, "args": args}))
 
     # ASYNC path (the session's owed records are wired: every session but agent-first).
     # A full agent turn can take 30-60s+, which can't block a voice turn (that was the
@@ -722,7 +773,8 @@ async def _ask_openclaw(params: FunctionCallParams, owed=None, gate=None):
     # for slow sub-agent delegation.
     if owed is not None:
         params.llm.create_task(_consult_and_land(
-            call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate))
+            call_id, fut, request, owed, params.tool_call_id, llm=params.llm, gate=gate,
+            message=_consult_message(args)))
         # Run NO inference on this placeholder (no_inference()). There is nothing for
         # the model to say: the user already heard the deterministic "I'll work on
         # that" ack, and the real outcome lands later (owed.py), rewriting this tool
@@ -747,8 +799,8 @@ async def _ask_openclaw(params: FunctionCallParams, owed=None, gate=None):
                                             timeout=_NATIVE_CONSULT_ACK_TIMEOUT)
         except asyncio.TimeoutError:
             if not getattr(fut, "working", False):
-                logger.warning("ask_openclaw: native consult not acked; using CLI")
-                outcome = await oc.agent_consult(request)
+                logger.warning("openclaw_agent_consult: native consult not acked; using CLI")
+                outcome = await oc.agent_consult(_consult_message(args))
                 await params.result_callback(
                     {"answer": outcome.text} if outcome.text
                     else {"error": "the desktop agent did not answer in time"
@@ -758,19 +810,20 @@ async def _ask_openclaw(params: FunctionCallParams, owed=None, gate=None):
             try:
                 result = await asyncio.wait_for(fut, timeout=_NATIVE_CONSULT_TIMEOUT)
             except asyncio.TimeoutError:
-                logger.warning(f"ask_openclaw: acked consult unfinished after "
+                logger.warning(f"openclaw_agent_consult: acked consult unfinished after "
                                f"{_NATIVE_CONSULT_TIMEOUT:.0f}s")
                 await params.result_callback(
                     {"error": "the desktop agent is taking too long — try a narrower request"})
                 return
         outcome = _consult_outcome(result)
         if outcome.text:
-            logger.info(f"ask_openclaw: native consult ok ({len(outcome.text)} chars)")
+            logger.info(f"openclaw_agent_consult: native consult ok "
+                        f"({len(outcome.text)} chars)")
             await params.result_callback({"answer": outcome.text})
         elif outcome.failure == "empty":
             await params.result_callback({"error": "the desktop agent returned no answer"})
         else:
-            logger.warning(f"ask_openclaw: native consult {_describe(outcome)}")
+            logger.warning(f"openclaw_agent_consult: native consult {_describe(outcome)}")
             await params.result_callback({"error": outcome.detail or "the desktop agent failed"})
     except asyncio.CancelledError:
         consult_bridge.cancel(call_id)
@@ -873,14 +926,18 @@ class ToolContext:
     tts: object = None
     has_tts: bool = False
     client_features: frozenset = frozenset()
-    # The session's owed records (owed.Owed): ask_openclaw's consults are dispatched and
-    # landed there. None: ask_openclaw consults synchronously on the turn.
+    # The session's owed records (owed.Owed): openclaw_agent_consult's consults are
+    # dispatched and landed there. None: openclaw_agent_consult consults synchronously on
+    # the turn.
     owed: object = None
     gate: object = None
     # The session's WifiSetupVoice (wifi_voice.py), which the wifi_setup tool hands to.
     wifi_voice: object = None
     # The session's CallPrompt (call_prompt.py): it can be asked whether to take a call.
     call_prompt: object = None
+    # The schemas the host gave for this session's tools (host_tool_schemas): offered in
+    # place of the brain's copy of the same name. Schema only, so register_tools needs none.
+    host_schemas: tuple = ()
 
 
 @dataclass(frozen=True)
@@ -916,7 +973,8 @@ class Tool:
     def direct(self) -> bool:
         """One of the session's own controls — its voice, or the device it speaks
         through — not a source of answers: agent-first mode lets the model call these
-        itself rather than through ask_openclaw (agent_session.agent_first_directive)."""
+        itself rather than through openclaw_agent_consult
+        (agent_session.agent_first_directive)."""
         return self.client or "tts" in self.needs or "call_prompt" in self.needs
 
 
@@ -975,12 +1033,12 @@ async def _answer_phone_call(params: FunctionCallParams, prompt=None):
             {"ok": False, "error": "no phone call is waiting for an answer"})
 
 
-def _bind_ask_openclaw(ctx: ToolContext):
+def _bind_openclaw_agent_consult(ctx: ToolContext):
     # ASYNC consult (its outcome lands later, owed.py) when the session gave us its
     # owed records; agent-first passes none and consults synchronously on the turn.
     if ctx.owed is not None:
-        return functools.partial(_ask_openclaw, owed=ctx.owed, gate=ctx.gate)
-    return _ask_openclaw
+        return functools.partial(_openclaw_agent_consult, owed=ctx.owed, gate=ctx.gate)
+    return _openclaw_agent_consult
 
 
 # In the order the model is offered them.
@@ -1008,15 +1066,16 @@ TOOLS: tuple[Tool, ...] = (
     Tool(REMEMBER, _plain(_remember),
          setting("TEAPORT_TOOL_REMEMBER"), frozenset({"agent"}),
          hint="remember (save a fact the user asks you to remember)"),
-    # ask_openclaw runs a full agent turn (~15-35s); pipecat's default 10s
+    # openclaw_agent_consult runs a full agent turn (~15-35s); pipecat's default 10s
     # function-call timeout abandons it mid-flight and discards the answer that
     # arrives later (the "weather never came back" bug). Its ceiling sits above the
     # handler's own consult caps; the fast tools keep pipecat's 10s.
-    Tool(ASK_OPENCLAW, _bind_ask_openclaw,
-         setting("TEAPORT_TOOL_ASK_OPENCLAW"), frozenset({"agent"}),
-         answers=True, timeout_secs=_ASK_OPENCLAW_TIMEOUT,
-         hint="ask_openclaw (your full desktop agent — every tool, deeper thinking; for "
-              "multi-step or open-ended requests your quick tools can't handle)"),
+    Tool(OPENCLAW_AGENT_CONSULT, _bind_openclaw_agent_consult,
+         setting("TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT"), frozenset({"agent"}),
+         answers=True, timeout_secs=_OPENCLAW_AGENT_CONSULT_TIMEOUT,
+         hint="openclaw_agent_consult (your full desktop agent — every tool, deeper "
+              "thinking; for multi-step or open-ended requests your quick tools can't "
+              "handle)"),
     Tool(LIST_VOICES, lambda ctx: functools.partial(_list_voices, tts=ctx.tts),
          setting("TEAPORT_TOOL_LIST_VOICES"), frozenset({"tts"}),
          answers=True,
@@ -1056,11 +1115,11 @@ TOOLS: tuple[Tool, ...] = (
 TOOLS_BY_NAME = {t.name: t for t in TOOLS}
 # The tools whose result is an answer (Tool.answers): owed.Owed reads which replies tell one.
 ANSWER_TOOLS = frozenset(t.name for t in TOOLS if t.answers)
-# The same guard for the switch: agent-first with ask_openclaw switched off would route
-# every turn to a tool the model is not offered.
-if AGENT_FIRST and not TOOLS_BY_NAME["ask_openclaw"].enabled:
-    logger.warning("TEAPORT_AGENT_FIRST is on but TEAPORT_TOOL_ASK_OPENCLAW is off — "
-                   "ignoring it (agent-first routes every turn through ask_openclaw)")
+# The same guard for the switch: agent-first with openclaw_agent_consult switched off would
+# route every turn to a tool the model is not offered.
+if AGENT_FIRST and not TOOLS_BY_NAME["openclaw_agent_consult"].enabled:
+    logger.warning("TEAPORT_AGENT_FIRST is on but TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT is off — "
+                   "ignoring it (agent-first routes every turn through openclaw_agent_consult)")
     AGENT_FIRST = False
 # The client features a /talk client may announce (?features=): one per client tool,
 # and "phonemes": the client draws a mouth from what is said (local_audio.py, for the
@@ -1115,8 +1174,53 @@ def active_tools(ctx: ToolContext | None = None) -> list[Tool]:
 
 
 def build_tools_schema(ctx: ToolContext | None = None) -> ToolsSchema:
-    """The schema the model is offered: active_tools(ctx)."""
-    return ToolsSchema(standard_tools=[t.schema for t in active_tools(ctx)])
+    """The schema the model is offered: active_tools(ctx), each with the host's schema
+    for it where the host gave one (ctx.host_schemas)."""
+    ctx = ctx or ToolContext()
+    host = {s.name: s for s in ctx.host_schemas}
+    return ToolsSchema(standard_tools=[host.get(t.name, t.schema) for t in active_tools(ctx)])
+
+
+# The host's tools the model is NOT offered, and why. openclaw_agent_control (OpenClaw's
+# REALTIME_VOICE_AGENT_CONTROL_TOOL: status, cancel or redirect a running consult) comes
+# with every Talk session, but the relay only shows a call to it as a card: nothing runs
+# it (its onToolCall executes openclaw_agent_consult alone). Spoken run control already
+# happens on the user's final transcripts the brain sends, through the relay's own
+# classifier. Offered, the model would "cancel" or "redirect" into nothing. When the relay
+# executes it, offer it and retire the brain's own control path (issue #230, open
+# question 2).
+_HOST_TOOLS_NOT_OFFERED = {
+    "openclaw_agent_control": "the relay does not run it; run control acts on transcripts",
+}
+
+
+def host_tool_schemas(host_tools) -> tuple:
+    """The FunctionSchemas from the host's tool definitions (OpenClaw's RealtimeVoiceTool:
+    type "function", name, description, JSON-schema parameters) that replace the brain's
+    own copy of a tool by name (build_tools_schema). A host tool is offered only where the
+    brain has a Tool record of that name -- a handler to run it, a switch, its needs; any
+    other is dropped and logged: the model must not call what nothing here runs. A
+    malformed definition is dropped too, and the brain's copy stands."""
+    out = []
+    for tool in host_tools or ():
+        name = tool.get("name") if isinstance(tool, dict) else None
+        if name in _HOST_TOOLS_NOT_OFFERED:
+            logger.info(f"host tool {name} not offered: {_HOST_TOOLS_NOT_OFFERED[name]}")
+            continue
+        if name not in TOOLS_BY_NAME:
+            logger.warning(f"host tool {name!r} not offered: the brain has no handler for it")
+            continue
+        params = tool.get("parameters")
+        if (tool.get("type", "function") != "function" or not isinstance(params, dict)
+                or not isinstance(params.get("properties", {}), dict)
+                or not isinstance(params.get("required", []), list)):
+            logger.warning(f"host tool {name}: malformed definition — offering the "
+                           "brain's copy")
+            continue
+        out.append(FunctionSchema(name=name, description=str(tool.get("description") or ""),
+                                  properties=params.get("properties", {}),
+                                  required=params.get("required", [])))
+    return tuple(out)
 
 
 # "Working on it" speech is primarily the MODEL's job: VOICE_OVERLAY tells it to say
@@ -1146,7 +1250,7 @@ def _fallback_line(name: str, args: dict, lang: str) -> str | None:
     if name == "web_fetch":
         return {"es": "Abriendo la página.", "it": "Apro la pagina.",
                 "cmn": "我打开那个页面。"}.get(lang, "Opening that page.")
-    if name == "ask_openclaw":
+    if name == "openclaw_agent_consult":
         # Agent-first: every turn is a consult — a stock ack per turn would be
         # noise (ThinkingSound covers the wait) and would corrupt TURN-TIMING's
         # tts_first_audio, which must mark the ANSWER in this mode.
@@ -1198,9 +1302,13 @@ def _wrap(name, handler, lang_fn, captions_ahead: bool = False):
             # Machine-readable event: the plugin forwards it to the relay's
             # onToolCall (tool.call Talk event). Today's control-ui doesn't render
             # those yet, so ALSO send the styled bubble the Talk view can render.
-            await params.llm.push_frame(OutputTransportMessageUrgentFrame(
-                message={"type": "tool_call", "call_id": params.tool_call_id,
-                         "name": name, "args": args}))
+            # Not for the consult: the relay RUNS every openclaw_agent_consult call it
+            # is handed, so this one would start a second consult. The handler sends
+            # the call the relay runs, which is also the consult's card.
+            if name != OPENCLAW_AGENT_CONSULT.name:
+                await params.llm.push_frame(OutputTransportMessageUrgentFrame(
+                    message={"type": "tool_call", "call_id": params.tool_call_id,
+                             "name": name, "args": args}))
             summary = _args_summary(args)
             await _bubble(params.llm,
                           f"> 🔧 **{name}**" + (f" · `{summary}`" if summary else ""))
@@ -1252,7 +1360,7 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `owed`, if given,
     is the session's owed records (owed.Owed), which a background consult is dispatched
-    to and lands in; providing it switches ask_openclaw to the ASYNC path. `gate` (a
+    to and lands in; providing it switches openclaw_agent_consult to the ASYNC path. `gate` (a
     FollowupGate), if given, lets the consult narrator wait for a conversational gap
     before speaking its progress lines. `captions_ahead` charts a tool call's filler
     before the call (Talk: captions.caption_ahead)."""

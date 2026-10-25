@@ -35,7 +35,7 @@ from teaport_brain.settings import setting
 _SILENT_TURN_SECS = setting("TEAPORT_SILENT_TURN_SECS")
 
 # A tool call legitimately owns the turn for far longer than the watchdog window:
-# _ASK_OPENCLAW_TIMEOUT is 55s and _NATIVE_CONSULT_TIMEOUT 45s (tools.py), and in
+# _OPENCLAW_AGENT_CONSULT_TIMEOUT is 55s and _NATIVE_CONSULT_TIMEOUT 45s (tools.py), and in
 # agent-first mode _fallback_line returns None so nothing is spoken until the consult
 # answers. Barking at 12s into a working consult made the one diagnostic this module adds
 # fire on the pipeline's slowest NORMAL path, which is how a warning becomes noise. So the

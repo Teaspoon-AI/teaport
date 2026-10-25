@@ -1367,7 +1367,7 @@ agent_openclaw() {
     # LISTEN there — its own default (and any TEAPORT_GATEWAY_PORT override) would otherwise
     # leave Caddy proxying to a dead port that phase_verify never checks.
     # http.endpoints.chatCompletions.enabled: turn on the warm-lane consult endpoint the brain
-    # prefers for ask_openclaw (openclaw_client._completions_consult -> POST /v1/chat/completions).
+    # prefers for openclaw_agent_consult (openclaw_client._completions_consult -> POST /v1/chat/completions).
     # It is a STOCK endpoint but ships DISABLED ("default: false"), so without this every consult
     # 404s the fast lane and falls back to the ~25s cold `openclaw agent --local` spawn (which then
     # tends to blow the 45s budget and fail silently). config patch deep-merges, so this only adds
@@ -1468,7 +1468,7 @@ agent_nemoclaw() {
     # host address (the same 172.18.0.1 the brain URL uses) — trust both; the forward is
     # host-loopback-bound, so this adds no reachability an attacker didn't already have.
     # Also enable the warm-lane consult endpoint (POST /v1/chat/completions) the brain prefers
-    # for ask_openclaw — a stock endpoint that ships DISABLED ("default: false"). NOTE: inside the
+    # for openclaw_agent_consult — a stock endpoint that ships DISABLED ("default: false"). NOTE: inside the
     # sandbox this makes NON-channel consults fast, but a warm-lane turn that drives a CHANNEL
     # action still needs the openshell-dialback-locality patch (NemoClaw 1e72408) to escape the
     # device-pairing dial-back loop; without it the brain falls back to `openclaw agent --local`

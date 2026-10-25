@@ -3,7 +3,7 @@
 #
 # The installer has always had a voice-only path (no OpenClaw, no front door), but the
 # brain never learned which kind of box it was on. Without a gateway it still advertised
-# web_search / web_fetch / search_memory / remember / ask_openclaw, told the model in the
+# web_search / web_fetch / search_memory / remember / openclaw_agent_consult, told the model in the
 # persona to use them, and ran MemoryRecall on every turn — up to TEAPORT_RECALL_TIMEOUT
 # spent on a search that returns None. Nothing crashed (the gateway client is
 # best-effort), so nothing said so; the caller just heard "I'll look into that" go
@@ -43,7 +43,7 @@ from teaport_brain import agent_backend, persona, tools  # noqa: E402
 from teaport_brain.agent_session import build_agent_session  # noqa: E402
 from teaport_brain.memory_recall import MemoryRecall  # noqa: E402
 
-GATEWAY_TOOLS = {"web_search", "web_fetch", "search_memory", "remember", "ask_openclaw"}
+GATEWAY_TOOLS = {"web_search", "web_fetch", "search_memory", "remember", "openclaw_agent_consult"}
 LOCAL_TOOLS = {"get_host_status", "get_current_time", "list_voices", "switch_voice"}
 
 
@@ -51,10 +51,10 @@ def test_the_mode_is_read_once_and_agent_first_is_ignored_without_a_gateway():
     assert agent_backend.AGENT == "none"
     assert agent_backend.HAS_AGENT is False
     assert tools.AGENT_FIRST is False, (
-        "TEAPORT_AGENT_FIRST=1 with no gateway would send every turn to ask_openclaw, "
+        "TEAPORT_AGENT_FIRST=1 with no gateway would send every turn to openclaw_agent_consult, "
         "which is not registered")
     assert "none" in agent_backend.startup_line()
-    assert "ask_openclaw" in agent_backend.startup_line(), (
+    assert "openclaw_agent_consult" in agent_backend.startup_line(), (
         "the journal line must name what is off")
 
 
@@ -85,7 +85,7 @@ def test_the_gateway_overlay_is_untouched():
     # test_persona_rules pins the wording; this pins that the gateway overlay is the
     # gateway tools paragraph plus the same delivery text the local one uses.
     assert persona.VOICE_OVERLAY.startswith("You have tools")
-    assert "ask_openclaw" in persona.VOICE_OVERLAY
+    assert "openclaw_agent_consult" in persona.VOICE_OVERLAY
     shared = persona.VOICE_OVERLAY[persona.VOICE_OVERLAY.index("Your words are spoken aloud"):]
     assert persona.VOICE_OVERLAY_LOCAL.endswith(shared)
 

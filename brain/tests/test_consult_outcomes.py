@@ -258,7 +258,7 @@ class _PlaceholderLLM:
 
 class _Params:
     def __init__(self, llm, request):
-        self.llm, self.arguments, self.tool_call_id = llm, {"request": request}, "tc-1"
+        self.llm, self.arguments, self.tool_call_id = llm, {"question": request}, "tc-1"
         self.results = []
 
     async def result_callback(self, result, properties=None):
@@ -274,8 +274,8 @@ async def _placeholders():
     llm = _PlaceholderLLM()
     first, dup = _Params(llm, "French rioting news"), _Params(llm, "French rioting news")
     dup.tool_call_id = "tc-2"
-    await tools._ask_openclaw(first, owed=owed)
-    await tools._ask_openclaw(dup, owed=owed)
+    await tools._openclaw_agent_consult(first, owed=owed)
+    await tools._openclaw_agent_consult(dup, owed=owed)
     for t in llm.tasks:
         t.cancel()
     await asyncio.gather(*llm.tasks, return_exceptions=True)

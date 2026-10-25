@@ -70,12 +70,12 @@
 # (via agent_session), so it now gets memory recall/reclaim, captions/transcript
 # emitters, and the turn-timing taps it previously lacked (captions/transcript
 # frames are harmlessly dropped by the SIP serializer — no SIP control type carries
-# them). Tools run exactly like the OpenClaw path: the async ask_openclaw consult
+# them). Tools run exactly like the OpenClaw path: the async openclaw_agent_consult consult
 # lands in owed.py and is told through the FollowupGate (no typing over the wait: a
 # phone call gets no ThinkingSound, outside agent-first), so a caller gets REAL tool results instead of
 # hallucinated ones. On SIP there is no OpenClaw plugin to service the native
 # openclaw_agent_consult round-trip (the sip_serializer drops it, being a non-protocol control), so
-# ask_openclaw degrades to the CLI agent_consult path; the fast tools (host status,
+# openclaw_agent_consult degrades to the CLI agent_consult path; the fast tools (host status,
 # time, web search/fetch, memory) run unchanged.
 
 import argparse

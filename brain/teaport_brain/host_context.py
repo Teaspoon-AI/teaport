@@ -12,7 +12,8 @@
 #
 # The brain follows that contract instead of composing its own: the session's system
 # prompt starts with the instructions as the host sent them (persona.build_system_prompt,
-# then the voice overlay).
+# then the voice overlay), and the model's consult tool takes the host's schema
+# (tools.host_tool_schemas).
 #
 # Where it comes from, per front end:
 #   Talk   the plugin's session_config frame, the first frame on /talk when the URL
@@ -36,7 +37,7 @@ class HostContext:
     """What the host composed for one voice session. `instructions` may be empty (a host
     that composed nothing; the brain then uses its own persona); `tools` are the host's
     tool definitions as it sent them (RealtimeVoiceTool: type, name, description,
-    parameters)."""
+    parameters), only some of which the model is offered (tools.host_tool_schemas)."""
     instructions: str = ""
     tools: tuple = ()
 

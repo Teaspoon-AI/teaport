@@ -52,7 +52,7 @@ CONSULT_ERR_FILE = "/tmp/teaport-consult-last.err"
 RECALL_TIMEOUT = setting("TEAPORT_RECALL_TIMEOUT")
 
 # Agent-consult: the rich, SLOW *delegation* primitive for hard questions (a future
-# `ask_openclaw` tool). Runs one full OpenClaw agent turn via the gateway — full
+# `openclaw_agent_consult` tool). Runs one full OpenClaw agent turn via the gateway — full
 # tools/skills/memory on the cerebras model — by shelling out to `openclaw agent`
 # (agent-run is a gateway WS protocol, not a REST endpoint, so the CLI drives it). Kept
 # validated but UNUSED for memory-write: routing "remember X" through a consult proved
@@ -81,7 +81,7 @@ OPENCLAW_AGENT = setting("OPENCLAW_AGENT_ID")
 # 45 s, not 30: the sandbox-exec shim adds ~14 s of spawn tax (nemoclaw + docker
 # exec + CLI node startup, measured) before the agent turn even starts, and a
 # Discord-action turn needs real time after that. Callers cap the voice wait
-# separately (TEAPORT_ASK_OPENCLAW_TIMEOUT must stay above ack+consult). This is the
+# separately (TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT must stay above ack+consult). This is the
 # SYNC path's budget only: the async path (SIP, or a relay that never acks) passes its
 # own, TEAPORT_ASYNC_CONSULT_TIMEOUT, since its wait is off the turn (#80).
 CONSULT_TIMEOUT = setting("TEAPORT_CONSULT_TIMEOUT")

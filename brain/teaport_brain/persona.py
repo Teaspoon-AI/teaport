@@ -19,11 +19,11 @@
 #                    4/21 -> 14/21); preserve its wording, don't reword casually.
 #
 # The tools paragraph of the overlay comes in two versions, chosen by TEAPORT_AGENT
-# (agent_backend.py): with a gateway it names web_search / search_memory / ask_openclaw
-# and how to use them; without one it names only the local tools and says plainly what
-# the assistant cannot do, so the model does not promise a lookup it cannot make. The
-# delivery paragraphs are shared verbatim. Without a gateway the persona comes from
-# TEAPORT_PERSONA_FILE and the OpenClaw workspace is never read.
+# (agent_backend.py): with a gateway it names web_search / search_memory /
+# openclaw_agent_consult and how to use them; without one it names only the local tools and
+# says plainly what the assistant cannot do, so the model does not promise a lookup it
+# cannot make. The delivery paragraphs are shared verbatim. Without a gateway the persona
+# comes from TEAPORT_PERSONA_FILE and the OpenClaw workspace is never read.
 #
 # Splitting persona out of the old monolithic SYSTEM_PROMPT is what lets OpenClaw
 # own identity while Pipecat keeps the tuned voice mechanics. Where the host composes the
@@ -73,7 +73,7 @@ _PREAMBLE_INSTRUCTION = (
     "in the same response."
 )
 _CONSULT_IN_PROGRESS = (
-    "While an ask_openclaw request is still in progress you do not "
+    "While an openclaw_agent_consult request is still in progress you do not "
     "yet know its answer: never guess or make one up, even if the user says 'go "
     "ahead' or 'start' — say it is still in progress; you will be told the moment "
     "it completes."
@@ -90,14 +90,15 @@ _TOOLS_WITH_AGENT = (
     "machine's live free memory, CPU load, decode speed), get_current_time, "
     "web_search (search the web for anything current, factual, or that you don't "
     "know), web_fetch (read a specific web page), search_memory (recall what "
-    "the user told you before, by voice or text), ask_openclaw (your full desktop "
+    "the user told you before, by voice or text), openclaw_agent_consult (your full desktop "
     "agent — every tool, deeper thinking; for multi-step or open-ended requests "
     "your quick tools can't handle), and " + _VOICE_SWITCH_INSTRUCTION + " "
     "When the user asks about your "
     "status or the time, about something recent or factual you'd need to look up, "
     "a web page, or something they told you earlier, call the matching tool "
     "directly. Quick lookups (time, host status, memory) need no preamble — just "
-    "call silently. A web search, page fetch, or ask_openclaw " + _PREAMBLE_INSTRUCTION
+    "call silently. A web search, page fetch, or openclaw_agent_consult "
+    + _PREAMBLE_INSTRUCTION
     + " " + _NO_TOOL_NAME_INSTRUCTION + " " + _CONSULT_IN_PROGRESS + " " + _GENERAL_CHAT_CLOSER
 )
 
@@ -175,10 +176,10 @@ def voice_overlay() -> str:
 # tools' own hints, so a tool that is off is never named.
 _TUNED_WITH_AGENT = frozenset({
     "get_host_status", "get_current_time", "web_search", "web_fetch", "search_memory",
-    "remember", "ask_openclaw", "list_voices", "switch_voice"})
+    "remember", "openclaw_agent_consult", "list_voices", "switch_voice"})
 _TUNED_LOCAL = frozenset({"get_host_status", "get_current_time", "list_voices", "switch_voice"})
-_SLOW_TOOLS = ("web_search", "web_fetch", "ask_openclaw")
-_LOOKUP_TOOLS = frozenset({"web_search", "web_fetch", "search_memory", "ask_openclaw"})
+_SLOW_TOOLS = ("web_search", "web_fetch", "openclaw_agent_consult")
+_LOOKUP_TOOLS = frozenset({"web_search", "web_fetch", "search_memory", "openclaw_agent_consult"})
 
 
 def _join(items: list[str]) -> str:
@@ -204,7 +205,7 @@ def _compose_tools(tools, device: bool = False) -> str:
     if slow:
         text += "A " + " or ".join(n.replace("_", " ") for n in slow) + " " + _PREAMBLE_INSTRUCTION + " "
     text += _NO_TOOL_NAME_INSTRUCTION + " "
-    if "ask_openclaw" in names:
+    if "openclaw_agent_consult" in names:
         text += _CONSULT_IN_PROGRESS + " "
     if not names & _LOOKUP_TOOLS:
         text += _CANNOT_LOOK_UP + " "

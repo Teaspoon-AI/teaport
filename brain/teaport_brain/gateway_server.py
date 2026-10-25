@@ -328,8 +328,8 @@ async def run_relay_bot(websocket: WebSocket):
                       voice=qp.get("voice"), language=qp.get("language"))
         return
     # What OpenClaw composed for this Talk session (host_context.py) is read BEFORE
-    # build_agent_session: its instructions start the system prompt. So the order is
-    # read, build, hello. The hello
+    # build_agent_session: its instructions start the system prompt, and its consult
+    # schema is the one the model gets. So the order is read, build, hello. The hello
     # carries the session's note limits, so it cannot go before the build, and the build
     # cannot go before the frame; what its early send is for -- going out before the
     # arbiter's grant and the pipeline start, the waits that could hold it past the

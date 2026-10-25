@@ -162,8 +162,8 @@ def drop_overtaken_tool_calls(aggregator) -> None:
     Interruption cancels only. They carry run_llm=False, so the ordinary order runs no
     inference on them either. The tool timeout's cancel carries run_llm=True and would,
     and a drop never does; but it cannot overtake an in-progress frame in practice: the
-    only tool with a timeout is ask_openclaw, and the config schema requires
-    TEAPORT_ASK_OPENCLAW_TIMEOUT to exceed the native consult's ack + answer timeouts
+    only tool with a timeout is openclaw_agent_consult, and the config schema requires
+    TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT to exceed the native consult's ack + answer timeouts
     (a sum_lt constraint; 55 s by default). Its frame would have to wait that long
     where frames wait ahead of their cancel -- behind the reply audio queued ahead of
     it, or in the reply gate's hold (capped at TEAPORT_REPLY_HOLD_MAX_S, 6 s by

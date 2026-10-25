@@ -32,8 +32,8 @@ const CAPTIONS_PROTOCOL = 2;
 
 // The session_config protocol, sent to the brain as ?session_config=. With it on the URL
 // the brain waits for the session_config frame (sessionConfigFrame) before it builds the
-// session, and builds the session's prompt from what OpenClaw composed for this voice
-// surface. A brain that sees no flag never waits, and builds its own.
+// session, and builds the session's prompt and consult tool from what OpenClaw composed
+// for this voice surface. A brain that sees no flag never waits, and builds its own.
 const SESSION_CONFIG_PROTOCOL = 1;
 
 /**
@@ -68,7 +68,7 @@ export function withVoiceParams(url, cfg) {
  * talk.realtime.instructions, the agent paragraph and the IDENTITY / USER / SOUL profile,
  * and any earlier conversation); `tools` is its tool list (openclaw_agent_consult and
  * openclaw_agent_control). Both go as OpenClaw sent them: the brain puts the instructions
- * at the head of its prompt.
+ * at the head of its prompt and takes the consult tool's schema from the list.
  *
  * Sent always, empty or not, because the URL flag promises it: the brain waits for this
  * frame whenever it sees ?session_config=, so a frame left out when the host composed
@@ -439,7 +439,13 @@ export function buildTeaportRealtimeProvider(defaults = {}) {
       // barge-in (it reads this from talk.catalog) and the relay ignores barge-in
       // cancels. 2026.9.1 does neither; handleBargeIn below covers it.
       supportsBargeIn: false,
-      supportsToolCalls: false,
+      // The brain calls OpenClaw's openclaw_agent_consult (its schema from req.tools) and
+      // the relay runs it (see supportsToolResultContinuation in TeaportBridge). Declared,
+      // talk.catalog lists teaport with the agent-consult brain; false listed it as
+      // brains ["none"]. It also tells the relay's spoken run control (status / cancel on
+      // the user's final transcripts) to act only while a consult is running, not when
+      // none is (realtime-run-control.ts, allowIdle).
+      supportsToolCalls: true,
       supportsBrowserSession: false,
     },
     isConfigured: ({ providerConfig }) =>
@@ -486,8 +492,8 @@ class TeaportBridge {
     this._state = "connecting";
     this._errored = false; // the socket reported an error (the onClose reason)
     this._queue = []; // audio buffered until the socket opens (sendAudio races connect)
-    // The brain delegates heavy requests by emitting an openclaw_agent_consult
-    // tool call; the relay runs the agent turn IN-PROCESS and returns the result
+    // The brain delegates heavy requests by calling openclaw_agent_consult, which
+    // reaches the relay as a tool call; the relay runs the agent turn IN-PROCESS and returns the result
     // via submitToolResult below. Declaring continuation support switches the
     // relay's consult machinery on (working responses + final tool_result).
     this.supportsToolResultContinuation = true;
@@ -573,7 +579,7 @@ class TeaportBridge {
   }
 
   // Relay -> brain: consult results (and working notices, willContinue=true).
-  // The brain resolves its pending ask_openclaw future on the final result.
+  // The brain resolves its pending openclaw_agent_consult future on the final result.
   submitToolResult(callId, result, options) {
     if (!this._ws || this._state !== "open") return;
     try {

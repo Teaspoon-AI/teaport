@@ -578,7 +578,7 @@ class FollowupGate(FrameProcessor):
             self._refresh()
         elif isinstance(frame, FunctionCallResultFrame):
             # A result that runs no inference (tools.no_inference(): the async
-            # ask_openclaw placeholders) is the end of the turn -- nothing will
+            # openclaw_agent_consult placeholders) is the end of the turn -- nothing will
             # answer from it. Any other result is followed by the answering
             # completion, whose start/end frames carry the turn from here. The LLM
             # service BROADCASTS the result frame (llm_service.broadcast_frame, both
@@ -586,8 +586,9 @@ class FollowupGate(FrameProcessor):
             # frame is seen. getattr for both fields:
             # run_llm is the legacy duplicate of properties.run_llm.
             #
-            # With another call still out (ask_openclaw's placeholder beside a sync tool,
-            # in one completion) the turn goes on: that call's answering completion ends it.
+            # With another call still out (openclaw_agent_consult's placeholder beside a
+            # sync tool, in one completion) the turn goes on: that call's answering
+            # completion ends it.
             self._call_settled(frame.tool_call_id)
             props = getattr(frame, "properties", None)
             if (getattr(frame, "run_llm", None) is False

@@ -43,17 +43,23 @@ docs/CONFIG.md → One engine, one conversation.
 
 OpenClaw composes what a realtime voice surface is told (its voice rules, the
 operator's `talk.realtime.instructions`, the agent paragraph and the IDENTITY / USER
-/ SOUL profile), and teaport follows that contract
+/ SOUL profile) and the consult tool, and teaport follows that contract
 (`brain/teaport_brain/host_context.py`, issue #230):
 
 - **Talk.** The plugin sends what OpenClaw handed it (`req.instructions`,
   `req.tools`) as the first frame on `/talk`, a `session_config` it announces with
   `?session_config=1`. The brain reads it before it builds the session: the system
-  prompt starts with those instructions as sent, followed by the brain's voice rules.
-  A client that announces no `session_config` gets the brain's own persona, as
-  before.
+  prompt starts with those instructions as sent, followed by the brain's voice rules,
+  and the model's consult tool takes OpenClaw's schema. `openclaw_agent_control` is
+  not offered: the relay runs nothing for it, and spoken run control acts on the
+  transcripts the brain sends. A client that announces no `session_config` gets the
+  brain's own persona, as before.
 - **Room mic and phone.** For now, the brain's own persona (the OpenClaw workspace
-  files, or `TEAPORT_PERSONA_FILE`).
+  files, or `TEAPORT_PERSONA_FILE`) and its copy of OpenClaw's consult schema
+  (`tools.OPENCLAW_AGENT_CONSULT`).
+
+The consult is OpenClaw's `openclaw_agent_consult` on every front end; the relay runs
+it in-process on Talk, and the gateway's agent lane runs it otherwise.
 
 ## Tools
 
@@ -64,7 +70,7 @@ Every tool the voice model can call follows one contract
   switch (`TEAPORT_TOOL_<NAME>`, see docs/CONFIG.md → Tools), its call timeout
   and the phrase the system prompt names it with.
 - **What it needs.** A tool can need the OpenClaw gateway (web, memory,
-  `ask_openclaw`), the session's voice (`list_voices`, `switch_voice`), a client
+  `openclaw_agent_consult`), the session's voice (`list_voices`, `switch_voice`), a client
   that can do it itself (`set_volume`, `restart_session`), or a part installed
   on the box (`wifi_setup` needs the `teaport-wifi-setup` unit and a client at
   the box).
@@ -116,5 +122,5 @@ Every tool the voice model can call follows one contract
   `call.incoming` journal line carries the From header (`from=`). The busy lamp
   breathes red while the face rings.
 
-TODO: block diagram, frame/timing flow, port map, the memory and ask_openclaw
-consult paths.
+TODO: block diagram, frame/timing flow, port map, the memory and
+openclaw_agent_consult paths.

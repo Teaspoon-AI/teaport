@@ -2,7 +2,7 @@
 # Unit test: two voice-overlay rules the 2026-09-04 runbook proved necessary.
 #
 # Live S9 (21:10): the user read "as soon as the ack ends, start" aloud while an
-# ask_openclaw consult was pending, and the model FABRICATED the answer -- "The top
+# openclaw_agent_consult consult was pending, and the model FABRICATED the answer -- "The top
 # five Hacker News stories right now are: 'OpenAI launches new model GPT-4 Turbo' –
 # https://news.ycombinator.com/item?id=12345678" -- three seconds before the real one
 # arrived. Six words of it were spoken before the next fragment cut it.
@@ -75,7 +75,7 @@ def test_the_default_mode_names_the_gateway_tools():
     # TEAPORT_AGENT is unset here, which is `openclaw`: the tools paragraph names the
     # gateway tools and how to use them. test_agent_none.py covers the other mode.
     prompt = build_system_prompt("IDENTITY LINE")
-    for name in ("web_search", "web_fetch", "search_memory", "ask_openclaw"):
+    for name in ("web_search", "web_fetch", "search_memory", "openclaw_agent_consult"):
         assert name in prompt, f"the gateway overlay no longer names {name}"
 
 

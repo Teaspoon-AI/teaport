@@ -2,7 +2,7 @@
 # Unit test: the consult narrator must stop before the answer is spoken.
 #
 # _consult_progress is a fixed countdown against dead air — "Still working on it." at 9s,
-# "Almost there — hang tight." at 22s — spoken while a background ask_openclaw runs. It
+# "Almost there — hang tight." at 22s — spoken while a background openclaw_agent_consult runs. It
 # used to be cancelled in the waiter's finally, which was harmless only while the
 # follow-up injector returned as soon as it had queued the LLM run.
 #

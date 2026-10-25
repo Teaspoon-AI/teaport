@@ -431,7 +431,7 @@ async def test_no_note_lands_while_a_tool_call_turn_is_in_flight():
     A note appended now would be read by that completion alongside the tool result."""
     h = _harness()
     for f in (LLMFullResponseStartFrame(),
-              FunctionCallInProgressFrame(function_name="ask_openclaw",
+              FunctionCallInProgressFrame(function_name="openclaw_agent_consult",
                                           tool_call_id="tc-1", arguments={},
                                           cancel_on_interruption=True)):
         await h.gate.process_frame(f, FrameDirection.DOWNSTREAM)
@@ -440,7 +440,7 @@ async def test_no_note_lands_while_a_tool_call_turn_is_in_flight():
     await asyncio.sleep(0.15)
     assert _notes_in(h.context) == [], "a note landed inside a tool-call turn"
     # The tool's result, then its answering completion, whose end ends the turn.
-    for f in (FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="tc-1",
+    for f in (FunctionCallResultFrame(function_name="openclaw_agent_consult", tool_call_id="tc-1",
                                       arguments={}, result={"ok": True}),
               LLMFullResponseStartFrame(), LLMFullResponseEndFrame()):
         await h.gate.process_frame(f, FrameDirection.DOWNSTREAM)

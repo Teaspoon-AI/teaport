@@ -138,7 +138,7 @@ class RawLLMCapture(FrameProcessor):
         # afterwards, so the usual order is End -> FunctionCallResultFrame and the flag
         # survived to the next completion only by luck of scheduling — a tool that
         # returned before End cleared it and its completion logged after_tool=False.
-        # Too late: with run_llm=False (the async ask_openclaw placeholders) NO
+        # Too late: with run_llm=False (the async openclaw_agent_consult placeholders) NO
         # completion follows at all, so the flag was cleared by some unrelated later
         # turn, which was then logged after_tool=True. Latching at Start fixes the
         # first; skipping results that suppress inference fixes the second.

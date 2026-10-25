@@ -3,7 +3,10 @@
 A Talk session's plugin sends OpenClaw's req.instructions and req.tools as the first
 frame on /talk ({"type": "session_config", ...}, announced with ?session_config=1). The
 brain reads it before it builds the session: the system prompt starts with the host's
-instructions. Without the flag nothing is waited for.
+instructions, the model's consult is OpenClaw's openclaw_agent_consult with the host's
+schema, and openclaw_agent_control (which the relay does not run) is not offered. Without
+the flag nothing is waited for. And the consult is called openclaw_agent_consult
+everywhere: the old name is gone from the repo.
 
 All host text here is synthetic."""
 import asyncio
@@ -27,7 +30,10 @@ require_pinned()
 
 from pipecat.processors.frame_processor import FrameProcessor  # noqa: E402
 
-from teaport_brain import host_context, persona  # noqa: E402
+from teaport_brain import host_context, persona, tools  # noqa: E402
+from teaport_brain.agent_backend import HAS_AGENT  # noqa: E402
+
+REPO = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 HOST_TEXT = ("You are a test voice interface. Call openclaw_agent_consult for anything "
              "that needs the agent.\n\nAdditional realtime instructions:\nThe user's name "
@@ -69,6 +75,102 @@ def test_a_session_config_frame_becomes_a_host_context():
     assert host_context.from_frame(["session_config"]) is None
 
 
+# ------------------------------------------------------------------ the tools
+
+def test_the_host_schema_replaces_the_brains_copy_and_control_is_not_offered():
+    schemas = tools.host_tool_schemas([HOST_CONSULT, HOST_CONTROL,
+                                       {"type": "function", "name": "some_future_tool",
+                                        "parameters": {"type": "object"}}])
+    # Only a tool the brain can run, and never openclaw_agent_control: the relay shows
+    # a call to it as a card and runs nothing.
+    assert [s.name for s in schemas] == ["openclaw_agent_consult"]
+    assert schemas[0].description == HOST_CONSULT["description"]
+    assert schemas[0].properties == HOST_CONSULT["parameters"]["properties"]
+    assert schemas[0].required == ["question"]
+    # A malformed definition is dropped, and the brain's copy stands.
+    assert tools.host_tool_schemas([{"name": "openclaw_agent_consult",
+                                     "parameters": "nope"}]) == ()
+
+    ctx = tools.ToolContext(has_tts=True, host_schemas=schemas)
+    offered = {s.name: s for s in tools.build_tools_schema(ctx).standard_tools}
+    assert "openclaw_agent_control" not in offered
+    if HAS_AGENT:
+        assert offered["openclaw_agent_consult"].description == HOST_CONSULT["description"]
+    # Every other tool keeps its own schema, in the same order as without a host.
+    plain = tools.build_tools_schema(tools.ToolContext(has_tts=True)).standard_tools
+    assert [s.name for s in plain] == list(offered)
+    assert all(a is b for a, b in zip(plain, offered.values())
+               if a.name != "openclaw_agent_consult")
+
+
+def test_the_fallback_consult_is_openclaws_tool():
+    """The copy for a session the host gave no tools (room, phone): OpenClaw's
+    REALTIME_VOICE_AGENT_CONSULT_TOOL, by name and parameters."""
+    s = tools.OPENCLAW_AGENT_CONSULT
+    assert s.name == "openclaw_agent_consult"
+    assert list(s.properties) == ["question", "context", "responseStyle"]
+    assert s.required == ["question"]
+    assert all(p["type"] == "string" for p in s.properties.values())
+    assert tools.TOOLS_BY_NAME["openclaw_agent_consult"].schema is s
+
+
+def test_the_consult_reads_openclaws_arguments():
+    assert tools._consult_args({"question": "  is the shop open?  "}) == {
+        "question": "is the shop open?"}
+    # OpenClaw's aliases, in its order, and its two optional fields.
+    assert tools._consult_args({"query": "q", "task": "t"}) == {"question": "q"}
+    assert tools._consult_args({"question": "q", "context": " c ", "responseStyle": ""}) == {
+        "question": "q", "context": "c"}
+    assert tools._consult_args({"request": "q"}) is None
+    assert tools._consult_args(None) is None
+    assert tools._consult_message({"question": "q", "context": "c", "responseStyle": "s"}) == (
+        "q\n\nContext:\nc\n\nSpoken style:\ns")
+
+
+class _LLM:
+    def __init__(self):
+        self.pushed = []
+        self.tasks = []
+
+    async def push_frame(self, frame, *a, **kw):
+        self.pushed.append(frame)
+
+    def create_task(self, coro):
+        coro.close()        # the background waiter is not under test here
+        return None
+
+
+def test_one_consult_call_reaches_the_relay_with_openclaws_name_and_arguments():
+    """The relay RUNS every openclaw_agent_consult it is handed, so the display card
+    tools._wrap sends for other tools must not go out for this one: one call, the
+    handler's, with OpenClaw's arguments."""
+    from pipecat.processors.aggregators.llm_context import LLMContext
+
+    from teaport_brain.owed import Owed
+
+    llm = _LLM()
+    results = []
+
+    async def cb(result, **kw):
+        results.append(result)
+
+    params = SimpleNamespace(llm=llm, tool_call_id="tc-1", result_callback=cb,
+                             arguments={"question": "what's on today?", "context": "at home"})
+    handler = tools._wrap("openclaw_agent_consult",
+                          tools._bind_openclaw_agent_consult(tools.ToolContext(owed=Owed(LLMContext([])))),
+                          lambda: "en")
+    llm._teaport_spoke = True   # the model spoke first: no fallback line
+    asyncio.run(handler(params))
+    calls = [f.message for f in llm.pushed
+             if getattr(f, "message", {}).get("type") == "tool_call"]
+    assert len(calls) == 1, calls
+    assert calls[0]["name"] == "openclaw_agent_consult"
+    assert calls[0]["args"] == {"question": "what's on today?", "context": "at home"}
+    assert results and results[0]["status"] == "working_in_background"
+    from teaport_brain import consult_bridge
+    consult_bridge.cancel(calls[0]["call_id"])
+
+
 # ------------------------------------------------------------------ the prompt
 
 def test_the_prompt_starts_with_exactly_the_host_text():
@@ -107,8 +209,12 @@ def test_a_session_built_with_a_host_context_uses_it(monkeypatch):
     session = asyncio.run(build(host_context.from_frame(FRAME)))
     system = session.context.get_messages()[0]["content"]
     assert system.startswith(HOST_TEXT), system[:200]
+    offered = {s.name: s for s in session.context.tools.standard_tools}
+    assert "openclaw_agent_control" not in offered
+    if HAS_AGENT:
+        assert offered["openclaw_agent_consult"].description == HOST_CONSULT["description"]
 
-    # A host that composed nothing: the brain's own persona.
+    # A host that composed nothing: the brain's own persona, and its own schema.
     session = asyncio.run(build(host_context.HostContext()))
     system = session.context.get_messages()[0]["content"]
     assert system.startswith("BRAIN PERSONA.\n\n"), system[:80]
@@ -211,6 +317,34 @@ def test_a_frame_that_does_not_come_as_promised_builds_without_it():
 def test_a_client_that_leaves_while_the_brain_waits_gets_no_session():
     order, built = _run_talk({"session_config": "1"}, [{"type": "websocket.disconnect"}])
     assert order == ["receive"] and built is None, order
+
+
+# ------------------------------------------------------------------ one name
+
+def test_the_old_consult_name_is_gone():
+    """One consult tool, OpenClaw's, on every front end: the brain's own name for it is
+    not kept anywhere, not even as an alias. The historical run logs (brain/test/RUNLOG-*)
+    record what ran then and keep it."""
+    old = "ask_" + "openclaw"
+    if not os.path.isdir(os.path.join(REPO, "plugin")):
+        pytest.skip("not a repository checkout")
+    hits = []
+    for root, dirs, files in os.walk(REPO):
+        dirs[:] = [d for d in dirs if d not in (".git", "node_modules", ".venv", "__pycache__",
+                                                ".claude")]
+        for f in files:
+            if f.startswith("RUNLOG-") or not f.endswith(
+                    (".py", ".js", ".mjs", ".md", ".toml", ".sh", ".tla", ".json", ".html",
+                     ".txt", ".cfg", ".service", ".conf")):
+                continue
+            path = os.path.join(root, f)
+            try:
+                with open(path, encoding="utf-8") as fh:
+                    if old in fh.read().lower():
+                        hits.append(os.path.relpath(path, REPO))
+            except (OSError, UnicodeDecodeError):
+                continue
+    assert not hits, hits
 
 
 if __name__ == "__main__":

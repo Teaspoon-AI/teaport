@@ -12,7 +12,7 @@
     "extensions": ["./index.js"]
   },
   "peerDependencies": {
-    "openclaw": ">=2026.9.0"
+    "openclaw": ">=2026.9.7"
   },
   "keywords": [
     "openclaw",

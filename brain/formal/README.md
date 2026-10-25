@@ -34,7 +34,7 @@ java -XX:+UseParallelGC -cp tla2tools.jar tlc2.TLC \
 
 ## `Followup.tla` — a one-shot order in the context, and the gate's turn latch
 
-> Until #203 this was the model of the async `ask_openclaw` follow-up: when a background
+> Until #203 this was the model of the async `openclaw_agent_consult` follow-up: when a background
 > consult finished, a one-shot USER-role trigger ("tell the user now…") was appended to
 > the context and an `LLMRunFrame` queued, and a delivery loop (`MODE = "heard"`, #30)
 > posted it again until the caller had heard a third of its words. #203 broke that
@@ -2025,7 +2025,7 @@ commit (`ToolCall`), its `FunctionCallInProgressFrame` travels to the assistant
 aggregator (`tool = "transit"`) and puts the call and an `IN_PROGRESS` result in the
 context (`CallLands`), and the result lands (`ToolDone`) — a sync tool's,
 the LLM answering from it, or the consult's placeholder (`run_llm=False`, the consult
-running on in the brain's own background task: `ask_openclaw` is an ordinary pipecat
+running on in the brain's own background task: `openclaw_agent_consult` is an ordinary pipecat
 call, registered with the default `cancel_on_interruption=True`). Both frames are
 uninterruptible (pipecat's `UninterruptibleFrame` on 1.8, `interruptible=False` since
 1.12) and reach the context through the gate, so a round started while the gate holds waits
@@ -2137,7 +2137,7 @@ The same pop covers the reply gate's drop of a held call (its cancel passes the 
 gate and finds nothing on record; the frame, dropped at the gate, never comes). That
 holds for interruption cancels, which carry `run_llm=False`; the tool timeout's cancel
 asks for an inference in the ordinary order and the drop never would, but it cannot
-overtake a frame in practice (only `ask_openclaw` has a timeout, at least 5 s, and its
+overtake a frame in practice (only `openclaw_agent_consult` has a timeout, at least 5 s, and its
 frame would have to wait that long behind the reply audio ahead of it). A call no cancel
 overtook always passes; a new call reusing the id clears the mark with its own
 `FunctionCallsStartedFrame`, and a dropped frame takes its mark with it. Tests: in

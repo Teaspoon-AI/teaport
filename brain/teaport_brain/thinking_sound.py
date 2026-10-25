@@ -1,22 +1,22 @@
 #
 # thinking_sound.py — "assistant is thinking" comfort audio for long agent consults.
 #
-# During an ask_openclaw consult the brain hands off to the full desktop agent and
+# During an openclaw_agent_consult consult the brain hands off to the full desktop agent and
 # waits ~15-35 s, sometimes minutes, for the answer (web search + fetch + reasoning).
 # This processor types through it: from the consult's start until its answer is in, a
 # typist types, heard whenever the line is quiet — nobody has spoken, and no reply has
-# been on its way, for TEAPORT_THINKING_GRACE_S — and for at most TEAPORT_THINKING_MAX_S
-# of each consult. Quick tools (time, host status, web_search) never type: only the
-# tools in _TRIGGER, which is just ask_openclaw. Phone calls get no typing (agent_session
-# builds none for SIP) -- but in agent-first, where it is the only cover for the wait
-# (no "I'll work on that", no progress lines). Nor while the session is held for one.
+# been on its way, for TEAPORT_THINKING_GRACE_S — and for at most TEAPORT_THINKING_MAX_S of
+# each consult. Quick tools (time, host status, web_search) never type: only the tools in
+# _TRIGGER, which is just openclaw_agent_consult. Phone calls get no typing (agent_session
+# builds none for SIP) -- but in agent-first, where it is the only cover for the wait (no
+# "I'll work on that", no progress lines). Nor while the session is held for one.
 #
 # A consult's start and end. A background consult (the default: the turn ends at once
 # on a placeholder, owed.py) is the brain's {"type": "working"} message to the client,
 # sent when it starts and when its outcome is in (tools._consult_and_land). An
 # agent-first consult (TEAPORT_AGENT_FIRST: the turn waits for it) is its
 # FunctionCallsStartedFrame and FunctionCallResultFrame, or a barge-in, which cancels
-# it. Neither is keyed on reply audio: ask_openclaw speaks a preamble ("I'll work on
+# it. Neither is keyed on reply audio: openclaw_agent_consult speaks a preamble ("I'll work on
 # that…") right after the call starts, and the typing just waits for quiet again.
 #
 # Placed just before transport.output(): it sees all of that coming DOWN (and the
@@ -82,7 +82,7 @@ _MAX_S = setting("TEAPORT_THINKING_MAX_S")        # most typing heard per consul
 _WAV = setting("TEAPORT_THINKING_WAV")            # "" = live typing
 # Only genuinely-long tool calls type; the fast tools resolve before the grace period
 # even elapses, so typing there would just be a blip.
-_TRIGGER = {"ask_openclaw"}
+_TRIGGER = {"openclaw_agent_consult"}
 # A consult's typing never outlives this, whatever its end (its answer is due within
 # TEAPORT_ASYNC_CONSULT_TIMEOUT, and the brain says so when it is in).
 _TYPING_MAX_S = 600.0

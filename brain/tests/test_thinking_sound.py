@@ -283,13 +283,13 @@ async def test_two_consults_type_until_the_last_is_answered_and_a_barge_in_types
 @_with(grace=0.05)
 async def test_an_agent_first_consult_types_until_its_result_or_a_barge_in():
     bed, out = _bed(consults_async=False)
-    started = FunctionCallsStartedFrame(function_calls=[SimpleNamespace(function_name="ask_openclaw")])
+    started = FunctionCallsStartedFrame(function_calls=[SimpleNamespace(function_name="openclaw_agent_consult")])
     await _send(bed, _working("c1"))                         # (not this mode's signal)
     assert not _said(out, "typing")
     await _send(bed, LLMFullResponseStartFrame())            # the call alone: its End is held
     await _send(bed, started)
     await asyncio.sleep(0.2)
-    await _send(bed, FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="t1",
+    await _send(bed, FunctionCallResultFrame(function_name="openclaw_agent_consult", tool_call_id="t1",
                                              arguments={}, result={"answer": "the answer"}))
     await _send(bed, started)
     await _send(bed, InterruptionFrame())
@@ -308,9 +308,9 @@ async def test_a_consult_with_no_answer_ends_the_typing_without_the_finish():
     await _send(background, _working("c1", done=True, answered=False))
     first, first_out = _bed(consults_async=False)
     await _send(first, FunctionCallsStartedFrame(
-        function_calls=[SimpleNamespace(function_name="ask_openclaw")]))
+        function_calls=[SimpleNamespace(function_name="openclaw_agent_consult")]))
     await _send(first, FunctionCallResultFrame(
-        function_name="ask_openclaw", tool_call_id="t1", arguments={},
+        function_name="openclaw_agent_consult", tool_call_id="t1", arguments={},
         result={"error": "the desktop agent is taking too long"}))
     for said in (out, first_out):
         assert _said(said, "typing")[-1] == {"type": "typing", "on": False, "done": False}
@@ -397,7 +397,7 @@ async def test_a_held_reply_start_that_comes_after_its_own_call_mutes_only_brief
     try:
         bed, out = _bed(consults_async=False)
         await _send(bed, FunctionCallsStartedFrame(
-            function_calls=[SimpleNamespace(function_name="ask_openclaw")]))
+            function_calls=[SimpleNamespace(function_name="openclaw_agent_consult")]))
         await _send(bed, LLMFullResponseStartFrame())
         await asyncio.sleep(0.2)
         assert not _audio(out)                               # a reply might be on its way...

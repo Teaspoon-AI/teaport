@@ -108,7 +108,7 @@ def get_llm_api_key() -> str:
 # It applies to tool-call arguments too, which is the other reason for the headroom: a
 # truncated arguments stream is malformed JSON, and pipecat raises on it inside
 # _process_context, so the whole turn errors out and the function never runs. A long
-# ask_openclaw request is the realistic case.
+# openclaw_agent_consult request is the realistic case.
 #
 # "" is deliberately NOT in this table. LLM_REASONING_EFFORT="" is a configuration
 # docs/CONFIG.md invites ("for models that don't support it"), and _llm_extra() then omits
@@ -277,8 +277,8 @@ async def _sequential_tool_call_indices(stream):
     reached — the parsed call is left sitting in functions_list and silently discarded.
     No error, no warning, no log line: the model asked for a tool and the pipeline just
     did not run it. Reproduced 3/3 on 2026-08-20; a tool at array index 0 would work and
-    every other tool would not, which is the shape of the ask_openclaw drops that went
-    unexplained for hours.
+    every other tool would not, which is the shape of the openclaw_agent_consult drops that
+    went unexplained for hours.
 
     Mapping by order of first appearance is identity for a provider that already numbers
     calls 0,1,2, so this costs nothing when it is not needed.

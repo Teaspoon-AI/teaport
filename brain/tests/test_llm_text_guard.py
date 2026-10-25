@@ -389,7 +389,7 @@ class Capture:
 
 def result_frame(run_llm=None):
     props = FunctionCallResultProperties(run_llm=run_llm) if run_llm is not None else None
-    return FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="t1",
+    return FunctionCallResultFrame(function_name="openclaw_agent_consult", tool_call_id="t1",
                                    arguments={}, result={"ok": True}, properties=props)
 
 

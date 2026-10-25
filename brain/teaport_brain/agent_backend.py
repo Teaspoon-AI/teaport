@@ -36,4 +36,4 @@ def startup_line() -> str:
     if HAS_AGENT:
         return "agent backend: openclaw (gateway tools, memory recall, workspace persona)"
     return ("agent backend: none — no web_search/web_fetch/search_memory/remember/"
-            "ask_openclaw, no memory recall; persona from the persona file")
+            "openclaw_agent_consult, no memory recall; persona from the persona file")

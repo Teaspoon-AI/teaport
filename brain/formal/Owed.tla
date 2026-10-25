@@ -598,8 +598,8 @@ Issue ==
 \* What the model may say, by who asked and what the request carried (header; DESIGN.md
 \* "What the evidence supports"). "tool" is a sync tool call (get_current_time, ...),
 \* only on a caller's turn, and "texttool" the same call with a line before it ("Let me
-\* check." + get_weather): the line plays while the call is out; "lookup" is ask_openclaw
-\* again for what the outcome answers.
+\* check." + get_weather): the line plays while the call is out; "lookup" is
+\* openclaw_agent_consult again for what the outcome answers.
 Says(p, r, n) ==
     LET pt == Opt(OUTCOME = "items", "part") IN    \* a failure is told whole or not at all
     IF p = "run"     THEN {"tell"} \cup (Opt(PARTIAL, "part") \cap pt) \cup Opt(SILENT, "silent")

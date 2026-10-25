@@ -5,12 +5,12 @@
 # The teaport brain has two front-ends — gateway_server.py (OpenClaw WebSocket
 # relay) and sip_server.py (SIP over an AF_UNIX socket) — that used to build the
 # SAME Pipecat pipeline separately, and drifted. This module is the single source
-# of truth for the agent: build_agent_session() constructs the whole brain
-# (VAD + engine STT -> LLM -> engine TTS, the heard-grounding TranscriptLedger +
-# HeardContextCorrector, memory recall/reclaim, captions, turn-timing taps, the
-# degenerate-text guards, tools + the async ask_openclaw consult's owed answers) and returns an
-# AgentSession the front-end drives. A front-end supplies only its transport and,
-# optionally, its own input-side processors (SIP's HalfDuplexInputGate).
+# of truth for the agent: build_agent_session() constructs the whole brain (VAD + engine STT
+# -> LLM -> engine TTS, the heard-grounding TranscriptLedger + HeardContextCorrector, memory
+# recall/reclaim, captions, turn-timing taps, the degenerate-text guards, tools + the async
+# openclaw_agent_consult consult's owed answers) and returns an AgentSession the front-end
+# drives. A front-end supplies only its transport and, optionally, its own input-side
+# processors (SIP's HalfDuplexInputGate).
 #
 # Extracted from gateway_server.py (the more-complete of the two) so the OpenClaw
 # path is byte-for-byte the same processor sequence it was before; the SIP path
@@ -100,6 +100,7 @@ from teaport_brain.tools import (
     ToolContext,
     active_tools,
     build_tools_schema,
+    host_tool_schemas,
     register_tools,
 )
 from teaport_brain.transcript_ledger import TranscriptLedger
@@ -134,14 +135,14 @@ def _vad_cls(sample_rate: int):
 
 
 # Agent-first experiment (TEAPORT_AGENT_FIRST=1): the sandboxed OpenClaw agent owns
-# every conversational turn — ask_openclaw runs SYNCHRONOUSLY (no owed records,
+# every conversational turn — openclaw_agent_consult runs SYNCHRONOUSLY (no owed records,
 # so tools.py takes its sync path) and a strict system directive makes
 # the brain LLM a thin router/phraser instead of the mind. Bridge-is-brain is the
 # default; set TEAPORT_AGENT_FIRST=1 to enable. (AGENT_FIRST is defined once, in
 # tools.py — imported here so both front-ends share the same switch.)
 AGENT_FIRST_DIRECTIVE = (
     "AGENT-FIRST MODE — this overrides earlier tool guidance. For EVERY user "
-    "message, immediately call ask_openclaw with the user's request as one "
+    "message, immediately call openclaw_agent_consult with the user's request as one "
     "self-contained sentence (add brief context from the conversation when "
     "needed). Call it SILENTLY: no preamble sentence, no other tools, and never "
     "answer from your own knowledge. When the result arrives, speak its answer "
@@ -633,8 +634,9 @@ def build_agent_session(transport, *, voice: str | None = None,
       call prompt below is offered to both.
     - host: what the OpenClaw host composed for this session (host_context.HostContext;
       a Talk session's session_config frame). Its instructions start the system prompt
-      in place of the persona. None (the room mic and the phone until issue #230's
-      Phase 3, a client that sent none): the persona.
+      in place of the persona, and its tools' schemas replace the brain's copies of the
+      same name (tools.host_tool_schemas). None (the room mic and the phone until issue
+      #230's Phase 3, a client that sent none): the persona and the brain's own schemas.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -698,7 +700,8 @@ def build_agent_session(transport, *, voice: str | None = None,
     prompt = call_prompt.CallPrompt() if front_end in ("talk", "room") else None
     # One tool set for the schema, the prompt and (below) the handlers: tools.active_tools.
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
-                           call_prompt=prompt)
+                           call_prompt=prompt,
+                           host_schemas=host_tool_schemas(host.tools) if host else ())
     session_tools = active_tools(tool_ctx)
     if prompt is not None and not any(t.name == "answer_phone_call" for t in session_tools):
         prompt = None
@@ -731,7 +734,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     if lang_name:
         logger.info(f"TTS language selected → instructing the LLM to reply in {lang_name}")
     # register_tools is deferred until after the PipelineTask exists, with the owed
-    # records the async ask_openclaw path lands its outcomes in.
+    # records the async openclaw_agent_consult path lands its outcomes in.
 
     # The stock TurnAnalyzerUserTurnStopStrategy, keeping its verdict across the late
     # turn start every barge-in has here -- see endpointing.py. Named because the
@@ -931,7 +934,7 @@ def build_agent_session(transport, *, voice: str | None = None,
         # How a setup ended reaches the model the notes' way (wifi_voice._ended). No
         # notes (no /talk), no line: the tool needs a local /talk client anyway.
         wifi.notes = client_notes
-    # Type through a long ask_openclaw consult, heard while the line is quiet; the
+    # Type through a long openclaw_agent_consult consult, heard while the line is quiet; the
     # room's face types along (its bridge announces "typing"). Not on a phone call,
     # but in agent-first: there it is all that covers the wait (tools._fallback_line).
     bed = (ThinkingSound(consults_async=not AGENT_FIRST, keys="typing" in client_features,
@@ -1098,7 +1101,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                      "down. A processor is blocked in start(); the STT engine connect "
                      "is the long pole (see stt.CONNECT_BUDGET_S)")
 
-    # Now that the task exists, wire the tools — ask_openclaw goes ASYNC: it hands
+    # Now that the task exists, wire the tools — openclaw_agent_consult goes ASYNC: it hands
     # the consult to a background waiter, and when it lands its outcome is a record
     # owed to the caller until they hear it (owed.py): rendered into every request as a
     # note, told by one run as it lands, and re-offered once at a long lull.

@@ -1470,7 +1470,7 @@ def test_a_brain_that_does_not_gate_is_never_sent_the_room(monkeypatch):
 
 def test_a_consult_still_on_its_way_keeps_the_conversation_awake(monkeypatch):
     """The keep-alive must not put a conversation to sleep while the agent's answer is
-    still coming (ask_openclaw's async consult: the brain's "working")."""
+    still coming (openclaw_agent_consult's async consult: the brain's "working")."""
     flag, _ = _wake_card(monkeypatch)
     monkeypatch.setattr(la, "KEEPALIVE_SECS", 0.3)
     ends = []

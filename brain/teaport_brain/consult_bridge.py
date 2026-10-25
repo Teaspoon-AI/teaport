@@ -1,7 +1,7 @@
 #
 # teaport — pending-consult registry (the brain half of in-process consults).
 #
-# ask_openclaw (tools.py) emits an openclaw_agent_consult tool_call over /talk
+# The consult tool, openclaw_agent_consult (tools.py), sends its call as a tool_call over /talk
 # with a call_id and parks a future here; the teaport plugin's submitToolResult
 # forwards the relay's result back as a {"type":"tool_result"} message, which
 # the serializer resolves through this module. Single event loop, no locking.
@@ -17,7 +17,7 @@ from loguru import logger
 
 _pending: dict = {}
 
-# Every consult call_id starts with this (tools._ask_openclaw mints them). The relay
+# Every consult call_id starts with this (tools._openclaw_agent_consult mints them). The relay
 # also echoes tool_results for the brain's OWN tool calls -- the display-only
 # tool_call events tools._wrap sends with pipecat's "fc_..." ids -- dozens per Talk
 # consult. Those are not consults and never were, so they are dropped without a log

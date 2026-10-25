@@ -2,13 +2,13 @@
 # owed.py — "owed until heard" (#203): what the caller is still owed, outside the
 # conversation.
 #
-# An async consult (tools.ask_openclaw) answers later than the turn that asked for it.
-# Until 2026-10 its answer was handed over by a one-shot USER-role trigger written into
-# the context ("tell the user now ...") and retired once the caller had heard a third of
-# the reply's WORDS. #203 broke that premise: 1.1 s of a lead-in that restated the
-# question ("The top story on Hacker News right now ...") was 31% of the words and none
-# of the information, the trigger was retired as "already given", and "I'm ready." was
-# answered with a second 49-second lookup.
+# An async consult (tools.openclaw_agent_consult) answers later than the turn that asked for
+# it. Until 2026-10 its answer was handed over by a one-shot USER-role trigger written into
+# the context ("tell the user now ...") and retired once the caller had heard a third of the
+# reply's WORDS. #203 broke that premise: 1.1 s of a lead-in that restated the question
+# ("The top story on Hacker News right now ...") was 31% of the words and none of the
+# information, the trigger was retired as "already given", and "I'm ready." was answered
+# with a second 49-second lookup.
 #
 # The shape that replaced it has three concepts and is checked before it was written
 # (brain/formal/Owed.tla, which LEADS this code; every action and row named below is
@@ -539,6 +539,20 @@ def render(messages: list, records: list, purpose: str) -> list:
 _NOT_A_RESULT = frozenset({"IN_PROGRESS", "CANCELLED", "COMPLETED"})
 
 
+def _argument_words(arguments) -> str:
+    """A tool call's arguments as the words in them: the values, not the JSON. The keys
+    are a schema's names, nobody's words, and some are not common words:
+    openclaw_agent_consult's "question" and "context" would count as terms of what was
+    asked, and walk the question back to any turn that says "question"."""
+    try:
+        parsed = json.loads(arguments) if isinstance(arguments, str) else arguments
+    except (ValueError, TypeError):
+        return str(arguments or "")
+    if isinstance(parsed, dict):
+        return " ".join(str(v) for v in parsed.values() if isinstance(v, (str, int, float)))
+    return str(parsed or "")
+
+
 def new_results(messages: list, known) -> list:
     """The tool results in `messages` whose tool_call_ids are not `known`, as (id, tool
     name, the words that started its round, what the caller asked), oldest first. Every
@@ -551,7 +565,7 @@ def new_results(messages: list, known) -> list:
     return [(m.get("tool_call_id"), calls.get(m.get("tool_call_id"), {}).get("name"),
              caller_asked(messages, i),
              _question(messages, i, terms_of(msg_text(m), "") | terms_of(
-                 str(calls.get(m.get("tool_call_id"), {}).get("arguments") or ""), "")))
+                 _argument_words(calls.get(m.get("tool_call_id"), {}).get("arguments")), "")))
             for i, m in enumerate(messages)
             if isinstance(m, dict) and m.get("role") == "tool"
             and m.get("tool_call_id") not in known and msg_text(m).strip() not in _NOT_A_RESULT]
@@ -676,10 +690,10 @@ class Reply:
 class Owed:
     """The session's owed records, and every action of Owed.tla's `rec` on them.
 
-    tools.ask_openclaw registers each consult (dispatch) and lands its outcome (land).
-    The LLM service asks for each request's view (view) and registers the reply that view
-    carried (noted); the ledger settles replies (settle). `gate`, a FollowupGate, is the
-    door the runs go through: the book asks it (ask), and it reports caller turns, runs
+    tools.openclaw_agent_consult registers each consult (dispatch) and lands its outcome
+    (land). The LLM service asks for each request's view (view) and registers the reply that
+    view carried (noted); the ledger settles replies (settle). `gate`, a FollowupGate, is
+    the door the runs go through: the book asks it (ask), and it reports caller turns, runs
     dropped at its hold cap and the session's end through its callbacks. The lull is the
     book's own task."""
 
@@ -852,11 +866,11 @@ class Owed:
     # ---- Land ---------------------------------------------------------------------
 
     def dispatch(self, key: str, request: str) -> Optional[str]:
-        """A consult is asked for (tools.ask_openclaw). None: it runs, and its placeholder
-        is in the context until land() rewrites it or the session ends (close_session).
-        Otherwise the key of the consult already running for this exact request: gpt-oss
-        sometimes asks the same thing twice a few seconds apart, and that one's outcome
-        answers both (land() rewrites this placeholder to point at it)."""
+        """A consult is asked for (tools.openclaw_agent_consult). None: it runs, and its
+        placeholder is in the context until land() rewrites it or the session ends
+        (close_session). Otherwise the key of the consult already running for this exact
+        request: gpt-oss sometimes asks the same thing twice a few seconds apart, and that
+        one's outcome answers both (land() rewrites this placeholder to point at it)."""
         running = self._running.get(request)
         self._answers[key] = _Answer(request, record=running or key)
         msgs = self.context.get_messages()

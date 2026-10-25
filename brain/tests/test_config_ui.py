@@ -388,13 +388,13 @@ def test_put_validation():
     assert r.status_code == 400 and r.json()["errors"]["TTS_LANGUAGE"] == "must be a single line", r.text
     assert "installer" in errs["GATEWAY_TOKEN"]
     assert calls == []
-    # constraints: ask_openclaw must exceed ack + native
+    # constraints: openclaw_agent_consult must exceed ack + native
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
-        "TEAPORT_ASK_OPENCLAW_TIMEOUT": "30"}})
+        "TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT": "30"}})
     assert r.status_code == 400 and r.json()["constraints"], r.text
     assert calls == []
     r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {
-        "TEAPORT_ASK_OPENCLAW_TIMEOUT": "30"}, "force": True})
+        "TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT": "30"}, "force": True})
     assert r.status_code == 200 and r.json()["warnings"], r.text
     assert calls[-1][0:2] == ("write", "brain.env")
     # LEDGER_TRACE only takes "1"
