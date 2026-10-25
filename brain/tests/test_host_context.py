@@ -675,11 +675,11 @@ def test_a_200_that_is_not_json_says_so(monkeypatch):
     assert not any("JSONDecodeError" in w for w in seen), seen
 
 
-def test_the_agent_the_operator_named_is_the_one_every_lane_reaches(monkeypatch):
+def test_the_agent_the_operator_named_is_the_one_the_consults_reach(monkeypatch):
     """OPENCLAW_AGENT_ID, when set, is the agent this box talks to: the voice context the
     room and the phone ask for, the warm consult lane's model and the CLI fallback all
-    name it (openclaw_client.AGENT_ID). Unset, none of them names one: the gateway's
-    default agent, everywhere."""
+    name it (openclaw_client.AGENT_ID). Unset, the voice context and the warm lane name
+    none (the gateway's default agent) and the CLI names "main", as it always has."""
     import io
 
     from teaport_brain import openclaw_client as oc
@@ -706,7 +706,7 @@ def test_the_agent_the_operator_named_is_the_one_every_lane_reaches(monkeypatch)
     _, requests = _fetch(monkeypatch, 200, ROUTE_BODY, front_end="room")
     assert requests[0][0] == "/teaport/voice-context?front_end=room", requests
     assert consult_model() == "openclaw"
-    assert oc.agent_args() == []
+    assert oc.agent_args() == ["--agent", "main"], "the CLI's agent as before #230"
     from teaport_brain.settings import setting
     assert setting("OPENCLAW_AGENT_ID", env={}) is None
 

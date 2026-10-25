@@ -78,19 +78,19 @@ def _find_openclaw_bin() -> str:
 
 OPENCLAW_BIN = _find_openclaw_bin()
 # The agent this box talks to: OPENCLAW_AGENT_ID when the operator set it, else None --
-# the gateway's own default agent. Every lane names it from here, so a consult, its CLI
-# fallback and the voice context (host_context.fetch, ?agent=) are about one agent:
+# the gateway's own default agent. The consult lanes and the voice context
+# (host_context.fetch, ?agent=) name it from here, so a consult and the room's profile
+# are about one agent:
 #   /v1/chat/completions  model "openclaw/<id>" (OpenClaw's agent model id, 2026.9.7
 #                         http-utils.ts resolveAgentIdFromModel: an unconfigured id is a
 #                         400), unset "openclaw" -> resolveDefaultAgentId;
-#   the CLI               --agent <id>, unset nothing: `openclaw agent` then picks its
-#                         implicit agent, the default one (agent-via-gateway.ts), and
-#                         `openclaw memory index` indexes every configured agent;
 #   the voice context     agent=<id>, unset nothing: the route's strict resolver, the
 #                         agent the lane's "openclaw" answers with whenever it answers.
-# Its old schema default "main" is gone: sent to a gateway whose default agent is
-# another, it named an agent the operator never did, and the CLI fallback consulted a
-# different agent from the warm lane it stands in for.
+# The CLI (the consult fallback and `memory index`) is as it was before: --agent <id>, or
+# --agent main when unset (with no --agent, `memory index` would index every agent, and
+# the consult would fail on a box with several agents and no default marked). Memory
+# and the web tools are not named at all: remember_note writes OPENCLAW_MEMORY_DIR and
+# /tools/invoke carries no agent, so they stay with the gateway's default agent.
 AGENT_ID = setting("OPENCLAW_AGENT_ID")
 
 
@@ -100,8 +100,10 @@ def agent_model() -> str:
 
 
 def agent_args() -> list[str]:
-    """The `openclaw` CLI arguments that name the agent this box talks to."""
-    return ["--agent", AGENT_ID] if AGENT_ID else []
+    """The `openclaw` CLI arguments naming the agent: OPENCLAW_AGENT_ID, else "main"."""
+    return ["--agent", AGENT_ID or "main"]
+
+
 # 45 s, not 30: the sandbox-exec shim adds ~14 s of spawn tax (nemoclaw + docker
 # exec + CLI node startup, measured) before the agent turn even starts, and a
 # Discord-action turn needs real time after that. Callers cap the voice wait
