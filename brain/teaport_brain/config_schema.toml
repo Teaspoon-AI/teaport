@@ -1273,6 +1273,7 @@ type = "float"
 unit = "s"
 min = 5
 default = 55
+former = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
 read = "startup"
 tier = "tuning"
 help = "The function-call timeout for openclaw_agent_consult. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
@@ -1498,6 +1499,7 @@ store = "brain_env"
 group = "tools"
 type = "flag"
 default = true
+former = "TEAPORT_TOOL_ASK_OPENCLAW"
 read = "startup"
 tier = "tuning"
 help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."

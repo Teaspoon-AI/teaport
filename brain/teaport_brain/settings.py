@@ -53,10 +53,11 @@
 # validate fails the first test that imports its module instead of shipping.
 #
 # A RENAMED setting keeps a row under its old name (tier diag, its help naming the new
-# one), and its read names both: setting("NEW", former="OLD"). While NEW is unset and OLD
-# is set, OLD's value is read, with a warning naming the rename, so an env file written
+# one), and the new row names the old: `former = "OLD"`. While NEW is unset and OLD is
+# set, OLD's value is read, with a warning naming the rename, so an env file written
 # before it keeps meaning what it said -- a switch turned off stays off -- instead of
-# being silently ignored. A RETIRED one (nothing reads it any more) keeps a row the same
+# being silently ignored. One rule, read_name(), for setting() and for the config page,
+# which shows NEW as the brain reads it. A RETIRED one (nothing reads it any more) keeps a row the same
 # way, and the module that dropped it warns when it is still set (reply_hold.py's
 # TEAPORT_REPLY_HOLD).
 #
@@ -260,23 +261,33 @@ def default_of(row: dict):
 _SCHEMA_DEFAULT = object()
 
 
-def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ, *, former: str | None = None):
+def read_name(name: str, env) -> str:
+    """The name setting `name` is read under in `env`: its own, or, while it is unset and
+    that one is set, the name it had before a rename (its row's `former`; module comment).
+    """
+    former = ROWS[name].get("former")
+    if former is not None and normalize(ROWS[name], env.get(name)) is None \
+            and normalize(ROWS[former], env.get(former)) is not None:
+        return former
+    return name
+
+
+def setting(name: str, default=_SCHEMA_DEFAULT, env=os.environ):
     """The value of setting `name`: its environment text, parsed by its schema row.
 
     Unset or empty -> the row's default, or `default` for the few rows whose default
     is computed in code; set-but-empty is "" instead where empty_is_value(row). A value
     that does not parse warns and falls back the same way: these are read at import,
     and an exception would crash-loop the service. normalize() says what text a value
-    is read as (stripped). `former`: the name it had before a rename (module comment),
-    read in its place, with a warning, while `name` is unset."""
+    is read as (stripped). A renamed setting is read under its former name while it is
+    unset and that one is set (read_name), with a warning."""
     row = ROWS[name]
     fallback = default_of(row) if default is _SCHEMA_DEFAULT else default
-    raw = normalize(row, env.get(name))
-    if raw is None and former is not None \
-            and normalize(ROWS[former], env.get(former)) is not None:
+    if (former := read_name(name, env)) != name:
         logger.warning(f"{former} is renamed {name}: its value is read for now; rename it "
                        "in the env file")
         return setting(former, fallback, env)
+    raw = normalize(row, env.get(name))
     if raw is None:
         return fallback
     if raw == "":

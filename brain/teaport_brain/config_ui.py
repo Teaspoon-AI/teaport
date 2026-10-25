@@ -255,13 +255,16 @@ def _read_by_rule(row: dict) -> bool:
         and "consumer" not in row
 
 
-def _as_read(rows: dict[str, dict], file_values: dict[str, str]) -> tuple[dict[str, str], dict[str, str]]:
+def _as_read(rows: dict[str, dict], file_values: dict[str, str]
+             ) -> tuple[dict[str, str], dict[str, str], dict[str, str]]:
     """A store's values for the page, each as its reader takes it (_read_by_rule): the
     brain's reading in its one spelling, left out where it is not set, or the text as
     written; a key the schema does not know as written; hidden keys dropped. And
-    {name: the page's note} for each value the brain ignores (_ignored)."""
+    {name: the page's note} for each value the brain ignores (_ignored), and for each
+    renamed setting it reads under its former name (_renamed)."""
     out: dict[str, str] = {}
     ignored: dict[str, str] = {}
+    renamed: dict[str, str] = {}
     for name, value in file_values.items():
         if _is_hidden(name, rows):
             continue
@@ -272,7 +275,21 @@ def _as_read(rows: dict[str, dict], file_values: dict[str, str]) -> tuple[dict[s
             if value is None:
                 continue
         out[name] = value
-    return out, ignored
+    # A renamed setting unset in the file is read under its former name while that one
+    # is set (settings.read_name, the brain's own rule): shown with that value, so a
+    # switch the old name turned off does not show on.
+    for name, row in rows.items():
+        if "former" in row and _read_by_rule(row) and name not in out \
+                and settings.read_name(name, file_values) != name and row["former"] in out:
+            out[name] = out[row["former"]]
+            renamed[name] = _renamed(row)
+    return out, ignored, renamed
+
+
+def _renamed(row: dict) -> str:
+    """The page's note for a renamed setting read under its former name."""
+    return (f"Read from {row['former']}, this setting's name before it was renamed: saving "
+            f"a value here writes the new name, which then wins.")
 
 
 def _ignored(row: dict, why: str) -> str:
@@ -444,6 +461,7 @@ async def get_config(request: Request):
 
     values: dict[str, dict[str, str]] = {}
     ignored: dict[str, str] = {}
+    renamed: dict[str, str] = {}
     parsed: dict[str, dict[str, str]] = {}
     mtimes: dict[str, float | None] = {}
     unreadable: list[str] = []
@@ -455,8 +473,9 @@ async def get_config(request: Request):
             unreadable.append(store)
             text = ""
         parsed[store] = parse_conf(text) if conf else parse_env(text)
-        values[store], why = _as_read(rows, parsed[store])
+        values[store], why, was = _as_read(rows, parsed[store])
         ignored.update(why)
+        renamed.update(was)
         mtimes[store] = _mtime(path)
 
     absent = [s for s in OPT_IN_STORES if not os.path.exists(_store_path(s))]
@@ -489,6 +508,7 @@ async def get_config(request: Request):
                    "settings": schema["settings"], "constraints": schema.get("constraints", [])},
         "values": values,
         "ignored": ignored,
+        "renamed": renamed,
         "secrets": secrets,
         "services": {u: s["state"] for u, s in states.items()},
         "pending": pending,

@@ -46,10 +46,8 @@ sys.path.insert(0, str(PKG.parent))
 from teaport_brain import config_schema  # noqa: E402  (stdlib-only: tomllib)
 from tempdirs import tempdir  # noqa: E402
 
-# `former="OLD"` is a read too: setting("NEW", former="OLD") reads a renamed setting's old
-# name while the new one is unset (settings.py, RENAMED).
 READ_RE = re.compile(
-    r'(?:getenv|\bsetting|environ\.get|environ\[|\bformer=)\(?\s*(["\'])([A-Z][A-Z0-9_]+)\1(?!\]\s*=[^=])'
+    r'(?:getenv|\bsetting|environ\.get|environ\[)\(?\s*(["\'])([A-Z][A-Z0-9_]+)\1(?!\]\s*=[^=])'
 )
 SETDEFAULT = r"""\benviron\.setdefault\(\s*(["']){name}\1"""
 
@@ -395,6 +393,12 @@ def main() -> int:
             problems.append(f"{n}: kept is `true`, on a row of the keyvalue store (sip_conf)")
         if "min" in r and "max" in r and r["min"] > r["max"]:
             problems.append(f"{n}: min > max")
+        if "former" in r:
+            old = next((o for o in rows if o["name"] == r["former"]), None)
+            if old is None or old["store"] != r["store"] or old["type"] != r["type"] \
+                    or old.get("tier") != "diag" or "former" in old:
+                problems.append(f"{n}: former names a diag row of the same store and type, "
+                                "itself not renamed")
 
     ok = {"type": "path", "empty": "off", "tier": "installer"}
     for bad in ({**ok, "type": "int"}, {**ok, "empty": ""}, {**ok, "default": ""},
@@ -415,6 +419,9 @@ def main() -> int:
                 problems.append(f"constraint references unknown setting {ref}")
 
     code = env_reads_in_code()
+    # A renamed setting's old name is read by setting() through the new row's `former`
+    # (settings.read_name): read while the new row is.
+    code |= {r["former"] for r in rows if "former" in r and r["name"] in code}
     for n in sorted(code - set(names)):
         problems.append(f"read in code, no schema row: {n}")
     for n in sorted(env_defaults_in_code() - set(names)):

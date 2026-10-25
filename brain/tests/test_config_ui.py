@@ -221,6 +221,30 @@ def test_an_ignored_value_says_what_its_reader_does_and_can_be_removed():
     assert "HEARD_MODE" not in client.get("/api/config", headers=H).json()["ignored"]
 
 
+def test_a_renamed_setting_shows_what_the_brain_reads_under_its_former_name():
+    # A box's env file from before #230 switched the consult off under its old name: the
+    # brain reads it (settings.read_name), so the page shows the new row off too, says
+    # why, and a value saved under the new name wins.
+    client, etc, home, calls = setup()
+    new, old = "TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT", "TEAPORT_TOOL_ASK_OPENCLAW"
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write(f"{old}=no\n")
+    body = client.get("/api/config", headers=H).json()
+    assert body["values"]["brain_env"][new] == "0" and body["values"]["brain_env"][old] == "0"
+    assert old in body["renamed"][new], body["renamed"]
+    from teaport_brain.settings import setting
+    assert setting(new, env={old: "no"}) is False, "the page and the brain read alike"
+    r = client.put("/api/config", headers=H, json={"store": "brain_env", "values": {new: "1"}})
+    assert r.status_code == 200, r.text
+    body = client.get("/api/config", headers=H).json()
+    assert body["values"]["brain_env"][new] == "1" and new not in body["renamed"]
+    # An old value the brain cannot read is not shown as the new one's.
+    with open(os.path.join(etc, "brain.env"), "w") as f:
+        f.write(f"{old}=maybe\n")
+    body = client.get("/api/config", headers=H).json()
+    assert new not in body["values"]["brain_env"] and new not in body["renamed"]
+
+
 def test_doctor_reads_a_blank_secret_as_not_set():
     # `teaport doctor`'s two secret checks (cli/teaport cmd_doctor) by the same rule as the
     # brain: a blank or whitespace-only llm_key and a GATEWAY_TOKEN="  " are not set. The

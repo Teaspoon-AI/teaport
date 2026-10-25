@@ -57,15 +57,15 @@ def test_a_renamed_setting_is_read_under_its_old_name_while_the_new_one_is_unset
     seen = []
     sink = settings.logger.add(seen.append, level="WARNING")
     try:
-        assert setting(new, env={old: "0"}, former=old) is False
+        assert setting(new, env={old: "0"}) is False
         # The new name wins; neither set is the new row's default, silently.
-        assert setting(new, env={old: "0", new: "1"}, former=old) is True
-        assert setting(new, env={}, former=old) is True
-        assert setting(new, env={old: " "}, former=old) is True
+        assert setting(new, env={old: "0", new: "1"}) is True
+        assert setting(new, env={}) is True
+        assert setting(new, env={old: " "}) is True
         # The timeout too, and an unreadable old value falls back like any other.
         t_new, t_old = "TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT", "TEAPORT_ASK_OPENCLAW_TIMEOUT"
-        assert setting(t_new, env={t_old: "70"}, former=t_old) == 70.0
-        assert setting(t_new, env={t_old: "soon"}, former=t_old) == default_of(ROWS[t_new])
+        assert setting(t_new, env={t_old: "70"}) == 70.0
+        assert setting(t_new, env={t_old: "soon"}) == default_of(ROWS[t_new])
     finally:
         settings.logger.remove(sink)
     renamed = [str(m) for m in seen if "is renamed" in str(m)]
