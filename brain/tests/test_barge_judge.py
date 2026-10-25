@@ -202,31 +202,18 @@ async def test_a_stop_word_while_judging_takes_the_turn_at_once():
         assert judge.asked == ["Okay"] and len(rig.out()) == 2, "its verdict is dropped"
 
 
-async def test_the_hold_has_one_deadline_however_often_the_judge_is_asked():
-    judge = _Judge({"Okay": CONTINUE, "Okay so": CONTINUE}, delay=0.35)
-    async with GateRig(judge, wait=0.6) as rig:
-        t0 = time.monotonic()
-        await rig.task.queue_frame(interim("Okay"))
-        await asyncio.sleep(0.1)
-        await rig.task.queue_frame(interim("Okay so"))
-        await asyncio.sleep(0.65)
-        assert judge.asked == ["Okay", "Okay so"], judge.asked
-        let_on = [t for t, d, f in rig.bottom.frames if isinstance(f, InterimTranscriptionFrame)]
-        assert let_on and let_on[0] - t0 < 0.68, (
-            f"let on {let_on[0] - t0 if let_on else None}s after the first words: the "
-            "asked-again judge must not get a fresh wait of its own")
-        assert rig.gate.verdicts[None] == 1
-
-
-async def test_with_too_little_of_the_hold_left_the_grown_words_go_on_unasked():
-    judge = _Judge({"Okay": CONTINUE}, delay=0.2)
+async def test_words_that_keep_growing_are_not_cut_while_each_verdict_is_in_time():
+    words = ["Yeah", "Yeah, now", "Yeah, now you", "Yeah, now you found it"]
+    judge = _Judge({w: CONTINUE for w in words}, delay=0.2)
     async with GateRig(judge) as rig:
-        await rig.task.queue_frame(interim("Okay"))
-        await asyncio.sleep(0.05)
-        await rig.task.queue_frame(interim("Okay so"))
-        await asyncio.sleep(0.25)
-        assert judge.asked == ["Okay"], f"{judge.asked}: 0.1 s left is no time to ask again"
-        assert rig.out() == [("interim", "Okay"), ("interim", "Okay so")], rig.out()
+        for w in words:
+            await rig.task.queue_frame(interim(w))
+            await asyncio.sleep(0.15)
+        await asyncio.sleep(0.4)
+        assert judge.asked == words, judge.asked
+        assert rig.out() == [] and rig.gate.verdicts[None] == 0, (
+            f"{rig.out()}: four quick CONTINUEs over {0.15 * len(words) + 0.2:.1f}s, past "
+            f"one {WAIT_S}s wait in all -- a caller still talking is not a slow judge")
 
 
 async def test_words_whose_segment_closed_empty_do_not_swallow_a_later_utterance():

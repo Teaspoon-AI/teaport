@@ -40,7 +40,7 @@
 # one-word judge (the cut judge's request path, owed.py) whether the reply should carry
 # on, stop, or answer them. CONTINUE drops the words -- a final becomes the wordless
 # close a cough gives -- and the reply resumes from the sample it paused on, as it does
-# for a cough. STOP or ANSWER, or no verdict within _JUDGE_WAIT_S of the first words,
+# for a cough. STOP or ANSWER, or no verdict within _JUDGE_WAIT_S of being asked,
 # lets the frames on as they came, and the turn starts exactly as it would have without
 # the judge, that much later; so does a stop word, or the reply's would-be end, arriving
 # while it decides. Stop words (below), a pause whose reply would be over by now and an
@@ -185,10 +185,11 @@ JUDGE = setting("TEAPORT_BARGE_JUDGE")
 # later verdict is dropped. 0.8 s timed out 2 of 25 on a live call (an "Okay." that then
 # cut the reply) though the box's own judge requests, off a call, were p99 0.62 s, max
 # 0.74 s (100 sequential, 2026-10-25): the tail is the call's load. Only a timeout waits
-# this long -- a verdict is acted on when it comes.
+# this long -- a verdict is acted on when it comes. Each request gets its own wait: a
+# caller still talking is not a slow judge (one deadline for a whole hold cut "Yeah, now
+# you found it." after three quick CONTINUEs on its growing words, 2026-10-25), and a
+# stop word does not wait on it at all.
 _JUDGE_WAIT_S = 1.2
-# Less of the hold left than about a judge's p50, and asking again is not worth a request.
-_REASK_MIN_S = 0.2
 
 CONTINUE, STOP, ANSWER = "continue", "stop", "answer"
 
@@ -616,11 +617,9 @@ class BargeInJudgeGate(FrameProcessor):
         # judging. A lock keeps a release in one piece against frames still arriving.
         self._held: list = []
         self._lock = asyncio.Lock()
-        # All the held words, the judge asked now, and when the hold gives up on it:
-        # one deadline for the hold, however often the judge is asked again.
+        # All the held words, and the judge asked now (on which words).
         self._said = ""
         self._task = None
-        self._deadline = 0.0
         # A user turn is open (the aggregator below broadcasts its start and stop): its
         # words are its own, never judged.
         self._turn_open = False
@@ -688,7 +687,6 @@ class BargeInJudgeGate(FrameProcessor):
             return False
         self._held = [frame]
         self._said = text
-        self._deadline = time.monotonic() + self._wait_secs
         if self._hold_resume is not None:
             self._hold_resume(True)
         self._ask(text)
@@ -700,10 +698,10 @@ class BargeInJudgeGate(FrameProcessor):
     async def _decide(self, said: str):
         t0 = time.monotonic()
         try:
-            verdict = await asyncio.wait_for(self._judge(said), max(0.0, self._deadline - t0))
+            verdict = await asyncio.wait_for(self._judge(said), self._wait_secs)
             why = ""
         except asyncio.TimeoutError:
-            verdict, why = None, f" (none within {self._wait_secs:.1f}s of the first words)"
+            verdict, why = None, f" (none within {self._wait_secs:.1f}s)"
         except Exception as e:  # noqa: BLE001 -- a judge failure is no verdict
             verdict, why = None, f" ({type(e).__name__}: {e})"
         self.verdicts[verdict] += 1
@@ -715,13 +713,10 @@ class BargeInJudgeGate(FrameProcessor):
             if not self._held:
                 return  # released meanwhile: the pause ended
             if verdict == CONTINUE and _key(self._said) != _key(said):
-                # They said more while it was deciding: ask on all of it -- with time
-                # left for an answer, or the words go on now.
-                if self._deadline - time.monotonic() >= _REASK_MIN_S:
-                    self._ask(self._said)
-                    return
-                await self._release("they said more, with no time left to ask again")
-            elif verdict == CONTINUE:
+                # They said more while it was deciding: ask on all of it.
+                self._ask(self._said)
+                return
+            if verdict == CONTINUE:
                 await self._carry_on(said)
             else:
                 await self._release(f"verdict {verdict or 'none'}")
