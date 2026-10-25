@@ -60,6 +60,7 @@ from pipecat.services.llm_service import FunctionCallParams
 
 from teaport_brain import consult_bridge
 from teaport_brain import openclaw_client as oc
+from teaport_brain.owed import CANCELLED_NOTE
 from teaport_brain.agent_backend import HAS_AGENT
 from teaport_brain.captions import caption_ahead
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
@@ -677,6 +678,9 @@ async def _consult_and_land(call_id, fut, request, owed, tool_call_id, llm=None,
         if outcome.text:
             logger.info(f"openclaw_agent_consult(async): follow-up ready "
                         f"({len(outcome.text)} chars)")
+        elif outcome.failure == "cancelled":
+            # OpenClaw's run control stopped it; owed.land closes it silently.
+            logger.info(f"openclaw_agent_consult(async): consult {_describe(outcome)}")
         else:
             logger.warning(f"openclaw_agent_consult(async): consult {_describe(outcome)}")
         await deliver(outcome)
@@ -822,6 +826,9 @@ async def _openclaw_agent_consult(params: FunctionCallParams, owed=None, gate=No
             await params.result_callback({"answer": outcome.text})
         elif outcome.failure == "empty":
             await params.result_callback({"error": "the desktop agent returned no answer"})
+        elif outcome.failure == "cancelled":
+            logger.info(f"openclaw_agent_consult: native consult {_describe(outcome)}")
+            await params.result_callback({"status": "cancelled", "note": CANCELLED_NOTE})
         else:
             logger.warning(f"openclaw_agent_consult: native consult {_describe(outcome)}")
             await params.result_callback({"error": outcome.detail or "the desktop agent failed"})

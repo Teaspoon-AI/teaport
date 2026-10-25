@@ -83,9 +83,23 @@ def extract_text(result) -> str:
 
 def classify(result) -> tuple[str | None, str | None, str]:
     """(text, failure, detail) for a relay consult result: the speakable answer, or
-    None with why -- "error", "timeout" (the runner's own wait ran out), or "empty"
-    (no answer, including the runner's no-text placeholder). Same vocabulary as
-    openclaw_client.ConsultOutcome."""
+    None with why -- "error", "timeout" (the runner's own wait ran out), "empty"
+    (no answer, including the runner's no-text placeholder), or "cancelled". Same
+    vocabulary as openclaw_client.ConsultOutcome, plus "cancelled", which only the relay
+    reports.
+
+    "cancelled" is OpenClaw stopping the run (buildRealtimeVoiceAgentCancelProviderResult,
+    {"status": "cancelled", "message": ...}): the relay's spoken run control heard the
+    user call it off ("cancel that", "never mind") and submits it as the final result of
+    every open consult (relay/forced-consults.ts, 2026.9.7); an aborted run reports it
+    too. It carries no text/result/output/error, so it used to read as "empty" and the
+    caller was later told the request "came back empty". Nothing is owed for it
+    (owed.Owed.land), and the relay speaks the cancellation itself (TeaportBridge.
+    sendUserMessage, plugin/provider.js)."""
+    if isinstance(result, dict) and result.get("status") == "cancelled":
+        message = result.get("message")
+        return None, "cancelled", (message.strip() if isinstance(message, str)
+                                   and message.strip() else "cancelled")
     if isinstance(result, dict) and result.get("error") \
             and not any(result.get(k) for k in ("text", "result", "output")):
         err = str(result["error"]).strip()

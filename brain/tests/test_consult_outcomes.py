@@ -157,6 +157,16 @@ async def test_the_no_text_placeholder_is_an_empty_result():
         assert text is None and failure == "empty", (result, text, failure)
 
 
+async def test_a_run_openclaw_cancelled_is_cancelled_not_empty():
+    """#230: the relay submits {"status": "cancelled", "message": ...} for a consult its
+    run control stopped (buildRealtimeVoiceAgentCancelProviderResult). It has no text,
+    and read as "empty" the caller was told it "came back empty"."""
+    result = {"status": "cancelled", "message": "Cancelled the active OpenClaw run."}
+    assert consult_bridge.classify(result) == (
+        None, "cancelled", "Cancelled the active OpenClaw run.")
+    assert consult_bridge.classify({"status": "cancelled"})[1] == "cancelled"
+
+
 async def test_the_runner_timeout_is_a_timeout():
     assert consult_bridge.classify({"error": "OpenClaw tool call timed out"})[1] == "timeout"
     # A run that times out inside the agent reports the agent's own message, and the
@@ -232,6 +242,14 @@ async def test_the_no_text_placeholder_is_not_delivered_as_an_answer():
     fut.set_result("OpenClaw finished with no text.")
     delivered = await _wait(fut)
     assert delivered == [(None, "empty")], delivered
+
+
+async def test_a_cancelled_run_is_delivered_as_cancelled():
+    """#230: owed.land gets "cancelled" (and closes it silently), not "empty"."""
+    fut = asyncio.get_running_loop().create_future()
+    fut.set_result({"status": "cancelled", "message": "Cancelled the active OpenClaw run."})
+    delivered = await _wait(fut)
+    assert delivered == [(None, "cancelled")], delivered
 
 
 async def test_the_budget_sits_just_past_the_control_ui():

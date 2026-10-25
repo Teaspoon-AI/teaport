@@ -567,6 +567,25 @@ async def test_a_duplicate_dispatch_is_answered_by_the_original():
     assert [r.key for r in b.owed()] == ["a"]
 
 
+async def test_a_consult_openclaw_cancelled_is_owed_nothing():
+    """#230: the relay's run control cancels the run when the caller calls it off, and
+    says so itself. The cancellation is no "empty" answer to tell later: its placeholder
+    says what happened, no record is made, and no run or re-offer is asked."""
+    msgs = tool_round("a") + tool_round("b")
+    b, ctx, gate = book(msgs=msgs)
+    assert b.dispatch("a", HN_REQ) is None and b.dispatch("b", HN_REQ) == "a"
+    assert b.land(HN_REQ, None, "a", failure="cancelled",
+                  detail="Cancelled the active OpenClaw run.") is None
+    tool = json.loads(ctx.get_messages()[3]["content"])
+    assert tool == {"status": "cancelled", "note": owed.CANCELLED_NOTE}, tool
+    assert json.loads(ctx.get_messages()[7]["content"])["status"] == "duplicate"
+    assert b.owed() == [] and b.record("a") is None and gate.asked == []
+    assert b._running == {}, "a cancelled consult is no longer running"
+    b.close_session()
+    assert b.owed() == [], "the session's end made a failure of a consult already cancelled"
+    assert render(ctx.get_messages(), b.owed(), "caller") == ctx.get_messages()
+
+
 # =============================================================== a sync tool's answer (#204)
 
 TOY = ("There's a Toy Joy store at five-five-zero-one Burnet Road in Austin. Toy Joy at "

@@ -446,6 +446,9 @@ Ask(k) ==
 \* is still to be RENDERED (their turn is open, or committed and not yet asked): that
 \* request carries the note, and the run would speak over or before it. A caller request
 \* already rendered (in flight without the note) does not stop the run: it waits behind.
+\* A consult OpenClaw CANCELLED (#230: the caller called it off) lands no record
+\* (Owed._cancelled): that is a behaviour in which Land never fires, which Spec already
+\* has (Land is not fair), so it needs no action of its own.
 Land ==
     /\ ~ended /\ st = "none"
     /\ st' = "owed"
