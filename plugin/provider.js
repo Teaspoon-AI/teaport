@@ -890,6 +890,8 @@ class TeaportBridge {
   // counts its run only after the Talk client's talk.client.toolCall and chat.send are
   // acknowledged and forgets it just before the result is submitted, so "a consult is open
   // and the classifier says control" also holds in moments when it acts on nothing. So:
+  //   the relay acted after reading the words          -> claimed, at once (a cancel
+  //     has closed its consult by then)
   //   not control (no consult open, the classifier says no, or the relay's echo filter
   //     drops it)                                      -> not claimed, at once
   //   control                                          -> claimed when the relay acts
@@ -919,6 +921,13 @@ class TeaportBridge {
         /* the brain stops waiting on its own */
       }
     };
+    // The relay already acted on the words it read (their transcript came first): claimed,
+    // whatever is open now -- a cancel closes the very consult it acted on, often before
+    // the question gets here.
+    if (heard && this._actedSeq > heard.seq) {
+      reply(true);
+      return;
+    }
     // Read as the question arrives; the relay read the same on the transcript, which
     // reaches it within moments of the question, before or after.
     const running = [...this._consults.values()].some(Boolean);

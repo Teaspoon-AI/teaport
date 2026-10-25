@@ -186,6 +186,19 @@ test("a consult the relay cancelled confirms the claim, and the transcript and q
   assert.deepEqual(await ask(ws, "how's it going?", "r2"), [{ type: "run_control_result", id: "r2", claimed: true }]);
 });
 
+test("a cancel that wins the race is claimed with no consult left open", async () => {
+  // The transcript goes first, the relay cancels the only consult, and the question
+  // comes after: no consult is open any more -- closed by the very act it asks about.
+  const { bridge, ws } = await session();
+  startConsult(ws, bridge);
+  said(ws, "cancel that");
+  bridge.submitToolResult("teaport-consult-a1", { status: "cancelled", message: "Cancelled the active OpenClaw run." });
+  assert.deepEqual(await ask(ws, "cancel that", "r1"), [{ type: "run_control_result", id: "r1", claimed: true }]);
+  // Said again with nothing running, the act on the first claims nothing.
+  said(ws, "cancel that");
+  assert.deepEqual(await ask(ws, "cancel that", "r2"), [{ type: "run_control_result", id: "r2", claimed: false }]);
+});
+
 test("words said again are not confirmed by the act on the first time", async (t) => {
   // "cancel that" twice, the second asked about before its own transcript reaches the
   // bridge: matched with the first final, the relay's act on the first would claim it.
