@@ -20,7 +20,8 @@
 #   * The model's openclaw_agent_control (tools.py): the call goes out as the relay's
 #     tool_call with OpenClaw's arguments, its result comes back for its own call id and
 #     is said in plain words, never read as a consult's; no answer in time is an honest
-#     "could not be reached", and no display card runs it a second time.
+#     "couldn't be confirmed" (the steer may have acted, its result held), and no
+#     display card runs it a second time. The typing bed is not heard while it waits.
 #   * A consult the brain gives up on is cancelled at the relay (tool_cancel), and a
 #     cancelled agent-first consult is not answered a second time.
 #   * The wire: the question goes out as {"type":"run_control"}, the answer comes back as
@@ -371,17 +372,22 @@ async def test_a_control_result_never_resolves_a_consult():
     assert consult_bridge.classify(consult.result())[1] == "cancelled"
 
 
-async def test_a_control_with_no_answer_says_it_could_not_be_reached():
+async def test_a_control_with_no_answer_says_it_could_not_be_confirmed():
+    """No result in time: the Control UI runs the steer first and may hold its result
+    while audio plays, so it may have gone through -- "couldn't be confirmed", never
+    "nothing changed". A client that refused it did change nothing."""
     monkeypatch_wait = tools.CONTROL_TIMEOUT_S
     tools.CONTROL_TIMEOUT_S = 0.05
     try:
-        for answer in (lambda msg: None, lambda msg: {"error": "text required"}):
+        for answer, said in ((lambda msg: None, "couldn't be confirmed whether that went"),
+                             (lambda msg: {"error": "text required"}, "could not be reached")):
             llm = _LLM(answer=answer)
             params, got = _params(llm, {"text": "how much longer?", "mode": "status"})
             await tools._openclaw_agent_control(params)
             [(result, kw)] = got
-            assert result["ok"] is False and "could not be reached" in result["update"]
+            assert result["ok"] is False and said in result["update"], result
             assert "OpenClaw" not in result["update"]
+        assert "nothing" not in tools._CONTROL_UNCONFIRMED
     finally:
         tools.CONTROL_TIMEOUT_S = monkeypatch_wait
     # No text: nothing is sent.

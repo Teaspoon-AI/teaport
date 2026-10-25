@@ -1055,17 +1055,27 @@ def _client_tool(name: str):
 # model says. The control's result comes back for the control's own call id
 # (CONTROL_CALL_PREFIX), so it is never read as the consult's.
 #
-# The wait is bounded: the Control UI holds a tool result until the voice it is playing
-# has finished (gateway-relay.ts, submitToolResult), the steer itself waits on the run's
-# queue, and a relay that is cancelling a response drops the result outright. Past it the
-# model is told the request could not be reached, and the turn goes on.
+# The wait is bounded: the Control UI holds a tool result until the audio it is playing
+# has finished (gateway-relay.ts submitToolResult: outputPlaybackDelayMs, re-checked when
+# it runs out), the steer itself waits on the run's queue, and a relay that is cancelling
+# a response drops the result outright. What can play meanwhile is short: the run's door
+# and ClientNotes stay shut while a call is out (followup_gate._calls_out), so no landed
+# answer, progress line or host note starts; a line the model said before the call (its
+# rules say call straight away) is a sentence; and the typing bed, which would keep the
+# queue busy for as long as it types, goes unheard while a control call waits
+# (thinking_sound, _CONTROL). Past the bound the steer may still have acted -- it runs
+# before the result is held -- so the model is told it could not be confirmed, not that
+# nothing changed; only a call that never went out, or one the client refused, changed
+# nothing.
 CONTROL_TIMEOUT_S = 10.0
 CONTROL_CALL_PREFIX = "teaport-control-"
 _CONTROL_MODES = ("status", "steer", "cancel", "followup")
 # A control result carries OpenClaw's message as the update and the brain's order to say
 # it in plain words (client_notes.PLAIN_UPDATE, as for the relay's own replies: OpenClaw's
-# statuses are an operator's). Two updates are the brain's own: no answer from the client,
-# and nothing in progress (_control_result).
+# statuses are an operator's). Three updates are the brain's own: no answer in time, the
+# call not run, and nothing in progress (_control_result).
+_CONTROL_UNCONFIRMED = ("It couldn't be confirmed whether that went through for the request "
+                        "that is being worked on in the background.")
 _CONTROL_UNREACHED = ("The request that is being worked on in the background could not be "
                       "reached just now, so nothing about it changed.")
 _NOTHING_IN_PROGRESS = ("No request was being worked on, so nothing was stopped or changed. If "
@@ -1098,10 +1108,13 @@ def _control_result(result, failure) -> dict:
     say it in plain words. Never the session key, ids or timings the result also carries."""
     from teaport_brain.client_notes import PLAIN_UPDATE
     message = result.get("message") if isinstance(result, dict) else None
+    if failure == "timeout":
+        # The client may have acted and its result been held (CONTROL_TIMEOUT_S above).
+        return {"ok": False, "update": _CONTROL_UNCONFIRMED, "instruction": PLAIN_UPDATE + "."}
     if failure or not isinstance(result, dict) or (result.get("error")
                                                    and not isinstance(message, str)):
-        # No answer in time, or the client could not run it (talk.session.steer refused,
-        # "text required"): {"error": ...}, which is the client's, not the user's.
+        # Never sent, or the client could not run it (talk.session.steer refused, "text
+        # required"): {"error": ...}, which is the client's, not the user's.
         return {"ok": False, "update": _CONTROL_UNREACHED, "instruction": PLAIN_UPDATE + "."}
     out = {"ok": result.get("ok") is True}
     if result.get("mode") in _CONTROL_MODES:
