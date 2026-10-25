@@ -186,6 +186,29 @@ test("a consult the relay cancelled confirms the claim, and the transcript and q
   assert.deepEqual(await ask(ws, "how's it going?", "r2"), [{ type: "run_control_result", id: "r2", claimed: true }]);
 });
 
+test("words said again are not confirmed by the act on the first time", async (t) => {
+  // "cancel that" twice, the second asked about before its own transcript reaches the
+  // bridge: matched with the first final, the relay's act on the first would claim it.
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  const { bridge, ws } = await session();
+  startConsult(ws, bridge);
+  said(ws, "cancel that");
+  assert.deepEqual(await ask(ws, "cancel that", "r1"), []);
+  bridge.sendUserMessage(STATUS);
+  assert.deepEqual(results(ws, "r1"), [{ type: "run_control_result", id: "r1", claimed: true }]);
+  startConsult(ws, bridge, "teaport-consult-a2");
+  assert.deepEqual(await ask(ws, "cancel that", "r2"), [], "the first act claims nothing new");
+  said(ws, "cancel that");
+  bridge.sendUserMessage(STATUS);
+  assert.deepEqual(results(ws, "r2"), [{ type: "run_control_result", id: "r2", claimed: true }]);
+  // Asked ahead again, and this time the relay does not act: the model's words.
+  assert.deepEqual(await ask(ws, "cancel that", "r3"), []);
+  said(ws, "cancel that");
+  t.mock.timers.tick(CONFIRM_MS);
+  await tick();
+  assert.deepEqual(results(ws, "r3"), [{ type: "run_control_result", id: "r3", claimed: false }]);
+});
+
 test("words the relay does not act on within CONFIRM_MS are the model's", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { bridge, ws, logs } = await session();

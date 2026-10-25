@@ -555,6 +555,10 @@ class TeaportBridge {
     this._seq = 0;
     this._actedSeq = 0;
     this._claim = null;
+    // The newest user final an answered question has used up (answerRunControl): its
+    // words, or the question's own place when it came before them. A later question is
+    // matched only with a final newer than that.
+    this._answeredSeq = 0;
     this._url = url; // ws://<pipecat-host>:7861/talk
     this._transcripts = transcripts; // one per session, like the Talk view's state
     this._ws = null;
@@ -895,7 +899,19 @@ class TeaportBridge {
   _answerRunControl(msg) {
     const id = msg.id;
     const text = typeof msg.text === "string" ? msg.text.trim() : "";
+    // The final the relay judged, when it has reached it (the two can cross): its echo
+    // check and its act are counted from then. Only one newer than what the last answered
+    // question used up: a "cancel that" said again, asked about before its own transcript
+    // is in, would otherwise be matched with the first one's and confirmed by the act on
+    // it.
+    const fresh = this._heard && this._heard.seq > this._answeredSeq ? this._heard : null;
+    const heard = fresh?.text === text ? fresh : null;
+    let since = heard ? heard.seq : 0;
     const reply = (claimed) => {
+      // Answered: the words it asked about are used up -- its final, or, asked ahead of
+      // it, the one with its words that came in while it waited.
+      const late = !heard && this._heard?.text === text ? this._heard.seq : 0;
+      this._answeredSeq = Math.max(this._answeredSeq, since, late);
       if (!this._ws || this._state !== "open") return;
       try {
         this._ws.send(JSON.stringify({ type: "run_control_result", id, claimed }));
@@ -910,9 +926,6 @@ class TeaportBridge {
       reply(false);
       return;
     }
-    // The transcript the relay judged, when it has reached it (the two can cross): its
-    // echo check and its act are counted from then.
-    const heard = this._heard?.text === text ? this._heard : null;
     this._runControl().then(
       ({ isControl, isEcho }) => {
         if (!this._safely(() => typeof isControl === "function" && isControl(text) === true)) {
@@ -936,7 +949,8 @@ class TeaportBridge {
           reply(false);
           return;
         }
-        this._awaitRelay(reply, heard ? heard.seq : ++this._seq);
+        if (!heard) since = ++this._seq;
+        this._awaitRelay(reply, since);
       },
       () => reply(false),
     );
