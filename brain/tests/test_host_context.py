@@ -10,6 +10,7 @@ everywhere: the old name is gone from the repo.
 
 All host text here is synthetic."""
 import asyncio
+import dataclasses
 import json
 import os
 import sys
@@ -717,9 +718,12 @@ def test_a_room_built_without_the_context_takes_it_at_the_wake(monkeypatch):
     monkeypatch.setattr(agent_backend, "HAS_AGENT", True)
     asks = []
 
+    # What the route serves: the agent paragraph and profile, and the consult's schema.
+    fresh = dataclasses.replace(ROOM_HOST, tools=(HOST_CONSULT,))
+
     async def fetch(front_end, *, patience=0.0, timeout=None):
         asks.append((front_end, timeout))
-        return ROOM_HOST
+        return fresh
 
     monkeypatch.setattr(host_context, "fetch", fetch)
 
@@ -731,6 +735,13 @@ def test_a_room_built_without_the_context_takes_it_at_the_wake(monkeypatch):
                                       host=None)
         system = session.context.get_messages()[0]
         assert system["content"].startswith("BRAIN PERSONA."), system["content"][:80]
+
+        def consult():
+            return {s.name: s for s in session.context.tools.standard_tools}[
+                "openclaw_agent_consult"]
+
+        if HAS_AGENT:  # (the consult is offered only with a gateway)
+            assert consult().description != HOST_CONSULT["description"], "the brain's copy"
         pushed = []
 
         async def push(frame):
@@ -742,6 +753,10 @@ def test_a_room_built_without_the_context_takes_it_at_the_wake(monkeypatch):
         assert asks == [("room", host_context.WAKE_TIMEOUT_S)], asks
         assert session.context.get_messages()[0] is system
         assert system["content"].startswith(ROOM_HOST.instructions), system["content"][:80]
+        # ...and the model is offered the host's consult schema (set_tools).
+        if HAS_AGENT:
+            assert consult().description == HOST_CONSULT["description"]
+            assert set(consult().properties) == {"question", "context"}
         # Once: a second wake phrase in the conversation asks nothing.
         await gate.final("hey teaport, again", push)
         assert len(asks) == 1
