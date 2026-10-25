@@ -845,10 +845,9 @@ JudgeContinue ==
     /\ UNCHANGED toolVars
     /\ UNCHANGED postVars
 
-\* STOP, ANSWER, no verdict in time (one deadline from the first words, however often
-\* the judge is asked) -- or the pause ended first (an interruption, the reply over,
-\* playout resumed): the held words go on as they came and start the turn exactly as
-\* they would have without the judge, that much later.
+\* STOP, ANSWER, no verdict in time -- or the pause ended first (an interruption, the
+\* reply over, playout resumed): the held words go on as they came and start the turn
+\* exactly as they would have without the judge, that much later.
 JudgeLetOn ==
     /\ ~endQueued
     /\ judging /\ turns < MaxTurns /\ ~userTurn

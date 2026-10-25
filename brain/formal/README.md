@@ -2501,8 +2501,8 @@ The witness `ut_judge_shipped_reach` FAILS `NoJudging`: a hold is reachable.
   (the PR #232 review).
 
 What is not modelled:
-- The judge's latency: there is no clock here, and the deadline is a verdict.
-- The 8 s pause cap: it is far past the deadline.
+- The judge's latency: there is no clock here, and its timeout (1.2 s per request) is a verdict.
+- The 8 s pause cap: a caller still talking keeps the pause; the cap ends it as a pause end.
 - What the CONTINUE'd final does to the stop strategy's close count. It becomes the
   `SegmentDoneFrame` the stop strategy already counts, which `test_barge_judge.py`
   checks.
