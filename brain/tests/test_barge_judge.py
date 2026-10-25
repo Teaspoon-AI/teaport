@@ -278,7 +278,8 @@ async def test_the_ledger_reads_the_paused_reply_and_what_was_heard():
 def test_the_judges_request_and_its_verdicts():
     m = judge_messages("Count to ten.", "One, two, three, four.", "One, two,", "Mm-hmm.")
     assert m[0]["content"] == barge_pause.JUDGE_PROMPT
-    assert ('caller said: "Count to ten."' in m[1]["content"]
+    assert ('caller had asked: "Count to ten."' in m[1]["content"]
+            and 'was answering it: "One, two, three, four."' in m[1]["content"]
             and 'heard up to: "One, two,"' in m[1]["content"]
             and 'said: "Mm-hmm."' in m[1]["content"]), m[1]["content"]
     long = judge_messages("", "x", " ".join(f"w{i}" for i in range(20)), "Yeah.")

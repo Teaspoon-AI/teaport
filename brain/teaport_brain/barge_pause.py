@@ -176,9 +176,12 @@ _MAX_NOWORD_PAUSES = 2
 # Words over a paused reply are judged (BargeInJudgeGate) rather than starting the turn
 # on their own. Only where the pauser is.
 JUDGE = setting("TEAPORT_BARGE_JUDGE")
-# The longest the gate waits for a verdict before the words go on as they would have.
-# The cut judge's request measured p90 0.58 s (owed.py); a later verdict is dropped.
-_JUDGE_WAIT_S = 0.8
+# The longest the gate waits for a verdict before the words go on as they would have; a
+# later verdict is dropped. 0.8 s timed out 2 of 25 on a live call (an "Okay." that then
+# cut the reply) though the box's own judge requests, off a call, were p99 0.62 s, max
+# 0.74 s (100 sequential, 2026-10-25): the tail is the call's load. Only a timeout waits
+# this long -- a verdict is acted on when it comes.
+_JUDGE_WAIT_S = 1.2
 
 CONTINUE, STOP, ANSWER = "continue", "stop", "answer"
 
@@ -197,14 +200,21 @@ _HEARD_WORDS = 12
 
 
 def judge_messages(asked: str, reply: str, heard: str, said: str) -> list:
-    """The judge's request, as the replay asked it."""
+    """The judge's request: the caller's words framed as the request the reply answers.
+    Framed only as "said" (the replay's first form), a "Yeah." a few words into the
+    answer to "Okay. Actually, can you explain how ... works?" was an ANSWER to the
+    can-you -- 30/60 on the live case, 42 of 600 on synthetic ones of its shape; framed
+    as answered, 0/60 and 25 of 1,500, most of them "Got it." read as STOP (a cut, the
+    safe side), with questions and stops talked over 12/700 against 13/700 (the
+    re-measure, 2026-10-25)."""
     words = heard.split()
     tail = ("…" if len(words) > _HEARD_WORDS else "") + " ".join(words[-_HEARD_WORDS:])
     return [{"role": "system", "content": JUDGE_PROMPT},
-            {"role": "user", "content": f"Before the assistant started, the caller said: "
-                                        f"\"{asked}\"\n\nThe assistant was saying: \"{reply}\""
-                                        f"\n\nThe caller had heard up to: \"{tail}\"\n\n"
-                                        f"Over it, the caller said: \"{said}\""}]
+            {"role": "user", "content": f"The caller had asked: \"{asked}\"\n\nThe assistant "
+                                        f"was answering it: \"{reply}\"\n\nThe caller had "
+                                        f"heard up to: \"{tail}\"\n\nThen, while the "
+                                        f"assistant was still talking, the caller said: "
+                                        f"\"{said}\""}]
 
 
 def judge_verdict(reply_text: str):
