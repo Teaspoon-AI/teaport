@@ -1194,10 +1194,9 @@ name = "OPENCLAW_AGENT_ID"
 store = "brain_env"
 group = "agent"
 type = "string"
-default = "main"
 read = "startup"
 tier = "tuning"
-help = "The agent the CLI consult lane runs, and, when set, the agent whose voice context (agent paragraph and profile) the room mic and the phone ask the teaport plugin for; unset, they get the gateway's default agent's, the one the /v1/chat/completions consult lane reaches."
+help = "The OpenClaw agent this box talks to: its consults (model openclaw/<id> on /v1/chat/completions, --agent on the CLI fallback) and the voice context (agent paragraph and profile) the room mic, the phone and the Discord bridge get from the teaport plugin. Must be a configured agent. Unset: the gateway's default agent, everywhere."
 
 [[settings]]
 name = "OPENCLAW_BIN"

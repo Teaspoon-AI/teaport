@@ -21,9 +21,10 @@
 // No session key: room and phone consults run under a fresh key each (the brain's
 // /v1/chat/completions lane sends none), as voice-call omits it too. The agent is the
 // one that lane's model "openclaw" answers with, unless the brain names one (agent=, its
-// OPENCLAW_AGENT_ID when the operator set it: the agent its CLI lane consults); a named
-// one must be a configured agent (listAgentIds), as the gateway's own x-openclaw-agent-id
-// header must. Both are resolved the way 2026.9.7 asks new plugins to (resolveAgentId).
+// OPENCLAW_AGENT_ID when the operator set it: the agent the box talks to, which its
+// consults then reach as model "openclaw/<id>"); a named one must be a configured agent
+// (listAgentIds), as the gateway's own agent model id and x-openclaw-agent-id header
+// must. Both are resolved the way 2026.9.7 asks new plugins to (resolveAgentId).
 //
 // The SDK subpaths are imported on the first request, not at plugin load: discovery and
 // CLI loads never serve a request, and the realtime-voice barrel is not small. They are

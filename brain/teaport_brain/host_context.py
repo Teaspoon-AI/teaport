@@ -43,7 +43,6 @@ from dataclasses import dataclass
 from loguru import logger
 
 from teaport_brain.agent_backend import HAS_AGENT
-from teaport_brain.settings import setting
 
 # The frame's type, and the ?session_config= value that promises it.
 FRAME_TYPE = "session_config"
@@ -127,13 +126,6 @@ RETRY_REFUSED_S = 0.5
 RETRY_AFTER_MAX_S = 2.0
 RETRY_ASK_MIN_S = 0.25
 WAKE_TIMEOUT_S = 1.0
-# The agent whose context is asked for: OPENCLAW_AGENT_ID, the one the CLI lane consults,
-# when it is set; unset, the agent the /v1/chat/completions lane's model "openclaw"
-# reaches (the route resolves it with resolveSessionAgentIdStrict and no owner, which is
-# that agent whenever the lane can answer; plugin/voice-context.js, resolveAgentId). Its
-# own default ("main") is not sent: on a gateway whose default agent is another, that
-# would ask for an agent the operator never named.
-AGENT_ID = setting("OPENCLAW_AGENT_ID", default=None)
 
 # A 200 whose body is not JSON (_get_sync).
 _NOT_JSON = object()
@@ -193,8 +185,8 @@ async def fetch(front_end: str, *, patience: float = 0.0,
         logger.warning(f"voice context ({front_end}): no gateway token — using {fallback}")
         return None
     query = {"front_end": front_end}
-    if AGENT_ID:
-        query["agent"] = AGENT_ID
+    if oc.AGENT_ID:  # the agent this box talks to, when the operator named one
+        query["agent"] = oc.AGENT_ID
     url = f"{oc.GATEWAY_URL}{VOICE_CONTEXT_PATH}?" + urllib.parse.urlencode(query)
     loop = asyncio.get_running_loop()
     deadline = loop.time() + patience

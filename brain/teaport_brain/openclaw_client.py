@@ -77,7 +77,31 @@ def _find_openclaw_bin() -> str:
 
 
 OPENCLAW_BIN = _find_openclaw_bin()
-OPENCLAW_AGENT = setting("OPENCLAW_AGENT_ID")
+# The agent this box talks to: OPENCLAW_AGENT_ID when the operator set it, else None --
+# the gateway's own default agent. Every lane names it from here, so a consult, its CLI
+# fallback and the voice context (host_context.fetch, ?agent=) are about one agent:
+#   /v1/chat/completions  model "openclaw/<id>" (OpenClaw's agent model id, 2026.9.7
+#                         http-utils.ts resolveAgentIdFromModel: an unconfigured id is a
+#                         400), unset "openclaw" -> resolveDefaultAgentId;
+#   the CLI               --agent <id>, unset nothing: `openclaw agent` then picks its
+#                         implicit agent, the default one (agent-via-gateway.ts), and
+#                         `openclaw memory index` indexes every configured agent;
+#   the voice context     agent=<id>, unset nothing: the route's strict resolver, the
+#                         agent the lane's "openclaw" answers with whenever it answers.
+# Its old schema default "main" is gone: sent to a gateway whose default agent is
+# another, it named an agent the operator never did, and the CLI fallback consulted a
+# different agent from the warm lane it stands in for.
+AGENT_ID = setting("OPENCLAW_AGENT_ID")
+
+
+def agent_model() -> str:
+    """The /v1/chat/completions model that reaches the agent this box talks to."""
+    return f"openclaw/{AGENT_ID}" if AGENT_ID else "openclaw"
+
+
+def agent_args() -> list[str]:
+    """The `openclaw` CLI arguments that name the agent this box talks to."""
+    return ["--agent", AGENT_ID] if AGENT_ID else []
 # 45 s, not 30: the sandbox-exec shim adds ~14 s of spawn tax (nemoclaw + docker
 # exec + CLI node startup, measured) before the agent turn even starts, and a
 # Discord-action turn needs real time after that. Callers cap the voice wait
@@ -298,7 +322,7 @@ async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tu
 
 
 def _completions_sync(message: str, token: str, timeout: float) -> str | None:
-    body = json.dumps({"model": "openclaw",
+    body = json.dumps({"model": agent_model(),
                        "messages": [{"role": "user", "content": message}]}).encode()
     req = urllib.request.Request(
         f"{GATEWAY_URL}/v1/chat/completions", data=body,
@@ -446,7 +470,7 @@ async def agent_consult(message: str, *, session_key: str | None = None,
     # brain sends self-contained requests, so no cross-consult context is lost.
     if session_key is None:
         session_key = f"voice:consult-{uuid.uuid4().hex[:10]}"
-    args = ["agent", "--agent", OPENCLAW_AGENT, "--session-key", session_key,
+    args = ["agent", *agent_args(), "--session-key", session_key,
             "-m", message, "--json"]
     if not answered:
         # --local only when no gateway answered: it runs the agent embedded in the
@@ -518,7 +542,7 @@ async def reindex_memory(*, timeout: float = 30.0) -> bool:
     runs. Subprocess `openclaw memory index`; best-effort, returns whether it succeeded."""
     try:
         rc, _, _ = await _run_openclaw(
-            ["memory", "index", "--agent", OPENCLAW_AGENT], timeout=timeout, capture=False)
+            ["memory", "index", *agent_args()], timeout=timeout, capture=False)
         return rc == 0
     except Exception as e:  # noqa: BLE001
         logger.debug("reindex_memory failed: {}", e)

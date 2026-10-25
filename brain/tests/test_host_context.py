@@ -670,17 +670,40 @@ def test_a_200_that_is_not_json_says_so(monkeypatch):
     assert not any("JSONDecodeError" in w for w in seen), seen
 
 
-def test_the_agent_the_operator_named_is_asked_for(monkeypatch):
-    """OPENCLAW_AGENT_ID, when set, is the agent the CLI lane consults: the room and the
-    phone ask for its context too. Unset, the route's default agent (nothing sent)."""
-    monkeypatch.setattr(host_context, "AGENT_ID", "kitchen")
+def test_the_agent_the_operator_named_is_the_one_every_lane_reaches(monkeypatch):
+    """OPENCLAW_AGENT_ID, when set, is the agent this box talks to: the voice context the
+    room and the phone ask for, the warm consult lane's model and the CLI fallback all
+    name it (openclaw_client.AGENT_ID). Unset, none of them names one: the gateway's
+    default agent, everywhere."""
+    import io
+
+    from teaport_brain import openclaw_client as oc
+
+    def consult_model():
+        sent = []
+
+        def urlopen(req, timeout):
+            sent.append(json.loads(req.data))
+            return io.BytesIO(json.dumps(
+                {"choices": [{"message": {"content": "ok"}}]}).encode())
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(oc.urllib.request, "urlopen", urlopen)
+            assert oc._completions_sync("hi", "tok", 1.0) == "ok"
+        return sent[0]["model"]
+
+    monkeypatch.setattr(oc, "AGENT_ID", "kitchen")
     _, requests = _fetch(monkeypatch, 200, ROUTE_BODY, front_end="room")
     assert requests[0][0] == "/teaport/voice-context?front_end=room&agent=kitchen", requests
-    monkeypatch.setattr(host_context, "AGENT_ID", None)
+    assert consult_model() == "openclaw/kitchen"
+    assert oc.agent_args() == ["--agent", "kitchen"]
+    monkeypatch.setattr(oc, "AGENT_ID", None)
     _, requests = _fetch(monkeypatch, 200, ROUTE_BODY, front_end="room")
     assert requests[0][0] == "/teaport/voice-context?front_end=room", requests
+    assert consult_model() == "openclaw"
+    assert oc.agent_args() == []
     from teaport_brain.settings import setting
-    assert setting("OPENCLAW_AGENT_ID", default=None, env={}) is None
+    assert setting("OPENCLAW_AGENT_ID", env={}) is None
 
 
 def test_a_room_built_without_the_context_takes_it_at_the_wake(monkeypatch):

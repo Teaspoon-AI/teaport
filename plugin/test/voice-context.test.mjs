@@ -94,8 +94,9 @@ test("the route answers with OpenClaw's agent context and consult tool", async (
 });
 
 test("an agent the brain names is served when it is a configured one", async () => {
-  // The brain names OPENCLAW_AGENT_ID when the operator set it: the agent its CLI lane
-  // consults. Checked against the configured ids, as the gateway checks its agent header.
+  // The brain names OPENCLAW_AGENT_ID when the operator set it: the agent its consults
+  // reach too (model "openclaw/<id>", the CLI's --agent). Checked against the configured
+  // ids, as the gateway checks its agent header.
   const { sdk, calls } = fakeSdk({ listAgentIds: () => ["main", "kitchen"] });
   const handler = voiceContextHandler({ config: () => ({}), loadSdk: async () => sdk });
   let res = await get(handler, `${VOICE_CONTEXT_PATH}?front_end=room&agent=Kitchen`);
