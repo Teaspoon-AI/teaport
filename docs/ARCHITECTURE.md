@@ -39,6 +39,22 @@ a call and the live session is a remote Talk session (whose user is told
 first). Everyone else is told the agent is busy. The table is in
 docs/CONFIG.md → One engine, one conversation.
 
+## What the voice is told
+
+OpenClaw composes what a realtime voice surface is told (its voice rules, the
+operator's `talk.realtime.instructions`, the agent paragraph and the IDENTITY / USER
+/ SOUL profile), and teaport follows that contract
+(`brain/teaport_brain/host_context.py`, issue #230):
+
+- **Talk.** The plugin sends what OpenClaw handed it (`req.instructions`,
+  `req.tools`) as the first frame on `/talk`, a `session_config` it announces with
+  `?session_config=1`. The brain reads it before it builds the session: the system
+  prompt starts with those instructions as sent, followed by the brain's voice rules.
+  A client that announces no `session_config` gets the brain's own persona, as
+  before.
+- **Room mic and phone.** For now, the brain's own persona (the OpenClaw workspace
+  files, or `TEAPORT_PERSONA_FILE`).
+
 ## Tools
 
 Every tool the voice model can call follows one contract

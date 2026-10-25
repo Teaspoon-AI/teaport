@@ -39,7 +39,26 @@ Configure in `~/.openclaw/openclaw.json`:
 The plugin appends `voice`, `language`, and `token` to the brain WebSocket URL
 as query parameters for each session. The `token` value can also come from the
 `TEAPORT_GATEWAY_TOKEN` environment variable. It also appends `captions=2`, the
-caption protocol it speaks (see below).
+caption protocol it speaks (see below), and `session_config=1` (see
+[What OpenClaw tells the voice](#what-openclaw-tells-the-voice)).
+
+## What OpenClaw tells the voice
+
+OpenClaw composes what a realtime voice surface is told and hands it to the provider
+with each session (`req.instructions` and `req.tools`, OpenClaw 2026.9.7 and newer):
+its realtime voice instructions, the operator's `talk.realtime.instructions`, the
+agent paragraph and the IDENTITY / USER / SOUL profile, and the consult tools
+`openclaw_agent_consult` and `openclaw_agent_control`. As soon as the brain's socket
+opens, before any audio, the plugin sends them as one frame:
+
+```json
+{"type": "session_config", "instructions": "<req.instructions, or \"\">", "tools": [<req.tools, or none>]}
+```
+
+The frame always goes out, empty or not: `session_config=1` on the URL tells the brain
+to wait for it, so it must always come. The brain starts the session's system prompt
+with the instructions as sent, then its own voice rules. A brain that gets no flag
+(another client) builds its own prompt, as before.
 
 ### Why `brain` must be `"agent-consult"`
 

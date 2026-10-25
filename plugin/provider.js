@@ -30,10 +30,17 @@ const CONTEXT_ACK_TIMEOUT_MS = 3000;
 // that repeats a bubble while the user talks, which is what an older plugin needs.
 const CAPTIONS_PROTOCOL = 2;
 
+// The session_config protocol, sent to the brain as ?session_config=. With it on the URL
+// the brain waits for the session_config frame (sessionConfigFrame) before it builds the
+// session, and builds the session's prompt from what OpenClaw composed for this voice
+// surface. A brain that sees no flag never waits, and builds its own.
+const SESSION_CONFIG_PROTOCOL = 1;
+
 /**
  * Append OpenClaw-selected TTS voice/language — and the gateway auth token — to the
- * brain's WS URL as query params, plus the caption protocol and the client id. The
- * Pipecat brain reads ?voice=&language=&token=&captions=&client= per session
+ * brain's WS URL as query params, plus the caption and session_config protocols and the
+ * client id. The Pipecat brain reads ?voice=&language=&token=&captions=&session_config=
+ * &client= per session
  * (gateway_server.py). `client` names the Talk client (the device) across its own
  * reconnects: the brain's session arbiter lets a reconnect replace that client's own
  * session, and refuses every other client while a conversation is live. A Kokoro
@@ -50,7 +57,30 @@ export function withVoiceParams(url, cfg) {
   if (cfg && cfg.token) q.push("token=" + encodeURIComponent(cfg.token));
   if (cfg && cfg.client) q.push("client=" + encodeURIComponent(cfg.client));
   q.push(`captions=${CAPTIONS_PROTOCOL}`);
+  q.push(`session_config=${SESSION_CONFIG_PROTOCOL}`);
   return url + (url.includes("?") ? "&" : "?") + q.join("&");
+}
+
+/**
+ * The first frame on the brain's socket: what OpenClaw composed for this voice session
+ * (RealtimeVoiceBridgeCreateRequest). `instructions` is the host's prompt for a provider
+ * that consults through the transcript (OpenClaw's realtime defaults, the operator's
+ * talk.realtime.instructions, the agent paragraph and the IDENTITY / USER / SOUL profile,
+ * and any earlier conversation); `tools` is its tool list (openclaw_agent_consult and
+ * openclaw_agent_control). Both go as OpenClaw sent them: the brain puts the instructions
+ * at the head of its prompt.
+ *
+ * Sent always, empty or not, because the URL flag promises it: the brain waits for this
+ * frame whenever it sees ?session_config=, so a frame left out when the host composed
+ * nothing would cost every such session the brain's whole wait, and an empty frame says
+ * at once that the host gave nothing.
+ */
+export function sessionConfigFrame(req) {
+  return {
+    type: "session_config",
+    instructions: typeof req?.instructions === "string" ? req.instructions : "",
+    tools: Array.isArray(req?.tools) ? req.tools : [],
+  };
 }
 
 // ── How the Talk view merges transcripts ─────────────────────────────────────
@@ -590,6 +620,13 @@ class TeaportBridge {
         }
         this._state = "open";
         this._openedAt = Date.now();
+        // The session_config frame first, before any audio: the brain reads it as the
+        // socket's first frame and builds the session from it (sessionConfigFrame).
+        try {
+          this._ws.send(JSON.stringify(sessionConfigFrame(this._req)));
+        } catch (err) {
+          if (this._req.onError) this._req.onError(err instanceof Error ? err : new Error(String(err)));
+        }
         for (const buf of this._queue) this._rawSend(buf);
         this._queue = [];
         if (this._req.onReady) this._req.onReady();

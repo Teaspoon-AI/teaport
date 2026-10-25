@@ -595,7 +595,8 @@ def build_agent_session(transport, *, voice: str | None = None,
                         reply_hold_enabled: bool = False,
                         client_features: frozenset = frozenset(),
                         wake_gate=None,
-                        front_end: str | None = None) -> AgentSession:
+                        front_end: str | None = None,
+                        host=None) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
 
     This is the single source of truth for the pipeline both front-ends run — the
@@ -630,6 +631,10 @@ def build_agent_session(transport, *, voice: str | None = None,
       over the shared values). Only the turn-taking and a tool call's filler caption
       (charted ahead on "talk": captions.caption_ahead) tell "room" from "talk"; the
       call prompt below is offered to both.
+    - host: what the OpenClaw host composed for this session (host_context.HostContext;
+      a Talk session's session_config frame). Its instructions start the system prompt
+      in place of the persona. None (the room mic and the phone until issue #230's
+      Phase 3, a client that sent none): the persona.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
       is per-CALL (sip_server._bring_up builds a fresh session for every caller), so
@@ -674,11 +679,19 @@ def build_agent_session(transport, *, voice: str | None = None,
     llm = make_llm()
     tts = make_tts(voice=voice, language=language, phonemes="phonemes" in client_features)
 
-    # Phase 1: identity comes from the shared persona so voice and text feel like one
-    # agent; build_system_prompt falls back to the baked-in persona if the shared
-    # source is unreachable, so the loop never hard-fails on a persona lookup.
-    persona = load_persona()
-    logger.info(f"Phase 1: loaded shared persona ({len(persona)} chars)")
+    # Identity: the host's instructions where the host composed them (a Talk session,
+    # OpenClaw's req.instructions: its voice rules, the agent paragraph and profile),
+    # else the shared persona so voice and text feel like one agent; build_system_prompt
+    # falls back to the baked-in persona if the shared source is unreachable, so the loop
+    # never hard-fails on a persona lookup.
+    if host is not None and host.instructions.strip():
+        persona = host.instructions
+        logger.info(f"host instructions from OpenClaw ({len(persona)} chars) start the prompt")
+    else:
+        if host is not None:
+            logger.info("the host sent no instructions — using the brain's own persona")
+        persona = load_persona()
+        logger.info(f"Phase 1: loaded shared persona ({len(persona)} chars)")
     # A Talk session or the room mic can be asked whether to take a phone call (the session
     # arbiter's PROMPT; call_prompt.py), through the answer_phone_call tool: only where
     # that tool is on. A call itself is never asked.

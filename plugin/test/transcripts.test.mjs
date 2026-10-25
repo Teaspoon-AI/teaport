@@ -378,10 +378,10 @@ test("a barge-in clear closes the bubble and sends the held cards", () => {
 test("the plugin tells the brain it speaks caption protocol 2", () => {
   // Without it the brain keeps skipping a final that repeats a bubble while the user
   // talks, which an older plugin needs.
-  assert.equal(withVoiceParams("ws://brain/talk", {}), "ws://brain/talk?captions=2");
+  assert.equal(withVoiceParams("ws://brain/talk", {}), "ws://brain/talk?captions=2&session_config=1");
   assert.equal(
     withVoiceParams("ws://brain/talk?x=1", { voice: "af_heart", token: "t k" }),
-    "ws://brain/talk?x=1&voice=af_heart&token=t%20k&captions=2",
+    "ws://brain/talk?x=1&voice=af_heart&token=t%20k&captions=2&session_config=1",
   );
   const provider = buildTeaportRealtimeProvider({ url: "ws://brain/talk", hostVersion: "2026.9.1" });
   const bridge = provider.createBridge({ providerConfig: { voice: "af_heart" } });

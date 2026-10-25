@@ -208,7 +208,45 @@ test("bad params are refused without touching a session", async () => {
     assert.equal(r.ok, false, JSON.stringify(params));
     assert.equal(r.error.code, "INVALID_REQUEST");
   }
-  assert.equal(ws.sent.length, 0);
+  // Only the session_config frame every session opens with; no note.
+  assert.deepEqual(ws.sent.map((m) => m.type), ["session_config"]);
+});
+
+// ── session_config: what OpenClaw composed, first on the socket (#230) ──────────────
+
+// OpenClaw's tools for a transcript-driven provider, shaped as the relay sends them
+// (synthetic descriptions; the brain reads only the shape).
+const HOST_TOOLS = [
+  { type: "function", name: "openclaw_agent_consult", description: "Ask the agent.",
+    parameters: { type: "object", properties: { question: { type: "string" } }, required: ["question"] } },
+  { type: "function", name: "openclaw_agent_control", description: "Steer the agent.",
+    parameters: { type: "object", properties: { action: { type: "string" } }, required: ["action"] } },
+];
+
+test("the session_config frame goes first, once, before the audio queued while connecting", async () => {
+  const env = setup();
+  const req = { providerConfig: {}, instructions: "You are a test voice.\n\nAdditional realtime instructions:\nBe brief.", tools: HOST_TOOLS };
+  const bridge = env.provider.createBridge(req);
+  const chunk = Buffer.from([1, 2, 3, 4]);
+  bridge.sendAudio(chunk); // before the socket opens: queued
+  await bridge.connect();
+  const ws = FakeWebSocket.last;
+  assert.equal(new URL(ws.url).searchParams.get("session_config"), "1");
+  bridge.sendAudio(Buffer.from([5, 6]));
+  ws.reply(HELLO);
+  ws.reply(READY);
+  assert.deepEqual(ws.sent[0], { type: "session_config", instructions: req.instructions, tools: HOST_TOOLS });
+  assert.equal(ws.sent[1], chunk, "the queued audio follows the frame");
+  assert.equal(ws.sent.filter((m) => m?.type === "session_config").length, 1);
+});
+
+test("a host that composed nothing still gets an empty session_config frame", async () => {
+  // The URL flag promises the frame, and the brain waits for it: leaving it out would
+  // cost the session the brain's whole wait.
+  const env = setup();
+  const bridge = env.provider.createBridge({ providerConfig: {} });
+  await bridge.connect();
+  assert.deepEqual(FakeWebSocket.last.sent, [{ type: "session_config", instructions: "", tools: [] }]);
 });
 
 // ── before the brain is ready (#71: "connecting" is not "unsupported") ─────────────

@@ -26,7 +26,9 @@
 # TEAPORT_PERSONA_FILE and the OpenClaw workspace is never read.
 #
 # Splitting persona out of the old monolithic SYSTEM_PROMPT is what lets OpenClaw
-# own identity while Pipecat keeps the tuned voice mechanics.
+# own identity while Pipecat keeps the tuned voice mechanics. Where the host composes the
+# voice context itself (a Talk session: OpenClaw's req.instructions, host_context.py),
+# that text takes the persona's place, as sent, and nothing here is read.
 #
 import os
 
@@ -295,8 +297,10 @@ def load_persona() -> str:
 
 def build_system_prompt(persona: str | None = None, tools=None) -> str:
     """Compose the voice system prompt: shared identity + voice-only overlay.
-    Pass a persona (e.g. fetched at session start) or leave None to load it. `tools`
-    is the session's tools.active_tools(); None means this box's default set."""
-    base = (persona or "").strip() or load_persona()
+    Pass a persona (the host's instructions for a Talk session, host_context.py) or leave
+    None to load it. A given one starts the prompt as given, only trailing whitespace
+    trimmed: the host's text is the host's. `tools` is the session's tools.active_tools();
+    None means this box's default set."""
+    base = persona.rstrip() if (persona or "").strip() else load_persona()
     overlay = voice_overlay() if tools is None else tools_paragraph(tools) + _DELIVERY
     return base + "\n\n" + overlay
