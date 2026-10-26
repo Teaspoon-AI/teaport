@@ -448,6 +448,26 @@ async def test_a_barge_drops_a_line_charted_ahead_that_never_played():
     print("  PASS a barge forgets a line charted ahead")
 
 
+async def test_many_lines_charted_ahead_are_each_charted_once():
+    # The contexts of lines charted ahead are kept in a bounded memory. Past the
+    # bound the OLDEST is forgotten, never the line playing now: a session's tenth
+    # filler is as silent as its first.
+    import uuid
+    h = Harness()
+    fillers = []
+    for i in range(12):
+        fillers.append(str(uuid.uuid4()))
+        await h.feed(CaptionedAheadFrame(text=FILLER))
+        await h.sentence(FILLER, fillers[-1])
+        await h.feed(BotStoppedSpeakingFrame())
+        await h.sentence(f"Answer number {i}.", str(uuid.uuid4()))
+        await h.feed(BotStoppedSpeakingFrame())
+    assert not any("moment" in t for t, _ in h.sent), h.sent
+    assert h.finals() == [f"Answer number {i}." for i in range(12)], h.sent
+    assert list(h.tap._ahead_ctx) == fillers[-CaptionTap._AHEAD_MAX:], h.tap._ahead_ctx
+    print("  PASS every filler in a long session is charted once")
+
+
 def test_captions():
     async def main():
         await test_seamless_multi_utterance_segment()
@@ -470,6 +490,7 @@ def test_captions():
         await test_a_line_charted_ahead_closes_the_bubble_before_it()
         await test_only_the_line_charted_ahead_is_skipped()
         await test_a_barge_drops_a_line_charted_ahead_that_never_played()
+        await test_many_lines_charted_ahead_are_each_charted_once()
     asyncio.run(main())
 
 

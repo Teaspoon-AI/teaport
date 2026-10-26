@@ -132,6 +132,15 @@ def _same_line(a: str, b: str) -> bool:
     return " ".join(a.split()) == " ".join(b.split())
 
 
+def _remember(seen: dict, key, cap: int) -> None:
+    """Add `key` to `seen`, an insertion-ordered set (a dict), forgetting the oldest
+    past `cap`. Not a set: set.pop() drops an arbitrary id, which can be the
+    utterance playing right now."""
+    seen[key] = None
+    while len(seen) > cap:
+        del seen[next(iter(seen))]
+
+
 class VoiceActivity:
     """One shared fact: when did the USER's transcript last reach the client?
     UserTranscriptEmitter stamps it as it sends text (an empty transcript changes
@@ -307,10 +316,10 @@ class CaptionTap(FrameProcessor):
         self._acc = ""          # live sentence's played prefix (accumulated_text)
         self._last_sent = ""    # longest partial emitted (forward-only guard)
         self._first_pts = None  # pts of its first word (guards stale End frames)
-        self._dead = set()      # barged context ids: drop their late progress frames
+        self._dead = {}         # barged context ids: drop their late progress frames
         self._playing_ctx = None  # the context the transport is writing (its TTSStartedFrame)
         self._ahead = []        # lines charted ahead (caption_ahead), not playing yet
-        self._ahead_ctx = set()  # their contexts once they play: their words chart nothing
+        self._ahead_ctx = {}    # their contexts once they play: their words chart nothing
 
     def _user_active(self) -> bool:
         return bool(self._activity) and self._activity.user_active()
@@ -324,9 +333,7 @@ class CaptionTap(FrameProcessor):
         # this utterance's stragglers. This override fires out-of-band, before
         # those stragglers.
         if self._ctx is not None:
-            self._dead.add(self._ctx)
-            while len(self._dead) > self._DEAD_MAX:
-                self._dead.pop()
+            _remember(self._dead, self._ctx, self._DEAD_MAX)
         # A line charted ahead that has not started playing is flushed with the rest
         # of the queued speech; its bubble stays, as a barged one does.
         self._ahead.clear()
@@ -483,9 +490,7 @@ class CaptionTap(FrameProcessor):
         else:
             return False
         del self._ahead[i]
-        self._ahead_ctx.add(ctx)
-        while len(self._ahead_ctx) > self._AHEAD_MAX:
-            self._ahead_ctx.pop()
+        _remember(self._ahead_ctx, ctx, self._AHEAD_MAX)
         if self._ctx is not None:
             await self._finalize("utterance switch")
         if _TRACE:
