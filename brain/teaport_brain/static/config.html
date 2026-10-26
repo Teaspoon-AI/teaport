@@ -400,6 +400,7 @@
         row.name === 'TTS_PACING' ? pacingNote() : null,
         row.source ? h('div', { class: 'source' }, row.source.join(', ')) : null),
       h('div', { class: 'control' }, ...control(row, writable),
+        Object.prototype.hasOwnProperty.call(data.renamed || {}, row.name) ? h('p', { class: 'note' }, data.renamed[row.name]) : null,
         isIgnored(row.name) ? h('p', { class: 'field-err' }, data.ignored[row.name] + ' ',
           writable && row.tier !== 'installer' ? h('button', { class: 'btn-ghost btn-sm', onclick: () => setEdit(row.name, null) }, h('span', { class: 'btn-label' }, 'Remove it from the file')) : null) : null));
     const first = $('input, select, textarea', el); if (first) first.id = id;

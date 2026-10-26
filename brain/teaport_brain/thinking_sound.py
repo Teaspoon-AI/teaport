@@ -1,22 +1,24 @@
 #
 # thinking_sound.py — "assistant is thinking" comfort audio for long agent consults.
 #
-# During an ask_openclaw consult the brain hands off to the full desktop agent and
+# During an openclaw_agent_consult consult the brain hands off to the full desktop agent and
 # waits ~15-35 s, sometimes minutes, for the answer (web search + fetch + reasoning).
 # This processor types through it: from the consult's start until its answer is in, a
 # typist types, heard whenever the line is quiet — nobody has spoken, and no reply has
-# been on its way, for TEAPORT_THINKING_GRACE_S — and for at most TEAPORT_THINKING_MAX_S
-# of each consult. Quick tools (time, host status, web_search) never type: only the
-# tools in _TRIGGER, which is just ask_openclaw. Phone calls get no typing (agent_session
-# builds none for SIP) -- but in agent-first, where it is the only cover for the wait
-# (no "I'll work on that", no progress lines). Nor while the session is held for one.
+# been on its way, for TEAPORT_THINKING_GRACE_S — and for at most TEAPORT_THINKING_MAX_S of
+# each consult. Quick tools (time, host status, web_search) never type: only the tools in
+# _TRIGGER, which is just openclaw_agent_consult; and none is heard while an
+# openclaw_agent_control call waits, whose result the Talk client holds while it plays
+# audio (_CONTROL). Phone calls get no typing (agent_session
+# builds none for SIP) -- but in agent-first, where it is the only cover for the wait (no
+# "I'll work on that", no progress lines). Nor while the session is held for one.
 #
 # A consult's start and end. A background consult (the default: the turn ends at once
 # on a placeholder, owed.py) is the brain's {"type": "working"} message to the client,
 # sent when it starts and when its outcome is in (tools._consult_and_land). An
 # agent-first consult (TEAPORT_AGENT_FIRST: the turn waits for it) is its
 # FunctionCallsStartedFrame and FunctionCallResultFrame, or a barge-in, which cancels
-# it. Neither is keyed on reply audio: ask_openclaw speaks a preamble ("I'll work on
+# it. Neither is keyed on reply audio: openclaw_agent_consult speaks a preamble ("I'll work on
 # that…") right after the call starts, and the typing just waits for quiet again.
 #
 # Placed just before transport.output(): it sees all of that coming DOWN (and the
@@ -53,6 +55,7 @@ from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     Frame,
+    FunctionCallCancelFrame,
     FunctionCallResultFrame,
     FunctionCallsStartedFrame,
     InterruptionFrame,
@@ -82,7 +85,19 @@ _MAX_S = setting("TEAPORT_THINKING_MAX_S")        # most typing heard per consul
 _WAV = setting("TEAPORT_THINKING_WAV")            # "" = live typing
 # Only genuinely-long tool calls type; the fast tools resolve before the grace period
 # even elapses, so typing there would just be a blip.
-_TRIGGER = {"ask_openclaw"}
+_TRIGGER = {"openclaw_agent_consult"}
+# A call whose result the Talk client holds while any audio it is playing goes on
+# (gateway-relay.ts submitToolResult, 2026.9.7): openclaw_agent_control, run by the
+# Control UI while a consult is still being typed through. Typing heard then keeps the
+# client's queue busy from chunk to chunk, so its result waited for the typing to stop
+# and the brain's wait (tools.CONTROL_TIMEOUT_S) ran out on a steer that had already
+# acted. The typing goes on unheard while one waits (the face keeps typing), until its
+# result or its cancel, or _CONTROL_MAX_S, past the brain's own wait, should neither
+# come by here. After a cancel (a barge-in) the brain may still wait for the result off
+# the turn (tools._ask_client's after_cancel) while the typing is heard again: that wait
+# is not kept quiet, and a result held past its end says nothing.
+_CONTROL = {"openclaw_agent_control"}
+_CONTROL_MAX_S = 15.0
 # A consult's typing never outlives this, whatever its end (its answer is due within
 # TEAPORT_ASYNC_CONSULT_TIMEOUT, and the brain says so when it is in).
 _TYPING_MAX_S = 600.0
@@ -437,6 +452,7 @@ class ThinkingSound(FrameProcessor):
         self._keys = keys and _LOOP is None
         self._gate = gate
         self._consults = set()      # background consults typing (their call_ids)
+        self._controls = {}         # control calls waiting (_CONTROL): id -> when started
         self._task = None           # the typing, while a consult runs
         self._heard = 0             # chunks heard this consult
         # The line, as this place in the pipeline sees it: who is talking, and when
@@ -456,8 +472,15 @@ class ThinkingSound(FrameProcessor):
         now = time.monotonic()
         replying = self._reply_t is not None and now - self._reply_t < _REPLY_WAIT_S
         held = self._gate is not None and self._gate.held
-        return (not (self._user or self._bot or replying or held)
+        return (not (self._user or self._bot or replying or held or self._controlling(now))
                 and now - self._spoke >= _GRACE_S)
+
+    def _controlling(self, now: float) -> bool:
+        """A control call is waiting for its result (_CONTROL)."""
+        for call, since in list(self._controls.items()):
+            if now - since > _CONTROL_MAX_S:
+                del self._controls[call]
+        return bool(self._controls)
 
     async def _say(self, message: dict, urgent: bool = False):
         if self._keys:
@@ -554,9 +577,20 @@ class ThinkingSound(FrameProcessor):
             task, self._task = self._task, None
             await self.cancel_task(task)
 
+    def _track_controls(self, frame: Frame) -> None:
+        """The control calls waiting (_CONTROL), whatever the consult mode."""
+        if isinstance(frame, FunctionCallsStartedFrame):
+            now = time.monotonic()
+            for call in frame.function_calls or []:
+                if getattr(call, "function_name", None) in _CONTROL:
+                    self._controls[getattr(call, "tool_call_id", None)] = now
+        elif isinstance(frame, (FunctionCallResultFrame, FunctionCallCancelFrame)):
+            self._controls.pop(getattr(frame, "tool_call_id", None), None)
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         self._track_line(frame)
+        self._track_controls(frame)
         if self._async and isinstance(frame, (OutputTransportMessageFrame,
                                               OutputTransportMessageUrgentFrame)):
             m = frame.message if isinstance(frame.message, dict) else {}

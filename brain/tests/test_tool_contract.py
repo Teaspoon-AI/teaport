@@ -53,7 +53,7 @@ def test_every_tool_has_a_switch_row_and_a_hint():
             f"{flag}: schema default and code default disagree")
         assert t.hint.startswith(t.name), f"{t.name}: the prompt hint must name the tool"
         for need in t.needs:
-            assert need in ("agent", "tts", "call_prompt") or re.fullmatch(r"client:[a-z]+", need) or (
+            assert need in ("agent", "tts", "call_prompt", "consult", "run_control") or re.fullmatch(r"client:[a-z]+", need) or (
                 need.startswith("host:") and need[5:] in tools.HOST_CHECKS), need
 
 
@@ -69,7 +69,7 @@ def test_defaults_keep_todays_tools_and_offer_client_tools_only_when_announced(m
     everything = _names(tools.active_tools(tools.ToolContext(
         has_tts=True, client_features=ALL_FEATURES)))
     assert everything == base + ["set_volume", "end_conversation"]
-    gateway = {"web_search", "web_fetch", "search_memory", "remember", "ask_openclaw"}
+    gateway = {"web_search", "web_fetch", "search_memory", "remember", "openclaw_agent_consult"}
     if HAS_AGENT:
         assert gateway <= set(base)
     else:
@@ -254,14 +254,14 @@ def test_the_agent_first_directive_names_the_sessions_direct_tools():
     assert agent_first_directive([]) == AGENT_FIRST_DIRECTIVE
 
 
-def test_agent_first_is_ignored_while_ask_openclaw_is_switched_off():
+def test_agent_first_is_ignored_while_openclaw_agent_consult_is_switched_off():
     import subprocess
     import sys
     env = dict(os.environ, TEAPORT_AGENT="openclaw", TEAPORT_AGENT_FIRST="1")
     probe = "from teaport_brain import tools; print(tools.AGENT_FIRST)"
     for switch, expected in (("0", "False"), ("1", "True")):
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True,
-                             env=dict(env, TEAPORT_TOOL_ASK_OPENCLAW=switch), timeout=120)
+                             env=dict(env, TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT=switch), timeout=120)
         assert out.stdout.strip().splitlines()[-1] == expected, (switch, out.stderr[-500:])
 
 
@@ -308,7 +308,7 @@ def test_the_wifi_setup_tool_hands_over_and_keeps_the_model_quiet():
 
 def _filler_call(captions_ahead):
     """What a silent model's consult pushes through the wrapper, in order: the handler
-    sends the call OpenClaw runs, as ask_openclaw does."""
+    sends the call OpenClaw runs."""
     async def handler(params):
         await params.llm.push_frame(tools.OutputTransportMessageUrgentFrame(message={
             "type": "tool_call", "call_id": "teaport-consult-1",
@@ -317,9 +317,9 @@ def _filler_call(captions_ahead):
     async def run():
         llm = _LLM()
         llm._teaport_spoke = False          # the model said nothing before the call
-        await tools._wrap("ask_openclaw", handler, lambda: "en",
+        await tools._wrap("openclaw_agent_consult", handler, lambda: "en",
                           captions_ahead=captions_ahead)(
-            _Params(llm, {"request": "the weather in Lima tomorrow"}))
+            _Params(llm, {"question": "the weather in Lima tomorrow"}))
         return llm.pushed
 
     def shape(f):
@@ -340,7 +340,6 @@ def test_on_talk_a_fillers_caption_goes_out_before_the_consult():
     (captions.caption_ahead)."""
     line = "I'll work on that — give me a moment."
     assert _filler_call(True) == [
-        ("call", "ask_openclaw"),
         ("final", line), ("CaptionedAheadFrame", line), ("TTSSpeakFrame", line),
         ("call", "openclaw_agent_consult")]
 
@@ -348,5 +347,5 @@ def test_on_talk_a_fillers_caption_goes_out_before_the_consult():
 def test_elsewhere_the_filler_is_charted_as_it_plays():
     line = "I'll work on that — give me a moment."
     assert _filler_call(False) == [
-        ("call", "ask_openclaw"), ("TTSSpeakFrame", line),
+        ("TTSSpeakFrame", line),
         ("call", "openclaw_agent_consult")]

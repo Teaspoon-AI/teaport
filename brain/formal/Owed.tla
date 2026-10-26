@@ -446,6 +446,9 @@ Ask(k) ==
 \* is still to be RENDERED (their turn is open, or committed and not yet asked): that
 \* request carries the note, and the run would speak over or before it. A caller request
 \* already rendered (in flight without the note) does not stop the run: it waits behind.
+\* A consult OpenClaw CANCELLED (#230: the caller called it off) lands no record
+\* (Owed._cancelled): that is a behaviour in which Land never fires, which Spec already
+\* has (Land is not fair), so it needs no action of its own.
 Land ==
     /\ ~ended /\ st = "none"
     /\ st' = "owed"
@@ -598,8 +601,8 @@ Issue ==
 \* What the model may say, by who asked and what the request carried (header; DESIGN.md
 \* "What the evidence supports"). "tool" is a sync tool call (get_current_time, ...),
 \* only on a caller's turn, and "texttool" the same call with a line before it ("Let me
-\* check." + get_weather): the line plays while the call is out; "lookup" is ask_openclaw
-\* again for what the outcome answers.
+\* check." + get_weather): the line plays while the call is out; "lookup" is
+\* openclaw_agent_consult again for what the outcome answers.
 Says(p, r, n) ==
     LET pt == Opt(OUTCOME = "items", "part") IN    \* a failure is told whole or not at all
     IF p = "run"     THEN {"tell"} \cup (Opt(PARTIAL, "part") \cap pt) \cup Opt(SILENT, "silent")

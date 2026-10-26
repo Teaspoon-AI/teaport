@@ -52,7 +52,7 @@ CONSULT_ERR_FILE = "/tmp/teaport-consult-last.err"
 RECALL_TIMEOUT = setting("TEAPORT_RECALL_TIMEOUT")
 
 # Agent-consult: the rich, SLOW *delegation* primitive for hard questions (a future
-# `ask_openclaw` tool). Runs one full OpenClaw agent turn via the gateway — full
+# `openclaw_agent_consult` tool). Runs one full OpenClaw agent turn via the gateway — full
 # tools/skills/memory on the cerebras model — by shelling out to `openclaw agent`
 # (agent-run is a gateway WS protocol, not a REST endpoint, so the CLI drives it). Kept
 # validated but UNUSED for memory-write: routing "remember X" through a consult proved
@@ -77,11 +77,37 @@ def _find_openclaw_bin() -> str:
 
 
 OPENCLAW_BIN = _find_openclaw_bin()
-OPENCLAW_AGENT = setting("OPENCLAW_AGENT_ID")
+# The agent this box talks to: OPENCLAW_AGENT_ID when the operator set it, else None --
+# the gateway's own default agent. The consult lanes and the voice context
+# (host_context.fetch, ?agent=) name it from here, so a consult and the room's profile
+# are about one agent:
+#   /v1/chat/completions  model "openclaw/<id>" (OpenClaw's agent model id, 2026.9.7
+#                         http-utils.ts resolveAgentIdFromModel: an unconfigured id is a
+#                         400), unset "openclaw" -> resolveDefaultAgentId;
+#   the voice context     agent=<id>, unset nothing: the route's strict resolver, the
+#                         agent the lane's "openclaw" answers with whenever it answers.
+# The CLI (the consult fallback and `memory index`) is as it was before: --agent <id>, or
+# --agent main when unset (with no --agent, `memory index` would index every agent, and
+# the consult would fail on a box with several agents and no default marked). Memory
+# and the web tools are not named at all: remember_note writes OPENCLAW_MEMORY_DIR and
+# /tools/invoke carries no agent, so they stay with the gateway's default agent.
+AGENT_ID = setting("OPENCLAW_AGENT_ID")
+
+
+def agent_model() -> str:
+    """The /v1/chat/completions model that reaches the agent this box talks to."""
+    return f"openclaw/{AGENT_ID}" if AGENT_ID else "openclaw"
+
+
+def agent_args() -> list[str]:
+    """The `openclaw` CLI arguments naming the agent: OPENCLAW_AGENT_ID, else "main"."""
+    return ["--agent", AGENT_ID or "main"]
+
+
 # 45 s, not 30: the sandbox-exec shim adds ~14 s of spawn tax (nemoclaw + docker
 # exec + CLI node startup, measured) before the agent turn even starts, and a
 # Discord-action turn needs real time after that. Callers cap the voice wait
-# separately (TEAPORT_ASK_OPENCLAW_TIMEOUT must stay above ack+consult). This is the
+# separately (TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT must stay above ack+consult). This is the
 # SYNC path's budget only: the async path (SIP, or a relay that never acks) passes its
 # own, TEAPORT_ASYNC_CONSULT_TIMEOUT, since its wait is off the turn (#80).
 CONSULT_TIMEOUT = setting("TEAPORT_CONSULT_TIMEOUT")
@@ -298,7 +324,7 @@ async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tu
 
 
 def _completions_sync(message: str, token: str, timeout: float) -> str | None:
-    body = json.dumps({"model": "openclaw",
+    body = json.dumps({"model": agent_model(),
                        "messages": [{"role": "user", "content": message}]}).encode()
     req = urllib.request.Request(
         f"{GATEWAY_URL}/v1/chat/completions", data=body,
@@ -446,7 +472,7 @@ async def agent_consult(message: str, *, session_key: str | None = None,
     # brain sends self-contained requests, so no cross-consult context is lost.
     if session_key is None:
         session_key = f"voice:consult-{uuid.uuid4().hex[:10]}"
-    args = ["agent", "--agent", OPENCLAW_AGENT, "--session-key", session_key,
+    args = ["agent", *agent_args(), "--session-key", session_key,
             "-m", message, "--json"]
     if not answered:
         # --local only when no gateway answered: it runs the agent embedded in the
@@ -518,7 +544,7 @@ async def reindex_memory(*, timeout: float = 30.0) -> bool:
     runs. Subprocess `openclaw memory index`; best-effort, returns whether it succeeded."""
     try:
         rc, _, _ = await _run_openclaw(
-            ["memory", "index", "--agent", OPENCLAW_AGENT], timeout=timeout, capture=False)
+            ["memory", "index", *agent_args()], timeout=timeout, capture=False)
         return rc == 0
     except Exception as e:  # noqa: BLE001
         logger.debug("reindex_memory failed: {}", e)

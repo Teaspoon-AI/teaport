@@ -52,6 +52,8 @@ from pipecat.transports.websocket.fastapi import (
 
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
+from teaport_brain import host_context
+from teaport_brain import run_control
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
 from teaport_brain import thinking_sound
@@ -109,6 +111,11 @@ CALL_CLOSE_REASON = "a phone call came in"
 ROOM_KEEPALIVE_SECS = 45.0
 # How long a Talk session a call ends may take to say so before it is closed anyway.
 CALL_LINE_MAX_SECS = 8.0
+# How long a Talk connection that announced ?session_config=1 may take to send that frame
+# before the session is built without it. The plugin sends it in its socket's open
+# handler, ahead of any audio, so it is normally in the socket's buffer by the time the
+# brain looks; this only bounds a plugin that broke its promise.
+SESSION_CONFIG_WAIT_SECS = 2.0
 # Set whenever the session arbiter's holder changes, so the busy lamp follows a call's
 # start and end at once (_busy_lamp). Made by the lamp's own task, on the loop that
 # waits on it.
@@ -211,6 +218,37 @@ async def _refuse(websocket, refusal: arb.Refusal, *, speak: bool, room: bool,
         pass
 
 
+async def _read_session_config(websocket) -> host_context.HostContext | None | bool:
+    """The session_config frame a Talk connection promised with ?session_config=1: its
+    HostContext, None when it did not come as promised (late, not a session_config, not
+    JSON, audio), or False when the client left while the brain waited. Read straight off
+    the socket, before the transport exists, so the pipeline never sees it; a frame that
+    comes after the wait reaches the serializer, which ignores a type it does not know."""
+    try:
+        msg = await asyncio.wait_for(websocket.receive(), SESSION_CONFIG_WAIT_SECS)
+    except asyncio.TimeoutError:
+        logger.warning(f"no session_config within {SESSION_CONFIG_WAIT_SECS:g}s although "
+                       "the client announced one — building without host instructions")
+        return None
+    if msg.get("type") == "websocket.disconnect":
+        return False
+    text = msg.get("text")
+    if text is None:
+        # Audio first: the plugin broke the frame-first promise. That chunk (a few ms of
+        # the user's microphone) is lost; the session goes on.
+        logger.warning("session_config announced but the first frame was audio — building "
+                       "without host instructions")
+        return None
+    try:
+        host = host_context.from_frame(json.loads(text))
+    except (json.JSONDecodeError, TypeError):
+        host = None
+    if host is None:
+        logger.warning("session_config announced but the first frame was not one — building "
+                       "without host instructions")
+    return host
+
+
 def _qp_float(value, default: float) -> float:
     try:
         return float(value)
@@ -248,7 +286,9 @@ async def run_relay_bot(websocket: WebSocket):
     room = "local" in features
     client = (qp.get("client") or "").strip()[:128] or None
     keepalive = _qp_float(qp.get("keepalive"), ROOM_KEEPALIVE_SECS)
-    serializer = TeaportGatewaySerializer()
+    # The plugin (and only it) announces run control; only its notes may be OpenClaw's.
+    run_controlled = qp.get("run_control") == run_control.PROTOCOL
+    serializer = TeaportGatewaySerializer(host_notes=run_controlled)
     session_holder: dict = {}
 
     def asleep() -> bool:
@@ -290,6 +330,37 @@ async def run_relay_bot(websocket: WebSocket):
         await _refuse(websocket, refusal, speak=speak_refusal, room=room,
                       voice=qp.get("voice"), language=qp.get("language"))
         return
+    # What OpenClaw tells this voice session (host_context.py) is in hand BEFORE
+    # build_agent_session: its instructions start the system prompt, and its consult
+    # schema is the one the model gets. So the order is read, build, hello. The hello
+    # carries the session's note limits, so it cannot go before the build, and the build
+    # cannot go before the context; what its early send is for -- going out before the
+    # arbiter's grant and the pipeline start, the waits that could hold it past the
+    # client's deadline -- is kept.
+    #   Talk: the session_config frame the plugin sends in its open handler, ahead of any
+    #     audio, when it announces ?session_config=1, so normally already buffered;
+    #     SESSION_CONFIG_WAIT_SECS bounds it well inside the plugin's 15 s wait for the
+    #     hello (plugin/context.js). Without the flag nothing is waited for.
+    #   everyone else -- the room mic, the Discord bridge (?client=discord), a plugin
+    #     before #230 -- sends no frame: the plugin's voice-context route on the gateway
+    #     (host_context.fetch: loopback, milliseconds, bounded by its FETCH_TIMEOUT_S), the
+    #     agent paragraph and profile the phone gets too, under the front end's name
+    #     ("discord", any other client "talk": host_context.front_end_of). A
+    #     gateway not up yet is asked again for as long as the session can wait: a few
+    #     seconds for a wake session opening asleep, about two for anyone else
+    #     (host_context.PATIENCE_*). The room's bridge sends no mic audio until the hello,
+    #     so nothing is lost meanwhile.
+    # A refused connection never gets here.
+    if qp.get("session_config") == host_context.PROTOCOL and not room:
+        host = await _read_session_config(websocket)
+        if host is False:
+            logger.info("Talk client left before its session_config arrived")
+            return
+    else:
+        host = await host_context.fetch(
+            "room" if room else host_context.front_end_of(client),
+            patience=(host_context.PATIENCE_ASLEEP_S if gate is not None and gate.asleep
+                      else host_context.PATIENCE_S))
     if gate is not None and awake:
         gate.store.clear()  # a fresh conversation, by request
     transport = FastAPIWebsocketTransport(
@@ -317,6 +388,9 @@ async def run_relay_bot(websocket: WebSocket):
         transport, voice=qp.get("voice"), language=qp.get("language"),
         caption_every_final=sends_every_final(qp.get("captions")),
         context_notes=True,
+        # The plugin answers whether OpenClaw's spoken run control took a final said
+        # while a consult runs (run_control.py, #230): only it, and only on Talk.
+        run_control=run_controlled,
         # What the client can do itself (the local audio bridge: volume, restart);
         # the client tools that need it are offered only then (tools.py, THE TOOL CONTRACT).
         client_features=features,
@@ -329,6 +403,7 @@ async def run_relay_bot(websocket: WebSocket):
         # Talk's own turn-taking (TALK_* over the shared knobs; endpointing.turn_settings),
         # or the room's (ROOM_*): across a room people pause mid-sentence (issue #159).
         front_end="room" if room else "talk",
+        host=host,
     )
     session_holder["s"] = session
 

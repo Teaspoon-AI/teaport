@@ -6,7 +6,7 @@
 //   talk.realtime.provider  = "teaport"
 //   talk.realtime.mode      = "realtime"
 //   talk.realtime.transport = "gateway-relay"
-//   talk.realtime.brain     = "agent-consult"  // see below; "none" breaks talk.client.create
+//   talk.realtime.brain     = "agent-consult"  // optional, the default; see below. Never "none"
 //   talk.realtime.providers.teaport.url = "ws://<pipecat-host>:7861/talk"
 //   talk.realtime.providers.teaport.assistantTranscripts = "auto"  // optional; see below
 //
@@ -18,13 +18,15 @@
 // `brain` is OpenClaw's "tool/agent strategy for realtime sessions" — how the session
 // reaches TOOLS AND THE AGENT. It does not decide who speaks: the realtime *provider*
 // (teaport) owns speech either way, so "agent-consult" cannot make OpenClaw double-respond.
-// It must be "agent-consult" for two reasons:
+// It must be "agent-consult" (or left unset: talk.client.create then defaults to it, and
+// talk.catalog lists teaport with it, since provider.js declares supportsToolCalls), for
+// two reasons:
 //   * talk.client.create rejects anything else outright. It takes an explicit `brain`
 //     param if given and otherwise falls back to this config value, so a Talk UI client
 //     — which passes none — inherits whatever is set here. With "none" every session
 //     dies at creation with `talk.client.create only supports brain="agent-consult"`.
-//   * it is the machinery this plugin actually uses: the brain's ask_openclaw arrives
-//     as an `openclaw_agent_consult` tool call, which provider.js hands to the relay's
+//   * it is the machinery this plugin actually uses: the brain's consult is an
+//     `openclaw_agent_consult` tool call, which provider.js hands to the relay's
 //     in-process agent-consult path (working notices, then submitToolResult back to the
 //     brain). With no agent strategy there is nothing for a consult to reach.
 // This line read "none" until 2026-09-08, on the reasoning that Pipecat orchestrates and
@@ -36,6 +38,7 @@ import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 
 import { TalkSessions, contextMethods } from "./context.js";
 import { buildTeaportRealtimeProvider } from "./provider.js";
+import { VOICE_CONTEXT_PATH, realtimeVoiceRunControl, voiceContextHandler } from "./voice-context.js";
 
 // The gateway connection a request came in on. createBridge runs inside the client's
 // talk.session.create request, so this names the connection that owns the session
@@ -113,6 +116,10 @@ export default definePluginEntry({
         log: (msg) => api.logger?.info?.(msg),
         sessions,
         clientKey: currentClientKey,
+        // OpenClaw's run-control classifier and echo filter, imported when the first Talk
+        // session is made (provider.js, answerRunControl), not here: discovery and CLI
+        // loads make none.
+        runControl: realtimeVoiceRunControl,
       }),
     );
     // Context notes for live sessions (context.js). operator.talk is the scope OpenClaw
@@ -122,6 +129,23 @@ export default definePluginEntry({
       for (const [method, handler] of Object.entries(contextMethods(sessions))) {
         api.registerGatewayMethod(method, handler, { scope: "operator.talk" });
       }
+    }
+    // The voice context for the brain's room mic and phone line (voice-context.js): what
+    // OpenClaw tells a voice surface, built with the SDK, served over the gateway's HTTP
+    // port behind its normal auth (the brain's bearer token). Config and version are read
+    // per request, like the version above: api.runtime is built lazily.
+    if (typeof api.registerHttpRoute === "function") {
+      api.registerHttpRoute({
+        path: VOICE_CONTEXT_PATH,
+        auth: "gateway",
+        match: "exact",
+        handler: voiceContextHandler({
+          config: () => api.runtime?.config?.current?.(),
+          version: () => api.runtime?.version,
+          revalidate: async () => getRequestScope?.()?.revalidate?.(),
+          log: api.logger,
+        }),
+      });
     }
   },
 });

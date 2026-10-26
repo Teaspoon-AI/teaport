@@ -123,7 +123,7 @@ def _context(*tail):
         {"role": "user", "content": "What's the top story on Hacker News?"},
         {"role": "assistant", "content": None, "tool_calls": [
             {"id": "call-hn", "type": "function",
-             "function": {"name": "ask_openclaw", "arguments": json.dumps({"request": REQ})}}]},
+             "function": {"name": "openclaw_agent_consult", "arguments": json.dumps({"question": REQ})}}]},
         {"role": "tool", "tool_call_id": "call-hn",
          "content": json.dumps({"status": "working_in_background"})},
         *tail], tools=ToolsSchema(standard_tools=[FunctionSchema(

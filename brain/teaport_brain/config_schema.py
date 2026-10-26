@@ -108,6 +108,9 @@ def _desc_cell(row: dict) -> str:
         parts.append("One of " + ", ".join(f"`{v}`" if v else EMPTY for v in row["values"]) + ".")
     if "note" in row:
         parts.append(row["note"].strip())
+    if "former" in row:
+        parts.append(f"Named `{row['former']}` before; that name is still read, with a "
+                     "warning, while this one is unset.")
     if row.get("tier") == "installer":
         parts.append("*Set by the installer.*")
     if row.get("kept"):

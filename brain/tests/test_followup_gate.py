@@ -4,7 +4,7 @@
 # The gate sets _llm on LLMFullResponseStartFrame and used to clear it ONLY on
 # LLMFullResponseEndFrame. But the end frame is not guaranteed to arrive at the
 # gate: for a completion with no synthesizable text (a bare tool call — exactly
-# the async ask_openclaw shape, where no_inference() means no later completion
+# the async openclaw_agent_consult shape, where no_inference() means no later completion
 # comes either), the TTS service holds the end frame waiting for an audio context
 # that empty text never creates; and an interruption discards a held one outright.
 # Either way the gate read "mid-response" forever: every consult narrator line
@@ -82,7 +82,7 @@ async def _feed(gate, *frames):
         await gate.process_frame(f, FrameDirection.DOWNSTREAM)
 
 
-def _tool_call(call_id="tc-1", name="ask_openclaw"):
+def _tool_call(call_id="tc-1", name="openclaw_agent_consult"):
     """A call's in-progress frame, as the LLM broadcasts it for every tool here
     (cancel_on_interruption: pipecat's default)."""
     return FunctionCallInProgressFrame(
@@ -94,7 +94,7 @@ def _tool_result(run_llm=None, call_id="tc-1"):
     """The call's result. run_llm=False is tools.no_inference() -- the async
     placeholder nothing answers from; None means the answering completion follows."""
     return FunctionCallResultFrame(
-        function_name="ask_openclaw", tool_call_id=call_id, arguments={},
+        function_name="openclaw_agent_consult", tool_call_id=call_id, arguments={},
         result={"status": "queued"},
         properties=FunctionCallResultProperties(run_llm=False) if run_llm is False else None)
 
@@ -155,7 +155,7 @@ async def test_a_turn_free_wait_waits_out_a_synchronous_tool_call():
 
 
 async def test_a_no_inference_result_ends_the_turn():
-    """The async ask_openclaw shape: the placeholder result runs no inference, so
+    """The async openclaw_agent_consult shape: the placeholder result runs no inference, so
     nothing will answer from it -- the turn is over."""
     gate = _gate()
     await _feed(gate, LLMFullResponseStartFrame(), _tool_call(), _tool_result(run_llm=False))
@@ -754,7 +754,7 @@ async def test_a_cancelled_calls_late_in_progress_frame_opens_no_round():
 
 
 async def test_two_calls_out_end_the_turn_only_when_both_are_answered():
-    """ask_openclaw (its placeholder runs no inference) beside a sync tool in one
+    """openclaw_agent_consult (its placeholder runs no inference) beside a sync tool in one
     completion: the placeholder's result does not end the turn or the round while the
     sync tool runs."""
     gate = _gate()

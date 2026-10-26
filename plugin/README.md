@@ -26,7 +26,7 @@ Configure in `~/.openclaw/openclaw.json`:
     "provider": "teaport",
     "mode": "realtime",
     "transport": "gateway-relay",
-    "brain": "agent-consult",               // required — see the note below
+    "brain": "agent-consult",               // the default; never "none" — see the note below
     "providers": { "teaport": {
       "url": "ws://127.0.0.1:7861/talk",    // the teaport brain's /talk WS
       "voice": "af_heart",                   // optional: a voice id the engine provides
@@ -39,9 +39,113 @@ Configure in `~/.openclaw/openclaw.json`:
 The plugin appends `voice`, `language`, and `token` to the brain WebSocket URL
 as query parameters for each session. The `token` value can also come from the
 `TEAPORT_GATEWAY_TOKEN` environment variable. It also appends `captions=2`, the
-caption protocol it speaks (see below).
+caption protocol it speaks (see below), `session_config=1` (see
+[What OpenClaw tells the voice](#what-openclaw-tells-the-voice)), and `run_control=1`
+(see [Spoken run control](#spoken-run-control)).
+
+## What OpenClaw tells the voice
+
+OpenClaw composes what a realtime voice surface is told and hands it to the provider
+with each session (`req.instructions` and `req.tools`, OpenClaw 2026.9.7 and newer):
+its realtime voice instructions, the operator's `talk.realtime.instructions`, the
+agent paragraph and the IDENTITY / USER / SOUL profile, and the consult tools
+`openclaw_agent_consult` and `openclaw_agent_control`. As soon as the brain's socket
+opens, before any audio, the plugin sends them as one frame:
+
+```json
+{"type": "session_config", "instructions": "<req.instructions, or \"\">", "tools": [<req.tools, or none>]}
+```
+
+The frame always goes out, empty or not: `session_config=1` on the URL tells the brain
+to wait for it, so it must always come. The brain starts the session's system prompt
+with the instructions as sent, then its own voice rules, and gives its language model
+OpenClaw's `openclaw_agent_consult` and `openclaw_agent_control` schemas from the tool
+list. A brain that gets no flag (another client) builds its own prompt, as before.
+
+### Spoken run control
+
+A request the agent is still working on can be asked about, cancelled, redirected or
+added to by voice, two ways, which never act on the same words:
+
+- **OpenClaw's relay** reads every final user transcript the brain sends while a consult
+  runs, and acts on what its classifier recognizes: "cancel that" cancels the run,
+  "how's it going?" reports on it, "actually ..." steers it, "also ..." queues a
+  follow-up. Those words are the relay's, not the model's (below).
+- **The model** gets `openclaw_agent_control` for everything else, in any phrasing or
+  language ("scratch that", "how much longer?", "olvídalo"), as OpenClaw's own voice
+  rules tell it to. The relay does not run it: the brain's call goes to the relay's
+  `onToolCall` like a consult's, the relay shows it to the Talk client as a `toolCall`
+  event, and the client runs it (the Control UI: `talk.session.steer`) and submits the
+  result back through the relay, which the plugin passes to the brain for that call's
+  id. The brain waits at most 10 s for it (the Control UI holds a tool result until the
+  voice it is playing has finished) and has the model say it in plain words.
+
+What keeps the brain in step:
+
+- **The relay's reply is spoken.** The relay hands its answer to the provider
+  (`sendUserMessage`); the plugin sends it to the brain as a context note marked
+  `"source": "host"`, and the brain's next reply says what it means for the user's
+  request in plain words (OpenClaw's status names "the active OpenClaw run" and tools,
+  so it is not read out verbatim). Only the plugin sets that mark;
+  `teaport.talk.context` never does, and the brain believes it only from a client that
+  announced `?run_control=1`.
+- **The brain does not answer the relay's words.** For a final said while it has a
+  consult running, the brain asks `{"type": "run_control", "id", "text"}` and holds that
+  turn for the answer. The plugin answers `{"type": "run_control_result", "id",
+  "claimed"}`. Not claimed, at once: no consult the relay acknowledged is unanswered,
+  OpenClaw's classifier (`shouldAutoControlRealtimeVoiceAgentText`) does not call the
+  words control, or the relay's echo filter would drop them
+  (`isLikelyRealtimeVoiceAssistantEchoTranscript` over the finals the plugin forwarded,
+  12 s lookback, as the relay keeps them). Otherwise claimed only once the relay acts on
+  them (its reply, or a consult's `{"status": "cancelled"}` result), and not claimed if it
+  has not within 2 s: the relay counts a consult's run only once the Talk client's
+  `talk.client.toolCall` and `chat.send` are acknowledged, and forgets it just before the
+  result, so in those moments it acts on nothing and the model answers instead. A
+  claimed turn ends with nothing for the model to answer. A second final said while one
+  is held is asked about in its turn.
+- **A cancelled consult is owed nothing.** The relay's `{"status": "cancelled"}` result
+  closes the consult silently on the brain's side, whichever way it was cancelled. A
+  control call's own result is the control's, never read as a consult's.
+- **A consult the brain gave up on stops.** Past its own wait the brain sends
+  `{"type": "tool_cancel", "call_id"}`, and the plugin tells the relay the call was
+  cancelled (`tool.call.cancelled`), which aborts the run, so the relay's run control
+  has nothing left to act on either.
+
+The room mic and the phone have no relay: no run control, and no control tool.
+
+### The room mic and the phone
+
+The box's own microphone and its phone line reach the brain without OpenClaw's Talk
+relay, and so does any other `/talk` client that sends no `session_config` (the Discord
+bridge), so the brain asks the plugin for their context at the start of each session:
+
+```
+GET /teaport/voice-context?front_end=room|sip|discord|talk[&agent=<id>]   (gateway auth: the gateway token)
+-> 200 {"version": 1, "agentId": "...", "instructions": "...", "tools": [...], "openclawVersion": "..."}
+-> 400 {"error": "agent_unknown"}
+-> 503 {"error": "host_unsupported" | "agent_unresolved" | "context_unavailable"}
+```
+
+The plugin builds it with OpenClaw's SDK the way OpenClaw's own phone surface
+(voice-call) does: `resolveRealtimeVoiceAgentContextInstructions` for the agent the
+brain's `/v1/chat/completions` consults answer with, or the configured agent the brain
+names (`agent=`, its `OPENCLAW_AGENT_ID` when set, which its consults then reach as
+model `openclaw/<id>`), resolved with
+`resolveSessionAgentIdStrict` as 2026.9.7 asks new plugins to — the agent paragraph,
+the agent's configured identity (name, emoji, vibe…) and the IDENTITY / USER / SOUL
+profile, at most 6,000 characters, no session key — and
+`REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
+it with its own voice rules. A gateway still starting or restarting (503 with
+`Retry-After`, or refusing connections) is asked again for a few seconds by a room
+session opening asleep and for about two by anyone else; past that, or on any other
+failure, the brain uses its persona file and logs a warning, and a room session built
+that way asks once more when its wake word is heard.
 
 ### Why `brain` must be `"agent-consult"`
+
+It is the default: with no `brain` in the config, `talk.client.create` uses
+`"agent-consult"`, and `talk.catalog` lists teaport with it because the provider
+declares `supportsToolCalls: true`. Setting it to anything else breaks Talk.
 
 `brain` is OpenClaw's *tool/agent strategy for realtime sessions* — how the session
 reaches tools and the agent. It does **not** decide who speaks: the realtime provider
@@ -54,7 +158,7 @@ Two things require it:
   given and otherwise falls back to this config value, so a Talk UI client — which sends
   none — inherits whatever is set here. With `"none"`, every session fails at creation
   with `talk.client.create only supports brain="agent-consult"`.
-- **It is the path this plugin uses.** The brain's `ask_openclaw` arrives as an
+- **It is the path this plugin uses.** The brain's consult is an
   `openclaw_agent_consult` tool call, which `provider.js` hands to the relay's in-process
   agent-consult machinery (working notices, then a final `submitToolResult` back to the
   brain). With no agent strategy, a consult has nothing to reach.
@@ -164,7 +268,7 @@ in OpenClaw 2026.8.1 and later (and in the 2026.7.2 prereleases) merges assistan
 text differently from user text. It appends each assistant partial as a delta, and
 only a final replaces the bubble. 2026.7.1 and earlier, and the 2026.7.33–7.35
 maintenance releases, replace the bubble with each partial instead; there is no
-2026.7.2 stable release. The package declares `openclaw >=2026.9.0`. The captions
+2026.7.2 stable release. The package declares `openclaw >=2026.9.7`. The captions
 were checked against the Talk view code of 2026.7.1, 2026.7.35 and 2026.9.1. The
 optional `talk.realtime.providers.teaport.assistantTranscripts` setting picks what
 the plugin sends:

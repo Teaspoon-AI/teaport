@@ -70,12 +70,12 @@
 # (via agent_session), so it now gets memory recall/reclaim, captions/transcript
 # emitters, and the turn-timing taps it previously lacked (captions/transcript
 # frames are harmlessly dropped by the SIP serializer — no SIP control type carries
-# them). Tools run exactly like the OpenClaw path: the async ask_openclaw consult
+# them). Tools run exactly like the OpenClaw path: the async openclaw_agent_consult consult
 # lands in owed.py and is told through the FollowupGate (no typing over the wait: a
 # phone call gets no ThinkingSound, outside agent-first), so a caller gets REAL tool results instead of
 # hallucinated ones. On SIP there is no OpenClaw plugin to service the native
 # openclaw_agent_consult round-trip (the sip_serializer drops it, being a non-protocol control), so
-# ask_openclaw degrades to the CLI agent_consult path; the fast tools (host status,
+# openclaw_agent_consult degrades to the CLI agent_consult path; the fast tools (host status,
 # time, web search/fetch, memory) run unchanged.
 
 import argparse
@@ -99,6 +99,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from teaport_brain import reply_hold
 from teaport_brain import session_arbiter as arb
 from teaport_brain.agent_session import build_agent_session
+from teaport_brain import host_context
 from teaport_brain.settings import setting
 from teaport_brain import agent_backend, audio_dump, display, sdnotify
 from teaport_brain.memory_hygiene import turn_reclaim
@@ -845,6 +846,11 @@ async def run_connection(sock, on_ready=None):
             reply_hold_enabled=reply_hold.SIP_ENABLED,
             # The phone's own turn-taking (SIP_* over the shared knobs).
             front_end="sip",
+            # What OpenClaw tells a voice surface, from the gateway's teaport plugin
+            # (host_context.fetch: loopback, milliseconds; None falls back to the persona
+            # file, with a warning). A caller is on the line: a gateway not up yet gets
+            # the short patience, not the asleep room's.
+            host=await host_context.fetch("sip", patience=host_context.PATIENCE_S),
         )
         if half_duplex is not None:
             half_duplex.thinking_sound = session.thinking_sound

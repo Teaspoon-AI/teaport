@@ -667,9 +667,9 @@ async def test_a_dropped_hold_drops_its_tool_round_too():
         await rig.send(
             FunctionCallInProgressFrame(function_name="web_search", tool_call_id="t1",
                                         arguments={}),
-            FunctionCallInProgressFrame(function_name="ask_openclaw", tool_call_id="t2",
+            FunctionCallInProgressFrame(function_name="openclaw_agent_consult", tool_call_id="t2",
                                         arguments={}),
-            FunctionCallResultFrame(function_name="ask_openclaw", tool_call_id="t2",
+            FunctionCallResultFrame(function_name="openclaw_agent_consult", tool_call_id="t2",
                                     arguments={}, result={"status": "working"}),
             *reply("c1", rig))
         await asyncio.sleep(0.3)

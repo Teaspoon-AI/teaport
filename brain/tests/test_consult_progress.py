@@ -2,7 +2,7 @@
 # Unit test: the consult narrator must stop before the answer is spoken.
 #
 # _consult_progress is a fixed countdown against dead air — "Still working on it." at 9s,
-# "Almost there — hang tight." at 22s — spoken while a background ask_openclaw runs. It
+# "Almost there — hang tight." at 22s — spoken while a background openclaw_agent_consult runs. It
 # used to be cancelled in the waiter's finally, which was harmless only while the
 # follow-up injector returned as soon as it had queued the LLM run.
 #
@@ -109,8 +109,9 @@ class _Gate:
     """Stub FollowupGate. `gap` is what wait_until_idle reports: True == a clear
     moment opened (speak), False == none within the window (skip)."""
 
-    def __init__(self, gap):
+    def __init__(self, gap, calls_out=False):
         self.gap = gap
+        self.calls_out = calls_out
         self.waits = 0
 
     async def wait_until_idle(self, max_wait=None):
@@ -170,6 +171,8 @@ async def test_the_schedule_is_wall_clock_so_a_gap_wait_does_not_push_the_next_l
     line is due at 0.4s: it must fire at ~0.7s (its moment, then its own wait), not
     at 1.0s (the first line's wait, then 0.4s more, then its own)."""
     class SlowGate:
+        calls_out = False
+
         async def wait_until_idle(self, max_wait=None):
             await asyncio.sleep(0.3)
             return True
@@ -188,10 +191,10 @@ async def test_the_schedule_is_wall_clock_so_a_gap_wait_does_not_push_the_next_l
     assert second < 0.85, f"the second line fired at {second:.2f}s: the gap wait stacked"
 
 
-async def _drive_progress(gap):
+async def _drive_progress(gap, calls_out=False):
     saved = tools._PROGRESS_SCHEDULE
     tools._PROGRESS_SCHEDULE = (0.0, 0.0)  # no countdown; exercise the gating only
-    gate = _Gate(gap)
+    gate = _Gate(gap, calls_out)
     llm = _Recorder()
     llm._teaport_progress_active = False
     try:
@@ -213,6 +216,14 @@ async def test_the_narrator_stays_quiet_when_there_is_no_gap():
     assert llm.said == [], (
         f"the narrator talked over the user instead of skipping: {llm.said!r}")
     assert gate.waits == 2, "it still checks (and skips) each line"
+
+
+async def test_the_narrator_stays_quiet_while_a_tool_call_waits():
+    """A quiet line with a call out (openclaw_agent_control's wait reads idle: the call
+    released the LLM flag): a line said then is audio the Talk client holds the
+    control's result behind."""
+    llm, gate = await _drive_progress(gap=True, calls_out=True)
+    assert llm.said == [], llm.said
 
 
 async def test_no_gate_falls_back_to_speaking_unconditionally():

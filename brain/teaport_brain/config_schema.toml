@@ -126,7 +126,7 @@ blurb = "TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; 
 [[groups]]
 id = "tools"
 title = "Tools"
-blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and ask_openclaw; the voice for the voice tools; and, for set_volume, restart_session and end_conversation, a client that can do it itself (the local audio bridge announces them; end_conversation only with wake words set); answer_phone_call is offered to Talk sessions and the room mic, never to a call. A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions."
+blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and openclaw_agent_consult; the voice for the voice tools; and, for set_volume, restart_session and end_conversation, a client that can do it itself (the local audio bridge announces them; end_conversation only with wake words set); answer_phone_call is offered to Talk sessions and the room mic, never to a call. A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions."
 
 [[groups]]
 id = "wifi_setup"
@@ -1166,7 +1166,7 @@ values = ["openclaw", "none"]
 default = "openclaw"
 read = "startup"
 tier = "setup"
-help = "Which agent, if any, is co-resident. `openclaw`: a gateway (host OpenClaw or a NemoClaw sandbox) provides web_search, web_fetch, search_memory, remember, ask_openclaw, memory recall and the workspace persona. `none`: a voice-only box — those tools are not advertised, recall is not run, and the persona comes from TEAPORT_PERSONA_FILE. Asymmetric on repair: a detected gateway is positive evidence, so the installer writes `openclaw` unconditionally (installing a gateway later and re-running is all it takes to turn the tools on) — but NOT finding one is not evidence of anything, so the installer only seeds `none` on a first voice-only install and an existing value survives a repair. To disable agent tooling on a box that still has a working gateway, use the config page, not a hand edit of this file — a repair that still finds the gateway overwrites a hand edit here (and now logs that it did)."
+help = "Which agent, if any, is co-resident. `openclaw`: a gateway (host OpenClaw or a NemoClaw sandbox) provides web_search, web_fetch, search_memory, remember, openclaw_agent_consult, memory recall and OpenClaw's voice context (identity and profile). `none`: a voice-only box — those tools are not advertised, recall is not run, and the persona comes from TEAPORT_PERSONA_FILE. Asymmetric on repair: a detected gateway is positive evidence, so the installer writes `openclaw` unconditionally (installing a gateway later and re-running is all it takes to turn the tools on) — but NOT finding one is not evidence of anything, so the installer only seeds `none` on a first voice-only install and an existing value survives a repair. To disable agent tooling on a box that still has a working gateway, use the config page, not a hand edit of this file — a repair that still finds the gateway overwrites a hand edit here (and now logs that it did)."
 
 [[settings]]
 name = "OPENCLAW_GATEWAY_URL"
@@ -1194,10 +1194,9 @@ name = "OPENCLAW_AGENT_ID"
 store = "brain_env"
 group = "agent"
 type = "string"
-default = "main"
 read = "startup"
 tier = "tuning"
-help = "The agent consulted."
+help = "The OpenClaw agent this box's consults reach (model openclaw/<id> on /v1/chat/completions, --agent on the CLI fallback) and whose voice context (agent paragraph and profile) the room mic, the phone and the Discord bridge get from the teaport plugin. Must be a configured agent. Unset: the gateway's default agent, with the CLI fallback and the memory reindex run as --agent main. Memory and the web tools (remember, search_memory, web_search, web_fetch) stay with the gateway's default agent either way: remember writes OPENCLAW_MEMORY_DIR, and /tools/invoke names no agent."
 
 [[settings]]
 name = "OPENCLAW_BIN"
@@ -1267,16 +1266,28 @@ tier = "tuning"
 help = "How long to wait on an acked native consult. Useful consults return in ~15–30 s; past ~45 s the voice wait degrades faster than the answer improves."
 
 [[settings]]
-name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
+name = "TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT"
 store = "brain_env"
 group = "agent"
 type = "float"
 unit = "s"
 min = 5
 default = 55
+former = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
 read = "startup"
 tier = "tuning"
-help = "The function-call timeout for ask_openclaw. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
+help = "The function-call timeout for openclaw_agent_consult. Must exceed ack + native consult or pipecat abandons the call and drops the late answer. Bounds the sync path only."
+
+[[settings]]
+name = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
+store = "brain_env"
+group = "agent"
+type = "float"
+unit = "s"
+min = 5
+read = "startup"
+tier = "diag"
+help = "Renamed TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT (#230: the consult took OpenClaw's tool name). While the new name is unset, the brain still reads this one and logs a warning saying to rename it."
 
 [[settings]]
 name = "TEAPORT_ASYNC_CONSULT_TIMEOUT"
@@ -1380,27 +1391,25 @@ type = "path"
 default = "~/.config/teaport/persona.md"
 read = "startup"
 tier = "installer"
-help = "The persona file: the source with TEAPORT_AGENT=none, the fallback when the gateway's workspace has nothing. The installer points it at the secrets dir."
+help = "The persona file: the source with TEAPORT_AGENT=none, and the fallback when the gateway cannot give the voice context OpenClaw composes (a Talk session's instructions, or the room/phone context from the teaport plugin; OpenClaw 2026.9.7+). The installer points it at the secrets dir."
 
 [[settings]]
 name = "OPENCLAW_WORKSPACE"
 store = "brain_env"
 group = "agent"
 type = "dir"
-default = "~/.openclaw/workspace"
 read = "startup"
-tier = "installer"
-help = "The OpenClaw workspace whose persona files the voice brain shares."
+tier = "diag"
+help = "Retired (#230): the brain no longer reads the OpenClaw workspace. OpenClaw composes the voice context itself (its IDENTITY, USER and SOUL profile) and the teaport plugin serves it. If it is still set, the brain ignores it and logs a warning saying so."
 
 [[settings]]
 name = "TEAPORT_WORKSPACE_FILES"
 store = "brain_env"
 group = "agent"
 type = "string"
-default = "SOUL.md,IDENTITY.md,USER.md,MEMORY.md"
 read = "startup"
-tier = "tuning"
-help = "Comma-separated workspace files injected as the shared persona, in order. IDENTITY.md is agent-writable by design."
+tier = "diag"
+help = "Retired (#230): the voice profile's files are OpenClaw's choice (IDENTITY, USER and SOUL), composed by OpenClaw and served by the teaport plugin; MEMORY.md is no longer in the prompt (search_memory reaches it). If it is still set, the brain ignores it and logs a warning saying so."
 
 [[settings]]
 name = "OPENCLAW_MEMORY_DIR"
@@ -1485,14 +1494,34 @@ tier = "tuning"
 help = "Save a fact to the shared long-term memory. Needs TEAPORT_AGENT=openclaw."
 
 [[settings]]
+name = "TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT"
+store = "brain_env"
+group = "tools"
+type = "flag"
+default = true
+former = "TEAPORT_TOOL_ASK_OPENCLAW"
+read = "startup"
+tier = "tuning"
+help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
+
+[[settings]]
 name = "TEAPORT_TOOL_ASK_OPENCLAW"
+store = "brain_env"
+group = "tools"
+type = "flag"
+read = "startup"
+tier = "diag"
+help = "Renamed TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT (#230: the consult took OpenClaw's tool name). While the new name is unset, the brain still reads this one (a consult switched off stays off) and logs a warning saying to rename it."
+
+[[settings]]
+name = "TEAPORT_TOOL_OPENCLAW_AGENT_CONTROL"
 store = "brain_env"
 group = "tools"
 type = "flag"
 default = true
 read = "startup"
 tier = "tuning"
-help = "Hand a request to the full OpenClaw agent. Needs TEAPORT_AGENT=openclaw. Agent-first mode (TEAPORT_AGENT_FIRST) routes every turn through it, so with this off agent-first is ignored (with a warning in the journal)."
+help = "Let the model ask about, cancel, change or add to a request the OpenClaw agent is still working on, in any phrasing or language (OpenClaw's openclaw_agent_control; the Talk client runs it). Talk only, and only with TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT on. Off, only what OpenClaw's own spoken run control recognizes (\"cancel that\", \"how's it going?\") reaches a request in progress."
 
 [[settings]]
 name = "TEAPORT_TOOL_LIST_VOICES"
@@ -2207,8 +2236,8 @@ source = "bridge/discord/index.js"
 [[constraints]]
 kind = "sum_lt"
 lhs = ["TEAPORT_NATIVE_CONSULT_ACK_TIMEOUT", "TEAPORT_NATIVE_CONSULT_TIMEOUT"]
-rhs = "TEAPORT_ASK_OPENCLAW_TIMEOUT"
-message = "TEAPORT_ASK_OPENCLAW_TIMEOUT must exceed the ack + native consult timeouts, or pipecat drops the late answer."
+rhs = "TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT"
+message = "TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT must exceed the ack + native consult timeouts, or pipecat drops the late answer."
 
 [[constraints]]
 kind = "le_chain"

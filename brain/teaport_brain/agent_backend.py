@@ -26,7 +26,7 @@ NONE = "none"
 
 
 AGENT = setting("TEAPORT_AGENT")
-# True when the gateway tools, memory recall and the workspace persona are available.
+# True when the gateway tools, memory recall and OpenClaw's voice context are available.
 HAS_AGENT = AGENT == OPENCLAW
 
 
@@ -34,6 +34,6 @@ def startup_line() -> str:
     """The operator-facing evidence for the journal, same as the other flags' 'off'
     lines: which mode, and in `none` what that switched off."""
     if HAS_AGENT:
-        return "agent backend: openclaw (gateway tools, memory recall, workspace persona)"
+        return "agent backend: openclaw (gateway tools, memory recall, OpenClaw voice context)"
     return ("agent backend: none — no web_search/web_fetch/search_memory/remember/"
-            "ask_openclaw, no memory recall; persona from the persona file")
+            "openclaw_agent_consult, no memory recall; persona from the persona file")

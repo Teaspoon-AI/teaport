@@ -50,6 +50,28 @@ def test_a_code_side_default_overrides_the_schema():
     assert setting("TEAPORT_FOLLOWUP_QUIET_S", default=2.0, env={"TEAPORT_FOLLOWUP_QUIET_S": "x"}) == 2.0
 
 
+def test_a_renamed_setting_is_read_under_its_old_name_while_the_new_one_is_unset():
+    """A box's env file from before #230 says TEAPORT_TOOL_ASK_OPENCLAW=0: the consult
+    must stay off under its new name, and the journal says to rename it."""
+    new, old = "TEAPORT_TOOL_OPENCLAW_AGENT_CONSULT", "TEAPORT_TOOL_ASK_OPENCLAW"
+    seen = []
+    sink = settings.logger.add(seen.append, level="WARNING")
+    try:
+        assert setting(new, env={old: "0"}) is False
+        # The new name wins; neither set is the new row's default, silently.
+        assert setting(new, env={old: "0", new: "1"}) is True
+        assert setting(new, env={}) is True
+        assert setting(new, env={old: " "}) is True
+        # The timeout too, and an unreadable old value falls back like any other.
+        t_new, t_old = "TEAPORT_OPENCLAW_AGENT_CONSULT_TIMEOUT", "TEAPORT_ASK_OPENCLAW_TIMEOUT"
+        assert setting(t_new, env={t_old: "70"}) == 70.0
+        assert setting(t_new, env={t_old: "soon"}) == default_of(ROWS[t_new])
+    finally:
+        settings.logger.remove(sink)
+    renamed = [str(m) for m in seen if "is renamed" in str(m)]
+    assert len(renamed) == 3 and f"{old} is renamed {new}" in renamed[0], seen
+
+
 def test_a_name_without_a_row_fails_loudly():
     try:
         setting("TEAPORT_NO_SUCH_KNOB", env={})

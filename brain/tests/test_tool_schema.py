@@ -54,7 +54,7 @@ def test_the_default_mode_advertises_the_gateway_tools():
     # test_agent_none.py pins the other mode.
     names = {t.name for t in build_tools_schema(VOICED).standard_tools}
     assert names == {"get_host_status", "get_current_time", "web_search", "web_fetch",
-                     "search_memory", "remember", "ask_openclaw", "list_voices",
+                     "search_memory", "remember", "openclaw_agent_consult", "list_voices",
                      "switch_voice"}, f"advertised {sorted(names)}"
 
 

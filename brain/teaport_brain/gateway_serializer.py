@@ -14,9 +14,17 @@
 #       text {"type":"tool_result",...}                  -> None (consult_bridge: a
 #                                                           consult's answer, or a
 #                                                           client tool's result)
-#       text {"type":"context","id":...,"text":...,"respond":bool[,"kind":...]}
-#                                                        -> ClientContextFrame
-#                                                           (client_notes.py)
+#       text {"type":"context","id":...,"text":...,"respond":bool[,"kind":...]
+#             [,"source":"host"]}                       -> ClientContextFrame
+#                                                           (client_notes.py; "host":
+#                                                           OpenClaw's own message for
+#                                                           the model, which only the
+#                                                           plugin sends: believed only
+#                                                           with ?run_control=1)
+#       text {"type":"run_control_result","id":...,"claimed":bool}
+#                                                        -> RunControlResultFrame
+#                                                           (run_control.py: did OpenClaw's
+#                                                           run control take the words)
 #
 #   us -> plugin (serialize):
 #       OutputAudioRawFrame       -> binary raw PCM16 24 kHz  (bot speech)
@@ -43,12 +51,26 @@
 #                                                           only to a client that announced
 #                                                           ?features=mood)
 #           {"type":"context_result","id":...,"ok":bool,...}  (answers a context note)
+#           {"type":"run_control","id":...,"text":...}     (is this final OpenClaw's? sent
+#                                                           only to a plugin that announced
+#                                                           ?run_control=1; run_control.py)
 #           {"type":"client_tool","call_id":...,"name":...,"args":{...}}
 #                                                         (a tool the client performs —
 #                                                           set_volume, restart_session —
 #                                                           sent only to a client that
 #                                                           announced it in ?features=;
 #                                                           answered with a tool_result)
+#           {"type":"tool_call","call_id":...,"name":...,"args":{...}}
+#                                                         (a tool call for the relay's
+#                                                           onToolCall: a host-run tool,
+#                                                           openclaw_agent_consult or, on
+#                                                           Talk, openclaw_agent_control,
+#                                                           answered with a tool_result;
+#                                                           or a display-only card)
+#           {"type":"tool_cancel","call_id":...}           (the brain stopped waiting on a
+#                                                           consult the relay acknowledged:
+#                                                           the relay is to stop it too,
+#                                                           tools._cancel_at_relay)
 #
 # Pipecat serializes audio (write_audio_frame) and OutputTransportMessage frames
 # (send_message); it never serializes transcripts itself, so the emitters in
@@ -93,10 +115,15 @@ class TeaportGatewaySerializer(FrameSerializer):
     """
 
     def __init__(self, relay_rate: int = RELAY_SAMPLE_RATE,
-                 pipeline_rate: int = PIPELINE_SAMPLE_RATE):
+                 pipeline_rate: int = PIPELINE_SAMPLE_RATE, *, host_notes: bool = False):
         super().__init__()
         self._relay_rate = relay_rate
         self._pipeline_rate = pipeline_rate
+        # Whether a context note's "source": "host" is believed: only from the teaport
+        # plugin, which announces ?run_control=1 (gateway_server). Any other /talk client
+        # could otherwise pass its text off as OpenClaw's word, an order the model
+        # follows (client_notes.py, HOST NOTES); from one, it is an app-event note.
+        self._host_notes = host_notes
         # soxr streaming resampler: stateful across calls for this session, the same
         # role the audioop.ratecv running-state served (native pipecat; drops audioop-lts).
         self._in_resampler = create_stream_resampler()
@@ -154,9 +181,9 @@ class TeaportGatewaySerializer(FrameSerializer):
         if msg.get("type") == "close":
             return EndFrame()
         if msg.get("type") == "tool_result":
-            # Relay -> brain: result of an in-process openclaw_agent_consult
-            # (see consult_bridge). Resolved here directly — no pipeline frame;
-            # the awaiting tool handler picks it up off its future.
+            # Relay -> brain: the result of a call the client runs (a consult, a
+            # control call, a client tool; see consult_bridge). Resolved here directly —
+            # no pipeline frame; the awaiting tool handler picks it up off its future.
             from teaport_brain import consult_bridge
             consult_bridge.resolve(
                 str(msg.get("call_id") or ""), msg.get("result"),
@@ -173,7 +200,13 @@ class TeaportGatewaySerializer(FrameSerializer):
                 respond=msg.get("respond") is True,
                 kind=kind if isinstance(kind, str) and kind else None,
                 request_id=str(req) if req is not None else None,
+                host=self._host_notes and msg.get("source") == "host",
             )
+        if msg.get("type") == "run_control_result":
+            from teaport_brain.run_control import RunControlResultFrame
+            req = msg.get("id")
+            return RunControlResultFrame(request_id=str(req) if req is not None else "",
+                                         claimed=msg.get("claimed") is True)
         # barge_in: the pipeline VAD already interrupts from the forwarded mic
         # audio, so an explicit signal needs no separate injection here.
         return None
