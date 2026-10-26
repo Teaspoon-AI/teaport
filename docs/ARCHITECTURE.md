@@ -79,9 +79,11 @@ it in-process on Talk, and the gateway's agent lane runs it otherwise.
 After OpenClaw's text come the brain's voice rules (`persona.py`): its tools, a consult
 paragraph, and the tuned delivery text. The consult paragraph depends on what the host
 text covers. Under Talk's text, which carries OpenClaw's realtime rules, it overrides
-the ones that clash with this surface (no control tool; a specific spoken preamble
-instead of the stock "Let me check that for you"). Under the room's and the phone's,
-which carry only the agent paragraph and profile, it says when to consult instead. Both
+the ones that clash with this surface (a specific spoken preamble instead of the stock
+"Let me check that for you") and says when to call `openclaw_agent_control`, or, with
+that tool switched off, that it is missing and the model just answers in words while
+the relay acts on what was said. Under the room's and the phone's, which carry only the
+agent paragraph and profile, it says when to consult instead. Both
 tell the model to answer from the conversation before consulting again and never to
 describe the agent's other sessions. The wording was chosen by an eval on the box's
 model (issue #230, arm B2). With the persona file the overlay is the tuned one,
