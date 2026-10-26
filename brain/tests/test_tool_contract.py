@@ -308,7 +308,7 @@ def test_the_wifi_setup_tool_hands_over_and_keeps_the_model_quiet():
 
 def _filler_call(captions_ahead):
     """What a silent model's consult pushes through the wrapper, in order: the handler
-    sends the call OpenClaw runs, as ask_openclaw does."""
+    sends the call OpenClaw runs."""
     async def handler(params):
         await params.llm.push_frame(tools.OutputTransportMessageUrgentFrame(message={
             "type": "tool_call", "call_id": "teaport-consult-1",
@@ -317,9 +317,9 @@ def _filler_call(captions_ahead):
     async def run():
         llm = _LLM()
         llm._teaport_spoke = False          # the model said nothing before the call
-        await tools._wrap("ask_openclaw", handler, lambda: "en",
+        await tools._wrap("openclaw_agent_consult", handler, lambda: "en",
                           captions_ahead=captions_ahead)(
-            _Params(llm, {"request": "the weather in Lima tomorrow"}))
+            _Params(llm, {"question": "the weather in Lima tomorrow"}))
         return llm.pushed
 
     def shape(f):
@@ -340,7 +340,6 @@ def test_on_talk_a_fillers_caption_goes_out_before_the_consult():
     (captions.caption_ahead)."""
     line = "I'll work on that — give me a moment."
     assert _filler_call(True) == [
-        ("call", "ask_openclaw"),
         ("final", line), ("CaptionedAheadFrame", line), ("TTSSpeakFrame", line),
         ("call", "openclaw_agent_consult")]
 
@@ -348,5 +347,5 @@ def test_on_talk_a_fillers_caption_goes_out_before_the_consult():
 def test_elsewhere_the_filler_is_charted_as_it_plays():
     line = "I'll work on that — give me a moment."
     assert _filler_call(False) == [
-        ("call", "ask_openclaw"), ("TTSSpeakFrame", line),
+        ("TTSSpeakFrame", line),
         ("call", "openclaw_agent_consult")]
