@@ -14,9 +14,11 @@
 // The text is built the way OpenClaw's own phone surface builds it (voice-call,
 // realtime-agent-context.ts), with the published SDK:
 //   instructions  resolveRealtimeVoiceAgentContextInstructions: the multi-session agent
-//                 paragraph, then the IDENTITY / USER / SOUL profile through the agent's
-//                 bootstrap pipeline, capped at 6,000 characters (voice-call's figure;
-//                 Talk keeps OpenClaw's fixed 12,000).
+//                 paragraph, the agent's configured identity (name, emoji, vibe...;
+//                 includeIdentity, voice-call's default), then the IDENTITY / USER / SOUL
+//                 profile through the agent's bootstrap pipeline, capped at 6,000
+//                 characters (voice-call's figure; Talk keeps OpenClaw's fixed 12,000 and
+//                 no configured identity).
 //   tools         [REALTIME_VOICE_AGENT_CONSULT_TOOL]: the consult, as Talk gets it.
 // No session key: room and phone consults run under a fresh key each (the brain's
 // /v1/chat/completions lane sends none), as voice-call omits it too. The agent is the
@@ -136,7 +138,17 @@ function resolveAgentId(sdk, config, requested) {
  *   config reads the gateway's current config (api.runtime.config.current), version its
  *   OpenClaw version; loadSdk is importVoiceContextSdk unless a test gives its own.
  */
-export function voiceContextHandler({ config, version, loadSdk = importVoiceContextSdk, log } = {}) {
+// `revalidate`: the request scope's recheck of the caller's grant (index.js), which OpenClaw
+// asks an auth:"gateway" route to await before it discloses protected data -- the profile
+// is USER / SOUL text. It answers 401 itself and throws when the grant expired or was
+// revoked; absent (undefined) for the bearer token the brain uses.
+export function voiceContextHandler({
+  config,
+  version,
+  loadSdk = importVoiceContextSdk,
+  revalidate = async () => {},
+  log,
+} = {}) {
   let sdkPromise = null;
   return async (req, res) => {
     if (req.method !== "GET" && req.method !== "HEAD") {
@@ -184,6 +196,7 @@ export function voiceContextHandler({ config, version, loadSdk = importVoiceCont
         config: cfg,
         agentId,
         maxChars: PROFILE_MAX_CHARS,
+        includeIdentity: true,
         warn: (message) => log?.warn?.(`teaport-realtime: voice context: ${message}`),
       });
     } catch (err) {
@@ -198,6 +211,7 @@ export function voiceContextHandler({ config, version, loadSdk = importVoiceCont
     } catch {
       openclawVersion = undefined;
     }
+    await revalidate(); // a rejection ends the request: the host has answered 401
     log?.info?.(
       `teaport-realtime: voice context for ${frontEnd || "unknown front end"} ` +
         `(agent ${agentId}, ${String(instructions ?? "").length} chars)`,

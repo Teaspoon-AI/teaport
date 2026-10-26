@@ -142,6 +142,7 @@ export default definePluginEntry({
         handler: voiceContextHandler({
           config: () => api.runtime?.config?.current?.(),
           version: () => api.runtime?.version,
+          revalidate: async () => getRequestScope?.()?.revalidate?.(),
           log: api.logger,
         }),
       });

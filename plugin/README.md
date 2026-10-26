@@ -131,8 +131,10 @@ The plugin builds it with OpenClaw's SDK the way OpenClaw's own phone surface
 brain's `/v1/chat/completions` consults answer with, or the configured agent the brain
 names (`agent=`, its `OPENCLAW_AGENT_ID` when set, which its consults then reach as
 model `openclaw/<id>`), resolved with
-`resolveSessionAgentIdStrict` as 2026.9.7 asks new plugins to — the agent paragraph and the IDENTITY / USER / SOUL profile, at most 6,000
-characters, no session key — and `REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
+`resolveSessionAgentIdStrict` as 2026.9.7 asks new plugins to — the agent paragraph,
+the agent's configured identity (name, emoji, vibe…) and the IDENTITY / USER / SOUL
+profile, at most 6,000 characters, no session key — and
+`REALTIME_VOICE_AGENT_CONSULT_TOOL`. The brain follows
 it with its own voice rules. A gateway still starting or restarting (503 with
 `Retry-After`, or refusing connections) is asked again for a few seconds by a room
 session opening asleep and for about two by anyone else; past that, or on any other

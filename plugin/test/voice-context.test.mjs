@@ -89,8 +89,35 @@ test("the route answers with OpenClaw's agent context and consult tool", async (
   assert.equal(calls[0].agentId, "main");
   assert.equal(calls[0].maxChars, PROFILE_MAX_CHARS);
   assert.equal(PROFILE_MAX_CHARS, 6000);
+  assert.equal(calls[0].includeIdentity, true, "the configured identity too, as voice-call");
   assert.equal("sessionKey" in calls[0], false);
   assert.ok(logs.some((m) => m.includes("for sip")), logs);
+});
+
+test("the caller's grant is rechecked before the profile goes out, and a refusal ends it", async () => {
+  // OpenClaw asks an auth:"gateway" route to await the request scope's revalidate before
+  // disclosing protected data; it answers 401 itself and throws when the grant is gone.
+  const { sdk, calls } = fakeSdk();
+  const order = [];
+  const handler = voiceContextHandler({
+    config: () => ({}),
+    loadSdk: async () => sdk,
+    revalidate: async () => {
+      order.push(`revalidate after ${calls.length} build`);
+    },
+  });
+  assert.equal((await get(handler, `${VOICE_CONTEXT_PATH}?front_end=room`)).statusCode, 200);
+  assert.deepEqual(order, ["revalidate after 1 build"]);
+  const refused = voiceContextHandler({
+    config: () => ({}),
+    loadSdk: async () => sdk,
+    revalidate: async () => {
+      throw new Error("grant revoked");
+    },
+  });
+  const res = fakeRes();
+  await assert.rejects(refused({ method: "GET", url: `${VOICE_CONTEXT_PATH}?front_end=room` }, res), /grant revoked/);
+  assert.equal(res.body, undefined, "nothing of the profile is written");
 });
 
 test("an agent the brain names is served when it is a configured one", async () => {
