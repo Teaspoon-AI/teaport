@@ -222,6 +222,31 @@ test("words said again are not confirmed by the act on the first time", async (t
   assert.deepEqual(results(ws, "r3"), [{ type: "run_control_result", id: "r3", claimed: false }]);
 });
 
+test("a plain question said before the relay acts on earlier control words stays the model's", async () => {
+  // A steer, then a question said before the relay's act on the steer lands (the brain
+  // holds the question behind the steer's, and asks about it once that is answered).
+  const { bridge, ws } = await session();
+  startConsult(ws, bridge);
+  said(ws, "actually make it tomorrow");
+  assert.deepEqual(await ask(ws, "actually make it tomorrow", "r1"), []);
+  said(ws, "what's the capital of France?");
+  bridge.sendUserMessage(STATUS);
+  assert.deepEqual(results(ws, "r1"), [{ type: "run_control_result", id: "r1", claimed: true }]);
+  assert.deepEqual(await ask(ws, "what's the capital of France?", "r2"), [
+    { type: "run_control_result", id: "r2", claimed: false },
+  ]);
+  // The same with a cancel, whose cancelled result closes the consult first.
+  startConsult(ws, bridge, "teaport-consult-a2");
+  said(ws, "cancel that");
+  assert.deepEqual(await ask(ws, "cancel that", "r3"), []);
+  said(ws, "what's the weather in Oslo?");
+  bridge.submitToolResult("teaport-consult-a2", { status: "cancelled", message: "Cancelled the active OpenClaw run." });
+  assert.deepEqual(results(ws, "r3"), [{ type: "run_control_result", id: "r3", claimed: true }]);
+  assert.deepEqual(await ask(ws, "what's the weather in Oslo?", "r4"), [
+    { type: "run_control_result", id: "r4", claimed: false },
+  ]);
+});
+
 test("words the relay does not act on within CONFIRM_MS are the model's", async (t) => {
   t.mock.timers.enable({ apis: ["setTimeout"] });
   const { bridge, ws, logs } = await session();

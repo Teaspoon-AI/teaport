@@ -544,7 +544,8 @@ class TeaportBridge {
     this._consults = new Map();
     // The relay's view of the transcript, mirrored for its echo filter: every final this
     // bridge forwarded ({at, role, text}, as its harness records them), and the last user
-    // final with that log as it stood then (the moment the relay judged it).
+    // final with that log and whether a consult was running, as they stood then (the
+    // moment the relay judged it).
     this._finals = [];
     this._heard = null;
     // The order things happened in, for claims (answerRunControl): a counter stamped on
@@ -890,13 +891,16 @@ class TeaportBridge {
   // counts its run only after the Talk client's talk.client.toolCall and chat.send are
   // acknowledged and forgets it just before the result is submitted, so "a consult is open
   // and the classifier says control" also holds in moments when it acts on nothing. So:
-  //   the relay acted after reading the words          -> claimed, at once (a cancel
-  //     has closed its consult by then)
-  //   not control (no consult open, the classifier says no, or the relay's echo filter
-  //     drops it)                                      -> not claimed, at once
+  //   not control (no consult open when the relay read the words, the classifier says
+  //     no, or the relay's echo filter drops them)    -> not claimed, at once
   //   control                                          -> claimed when the relay acts
   //     (its reply, or a consult's cancelled result: _relayActed), counted from when it
-  //     read the words; not claimed if it has not within CONFIRM_MS.
+  //     read the words -- at once if it already has (a cancel has closed its consult by
+  //     then); not claimed if it has not within CONFIRM_MS.
+  // An act is never matched to the final it answers (a cancel can bring a reply, a
+  // cancelled result, both or neither), so only words the relay itself took for control
+  // are counted with one: an act on earlier words, landing after a plain question was
+  // said, does not claim the question.
   // Always answered, false when unsure: the brain waits on it.
   _answerRunControl(msg) {
     const id = msg.id;
@@ -921,16 +925,11 @@ class TeaportBridge {
         /* the brain stops waiting on its own */
       }
     };
-    // The relay already acted on the words it read (their transcript came first): claimed,
-    // whatever is open now -- a cancel closes the very consult it acted on, often before
-    // the question gets here.
-    if (heard && this._actedSeq > heard.seq) {
-      reply(true);
-      return;
-    }
-    // Read as the question arrives; the relay read the same on the transcript, which
-    // reaches it within moments of the question, before or after.
-    const running = [...this._consults.values()].some(Boolean);
+    // Whether a consult was open when the relay read the words: as their final came in,
+    // or, asked ahead of it, as the question arrives (the transcript reaches the relay
+    // within moments). Not now: a cancel closes the very consult it acted on, often
+    // before the question gets here.
+    const running = heard ? heard.running : this._consultRunning();
     if (!text || !running) {
       reply(false);
       return;
@@ -963,6 +962,11 @@ class TeaportBridge {
       },
       () => reply(false),
     );
+  }
+
+  // A consult the relay acknowledged and has not answered yet: its run control acts.
+  _consultRunning() {
+    return [...this._consults.values()].some(Boolean);
   }
 
   // The result of an SDK call, false when it throws.
@@ -1059,7 +1063,13 @@ class TeaportBridge {
     if (this._finals.length > FINALS_KEPT) this._finals.splice(0, this._finals.length - FINALS_KEPT);
     const said = typeof text === "string" ? text.trim() : "";
     if (role === "user" && said) {
-      this._heard = { text: said, atMs: Date.now(), seq: ++this._seq, log: this._finals.slice() };
+      this._heard = {
+        text: said,
+        atMs: Date.now(),
+        seq: ++this._seq,
+        log: this._finals.slice(),
+        running: this._consultRunning(),
+      };
     }
   }
 
