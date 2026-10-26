@@ -627,7 +627,8 @@ def build_agent_session(transport, *, voice: str | None = None,
       gets this session's context, to continue the mic conversation in and greet into.
     - front_end: "sip", "talk" or "room" (the box's own mic, a /talk client) -- whose
       turn-taking knobs the session uses (endpointing.turn_settings: SIP_*/TALK_*/ROOM_*
-      over the shared values). Only the turn-taking tells "room" from "talk"; the
+      over the shared values). Only the turn-taking and a tool call's filler caption
+      (charted ahead on "talk": captions.caption_ahead) tell "room" from "talk"; the
       call prompt below is offered to both.
     - cancel_on_idle_timeout: forwarded to PipelineTask only when set. NEITHER
       front-end sets it today: the OpenClaw pipeline is per-connection and the SIP one
@@ -1097,7 +1098,10 @@ def build_agent_session(transport, *, voice: str | None = None,
                    gate=followup_gate,
                    client_features=tool_ctx.client_features,
                    wifi_voice=wifi,
-                   call_prompt=prompt)
+                   call_prompt=prompt,
+                   # OpenClaw's Talk relay stores every final in the session a
+                   # consult starts from (captions.py, caption_ahead).
+                   captions_ahead=front_end == "talk")
 
     session = AgentSession(
         task=task,
