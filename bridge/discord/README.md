@@ -18,6 +18,15 @@ phone call) is live, the bot's dial is refused — the agent says it is busy and
 the bot leaves the channel — and a Discord session that is live refuses
 everyone else the same way. Re-joining replaces the bot's own session.
 
+## What it can do on your server
+
+The voice hands requests to your OpenClaw agent, so what it can do on the server
+(post, run a poll, pin, read messages, and anything else) is whatever the agent's
+own Discord tools and permissions allow. Teaport adds no limits of its own. Until
+issue #230 its consult text told the voice that server changes (channels, roles,
+kicks, bans, scheduled events) were not for voice. That text is gone. To keep such
+changes off, limit them in the agent's tools or in the bot's server permissions.
+
 ## Setup
 
 Create a Discord application + bot (Developer Portal), enable the **Server
