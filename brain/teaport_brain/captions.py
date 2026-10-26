@@ -37,6 +37,19 @@
 # spoken utterance is charted in exactly one bubble, and bubbles appear in the
 # order the words were heard.
 #
+# ── The one exception: a tool call's filler on Talk (caption_ahead) ──────────
+# OpenClaw's Talk relay stores every final in the agent's session, and a consult the
+# tool call starts cannot start while that session changes: the run checks the
+# transcript is untouched for its first ~1 s and fails otherwise ("Persisted user turn
+# changed before replay admission"). The relay waits only for the finals sent BEFORE
+# the call. A filler's playout-paced final lands ~1 s after the call -- inside that
+# window, and it killed 5 of 7 failed consults on the box (2026-10-25, #234). So on
+# Talk the filler is charted when it is queued, ahead of the call (caption_ahead),
+# and its words are not captioned again as they play. The order is the one OpenClaw expects
+# of any realtime voice: what was said before a tool call is final before the call.
+#
+
+from dataclasses import dataclass
 
 from loguru import logger
 from teaport_brain.settings import setting
@@ -50,6 +63,7 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     LLMFullResponseEndFrame,
     OutputTransportMessageUrgentFrame,
+    SystemFrame,
     TTSStartedFrame,
     TranscriptionFrame,
 )
@@ -93,6 +107,38 @@ def sends_every_final(captions) -> bool:
         return int(captions) >= _CAPTIONS_EVERY_FINAL
     except (TypeError, ValueError):
         return False
+
+
+@dataclass
+class CaptionedAheadFrame(SystemFrame):
+    """Tells CaptionTap a line about to be spoken was charted already (caption_ahead):
+    the utterance that plays exactly this text gets no partials and no final. A
+    SystemFrame, so it reaches CaptionTap long before the line plays."""
+
+    text: str
+
+
+async def caption_ahead(proc: FrameProcessor, text: str) -> None:
+    """Chart `text` now, as one closed assistant bubble, and tell CaptionTap not to
+    chart it again when it plays. Push it from `proc` BEFORE the TTSSpeakFrame that
+    speaks it and before the tool call it goes with: urgent messages leave in the
+    order they are pushed, so the relay has the final before it sees the call."""
+    await proc.push_frame(OutputTransportMessageUrgentFrame(message={
+        "type": "transcript", "role": "assistant", "text": text, "final": True}))
+    await proc.push_frame(CaptionedAheadFrame(text=text))
+
+
+def _same_line(a: str, b: str) -> bool:
+    return " ".join(a.split()) == " ".join(b.split())
+
+
+def _remember(seen: dict, key, cap: int) -> None:
+    """Add `key` to `seen`, an insertion-ordered set (a dict), forgetting the oldest
+    past `cap`. Not a set: set.pop() drops an arbitrary id, which can be the
+    utterance playing right now."""
+    seen[key] = None
+    while len(seen) > cap:
+        del seen[next(iter(seen))]
 
 
 class VoiceActivity:
@@ -255,7 +301,9 @@ class CaptionTap(FrameProcessor):
     straggler word frames already released by the transport clock are dropped."""
 
     # Barged context ids kept to reject stragglers; bounded, they're short uuids.
+    # The lines charted ahead and their contexts are bounded the same way.
     _DEAD_MAX = 16
+    _AHEAD_MAX = 4
 
     def __init__(self, activity: "VoiceActivity" = None, *, every_final: bool = False):
         super().__init__()
@@ -268,8 +316,10 @@ class CaptionTap(FrameProcessor):
         self._acc = ""          # live sentence's played prefix (accumulated_text)
         self._last_sent = ""    # longest partial emitted (forward-only guard)
         self._first_pts = None  # pts of its first word (guards stale End frames)
-        self._dead = set()      # barged context ids: drop their late progress frames
+        self._dead = {}         # barged context ids: drop their late progress frames
         self._playing_ctx = None  # the context the transport is writing (its TTSStartedFrame)
+        self._ahead = []        # lines charted ahead (caption_ahead), not playing yet
+        self._ahead_ctx = {}    # their contexts once they play: their words chart nothing
 
     def _user_active(self) -> bool:
         return bool(self._activity) and self._activity.user_active()
@@ -283,9 +333,10 @@ class CaptionTap(FrameProcessor):
         # this utterance's stragglers. This override fires out-of-band, before
         # those stragglers.
         if self._ctx is not None:
-            self._dead.add(self._ctx)
-            while len(self._dead) > self._DEAD_MAX:
-                self._dead.pop()
+            _remember(self._dead, self._ctx, self._DEAD_MAX)
+        # A line charted ahead that has not started playing is flushed with the rest
+        # of the queued speech; its bubble stays, as a barged one does.
+        self._ahead.clear()
         if _TRACE:
             logger.info(f"[CAP] barge → ctx {self._ctx} dead; bubble is the client's")
         self._reset()
@@ -357,6 +408,10 @@ class CaptionTap(FrameProcessor):
                 if _TRACE:
                     logger.info(f"[CAP] dropped straggler acc={frame.accumulated_text!r} ctx={ctx}")
                 return
+            if ctx in self._ahead_ctx:
+                return  # charted when it was queued (caption_ahead)
+            if ctx != self._ctx and await self._starts_ahead(ctx, frame.text or ""):
+                return
             if self._ctx is not None and ctx != self._ctx:
                 # Seamless utterance switch (filler → reply, reply → reply with no
                 # audio gap): the previous utterance is done — commit its bubble.
@@ -422,3 +477,22 @@ class CaptionTap(FrameProcessor):
             await self._finalize("bot stopped")
         elif isinstance(frame, TTSStartedFrame) and frame.context_id is not None:
             self._playing_ctx = frame.context_id
+        elif isinstance(frame, CaptionedAheadFrame):
+            self._ahead.append(frame.text)
+            del self._ahead[:-self._AHEAD_MAX]
+
+    async def _starts_ahead(self, ctx, text: str) -> bool:
+        """Whether the utterance `ctx` starting now is a line charted ahead. If it is,
+        it is a boundary like any utterance switch, and its own words chart nothing."""
+        for i, line in enumerate(self._ahead):
+            if _same_line(line, text):
+                break
+        else:
+            return False
+        del self._ahead[i]
+        _remember(self._ahead_ctx, ctx, self._AHEAD_MAX)
+        if self._ctx is not None:
+            await self._finalize("utterance switch")
+        if _TRACE:
+            logger.info(f"[CAP] ctx {ctx} was charted ahead: {text!r}")
+        return True

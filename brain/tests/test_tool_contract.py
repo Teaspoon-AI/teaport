@@ -304,3 +304,49 @@ def test_the_wifi_setup_tool_hands_over_and_keeps_the_model_quiet():
     got = asyncio.run(run())
     assert Voice.begun == 1 and got["result"]["ok"]
     assert got["properties"].run_llm is False
+
+
+def _filler_call(captions_ahead):
+    """What a silent model's consult pushes through the wrapper, in order: the handler
+    sends the call OpenClaw runs, as ask_openclaw does."""
+    async def handler(params):
+        await params.llm.push_frame(tools.OutputTransportMessageUrgentFrame(message={
+            "type": "tool_call", "call_id": "teaport-consult-1",
+            "name": "openclaw_agent_consult", "args": {"question": "q"}}))
+
+    async def run():
+        llm = _LLM()
+        llm._teaport_spoke = False          # the model said nothing before the call
+        await tools._wrap("ask_openclaw", handler, lambda: "en",
+                          captions_ahead=captions_ahead)(
+            _Params(llm, {"request": "the weather in Lima tomorrow"}))
+        return llm.pushed
+
+    def shape(f):
+        m = getattr(f, "message", None) or {}
+        if m.get("type") == "transcript":
+            return ("final" if m["final"] else "partial", m["text"])
+        if m.get("type") == "tool_call":
+            return ("call", m["name"])
+        return (type(f).__name__, getattr(f, "text", None))
+    return [shape(f) for f in asyncio.run(run())
+            if not str(shape(f)[1] or "").startswith("> 🔧")]
+
+
+def test_on_talk_a_fillers_caption_goes_out_before_the_consult():
+    """OpenClaw's relay stores each final in the session the consult starts from, and
+    the consult fails if that session changes while it starts: the filler is final
+    before the call that starts it, and its words are not charted again as they play
+    (captions.caption_ahead)."""
+    line = "I'll work on that — give me a moment."
+    assert _filler_call(True) == [
+        ("call", "ask_openclaw"),
+        ("final", line), ("CaptionedAheadFrame", line), ("TTSSpeakFrame", line),
+        ("call", "openclaw_agent_consult")]
+
+
+def test_elsewhere_the_filler_is_charted_as_it_plays():
+    line = "I'll work on that — give me a moment."
+    assert _filler_call(False) == [
+        ("call", "ask_openclaw"), ("TTSSpeakFrame", line),
+        ("call", "openclaw_agent_consult")]

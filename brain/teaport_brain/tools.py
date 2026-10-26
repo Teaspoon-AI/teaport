@@ -61,6 +61,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from teaport_brain import consult_bridge
 from teaport_brain import openclaw_client as oc
 from teaport_brain.agent_backend import HAS_AGENT
+from teaport_brain.captions import caption_ahead
 from teaport_brain.engine_tts import ENGINE_VOICES, LANG_NAMES
 from teaport_brain.settings import setting
 
@@ -1188,7 +1189,7 @@ async def _bubble(llm, text: str) -> None:
                  "text": text}))
 
 
-def _wrap(name, handler, lang_fn):
+def _wrap(name, handler, lang_fn, captions_ahead: bool = False):
     async def wrapped(params: FunctionCallParams):
         # Best-effort UX around the call — a display/speech failure must never
         # break the tool itself.
@@ -1210,6 +1211,11 @@ def _wrap(name, handler, lang_fn):
                     # lines: audio-only, never an assistant message the heard
                     # corrector could misanchor on, and marked as a filler
                     # context for the ledger.
+                    if captions_ahead:
+                        # Talk: charted now, before the handler sends the call, or its
+                        # playout-paced final lands while OpenClaw starts the consult
+                        # and fails it (captions.py, caption_ahead).
+                        await caption_ahead(params.llm, line)
                     await params.llm.push_frame(
                         TTSSpeakFrame(line, append_to_context=False))
 
@@ -1242,13 +1248,14 @@ def _wrap(name, handler, lang_fn):
 
 def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
                    client_features: frozenset = frozenset(), wifi_voice=None,
-                   call_prompt=None) -> None:
+                   call_prompt=None, captions_ahead: bool = False) -> None:
     """Wire the handlers of active_tools() onto `llm` — exactly the tools
     build_tools_schema offered for the same tts and client_features. `owed`, if given,
     is the session's owed records (owed.Owed), which a background consult is dispatched
     to and lands in; providing it switches ask_openclaw to the ASYNC path. `gate` (a
     FollowupGate), if given, lets the consult narrator wait for a conversational gap
-    before speaking its progress lines."""
+    before speaking its progress lines. `captions_ahead` charts a tool call's filler
+    before the call (Talk: captions.caption_ahead)."""
     _install_spoke_tracker(llm)
     if tts is not None:
         # Live language: read the TTS service at call time, so a mid-session
@@ -1263,4 +1270,5 @@ def register_tools(llm, lang: str = "en-us", tts=None, owed=None, gate=None,
                       wifi_voice=wifi_voice, call_prompt=call_prompt)
     for tool in active_tools(ctx):
         kw = {"timeout_secs": tool.timeout_secs} if tool.timeout_secs else {}
-        llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn), **kw)
+        llm.register_function(tool.name, _wrap(tool.name, tool.bind(ctx), lang_fn,
+                                               captions_ahead), **kw)

@@ -45,7 +45,8 @@ from pipecat.frames.frames import (  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 from pipecat.utils.text.base_text_aggregator import AggregationType  # noqa: E402
 
-from teaport_brain.captions import CaptionTap, VoiceActivity, sends_every_final  # noqa: E402
+from teaport_brain.captions import (  # noqa: E402
+    CaptionedAheadFrame, CaptionTap, VoiceActivity, sends_every_final)
 
 
 def P(ctx, seg, text, acc, pts=None):
@@ -393,6 +394,80 @@ async def test_partials_extend_across_a_line_break():
     print("  PASS captions keep extending across a line break")
 
 
+FILLER = "I'll work on that — give me a moment."
+
+
+async def test_a_line_charted_ahead_is_not_charted_again():
+    # Talk: the tool call's filler was charted when it was queued (caption_ahead), so
+    # as it plays it gets no partials and no final -- one bubble, not two. What
+    # follows it is captioned as usual.
+    h = Harness()
+    await h.feed(CaptionedAheadFrame(text=FILLER))
+    await h.sentence(FILLER, "ctx-filler")
+    await h.feed(BotStoppedSpeakingFrame())
+    await h.sentence("Lima will be cloudy tomorrow.", "ctx-answer")
+    await h.feed(BotStoppedSpeakingFrame())
+    assert h.sent[-1] == ("Lima will be cloudy tomorrow.", True), h.sent
+    assert not any("moment" in t for t, _ in h.sent), h.sent
+    print("  PASS a line charted ahead plays without a second bubble")
+
+
+async def test_a_line_charted_ahead_closes_the_bubble_before_it():
+    # It is an utterance boundary like any other: a reply still open when the filler
+    # starts gets its final then, and the filler adds nothing.
+    h = Harness()
+    await h.feed(CaptionedAheadFrame(text=FILLER))
+    await h.sentence("Sure.", "ctx-reply")
+    await h.sentence(FILLER, "ctx-filler")
+    await h.feed(BotStoppedSpeakingFrame())
+    assert h.finals() == ["Sure."], h.sent
+    print("  PASS a line charted ahead finalizes the open bubble")
+
+
+async def test_only_the_line_charted_ahead_is_skipped():
+    # Waiting for its line, the tap still captions every other utterance.
+    h = Harness()
+    await h.feed(CaptionedAheadFrame(text=FILLER))
+    await h.sentence("Let me see.", "ctx-other")
+    await h.feed(BotStoppedSpeakingFrame())
+    await h.sentence(FILLER, "ctx-filler")
+    await h.feed(BotStoppedSpeakingFrame())
+    assert h.finals() == ["Let me see."], h.sent
+    print("  PASS only the line charted ahead is skipped")
+
+
+async def test_a_barge_drops_a_line_charted_ahead_that_never_played():
+    # A barge flushes the queued filler with the rest of the speech; the same words
+    # spoken later, not charted ahead, are captioned.
+    h = Harness()
+    await h.feed(CaptionedAheadFrame(text=FILLER))
+    await h.barge()
+    await h.sentence(FILLER, "ctx-later")
+    await h.feed(BotStoppedSpeakingFrame())
+    assert h.finals() == [FILLER], h.sent
+    print("  PASS a barge forgets a line charted ahead")
+
+
+async def test_many_lines_charted_ahead_are_each_charted_once():
+    # The contexts of lines charted ahead are kept in a bounded memory. Past the
+    # bound the OLDEST is forgotten, never the line playing now: a session's tenth
+    # filler is as silent as its first.
+    import uuid
+    h = Harness()
+    fillers = []
+    for i in range(12):
+        fillers.append(str(uuid.uuid4()))
+        await h.feed(CaptionedAheadFrame(text=FILLER))
+        await h.sentence(FILLER, fillers[-1])
+        await h.feed(BotStoppedSpeakingFrame())
+        await h.sentence(f"Answer number {i}.", str(uuid.uuid4()))
+        await h.feed(BotStoppedSpeakingFrame())
+    assert not any("moment" in t for t, _ in h.sent), h.sent
+    assert h.finals() == [f"Answer number {i}." for i in range(12)], h.sent
+    assert list(h.tap._ahead_ctx) == fillers[-CaptionTap._AHEAD_MAX:], h.tap._ahead_ctx
+    print("  PASS every filler in a long session is charted once")
+
+
 def test_captions():
     async def main():
         await test_seamless_multi_utterance_segment()
@@ -411,6 +486,11 @@ def test_captions():
         await test_no_empty_or_double_finals()
         await test_messages_carry_their_utterance()
         await test_partials_extend_across_a_line_break()
+        await test_a_line_charted_ahead_is_not_charted_again()
+        await test_a_line_charted_ahead_closes_the_bubble_before_it()
+        await test_only_the_line_charted_ahead_is_skipped()
+        await test_a_barge_drops_a_line_charted_ahead_that_never_played()
+        await test_many_lines_charted_ahead_are_each_charted_once()
     asyncio.run(main())
 
 
