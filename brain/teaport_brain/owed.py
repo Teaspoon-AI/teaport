@@ -1252,12 +1252,15 @@ class Owed:
                 rec.heard.append(heard.strip())
                 asks[key], defaults[key] = self._cut(rec, reply, heard_all, whole_all, rest), False
             # Only a request that carried its note (Owed.tla `ct`: nreg): a reply rendered
-            # before the record existed, settling late, is no telling of it. And only what
-            # the caller HEARD of it is about the record: its whole text can share a term
-            # by chance (an address's "fifty-five" and a forecast's low), and a cut of
-            # another answer would count, and its words be read, as this one's.
+            # before the record existed, settling late, is no telling of it. About it by its
+            # whole text, as the judges read it -- its heard prefix may be a lead-in ("So,
+            # as I mentioned,"), the very moment a repeat is cut -- unless the reply carried
+            # a fresh answer: then it was that answer's telling (its record, if the cut
+            # makes one, counts it), and a term it shares with an older record is chance
+            # (an address's "fifty-five" and a forecast's low).
             if (mark is not None and key in reply.noted and cut and audio and heard
-                    and heard.strip() and (mine or rec.about(heard))):
+                    and heard.strip()
+                    and (mine or (not reply.fresh and rec.about(text or heard)))):
                 # A telling of it cut after its audio began (#231, Owed.tla `cuts`): it
                 # counts, and the second ends it unless the judges find it heard
                 # (BoundedTellings) -- decided here, at this cut, not when a late verdict

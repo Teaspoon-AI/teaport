@@ -417,28 +417,31 @@ class AgentSession:
         if self.input_mute is not None:
             self.input_mute.muted = True
         # The cut is ours, not the caller's: the owed book counts no cut telling and reads
-        # no words for it (owed.Owed.own_cut, #231).
+        # no words for it (owed.Owed.own_cut, #231) -- for as long as the line takes, not a
+        # timer the ledger's charting of the cut could lose to: input is muted throughout,
+        # so no cut in this window is the caller's.
         owed = getattr(self.llm, "owed", None)
         if owed is not None:
             owed.own_cut = True
         try:
             await self.task.queue_frames([InterruptionWorkerFrame()])
             await asyncio.sleep(self._LAST_LINE_SETTLE_S)
+            # Armed after the interruption has gone through (it settles every watched
+            # reply as cut) and before the line is queued.
+            delivery = self.followup_gate.watch_delivery()
+            await self.task.queue_frames([TTSSpeakFrame(line,
+                                                        append_to_context=append_to_context)])
+            try:
+                await asyncio.wait_for(delivery.done.wait(), max_secs)
+            except asyncio.TimeoutError:
+                self.followup_gate.drop_delivery(delivery)
+                logger.info(f"the session's last line did not finish within {max_secs:g} s — "
+                            "ending it anyway")
+                return False
+            return not delivery.interrupted
         finally:
             if owed is not None:
                 owed.own_cut = False
-        # Armed after the interruption has gone through (it settles every watched reply
-        # as cut) and before the line is queued.
-        delivery = self.followup_gate.watch_delivery()
-        await self.task.queue_frames([TTSSpeakFrame(line, append_to_context=append_to_context)])
-        try:
-            await asyncio.wait_for(delivery.done.wait(), max_secs)
-        except asyncio.TimeoutError:
-            self.followup_gate.drop_delivery(delivery)
-            logger.info(f"the session's last line did not finish within {max_secs:g} s — "
-                        "ending it anyway")
-            return False
-        return not delivery.interrupted
 
     # --- On hold for a phone call (the session arbiter's PROMPT, issue #111) ------------
     # While held, the pipeline runs on with nothing to do: the engine's STT session is

@@ -1804,7 +1804,8 @@ def cut_telling(decline, judge=None, heard=CUT_AT):
     owed (OWED), so the words that cut it are what decides."""
     b, ctx, gate = book(judge=judge or FakeJudge(False), gist=FakeGist(True), decline=decline)
     b.land(HN_REQ, HN_RAW, "call-hn")
-    cut(b, noted_reply(b, "caller"), heard, TELLING)
+    text = TELLING if TELLING.startswith(heard) else f"{heard} {TELLING}"
+    cut(b, noted_reply(b, "caller"), heard, text)
     return b, ctx, gate
 
 
@@ -2020,6 +2021,24 @@ async def test_a_cut_before_any_audio_or_about_something_else_counts_nothing():
     cut(b, noted_reply(b, "caller"), "Sure, I can set", "Sure, I can set a timer for ten minutes.")
     await judged(b)
     assert rec.cuts == 0 and rec.decline is None and rec.state == OWED
+
+
+async def test_a_repeat_cut_at_its_lead_in_counts():
+    """The re-review's finding A: a re-telling is cut as soon as the caller recognises it
+    -- during its lead-in ("So, as I mentioned,"), before any term of the record was
+    heard. Its whole text is about the record, so the cut counts and its words are read;
+    the second such cut drops it."""
+    decline = FakeDecline(False)
+    b, ctx, _ = cut_telling(decline, heard="So, as I mentioned,")
+    await judged(b)
+    rec = b.record("call-hn")
+    assert rec.cuts == 1 and rec.decline is not None
+    says(ctx, "Why are you telling me this now?")
+    await b.view(ctx, owed.COMMIT)
+    assert decline.calls[0][3] == "Why are you telling me this now?"
+    cut(b, noted_reply(b, "caller"), "Oh, and like I said earlier,", TELLING)
+    await judged(b)
+    assert rec.state == DROPPED
 
 
 def test_the_cut_count_survives_the_rooms_sleep():
