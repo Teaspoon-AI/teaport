@@ -310,6 +310,15 @@ if [ "$FULL" = 1 ]; then
   run SttCommit.tla sc_reset_pays_closes   "(expected: holds — the shipped reset, with the engine's own close)"
 fi
 echo
+echo "SttSlice.tla — sliced turn text: a turn is the words of one continuous transcript that end before its commit"
+run SttSlice.tla ss_shipped       "(expected: holds — AS SHIPPED (TEAPORT_STT_TURN_TEXT=slice): sliced by end, filed late, final on end_through_ms, new words for an empty provisional)"
+run SttSlice.tla ss_shipped_late  "(expected: FAILS NoLateWord — witness: a final has words that came after its preview)"
+run SttSlice.tla ss_shipped_empty "(expected: FAILS NoEmptyProvisional — witness: an empty provisional's final has words)"
+run SttSlice.tla ss_arrival       "(expected: FAILS RightTurn — a turn as the words received by its preview: its last word, sent after the commit, lands in the next turn)"
+run SttSlice.tla ss_interimAll    "(expected: FAILS NoLateInterim — every delta an interim: a committed turn's own late word would open a turn over its reply)"
+run SttSlice.tla ss_decoded       "(expected: FAILS FinalComplete — final on decoded_through_ms: a word the engine still holds comes after)"
+run SttSlice.tla ss_noNewWords    "(expected: FAILS NoLostWords — an empty provisional's final words dropped)"
+echo
 echo "SttSlot.tla — the engine's single STT slot: has the engine let go when the brain thinks so"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS NoFalseBusy — two arbiters, before #58 step 2: one connect attempt)"
 run SttSlot.tla  stt_retryWhileBusy  "(expected: holds — two arbiters, with the connect retry)"

@@ -711,6 +711,60 @@ gate's timing (`Owed.tla` holds one; this module has no gate, runs or re-offers)
 `STREAMCUT` with two answers in flight (here one reply is in flight at a time). The
 `LATE` settle's re-offer counter (`Owed.tla`'s `OneReoffer` with one record).
 
+## `SttSlice.tla` — sliced turn text: the words of one continuous transcript, by where they end
+
+With `TEAPORT_STT_TURN_TEXT=slice` (stt.py, TURN TEXT) the engine decodes one stream per
+session and a commit changes nothing in it: the engine answers it with a preview, and the
+brain forms the turn itself. A turn is the main words that end before its commit and
+after the one before; it goes downstream at the preview as the words in hand plus the
+preview's text, and is final once the engine's `end_through_ms` has passed the commit.
+That is a new protocol over one ordered channel (deltas, previews, progress), and the
+brain's half of it is four handlers: `_take_turn`, `_slice_delta`, `_handle_preview`,
+`_finalize_turns`/`_settle_turn`.
+
+The engine is modelled weaker than PROTOCOL3 promises: a word is sent once the decoder is
+past its end or any time later (it holds a word until it is whole), the bound is as high
+as the engine may put it (the decoder's position, never past a word still to send), and
+a word that ends after a commit may come before that commit's preview. The brain commits
+at any point (when is SttCommit.tla's business).
+
+| DESIGN | | `NoWordTwice` | `RightTurn` | `FinalComplete` | `NoLateInterim` | `NoLostWords` |
+|---|---|---|---|---|---|---|
+| `shipped` | slice by end; a late word to the oldest unsettled turn it ends before; final on `end_through_ms`; an empty provisional's final words go on as new words | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `arrival` | a turn is the words received by its preview | | ✗ | | | |
+| `interimAll` | the shipped slicing, every delta announced as an interim | | | | ✗ | |
+| `decoded` | final once `decoded_through_ms` passes the commit | | | ✗ | | |
+| `noNewWords` | an empty provisional's final words dropped | | | | | ✗ |
+
+- **`RightTurn`** — a turn holds only words that end in its own stretch. `arrival` fails it
+  the way the commit-and-flush days never could: the caller's last word is decoded ~0.5 s
+  after the commit that ends the turn, and by arrival it is the next turn's first.
+- **`FinalComplete`** — a turn made final has every word of its stretch. `decoded` fails
+  it: `decoded_through_ms` passes a word's end before the engine sends the word (it holds
+  it until it is whole), so a turn can be settled with a word still to come.
+- **`NoLateInterim`** — a committed turn's word is never announced as an interim: the
+  interim would start a user turn (`MinWordsUserTurnStartStrategy`) and interrupt the reply
+  to that very word's turn. `interimAll` fails it.
+- **`NoLostWords`** — every word of a final goes downstream: in the provisional, in the
+  correction (`TurnTextFinalFrame`), or, when nothing was pushed, as words of their own.
+- Witnesses (`ss_shipped_late`, `ss_shipped_empty`): the shipped design does reach a final
+  with words that came after its preview, and an empty provisional whose final has words.
+
+Run: `ss_shipped` is ~580k distinct states (MaxPos 5, three words, two commits, a channel
+of two), about 7 s.
+
+### Known limits of this model
+
+- Text is sets of word ids: the preview's own words, and whether a correction is applied
+  downstream (amended, corrected, or placed nowhere and sent back up), are
+  `turn_text.TurnTextCorrector`'s, unit-tested (`test_turn_text_correction.py`), not
+  modelled. `NoLostWords` checks the STT delivers; the corrector's `unplaced` path
+  re-delivers only a final that adds words.
+- A reconnect (the turns not yet final are dropped, their provisional standing) and the
+  wake gate's and echo guard's rewrites are not modelled.
+- The bound is trusted. A word below a settled turn's commit (the engine breaking it) goes
+  to the open turn with a warning; the model's engine never sends one.
+
 ## `SttSlot.tla` — arbitration of the engine's single STT slot
 
 The engine serves one STT session. Who may hold it is the brain's decision; whether the

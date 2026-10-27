@@ -109,6 +109,7 @@ from teaport_brain.tools import (
 )
 from teaport_brain.transcript_ledger import TranscriptLedger
 from teaport_brain.tts_text import strip_urls_for_speech
+from teaport_brain.turn_text import TurnTextCorrector
 from teaport_brain.turn_timing import TurnTimer
 
 
@@ -886,6 +887,15 @@ def build_agent_session(transport, *, voice: str | None = None,
                     + ("-- by the engine's report where it gives one, else after they stop "
                        f"changing for {settle}" if speculator.on_decode
                        else f"-- after they stop changing for {settle}"))
+    # A sliced turn's final words, where they differ from those it was asked on
+    # (stt.py TURN TEXT, turn_text.py): only where the setting asks for slices.
+    turn_text = None
+    if stt.slices_asked:
+        turn_text = TurnTextCorrector(
+            context_aggregator.user(),
+            speculator=speculator if speculate.ENABLED else None)
+        logger.info("turn text: SLICED from the engine's continuous transcript "
+                    "(TEAPORT_STT_TURN_TEXT=slice), where the engine offers it")
     # Pauses playout the moment the caller starts talking over the bot, and resumes it
     # if no words follow (barge_pause.py). Only where the transport can pause without
     # losing audio: SIP. The Talk relay's client buffers what we send and can only
@@ -1020,6 +1030,8 @@ def build_agent_session(transport, *, voice: str | None = None,
         # aggregator has just handed them to; the stock aggregator forwards every
         # other data frame, so they are dropped here rather than ride to the transport.
         SegmentDoneSink(),
+        # Below the aggregator, whose words and context it corrects; None on segments.
+        turn_text,
         heard_corrector,
         # Notes join the context here, just before the turn being answered or at a
         # quiet moment -- never mid-turn. Below the corrector: see ClientNotes.

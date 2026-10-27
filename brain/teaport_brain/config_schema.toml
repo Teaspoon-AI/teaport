@@ -1133,6 +1133,18 @@ tier = "tuning"
 help = "After each commit, send the audio from where the silence hint's claim starts again, as the start of the next segment: at most this much, and never back past the previous commit. A word the caller begins just as a segment is closed then reaches the engine whole, with the silence before it, instead of split between two segments; only the hint's margin is decoded by both. Where this much does not reach back to the end of the caller's speech, or the commit was held for the caller's pause, voice heard since the stop stays in the closed segment and the carry starts after it. Needs TEAPORT_STT_SILENCE_HINT: a commit that claims no silence carries nothing. 0: the next segment opens at the commit, as before."
 
 [[settings]]
+name = "TEAPORT_STT_TURN_TEXT"
+store = "brain_env"
+group = "turn_taking"
+type = "enum"
+values = ["segment", "slice"]
+default = "segment"
+read = "startup"
+tier = "tuning"
+help = "What the words of a turn are. segment: each commit closes an engine segment, and the engine's final for it is the turn's text. slice: the engine keeps one continuous transcript that commits never change (its preview stream; an engine without it runs on segments as before); a turn is the words that end before its commit, answered at once on the words in hand plus the engine's preview of the rest, then checked against the transcript's own words about half a second later, which correct the conversation's record where they differ. In slice mode the carry and the wait for the caller's pause are off; the silence hint stays."
+note = "Prototype: needs a teagram-engine with the preview stream (PROTOCOL3, \"transcription.preview\" in its capabilities)."
+
+[[settings]]
 name = "HEARD_MODE"
 store = "brain_env"
 group = "turn_taking"

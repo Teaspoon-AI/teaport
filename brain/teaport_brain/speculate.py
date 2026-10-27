@@ -390,6 +390,27 @@ class Speculator:
                     f"{f' {trigger}' if trigger else ''}")
         return True
 
+    def amend(self, index: int, old: str, new: str) -> bool:
+        """A user message the context holds at `index` was rewritten from `old` to `new`
+        in place: a sliced turn's final correcting the words it was asked on
+        (turn_text.TurnTextCorrector, which keeps the reply asked on them). The live
+        speculation's snapshot holds that message as it read then: rewritten the same
+        way, so the commit that follows does not miss as ctx-changed over a correction
+        the policy keeps everywhere else -- the speculation is the next reply, asked on
+        the same history the kept reply was. Only a copy still reading `old` at that
+        position is rewritten (a snapshot that has moved on misses as before); its own
+        user message, the last, is the candidate's and never this. Returns whether it
+        was."""
+        spec = self._current
+        if spec is None or not 0 <= index < len(spec.messages) - 1:
+            return False
+        m = spec.messages[index]
+        if not isinstance(m, dict) or m.get("role") != "user" or m.get("content") != old:
+            return False
+        m["content"] = new
+        logger.debug(f"[SPEC] snapshot amended with a turn's final words (message {index})")
+        return True
+
     async def cancel(self, reason: str):
         self._epoch += 1
         spec, self._current = self._current, None

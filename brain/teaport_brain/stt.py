@@ -46,8 +46,10 @@
 import asyncio
 import base64
 import contextlib
+import difflib
 import json
 import os
+import re
 import time
 from collections import deque
 from dataclasses import dataclass, field
@@ -87,6 +89,8 @@ from teaport_brain.endpointing import (
     TurnVerdictFrame,
 )
 from teaport_brain.settings import setting
+from teaport_brain.turn_text import TurnTextFinalFrame, TurnTextUnplacedFrame
+from teaport_brain.wake_words import find_wake
 
 # P99 latency from speech end to final transcript (broadcast to downstream turn
 # strategies). The engine's realtime STT targets <500 ms delta delay; ~0.8 s end-to-end p99
@@ -438,6 +442,59 @@ _SLOW_LOG_SECS = 60.0
 # 0 turns it off (the A/B switch): the next segment opens at the commit, as before.
 _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 
+# TURN TEXT: what the turn a commit closes is made of (TEAPORT_STT_TURN_TEXT).
+#
+#   segment  The commit closes an engine segment: the engine finishes it (right-pads and
+#            redecodes the buffer), answers with transcription.done, and decodes what
+#            follows from nothing. The done is the turn's text. Everything above this
+#            note -- the hold for the verdict, the wait for the caller's pause, the hint's
+#            re-prime floor, the carry -- exists because that close is irreversible and a
+#            misplaced one damages the words on both sides of it.
+#   slice    The engine's preview stream (teagram-engine, ~/rbf/PROTOCOL3.md; opt-in
+#            "preview": true, offered as "transcription.preview" in session.created): ONE
+#            continuous decode per session, which commits never touch. A commit at P (the
+#            audio sent so far) is a question: the engine answers it with one
+#            transcription.preview -- the text a finish at P would add now, decoded on a
+#            snapshot it throws away -- and the main transcript goes on as if it had not
+#            been asked. Every main delta carries end_ms, where its word ends, and the
+#            progress report end_through_ms: no delta after it ends before it. The turn a
+#            commit at P closes is the main words ending in [P', P), P' the commit before:
+#              provisional  those received by the preview, then the preview's text. Pushed
+#                           at once as the turn's final, so the reply starts when it does
+#                           today: commit -> preview is the done's ~0.15 s.
+#              final        all of them, once end_through_ms >= P (~0.5 s later): the
+#                           authoritative text. It equalled the provisional on 97 % of the
+#                           288 turns measured on jetson05 (~/rbf/RESULTS2.md, "Spike
+#                           2b"), and the provisional was, overall, MORE accurate than
+#                           today's done (calls WER 14.8 vs 15.6 %), most of all at a
+#                           turn's first words: no decoder starts a turn from nothing.
+#            A word ending at or after P is the next turn's, even when it arrives before
+#            P's preview: the commit often goes out after the caller resumed. A word of a
+#            committed turn arriving after the commit is never an interim -- it would start
+#            a turn and cut the reply to its own words -- it is that turn's final's.
+#
+# Where the final differs from what was pushed, the STT says so (TurnTextFinalFrame) and
+# turn_text.TurnTextCorrector applies it, without a restart: see there. A provisional
+# with no words (an empty preview, nothing in hand) pushed a wordless close; if its final
+# has words they go on as new words, stamped NO_STOP, and the turn they open is asked on
+# them (_settle_turn). The words are the user's; a preview that missed them must not lose
+# them.
+#
+# In slice mode a commit damages nothing, so what repaired its damage is off: the carry
+# (no segment opens behind a commit), with it the hint's re-prime floor, and the wait for
+# the caller's pause (THE CALLER'S VOICE: words they resume with end after P and go to the
+# next turn whole). What stays: WHEN commits go out (the verdict, the hold, its expiry,
+# the stop over the bot, the backstop) -- the measured design kept the brain's commit
+# schedule -- and the trailing-silence hint, which still shortens the preview's pad
+# exactly as it shortens a finish's (PROTOCOL3: credited_ms; it never reaches the main
+# stream). Without it the engine credits its own fvad count, ~0 on a phone line, and the
+# preview pays the full ~1 s pad: the one remaining dependency on the old machinery.
+#
+# The mode is the setting's ask and the engine session's answer: sent in every
+# session.update, taken only where the session's capabilities offer it. An engine without
+# the preview ignores the field and the session runs on segments, as before.
+TURN_TEXT = setting("TEAPORT_STT_TURN_TEXT")
+
 # SPEECH_DECODED: the engine's transcription report (teagram-engine's
 # transcription.progress), turned into SpeechDecodedFrame for the stop strategy.
 #
@@ -654,6 +711,56 @@ class _Commit:
     for_voice: bool = False
     # Audio re-sent behind it as the next segment's start, in ms (CARRY THE TAIL).
     carry_ms: int = 0
+    # The turn it closes, in slice mode (TURN TEXT); None on segments.
+    turn: Optional["_Turn"] = None
+
+
+@dataclass
+class _Turn:
+    """A commit's turn in slice mode (TURN TEXT), from the commit until its final."""
+    at_ms: int                 # P: the commit's position on the engine session's clock
+    stop_n: int = 0            # the commit's stamp (_Commit.n), for the lines
+    # (piece, end_ms) of its main words, in arrival order: those in hand at the commit,
+    # then those that arrive after it with end_ms < P.
+    words: list = field(default_factory=list)
+    since: Optional[float] = None    # the echo guard's clock: when its first words came
+    previewed: bool = False
+    asked_n: int = 0           # words in hand when the preview came
+    asked: str = ""            # the provisional text
+    # What went downstream as the turn's final: "" for a wordless close; None while the
+    # wake gate slept through it, which a correction leaves be. And whether its words
+    # woke the gate: then what went down is what followed the wake phrase.
+    pushed: Optional[str] = None
+    woke: bool = False
+    preview_at: float = 0.0
+
+
+def _words_of(text: str) -> list:
+    """The words a turn's texts are compared by: case and punctuation out, as the
+    measurement compared them (~/rbf/harness/textnorm.py)."""
+    return re.findall(r"[0-9a-z']+", (text or "").lower().replace("’", "'"))
+
+
+def compare_turn_text(asked: str, final: str) -> tuple:
+    """How the final differs from what was asked: ("same", (), ()), or a kind -- "adds"
+    (the final only has words the provisional lacked, the trailing "stop" a preview
+    stopped short of), "drops" (only lacks some), "changes" (anything else) -- with the
+    words the final adds and the words it drops."""
+    a, b = _words_of(asked), _words_of(final)
+    if a == b:
+        return "same", (), ()
+    added, dropped, changed = [], [], False
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        if op == "insert":
+            added += b[j1:j2]
+        elif op == "delete":
+            dropped += a[i1:i2]
+        elif op == "replace":
+            changed = True
+            added += b[j1:j2]
+            dropped += a[i1:i2]
+    kind = "changes" if changed or (added and dropped) else ("adds" if added else "drops")
+    return kind, tuple(added), tuple(dropped)
 
 
 class TeaportSTTService(WebsocketSTTService):
@@ -758,6 +865,24 @@ class TeaportSTTService(WebsocketSTTService):
         self._streaming = streaming_backend
         self._gen_started = False
         self._boundary_task = None
+
+        # TURN TEXT: whether the setting asks for slices (never of the streaming backend),
+        # and whether this engine session gives them -- asked at the connect, settled by
+        # its session.created, which the engine sends before anything else.
+        self._slice_asked = TURN_TEXT == "slice" and not streaming_backend
+        self._slicing = False
+        # The open turn's words: (piece, end_ms) of the main deltas no commit has taken,
+        # in arrival order (their text is _interim_buffer). The committed turns not yet
+        # final, oldest first. The session's end_through_ms, and the end of the last turn
+        # made final (no delta may end before it: the engine's bound).
+        self._open_words: list = []
+        self._turns: deque = deque()
+        self._end_through = -1
+        self._final_through = 0
+        self._warned: set = set()
+        # Turns whose final equalled what was pushed, and those whose did not.
+        self._turn_same = 0
+        self._turn_differs = 0
 
         # Running transcript for the current utterance (deltas are append-only).
         self._interim_buffer: str = ""
@@ -864,6 +989,12 @@ class TeaportSTTService(WebsocketSTTService):
         """What forces the final: "verdict", or "vad-stop" while the session-wide
         no-verdict fallback is in force (the commit note above _VAD_STOP_COMMITS)."""
         return self._commit_on
+
+    @property
+    def slices_asked(self) -> bool:
+        """Whether this service asks the engine for sliced turn text (TURN TEXT); each
+        engine session's created says whether it gets it."""
+        return self._slice_asked
 
     @property
     def stt_available(self):
@@ -995,8 +1126,9 @@ class TeaportSTTService(WebsocketSTTService):
         return True
 
     def _keep_tail(self, audio: bytes):
-        """Keep the last _CARRY_MS of audio sent, for the next commit to carry."""
-        if not _CARRY_MS or self._streaming:
+        """Keep the last _CARRY_MS of audio sent, for the next commit to carry. Not in
+        slice mode: no segment opens behind a commit (TURN TEXT)."""
+        if not _CARRY_MS or self._streaming or self._slicing:
             return
         self._tail += audio
         keep = 2 * (_CARRY_MS * (self.sample_rate or 16000) // 1000)
@@ -1026,6 +1158,14 @@ class TeaportSTTService(WebsocketSTTService):
             # process_audio_frame, which a reconnect's replay runs a second time for
             # the frames it buffered.
             self._passed_samples += len(frame.audio) // 2
+        if isinstance(frame, TurnTextUnplacedFrame):
+            # A final's words found no turn and no message downstream
+            # (turn_text.TurnTextCorrector): they go on as words of their own. Consumed
+            # here; nothing above has a use for it.
+            logger.debug(f"{self}: VAD stop {frame.stop_n}'s final words were placed "
+                         "nowhere downstream -- pushing them as a final of their own")
+            await self._push_unplaced(frame.final)
+            return
         await super().process_frame(frame, direction)
         # Commit (force a final) off the VAD's end-of-speech, or off the verdict that
         # answers it — NOT on UserStoppedSpeakingFrame. With the Smart Turn turn
@@ -1314,7 +1454,12 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _commit_at_pause(self, why: str):
         """Commit a complete verdict's segment now if nothing says the caller is
-        speaking, otherwise hold it for _wait_for_pause."""
+        speaking, otherwise hold it for _wait_for_pause. In slice mode, now: a commit
+        damages nothing there, and words the caller resumed with end after it, in the
+        next turn (TURN TEXT)."""
+        if self._slicing:
+            await self._send_commit(final=True, why=why)
+            return
         w = self._check_caught_up(self._voice_marks())
         if self._pause_off:
             w = None
@@ -1590,8 +1735,11 @@ class TeaportSTTService(WebsocketSTTService):
                        f"{'for the caller to pause' if commit.for_voice else 'for the VAD'}")
         if commit and commit.carry_ms:
             credit += f", carried {commit.carry_ms}ms"
+        # In slice mode the answer is the commit's preview, and what it carries is the
+        # turn's provisional text (TURN TEXT).
+        answer = "preview" if msg.get("type") == "transcription.preview" else "done"
         line = (f"{self}: segment {secs:.2f}s audio, {self._seg_interims} interims, "
-                f"commit={why} -> done in {lat}: {verdict}{credit}")
+                f"commit={why} -> {answer} in {lat}: {verdict}{credit}")
         # An empty final on a segment the engine DID stream interims for is the shape
         # worth noticing: it had words a moment ago and returned none.
         #
@@ -1654,7 +1802,7 @@ class TeaportSTTService(WebsocketSTTService):
         rate = self.sample_rate or 16000
         sent = self._sent_samples
         bound = None
-        if _CARRY_MS and not self._streaming:
+        if _CARRY_MS and not self._streaming and not self._slicing:
             bound = max(sent - len(self._tail) // 2, self._carry_floor)
         end = self._speech_end
         if (bound is None or bound > end + _HINT_MARGIN_MS * rate // 1000
@@ -1761,8 +1909,169 @@ class TeaportSTTService(WebsocketSTTService):
                                "final will come for it, and it carries nothing")
                 return
             self._commits.append(commit)
+            if self._slicing:
+                self._take_turn(commit)
             if carry:
                 await self._send_carry(ws, commit, carry)
+
+    def _take_turn(self, commit: _Commit):
+        """The commit just sent closes a turn (TURN TEXT): it takes the open words that
+        end before its position, on the engine's session clock -- the audio sent on this
+        socket, which the commit followed with nothing between (THE WIRE). Words ending
+        at or after it stay open: the caller had resumed by the commit."""
+        rate = self.sample_rate or 16000
+        at = (self._sent_samples - self._session_origin) * 1000 // rate
+        mine = [w for w in self._open_words if w[1] < at]
+        rest = [w for w in self._open_words if w[1] >= at]
+        commit.turn = _Turn(at_ms=at, stop_n=commit.n, words=mine,
+                            since=self._seg_since if mine else None)
+        self._turns.append(commit.turn)
+        self._open_words = rest
+        self._interim_buffer = "".join(p for p, _ in rest)
+        if not rest:
+            self._seg_since = None
+
+    def _warn_once(self, key: str, line: str):
+        if key in self._warned:
+            return
+        self._warned.add(key)
+        logger.warning(f"{self}: {line}")
+
+    def _slice_delta(self, piece: str, end) -> bool:
+        """File a main delta by where its word ends (TURN TEXT): into the committed turn
+        it ends before -- the oldest such, the turns being in position order -- and say
+        so (True), or into the open turn (False)."""
+        if not isinstance(end, (int, float)):
+            # No position (not the preview stream's delta): it ends no later than the
+            # audio sent so far, so the next commit takes it.
+            self._warn_once("no-end", "a delta with no end_ms in a sliced session -- "
+                            "placed at the audio sent so far")
+            end = ((self._sent_samples - self._session_origin) * 1000
+                   // (self.sample_rate or 16000))
+        for turn in self._turns:
+            if end < turn.at_ms:
+                turn.words.append((piece, end))
+                return True
+        if end < self._final_through:
+            # The engine's end_through_ms promised this cannot come. Kept, not lost: the
+            # open turn has it.
+            self._warn_once("bound", f"a word ending at {end} ms arrived after the turn "
+                            f"through {self._final_through} ms was final -- the engine's "
+                            "end_through_ms did not hold; the open turn takes it")
+        self._open_words.append((piece, end))
+        return False
+
+    def _forget_turn(self, turn: _Turn):
+        with contextlib.suppress(ValueError):
+            self._turns.remove(turn)
+
+    async def _handle_preview(self, msg: dict):
+        """The engine's answer to a commit in slice mode (TURN TEXT): the commit's turn
+        goes downstream now, as the words in hand and the preview's text."""
+        commit = self._commits.popleft() if self._commits else None
+        turn = commit.turn if commit is not None else None
+        if turn is None:
+            self._warn_once("preview", "a transcription.preview with no sliced commit "
+                            "outstanding -- the engine and this service disagree about "
+                            "what was sent; ignored")
+            return
+        through = msg.get("through_ms")
+        if isinstance(through, (int, float)) and int(through) != turn.at_ms:
+            self._warn_once("through", f"the engine placed a commit at {through} ms, this "
+                            f"service at {turn.at_ms} ms -- the turns are sliced at ours")
+        turn.previewed = True
+        turn.asked_n = len(turn.words)
+        turn.asked = ("".join(p for p, _ in turn.words) + (msg.get("delta") or "")).strip()
+        turn.preview_at = time.monotonic()
+        self._log_segment({**msg, "text": turn.asked}, commit)
+        turn.pushed, turn.woke = await self._close(msg, commit, turn.asked, turn.asked,
+                                                   turn.since)
+        # The backstop guards the open turn's words, and a close stands it down (the
+        # done's rule); words already open that no delta will re-arm it for keep it.
+        await self._cancel_stranded_commit()
+        if self._interim_buffer.strip():
+            await self._arm_stranded_commit()
+        await self._finalize_turns()
+
+    async def _finalize_turns(self):
+        """Settle every turn, oldest first, whose preview has come and whose position
+        end_through_ms has passed: no word of it can come any more (TURN TEXT)."""
+        while (self._turns and self._turns[0].previewed
+               and self._turns[0].at_ms <= self._end_through):
+            turn = self._turns.popleft()
+            self._final_through = turn.at_ms
+            await self._settle_turn(turn)
+
+    async def _settle_turn(self, turn: _Turn):
+        """A turn's final is in: all its words. Compared with the provisional text it was
+        pushed as, by words (case and punctuation aside, as measured); a difference goes
+        downstream for turn_text.TurnTextCorrector to apply, and every outcome is one
+        [TURN] line."""
+        final = "".join(p for p, _ in turn.words).strip()
+        kind, added, dropped = compare_turn_text(turn.asked, final)
+        late = len(turn.words) - turn.asked_n
+        wait = time.monotonic() - turn.preview_at
+        if kind == "same":
+            self._turn_same += 1
+        else:
+            self._turn_differs += 1
+        tally = f"same={self._turn_same} differs={self._turn_differs}"
+        head = (f"[TURN] VAD stop {turn.stop_n}: final +{wait:.2f}s after the preview, "
+                f"{late} word(s) since")
+        if kind == "same":
+            logger.info(f"{head}: as asked ({tally})")
+            return
+        if turn.pushed is None:
+            # The wake gate slept through it: nothing went on, and a wake phrase only
+            # the final has is not re-offered (the gate's carry has moved on). Counts,
+            # never words.
+            logger.info(f"{head}: final {kind} ({len(added)} added, {len(dropped)} "
+                        f"dropped) while the wake gate slept -- left as it went ({tally})")
+            return
+        corrected = final
+        if final and self.echo_guard is not None:
+            # As the provisional was: the bot's own words off its front.
+            corrected = self.echo_guard.strip(final, final=True, since=turn.since)
+        if turn.woke and corrected:
+            # The words that woke the gate went on as what followed the phrase: the
+            # final's are measured the same way, if the final has the phrase too.
+            found = find_wake(corrected, self.wake_gate.phrases)
+            if found is None:
+                logger.info(f"{head}: final {kind}, and the wake phrase the provisional "
+                            f"woke on is not in it -- left as it went ({tally})")
+                return
+            corrected = found[1]
+        if not turn.pushed:
+            # Nothing went on for this turn: an empty preview, or the bot's own words.
+            # The final's words must not be lost: they go on as new words, stamped with
+            # no stop (as the engine's own close of words is), and the turn they open is
+            # asked on them.
+            if corrected:
+                logger.info(f"{head}: final {kind} {list(added)} where nothing was asked "
+                            f"-- they go on as new words ({tally})")
+                await self._push_unplaced(corrected)
+            else:
+                logger.info(f"{head}: final {kind}, the bot's own words -- nothing goes "
+                            f"on ({tally})")
+            return
+        if corrected == turn.pushed:
+            # Only the bot's own words differ, and the echo guard took them off both.
+            logger.info(f"{head}: final {kind}, the same once the echo guard has run ({tally})")
+            return
+        logger.info(f"{head}: final {kind} added={list(added)} dropped={list(dropped)}: "
+                    f"asked {turn.pushed!r}, final {corrected!r} ({tally})")
+        await self.push_frame(TurnTextFinalFrame(stop_n=turn.stop_n, asked=turn.pushed,
+                                                 final=corrected, kind=kind, added=added,
+                                                 dropped=dropped, pushed_at=turn.preview_at))
+
+    async def _push_unplaced(self, text: str):
+        """Words of a final that are in no turn and no context (TURN TEXT): pushed as a
+        final of their own, stamped NO_STOP -- no stop's close, so the turn they open
+        ends as the engine's own close of words does."""
+        await self.push_frame(FinalTranscriptionFrame(
+            text, self._user_id, time_now_iso8601(), self._language,
+            result={"type": "transcription.final", "text": text}, finalized=True,
+            stop_n=NO_STOP))
 
     async def _send_carry(self, ws, commit: _Commit, carry: bytes):
         """Send the audio from where the commit's claim starts again, right behind the
@@ -1864,12 +2173,23 @@ class TeaportSTTService(WebsocketSTTService):
                 self._decoded_through = None
                 # Nor does a carry reach back into the last session's audio.
                 self._carry_floor = self._sent_samples
+                # Slices are asked for, and taken until the session's created says
+                # otherwise (TURN TEXT); its clocks start here.
+                self._slicing = self._slice_asked
+                self._end_through = -1
+                self._final_through = 0
                 # Handshake: the engine is single-model and just acknowledges this --
                 # and an engine with the report starts sending it (one without ignores
                 # the field). Not to the streaming backend: vLLM validates its session.
                 update = {"type": "session.update", "model": self._model}
-                if self.transcription_progress and not self._streaming:
+                if (self.transcription_progress or self._slice_asked) and not self._streaming:
                     update["transcription_progress"] = True
+                if self._slice_asked:
+                    # Before any audio, as the engine requires. "continuous" is what the
+                    # spike engine (rbf3) also needed; the production engine ignores it.
+                    # Its bounds ride on the progress report, so that is asked for too.
+                    update["preview"] = True
+                    update["continuous"] = True
                 await self._websocket.send(json.dumps(update))
                 self._stt_available = True
                 if attempt:
@@ -1943,6 +2263,15 @@ class TeaportSTTService(WebsocketSTTService):
                     logger.debug(f"{self}: could not push the segment reset ({e})")
             self._interim_buffer = ""
             self._seg_since = None
+            # TURN TEXT: the open words go with the session, and so do the finals the
+            # committed turns were waiting for -- what was pushed at their previews
+            # stands.
+            if self._turns:
+                logger.info(f"{self}: the engine session closed with "
+                            f"{len(self._turns)} turn(s) not yet final -- their "
+                            "provisional text stands")
+            self._open_words = []
+            self._turns.clear()
             # Per-session, like the buffer beside it: a run of 4 empty finals before a
             # reconnect plus 1 after is not 5 finals of the same microphone.
             self._empty_finals = 0
@@ -1959,6 +2288,128 @@ class TeaportSTTService(WebsocketSTTService):
             await self._cancel_hold_expiry()
 
     # ---- transcripts out ---------------------------------------------------
+
+    async def _close(self, msg: dict, commit: Optional[_Commit], engine_text: str,
+                     text: str, since: Optional[float]) -> tuple:
+        """Push a segment's close downstream: its final, or a SegmentDoneFrame when it has
+        no words. `commit` is the commit it answers (None: the engine closed it on its
+        own), `engine_text` the engine's own words for it, `text` what goes on (the
+        done's text, or the interim it fell back to; in slice mode the provisional
+        text), `since` the echo guard's clock for it. Returns the text pushed as the
+        final ("" for a wordless close; None while the wake gate sleeps through it) and
+        whether these words woke the gate (what was pushed is what followed the wake
+        phrase): what a slice's correction is measured against."""
+        unasked = commit is None
+        # The stamp the final (or the SegmentDoneFrame) below carries: the VAD stop
+        # this close answers, for the stop strategy to hold against its own count
+        # (see FinalTranscriptionFrame). A commit's answer is stamped with the
+        # commit's. The engine's own close names no stop, so it is placed by what
+        # this service knows:
+        #   * it carries no words -- the engine's own close is on speech it heard,
+        #     so this is the silent tail a commit of ours closed behind a close
+        #     of the engine's that took the commit's place in the queue (the
+        #     pairing _commits documents): it answers that commit's stop after
+        #     all, and never the stop of an utterance since;
+        #   * otherwise it is the caller's words up to some point before now --
+        #     inside the utterance under way, or an earlier one's whose finish
+        #     ran long: whichever, no stop of ours has been answered by it, and it
+        #     is stamped NO_STOP: it pays no stop's debt. The strategy waits for
+        #     the close the stop itself produces: the rest of the words, or the
+        #     silent tail the stop's commit returns at once. It was stamped as the
+        #     NEXT stop's until SttCommit.tla gave the VAD its real place: the
+        #     strategy can count that stop before this service has seen it, and
+        #     then the first half paid the stop with the rest still in the
+        #     segment -- the turn ended on half a sentence (sc_final_stop_marked).
+        # It does NOT release a segment held for its verdict, though the first
+        # cut did: this close may be the PREVIOUS utterance's, landing under the
+        # hold on the next one (the engine's finish outlasting the caller's next
+        # utterance), and a released hold would leave those words to the engine's
+        # own close, unstamped. Keeping the hold costs the ceiling's commit one
+        # wordless done, which the engine answers without a decode (no audio fed
+        # since its own close: voxtral_websocket.c's "empty commit").
+        if not unasked:
+            stop_n = commit.n
+        elif not text:
+            stop_n = self._last_commit_n
+        else:
+            stop_n = NO_STOP
+        if unasked:
+            # See the VAD stop in process_frame: the next stop, if none has come
+            # yet, closes the tail rather than hold it.
+            self._closed_unasked = True
+        # A run of finals with nothing in them means the engine is being handed audio
+        # it can find no words in. Both are silent from the pipeline's side — no
+        # transcript, so no turn, so no reply — and that is indistinguishable from the
+        # pipeline bugs that produce the same silence, which is why it has to say so.
+        #
+        # Live 2026-08-21: 77 seconds of it. The engine ran 11 segments and returned 0
+        # characters for every one while the brain's own VAD stayed QUIET, so the room
+        # was making noise and the user's voice was not reaching the microphone. The
+        # engine was healthy throughout — fed a synthesized sentence it transcribed it
+        # perfectly — and nothing anywhere said "I cannot hear you".
+        #
+        # One line per run, not per final: an isolated empty final is ordinary (the VAD
+        # fires on a cough or a door), and warning on each would bury the real case.
+        #
+        # Not while a wake gate is asleep (#116): the room mic's session is open on a
+        # quiet room, waiting for a wake word, and wordless finals are all it should
+        # hear. The run counts from the wake, so a muted mic in a conversation still
+        # says so.
+        if self.wake_gate is not None and self.wake_gate.asleep:
+            self._empty_finals = 0
+        elif not engine_text:
+            self._empty_finals += 1
+            if self._empty_finals == _EMPTY_FINAL_RUN:
+                logger.warning(
+                    f"{self}: {self._empty_finals} finals in a row with no words — "
+                    "the engine is hearing audio but no speech (microphone muted or "
+                    "routed away, or the room is louder than the speaker)"
+                )
+        else:
+            if self._empty_finals >= _EMPTY_FINAL_RUN:
+                logger.info(f"{self}: hearing speech again after "
+                            f"{self._empty_finals} empty finals")
+            self._empty_finals = 0
+        result = msg
+        if text and self.echo_guard is not None:
+            # Before the wake gate: "hey teaport" in the bot's own voice wakes nothing.
+            kept = self.echo_guard.strip(text, final=True, since=since)
+            if kept != text and (self.wake_gate is None or not self.wake_gate.asleep):
+                # Never the room's words while it sleeps (wake_gate.py).
+                echo_guard.log_strip("final", text, kept)
+                result = {**msg, "text": kept}
+            text = kept
+        asleep = self.wake_gate is not None and self.wake_gate.asleep
+        woke = False
+        if text and self.wake_gate is not None:
+            # Asleep: no wake phrase -> nothing; one -> what follows it (wake_gate.py).
+            gated = await self.wake_gate.final(text, self.push_frame)
+            if gated != text:
+                # The engine's message carries the whole utterance: not what is kept.
+                result = {**msg, "text": gated or ""}
+            woke = asleep and not self.wake_gate.asleep
+            text = gated
+        pushed = None if asleep and not woke else (text or "")
+        if text:
+            await self.push_frame(
+                FinalTranscriptionFrame(
+                    text,
+                    self._user_id,
+                    time_now_iso8601(),
+                    self._language,
+                    result=result,
+                    finalized=True,
+                    stop_n=stop_n,
+                )
+            )
+        else:
+            # The segment closed with nothing in it. The stop strategy is waiting
+            # on this stop's close (endpointing.py): this is how it learns the
+            # close came, and that the words it already holds are all the turn
+            # will get. A data frame, so it queues behind the interims it follows.
+            await self.push_frame(SegmentDoneFrame(stop_n=stop_n))
+        await self.stop_processing_metrics()
+        return pushed, woke
 
     async def _receive_messages(self):
         # Iterate the base class's websocket directly (WebsocketSTTService owns it).
@@ -1981,6 +2432,9 @@ class TeaportSTTService(WebsocketSTTService):
             # Append-only token piece → grow the running utterance buffer and
             # emit it as the cumulative interim hypothesis.
             piece = msg.get("delta", "")
+            if self._slicing and self._slice_delta(piece, msg.get("end_ms")):
+                # A committed turn's word: its final's, never an interim (TURN TEXT).
+                return
             self._interim_buffer += piece
             # The streaming backend emits a delta per AUDIO FRAME -- 12.5 a second,
             # blank ones through silence (210 of them across one 16.9 s segment). Each
@@ -2073,7 +2527,10 @@ class TeaportSTTService(WebsocketSTTService):
                                    "with no commit outstanding -- the engine and this "
                                    "service disagree about what was sent; taken as the "
                                    "engine's own close")
-            unasked = commit is None
+            if commit is not None and commit.turn is not None:
+                # A commit taken for a slice, answered as a segment: the engine is not
+                # slicing after all. Its turn waits for no final.
+                self._forget_turn(commit.turn)
             self._log_segment(msg, commit)
             engine_text = (msg.get("text") or "").strip()
             text = engine_text or self._interim_buffer.strip()
@@ -2083,116 +2540,27 @@ class TeaportSTTService(WebsocketSTTService):
                              f"hypothesis ({len(text)} chars) to close the turn")
             self._interim_buffer = ""
             since, self._seg_since = self._seg_since, None
-            # The stamp the final (or the SegmentDoneFrame) below carries: the VAD stop
-            # this close answers, for the stop strategy to hold against its own count
-            # (see FinalTranscriptionFrame). A commit's answer is stamped with the
-            # commit's. The engine's own close names no stop, so it is placed by what
-            # this service knows:
-            #   * it carries no words -- the engine's own close is on speech it heard,
-            #     so this is the silent tail a commit of ours closed behind a close
-            #     of the engine's that took the commit's place in the queue (the
-            #     pairing _commits documents): it answers that commit's stop after
-            #     all, and never the stop of an utterance since;
-            #   * otherwise it is the caller's words up to some point before now --
-            #     inside the utterance under way, or an earlier one's whose finish
-            #     ran long: whichever, no stop of ours has been answered by it, and it
-            #     is stamped NO_STOP: it pays no stop's debt. The strategy waits for
-            #     the close the stop itself produces: the rest of the words, or the
-            #     silent tail the stop's commit returns at once. It was stamped as the
-            #     NEXT stop's until SttCommit.tla gave the VAD its real place: the
-            #     strategy can count that stop before this service has seen it, and
-            #     then the first half paid the stop with the rest still in the
-            #     segment -- the turn ended on half a sentence (sc_final_stop_marked).
-            # It does NOT release a segment held for its verdict, though the first
-            # cut did: this close may be the PREVIOUS utterance's, landing under the
-            # hold on the next one (the engine's finish outlasting the caller's next
-            # utterance), and a released hold would leave those words to the engine's
-            # own close, unstamped. Keeping the hold costs the ceiling's commit one
-            # wordless done, which the engine answers without a decode (no audio fed
-            # since its own close: voxtral_websocket.c's "empty commit").
-            if not unasked:
-                stop_n = commit.n
-            elif not text:
-                stop_n = self._last_commit_n
-            else:
-                stop_n = NO_STOP
-            if unasked:
-                # See the VAD stop in process_frame: the next stop, if none has come
-                # yet, closes the tail rather than hold it.
-                self._closed_unasked = True
-            # A run of finals with nothing in them means the engine is being handed audio
-            # it can find no words in. Both are silent from the pipeline's side — no
-            # transcript, so no turn, so no reply — and that is indistinguishable from the
-            # pipeline bugs that produce the same silence, which is why it has to say so.
-            #
-            # Live 2026-08-21: 77 seconds of it. The engine ran 11 segments and returned 0
-            # characters for every one while the brain's own VAD stayed QUIET, so the room
-            # was making noise and the user's voice was not reaching the microphone. The
-            # engine was healthy throughout — fed a synthesized sentence it transcribed it
-            # perfectly — and nothing anywhere said "I cannot hear you".
-            #
-            # One line per run, not per final: an isolated empty final is ordinary (the VAD
-            # fires on a cough or a door), and warning on each would bury the real case.
-            #
-            # Not while a wake gate is asleep (#116): the room mic's session is open on a
-            # quiet room, waiting for a wake word, and wordless finals are all it should
-            # hear. The run counts from the wake, so a muted mic in a conversation still
-            # says so.
-            if self.wake_gate is not None and self.wake_gate.asleep:
-                self._empty_finals = 0
-            elif not engine_text:
-                self._empty_finals += 1
-                if self._empty_finals == _EMPTY_FINAL_RUN:
-                    logger.warning(
-                        f"{self}: {self._empty_finals} finals in a row with no words — "
-                        "the engine is hearing audio but no speech (microphone muted or "
-                        "routed away, or the room is louder than the speaker)"
-                    )
-            else:
-                if self._empty_finals >= _EMPTY_FINAL_RUN:
-                    logger.info(f"{self}: hearing speech again after "
-                                f"{self._empty_finals} empty finals")
-                self._empty_finals = 0
-            result = msg
-            if text and self.echo_guard is not None:
-                # Before the wake gate: "hey teaport" in the bot's own voice wakes nothing.
-                kept = self.echo_guard.strip(text, final=True, since=since)
-                if kept != text and (self.wake_gate is None or not self.wake_gate.asleep):
-                    # Never the room's words while it sleeps (wake_gate.py).
-                    echo_guard.log_strip("final", text, kept)
-                    result = {**msg, "text": kept}
-                text = kept
-            if text and self.wake_gate is not None:
-                # Asleep: no wake phrase -> nothing; one -> what follows it (wake_gate.py).
-                gated = await self.wake_gate.final(text, self.push_frame)
-                if gated != text:
-                    # The engine's message carries the whole utterance: not what is kept.
-                    result = {**msg, "text": gated or ""}
-                text = gated
-            if text:
-                await self.push_frame(
-                    FinalTranscriptionFrame(
-                        text,
-                        self._user_id,
-                        time_now_iso8601(),
-                        self._language,
-                        result=result,
-                        finalized=True,
-                        stop_n=stop_n,
-                    )
-                )
-            else:
-                # The segment closed with nothing in it. The stop strategy is waiting
-                # on this stop's close (endpointing.py): this is how it learns the
-                # close came, and that the words it already holds are all the turn
-                # will get. A data frame, so it queues behind the interims it follows.
-                await self.push_frame(SegmentDoneFrame(stop_n=stop_n))
-            await self.stop_processing_metrics()
+            await self._close(msg, commit, engine_text, text, since)
+
+        elif mtype == "transcription.preview":
+            await self._handle_preview(msg)
 
         elif mtype == "transcription.progress":
             # How far the engine has transcribed, on this session's audio clock
             # (SPEECH_DECODED); whole ms, so the sample it names is never past it.
             ms = msg.get("decoded_through_ms")
+            if self._slicing:
+                # The bound the turns' finals wait for (TURN TEXT). It is also the
+                # report's position here: decoded_through_ms is no bound once words are
+                # held until complete, and every word of the speech that ends before
+                # end_through_ms is in hand. Asked for by the slices, so pushed on only
+                # where the stop strategy asked for the report too.
+                ms = msg.get("end_through_ms")
+                if isinstance(ms, (int, float)):
+                    self._end_through = max(self._end_through, int(ms))
+                    await self._finalize_turns()
+                if not self.transcription_progress:
+                    ms = None
             if isinstance(ms, (int, float)):
                 rate = self.sample_rate or 16000
                 self._decoded_through = self._session_origin + int(ms) * rate // 1000
@@ -2203,11 +2571,23 @@ class TeaportSTTService(WebsocketSTTService):
             # offers it and we asked): the stop strategy then asks the speculation on
             # the report rather than on a timer. Said at every session's start, so a
             # reconnect to an engine without it puts the strategy back on the timer.
+            capabilities = msg.get("capabilities") or []
             reported = (self.transcription_progress and not self._streaming
-                        and "transcription.progress" in (msg.get("capabilities") or []))
+                        and "transcription.progress" in capabilities)
             self._reports = reported
+            # Slices where asked and offered (TURN TEXT). The engine sends this first,
+            # so no delta or answer has come yet; a commit already sent for a slice is
+            # answered as a segment, and the done path forgets its turn.
+            if self._slice_asked:
+                self._slicing = "transcription.preview" in capabilities
+                if not self._slicing:
+                    logger.warning(f"{self}: TEAPORT_STT_TURN_TEXT=slice, but this engine "
+                                   "offers no preview stream -- this session's turns are "
+                                   "its segments, as before")
+                    self._open_words = []
             logger.debug(f"{self}: session created {msg.get('id')}"
-                         f"{' (transcription.progress)' if reported else ''}")
+                         f"{' (transcription.progress)' if reported else ''}"
+                         f"{' (turn text sliced)' if self._slicing else ''}")
             await self.push_frame(SttProgressFrame(reported=reported))
 
         elif mtype == "error":
