@@ -715,26 +715,32 @@ gate's timing (`Owed.tla` holds one; this module has no gate, runs or re-offers)
 
 With `TEAPORT_STT_TURN_TEXT=slice` (stt.py, TURN TEXT) the engine decodes one stream per
 session and a commit changes nothing in it: the engine answers it with a preview, and the
-brain forms the turn itself. A turn is the main words that end before its commit and
-after the one before; it goes downstream at the preview as the words in hand plus the
-preview's text, and is final once the engine's `end_through_ms` has passed the commit.
-That is a new protocol over one ordered channel (deltas, previews, progress), and the
-brain's half of it is four handlers: `_take_turn`, `_slice_delta`, `_handle_preview`,
+brain forms the turn itself. A turn is the main words that end before its position and
+after the turn before; it goes downstream at the preview as the words in hand plus the
+preview's text, and is final once the engine's `end_through_ms` has passed its position.
+With `TEAPORT_STT_PREVIEW_AT_STOP` (THE PEEK, `PEEKS`) the preview is asked at the VAD
+stop with nothing in flight: a commit that closes nothing. The caller resuming drops it;
+the turn's close (a verdict, the ceiling, the hold's expiry) adopts it, at its position,
+on its preview, with no second commit. That is a new protocol over one ordered channel
+(deltas, previews, progress), and the brain's half of it is `_take_turn`/`_turn_at`,
+`_peek_at_stop`, `_drop_peek`, `_adopt_peek`, `_slice_delta`, `_handle_preview` and
 `_finalize_turns`/`_settle_turn`.
 
 The engine is modelled weaker than PROTOCOL3 promises: a word is sent once the decoder is
 past its end or any time later (it holds a word until it is whole), the bound is as high
 as the engine may put it (the decoder's position, never past a word still to send), and
-a word that ends after a commit may come before that commit's preview. The brain commits
-at any point (when is SttCommit.tla's business).
+a word that ends after a commit may come before that commit's preview. The brain closes
+turns at any point (when is SttCommit.tla's business); its VAD speaks and stops.
 
-| DESIGN | | `NoWordTwice` | `RightTurn` | `FinalComplete` | `NoLateInterim` | `NoLostWords` |
-|---|---|---|---|---|---|---|
-| `shipped` | slice by end; a late word to the oldest unsettled turn it ends before; final on `end_through_ms`; an empty provisional's final words go on as new words | ✓ | ✓ | ✓ | ✓ | ✓ |
-| `arrival` | a turn is the words received by its preview | | ✗ | | | |
-| `interimAll` | the shipped slicing, every delta announced as an interim | | | | ✗ | |
-| `decoded` | final once `decoded_through_ms` passes the commit | | | ✗ | | |
-| `noNewWords` | an empty provisional's final words dropped | | | | | ✗ |
+| DESIGN | | `NoWordTwice` | `RightTurn` | `FinalComplete` | `NoLateInterim` | `NoLostWords` | `NoSplitOnResume` |
+|---|---|---|---|---|---|---|---|
+| `shipped`, `PEEKS` FALSE | the preview at the verdict: slice by end; a late word to the oldest unsettled turn it ends before; final on `end_through_ms`; an empty provisional's final words go on as new words | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `shipped`, `PEEKS` TRUE | the same, the preview at the VAD stop (`ss_peek`; `ss_peek_full` with `--full`) | ✓ | ✓ | ✓ | ✓ | ✓ | ✓ |
+| `arrival` | a turn is the words received by its preview | | ✗ | | | | |
+| `interimAll` | the shipped slicing, every delta announced as an interim | | | | ✗ | | |
+| `decoded` | final once `decoded_through_ms` passes the commit | | | ✗ | | | |
+| `noNewWords` | an empty provisional's final words dropped | | | | | ✗ | |
+| `peekAsTurn` | the commit at the stop closes the turn there | | | | | | ✗ |
 
 - **`RightTurn`** — a turn holds only words that end in its own stretch. `arrival` fails it
   the way the commit-and-flush days never could: the caller's last word is decoded ~0.5 s
@@ -742,16 +748,23 @@ at any point (when is SttCommit.tla's business).
 - **`FinalComplete`** — a turn made final has every word of its stretch. `decoded` fails
   it: `decoded_through_ms` passes a word's end before the engine sends the word (it holds
   it until it is whole), so a turn can be settled with a word still to come.
-- **`NoLateInterim`** — a committed turn's word is never announced as an interim: the
+- **`NoLateInterim`** — a closed turn's word is never announced as an interim: the
   interim would start a user turn (`MinWordsUserTurnStartStrategy`) and interrupt the reply
-  to that very word's turn. `interimAll` fails it.
+  to that very word's turn. `interimAll` fails it. A peek's words before its adoption are
+  interims, as any open turn's are: nothing is closed on a peek.
 - **`NoLostWords`** — every word of a final goes downstream: in the provisional, in the
   correction (`TurnTextFinalFrame`), or, when nothing was pushed, as words of their own.
-- Witnesses (`ss_shipped_late`, `ss_shipped_empty`): the shipped design does reach a final
-  with words that came after its preview, and an empty provisional whose final has words.
+- **`NoSplitOnResume`** — no turn is closed at a stop the caller then talked past: the
+  peek is a question, and a commit at the stop that closed the turn (`peekAsTurn`) would
+  cut the sentence of every caller who pauses and goes on.
+- Witnesses: the shipped design does reach a final with words that came after its
+  preview (`ss_shipped_late`), an empty provisional whose final has words
+  (`ss_shipped_empty`), a turn closed on a peek (`ss_peek_adopted`) and a peek the caller
+  talked past (`ss_peek_dropped`).
 
-Run: `ss_shipped` is ~580k distinct states (MaxPos 5, three words, two commits, a channel
-of two), about 7 s.
+Run: `ss_shipped` is ~3.5M distinct states (MaxPos 5, three words, two commits, two
+stops, a channel of two), ~30 s; `ss_peek` 3.3M (MaxPos 4), ~1 min; `ss_peek_full` 22M
+(MaxPos 5), ~3.5 min, in `--full`.
 
 ### Known limits of this model
 
@@ -760,6 +773,12 @@ of two), about 7 s.
   `turn_text.TurnTextCorrector`'s, unit-tested (`test_turn_text_correction.py`), not
   modelled. `NoLostWords` checks the STT delivers; the corrector's `unplaced` path
   re-delivers only a final that adds words.
+- The peek waits for nothing in flight; the stop that finds a commit in flight peeks when
+  its answer lands (`_peek_wanted`), which the model leaves out (that stop's turn closes
+  with a commit of its own, as `PEEKS` FALSE does).
+- The speculation on the peek's preview (endpointing.LateStartTurnStopStrategy, the
+  Speculator) is not modelled here: UserTurn.tla's SPEC rows hold for any text it asks
+  on, and `test_turn_text_peek.py` drives it over a real pipeline.
 - A reconnect (the turns not yet final are dropped, their provisional standing) and the
   wake gate's and echo guard's rewrites are not modelled.
 - The bound is trusted. A word below a settled turn's commit (the engine breaking it) goes

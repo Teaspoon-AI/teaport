@@ -341,8 +341,15 @@ class Speculator:
         """The user message the live speculation asked, or None."""
         return self._current.text if self._current is not None else None
 
-    async def start(self, text: str, why: str = "", trigger: str = "") -> bool:
-        if not self._controller._user_turn:
+    async def start(self, text: str, why: str = "", trigger: str = "",
+                    ahead_of_turn: bool = False) -> bool:
+        """Ask the LLM on `text` as the user message the commit will write. Only inside an
+        open user turn -- unless `ahead_of_turn`: the stop's preview in slice mode (stt.py
+        THE PEEK), whose words are the turn's though none has opened it yet (a short
+        answer whose words all come after the stop). The commit that adopts it is still
+        the whole-context check in take(); a turn that never commits leaves it to be
+        cancelled (the caller resumed) or superseded, as any."""
+        if not ahead_of_turn and not self._controller._user_turn:
             return False
         text = (text or "").strip()
         if not text:
@@ -361,7 +368,7 @@ class Speculator:
             # were dropped) or superseded by a newer start: the words are stale. A turn
             # that closed meanwhile cancels nothing (its speculation is the commit's to
             # take), so the turn is asked about again.
-            if self._epoch != epoch or not self._controller._user_turn:
+            if self._epoch != epoch or not (ahead_of_turn or self._controller._user_turn):
                 logger.debug(f"[SPEC] not started {text[:40]!r}: cancelled, superseded "
                              "or committed while the cut reply landed")
                 return False

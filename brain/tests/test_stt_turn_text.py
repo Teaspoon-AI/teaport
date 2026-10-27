@@ -56,6 +56,8 @@ from teaport_brain.endpointing import (  # noqa: E402
     NO_STOP,
     SegmentDoneFrame,
     SpeechDecodedFrame,
+    SpeechPreviewFrame,
+    SttProgressFrame,
     TurnVerdictFrame,
 )
 from teaport_brain.stt import FinalTranscriptionFrame, TeaportSTTService  # noqa: E402
@@ -73,13 +75,13 @@ class Service(TeaportSTTService):
     """The real service, built with the setting given, its wire recorded and its pushed
     frames kept."""
 
-    def __init__(self, turn_text="slice", progress=False, **kwargs):
-        was = stt_mod.TURN_TEXT
-        stt_mod.TURN_TEXT = turn_text
+    def __init__(self, turn_text="slice", progress=False, peeks=False, **kwargs):
+        was = stt_mod.TURN_TEXT, stt_mod.PREVIEW_AT_STOP
+        stt_mod.TURN_TEXT, stt_mod.PREVIEW_AT_STOP = turn_text, peeks
         try:
             super().__init__(url="ws://127.0.0.1:1/none", **kwargs)
         finally:
-            stt_mod.TURN_TEXT = was
+            stt_mod.TURN_TEXT, stt_mod.PREVIEW_AT_STOP = was
         self._websocket = WireRecorder()
         self.pushed = []
         self.transcription_progress = progress
@@ -396,6 +398,149 @@ async def test_the_wake_turn_is_corrected_on_what_follows_the_phrase():
     await delta(s, " news", 990)
     await progress(s, 1000)
     assert s.finals() == [] and s.corrections() == [] and s.wake_gate.asleep
+
+
+# ---- the peek: the preview asked at the VAD stop ----------------------------------------
+
+async def verdict(s, complete=True, source="verdict"):
+    await s.process_frame(TurnVerdictFrame(complete=complete, source=source,
+                                           stop_n=s._vad_stops), UP)
+
+
+async def test_a_peek_asks_at_the_stop_and_the_verdict_adopts_it():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " okay", 500)
+    await vad_stop(s)                          # the peek, at the stop: 1000 ms
+    [c] = commits(s)
+    assert c.get("trailing_silence_ms"), "the hint at the stop: the stop's window"
+    assert s._peek is not None and s._peek.at_ms == 1000 and not s._turns
+    await audio(s, 200)
+    await delta(s, " stop", 950)               # no turn is closed: still an interim
+    assert s.interims()[-1] == " okay stop"
+    await preview(s, 1000, "")
+    assert [(p.stop_n, p.text) for p in s.of(SpeechPreviewFrame)] == [(1, "okay stop")]
+    assert s.finals() == [], "nothing is closed on a peek"
+    await verdict(s)                           # adopted: no second commit
+    assert len(commits(s)) == 1 and s.finals() == [("okay stop", 1)]
+    await progress(s, 1000)                    # final once the bound passes the STOP
+    assert s.corrections() == [] and not s._turns
+
+
+async def test_a_verdict_before_the_preview_pushes_the_turn_when_it_lands():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " yes", 700)
+    await vad_stop(s)
+    await verdict(s)
+    assert len(commits(s)) == 1 and s.finals() == [] and s._turns
+    await delta(s, " please", 990)             # the adopted turn's: never an interim
+    assert s.interims()[-1] == " yes"
+    await preview(s, 1000, "")
+    assert s.finals() == [("yes please", 1)] and s.of(SpeechPreviewFrame) == []
+
+
+async def test_a_peek_then_incomplete_then_the_caller_resuming_is_one_turn():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " so", 400)
+    await vad_stop(s)                          # peek 1, at 1000
+    await verdict(s, complete=False)
+    await vad_start(s)                         # they go on: peek 1 is no one's
+    await preview(s, 1000, " I was")
+    assert s.of(SpeechPreviewFrame) == [] and s.finals() == []
+    await audio(s, 1000)
+    for w, e in ((" I", 1100), (" was", 1300), (" thinking", 1700)):
+        await delta(s, w, e)
+    await vad_stop(s)                          # peek 2, at 2000
+    assert len(commits(s)) == 2 and s._peek.at_ms == 2000
+    await preview(s, 2000, "")
+    await verdict(s)
+    assert s.finals() == [("so I was thinking", 2)], "one turn, every word once"
+    await progress(s, 2000)
+    assert s.corrections() == []
+
+
+async def test_an_incomplete_verdict_then_the_ceiling_reuses_the_peek():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " well", 600)
+    await vad_stop(s)
+    await preview(s, 1000, " maybe")
+    assert [p.text for p in s.of(SpeechPreviewFrame)] == ["well maybe"]
+    await verdict(s, complete=False)
+    await audio(s, 800)                        # the ceiling's silence, no VAD start
+    await verdict(s, complete=True, source="ceiling")
+    assert len(commits(s)) == 1, "the ceiling closes the turn on the peek: no commit"
+    assert s.finals() == [("well maybe", 1)]
+    await delta(s, " maybe", 980)              # the main transcript's own: the turn's
+    await progress(s, 1000)
+    assert s.corrections() == [] and s.interims() == [" well"]
+
+
+async def test_an_empty_peek_then_complete_asks_on_the_final_and_loses_nothing():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await vad_stop(s)
+    await preview(s, 1000, "")
+    assert s.of(SpeechPreviewFrame) == [], "nothing to speculate on"
+    await verdict(s)
+    assert s.finals() == [] and [f.stop_n for f in s.of(SegmentDoneFrame)] == [1]
+    await delta(s, " yes", 900)
+    await progress(s, 1000)
+    assert s.finals() == [("yes", NO_STOP)], "asked on the final, as words of their own"
+
+
+async def test_one_commit_in_flight_a_flapping_stop_waits_for_the_answer():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 600)
+    await vad_stop(s)                          # peek 1, at 600, unanswered
+    await vad_start(s)
+    await audio(s, 300)
+    await vad_stop(s)                          # waits: an answer is outstanding
+    assert len(commits(s)) == 1 and s._peek is None
+    await preview(s, 600, "")                  # peek 1's (no one's); now peek 2 goes
+    assert len(commits(s)) == 2 and s._peek.at_ms == 900 and s._peek.n == 2
+    # and a stop the caller resumed after before the answer came asks nothing
+    await vad_start(s)
+    await audio(s, 200)
+    await vad_stop(s)
+    await vad_start(s)
+    await preview(s, 900, "")
+    assert len(commits(s)) == 2 and s._peek is None
+
+
+async def test_the_stop_over_the_bot_commits_a_turn_not_a_peek():
+    s = Service(peeks=True)
+    await created(s)
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    await vad_start(s)
+    await audio(s, 600)
+    await vad_stop(s)
+    assert s._peek is None and s._turns and s._turns[0].at_ms == 600
+
+
+async def test_the_strategy_is_told_the_session_peeks():
+    for peeks in (True, False):
+        s = Service(peeks=peeks)
+        await created(s)
+        [f] = s.of(SttProgressFrame)
+        assert f.peeks is peeks
+    s = Service(peeks=True)
+    await created(s, preview=False)
+    assert s.of(SttProgressFrame)[0].peeks is False, "an engine without the preview"
 
 
 # ---- what slice mode turns off, and keeps ---------------------------------------------

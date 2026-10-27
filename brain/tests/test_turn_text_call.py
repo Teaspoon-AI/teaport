@@ -9,6 +9,8 @@
 #   2. The preview has every word: asked on them, the final as asked, nothing corrected.
 #   3. The setting on, an engine without the preview stream: the call runs on segments,
 #      as before.
+#   4. 1. with the preview asked at the verdict (TEAPORT_STT_PREVIEW_AT_STOP off) rather
+#      than at the VAD stop (the default, stt.py THE PEEK).
 #
 # Run: python test_turn_text_call.py
 #
@@ -28,12 +30,15 @@ from test_sip_fake_gateway import QUESTION_WAV, Rig, user_texts  # noqa: E402
 SHORT = DEFAULT_TRANSCRIPT.rsplit(" ", 1)[0]      # the preview missing "city?"
 
 
-async def _call(engine: FakeEngine):
-    """One call through the real brain with slices asked for; the brain's journal."""
+async def _call(engine: FakeEngine, peek: bool = True):
+    """One call through the real brain with slices asked for (previewed at the VAD stop,
+    or at the verdict); the brain's journal."""
     rig = Rig()
     rig.engine = engine
-    was = os.environ.get("TEAPORT_STT_TURN_TEXT")
+    was = {k: os.environ.get(k) for k in ("TEAPORT_STT_TURN_TEXT",
+                                          "TEAPORT_STT_PREVIEW_AT_STOP")}
     os.environ["TEAPORT_STT_TURN_TEXT"] = "slice"
+    os.environ["TEAPORT_STT_PREVIEW_AT_STOP"] = "true" if peek else "false"
     try:
         async with rig:
             rig.start_brain()
@@ -45,10 +50,11 @@ async def _call(engine: FakeEngine):
                 journal = f.read()
             return s, journal
     finally:
-        if was is None:
-            os.environ.pop("TEAPORT_STT_TURN_TEXT", None)
-        else:
-            os.environ["TEAPORT_STT_TURN_TEXT"] = was
+        for k, v in was.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
 
 
 def _turn_lines(journal):
@@ -59,7 +65,7 @@ async def test_a_preview_short_of_the_last_word_is_answered_then_corrected():
     engine = FakeEngine(preview=True, previews=[SHORT])
     s, journal = await _call(engine)
     assert engine.stt_finals == [DEFAULT_TRANSCRIPT], engine.stt_finals
-    assert engine.stt_previews == [SHORT], engine.stt_previews
+    assert SHORT in engine.stt_previews, engine.stt_previews
     asked = user_texts(engine)
     assert SHORT in asked and DEFAULT_TRANSCRIPT not in asked, (
         f"the LLM was not asked on the provisional words: {asked}")
@@ -68,6 +74,16 @@ async def test_a_preview_short_of_the_last_word_is_answered_then_corrected():
     assert any("final adds added=['city']" in line for line in lines), lines
     assert any("-> corrected in the context" in line for line in lines), lines
     assert "turn text: SLICED" in journal
+
+
+async def test_previewed_at_the_verdict_the_same_short_preview_is_corrected_too():
+    engine = FakeEngine(preview=True, previews=[SHORT])
+    s, journal = await _call(engine, peek=False)
+    asked = user_texts(engine)
+    assert SHORT in asked and DEFAULT_TRANSCRIPT not in asked, asked
+    lines = _turn_lines(journal)
+    assert any("final adds added=['city']" in line for line in lines), lines
+    assert "peek" not in journal, "previewed at the verdict: no peek"
 
 
 async def test_a_full_preview_is_the_final_and_nothing_is_corrected():

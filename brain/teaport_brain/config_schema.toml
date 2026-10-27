@@ -1145,6 +1145,16 @@ help = "What the words of a turn are. segment: each commit closes an engine segm
 note = "Prototype: needs a teagram-engine with the preview stream (PROTOCOL3, \"transcription.preview\" in its capabilities)."
 
 [[settings]]
+name = "TEAPORT_STT_PREVIEW_AT_STOP"
+store = "brain_env"
+group = "turn_taking"
+type = "flag"
+default = true
+read = "startup"
+tier = "tuning"
+help = "With TEAPORT_STT_TURN_TEXT=slice: ask the engine's preview of the turn at the end of the caller's speech, while the turn-end model is still deciding, instead of after it. The turn closes on that preview if the model calls the turn done, the speculative reply is asked on it as soon as it lands, and its final words come sooner; if the caller goes on talking, it is dropped and the next pause asks again. Off: the preview is asked when the turn closes."
+
+[[settings]]
 name = "HEARD_MODE"
 store = "brain_env"
 group = "turn_taking"
