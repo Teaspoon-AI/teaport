@@ -8,16 +8,8 @@
 # are shared with run_sip_tools_test.sh — see sip_test_common.sh.
 set -u
 
-# Find the shared rig next to this script, else in the appliance checkout — the
-# recorded runs invoke these runners from both places (see run_sip_tools_test.sh).
-_common=
-for _c in "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)" \
-          "${TEAPORT_BRAIN_SRC:-$HOME/teaport-src/brain}/test"; do
-  if [ -r "$_c/sip_test_common.sh" ]; then _common=$_c/sip_test_common.sh; break; fi
-done
-[ -n "$_common" ] || { echo "sip_test_common.sh not found (set TEAPORT_BRAIN_SRC)" >&2; exit 1; }
-. "$_common"
-unset _c _common
+# The shared rig sits next to this script; run it from a checkout.
+. "$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/sip_test_common.sh"
 
 SOCK=${SOCK:-/tmp/teaport-fakegw.sock}
 QWAV=$TEST/question_host_status.wav
@@ -34,7 +26,7 @@ sip_test_host_snapshot "$BRAINLOG.hostref"
 sip_test_clean_stale "$SOCK"
 
 # Fake gateway (SERVER) first, so the brain client can connect.
-timeout -k 10 "$GW_TIMEOUT" "$PY" "$TEST/fake_gateway_multicall.py" \
+timeout -k 10 "$GW_TIMEOUT" "$PY" "$TEST/fake_gateway.py" \
     --socket "$SOCK" --wav "$QWAV" --out-prefix "$OUTPREFIX" --calls 3 \
     --greet-wait 14 --reply-idle 3 --reply-cap 75 --between 3 > "$GWLOG" 2>&1 &
 GWPID=$!
@@ -54,7 +46,7 @@ sip_test_report_gw_rc "$GWRC" "$GW_TIMEOUT" "$BRAINLOG"
 sip_test_stop_brain "$BRAINPID"
 rm -f "$SOCK"
 
-echo "=== fake_gateway_multicall rc=$GWRC ==="
+echo "=== fake_gateway rc=$GWRC ==="
 echo "GWLOG=$GWLOG"
 echo "BRAINLOG=$BRAINLOG"
 echo "OUTPREFIX=$OUTPREFIX (per-call WAVs: ${OUTPREFIX}-call{1,2,3}-audio-out.wav)"
