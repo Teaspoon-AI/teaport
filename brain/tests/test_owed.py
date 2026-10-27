@@ -2041,6 +2041,35 @@ async def test_a_repeat_cut_at_its_lead_in_counts():
     assert rec.state == DROPPED
 
 
+async def test_an_open_answer_hides_no_re_telling_of_an_older_record():
+    """The re-review's fourth finding: a web_search answer still open after a reply that
+    settled nothing, a "Yeah.", and the reply re-tells the older record and is cut at its
+    lead-in. Position alone would take it for the open answer's telling; it is about the
+    older record, so the cut counts for it and the words are read."""
+    dec = FakeDecline(True)
+    b, ctx, _ = book(msgs=[], answer_tools=ANSWERS, judge=FakeJudge(False),
+                     gist=FakeGist(True), decline=dec)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    rec = b.record("call-hn")
+    for m in round_msgs():
+        ctx.add_message(m)
+    r1 = Reply(owed.POST)
+    b.noted(r1, ("call-hn",), ctx.get_messages())
+    b.settle(r1, "Sure, take your time.", cut=False, audio=True, text="Sure, take your time.")
+    await judged(b)
+    ctx.add_message({"role": "assistant", "content": "Sure, take your time."})
+    says(ctx, "Yeah.")
+    r2 = Reply(owed.COMMIT)
+    b.noted(r2, ("call-hn",), ctx.get_messages())
+    assert r2.fresh == ("call-ws",)
+    cut(b, r2, "So, as I mentioned,", f"So, as I mentioned, {TELLING}")
+    await judged(b)
+    assert rec.cuts == 1 and rec.decline is not None, (rec.cuts, rec.decline)
+    says(ctx, "Why are you telling me this now?")
+    await b.view(ctx, owed.COMMIT)
+    assert rec.state == owed.DECLINED
+
+
 def test_the_cut_count_survives_the_rooms_sleep():
     rec = hn_record()
     rec.cuts = 1

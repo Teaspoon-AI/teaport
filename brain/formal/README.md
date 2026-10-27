@@ -257,10 +257,13 @@ Each is outside what the model checks, and each errs toward owed or toward silen
 - **What counts as a cut telling** (#231). A cut, after its audio began, of a reply whose
   request carried the note and whose whole text is about the record (`Record.about`, as
   the judges read it: a lead-in like "So, as I mentioned," is the very moment a repeat is
-  cut), or a run of ours for it: the model's `say ∈ {tell, part}`. Not a reply that
-  carried a fresh answer: it was that answer's telling, and a term it shares with an
-  older record is chance (an address's "fifty-five" and a forecast's low); the record
-  its cut makes (`ORIGIN = "cut"`) starts with that cut counted. Not a late settle of a
+  cut), or a run of ours for it: the model's `say ∈ {tell, part}`. Not a reply that is a
+  fresh answer's telling -- by position (`_resolve`'s rule, `Owed._tells_fresh`) and about
+  it (a term shared with what was asked for it): a term it shares with an older record
+  is chance (an address's "fifty-five" and a forecast's low); the record its cut makes
+  (`ORIGIN = "cut"`) starts with that cut counted. Position alone is not enough: it takes
+  any reply with words of its own, and a re-telling of an older record after a "Yeah."
+  would be hidden. Not a late settle of a
   reply rendered before the record existed. The brain's own cut
   (`AgentSession.say_last_line`, a call going on hold) counts as none (`Owed.own_cut`,
   up for the whole line: input is muted, so no cut in that window is the caller's).

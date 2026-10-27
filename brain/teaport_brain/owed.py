@@ -1086,8 +1086,9 @@ class Owed:
 
     async def _lull_loop(self) -> None:
         """Owed.tla Lull: an owed record whose re-offer is armed and unspent, every
-        reply settled, every due decline check read, and the line quiet (FollowupGate.quiet_for: no caller speech
-        pending, no turn, no request or reply, nothing waiting at the door) for
+        reply settled, every due decline check read, and the line quiet
+        (FollowupGate.quiet_for: no caller speech pending, no turn, no request or reply,
+        nothing waiting at the door) for
         REOFFER_QUIET_S. One re-offer per record, ever, counted at the ask: OneReoffer."""
         try:
             while self._due():
@@ -1223,6 +1224,17 @@ class Owed:
         judgeable = (cut and audio and bool(heard and heard.strip()) and bool(text)
                      and rest is not None)
         missed, asks, defaults, drops = [], {}, {}, set()
+        # A reply that is a fresh answer's telling -- by position (_resolve's rule) and
+        # about it (a term shared with what was asked for it) -- is that answer's, not a
+        # cut telling of an older record it shares a term with by chance. Position alone
+        # takes any reply with words of its own (OwedAnswers.tla's ASIDE residual): a
+        # re-telling of an older record after a "Yeah." would be hidden.
+        open_ids = [t for t in reply.fresh if self._answers[t].replies]
+        fresh_telling = (self._tells_fresh(reply, audio=audio, cut=cut, text=text)
+                         and any(terms_of(text or "", "")
+                                 & (terms_of(self._answers[t].request, "")
+                                    | terms_of(self._answers[t].question, ""))
+                                 for t in open_ids))
         # The caller messages a cut's words come after (#231): counted at its render, so
         # words committed before the ledger charts the cut still come after it. None: the
         # brain cut its own reply (own_cut), and there are no words to read.
@@ -1254,13 +1266,13 @@ class Owed:
             # Only a request that carried its note (Owed.tla `ct`: nreg): a reply rendered
             # before the record existed, settling late, is no telling of it. About it by its
             # whole text, as the judges read it -- its heard prefix may be a lead-in ("So,
-            # as I mentioned,"), the very moment a repeat is cut -- unless the reply carried
-            # a fresh answer: then it was that answer's telling (its record, if the cut
-            # makes one, counts it), and a term it shares with an older record is chance
-            # (an address's "fifty-five" and a forecast's low).
+            # as I mentioned,"), the very moment a repeat is cut -- unless it is a fresh
+            # answer's telling (`fresh_telling`, above): then it was that answer's (its
+            # record, if the cut makes one, counts it), and a term it shares with an older
+            # record is chance (an address's "fifty-five" and a forecast's low).
             if (mark is not None and key in reply.noted and cut and audio and heard
                     and heard.strip()
-                    and (mine or (not reply.fresh and rec.about(text or heard)))):
+                    and (mine or (not fresh_telling and rec.about(text or heard)))):
                 # A telling of it cut after its audio began (#231, Owed.tla `cuts`): it
                 # counts, and the second ends it unless the judges find it heard
                 # (BoundedTellings) -- decided here, at this cut, not when a late verdict
@@ -1439,6 +1451,15 @@ class Owed:
                     f"({'cut' if cut else 'played through'}{'; ' + why if why else ''}): "
                     f"{(heard or '')[:80]!r}")
 
+    def _tells_fresh(self, reply: Reply, *, audio: bool, cut: bool,
+                     text: Optional[str]) -> bool:
+        """Whether `reply` is, by position, the telling of the sync answers it carries
+        still open (_resolve's rule): it calls nothing, played audio, its stream ended if
+        cut, and it says something of the answers' request."""
+        ids = [t for t in reply.fresh if self._answers[t].replies]
+        return bool(ids) and audio and not reply.calls and not (cut and not text) \
+            and bool(terms_of(text or "", self._answers[ids[-1]].request))
+
     def _resolve(self, reply: Reply, heard: Optional[str], *, cut: bool, audio: bool,
                  text: Optional[str]) -> tuple:
         """The sync answers `reply` settles, by position only: a reply that calls nothing,
@@ -1453,8 +1474,7 @@ class Owed:
         if not ids:
             return (), ""
         request = self._answers[ids[-1]].request
-        if (not audio or reply.calls or (cut and not text)
-                or not terms_of(text or "", request)):
+        if not self._tells_fresh(reply, audio=audio, cut=cut, text=text):
             if audio and cut and not text and not reply.calls:
                 logger.info(f"OWED: a reply carrying {ids} cut before its stream ended "
                             f"(audio played, heard {(heard or '')[:60]!r}) -- no record "
