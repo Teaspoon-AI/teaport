@@ -154,6 +154,9 @@ run Owed.tla ow_declineMiss       "(expected: FAILS NoNoteAfterDecline — DECMI
 run Owed.tla ow_declineMiss_rest  "(expected: holds — DECMISS: every other property; a missed dismissal costs at most the tellings BoundedTellings allows)"
 run Owed.tla ow_declineWrong      "(expected: FAILS DeclinedOnEvidence — the check answers DECLINED on words that wanted the rest (3/500 measured): the record ends unheard)"
 run Owed.tla ow_cutsUncounted     "(expected: FAILS BoundedTellings — before #231: a cut telling counts toward nothing, and a record told and cut on every turn stays owed (10-25: five tellings in five minutes))"
+run Owed.tla ow_cutRecord         "(expected: holds — ORIGIN cut: a sync answer's record made at the cut of its first telling (the issue's own cases), every safety property)"
+run Owed.tla ow_cutRecord_live    "(expected: holds — ORIGIN cut: OwedResolves under FairSpec)"
+run Owed.tla ow_cutRecordUnread   "(expected: FAILS NoNoteAfterDecline — the record made at a cut has nothing due (the first fix's gap, found in review): \"that's all I needed\" cuts a web_search answer and the next request carries its note)"
 echo
 echo "OwedAnswers.tla — how a sync tool's answer becomes owed (#204): position, one more reply, the narrow re-lookup"
 run OwedAnswers.tla oa_design          "(expected: holds — position only: an answer's first reply settles it if it says something of its own, one more if it did not; a caller turn in words of their own ends it; a round is a record's re-lookup only in the turn right after its cut)"

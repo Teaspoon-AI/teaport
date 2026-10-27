@@ -203,6 +203,16 @@
 (*                     "that's all I needed" every request carries the note.*)
 (*   "declineAfter" (MUT) -- the check does not hold the render: the reply  *)
 (*                     to the dismissal itself carries the note.            *)
+(* ORIGIN: how the record is made. "consult" -- an async consult lands     *)
+(* (Land). "cut" -- a sync answer tool's result (web_search) told by the    *)
+(* reply after it and cut before it was heard: the cut MAKES the record     *)
+(* (OwedAnswers.tla End; owed._cut_answer), the issue's own two cases, so   *)
+(* that cut is the record's first cut telling and its words are read too.  *)
+(*   "cutRecordUnread" (MUT) -- the record made at a cut has nothing due    *)
+(*                     (the first fix's gap, found in review).              *)
+(* The words read are the first the caller commits after the cut: those of *)
+(* the turn that cut it, or, if it committed none (an empty final), the     *)
+(* next turn's (a turn that turned to something else reads WANTED).        *)
 (* A dismissal in a turn that cut nothing is the note's FOOTER's ("If       *)
 (* they're busy with something else..."), the model's, and not modelled.   *)
 (*                                                                          *)
@@ -238,7 +248,8 @@ CONSTANTS MaxSpeech,   \* bound on the caller's bursts of speech (VAD starts)
           NOVERDICT,   \* "gist": the judge may give no verdict in time (closes)
           MENTION,     \* a noted reply may be about the record and give no answer
           TWICE,       \* the about-reply after one that gave no answer may give none again
-          DECMISS      \* the decline check may answer WANTED (or not in time) though they declined
+          DECMISS,     \* the decline check may answer WANTED (or not in time) though they declined
+          ORIGIN       \* "consult" | "cut": how the record is made (see the header)
 
 Mut(m) == m \in MUT
 Runs   == {"run", "reoffer"}        \* the brain's own, unprompted requests
@@ -252,10 +263,10 @@ VARIABLES
                   \*   ended and owed.py has not been told yet; "drop" = the second cut
                   \*   telling has; "none" = settled
     cuts,         \* noted tellings of the record cut after their audio began, up to 2
-    dw,           \* the words of the turn that cut a telling of the owed record:
-                  \*   "none" | "want" | "decline"
-    dck,          \* ...committed, and the decline check on them is due: every reader of
-                  \*   the record waits for it
+    dw,           \* what the words the caller cuts a telling of the record with mean (a
+                  \*   ghost until they are committed): "none" | "want" | "decline"
+    due,          \* the brain marked a decline check due at that cut (owed.Record.decline)
+    dck,          \* ...and the words are committed: every reader of the record waits for it
     uncut,        \* countSettle only: noted replies played through, up to 2
     missed,       \* the re-offer is armed (REOFFER says by what)
     reoffers,     \* re-offer runs asked (a held-then-dropped one counts)
@@ -310,7 +321,7 @@ VARIABLES
     staleDecl,    \* a request carried the note after the caller had declined it
     got           \* what the caller heard of the last reply that ended (for traces)
 
-rec   == <<st, fed, uncut, missed, reoffers, told, part1, hacc, cuts, dw, dck>>
+rec   == <<st, fed, uncut, missed, reoffers, told, part1, hacc, cuts, dw, due, dck>>
 line  == <<vad, pend, turn, speech>>
 door  == <<q, hPost, rloc, rk, tres, tend, mark, gtool>>
 reply == <<req, rst, noted, nreg, say, ph>>
@@ -325,7 +336,7 @@ Noted(r) == IF Mut("storeNote") THEN r # "none" ELSE r = "owed"
 
 Init ==
     /\ st = "none" /\ fed = "none" /\ uncut = 0 /\ missed = FALSE /\ reoffers = 0
-    /\ told = 0 /\ part1 = FALSE /\ hacc = FALSE /\ cuts = 0 /\ dw = "none" /\ dck = FALSE
+    /\ told = 0 /\ part1 = FALSE /\ hacc = FALSE /\ cuts = 0 /\ dw = "none" /\ due = FALSE /\ dck = FALSE
     /\ heard = FALSE /\ decl = FALSE /\ repeat = FALSE
     /\ vad = FALSE /\ pend = FALSE /\ turn = FALSE /\ speech = 0
     /\ q = "none" /\ hPost = FALSE /\ rloc = "none" /\ rk = "none" /\ tres = FALSE
@@ -451,8 +462,9 @@ Reads(cut, g) ==
       ELSE {g}
 
 \* `arm`: the ending arms the re-offer whatever it closed (a caller turn's cut). Under
-\* "anyMiss" a run that ended without closing the record arms it too.
-Finish(cut, g, arm) ==
+\* "anyMiss" a run that ended without closing the record arms it too. `mk`: this cut makes
+\* the record (ORIGIN "cut"), its first cut telling.
+Finish(cut, g, arm, mk) ==
     \E r \in Reads(cut, g) :
     \E v \in (IF cut THEN CutVerdicts(say, r)
               ELSE IF OUTCOME = "items" THEN PtVerdicts(r) ELSE {"skip"}) :
@@ -468,7 +480,7 @@ Finish(cut, g, arm) ==
          /\ heard' = (heard \/ g = "all")
          /\ fed' = IF c /\ st = "owed" THEN "close"
                    ELSE IF ct /\ cuts >= 1 THEN "drop" ELSE fed
-         /\ cuts' = IF ct THEN (IF cuts < 2 THEN cuts + 1 ELSE 2) ELSE cuts
+         /\ cuts' = IF ct THEN (IF cuts < 2 THEN cuts + 1 ELSE 2) ELSE IF mk THEN 1 ELSE cuts
          /\ uncut' = u
          /\ told' = IF ab THEN (IF told < 2 THEN told + 1 ELSE 2) ELSE told
          /\ part1' = IF ab /\ told = 0 THEN r # "all" ELSE part1
@@ -500,12 +512,12 @@ Ask(k) ==
 \* (Owed._cancelled): that is a behaviour in which Land never fires, which Spec already
 \* has (Land is not fair), so it needs no action of its own.
 Land ==
-    /\ ~ended /\ st = "none"
+    /\ ~ended /\ st = "none" /\ ORIGIN = "consult"
     /\ st' = "owed"
     /\ IF turn \/ q = "caller"
          THEN missed' = TRUE /\ UNCHANGED <<rloc, rk, hPost, displaced>>
          ELSE Ask("run") /\ UNCHANGED missed
-    /\ UNCHANGED <<fed, uncut, reoffers, told, part1, hacc, cuts, dw, dck, heard, decl, repeat, line,
+    /\ UNCHANGED <<fed, uncut, reoffers, told, part1, hacc, cuts, dw, due, dck, heard, decl, repeat, line,
                    q, tres, tend, mark, gtool, reply, ended, runUnder, runMid, staleNote, noNote,
                    staleHeard, relook, retell, got, tellings, staleDecl>>
 
@@ -520,7 +532,7 @@ Settle ==
     /\ fed # "none"
     /\ fed' = "none"
     /\ st' = IF st # "owed" THEN st ELSE IF fed = "close" THEN "closed" ELSE "dropped"
-    /\ UNCHANGED <<uncut, missed, reoffers, told, part1, hacc, cuts, dw, dck, heard, decl, repeat, line,
+    /\ UNCHANGED <<uncut, missed, reoffers, told, part1, hacc, cuts, dw, due, dck, heard, decl, repeat, line,
                    door, reply, ended, mons>>
 
 \* The decline check (#231): once the words of a turn that cut a telling of the owed record
@@ -537,7 +549,7 @@ Decline ==
     /\ \E v \in (IF dw = "decline" THEN {"declined"} \cup Opt(DECMISS, "wanted")
                  ELSE {"wanted"} \cup Opt(Mut("declineWrong"), "declined")) :
          st' = IF v = "declined" /\ st = "owed" THEN "declined" ELSE st
-    /\ dw' = "none" /\ dck' = FALSE
+    /\ dw' = "none" /\ due' = FALSE /\ dck' = FALSE
     /\ UNCHANGED <<fed, uncut, missed, reoffers, told, part1, hacc, cuts, heard, decl, repeat, line,
                    door, reply, ended, mons>>
 
@@ -559,7 +571,7 @@ Lull ==
     /\ reoffers' = reoffers + 1
     /\ missed' = FALSE                         \* runAfterCut: re-armed by the next cut
     /\ Ask("reoffer")
-    /\ UNCHANGED <<st, fed, uncut, told, part1, hacc, cuts, dw, dck, heard, decl, repeat, line, q, tres,
+    /\ UNCHANGED <<st, fed, uncut, told, part1, hacc, cuts, dw, due, dck, heard, decl, repeat, line, q, tres,
                    tend, mark, gtool, reply, ended, runUnder, runMid, staleNote, noNote,
                    staleHeard, relook, retell, got, tellings, staleDecl>>
 
@@ -604,7 +616,7 @@ Cap ==
     /\ ~ended /\ rloc = "wait" /\ (vad \/ pend)
     /\ rloc' = "none" /\ rk' = "none"
     /\ missed' = (missed \/ (REOFFER = "anyMiss" /\ st = "owed"))
-    /\ UNCHANGED <<st, fed, uncut, reoffers, told, part1, hacc, cuts, dw, dck, heard, decl, repeat,
+    /\ UNCHANGED <<st, fed, uncut, reoffers, told, part1, hacc, cuts, dw, due, dck, heard, decl, repeat,
                    line, q, hPost, tres, tend, mark, gtool, reply, ended, mons>>
 
 \* The caller's VAD stopped and no words came within TEAPORT_REPLY_HOLD_RELEASE_S (a
@@ -689,7 +701,9 @@ Says(p, r, n) ==
                           \cup Opt(SILENT, "silent")
     ELSE LET t == IF p = "caller" THEN {"tool", "texttool"} ELSE {} IN
          IF n            THEN {"tell", "defer", "other"} \cup pt \cup t \cup Opt(FLAKY, "lookup")
-         ELSE IF r = "none"   THEN {"other"} \cup t
+         \* ORIGIN "cut": the reply after the sync result, before any reply ended, tells it
+         ELSE IF r = "none"   THEN IF ORIGIN = "cut" /\ got = "none"
+                                     THEN {"tell", "other"} \cup pt \cup t ELSE {"other"} \cup t
          ELSE IF r \in {"closed", "declined", "dropped"} THEN {"tell", "other"} \cup t
          ELSE {"tell", "defer", "other", "lookup"} \cup pt \cup t
 
@@ -706,22 +720,22 @@ Say ==
          /\ tellings' = IF noted /\ rst = "owed" /\ s \in {"tell", "part"}
                           THEN (IF tellings < 4 THEN tellings + 1 ELSE 4) ELSE tellings
          /\ IF s \in {"silent", "stay", "tool"}
-              THEN /\ Finish(FALSE, "nothing", FALSE)
+              THEN /\ Finish(FALSE, "nothing", FALSE, FALSE)
                    /\ tres' = (s = "tool") /\ mark' = (s = "tool")
               ELSE /\ say' = s /\ ph' = "play"
                    /\ tres' = (s = "texttool") /\ mark' = (s = "texttool")
                    /\ UNCHANGED <<req, rst, noted, nreg, heard, fed, uncut, missed, told, part1,
                                   hacc, cuts, got>>
-    /\ UNCHANGED <<st, reoffers, dw, dck, decl, line, q, hPost, rloc, rk, tend, gtool, ended, runUnder,
+    /\ UNCHANGED <<st, reoffers, dw, due, dck, decl, line, q, hPost, rloc, rk, tend, gtool, ended, runUnder,
                    runMid, displaced, staleNote, noNote, staleHeard, staleDecl>>
 
 \* BotStoppedSpeaking: the reply played to its end. A "texttool" reply's End passes the
 \* gate here with its call still out (tend).
 Played ==
     /\ ~ended /\ ph = "play"
-    /\ \E g \in PlayGot(say) \ Opt(Restrained /\ nreg, "mention") : Finish(FALSE, g, FALSE)
+    /\ \E g \in PlayGot(say) \ Opt(Restrained /\ nreg, "mention") : Finish(FALSE, g, FALSE, FALSE)
     /\ tend' = (tres /\ say = "texttool")
-    /\ UNCHANGED <<st, reoffers, dw, dck, decl, repeat, line, q, hPost, rloc, rk, tres, mark, gtool,
+    /\ UNCHANGED <<st, reoffers, dw, due, dck, decl, repeat, line, q, hPost, rloc, rk, tres, mark, gtool,
                    ended, runUnder, runMid, displaced, staleNote, noNote, staleHeard, relook,
                    retell, tellings, staleDecl>>
 
@@ -748,34 +762,44 @@ TurnStart ==
     /\ turn' = TRUE /\ pend' = FALSE
     /\ q' = "none" /\ hPost' = FALSE /\ rloc' = "none" /\ rk' = "none" /\ tres' = FALSE
     /\ tend' = FALSE /\ gtool' = FALSE  \* the cancel; a queued in-progress frame stays (mark)
-    /\ IF req # "none"
-         THEN \E g \in CutGot(say, ph) : Finish(TRUE, g, st = "owed")
-         ELSE /\ missed' = (missed \/ st = "owed")
-              /\ UNCHANGED <<reply, heard, fed, uncut, told, part1, hacc, cuts, got>>
     \* What they say as they cut a telling of the owed record (#231): they want the rest, or
-    \* not (a dismissal, a correction). The words reach the brain at the commit, and are read
+    \* not (a dismissal, a correction). The words reach the brain at a commit, and are read
     \* there (Decline). A turn that cut no telling leaves an earlier turn's words to be read.
-    /\ IF req # "none" /\ ph = "play" /\ say \in {"tell", "part"} /\ nreg /\ st = "owed"
-         THEN dw' \in {"want", "decline"}
-         ELSE UNCHANGED dw
-    /\ UNCHANGED <<st, reoffers, decl, dck, repeat, vad, speech, mark, ended, runUnder, runMid,
+    \* ORIGIN "cut": the cut of the first reply's telling of the sync result makes the record
+    \* (unless the judge found it all heard -- or OWES), its first cut telling.
+    /\ IF req # "none"
+         THEN \E g \in CutGot(say, ph) :
+                LET tl == ph = "play" /\ say \in {"tell", "part"}
+                    mk == ORIGIN = "cut" /\ st = "none" /\ got = "none" /\ tl
+                          /\ req \in {"caller", "post"} /\ (g # "all" \/ OWES)
+                IN /\ Finish(TRUE, g, st = "owed" \/ mk, mk)
+                   /\ st' = IF mk THEN "owed" ELSE st
+                   /\ IF (tl /\ nreg /\ st = "owed") \/ mk
+                        THEN /\ dw' \in {"want", "decline"}
+                             /\ due' = ~(Mut("noDecline") \/ (mk /\ Mut("cutRecordUnread")))
+                        ELSE UNCHANGED <<dw, due>>
+         ELSE /\ missed' = (missed \/ st = "owed")
+              /\ UNCHANGED <<st, dw, due, reply, heard, fed, uncut, told, part1, hacc, cuts, got>>
+    /\ UNCHANGED <<reoffers, decl, dck, repeat, vad, speech, mark, ended, runUnder, runMid,
                    displaced, staleNote, noNote, staleHeard, relook, retell, tellings, staleDecl>>
 
 \* The turn ends: its words are committed and the LLM asked (TurnCommitMark claims the
 \* window). The commit takes the words of speech that has stopped (UserTurn's
 \* PendCommitted). An empty final (a 0-char decode, noise) commits nothing and asks
 \* nothing (push_aggregation returns ""), as in Followup.tla's UserStop. Words that
-\* declined a telling they cut are known to the brain from here (`decl`); lost to an empty
-\* final, they never are, and the record stays owed. noDecline reads none of them.
+\* declined a telling they cut are known to the brain from here (`decl`). An empty final
+\* leaves them due: the next words the caller commits are read in their place.
+\* noDecline reads none of them.
 Commit ==
     /\ ~ended /\ turn /\ ~vad
     /\ turn' = FALSE /\ pend' = FALSE
     /\ \E words \in BOOLEAN :
          /\ q' = IF words THEN "caller" ELSE "none"
          /\ decl' = (decl \/ (words /\ dw = "decline"))
-         /\ dck' = (dck \/ (words /\ dw # "none" /\ ~Mut("noDecline")))
-         /\ dw' = IF dck \/ (words /\ ~Mut("noDecline")) THEN dw ELSE "none"
-    /\ UNCHANGED <<st, fed, uncut, missed, reoffers, told, part1, hacc, cuts, heard, repeat,
+         /\ dck' = (dck \/ (words /\ due))
+         \* words nobody will read: their meaning is in `decl` now
+         /\ dw' = IF words /\ ~due THEN "none" ELSE dw
+    /\ UNCHANGED <<st, fed, uncut, missed, reoffers, told, part1, hacc, cuts, due, heard, repeat,
                    vad, speech, hPost, rloc, rk, tres, tend, mark, gtool, reply, ended, mons>>
 
 \* The client disconnects or the call hangs up. Nothing is owed to nobody: the escape in
@@ -869,7 +893,7 @@ OwedResolves == (st = "owed") ~> (st \in {"closed", "declined", "dropped"} \/ en
 TypeOK ==
     /\ st \in {"none", "owed", "closed", "declined", "dropped"} /\ fed \in {"none", "close", "drop"}
     /\ cuts \in 0..2 /\ dw \in {"none", "want", "decline"} /\ decl \in BOOLEAN
-    /\ dck \in BOOLEAN /\ (dck => dw # "none")
+    /\ due \in BOOLEAN /\ dck \in BOOLEAN /\ (dck => due) /\ (due => dw # "none")
     /\ tellings \in 0..4 /\ staleDecl \in BOOLEAN
     /\ uncut \in 0..2 /\ missed \in BOOLEAN /\ reoffers \in 0..2
     /\ told \in 0..2 /\ part1 \in BOOLEAN /\ hacc \in BOOLEAN /\ retell \in 0..2
@@ -892,13 +916,13 @@ TypeOK ==
     /\ got \in {"none", "nothing", "lead", "filler", "mention", "some", "words", "all"}
     /\ OWES \in BOOLEAN /\ CLOSE \in {"lexical", "gist"} /\ LEXMISS \in BOOLEAN
     /\ PTOWES \in BOOLEAN /\ NOVERDICT \in BOOLEAN /\ MENTION \in BOOLEAN /\ TWICE \in BOOLEAN
-    /\ DECMISS \in BOOLEAN
+    /\ DECMISS \in BOOLEAN /\ ORIGIN \in {"consult", "cut"}
     /\ MUT \subseteq {"fraction", "countSettle", "singleWord", "oneItem", "storeNote",
                       "runAfterCut", "lagSettle", "oneSlot", "askOnly", "turnLevel",
                       "vadLevel", "renderInGet", "ledgerMax", "endClearsTool",
                       "staleFlag", "adoptDropsKeys", "judgeWrong", "prefixLexical",
                       "gistWrong", "noBackstop", "oneReply", "noDecline", "declineAfter",
-                      "declineWrong", "cutsUncounted"}
+                      "declineWrong", "cutsUncounted", "cutRecordUnread"}
     /\ REOFFER \in {"cutOrTurn", "anyMiss"} /\ RUNCLOSE \in {"uncut", "terms", "about"}
     /\ OUTCOME \in {"items", "failure"} /\ nreg \in BOOLEAN /\ (nreg => noted)
 =============================================================================

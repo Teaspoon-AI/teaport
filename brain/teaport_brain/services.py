@@ -649,8 +649,13 @@ class BoundedOpenAILLMService(OpenAILLMService):
         # same request either way; only WHEN it was opened differs. A run of ours is
         # never one: no speculation lives outside a caller's turn.
         if self.speculator is not None and (reply is None or reply.kind not in owed_mod.RUNS):
-            adopted = await self.speculator.take(context)
-            if adopted is not None:
+            if self.owed is not None:
+                await self.owed.settled()
+            if self.owed is not None and self.owed.decline_due():
+                # The words that cut a telling are read before this renders (owed.py,
+                # #231); the speculation's render read none, so it cannot stand for it.
+                await self.speculator.cancel("a decline check is due")
+            elif (adopted := await self.speculator.take(context)) is not None:
                 if self.owed is not None:
                     self._rendered(reply, adopted.owed_noted, context)
                 return adopted
@@ -678,8 +683,9 @@ class BoundedOpenAILLMService(OpenAILLMService):
         noted = ()
         if self.owed is not None:
             kind = reply.kind if reply is not None else "caller"
-            view, noted = await self.owed.view(context, kind,
-                                               reply.keys if reply is not None else ())
+            view, noted = await self.owed.view(
+                context, kind, reply.keys if reply is not None else (),
+                speculative=reply is None and SPECULATION_NOTED.get() is not None)
             if view is None:
                 logger.info(f"{self}: the {kind} has nothing owed to tell -- no request")
                 return _NothingToSay()

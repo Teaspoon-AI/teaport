@@ -242,7 +242,7 @@ the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
 | `Finish` → `Settle` | the **settle feed**: `TranscriptLedger.on_reply_end` → `Owed.settle`, at the reply's own end, once per reply. A cut: at `_interrupt`, with the pts-exact prefix (`exact`, never `heard_text`); a reply cut before its TTS opened, heard nothing. Played through: at the ledger's chart (`_close_ready`), once the reply's synthesis is done (its own `TTSStoppedFrame`) and all of its audio has played -- the window close its last chunk played out in -- with the whole text; a `BotStoppedSpeakingFrame` mid-reply (the transport's 3 s fallback on a TTS stall) or at a filler's end settles nothing. No text or no audio: at its End, or where the ledger drops it. The reply is the `owed.Reply` the LLM hangs on its `LLMFullResponseStartFrame`. A reply about a record (`Record.about`) is judged on what was heard of the record so far (`Record.heard`): played through, by the gist judge (`Owed._played` -> `services.BoundedOpenAILLMService.judge_gist`, asked as its stream ended: `Owed.reply_text`, fed by `TranscriptLedger.on_reply_text`; `PtVerdicts`), or the backstop at its second (`Record.told`); cut with a heard prefix and its whole text, by both judges (`Owed._cut` -> `judge_gist` + `judge_cut`, `CutVerdicts`): the settle completes when the verdicts land (`Owed._apply`, on the live book), the reply pending till then |
 | `Lull` | `Owed._lull_loop`: every reply settled, every due decline check read, and `FollowupGate.quiet_for() >= TEAPORT_REOFFER_AFTER_QUIET_S` (no caller speech pending, no turn, no request or reply, nothing claimed, held or waiting at the door) |
 | `Commit` | the user aggregator's commit (an empty final commits nothing). Words that cut a telling of an owed record (`dw`) are in the context from here, after the caller messages counted at the cut (`Record.decline`, set in `Owed.settle`) |
-| `Decline` | `Owed.declines_read`, awaited by every reader -- `Owed.view` (any render: a commit's, a post-tool answer's, a run's, the speculative reply's, on the context it renders) and the lull -- after the settles: the decline check (`Owed._ask_decline` -> `judge_decline`, bounded by `SETTLE_WAIT_S`) on the caller's messages since the cut. No words in a render before the commit leave it due; a run or the lull, after the commit, let it lapse (an empty final). `Checked` is that wait |
+| `Decline` | `Owed.declines_read`, awaited by every reader -- `Owed.view` (a commit's, a post-tool answer's or a run's render, on the context it renders) and the lull -- after the settles: the decline check (`Owed._ask_decline` -> `judge_decline`, bounded by `SETTLE_WAIT_S`) on the caller's messages after those counted when the cut reply was rendered (`Reply.callers`). No words yet leave it due: the next words committed are read. A speculative reply's render reads none, and none is adopted while a check is due (`Owed.decline_due`, `BoundedOpenAILLMService.get_chat_completions`): the commit renders itself. `Checked` is that wait |
 
 ### What the code adds
 
@@ -251,10 +251,18 @@ Each is outside what the model checks, and each errs toward owed or toward silen
 - **The decline check's wait** (#231). A render after a cut telling waits for the check on
   the caller's words -- measured p50 0.36 s, p90 0.92 s, bounded by `SETTLE_WAIT_S` (2 s),
   past which it is no verdict and the record stays owed. It is asked only for a record
-  still owed after the cut's own verdicts, once per cut. A speculative reply reads the
-  words it was started on: a final that differs discards the speculation, but a
-  decline it read stands (the interim words that start one are nearly always the
-  final's).
+  still owed after the cut's own verdicts, once per cut. That turn also gives up its
+  speculative head start: a speculation rendered on interim words cannot stand for the
+  check.
+- **What counts as a cut telling** (#231). A cut of a reply whose request carried the note
+  and whose HEARD prefix is about the record (`Record.about`), or a run of ours for it: the
+  model's `say ∈ {tell, part}`. Not the whole text (an address's "fifty-five" is a
+  forecast's low), not a late settle of a reply rendered before the record existed. A
+  record made at a cut (`ORIGIN = "cut"`) starts with that cut counted. The brain's own
+  cut (`AgentSession.say_last_line`, a call going on hold) counts as none
+  (`Owed.own_cut`, set while its interruption clears the way, `_LAST_LINE_SETTLE_S`); a
+  ledger that charts that cut later than 0.2 s counts it, the accepted residual: one cut
+  closer to the bound, and the caller's next words read.
 
 - **Several records.** At most `MAX_RENDERED` (3) owed records render; a fourth evicts the
   oldest as `dropped` (not heard, its tool result kept, no note): never `closed`, which
