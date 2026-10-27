@@ -1811,7 +1811,9 @@ class TeaportSTTService(WebsocketSTTService):
         # there was an utterance to transcribe, so an empty final there is a real miss
         # (the double-talk drop this whole surface is about); a backstop or auto-commit
         # empty is ordinary and logs at debug.
-        if not engine_text and self._seg_interims:
+        # In slice mode a turn with words in hand is never wordless, so the interims
+        # since the last line were the open turn's, which this commit does not close.
+        if not engine_text and self._seg_interims and answer == "done":
             logger.warning(line + " — engine streamed interims then returned no text")
         elif not engine_text and why in _VAD_STOP_COMMITS and secs > 0.3:
             logger.warning(line + " — audio in, no words out")
