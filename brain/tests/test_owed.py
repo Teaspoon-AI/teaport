@@ -1777,6 +1777,200 @@ async def test_a_reply_whose_end_reached_the_tts_before_the_cut_is_no_fragment()
     assert got2 == [None], got2
 
 
+
+# =============================================================== the decline, cut tellings (#231)
+
+class FakeDecline(FakeJudge):
+    """The decline check (Owed.decline), scripted as FakeJudge: called with (question,
+    heard, rest, words); True DECLINED, False WANTED."""
+
+    async def __call__(self, question, heard, rest, words):
+        self.calls.append((question, heard, rest, words))
+        if self.release is not None:
+            await self.release.wait()
+        if self.error is not None:
+            raise self.error
+        return self.verdict
+
+
+CUT_AT = "Tesla Roadster is the top"
+
+
+def cut_telling(decline, judge=None, heard=CUT_AT):
+    """A record told by the caller's turn and cut after `heard`: the cut judge keeps it
+    owed (OWED), so the words that cut it are what decides."""
+    b, ctx, gate = book(judge=judge or FakeJudge(False), gist=FakeGist(True), decline=decline)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    cut(b, noted_reply(b, "caller"), heard, TELLING)
+    return b, ctx, gate
+
+
+def says(ctx, words):
+    ctx.add_message({"role": "user", "content": words})
+
+
+async def test_a_dismissal_at_the_cut_declines_the_record():
+    """Owed.tla Decline, NoNoteAfterDecline (ow_noDecline: 10-25, \"Great, that's all I
+    needed\" and the rest re-told into unrelated turns): the caller's words when they cut
+    a telling are read before the next render; DECLINED ends the record, and that render
+    and every one after carry no note. Its tool result stays."""
+    decline = FakeDecline(True)
+    b, ctx, _ = cut_telling(decline)
+    await judged(b)
+    rec = b.record("call-hn")
+    assert rec.state == OWED and rec.cuts == 1 and rec.decline is not None
+    says(ctx, "Great, that's all I needed.")
+    view, keys = await b.view(ctx, owed.COMMIT)
+    assert rec.state == owed.DECLINED and keys == () and view is ctx, (rec.state, keys)
+    question, heard, rest, words = decline.calls[0]
+    assert question == rec.asked and heard == CUT_AT and words == "Great, that's all I needed."
+    assert rest == _unheard(TELLING, CUT_AT), rest
+    assert "Tesla Roadster" in json.dumps(ctx.get_messages()), "the tool result went"
+    says(ctx, "How does a heat pump work?")
+    assert (await b.view(ctx, owed.COMMIT))[1] == () and len(decline.calls) == 1
+
+
+async def test_words_that_want_the_rest_keep_it_owed():
+    """WANTED -- or no verdict, an error, a timeout (DECMISS: errs owed, as before #231)
+    -- keeps the record owed, and the render carries the note."""
+    for decline in (FakeDecline(False), FakeDecline(None), FakeDecline(error=RuntimeError("x")),
+                    None):
+        b, ctx, _ = cut_telling(decline)
+        await judged(b)
+        says(ctx, "Wait, what was that?")
+        _, keys = await b.view(ctx, owed.COMMIT)
+        assert keys == ("call-hn",) and b.record("call-hn").state == OWED, decline
+        assert b.record("call-hn").decline is None, "read once"
+
+
+async def test_the_render_waits_for_the_decline_check():
+    """The user's choice (2026-10-27; ow_declineAfter): the reply to a dismissal must not
+    carry the note, so the render holds until the check answers -- bounded by
+    SETTLE_WAIT_S."""
+    release = asyncio.Event()
+    b, ctx, _ = cut_telling(FakeDecline(True, release=release))
+    await judged(b)
+    says(ctx, "Never mind, I'll look it up myself.")
+    render = asyncio.create_task(b.view(ctx, owed.COMMIT))
+    await asyncio.sleep(0.05)
+    assert not render.done(), "rendered before the check answered"
+    release.set()
+    assert (await render)[1] == () and b.record("call-hn").state == owed.DECLINED
+    old, owed.SETTLE_WAIT_S = owed.SETTLE_WAIT_S, 0.05
+    try:
+        b, ctx, _ = cut_telling(FakeDecline(True, release=asyncio.Event()))
+        await judged(b)
+        says(ctx, "Forget it.")
+        assert (await b.view(ctx, owed.COMMIT))[1] == ("call-hn",), "past the bound: owed"
+    finally:
+        owed.SETTLE_WAIT_S = old
+
+
+async def test_the_check_reads_only_what_was_said_after_the_cut():
+    """The words are the caller's messages after the cut -- counted, not matched by
+    identity: a speculative reply renders a deep copy of the context with the words it
+    was started on, and its render is the one the commit adopts."""
+    import copy
+    decline = FakeDecline(True)
+    b, ctx, _ = cut_telling(decline)
+    await judged(b)
+    spec = LLMContext(copy.deepcopy(ctx.get_messages())
+                      + [{"role": "user", "content": "No, I mean the one on Elm Street."}])
+    assert (await b.view(spec, owed.COMMIT))[1] == ()
+    assert decline.calls[0][3] == "No, I mean the one on Elm Street.", decline.calls
+
+
+async def test_no_words_after_the_cut_lapse_only_after_the_commit():
+    """Owed.tla Commit: words lost to an empty final never reach the brain, and the record
+    stays owed. A render with no words yet (a speculation's before its words, say) leaves
+    the check due; a run or the lull, which come after the commit, lapse it."""
+    decline = FakeDecline(True)
+    b, ctx, _ = cut_telling(decline)
+    await judged(b)
+    rec = b.record("call-hn")
+    assert (await b.view(ctx, owed.COMMIT))[1] == ("call-hn",)
+    assert rec.decline is not None and decline.calls == []
+    view, keys = await b.view(ctx, owed.RUN, ("call-hn",))
+    assert keys == ("call-hn",) and rec.decline is None and decline.calls == []
+    assert rec.state == OWED
+
+
+async def test_the_lull_reads_a_dismissal_its_request_never_rendered():
+    """Owed.tla Decline (the model's counterexample before every reader waited): the
+    dismissal is committed, a new turn drops its request and commits nothing, and the
+    line goes quiet -- the lull reads the words before its re-offer, and offers nothing."""
+    b, ctx, gate = cut_telling(FakeDecline(True))
+    await judged(b)
+    b._reoffer_quiet_s, gate.quiet = 0.0, 1.0
+    rec = b.record("call-hn")
+    assert rec.missed, "the cut armed the re-offer"
+    says(ctx, "That's fine, you can stop there.")
+    b._arm([rec])
+    await asyncio.wait_for(b._lull, 2.0)
+    assert rec.state == owed.DECLINED, rec.state
+    assert [p for _, p in gate.asked if p == owed.REOFFER] == [], gate.asked
+
+
+async def test_a_telling_cut_twice_is_dropped():
+    """Owed.tla `cuts`, BoundedTellings (ow_cutsUncounted: 10-25, five tellings in five
+    minutes, four of them cut): a noted telling cut after its audio began counts, and the
+    second ends the record dropped -- after the judges' verdicts (they may close it), or
+    at once when there is nothing to judge (cut mid-stream). Its tool result stays."""
+    b, ctx, _ = cut_telling(FakeDecline(False))
+    await judged(b)
+    says(ctx, "Uh-huh, go on.")
+    await b.view(ctx, owed.COMMIT)
+    rec = b.record("call-hn")
+    cut(b, noted_reply(b, "caller"), "Tesla Roadster", TELLING)
+    await judged(b)
+    assert rec.state == DROPPED and rec.cuts == 2, rec.state
+    assert (await b.view(ctx, owed.COMMIT))[1] == ()
+    # Cut mid-stream (no whole text): no judges, dropped at the settle.
+    b, ctx, _ = cut_telling(FakeDecline(False))
+    await judged(b)
+    rec = b.record("call-hn")
+    b.settle(noted_reply(b, "caller"), "Tesla", cut=True, audio=True, text=None, rest=None)
+    assert rec.state == DROPPED
+    # Heard at the second cut: the judges close it, as before.
+    b, ctx, _ = cut_telling(FakeDecline(False))
+    await judged(b)
+    b.judge = FakeJudge(True)
+    cut(b, noted_reply(b, "caller"), "Tesla Roadster is the top story", TELLING)
+    await judged(b)
+    assert b.record("call-hn").state == CLOSED
+
+
+async def test_a_cut_before_any_audio_or_about_something_else_counts_nothing():
+    """Only a telling of the record whose audio began counts: cut before its audio, or a
+    reply about something else, leaves `cuts` as it was and nothing to read."""
+    b, _, _ = book(judge=FakeJudge(False), gist=FakeGist(True), decline=FakeDecline(True))
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    rec = b.record("call-hn")
+    b.settle(noted_reply(b, "caller"), None, cut=True, audio=False)
+    cut(b, noted_reply(b, "caller"), "Sure, I can set", "Sure, I can set a timer for ten minutes.")
+    await judged(b)
+    assert rec.cuts == 0 and rec.decline is None and rec.state == OWED
+
+
+def test_the_cut_count_survives_the_rooms_sleep():
+    rec = hn_record()
+    rec.cuts = 1
+    b, _, _ = book()
+    b.restore([rec.to_saved()])
+    assert b.record("call-hn").cuts == 1
+
+
+def test_the_decline_checks_request_is_the_measured_one():
+    """The text the eval measured (2026-10-27, 200 cuts: 3/500 false DECLINED)."""
+    msgs = owed.decline_judge_messages("Q?", "heard", "rest", "words")
+    assert msgs[0]["content"] == owed.DECLINE_JUDGE_PROMPT
+    assert msgs[1]["content"] == ('Their question: Q?\n\nWhat they heard:\n"heard"\n\n'
+                                  'The rest, which they did not hear:\n"rest"\n\n'
+                                  'What they said when they cut in:\n"words"')
+    assert [owed.decline_verdict(t) for t in ("DECLINED", " wanted.", "maybe", None)] == [
+        True, False, None, None]
+
+
 def main():
     sync = [v for k, v in sorted(globals().items())
             if k.startswith("test_") and not asyncio.iscoroutinefunction(v)]

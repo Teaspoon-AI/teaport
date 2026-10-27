@@ -16,7 +16,8 @@
 #
 #   the RECORD   -- one per consult, and one per cut telling of a sync answer tool's
 #                   result (#204: Owed._resolve, _cut_answer), kept HERE, never in the
-#                   context: owed -> closed, or dropped (evicted unheard). Land.
+#                   context: owed -> closed (heard), declined (the caller doesn't want
+#                   it, #231), or dropped (evicted unheard, or told and cut twice). Land.
 #   the NOTE     -- rendered from the records into every request while one is owed
 #                   (render(), called by services.BoundedOpenAILLMService._open_stream
 #                   after HeardContextCorrector's reconcile), and never stored.
@@ -31,6 +32,12 @@
 #                   statement: a reply about it heard to its end. Only a reply whose
 #                   request carried the note counts. ClosedOnEvidence, RetellOnce;
 #                   ow_gist_*, ow_fraction (1/3 of the words, #203), ow_ledgerMax.
+#   the DECLINE  -- the caller's words when they cut a telling of a record: read by the
+#                   decline check before anything renders again, a dismissal or a
+#                   correction ends it "declined" (#231). A telling cut after its audio
+#                   began counts, and the second ends it "dropped". Decline,
+#                   DeclinedOnEvidence, NoNoteAfterDecline, BoundedTellings; ow_noDecline,
+#                   ow_declineAfter, ow_cutsUncounted.
 #
 # The brain speaks unprompted at most twice per record: one RUN when the answer lands
 # (unless a caller request is still to be rendered: that one carries the note), and
@@ -83,7 +90,7 @@ from teaport_brain.tts_text import _normalize_for_tts, has_speech, strip_urls_fo
 RUN, REOFFER = "run", "reoffer"
 RUNS = frozenset({RUN, REOFFER})
 
-OWED, CLOSED, DROPPED = "owed", "closed", "dropped"
+OWED, CLOSED, DROPPED, DECLINED = "owed", "closed", "dropped", "declined"
 
 # At most this many owed records render; a newer one evicts the oldest, which ends
 # DROPPED -- not heard, its tool result kept, no note (DESIGN v3 #10: closing it would
@@ -175,6 +182,41 @@ def gist_judge_messages(question: str, outcome: str, heard: str) -> list:
     return [{"role": "system", "content": GIST_JUDGE_PROMPT},
             {"role": "user", "content": f"Their question: \"{question}\"\n\nThe result:\n"
                                         f"{outcome}\n\nWhat they heard:\n\"{heard}\""}]
+
+
+# The decline check (#231): the caller cut a telling of a record, and their words are read
+# before anything renders again -- do they still want the rest? A dismissal ("Great,
+# that's all I needed") or a correction ("No, I mean the one on Elm Street") ends the
+# record DECLINED; the rest of the time it stays owed. Measured on 200 synthetic cuts (10
+# tellings x 20 kinds of words, gpt-oss-120b, 2026-10-27): one call each, 3/500 false
+# DECLINED, 35/500 false WANTED ("Why are you telling me about this now?" during the
+# first telling, mostly), p50 0.36 s, p90 0.92 s; by majority of 5, 0/100 and 5/100.
+DECLINE_JUDGE_PROMPT = (
+    "A voice assistant was answering someone on a phone call, and they cut in. You see "
+    "their question, what they heard, the rest they did not hear, and what they said "
+    "when they cut in. Decide whether they still want the rest. DECLINED: their words "
+    "show they don't want it -- they said they have what they need or already know it, "
+    "dismissed it, objected to being told it, told the assistant to stop or drop it, "
+    "or corrected their request so this answer no longer fits (they meant a different "
+    "place, thing or person). WANTED: anything else -- they asked about it, asked to "
+    "repeat it or to wait, only showed they are listening, or added another request or "
+    "turned to something else without saying they don't want this. Reply with exactly "
+    "one word: DECLINED or WANTED.")
+
+
+def decline_judge_messages(question: str, heard: str, rest: str, words: str) -> list:
+    """The decline check's request, as the eval asked it."""
+    return [{"role": "system", "content": DECLINE_JUDGE_PROMPT},
+            {"role": "user", "content": f"Their question: {question}\n\nWhat they heard:\n"
+                                        f"\"{heard}\"\n\nThe rest, which they did not hear:\n"
+                                        f"\"{rest}\"\n\nWhat they said when they cut in:\n"
+                                        f"\"{words}\""}]
+
+
+def decline_verdict(reply_text: str) -> Optional[bool]:
+    """The decline check's answer: True for DECLINED, False for WANTED, None otherwise."""
+    t = (reply_text or "").strip().upper()
+    return True if t.startswith("DECLINED") else False if t.startswith("WANTED") else None
 
 
 def judge_verdict(reply_text: str) -> Optional[bool]:
@@ -428,6 +470,10 @@ class Record:
     heard_quote: str = ""         # what a cut reply carrying the note got through
     heard: list = field(default_factory=list)   # what was heard of it so far, oldest first
     told: int = 0                 # noted replies about it played to their end (the backstop)
+    cuts: int = 0                 # noted tellings of it cut after their audio began (#231)
+    # The decline check due on the caller's words after its last cut telling: (how many
+    # caller messages the context had at the cut, what they heard, the rest), or None.
+    decline: Optional[tuple] = None
     reoffers: int = 0             # counted at the ask: a held-then-dropped one is one
     missed: bool = False          # the one re-offer is armed (Owed.tla `missed`)
     ids: tuple = ()               # the tool_call_ids it answers: the consult's, a round's
@@ -465,7 +511,8 @@ class Record:
         return {"key": self.key, "request": self.request, "outcome": self.outcome,
                 "failure": self.failure, "question": self.question,
                 "heard_quote": self.heard_quote, "heard": list(self.heard),
-                "told": self.told, "reoffers": self.reoffers, "ids": list(self.ids)}
+                "told": self.told, "cuts": self.cuts, "reoffers": self.reoffers,
+                "ids": list(self.ids)}
 
 
 # ------------------------------------------------------------------------- the note
@@ -704,7 +751,7 @@ class Owed:
     book's own task."""
 
     def __init__(self, context, gate=None, *, answer_tools=frozenset(), judge=None,
-                 gist=None, reoffer_quiet_s: float = None):
+                 gist=None, decline=None, reoffer_quiet_s: float = None):
         self.context = context
         self.gate = gate
         # The cut judge: async (question, heard, rest) -> True (HEARD) | False (OWED) |
@@ -715,6 +762,11 @@ class Owed:
         # services.BoundedOpenAILLMService.judge_gist. None: no verdict ever, so a reply
         # about a record played to its end closes it, and a cut errs owed.
         self.gist = gist
+        # The decline check (#231): async (question, heard, rest, words) -> True (DECLINED) |
+        # False (WANTED) | None -- services.BoundedOpenAILLMService.judge_decline. None: no
+        # verdict ever, every record cut stays owed.
+        self.decline = decline
+        self._declining = None                # the decline checks being read (_read_declines)
         self._judging: dict = {}              # verdicts still to come: task -> its _apply args
         # The tools whose result is an answer (tools.ANSWER_TOOLS): a cut telling of one
         # is owed (Owed._resolve). An action's confirmation never is.
@@ -805,8 +857,10 @@ class Owed:
         records is owed any more -- it renders nothing and sends no request. A run's note
         carries its own records only. This is
         where a run is checked again (Owed.tla RunGo; ow_askOnly): the gate lets it go
-        only into a quiet window, so nothing lies between its go and this render."""
+        only into a quiet window, so nothing lies between its go and this render. A due
+        decline check is read first (declines_read), as every reader does."""
         await self.settled()
+        await self.declines_read(context.get_messages(), purpose in RUNS)
         records = self.owed()
         if purpose in RUNS:
             # A run of ours is for its own records: told in a run with another owed answer
@@ -970,9 +1024,15 @@ class Owed:
     def _evict(self) -> None:
         owed = self.owed()
         for rec in owed[: max(0, len(owed) - MAX_RENDERED)]:
-            rec.state = DROPPED
-            logger.info(f"OWED: {rec.key} dropped unheard -- {MAX_RENDERED} newer answers "
-                        "are owed (its tool result stays)")
+            self._drop(rec, f"{MAX_RENDERED} newer answers are owed")
+
+    def _drop(self, rec: Record, why: str) -> None:
+        """`rec` ends unheard, its tool result kept and its note gone (DESIGN v3 #10:
+        closing it would break ClosedOnEvidence)."""
+        rec.state = DROPPED
+        rec.missed = False
+        rec.decline = None
+        logger.info(f"OWED: {rec.key} dropped unheard -- {why} (its tool result stays)")
 
     # ---- the re-offer --------------------------------------------------------------
 
@@ -1002,13 +1062,14 @@ class Owed:
 
     async def _lull_loop(self) -> None:
         """Owed.tla Lull: an owed record whose re-offer is armed and unspent, every
-        reply settled, and the line quiet (FollowupGate.quiet_for: no caller speech
+        reply settled, every due decline check read, and the line quiet (FollowupGate.quiet_for: no caller speech
         pending, no turn, no request or reply, nothing waiting at the door) for
         REOFFER_QUIET_S. One re-offer per record, ever, counted at the ask: OneReoffer."""
         try:
             while self._due():
                 await asyncio.sleep(_LULL_TICK_S)
                 if self.is_settled() and self.gate.quiet_for() >= self._reoffer_quiet_s:
+                    await self.declines_read(self.context.get_messages(), True)
                     due = self._due()
                     for r in due:
                         r.missed = False
@@ -1124,6 +1185,9 @@ class Owed:
             verdict does (_played). A failure: closed on being heard to its end.
           - cut, with a heard prefix and its whole text: closed only on both judges' HEARD
             (_cut); the prefix joins what was heard of it.
+          - cut after its audio began, about it: one more cut telling; the second ends it
+            "dropped" unless the judges close it (#231); the caller's words are read
+            before anything renders again (declines_read).
         Unrelated replies settle nothing. The verdicts land on the LIVE book (_apply):
         the reply stays pending -- the readers wait (settled()) -- until they are in;
         past SETTLE_WAIT_S they go on (OwedAnswers.tla LATE)."""
@@ -1158,6 +1222,17 @@ class Owed:
                 heard_all, whole_all = rec.heard_with(heard), rec.heard_with(text)
                 rec.heard.append(heard.strip())
                 asks[key], defaults[key] = self._cut(rec, reply, heard_all, whole_all, rest), False
+            if cut and audio and heard and heard.strip() and (mine or rec.about(text or heard)):
+                # A telling of it cut after its audio began (#231, Owed.tla `cuts`): it
+                # counts, and the second ends it unless the judges find it heard
+                # (BoundedTellings); the caller's words are read before anything renders
+                # again (declines_read).
+                rec.cuts += 1
+                rec.decline = (_caller_count(self.context.get_messages()),
+                               heard.strip(), rest if rest is not None else rec.outcome)
+                if rec.cuts >= 2 and key not in asks:
+                    self._drop(rec, f"told and cut {rec.cuts} times")
+                    continue
             # Quoted only when about the record: the #203 session would otherwise have
             # quoted a clarifying question as the answer (test_owed_corpus.py).
             if cut and heard and heard.strip() and (mine or rec.about(heard)):
@@ -1213,6 +1288,69 @@ class Owed:
                     f"on {question[:50]!r}: heard {heard[-50:]!r}, rest {rest[:50]!r}")
         return verdict
 
+    async def declines_read(self, messages: list, final: bool) -> None:
+        """Owed.tla Decline: every reader of the records -- a render (view), the lull --
+        first reads the decline checks due (a record's telling cut after its audio
+        began), on what the caller said since that cut in `messages`, the context it
+        renders: a speculative reply's carries the words it was started on, and its
+        render is the one the commit adopts. Not the cutting turn's request alone: a turn
+        that drops it and commits nothing of its own would leave the words unread, and
+        the lull would re-offer the answer they declined. No words: a reader after the
+        commit (`final`: a run of ours, the lull) knows none came (an empty final) and
+        the check lapses; any other leaves it due. Readers at once share one read."""
+        while self._declining is not None and not self._declining.done():
+            await asyncio.shield(self._declining)
+        checks = []
+        for rec in self.owed():
+            if rec.decline is None:
+                continue
+            mark, heard, rest = rec.decline
+            words = _said_since(messages, mark)
+            if words:
+                rec.decline = None
+                checks.append((rec, words, self._ask_decline(rec.asked, heard, rest, words)))
+            elif final:
+                rec.decline = None
+                logger.info(f"OWED: {rec.key} -- no words came after its cut; stays owed")
+        if checks:
+            self._declining = asyncio.get_running_loop().create_task(self._judge_declines(checks))
+            await asyncio.shield(self._declining)
+
+    async def _judge_declines(self, checks: list) -> None:
+        verdicts = await asyncio.gather(*(c for _, _, c in checks))
+        for (rec, words, _), declined in zip(checks, verdicts):
+            if rec.state != OWED:
+                continue
+            if declined:
+                rec.state = DECLINED
+                rec.missed = False
+                logger.info(f"OWED: {rec.key} declined -- they said {words[-60:]!r} (its "
+                            "tool result stays)")
+            else:
+                logger.info(f"OWED: {rec.key} stays owed -- decline check "
+                            f"{'WANTED' if declined is False else 'none'}")
+
+    async def _ask_decline(self, question: str, heard: str, rest: str,
+                           words: str) -> Optional[bool]:
+        """One decline verdict, bounded by SETTLE_WAIT_S; None (stays owed) past it, on an
+        error, or with no check."""
+        if self.decline is None:
+            return None
+        started = time.monotonic()
+        try:
+            verdict = await asyncio.wait_for(self.decline(question, heard, rest, words),
+                                             SETTLE_WAIT_S)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 -- a failed check errs owed, never breaks
+            verdict, why = None, f" ({type(e).__name__})"
+        else:
+            why = ""
+        said = "DECLINED" if verdict else "WANTED" if verdict is False else "none"
+        logger.info(f"OWED: decline check {said}{why} in {time.monotonic() - started:.2f}s "
+                    f"on {question[:50]!r}: they said {words[-60:]!r}")
+        return verdict
+
     def _apply(self, reply, decisions: dict, ids, request, heard, text, cut,
                sync: Optional[bool], answered: Optional[bool] = None) -> None:
         """The verdicts on the LIVE book: a record still owed closes on its decision (a
@@ -1226,6 +1364,8 @@ class Owed:
             if rec is not None and rec.state == OWED:
                 if close:
                     self._close(rec, reply, cut, heard, why)
+                elif cut and rec.cuts >= 2:
+                    self._drop(rec, f"told and cut {rec.cuts} times; {why}")
                 else:
                     logger.info(f"OWED: {key} stays owed -- {why}")
         if ids:
@@ -1251,6 +1391,7 @@ class Owed:
                why: str = "") -> None:
         rec.state = CLOSED
         rec.missed = False
+        rec.decline = None
         logger.info(f"OWED: {rec.key} closed -- heard by the {reply.kind} reply "
                     f"({'cut' if cut else 'played through'}{'; ' + why if why else ''}): "
                     f"{(heard or '')[:80]!r}")
@@ -1337,13 +1478,26 @@ class Owed:
                                         question=d.get("question", ""),
                                         heard_quote=d.get("heard_quote", ""),
                                         heard=list(d.get("heard") or ()),
-                                        told=d.get("told", 0),
+                                        told=d.get("told", 0), cuts=d.get("cuts", 0),
                                         reoffers=d.get("reoffers", 0)),
                             "restored with the conversation, unheard")
             for t in rec.ids:
                 self._answers[t] = _Answer(rec.request, record=rec.key)
         for t in tool_call_ids(self.context.get_messages()):
             self._answers.setdefault(t, _Answer(""))
+
+
+def _caller_count(messages: list) -> int:
+    """How many messages the caller has said: the mark a cut's words are read after.
+    A count, not a message: a speculative reply renders a deep copy of the context, and
+    caller messages are never removed from it (only replies and notices are)."""
+    return sum(1 for m in messages if is_caller_message(m))
+
+
+def _said_since(messages: list, mark: int) -> str:
+    """What the caller said after their first `mark` messages, joined."""
+    said = [msg_text(m).strip() for m in messages if is_caller_message(m)]
+    return " ".join(said[mark:])
 
 
 def _said(verdict: Optional[bool]) -> str:

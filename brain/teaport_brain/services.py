@@ -705,6 +705,13 @@ class BoundedOpenAILLMService(OpenAILLMService):
         of a record gave them the answer to their question. As judge_cut."""
         return await self._judge(owed_mod.gist_judge_messages(question, outcome, heard))
 
+    async def judge_decline(self, question: str, heard: str, rest: str, words: str):
+        """The decline check owed.Owed asks (Owed._ask_decline, #231): whether the caller,
+        cutting a telling of an owed answer, still wants the rest. True for DECLINED, False
+        for WANTED, None for anything else. As judge_cut."""
+        return await self._judge(owed_mod.decline_judge_messages(question, heard, rest, words),
+                                 owed_mod.decline_verdict)
+
     async def judge_barge(self, asked: str, reply: str, heard: str, said: str):
         """The barge-in judge barge_pause.BargeInJudgeGate asks (#224): whether the
         caller's words over a paused reply let it carry on. barge_pause.CONTINUE, STOP,

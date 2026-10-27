@@ -954,10 +954,11 @@ def build_agent_session(transport, *, voice: str | None = None,
     # cut tellings (owed.py, #203/#204): the LLM renders its note into every request, the
     # ledger settles each reply into it -- judged by the session's own model for the gist
     # (llm.judge_gist, asked as the reply's stream ends) and, cut, for the rest
-    # (llm.judge_cut) --, the gate is the door its runs go through, and a room's sleep
-    # keeps it with the conversation.
+    # (llm.judge_cut) and for whether the caller still wants it (llm.judge_decline,
+    # #231) --, the gate is the door its runs go through, and a room's sleep keeps it
+    # with the conversation.
     owed = Owed(context, gate=followup_gate, answer_tools=ANSWER_TOOLS, judge=llm.judge_cut,
-                gist=llm.judge_gist)
+                gist=llm.judge_gist, decline=llm.judge_decline)
     llm.owed = owed
     ledger.on_reply_text = owed.reply_text
     ledger.on_reply_end = owed.settle
