@@ -123,8 +123,8 @@ class SipProtocolSerializer(FrameSerializer):
             # it here), but protocol v0 has no "flush the caller's playout" control
             # message, so we can't tell the gateway to drop already-queued audio; we
             # simply stop sending, and the gateway's ~1 s bounded queue drains.
-            # (Documented deferral — see RUNLOG. Adding the v1 flush is a one-line
-            # change right here, with nothing to touch in the transport.)
+            # (Adding a v1 flush is a one-line change right here, with nothing to
+            # touch in the transport.)
             return None
         if isinstance(frame, (OutputTransportMessageUrgentFrame, OutputTransportMessageFrame)):
             if self.should_ignore_frame(frame):  # drop RTVI protocol messages

@@ -1,35 +1,31 @@
 # SPDX-License-Identifier: MIT
 #
-# teaport — offline fake teaport-sip gateway for testing the SIP brain (M2).
+# teaport — offline fake teaport-sip gateway for testing the SIP brain. It stands in
+# for the real C++/GPL teaport-sip gateway so the brain (teaport_brain.sip_server)
+# can be exercised end-to-end WITHOUT a live phone call, and drives one or more
+# SEQUENTIAL calls on ONE persistent socket connection.
 #
-# Stands in for the real C++/GPL teaport-sip gateway so the brain
-# (teaport_brain.sip_server) can be exercised end-to-end WITHOUT a live phone
-# call. Speaks teaport-sip protocol v0 (see teaport_brain.sip_serializer):
-# AF_UNIX SOCK_SEQPACKET *server* (the gateway is the server; the brain connects).
+# It keeps the SEQPACKET socket OPEN across --calls N: for each call it sends
+# call.incoming -> call.state confirmed, streams a spoken question WAV as 0x10
+# audio.in, collects the brain's 0x11 audio.out, then sends call.state disconnected
+# and pauses. It only sends hello ONCE (the connection is persistent). The socket is
+# closed after the LAST call.
+#
+# With --calls 1 it is the plain one-call run (run_sip_tools_test.sh). With more, the
+# point it proves: the persistent SipConnection + control dispatch SURVIVE while each
+# call's pipeline is built fresh and torn down. If the brain closed the socket (or
+# killed control dispatch) when a call's pipeline ended, calls #2 and #3 would never
+# be received — this driver would hang and time out.
+#
+# Audio the brain sends outside a call window is not part of any call's WAV, but it
+# is counted and reported: there should be none.
 #
 # It always binds a SEPARATE TEST socket (default /tmp/teaport-fakegw.sock), NEVER
-# the live /run/teaport/teaport-sip.sock — it refuses that path outright so a fat-finger
-# can't disturb the real gateway's NetSapiens registration.
-#
-# Kept as its own file rather than folded into fake_gateway_multicall.py --calls 1
-# (which it nearly is), because two acceptance run logs — RUNLOG-sip-offline.md and
-# RUNLOG-sip-tools.md — quote the literal `fake_gateway.py ... --out-wav ...` command
-# they were produced by. Those are records of runs that happened, not docs to keep
-# current, so a rename would make them cite a command that never existed. The two
-# also differ in what they record: this one keeps every audio.out frame from connect
-# onward, the multicall driver drops anything arriving outside a call window.
-#
-# Sequence it drives:
-#   brain connects  ->  we send hello, call.incoming, call.state=confirmed
-#   wait --greet-wait s (collect any greeting audio.out)
-#   stream question.wav as 0x10 frames at 20 ms cadence (640 B each)
-#   collect the brain's 0x11 audio.out until it goes idle (--reply-idle s)
-#   send call.state=disconnected, close
-#   write all received audio.out to a WAV; print stats
+# the live /run/teaport/teaport-sip.sock — it refuses that path outright.
 #
 # Usage:
 #   python3 fake_gateway.py --socket /tmp/teaport-fakegw.sock \
-#           --wav question.wav --out-wav /tmp/sip-audio-out.wav
+#           --wav question_host_status.wav --out-prefix /tmp/sip-percall --calls 3
 
 import argparse
 import asyncio
@@ -72,7 +68,8 @@ async def send_audio(loop, conn, pcm640: bytes):
 
 
 async def recorder(loop, conn, state: dict):
-    """Receive datagrams from the brain: record 0x11 audio.out, log 0x01 control."""
+    """Receive datagrams from the brain: record 0x11 audio.out into the CURRENT
+    call's buffer, log 0x01 control. Runs for the whole connection lifetime."""
     while not state["stop"]:
         try:
             data = await asyncio.wait_for(loop.sock_recv(conn, MAX_FRAME_BYTES), timeout=0.5)
@@ -81,12 +78,17 @@ async def recorder(loop, conn, state: dict):
         except (ConnectionResetError, OSError):
             break
         if not data:
+            state["eof"] = True
             break
         tag, payload = data[0], data[1:]
         if tag == TAG_AUDIO_OUT:
-            state["audio"].extend(payload)
-            state["frames"] += 1
-            state["last_audio_t"] = time.monotonic()
+            cur = state["cur"]
+            if cur is not None:
+                cur["audio"].extend(payload)
+                cur["frames"] += 1
+                cur["last_audio_t"] = time.monotonic()
+            else:
+                state["stray_frames"] += 1
         elif tag == TAG_CONTROL:
             try:
                 print(f"[brain->gw] control {json.loads(payload)}")
@@ -96,43 +98,22 @@ async def recorder(loop, conn, state: dict):
             print(f"[brain->gw] unknown tag 0x{tag:02x} ({len(payload)}B)")
 
 
-async def serve(args):
-    if os.path.abspath(args.socket) == os.path.abspath(LIVE_SOCKET):
-        raise SystemExit(f"refusing to bind the LIVE gateway socket {LIVE_SOCKET}")
-    if os.path.exists(args.socket):
-        os.unlink(args.socket)
+async def run_one_call(loop, conn, state, question, call_idx, args):
+    """Drive a single call end-to-end on the already-open connection."""
+    call_id = f"fakecall-{call_idx:04d}"
+    call = {"audio": bytearray(), "frames": 0, "last_audio_t": 0.0, "id": call_id}
+    state["cur"] = call
+    print(f"\n===== CALL {call_idx} ({call_id}) =====")
 
-    question = read_wav_16k_mono(args.wav)
-    n_q_frames = (len(question) + BYTES_PER_FRAME - 1) // BYTES_PER_FRAME
-    print(f"loaded question WAV: {len(question)} bytes "
-          f"({len(question)/2/WIRE_RATE:.2f}s, {n_q_frames} frames of 20ms)")
-
-    srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
-    srv.bind(args.socket)
-    srv.listen(1)
-    srv.setblocking(False)
-    print(f"fake gateway listening on {args.socket} — waiting for the brain to connect")
-
-    loop = asyncio.get_event_loop()
-    conn, _ = await loop.sock_accept(srv)
-    conn.setblocking(False)
-    print("brain connected")
-
-    state = {"audio": bytearray(), "frames": 0, "last_audio_t": 0.0, "stop": False}
-    rec_task = asyncio.create_task(recorder(loop, conn, state))
-
-    call_id = "fakecall-0001"
-    await send_control(loop, conn, {"type": "hello", "proto": 0, "role": "gateway",
-                                    "codec": "s16le", "rate": WIRE_RATE,
-                                    "channels": 1, "ptime_ms": 20})
     await send_control(loop, conn, {"type": "call.incoming", "call_id": call_id,
                                     "from": "sip:tester@fake", "to": "sip:100v@fake"})
-    await send_control(loop, conn, {"type": "call.state", "call_id": call_id, "state": "confirmed"})
+    await send_control(loop, conn, {"type": "call.state", "call_id": call_id,
+                                    "state": "confirmed"})
 
     # Let the greeting (LLMRunFrame on confirmed) play out before the question.
     print(f"waiting {args.greet_wait}s for the greeting...")
     await asyncio.sleep(args.greet_wait)
-    greeting_frames = state["frames"]
+    greeting_frames = call["frames"]
     print(f"greeting audio.out so far: {greeting_frames} frames")
 
     # Stream the spoken question at real-time 20 ms cadence.
@@ -148,31 +129,79 @@ async def serve(args):
     print("question sent — waiting for the reply...")
 
     # Collect the reply until audio.out goes idle for --reply-idle (overall cap).
-    state["last_audio_t"] = time.monotonic()
+    call["last_audio_t"] = time.monotonic()
     deadline = time.monotonic() + args.reply_cap
     while time.monotonic() < deadline:
         await asyncio.sleep(0.2)
-        since = time.monotonic() - state["last_audio_t"]
-        if state["frames"] > greeting_frames and since > args.reply_idle:
+        since = time.monotonic() - call["last_audio_t"]
+        if call["frames"] > greeting_frames and since > args.reply_idle:
             break
 
-    reply_frames = state["frames"] - greeting_frames
-    print(f"reply idle — total audio.out frames={state['frames']} "
+    reply_frames = call["frames"] - greeting_frames
+    print(f"reply idle — call {call_idx} audio.out frames={call['frames']} "
           f"(greeting~{greeting_frames}, reply~{reply_frames})")
 
-    await send_control(loop, conn, {"type": "call.state", "call_id": call_id, "state": "disconnected"})
-    await asyncio.sleep(0.3)
-    state["stop"] = True
-    rec_task.cancel()
+    await send_control(loop, conn, {"type": "call.state", "call_id": call_id,
+                                    "state": "disconnected"})
 
-    # Write everything we heard back from the brain.
-    with wave.open(args.out_wav, "wb") as wf:
+    # Write this call's reply audio to its own WAV.
+    out_wav = f"{args.out_prefix}-call{call_idx}-audio-out.wav"
+    with wave.open(out_wav, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)
         wf.setframerate(WIRE_RATE)
-        wf.writeframes(bytes(state["audio"]))
-    secs = len(state["audio"]) / 2 / WIRE_RATE
+        wf.writeframes(bytes(call["audio"]))
+    print(f"wrote {out_wav} ({len(call['audio'])/2/WIRE_RATE:.2f}s)")
 
+    state["cur"] = None  # audio between calls (there should be none) is only counted
+    return {"idx": call_idx, "id": call_id, "total_frames": call["frames"],
+            "greeting_frames": greeting_frames, "reply_frames": reply_frames}
+
+
+async def serve(args):
+    if os.path.abspath(args.socket) == os.path.abspath(LIVE_SOCKET):
+        raise SystemExit(f"refusing to bind the LIVE gateway socket {LIVE_SOCKET}")
+    if os.path.exists(args.socket):
+        os.unlink(args.socket)
+
+    question = read_wav_16k_mono(args.wav)
+    n_q_frames = (len(question) + BYTES_PER_FRAME - 1) // BYTES_PER_FRAME
+    print(f"loaded question WAV: {len(question)} bytes "
+          f"({len(question)/2/WIRE_RATE:.2f}s, {n_q_frames} frames of 20ms)")
+    print(f"driving {args.calls} SEQUENTIAL calls on ONE persistent socket")
+
+    srv = socket.socket(socket.AF_UNIX, socket.SOCK_SEQPACKET)
+    srv.bind(args.socket)
+    srv.listen(1)
+    srv.setblocking(False)
+    print(f"fake gateway listening on {args.socket} — waiting for the brain to connect")
+
+    loop = asyncio.get_event_loop()
+    conn, _ = await loop.sock_accept(srv)
+    conn.setblocking(False)
+    print("brain connected")
+
+    state = {"cur": None, "stop": False, "eof": False, "stray_frames": 0}
+    rec_task = asyncio.create_task(recorder(loop, conn, state))
+
+    # hello ONCE — the connection is persistent across all calls.
+    await send_control(loop, conn, {"type": "hello", "proto": 0, "role": "gateway",
+                                    "codec": "s16le", "rate": WIRE_RATE,
+                                    "channels": 1, "ptime_ms": 20})
+
+    results = []
+    for call_idx in range(1, args.calls + 1):
+        if state["eof"]:
+            print("brain closed the socket unexpectedly — aborting")
+            break
+        results.append(await run_one_call(loop, conn, state, question, call_idx, args))
+        if call_idx < args.calls:
+            print(f"--- inter-call pause {args.between}s (connection stays open) ---")
+            await asyncio.sleep(args.between)
+
+    await asyncio.sleep(0.3)
+    state["stop"] = True
+    rec_task.cancel()
     try:
         conn.close()
     except Exception:
@@ -183,28 +212,40 @@ async def serve(args):
     except Exception:
         pass
 
-    print("=" * 60)
-    print(f"RESULT audio.out: {state['frames']} frames, {len(state['audio'])} bytes, {secs:.2f}s")
-    print(f"RESULT wrote     : {args.out_wav}")
-    print("=" * 60)
-    # Non-trivial reply gate: more than ~0.3 s of playout past the greeting.
-    if reply_frames < 15:
-        raise SystemExit(f"FAIL: reply audio.out too small ({reply_frames} frames)")
-    print("PASS: non-trivial audio.out reply received")
+    print("\n" + "=" * 64)
+    print(f"RESULT: drove {len(results)}/{args.calls} calls on one persistent socket")
+    for r in results:
+        print(f"  call {r['idx']} ({r['id']}): total={r['total_frames']}f "
+              f"greeting~{r['greeting_frames']}f reply~{r['reply_frames']}f")
+    print(f"  outside any call: {state['stray_frames']}f")
+    print("=" * 64)
+
+    # Every call must have received a non-trivial reply (>~0.3 s past the greeting).
+    if len(results) != args.calls:
+        raise SystemExit(f"FAIL: only {len(results)}/{args.calls} calls completed — "
+                         "the connection did NOT survive between calls")
+    weak = [r["idx"] for r in results if r["reply_frames"] < 15]
+    if weak:
+        raise SystemExit(f"FAIL: calls {weak} had too little reply audio.out")
+    print(f"PASS: all {args.calls} calls received + answered on one persistent socket")
 
 
 def main():
     here = os.path.dirname(__file__)
-    p = argparse.ArgumentParser(description="Offline fake teaport-sip gateway (M2 test)")
+    p = argparse.ArgumentParser(description="Offline fake teaport-sip gateway — "
+                                            "one or more sequential calls")
     p.add_argument("--socket", default="/tmp/teaport-fakegw.sock")
-    p.add_argument("--wav", default=os.path.join(here, "question.wav"))
-    p.add_argument("--out-wav", default="/tmp/sip-audio-out.wav")
-    p.add_argument("--greet-wait", type=float, default=6.0,
+    p.add_argument("--wav", default=os.path.join(here, "question_host_status.wav"))
+    p.add_argument("--out-prefix", default="/tmp/sip-percall")
+    p.add_argument("--calls", type=int, default=3)
+    p.add_argument("--greet-wait", type=float, default=14.0,
                    help="seconds to let the greeting play before the question")
-    p.add_argument("--reply-idle", type=float, default=2.0,
-                   help="silence gap that marks the reply complete")
-    p.add_argument("--reply-cap", type=float, default=40.0,
-                   help="overall cap waiting for the reply")
+    p.add_argument("--reply-idle", type=float, default=3.0,
+                   help="silence gap that marks a reply complete")
+    p.add_argument("--reply-cap", type=float, default=75.0,
+                   help="overall cap waiting for a reply")
+    p.add_argument("--between", type=float, default=3.0,
+                   help="pause between calls (connection stays open)")
     asyncio.run(serve(p.parse_args()))
 
 
