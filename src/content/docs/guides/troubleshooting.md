@@ -3,14 +3,14 @@ title: Troubleshooting
 description: Find the cause when teaport does not work correctly.
 ---
 
-This page lists the failures that we saw on real devices. Each section starts with what you
-see. Find your symptom, then do the steps.
+This page lists the failures seen on real devices. Each section starts with the
+symptom. Find yours, then follow the fix.
 
-:::note[Pre-launch]
-teaport is not released yet. Every failure on this page occurred on a Jetson Orin Nano Dev
-Kit (8 GB) with JetPack 7.2. If your problem is not here,
-[open an issue](https://github.com/Teaspoon-AI/teaport/issues). Include the output of
-`teaport status` and `teaport doctor`.
+:::note[Seen on]
+Every failure on this page occurred on a Jetson Orin Nano Dev Kit (8 GB) with
+JetPack 7.2. If your problem is not here,
+[open an issue](https://github.com/Teaspoon-AI/teaport/issues). Include the
+output of `teaport status` and `teaport doctor`.
 :::
 
 ## Start here
@@ -23,16 +23,22 @@ teaport doctor      # are the files, the settings, and the ports correct?
 teaport logs        # what did the brain report?
 ```
 
-You can run the installer again at any time. It repairs an installation. It does not make a
-second installation. It keeps the settings that you added yourself.
+`teaport doctor --fix` runs the same checks and restarts a service whose unit
+has stopped. It prints the unit that it restarts.
+
+<!-- source: cli/teaport:6;cli/teaport:176-279 @1e5604c -->
+
+You can run the installer again at any time. It repairs an installation without
+making a second one and keeps the settings that you added yourself.
 
 ```bash
 bash <(curl -fsSL https://get.teaspoon.tech/teaport)
 ```
 
 :::caution[`teaport doctor` does not test speech quality]
-`doctor` tests that files exist and that services run. Two important failures pass every
-test: the slow speech-recognition kernel, and the missing pronunciation dictionary. Read
+`doctor` tests that files exist and that services run. Two important failures
+pass every test: the slow speech-recognition kernel, and the missing
+pronunciation dictionary. See
 [The speech sounds robotic](#the-speech-sounds-robotic) and
 [Speech recognition is slow](#speech-recognition-is-slow).
 :::
@@ -41,304 +47,458 @@ test: the slow speech-recognition kernel, and the missing pronunciation dictiona
 
 ### `not an NVIDIA Jetson (/etc/nv_tegra_release missing)`
 
-You are not on a Jetson. The installer works only on Jetson devices.
+**Cause** You are not on a Jetson, or the Jetson image carries no
+`/etc/nv_tegra_release`. The installer works only on Jetson devices.
+
+<!-- source: install.sh:243 @1e5604c -->
+
+**Fix**
+
+1. Run the installer on a Jetson that runs JetPack. To set one up, see
+   [Prepare the Jetson](/getting-started/prepare-the-jetson/).
 
 ### `unsupported L4T` with a version number
 
-Your device has a JetPack version that teaport does not support. Check the version:
+**Cause** The device runs a JetPack that the engine does not support. The engine
+ships for JetPack 7.2 (L4T R38 or R39, CUDA 13) only.
 
-```bash
-cat /etc/nv_tegra_release
-apt-cache policy nvidia-jetpack | head -2
-```
+<!-- source: install.sh:224-238 @1e5604c -->
 
-teaport accepts Linux for Tegra (L4T) R38 and R39. JetPack 7.2 reports **R39**. This is
-correct. Do not look for R38.
+**Fix**
 
-<!-- source: install.sh:178 -->
+1. Check the version:
+
+   ```bash
+   cat /etc/nv_tegra_release
+   apt-cache policy nvidia-jetpack | head -2
+   ```
+
+2. teaport accepts Linux for Tegra (L4T) R38 and R39. JetPack 7.2 reports
+   **R39**. That is correct; do not look for R38. On any other version, install
+   JetPack 7.2, and then run the installer again. See
+   [Prepare the Jetson](/getting-started/prepare-the-jetson/).
 
 ### `libopenblas.so.0 not installed`
 
-The engine links against OpenBLAS. JetPack does not include it. Install it:
+**Cause** The engine links against `libopenblas.so.0`. JetPack does not include
+it.
 
-```bash
-sudo apt-get install -y libopenblas0
-```
+<!-- source: install.sh:270-279 @1e5604c -->
 
-The current installer does this for you. This error occurs only with an older installer.
+**Fix**
 
-<!-- source: install.sh:208-214 -->
+1. Install it:
+
+   ```bash
+   sudo apt-get install -y libopenblas0
+   ```
 
 ### `manifest has no engine.g2p_dict`
 
-The release manifest is older than the installer. Wait for a new manifest, or use an older
-installer. Do not remove the check. The dictionary is necessary. See
-[The speech sounds robotic](#the-speech-sounds-robotic).
+**Cause** The release manifest carries no `engine.g2p_dict` entry, with its URL
+and sha256. A device installed without the pronunciation dictionary speaks with
+robotic espeak prosody. The dictionary check is necessary, so keep it.
 
-### A checksum does not agree
+<!-- source: install.sh:444-454 @1e5604c -->
 
-The installer downloaded a file, then found a different checksum. Delete the partial file and
-run the installer again:
+**Fix**
 
-```bash
-sudo rm -f /opt/teaport/models/voxtral/*.part /opt/teaport/bin/*.part
-bash <(curl -fsSL https://get.teaspoon.tech/teaport)
-```
+1. Wait until the manifest is republished with the entry, and then run the
+   installer again. See [The speech sounds robotic](#the-speech-sounds-robotic).
 
-If the error continues, the published manifest and the published file do not agree. This is
-our fault, not yours. [Open an issue](https://github.com/Teaspoon-AI/teaport/issues).
+### `sha256 mismatch`
+
+**Cause** A downloaded file does not agree with the checksum in the manifest.
+The partial `.part` file remains on the disk.
+
+<!-- source: install.sh:156-159 @1e5604c -->
+
+**Fix**
+
+1. Delete the partial files, and run the installer again:
+
+   ```bash
+   sudo rm -f /opt/teaport/models/voxtral/*.part /opt/teaport/bin/*.part
+   bash <(curl -fsSL https://get.teaspoon.tech/teaport)
+   ```
+
+2. If the same file fails again, the published manifest and the published file
+   disagree. [Open an issue](https://github.com/Teaspoon-AI/teaport/issues).
+
+## A service is stopped
+
+**Cause** The engine or the brain crashed, or someone stopped it. A fresh start
+also needs up to a minute before the engine port listens.
+
+**Fix**
+
+1. Run `teaport doctor --fix`. It restarts `teaport-engine` or `teaport-brain`
+   when the unit is stopped, and prints the unit that it restarts.
+2. Run `teaport doctor` again. The last line reads `doctor: all good`.
+3. If the same check fails again, read the log. See
+   [Where the logs are](#where-the-logs-are).
+
+<!-- source: cli/teaport:176-279 @1e5604c -->
 
 ## The browser cannot open `https://teaport.local`
 
-Do these checks in order.
+**Cause** The name `teaport.local` is not published on the network, or the front
+door is not listening. Most home networks carry the name. Some guest networks
+and some corporate networks block it.
 
-**1. Test the name.** From a computer on the same network:
+**Fix** Do these checks in order.
 
-```bash
-getent hosts teaport.local
-```
+1. Test the name from a computer on the same network:
 
-If you get no result, the multicast Domain Name System (mDNS) name is not published. On the
-Jetson, restart the mDNS service:
+   ```bash
+   getent hosts teaport.local
+   ```
 
-```bash
-sudo systemctl restart avahi-daemon
-```
+   If the command prints nothing, restart the mDNS service on the Jetson:
 
-The installer sets the published name in `/etc/avahi/avahi-daemon.conf`. The service reads
-that file only when it starts. An installer that writes the name but does not restart the
-service leaves the device with its old name.
+   ```bash
+   sudo systemctl restart avahi-daemon
+   ```
 
-**2. Use the address instead.** If the name still fails, use the Jetson's address, for
-example `https://192.168.1.67`. Your browser shows a stronger warning, because the
-certificate names `teaport.local` only. Your network does not permit mDNS. Some guest
-networks and some corporate networks block it.
+   The mDNS service reads its configuration only at startup. An installation
+   that sets the name but does not restart the service leaves the device under
+   the old name.
 
-**3. Test the front door.** On the Jetson:
+2. Use the address instead, for example `https://192.168.1.67`. The browser
+   shows a stronger warning, because the certificate names `teaport.local`
+   only.
 
-```bash
-sudo ss -tlnp | grep -E ':(443|18789) '
-```
+3. Test the front door. On the Jetson:
 
-You must see Caddy on port 443 and the gateway on `127.0.0.1:18789`.
+   ```bash
+   sudo ss -tlnp | grep -E ':(443|18789) '
+   ```
 
-<!-- source: install.sh:494-497 -->
+   Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
+
+<!-- source: install.sh:1529;install.sh:1660-1680 @1e5604c -->
 
 ## The page opens but nothing happens
 
-You see the dashboard. It does not connect. It shows no error.
+**Cause** The gateway refuses the browser because the address carries no token.
+The dashboard shows no error.
 
-The gateway refuses your browser because you did not supply a token. Get the full address:
+**Fix**
 
-```bash
-openclaw dashboard --no-open
-```
+1. Get the full address:
 
-Open the address that this command prints. It contains `#token=`.
+   ```bash
+   openclaw dashboard --no-open
+   ```
+
+2. Open the address that the command prints. It contains `#token=`.
 
 :::caution[The token must follow a `#`]
-A `#` makes a fragment. Your browser keeps a fragment. A `?` makes a query. Your browser
-sends a query to the server, and the server writes it to its log. Always use `#`.
+A `#` makes a fragment, and the browser keeps a fragment. A `?` makes a query:
+the browser sends the query to the server, and the server writes it to its log.
+Always use `#`.
 :::
 
 The token is also in `~/.openclaw/openclaw.json`, under `gateway.auth.token`.
 
+<!-- source: install.sh:1404-1417 @1e5604c -->
+
 ## The gateway restarts again and again
 
-`openclaw gateway status` shows `Runtime:` with a changing process number. The dashboard
-refuses every connection.
+**Cause** The gateway started twice. `openclaw gateway install` installs the
+service and starts it. A later `openclaw gateway start` restarts the service.
+The restart stops the first process during a database migration, and the lock
+stays for approximately five minutes.
 
-You started the gateway twice. `openclaw gateway install` installs the service **and starts
-it**. A later `openclaw gateway start` restarts the service. This stops the first process
-during a database migration. The lock stays for approximately five minutes.
+**Fix**
 
-Do this:
+1. Stop the gateway:
 
-```bash
-openclaw gateway stop
-# wait five minutes
-openclaw gateway start
-```
+   ```bash
+   openclaw gateway stop
+   ```
 
-Use `openclaw gateway restart` after this. Do not use `stop` and `start` together.
+2. Wait five minutes.
+3. Start the gateway one time:
+
+   ```bash
+   openclaw gateway start
+   ```
+
+From then on, use `openclaw gateway restart`. Do not pair `stop` with `start`.
 
 ## The gateway is not running after a restart of the device
 
-The gateway is a systemd **user** service. A user service does not start until the user logs
-in. A device with no screen never logs in.
+**Cause** The gateway is a systemd user service. A user service starts when the
+user signs in. A device with no screen never signs in.
 
-```bash
-sudo loginctl enable-linger $USER
-```
+<!-- source: install.sh:1423-1427 @1e5604c -->
 
-The installer does this. Check it:
+**Fix**
 
-```bash
-loginctl show-user $USER --property=Linger
-```
+1. On the Jetson, enable linger for your user:
+
+   ```bash
+   sudo loginctl enable-linger $USER
+   ```
+
+2. Check it:
+
+   ```bash
+   loginctl show-user $USER --property=Linger
+   ```
+
+   The output shows `Linger=yes`. The installer enables linger.
 
 ## `openclaw qr` refuses to make a code
 
-```
+The command prints:
+
+```text
 Error: Gateway is only bound to loopback. Set gateway.bind=lan, enable tailscale serve,
 or configure plugins.entries.device-pair.config.publicUrl.
 ```
 
-The gateway listens only on `127.0.0.1`. This is correct. Caddy is the front door. The
-pairing plugin does not know that the front door exists. Tell it:
+**Cause** The gateway listens on `127.0.0.1` only. That is correct: Caddy is the
+front door. The pairing plugin does not know that the front door exists. It
+needs the public URL.
 
-```bash
-cat > /tmp/oc-pair.json <<'JSON'
-{ "plugins": { "entries": { "device-pair": {
-  "enabled": true, "config": { "publicUrl": "wss://teaport.local" } } } } }
-JSON
-openclaw config patch --file /tmp/oc-pair.json
-openclaw gateway restart
-```
+<!-- source: install.sh:1255-1267 @1e5604c -->
 
-The installer does this. This error occurs only with an older installer.
+**Fix**
 
-<!-- source: install.sh:326-340 -->
+1. Write the configuration:
+
+   ```bash
+   cat > /tmp/oc-pair.json <<'JSON'
+   { "plugins": { "entries": { "device-pair": {
+     "enabled": true, "config": { "publicUrl": "wss://teaport.local" } } } } }
+   JSON
+   ```
+
+2. Apply it, and restart the gateway:
+
+   ```bash
+   openclaw config patch --file /tmp/oc-pair.json
+   openclaw gateway restart
+   ```
+
+The installer writes this configuration. The error occurs only with an older
+installer.
 
 :::note[`enabled` is necessary]
-The plugin has `enabledByDefault` in its manifest. It is also a bundled plugin, and a bundled
-plugin needs permission on this system. Configuration alone gives you
-`plugin disabled (bundled (disabled by default)) but config is present`, and pairing stays
-dead.
+The plugin has `enabledByDefault` in its manifest. It is also a bundled plugin,
+and a bundled plugin needs permission on this system. Configuration alone gives
+you `plugin disabled (bundled (disabled by default)) but config is present`, and
+pairing stays dead.
 :::
 
 ## The phone does not pair
 
-You scan the code. The application fails. It gives no useful message.
+**Cause** The application cannot accept the certificate. teaport signs its own
+certificate. A browser lets you accept a warning; an application does not.
 
-The application cannot accept our certificate. teaport signs its own certificate. A browser
-lets you accept a warning. An application cannot.
+**Fix**
 
-Install the certificate on the phone:
+1. On the phone, open `http://teaport.local/teaport-ca.crt` in the browser, and
+   select **Allow**.
+2. Open Settings. Select General. Select **VPN & Device Management**. Install
+   the profile.
+3. Open Settings. Select General. Select About. Select **Certificate Trust
+   Settings**. Switch the certificate on.
+4. Make a new code on the Jetson, and scan it:
 
-1. Open `http://teaport.local/teaport-ca.crt` in the phone's browser. Select **Allow**.
-2. Open Settings. Select General. Select **VPN & Device Management**. Install the profile.
-3. Open Settings. Select General. Select About. Select **Certificate Trust Settings**. Switch
-   the certificate on.
+   ```bash
+   openclaw qr
+   ```
+
+5. Approve the device on the Jetson:
+
+   ```bash
+   openclaw devices list
+   openclaw devices approve REQUEST_ID
+   ```
+
+   `REQUEST_ID` is the request identifier from the list.
 
 :::caution[Step 3 is a different step from step 2]
-An installed certificate is not a trusted certificate. If you do step 2 but not step 3, the
-application fails exactly as before. This is the most frequent cause.
+An installed certificate is not a trusted certificate. If you do step 2 but not
+step 3, the application fails exactly as before. This is the most frequent
+cause.
 :::
 
-Then make a new code and scan it:
+Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
+makes a new code. Do not scan a photograph of an old code.
 
-```bash
-openclaw qr
-```
-
-Each code contains a token. The token stops after **10 minutes**. Each `openclaw qr` command
-makes a new code. Do not use a photograph of an old code.
-
-After you scan, approve the device on the Jetson:
-
-```bash
-openclaw devices list
-openclaw devices approve <requestId>
-```
+<!-- source: install.sh:1660-1680 @1e5604c -->
 
 ### The phone pairs, but it has no permissions
 
-You paired over `ws://` instead of `wss://`. OpenClaw gives a cleartext connection a limited
-profile. That profile permits speech only. It does not permit operator commands.
+**Cause** The pairing used `ws://` instead of `wss://`. OpenClaw gives a
+cleartext connection a limited profile. The profile permits speech only. It
+does not permit operator commands.
 
-Pair again over `wss://`. See `publicUrl` in
+**Fix** Pair again over `wss://`. Set `publicUrl` as in
 [`openclaw qr` refuses to make a code](#openclaw-qr-refuses-to-make-a-code).
+
+## Phone calls go unanswered
+
+**Cause** One of three things, and `teaport doctor` names which: the
+`teaport-sip` gateway is not running; the brain's SIP front-end is not connected
+to it (`TEAPORT_SIP_SOCKET` empty in `/etc/teaport/brain.env`); or the trunk
+registration is missing, so calls from the provider never arrive.
+
+<!-- source: cli/teaport:176-279 @1e5604c -->
+
+**Fix**
+
+1. Run `teaport doctor`. The `SIP` lines name the break: `teaport-sip is ...`,
+   `the brain's SIP front-end is ...`, or `SIP trunk NOT registered`.
+2. Run `teaport doctor --fix`. It restarts `teaport-sip`, and the brain
+   reconnects to it. If the front-end was the fault, it restarts the brain. A
+   restart of the brain ends a live Talk session.
+3. Wait ten seconds after a gateway start, and run `teaport doctor` again: the
+   registration appears in the journal within approximately ten seconds.
+4. If the trunk is still unregistered, check the account against
+   [Set up phone calls](/guides/phone-calls/).
 
 ## The speech sounds robotic
 
-The voice is flat. Short words sound too long. The rhythm is wrong.
+**Cause** The engine did not load the pronunciation dictionary. It fell back to
+plain `espeak-ng`, which has no word stress: short words sound too long, and the
+rhythm is wrong.
 
-The engine did not load the pronunciation dictionary. It uses a fallback that has no word
-stress. Check:
+<!-- source: install.sh:269;install.sh:434-435 @1e5604c -->
 
-```bash
-sudo journalctl -u teaport-engine | grep 'dict G2P'
-```
+**Fix**
 
-`dict G2P unavailable` means the dictionary is absent. The dictionary must be in
-`/opt/teaport/bin/g2p/`. Run the installer again to get it.
+1. Check the dictionary:
 
-<!-- source: install.sh:636-642, install.sh:805 -->
+   ```bash
+   sudo journalctl -u teaport-engine | grep 'dict G2P'
+   ```
 
-The installer writes `VOX_REQUIRE_DICT_G2P=1` into `/etc/teaport/engine.env`. An engine that
-supports this setting refuses to start without the dictionary. This is safer than a device
-that runs and sounds wrong.
+   `dict G2P unavailable` means the dictionary is absent.
+2. The dictionary must be `/opt/teaport/bin/g2p/kokoro_g2p.v2.dict`. Run the
+   installer again to get it.
+3. The installer writes `VOX_REQUIRE_DICT_G2P=1` into `/etc/teaport/engine.env`.
+   An engine that supports this setting refuses to start without the dictionary.
+   That is safer than a device that runs and sounds wrong.
 
 :::caution[The published engine ignores this setting]
-The engine that `teaport update` installs today does not know `VOX_REQUIRE_DICT_G2P`. The
-setting does nothing. The engine starts, and it sounds robotic. Use the journal command
-above to test. Do not rely on the setting until we publish a new engine.
+The engine that `teaport update` installs today does not know
+`VOX_REQUIRE_DICT_G2P`. The setting does nothing. The engine starts, and it
+sounds robotic. Use the journal command in step 1. Do not rely on the setting
+until a new engine is published.
 :::
 
 :::caution[`teaport doctor` passes without the dictionary]
-`doctor` tests that `espeak-ng` exists. `espeak-ng` is the fallback, not the dictionary. A
-device with correct speech and a device with robotic speech both pass. Use the journal
-command above.
+`doctor` tests that `espeak-ng` exists. `espeak-ng` is the fallback, not the
+dictionary. A device with correct speech and a device with robotic speech both
+pass. Use the journal command in step 1.
 :::
 
 ## Speech recognition is slow
 
-Speech recognition takes several seconds for a short sentence.
+**Cause** The engine has three kernels and picked a slow one, because the model
+file on the disk is not the one the manifest describes.
 
-The engine has three kernels. Only one is fast. Check which one it chose:
+**Fix**
 
-```bash
-sudo journalctl -u teaport-engine | grep -i marlin
-```
+1. Check which kernel the engine chose:
 
-You must see:
+   ```bash
+   sudo journalctl -u teaport-engine | grep -i marlin
+   ```
 
-```
-Detected Marlin INT4 model (single-file format)
-```
+   The output must contain:
 
-Any other message means a slow kernel. The cause is the wrong model file. Compare the file
-against the manifest:
+   ```text
+   Detected Marlin INT4 model (single-file format)
+   ```
 
-```bash
-sha256sum /opt/teaport/models/voxtral/consolidated.safetensors
-grep -A2 '"voxtral"' /opt/teaport/manifest.json
-```
+2. Any other message means a slow kernel. Compare the model file against the
+   manifest:
 
-If the values do not agree, delete the model and run the installer again:
+   ```bash
+   sha256sum /opt/teaport/models/voxtral/consolidated.safetensors
+   grep -A2 '"voxtral"' /opt/teaport/manifest.json
+   ```
 
-```bash
-sudo rm -f /opt/teaport/models/voxtral/consolidated.safetensors
-bash <(curl -fsSL https://get.teaspoon.tech/teaport)
-```
+3. If the values differ, delete the model, and run the installer again:
+
+   ```bash
+   sudo rm -f /opt/teaport/models/voxtral/consolidated.safetensors
+   bash <(curl -fsSL https://get.teaspoon.tech/teaport)
+   ```
 
 :::caution[`teaport doctor` passes on the slow kernel]
-`doctor` tests that the model file exists. It does not test which kernel the engine chose.
-Use the journal command above.
+`doctor` tests that the model file exists. It does not test which kernel the
+engine chose. Use the journal command in step 1.
 :::
+
+## The first sentence fails
+
+**Cause** The model name is wrong for the endpoint. OpenRouter needs the
+supplier and the model; other services need the model alone. The brain can also
+miss the endpoint or the key.
+
+| Endpoint | Model name |
+|---|---|
+| OpenRouter | `openai/gpt-oss-120b` |
+| Groq | `gpt-oss-120b` |
+| Cerebras | `gpt-oss-120b` |
+
+**Fix**
+
+1. Correct `LLM_MODEL` in `/etc/teaport/brain.env`.
+2. To apply the change, restart the brain:
+
+   ```bash
+   sudo systemctl restart teaport-brain
+   ```
+
+3. Run `teaport doctor`. It prints `LLM_BASE_URL unset in
+   /etc/teaport/brain.env` when the endpoint is missing, and
+   `no LLM key - set LLM_API_KEY or write ~/.config/teaport/llm_key` when the
+   key is missing.
+
+The installer offers `gpt-oss-120b` as the default value. That default is wrong
+for OpenRouter.
+
+<!-- source: install.sh:1506;install.sh:1519-1522 @1e5604c -->
 
 ## teaport does not remember anything
 
-teaport answers correctly. It does not recall earlier conversations.
+**Cause** The brain calls the gateway for memory, and it lacks the gateway's own
+token. It then skips the memory tools, and logs
+`no gateway token; skipping tool`.
 
-The brain calls the gateway for memory. It needs the gateway's own token. Check the file:
+<!-- source: brain/teaport_brain/openclaw_client.py:148;install.sh:1404-1417 @1e5604c -->
 
-```bash
-ls -l ~/.config/teaport/openclaw_token
-teaport logs brain | grep -i 'gateway token'
-```
+**Fix**
 
-`no gateway token; skipping tool 'memory_search'` means the file is absent. Write it:
+1. Check the token file, and the brain log:
 
-```bash
-python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['gateway']['auth']['token'])" \
-  > ~/.config/teaport/openclaw_token
-chmod 600 ~/.config/teaport/openclaw_token
-sudo systemctl restart teaport-brain
-```
+   ```bash
+   ls -l ~/.config/teaport/openclaw_token
+   teaport logs brain | grep -i 'gateway token'
+   ```
 
-<!-- source: install.sh:421-433 -->
+2. `no gateway token; skipping tool 'memory_search'` means the file is absent.
+   Write it:
+
+   ```bash
+   python3 -c "import json;print(json.load(open('$HOME/.openclaw/openclaw.json'))['gateway']['auth']['token'])" \
+     > ~/.config/teaport/openclaw_token
+   chmod 600 ~/.config/teaport/openclaw_token
+   ```
+
+3. To apply the change, restart the brain:
+
+   ```bash
+   sudo systemctl restart teaport-brain
+   ```
 
 :::note[teaport uses three different secrets]
 Do not confuse them.
@@ -352,49 +512,28 @@ Do not confuse them.
 
 ## teaport stops speaking in the middle of a reply
 
-teaport speaks. It stops. The rest of the reply does not arrive. This happens after you
-interrupt teaport two times quickly.
+**Cause** A fault in the engine. The engine keeps two audio slots, and releases
+a slot only after it finishes the abandoned sentence. That takes approximately
+1.5 seconds. Two interruptions within that time use both slots, and the next
+sentence gets no slot.
 
-This is a fault in the engine. The engine keeps two audio slots. It releases a slot only
-after it finishes the abandoned sentence. That takes approximately 1.5 seconds. Two
-interruptions in that time use both slots, and the next sentence gets no slot.
+**Fix** Leave approximately two seconds between interruptions.
 
 :::caution[The correction is not in the published engine yet]
-The correction exists. It is not in the engine that `teaport update` installs today. Until we
-publish a new engine, leave approximately two seconds between interruptions.
+The correction exists. The engine that `teaport update` installs today does not
+carry it.
 :::
-
-## The first sentence fails
-
-The installation completes. The first sentence gives an error from the LLM.
-
-Your model name is wrong for your endpoint. OpenRouter needs the supplier and the model. Other
-services need the model alone.
-
-| Endpoint | Model name |
-|---|---|
-| OpenRouter | `openai/gpt-oss-120b` |
-| Groq | `gpt-oss-120b` |
-| Cerebras | `gpt-oss-120b` |
-
-Correct `LLM_MODEL` in `/etc/teaport/brain.env`, then:
-
-```bash
-sudo systemctl restart teaport-brain
-```
-
-The installer offers `gpt-oss-120b` as the default value. That default is wrong for
-OpenRouter.
 
 ## teaport does not answer quiet speech
 
-You speak quietly. teaport does nothing. It gives no error.
+**Cause** Speech recognition returns an empty result for quiet audio. It does
+not report a fault.
 
-Speech recognition returns an empty result for quiet audio. It does not report a fault. Speak
-closer to the microphone. Raise the input level of the browser device.
+**Fix** Speak closer to the microphone. Raise the input level of the browser
+device.
 
-This is a known limitation. We measured it: 16% of one standard test set peaks below
-−30 dBFS, and 24 of 2600 files returned an empty result.
+Tests confirm it: 16% of a standard test set peaks below −30 dBFS, and
+24 of 2600 files returned an empty result.
 
 ## Where the logs are
 
@@ -406,22 +545,24 @@ This is a known limitation. We measured it: 16% of one standard test set peaks b
 | `sudo journalctl -u caddy` | the front door and the certificate |
 | `sudo journalctl -u avahi-daemon` | the `teaport.local` name |
 
-Add `-f` to follow a log. Add `-n 200` to get more lines.
+Add `-f` to follow a log. Add `-n 200` to see more lines.
 
-The gateway also writes a file. `openclaw gateway status` prints its path. The path changes
-each day:
+The gateway also writes a file. `openclaw gateway status` prints its path. The
+path changes each day:
 
-```
+```text
 File logs: /tmp/openclaw/openclaw-2026-08-07.log
 ```
 
 :::note
-`openclaw gateway` has no `logs` command. Its commands are `install`, `start`, `stop`,
-`restart`, and `status`.
+`openclaw gateway` has no `logs` command. Its commands are `install`, `start`,
+`stop`, `restart`, and `status`.
 :::
 
 ## Related
 
 - [Installation](/getting-started/installation/)
-- [teaport CLI](/reference/cli/)
 - [Configuration](/guides/configuration/)
+- [Set up phone calls](/guides/phone-calls/)
+- [Use a microphone on the device](/guides/local-audio/)
+- [teaport CLI reference](/reference/cli/)

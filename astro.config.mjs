@@ -23,16 +23,21 @@ export default defineConfig({
 			},
 			sidebar: [
 				{
-					label: 'Getting Started',
+					label: 'Get started',
 					items: [
 						{ label: 'Prepare the Jetson', slug: 'getting-started/prepare-the-jetson' },
-						{ label: 'Installation', slug: 'getting-started/installation' },
+						{ label: 'Install teaport', slug: 'getting-started/installation' },
 					],
 				},
 				{
 					label: 'Guides',
 					items: [
-						{ label: 'Configuration', slug: 'guides/configuration' },
+						{ label: 'Configure teaport', slug: 'guides/configuration' },
+						{ label: 'Set up phone calls', slug: 'guides/phone-calls' },
+						{ label: 'Set up the Discord bridge', slug: 'guides/discord-bridge' },
+						{ label: 'Use a microphone on the device', slug: 'guides/local-audio' },
+						{ label: 'Connect the device to Wi-Fi', slug: 'guides/wifi-setup' },
+						{ label: 'Update teaport', slug: 'guides/updating' },
 						{ label: 'Troubleshooting', slug: 'guides/troubleshooting' },
 						{ label: 'FAQ', slug: 'guides/faq' },
 					],
@@ -41,7 +46,9 @@ export default defineConfig({
 					label: 'Reference',
 					items: [
 						{ label: 'Architecture', slug: 'reference/architecture' },
-						{ label: 'teaport CLI', slug: 'reference/cli' },
+						{ label: 'teaport CLI reference', slug: 'reference/cli' },
+						{ label: 'Installer reference', slug: 'reference/installer' },
+						{ label: 'Settings reference', slug: 'reference/settings' },
 					],
 				},
 			],
