@@ -11,7 +11,7 @@ This page walks you through installing teaport on a Jetson Orin Nano Dev Kit (8 
 - SSH access or a screen, and a home network.
 - An **agent**: OpenClaw on the device, or NemoClaw, which is NVIDIA's OpenClaw package. The agent gives you the browser interface, the Talk session, and the tools. You can skip the agent, but then nothing can talk to the device. See [Install an agent](#install-an-agent).
 - Your own **large language model (LLM)**. Use a cloud key from OpenRouter, Groq, or Cerebras, or a local OpenAI-compatible server. See [Configuration](/guides/configuration/).
-- A **phone or laptop with a browser** on the same network. Its microphone and speaker carry the audio. Nothing connects to the device with a cable.
+- A **phone or laptop with a browser** on the same network. Its microphone and speaker carry the audio. Nothing to plug in: the device is already powered and on the network.
 - About **15 GB** of free disk space for the engine and its models. The installer warns when it finds less.
 
 <!-- source: install.sh:224-238,245-246,283,1506-1517 @1e5604c -->
