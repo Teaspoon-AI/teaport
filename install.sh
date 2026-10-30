@@ -1757,8 +1757,10 @@ phase_services() {
   # voice-only box (and a gateway box whose gateway cannot answer) reads a file that
   # does not exist, load_persona() silently falls through to the baked-in
   # FALLBACK_PERSONA, and the box quietly ships the generic assistant instead of the
-  # editable one docs/FAQ.md says it reads. Seed it once with that same text — never
-  # overwrite an existing file, so an operator's persona edit survives every repair.
+  # editable one the docs say it reads (docs/src/content/docs/guides/configuration.md,
+  # "Where secrets live"; reference/settings.md, TEAPORT_PERSONA_FILE). Seed it once
+  # with that same text — never overwrite an existing file, so an operator's persona
+  # edit survives every repair.
   if [ "$DRY_RUN" = 1 ]; then
     printf '  [dry-run] write %s if absent (starter persona text)\n' "$SECRETS/persona.md"
   elif [ ! -f "$SECRETS/persona.md" ]; then

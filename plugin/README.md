@@ -197,7 +197,7 @@ teaport.talk.context
   reaction to that note. While it is speaking, the reaction waits until it stops. If
   the user speaks first, their turn answers the note instead. A reaction that finds
   no quiet moment within 20 s is dropped, and the note stays as context.
-- Limits are set by the brain (`docs/CONFIG.md`, *Talk client context notes*): at
+- Limits are set by the brain (the [Settings reference](https://docs.teaspoon.tech/reference/settings/#talk-client-context-notes)): at
   most 1,000 characters per note (counted in Unicode code points), 20 notes kept in
   the context (the oldest are removed), and one `respond: true` note per 15 s. On top
   of those, any 10 notes may come at once, and after that one per second (fixed, not

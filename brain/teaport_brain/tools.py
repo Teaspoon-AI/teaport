@@ -13,8 +13,9 @@
 #
 # THE TOOL CONTRACT. Every tool is one `Tool` record in TOOLS (bottom of the schemas):
 #   - its schema (what the model sees) and its handler (bound per session);
-#   - an on/off switch, TEAPORT_TOOL_<NAME>, with a per-tool default (docs/CONFIG.md
-#     "Tools"; all of today's tools default on, restart_session off);
+#   - an on/off switch, TEAPORT_TOOL_<NAME>, with a per-tool default
+#     (docs/src/content/docs/reference/settings.md, "Tools"; all of today's tools
+#     default on, restart_session off);
 #   - what it NEEDS to work: "agent" (the co-resident OpenClaw gateway,
 #     TEAPORT_AGENT=openclaw, see agent_backend.py), "tts" (the session's voice),
 #     "client:<feature>" (the connected client can do it, announced on /talk as
@@ -76,7 +77,8 @@ from teaport_brain.settings import setting
 # both: two copies of `os.getenv(...) in ("1","true")` could disagree if either was edited
 # alone, leaving the mode half-enabled — the strict router directive installed while this
 # module still spoke the "I'll work on that" ack the directive exists to suppress. It also
-# only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while docs/CONFIG.md
+# only accepted 1/true, so `TEAPORT_AGENT_FIRST=on` silently meant off while
+# docs/src/content/docs/guides/configuration.md ("Change a setting in a configuration file")
 # promised otherwise; setting() reads it by the documented table.
 AGENT_FIRST = setting("TEAPORT_AGENT_FIRST")
 # Agent-first routes EVERY turn through openclaw_agent_consult; without a gateway that tool
