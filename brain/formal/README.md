@@ -264,9 +264,14 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   `say ∈ {tell, part}`. Merely about it is not enough: a reply on another subject with
   one of its terms among its own ("sunny days" in how a heat pump works, a forecast
   owed) is judged as before and stays owed, but its cut counts nothing and its dismissal
-  is not read against the record. The cost: a re-telling that paraphrases every one of
+  is not read against the record. The costs: a re-telling that paraphrases every one of
   its result's terms away is not counted (the told-twice backstop still bounds the ones
-  played through). Not a reply that is a
+  played through); and a short reply on another subject whose one term of its own is
+  one of the result's ("Sure, I can set a timer for six minutes." with a pharmacy's
+  "six" owed) passes for the rest alone -- bounded: it must carry the note and be cut,
+  the check should read words about it as WANTED, and a wrong drop needs two. A
+  re-lookup's reply counts only once its stream ended calling nothing; cut before that,
+  it is judged by what was heard. Not a reply that is a
   fresh answer's telling -- by position (`_resolve`'s rule, `Owed._tells_fresh`) and about
   it (a term shared with what was asked for it): a term it shares with an older record
   is chance (an address's "fifty-five" and a forecast's low); the record its cut makes

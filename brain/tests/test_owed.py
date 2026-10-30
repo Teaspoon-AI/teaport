@@ -2119,6 +2119,11 @@ def test_a_telling_is_two_of_its_terms_or_the_rest_alone():
                       (p, "The pharmacy on Main Street is a CVS with a drive-through and a "
                           "photo counter.")]:
         assert not rec.tells(text), text
+    # The accepted residual: a short reply on another subject whose one term of its own
+    # is one of the result's (a number, often) passes for the rest alone. It must carry
+    # the note and be cut; the check should read words about it as WANTED; a wrong drop
+    # needs two (formal/README.md, What the code adds).
+    assert p.tells("Sure, I can set a timer for six minutes.")
 
 
 async def test_a_re_lookups_own_line_before_its_call_is_no_telling():
@@ -2139,6 +2144,19 @@ async def test_a_re_lookups_own_line_before_its_call_is_no_telling():
     c.calls = 1
     b.called(c, ["wf"])
     b.settle(c, "Sure, let me", cut=True, audio=True, text="Sure, let me pull that up again.")
+    await judged(b)
+    rec = b.record("w1")
+    assert rec.state == OWED and rec.cuts == 1, (rec.state, rec.cuts)
+    # Cut before its stream ended: the call is not out yet (pipecat runs it at the end).
+    b, _, _ = sync_book(judge=FakeJudge(False), gist=FakeGist(False),
+                        decline=FakeDecline(False))
+    msgs = await _owed_weather(b)
+    await judged(b)
+    msgs = msgs + [{"role": "user", "content": "Hold on, hold on."}]
+    _, keys = await b.view(LLMContext(msgs), owed.COMMIT)
+    c = Reply(owed.COMMIT)
+    b.noted(c, keys, msgs)
+    b.settle(c, "Sure, let me", cut=True, audio=True, text=None, rest=None)
     await judged(b)
     rec = b.record("w1")
     assert rec.state == OWED and rec.cuts == 1, (rec.state, rec.cuts)

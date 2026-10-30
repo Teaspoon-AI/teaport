@@ -1309,12 +1309,14 @@ class Owed:
             # unless it is a fresh answer's telling (`fresh_telling`, above): then it was
             # that answer's (its record, if the cut makes one, counts it), and terms it
             # shares with an older record are chance (an address's "fifty-five" and a
-            # forecast's low). Its re-lookup's reply that tells the new result (`relook`,
-            # calling nothing) is its telling whatever that says -- not the turn's own "let
-            # me check" line before the call.
+            # forecast's low). Its re-lookup's reply that tells the new result (`relook`:
+            # its stream ended, calling nothing) is its telling whatever that says -- not
+            # the turn's own "let me check" line before the call, which may be cut before
+            # its stream ends and the call goes out (then it is judged by tells(heard)).
             if (mark is not None and key in reply.noted and cut and audio and heard
                     and heard.strip()
-                    and (mine or (reply.relook == key and not reply.calls)
+                    and (mine or (reply.relook == key and text is not None
+                                  and not reply.calls)
                          or (not fresh_telling and rec.tells(text or heard)))):
                 # A telling of it cut after its audio began (#231, Owed.tla `cuts`): it
                 # counts, and the second ends it unless the judges find it heard
