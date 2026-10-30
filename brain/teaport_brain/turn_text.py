@@ -58,11 +58,10 @@
 #
 import time
 from collections import deque
-from dataclasses import dataclass
 
 from loguru import logger
 
-from pipecat.frames.frames import BotStartedSpeakingFrame, SystemFrame
+from pipecat.frames.frames import BotStartedSpeakingFrame
 from pipecat.processors.frame_processor import FrameProcessor
 
 from teaport_brain.endpointing import TurnTextFinalFrame
@@ -70,15 +69,6 @@ from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 from teaport_brain.heard_context import _set_msg_text, msg_text
 
 __all__ = ["TurnTextCorrector", "TurnTextFinalFrame"]
-
-
-@dataclass
-class TurnTextUnplacedFrame(SystemFrame):
-    """No longer pushed: the corrector never sends words back up (see unplaced above).
-    Kept only until the STT stops handling it, in the next change."""
-
-    stop_n: int
-    final: str
 
 # The commits a correction may look in: the latest few, each with when it passed and
 # the user message it carried. The final follows its provisional by ~0.5 s.

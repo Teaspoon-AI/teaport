@@ -166,10 +166,6 @@ class FakeEngine:
         self.stt_sessions += 1
         self.stt_active += 1
         seg_speech, words, streamed = 0.0, None, 0
-        # The preview stream (opted in by the session): the session clock (ms of audio
-        # appended), where the open segment's speech last was, the last word's end,
-        # words of a commit's turn still to send (word, end_ms), and appends since the
-        # last progress report.
         # The preview stream (opted in by the session): one continuous transcript. The
         # session clock (ms of audio appended), where the utterance's speech last was,
         # the last word's end, the silence since, and appends since the last report.

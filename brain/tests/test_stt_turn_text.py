@@ -20,8 +20,10 @@
 #     TurnTextFinalFrame naming what the final added ("adds": the trailing "stop" a
 #     preview stopped short of), dropped, or changed;
 #   * words are never lost: an empty provisional (a wordless close) whose final has words
-#     pushes them as a final of their own, stamped NO_STOP; and so does a final the
-#     corrector downstream could place nowhere (TurnTextUnplacedFrame, upstream);
+#     pushes them as a final of their own, stamped NO_STOP, through the echo guard and
+#     the wake gate; over the bot an empty preview closes nothing, and the turn closes on
+#     its final, stamped with its stop;
+#   * a word ending just past the cut is the turn's when its preview vouched for it;
 #   * what slice mode turns off: the carry, and the wait for the caller's pause -- a
 #     COMPLETE verdict commits at once over voice the analyzer has heard; what it keeps:
 #     the hint, on every commit;
@@ -61,7 +63,7 @@ from teaport_brain.endpointing import (  # noqa: E402
     TurnVerdictFrame,
 )
 from teaport_brain.stt import FinalTranscriptionFrame, TeaportSTTService  # noqa: E402
-from teaport_brain.turn_text import TurnTextFinalFrame, TurnTextUnplacedFrame  # noqa: E402
+from teaport_brain.endpointing import TurnTextFinalFrame  # noqa: E402
 
 SAMPLE_RATE = 16000
 CHUNK_MS = 20
@@ -148,9 +150,10 @@ async def turn(s, speech_ms=1000, quiet_ms=0):
     await complete(s)
 
 
-async def delta(s, text, end):
+async def delta(s, text, end, start=None):
     await s._handle_message({"type": "transcription.delta", "delta": text,
-                             "timestamp": 0.0, "audio_ms": max(0, end - 200),
+                             "timestamp": 0.0,
+                             "audio_ms": max(0, end - 200) if start is None else start,
                              "end_ms": end})
 
 
@@ -159,10 +162,10 @@ async def preview(s, through, text=""):
                              "delta": text, "main_through_ms": 0, "credited_ms": 0})
 
 
-async def progress(s, end_through, decoded=None):
+async def progress(s, end_through, decoded=None, audio=None):
     await s._handle_message({"type": "transcription.progress",
                              "decoded_through_ms": end_through if decoded is None else decoded,
-                             "audio_through_ms": end_through,
+                             "audio_through_ms": end_through if audio is None else audio,
                              "end_through_ms": end_through})
 
 
@@ -252,7 +255,7 @@ async def test_a_turn_is_the_words_that_end_before_its_commit():
     assert s.finals() == [("what time is", 1)]
     await progress(s, 1000)
     assert s.corrections() == [], "the final is what was asked"
-    assert s._interim_buffer == " it" and [w for w, _ in s._open_words] == [" it"]
+    assert s._interim_buffer == " it" and [w for w, *_ in s._open_words] == [" it"]
 
 
 async def test_the_provisional_is_the_words_in_hand_then_the_preview():
@@ -336,7 +339,7 @@ async def test_a_word_below_a_settled_turn_is_kept_for_the_open_one():
     await created(s)
     await turn(s)
     await preview(s, 1000, " hi")
-    await progress(s, 1000)
+    await progress(s, 1000 + stt_mod._VOUCH_MS)    # " hi" never came: final at the margin
     await delta(s, " late", 500)            # the engine's bound did not hold
     assert s._interim_buffer == " late" and s.interims()[-1] == " late"
 
@@ -361,14 +364,6 @@ async def test_an_empty_provisional_whose_final_has_words_goes_on_as_new_words()
     await preview(s, 1000, "")
     await progress(s, 1000)
     assert s.finals() == [] and s.corrections() == []
-
-
-async def test_a_final_placed_nowhere_downstream_comes_back_as_its_own_final():
-    s = Service()
-    await created(s)
-    await s.process_frame(TurnTextUnplacedFrame(stop_n=3, final="okay stop"), UP)
-    assert s.finals() == [("okay stop", NO_STOP)]
-    assert not any(isinstance(f, TurnTextUnplacedFrame) for f in s.pushed), "consumed"
 
 
 async def test_the_wake_turn_is_corrected_on_what_follows_the_phrase():
@@ -541,6 +536,203 @@ async def test_the_strategy_is_told_the_session_peeks():
     s = Service(peeks=True)
     await created(s, preview=False)
     assert s.of(SttProgressFrame)[0].peeks is False, "an engine without the preview"
+
+
+# ---- the 2026-10-27 review --------------------------------------------------------------
+
+async def test_a_word_the_preview_vouches_for_stays_in_its_turn():
+    # The peek slices at the stop; the main stream's last word ends a little past it (an
+    # end estimate late by tens of ms). The preview has the word: it is the turn's, not
+    # the open turn's -- no interim, no correction dropping it, no backstop committing it
+    # as a turn of its own.
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " what's", 300)
+    await delta(s, " the", 600)
+    await vad_stop(s, stop_secs=0.2)
+    at = s._peek.at_ms
+    await preview(s, at, " weather")
+    await complete(s)
+    assert s.finals() == [("what's the weather", 1)]
+    interims = list(s.interims())
+    await delta(s, " weather", at + 10)
+    await audio(s, 200)
+    assert s.interims() == interims, "the turn's own word announced as an interim"
+    await progress(s, at + 300)
+    assert s.corrections() == [] and not s._open_words and not s._turns
+    await asyncio.sleep(stt_mod._STRANDED_INTERIM_SECS + 0.1)
+    assert len(commits(s)) == 1, "a backstop committed the turn's own word"
+
+
+async def test_a_vouched_word_in_before_the_verdict_is_taken_back_from_the_open_turn():
+    # The same word, arriving between the peek's preview and the verdict that adopts it:
+    # the open turn had it (as every word of a turn not yet closed), and the turn takes it
+    # back -- it is in the provisional already, through the preview.
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " what's", 300)
+    await delta(s, " the", 600)
+    await vad_stop(s, stop_secs=0.2)
+    at = s._peek.at_ms
+    await preview(s, at, " weather")
+    await delta(s, " weather", at + 10)
+    await complete(s)
+    assert s.finals() == [("what's the weather", 1)]
+    assert not s._open_words and s._interim_buffer == "", s._open_words
+    await progress(s, at + 300)
+    assert s.corrections() == [] and not s._turns
+    await asyncio.sleep(stt_mod._STRANDED_INTERIM_SECS + 0.1)
+    assert len(commits(s)) == 1, "a backstop committed the turn's own word"
+
+
+async def test_a_word_the_cut_falls_inside_is_the_turns_when_the_preview_has_it():
+    # A commit with no pause behind it (the backstop) cuts inside a word: it starts before
+    # the cut and ends well past it. The preview, decoded to the cut, has it whole. The
+    # turn takes it -- and its later pieces, which share its positions -- and is not final
+    # until no word starting before the cut can still come (audio_through_ms).
+    s = Service()
+    await created(s)
+    await turn(s)                                  # at 1000
+    await delta(s, " vertically", 700, start=300)
+    await preview(s, 1000, " horizontally.")
+    await progress(s, 1250, audio=900)
+    assert s._turns, "final while a word starting before the cut could still come"
+    await delta(s, " horizontally", 1400, start=800)
+    await delta(s, ".", 1400, start=800)
+    await progress(s, 1400, audio=1000)
+    assert not s._turns and s.corrections() == [], s.corrections()
+    assert not s._open_words and s._interim_buffer == ""
+
+
+async def test_a_words_later_pieces_follow_it_into_its_turn():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " to", 700)
+    await vad_stop(s, stop_secs=0.2)
+    at = s._peek.at_ms
+    await preview(s, at, " 1300.")
+    await complete(s)
+    for piece in (" 1", "3", "0", "0", "."):
+        await delta(s, piece, at + 60, start=at - 300)
+    await progress(s, at + 300)
+    assert not s._turns and s.corrections() == [], s.corrections()
+    assert not s._open_words
+
+
+async def test_a_word_past_the_cut_the_preview_did_not_have_is_the_next_turns():
+    s = Service(peeks=True)
+    await created(s)
+    await vad_start(s)
+    await audio(s, 1000)
+    await delta(s, " last", 400)
+    await delta(s, " week", 700)
+    await vad_stop(s)
+    at = s._peek.at_ms
+    await preview(s, at, "")
+    await complete(s)
+    await delta(s, " I", at + 50)              # the next utterance's first word
+    assert s.interims()[-1] == " I" and [w for w, *_ in s._open_words] == [" I"]
+    await progress(s, at + 300)
+    assert s.corrections() == []
+
+
+async def test_a_barge_in_with_an_empty_preview_closes_on_its_final():
+    # Over the bot the preview can be empty while the main stream has the words: the
+    # turn closes on the final, stamped with its stop, so the words are decided as the
+    # barge-in they are (the pause still holding the reply) -- not a wordless close now
+    # and the words later, unpaused, as words of no stop.
+    s = Service(peeks=True)
+    await created(s)
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    await vad_start(s)
+    await audio(s, 600)
+    await vad_stop(s)
+    await preview(s, 600, "")
+    assert s.finals() == [] and s.of(SegmentDoneFrame) == [], "closed on the empty preview"
+    await delta(s, " Stop.", 450)
+    await progress(s, 600)
+    assert s.finals() == [("Stop.", 1)]
+
+
+async def test_a_barge_in_heard_only_as_the_bots_own_words_closes_on_its_final():
+    # The room mic over the bot: the provisional is the bot's reply heard back, which the
+    # echo guard takes off whole. As with an empty preview, the turn closes on its final,
+    # stamped with its stop -- the caller's "stop" is the barge-in, not new words after it.
+    from teaport_brain import echo_guard
+    class Clock:
+        t = 100.0
+
+        def __call__(self):
+            return self.t
+    clock = Clock()
+    s = Service()
+    await created(s)
+    s.echo_guard = echo_guard.EchoGuard(clock=clock)
+    for w in "the weather today is sunny and warm".split():
+        s.echo_guard.bot.played(w)              # a word every 0.3 s
+        clock.t += 0.3
+    clock.t = 100.5                             # its echo starts arriving 0.5 s in
+    await s.process_frame(BotStartedSpeakingFrame(), UP)
+    await vad_start(s)
+    await audio(s, 1000)
+    for w, e in ((" the", 200), (" weather", 400), (" today", 600), (" is", 700)):
+        await delta(s, w, e)
+    await vad_stop(s)
+    await preview(s, 1000, " sunny")
+    assert s.finals() == [] and s.of(SegmentDoneFrame) == [], "closed on the bot's words"
+    await delta(s, " sunny", 800)
+    await delta(s, " stop", 950)
+    await progress(s, 1000)
+    assert s.finals() == [("stop", 1)], s.finals()
+
+
+async def test_an_empty_provisionals_words_go_through_the_wake_gate():
+    from teaport_brain import wake_gate
+    from teaport_brain.wake_words import parse_phrases
+    s = Service(peeks=True)
+    await created(s)
+    s.wake_gate = wake_gate.WakeGate(parse_phrases("hey teaport"),
+                                     store=wake_gate.MicConversation())
+    await turn(s)
+    await preview(s, 1000, "")
+    for w, e in ((" Hey", 300), (" Teaport,", 500), (" what", 700), (" time?", 900)):
+        await delta(s, w, e)
+    await progress(s, 1000)
+    assert not s.wake_gate.asleep and s.finals() == [("what time?", NO_STOP)], s.finals()
+
+
+async def test_an_engine_with_the_preview_but_no_progress_runs_on_segments():
+    s = Service(peeks=True)
+    await s._handle_message({"type": "session.created", "id": "s", "created": 1,
+                             "capabilities": ["transcription.preview"]})
+    assert not s._slicing
+
+
+async def test_a_dropped_word_then_a_backstop_is_counted():
+    s = Service()
+    await created(s)
+    lines = []
+    sink = stt_mod.logger.add(lambda m: lines.append(m.record["message"]), level="INFO")
+    try:
+        await vad_start(s)
+        await audio(s, 1000)
+        await delta(s, " capital", 500)
+        await vad_stop(s)
+        await complete(s)
+        await preview(s, 1000, " cities")
+        await delta(s, " cities", 1500)        # past the cut by more than the margin
+        await progress(s, 1000 + stt_mod._VOUCH_MS)
+        assert [c.kind for c in s.corrections()] == ["drops"]
+        await asyncio.sleep(stt_mod._STRANDED_INTERIM_SECS + 0.1)
+        assert any("[TURN]" in m and "backstop" in m and "dropped" in m for m in lines), lines
+    finally:
+        stt_mod.logger.remove(sink)
 
 
 # ---- what slice mode turns off, and keeps ---------------------------------------------
