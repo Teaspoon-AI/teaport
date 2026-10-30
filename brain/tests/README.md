@@ -86,8 +86,8 @@ HF_HUB_OFFLINE=1 HF_HOME=$(mktemp -d) unshare -rn \
 
 Loopback is up in that namespace because `test_sip_fake_gateway.py` needs it: it
 runs the real teaport-brain against `fake_sip_gateway.py` (a stand-in for the
-teaport-sip gateway, also a CLI for the box — docs/CONFIG.md, *Testing the phone
-path without a line*) and `fake_engine.py` (the engine's STT/TTS and an
+teaport-sip gateway, also a CLI for the box — `docs/src/content/docs/guides/phone-calls.md`,
+"Test the phone path without a line", and the section below) and `fake_engine.py` (the engine's STT/TTS and an
 OpenAI-compatible LLM on 127.0.0.1). Nothing leaves the machine.
 
 Need the appliance:
@@ -98,3 +98,47 @@ Need the appliance:
 - `test_remember_tool.py` — needs a **live LLM** (`LLM_BASE_URL` + `LLM_API_KEY` +
   `LLM_MODEL`). Skips when `LLM_BASE_URL` is unset. Asserts the model actually emits the `remember` tool call, so it can flake
   on model behavior rather than on our code. Writes to an isolated tmp memory dir.
+
+## Driving the phone path by hand
+
+The steps to place one call against a box's real brain (guard the gateway with
+`tools/sip-line-guard`, serve the socket with `fake_sip_gateway.py`, read the
+summary) are the user-facing page `docs/src/content/docs/guides/phone-calls.md`,
+"Test the phone path without a line" (published at
+https://docs.teaspoon.tech/guides/phone-calls/#test-the-phone-path-without-a-line).
+What it leaves out is here. `tools/sip-line-guard` explains in its header why it is
+a drop-in and not `systemctl mask --runtime`: the unit file in `/etc/systemd/system`
+outranks a mask in `/run`.
+
+Other calls (the flags are in `fake_sip_gateway.py`'s `parse_args`):
+
+```sh
+--hangup-mid-reply 1.5                  # hang up 1.5 s into the bot's answer
+--hangup-after 60                       # hang up 60 s after answer at the latest
+--wait-brain-hangup --hangup-after 60   # leave hanging up to the brain (capped)
+--calls 3 --between 2                   # three calls in a row on one connection
+--no-auto-answer                        # ring until the brain sends call.answer
+```
+
+To test a brain restart mid-call:
+
+1. Start a call that stays up on its own, with `--wait-brain-hangup --hangup-after 60`.
+   Without a WAV, the default hangs up as soon as the greeting is over.
+2. While it runs, `sudo systemctl restart teaport-brain`, or
+   `sudo systemctl kill -s KILL teaport-brain`, which `Restart=` brings back 5 s later.
+   Either one also ends any Talk session on the box.
+3. The fake keeps the call up. Its socket survives too, because `/run/teaport` is not
+   `teaport-brain`'s.
+4. The fake replays the call to the brain when it reconnects. Its log shows
+   `brain 2 connected: hello + replay of call ...`.
+5. The brain's journal shows it `RESUMING a call already in progress`, and the summary
+   has `"brain_connects": 2`.
+
+`python -m teaport_brain.sip_server --socket PATH` runs the SIP front-end on its own.
+It is for test rigs off the box only. It has its own arbiter and cannot see the box's
+Talk sessions. So on a box whose room mic holds the engine (wake words set), its calls
+get the busy line rather than the handoff.
+
+Off the box, `fake_engine.py` stands in for the engine and the LLM
+(`python tests/fake_engine.py` prints the env to point a brain at it), and
+`test_sip_fake_gateway.py` runs whole calls through `teaport-brain` against both fakes.

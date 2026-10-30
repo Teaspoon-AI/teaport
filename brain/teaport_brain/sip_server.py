@@ -153,8 +153,9 @@ from teaport_brain.sip_transport import (
 # preserve verbatim:
 #
 #   The kill switch had grown its OWN truth table ("0"/"false"/"no"), which accepted
-#   neither `off` nor `n`. So `SIP_HALF_DUPLEX=off` — a spelling docs/CONFIG.md
-#   documents, and one brain.env can decide, since an EnvironmentFile overrides the
+#   neither `off` nor `n`. So `SIP_HALF_DUPLEX=off` — a spelling
+#   docs/src/content/docs/guides/configuration.md ("Change a setting in a configuration
+#   file") documents, and one brain.env can decide, since an EnvironmentFile overrides the
 #   unit's own `Environment=SIP_HALF_DUPLEX=0` (systemd.exec) — left the gate ON:
 #   barge-in silently dead on the phone line, with not one journal line about it,
 #   since a private table also skips setting()'s "disabled" log. tools.py records the
@@ -613,9 +614,10 @@ async def run_connection(sock, on_ready=None):
             # smart-turn/VAD/resampler arena pages (~35 MB a session), and whatever a
             # long call freed after its last quiet moment, until this. Without this, RSS
             # and VRAM ratchet call over call on the 8 GB unified pool — and on the
-            # phone-dedicated box docs/CONFIG.md recommends (`systemctl disable --now
-            # teaport-brain`) NO other process is running sessions to reclaim on our
-            # behalf, so it ends at an OOM.
+            # phone-dedicated box the docs recommend (the OTHER front ends turned off, the
+            # brain left running: docs/src/content/docs/guides/phone-calls.md, "A call
+            # during a conversation") NO other front end is running sessions to reclaim
+            # on our behalf, so it ends at an OOM.
             #
             # Off the loop, like MemoryReclaim's in-session trim, but AWAITED: this
             # usually runs inline in the connection's single receive loop, so awaiting
@@ -954,7 +956,8 @@ async def run_connection(sock, on_ready=None):
                         "the gateway answered a call by itself (teaport-sip.conf "
                         "auto_answer=true): no ring head start, and a call a conversation "
                         "says not to pick up hears busy instead of ringing on. Set "
-                        "auto_answer=false and `teaport sip restart` (docs/CONFIG.md)")
+                        "auto_answer=false and `teaport sip restart` "
+                        "(https://docs.teaspoon.tech/reference/settings/#sip-gateway)")
                 ring.answered.set()
                 if ring.declined:
                     # Left ringing, and answered anyway: it cannot ring on any more.

@@ -1,0 +1,61 @@
+name: docs
+
+# Lint and build the documentation site in docs/ (Astro + Starlight). Nothing here
+# deploys: hosting docs.teaspoon.tech is configured outside this repo, so this workflow
+# only says whether a change leaves the docs publishable.
+#
+# No path filter, on purpose. The pages cite the product's own files for every port,
+# path and default they state, with a fingerprint of the cited lines
+# (<!-- source: install.sh:375-386#3f9a2c1b -->), and the lint fails when those lines
+# change; one page is generated from brain/teaport_brain/config_schema.toml. So a
+# change outside docs/ (install.sh, cli/teaport, systemd/, manifest/, the config
+# schema) can make a page wrong or break its build. A filter would have to list all of them and would
+# rot the first time a page cites a new file. The job is cheap enough not to bother:
+# an npm ci from the cache and a static build, about a minute against the 15 minutes
+# ci.yml's brain jobs take. Revisit if docs/ grows past that.
+#
+# Job name is plain `docs` (no matrix), so a future branch-protection rule can name
+# it directly, same as the `formal` note in ci.yml.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A newer push to a PR replaces its older check; on main every push is checked.
+concurrency:
+  group: docs-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+jobs:
+  docs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: docs
+    steps:
+      # Default depth: the lint reads the working tree only. Only
+      # `lint.mjs --fix-sources`, which a person runs to refresh citations, reads git
+      # history, so the full clone is not needed here.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # Astro 7 needs Node >= 22.12 (docs/package.json engines); "22" resolves to the
+      # newest 22.x, as the plugin job in ci.yml does.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: docs/package-lock.json
+      - name: Install dependencies from package-lock.json
+        run: npm ci
+      - name: Lint the pages
+        # The mechanical style rules and the source-comment check
+        # (docs/docs-work/lint.mjs). A clean lint does not prove a sentence is true.
+        run: node docs-work/lint.mjs
+      - name: Build the site
+        run: npx astro build

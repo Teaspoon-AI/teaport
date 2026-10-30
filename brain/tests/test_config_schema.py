@@ -2,10 +2,10 @@
 # Schema drift gate: every environment variable the brain reads has a row in
 # teaport_brain/config_schema.toml, and every row is well-formed.
 #
-# The schema is the ONE table the config UI, `teaport doctor` and the CONFIG.md
-# generator read, so an os.getenv() added without a row is a setting nobody can
-# see, document or validate — exactly the state docs/CONFIG.md was in when the
-# table was first drafted (25 knobs read by the code and documented nowhere).
+# The schema is the ONE table the config UI, `teaport doctor` and the Settings
+# reference generator read, so an os.getenv() added without a row is a setting nobody can
+# see, document or validate — exactly the state the hand-written config doc was in when
+# the table was first drafted (25 knobs read by the code and documented nowhere).
 # The read-site regex mirrors settings.setting and the bare os.getenv / os.environ
 # forms, either quote (a read inside an f-string is single-quoted); a new reader needs
 # adding here too. Comments are not reads: a name mentioned in one must not stand in

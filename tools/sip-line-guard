@@ -2,8 +2,8 @@
 # SPDX-License-Identifier: MIT
 #
 # sip-line-guard — keep the SIP gateway from starting, and so from registering, while
-# the phone path is tested with brain/tests/fake_sip_gateway.py (docs/CONFIG.md,
-# "Testing the phone path without a line").
+# the phone path is tested with brain/tests/fake_sip_gateway.py (docs/src/content/docs/guides/phone-calls.md,
+# "Test the phone path without a line").
 #
 #   tools/sip-line-guard on       add the guard (runtime: gone at the next boot)
 #   tools/sip-line-guard status   prove it holds, without starting anything

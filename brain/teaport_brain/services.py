@@ -77,7 +77,7 @@ def get_llm_api_key() -> str:
         return key
     raise RuntimeError(
         "no LLM API key — set LLM_API_KEY or write ~/.config/teaport/llm_key "
-        "(see docs/CONFIG.md)"
+        "(see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model)"
     )
 
 
@@ -96,7 +96,8 @@ def get_llm_api_key() -> str:
 #
 # The cap is sized for the reasoning effort ACTUALLY IN FORCE. gpt-oss bills hidden
 # chain-of-thought as completion tokens, and LLM_REASONING_EFFORT is an independent
-# knob an operator is invited to turn (docs/CONFIG.md) — so a cap sized for "low"
+# knob an operator is invited to turn (docs/src/content/docs/reference/settings.md,
+# "Language model") — so a cap sized for "low"
 # starves "high": the reasoning alone exhausts the budget, the completion comes back
 # finish_reason=length with zero visible content, no LLMTextFrame is ever pushed, and
 # the room hears dead air. That is the SAME silent assistant this cap exists to
@@ -111,10 +112,11 @@ def get_llm_api_key() -> str:
 # openclaw_agent_consult request is the realistic case.
 #
 # "" is deliberately NOT in this table. LLM_REASONING_EFFORT="" is a configuration
-# docs/CONFIG.md invites ("for models that don't support it"), and _llm_extra() then omits
-# reasoning_effort from the request entirely — so the model runs at ITS OWN default, which
-# is typically medium. Mapping "" to the 1024-token low budget billed a medium-effort
-# completion against the cheapest cap and produced exactly the failure described above:
+# docs/src/content/docs/reference/settings.md ("Language model") invites ('Set "" to
+# disable for models that do not'), and _llm_extra() then omits reasoning_effort from the
+# request entirely — so the model runs at ITS OWN default, which is typically medium.
+# Mapping "" to the 1024-token low budget billed a medium-effort completion against the
+# cheapest cap and produced exactly the failure described above:
 # finish_reason=length, zero visible content, dead air. Falling through to the
 # unknown-effort headroom is correct, because the effort in force is unknown by
 # construction.
@@ -851,7 +853,7 @@ def make_llm():
             "LLM_BASE_URL is not set, or is not an http(s):// URL (see the warning above) — "
             "point it at your OpenAI-compatible endpoint "
             "(e.g. https://api.groq.com/openai/v1, or http://127.0.0.1:8182/v1 for a "
-            "local server); see docs/CONFIG.md"
+            "local server); see https://docs.teaspoon.tech/guides/configuration/#set-up-the-language-model"
         )
     # When uncapped, max_tokens is left OUT of Settings rather than set to None: the
     # field then keeps its NOT_GIVEN default, the OpenAI SDK sentinel that drops it from

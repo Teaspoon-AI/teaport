@@ -447,10 +447,10 @@ async def run_relay_bot(websocket: WebSocket):
             # greet() spoke the can't-hear line instead of greeting. Nothing read this
             # before, so the session stayed up: the client saw a connected assistant
             # that answered once and then never again, while holding the slot.
-            # docs/CONFIG.md and docs/FAQ.md both promise the session ends here, and
-            # the SIP path already does it (hangs the caller up). Let the line play,
-            # then end the pipeline — the client sees a clean disconnect. It never says
-            # "ready", so the plugin keeps notes out of a session being torn down.
+            # The session ends here, as the SIP path already ends it (hangs the caller
+            # up). Let the line play, then end the pipeline — the client sees a clean
+            # disconnect. It never says "ready", so the plugin keeps notes out of a
+            # session being torn down.
             logger.info("STT unavailable — ending the session after the warning plays")
             await session.followup_gate.wait_until_delivered()
             await session.task.cancel()

@@ -21,7 +21,7 @@ different engine if it is compatible with the teaport-engine interface.
 ## Quickstart — your own Jetson Orin Nano (8 GB)
 
 ```bash
-# 1. Flash JetPack 7.2 (see docs/INSTALL.md)
+# 1. Flash JetPack 7.2 (see the installation guide linked below)
 # 2. Install NemoClaw (NVIDIA's installer — your consent, your terminal)
 bash <(curl -fsSL https://www.nvidia.com/nemoclaw.sh)
 # 3. Install teaport
@@ -31,8 +31,9 @@ bash <(curl -fsSL https://get.teaspoon.tech/teaport)
 Accept the engine license. Answer the LLM question. The installer then sets up
 the engine, the voices, the brain, the OpenClaw plugin, and the services. It
 ends with a self-test. You can run the installer again at any time. It repairs
-an installation and does not duplicate it. See
-[docs/INSTALL.md](docs/INSTALL.md) for the full procedure.
+an installation and does not duplicate it. See the
+[installation guide](https://docs.teaspoon.tech/getting-started/installation/) for the
+full procedure.
 
 ## Layout
 
@@ -44,7 +45,9 @@ an installation and does not duplicate it. See
   artifact the manifest names is already uploaded with that sha256. Upload a release's
   artifacts first, then merge its manifest.
 - `install.sh` · `cli/teaport` · `systemd/` — install and operate the product
-- `docs/` — INSTALL, ARCHITECTURE, CONFIG, FAQ
+- `docs/` — the documentation site, published at
+  [docs.teaspoon.tech](https://docs.teaspoon.tech): installation, guides, and the
+  architecture, CLI, installer, and settings references. See `docs/README.md` to build it.
 
 ## Licensing
 
