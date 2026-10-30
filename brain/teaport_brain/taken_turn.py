@@ -14,6 +14,10 @@
 # empty finals.
 #
 import dataclasses
+from collections import deque
+from typing import Optional
+
+from loguru import logger
 
 from pipecat.frames.frames import Frame, TranscriptionFrame
 from pipecat.turns.types import ProcessFrameResult
@@ -42,6 +46,40 @@ def handed_back(frame: TranscriptionFrame, text: str) -> TranscriptionFrame:
     closed when it was taken), so it cannot end the turn it joins."""
     fields = {f.name for f in dataclasses.fields(frame)}
     return dataclasses.replace(frame, text=text, **({"stop_n": None} if "stop_n" in fields else {}))
+
+
+class TakenWords:
+    """The caller's latest finals that went somewhere other than the model, and why: Wi-Fi
+    setup or OpenClaw's run control took them (taken() above), the barge-in judge let
+    the reply carry on over them (barge_pause.BargeInJudgeGate), the barge-in guard
+    dropped them as too few to cut the bot (barge_pause.PauseAwareMinWordsStrategy).
+    One per session (agent_session builds it and hands it to each).
+
+    Read by turn_text.TurnTextCorrector: a sliced turn's correction that finds its words
+    nowhere says where they went, and never pushes them again -- they were decided once,
+    under the state they came in. Told to its listeners: the speculative reply asked on
+    those words (the stop's preview, stt.py THE PEEK, possibly with no turn open) stands
+    down."""
+
+    def __init__(self, keep: int = 16):
+        self._recent: deque = deque(maxlen=keep)
+        self.listeners: list = []
+
+    async def took(self, text: str, why: str) -> None:
+        text = (text or "").strip()
+        if not text:
+            return
+        self._recent.append((text, why))
+        for listener in list(self.listeners):
+            try:
+                await listener(why)
+            except Exception as e:  # noqa: BLE001 -- a listener must not lose the words
+                logger.warning(f"taken words: a listener failed ({e!r})")
+
+    def why(self, text: str) -> Optional[str]:
+        """Why the newest final reading `text` went elsewhere, or None."""
+        text = (text or "").strip()
+        return next((w for t, w in reversed(self._recent) if t == text), None)
 
 
 class TakenTurnCloser(BaseUserTurnStopStrategy):

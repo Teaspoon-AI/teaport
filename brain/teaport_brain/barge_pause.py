@@ -138,11 +138,9 @@ from pipecat.turns.user_start import MinWordsUserTurnStartStrategy
 
 from teaport_brain.endpointing import (
     NO_STOP,
-    NoSpeechReportFrame,
+    STT_FRAMES,
     SegmentDoneFrame,
     SegmentResetFrame,
-    SpeechDecodedFrame,
-    SttProgressFrame,
 )
 from teaport_brain.settings import setting
 
@@ -496,6 +494,8 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         super().__init__(**kwargs)
         self._stop_words = tuple(stop_words)
         self._on_final_without_turn = on_final_without_turn
+        # taken_turn.TakenWords, where the session keeps one (agent_session).
+        self.taken_words = None
         self._playout_paused = False
         self._pause_t0 = None
         self._would_end_at = None
@@ -541,6 +541,15 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
             await self._on_final_without_turn()
 
     async def _handle_transcription(self, frame):
+        result = await self._count(frame)
+        if (result != ProcessFrameResult.STOP and isinstance(frame, TranscriptionFrame)
+                and (frame.text or "").strip() and self.taken_words is not None):
+            # A final that starts no turn: the aggregator drops its words (the guard's
+            # reset), and they go on record as dropped (taken_turn.TakenWords).
+            await self.taken_words.took(frame.text, "dropped by the barge-in guard")
+        return result
+
+    async def _count(self, frame):
         if not (self._bot_speaking and self._playout_paused):
             return await super()._handle_transcription(frame)
         if is_stop_utterance(frame.text, self._stop_words):
@@ -560,12 +569,6 @@ class PauseAwareMinWordsStrategy(MinWordsUserTurnStartStrategy):
         if result != ProcessFrameResult.STOP and isinstance(frame, TranscriptionFrame):
             await self._notify()
         return result
-
-
-# What the STT pushes for the turn strategies, in its order: held together, so a close or
-# a decode report never overtakes the words it follows.
-_STT_FRAMES = (TranscriptionFrame, InterimTranscriptionFrame, SegmentDoneFrame,
-               SegmentResetFrame, SpeechDecodedFrame, NoSpeechReportFrame, SttProgressFrame)
 
 
 def _key(text: str) -> tuple:
@@ -628,10 +631,14 @@ class BargeInJudgeGate(FrameProcessor):
         self._continued = None
         # Tallies, for the log and the tests.
         self.verdicts = {CONTINUE: 0, STOP: 0, ANSWER: 0, None: 0}
+        # taken_turn.TakenWords, where the session keeps one (agent_session).
+        self.taken_words = None
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, _STT_FRAMES):
+        # The STT's frames (endpointing.STT_FRAMES), held together: no close, report or
+        # turn-text correction overtakes the words it follows.
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, STT_FRAMES):
             async with self._lock:
                 if not await self._gate(frame):
                     await self.push_frame(frame, direction)
@@ -680,7 +687,7 @@ class BargeInJudgeGate(FrameProcessor):
             # dropped; their final is the close of a segment with no turn in it.
             if isinstance(frame, TranscriptionFrame):
                 self._continued = None
-                await self.push_frame(_close_of(frame))
+                await self.push_frame(await self._carried_over(frame))
             return True
         self._continued = None
         if self._turn_open or not self._strategy.judges(text):
@@ -731,12 +738,19 @@ class BargeInJudgeGate(FrameProcessor):
             if isinstance(f, TranscriptionFrame):
                 if not f.text.strip():
                     continue
-                f = _close_of(f)
+                f = await self._carried_over(f)
             elif isinstance(f, InterimTranscriptionFrame):
                 continue
             await self.push_frame(f)
         if self._hold_resume is not None:
             self._hold_resume(False)
+
+    async def _carried_over(self, final) -> SegmentDoneFrame:
+        """A final the reply carries on over: its segment's close, with no words for the
+        turn strategies, and its words on record as judged (taken_turn.TakenWords)."""
+        if self.taken_words is not None:
+            await self.taken_words.took(final.text, "judged a backchannel")
+        return _close_of(final)
 
     async def _release(self, why: str):
         """The held frames go on as they came: the turn starts on them as it would have."""

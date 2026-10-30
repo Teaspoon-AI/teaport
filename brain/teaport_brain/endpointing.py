@@ -25,6 +25,7 @@ from pipecat.frames.frames import (
     InterimTranscriptionFrame,
     InterruptionFrame,
     SystemFrame,
+    TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.turns.user_stop.turn_analyzer_user_turn_stop_strategy import (
@@ -495,10 +496,46 @@ class NoSpeechReportFrame(_UninterruptibleData):
     stop_n: int
 
 
+@dataclass
+class TurnTextFinalFrame(_UninterruptibleData):
+    """A sliced turn's final words differ from those pushed for it (stt.py, TURN TEXT).
+    Pushed DOWNSTREAM by the STT behind the final it corrects; one of STT_FRAMES, so
+    every processor that holds the STT's frames holds it behind that final, and the
+    corrector below the aggregator (turn_text.TurnTextCorrector) gets it after the
+    aggregator has handled the final. Data and uninterruptible like the frames above.
+
+    `asked`: the text pushed as the turn's final (after the echo guard). `final`: the
+    final words, the same way. `kind`: "adds", "drops" or "changes"
+    (stt.compare_turn_text), with the words added and dropped. `pushed_at`: when
+    `asked` was pushed (time.monotonic()): the commit that carries it came after."""
+
+    stop_n: int
+    asked: str
+    final: str
+    kind: str
+    added: tuple = ()
+    dropped: tuple = ()
+    pushed_at: float = 0.0
+
+
+# The STT's bookkeeping frames, for the processors below it: data, uninterruptible, each
+# behind the words it follows. Dropped by SegmentDoneSink once the aggregator (and the
+# turn-text corrector above the sink) has had them.
+STT_BOOKKEEPING_FRAMES = (SegmentDoneFrame, SegmentResetFrame, SttProgressFrame,
+                          SpeechDecodedFrame, NoSpeechReportFrame, SpeechPreviewFrame,
+                          TurnTextFinalFrame)
+
+# Everything the STT pushes for the turn strategies, in its order. A processor above the
+# aggregator that holds the STT's words -- RunControlClaims while the relay decides, the
+# barge-in judge while it judges -- holds every one of these behind them, so no close, no
+# report and no correction overtakes the words it follows. One tuple, so a frame the STT
+# gains is held by all of them at once.
+STT_FRAMES = (TranscriptionFrame, InterimTranscriptionFrame) + STT_BOOKKEEPING_FRAMES
+
+
 class SegmentDoneSink(FrameProcessor):
-    """Drops the STT's frames for the stop strategy -- SegmentDoneFrame,
-    SegmentResetFrame, SttProgressFrame, SpeechDecodedFrame, NoSpeechReportFrame,
-    SpeechPreviewFrame. Sits
+    """Drops the STT's bookkeeping frames (STT_BOOKKEEPING_FRAMES) once the stop
+    strategy and the turn-text corrector have had them. Sits
     right after the user aggregator (behind only CutReplyFence's head, which passes
     every frame on inline), whose stock process_frame forwards every data frame it does
     not itself consume: the frames are for the stop strategy (which the aggregator hands
@@ -507,8 +544,7 @@ class SegmentDoneSink(FrameProcessor):
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
-        if isinstance(frame, (SegmentDoneFrame, SegmentResetFrame, SttProgressFrame,
-                              SpeechDecodedFrame, NoSpeechReportFrame, SpeechPreviewFrame)):
+        if isinstance(frame, STT_BOOKKEEPING_FRAMES):
             return
         await self.push_frame(frame, direction)
 
@@ -1026,7 +1062,7 @@ class LateStartTurnStopStrategy(TurnAnalyzerUserTurnStopStrategy):
                 await self._arm_settle(max(0.0, self.speculator.settle_secs - settled))
         # Previewed at the stop: a preview that came before this strategy counted the
         # stop is asked on now.
-        if self._inferences == before:
+        if self._peeks and self._inferences == before:
             await self._speculate_on_preview()
 
     async def _handle_input_audio(self, frame):

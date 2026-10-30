@@ -97,20 +97,13 @@ from pipecat.frames.frames import (
     CancelFrame,
     EndFrame,
     Frame,
-    InterimTranscriptionFrame,
     OutputTransportMessageUrgentFrame,
     SystemFrame,
     TranscriptionFrame,
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
-from teaport_brain.endpointing import (
-    NoSpeechReportFrame,
-    SegmentDoneFrame,
-    SegmentResetFrame,
-    SpeechDecodedFrame,
-    SttProgressFrame,
-)
+from teaport_brain.endpointing import STT_FRAMES
 from teaport_brain.taken_turn import is_taken, taken
 
 # The ?run_control= value a plugin that answers run_control questions sends.
@@ -119,11 +112,6 @@ PROTOCOL = "1"
 # the relay will not act on, and within its own window (CONFIRM_MS in plugin/provider.js,
 # 2 s) for words it might, so this only bounds a plugin that is wedged or gone.
 CLAIM_WAIT_S = 2.5
-
-# What the STT pushes for the turn strategies, in its order: held together behind a final,
-# so a segment close or a decode report never overtakes the words it follows.
-_STT_FRAMES = (TranscriptionFrame, InterimTranscriptionFrame, SegmentDoneFrame,
-               SegmentResetFrame, SpeechDecodedFrame, NoSpeechReportFrame, SttProgressFrame)
 
 # The notice a claimed utterance leaves in the context (ClientNotes.add_notice).
 _NOTICE = ("The user said {} about the request running in the background, and OpenClaw "
@@ -153,6 +141,9 @@ class RunControlClaims(FrameProcessor):
         super().__init__()
         self._consults = consults_running
         self.notes = notes
+        # taken_turn.TakenWords, where the session keeps one: a claimed final's words go
+        # on record as OpenClaw's (set by agent_session).
+        self.taken_words = None
         self._wait_secs = wait_secs
         # The STT's frames held since the final asked about, in order; empty when not
         # asking. A lock keeps a release in one piece against frames still arriving.
@@ -173,7 +164,9 @@ class RunControlClaims(FrameProcessor):
             async with self._lock:
                 await self._decided(frame.request_id, frame.claimed)
             return  # consumed
-        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, _STT_FRAMES):
+        # The STT's frames (endpointing.STT_FRAMES) held together behind a final, so no
+        # close, report or turn-text correction overtakes the words it follows.
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, STT_FRAMES):
             async with self._lock:
                 if self._held:
                     self._held.append(frame)  # a final among them is asked in its turn
@@ -231,6 +224,8 @@ class RunControlClaims(FrameProcessor):
         if claimed:
             self.claimed += 1
             held[0] = taken(final)
+            if self.taken_words is not None:
+                await self.taken_words.took(text, "taken by OpenClaw's run control")
             logger.info(f"RUN-CONTROL: OpenClaw took {text!r} (asked {waited:.2f}s); the "
                         "model does not answer it")
             if self.notes is not None:

@@ -418,6 +418,16 @@ class Speculator:
         logger.debug(f"[SPEC] snapshot amended with a turn's final words (message {index})")
         return True
 
+    async def stand_down_ownerless(self, reason: str) -> bool:
+        """Cancel the live speculation if no caller's turn is open: one asked ahead of any
+        turn (start's `ahead_of_turn`), which something other than a commit is about to
+        overtake -- a run of ours, words taken elsewhere. Inside an open turn the commit
+        decides, as ever. Returns whether one was stood down."""
+        if self._current is None or self._controller._user_turn:
+            return False
+        await self.cancel(reason)
+        return True
+
     async def cancel(self, reason: str):
         self._epoch += 1
         spec, self._current = self._current, None

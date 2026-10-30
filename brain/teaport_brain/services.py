@@ -647,13 +647,18 @@ class BoundedOpenAILLMService(OpenAILLMService):
         # its buffered chunks replay first, then it continues live. The request-building
         # path below is what the speculation itself went through, so the two are the
         # same request either way; only WHEN it was opened differs. A run of ours is
-        # never one: no speculation lives outside a caller's turn.
-        if self.speculator is not None and (reply is None or reply.kind not in owed_mod.RUNS):
-            adopted = await self.speculator.take(context)
-            if adopted is not None:
-                if self.owed is not None:
-                    self._rendered(reply, adopted.owed_noted, context)
-                return adopted
+        # never one. And a speculation asked on a stop's preview can be live with no
+        # caller's turn open (stt.py THE PEEK): the run writes the context it was asked
+        # against, so nothing could adopt it, and the run stands it down.
+        if self.speculator is not None:
+            if reply is not None and reply.kind in owed_mod.RUNS:
+                await self.speculator.stand_down_ownerless("a run of ours")
+            else:
+                adopted = await self.speculator.take(context)
+                if adopted is not None:
+                    if self.owed is not None:
+                        self._rendered(reply, adopted.owed_noted, context)
+                    return adopted
         return await self._open_stream(context)
 
     # Paired with _process_context's CANCELLED line: this marks the boundary between
