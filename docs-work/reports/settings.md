@@ -12,7 +12,8 @@
 None.
 
 ## Open questions
-- Generator-owned help text breaks STYLE.md in places. The lint counts 14 ERRORs and 67 WARNs, all inside generated table rows that the packet says to keep verbatim; the wordings belong in brain/teaport_brain/config_schema.toml, so they should be fixed in the schema and the page regenerated. Patterns seen: "may" for ability/possibility (rows at page lines 41, 82, 149, 163, 229, 274, 328, 329), "setting" used for a value (93, 286), "Teaport"/product casing (108), "config UI" instead of "configuration page" (159, 329), "e.g." (362), "device" term and "once"/"since"/"above" usages across many rows (full list: node docs-work/lint.mjs src/content/docs/reference/settings.md).
+- The lint ERRORs and the history in the generated rows are fixed upstream, in `config_schema.toml` on the product branch `docs/schema-help-style` (commit 5a98d87): `docs = false` keeps the six retired names out of the tables, and the generator no longer prints "Named X before". Every row here now equals the generator's output. Update the `@5a98d87` citation to the merge commit after the product PR lands.
+- The 72 remaining WARNs are "device" versus "box" (the product's own config page uses "box"), "once"/"since", and "above"/"below". They live in schema help text, so a wording change there also changes the config page; decide that in the product repo.
 
 ## Lint
-14 error(s), 67 warning(s) in 1 file(s). Every ERROR and WARN is inside generator-owned table rows kept verbatim per the packet; see Open questions for the schema-side fix.
+0 error(s), 72 warning(s) in 1 file(s).
