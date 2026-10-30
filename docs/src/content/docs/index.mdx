@@ -16,7 +16,7 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-{/* source: README.md:3-4 @1e5604c (hero tagline) */}
+{/* source: README.md:3-4#c411b802 */}
 
 <CardGrid stagger>
 	<Card title="Install teaport" icon="rocket">
@@ -24,26 +24,26 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		brain, and the services, and ends with a self-test. See
 		[Install teaport](/getting-started/installation/).
 
-		{/* source: README.md:28-33 @1e5604c */}
+		{/* source: README.md:28-33#4f83c2e7 */}
 	</Card>
 	<Card title="Prepare the Jetson" icon="rocket">
 		Check the JetPack release and trim the desktop before you run the
 		installer. See [Prepare the Jetson](/getting-started/prepare-the-jetson/).
 
-		{/* source: docs/INSTALL.md:5-11 @1e5604c */}
+		{/* source: install.sh:224-239#fe7128e6 */}
 	</Card>
 	<Card title="Configure teaport" icon="setting">
 		Point the brain at its large language model. Change settings in the
 		configuration page. A restart applies the change; nothing hot-reloads.
 		See [Configure teaport](/guides/configuration/).
 
-		{/* source: install.sh:1506-1507 @1e5604c; brain/teaport_brain/gateway_server.py:27 @1e5604c; brain/teaport_brain/config_ui.py:27-28 @1e5604c */}
+		{/* source: install.sh:1506-1507#a7961754; brain/teaport_brain/gateway_server.py:27#8b91144b; brain/teaport_brain/config_ui.py:27-28#433b1e87 */}
 	</Card>
 	<Card title="Set up phone calls" icon="phone">
 		Answer phone calls on the device over a SIP trunk. `teaport sip configure`
 		sets the line up. See [Set up phone calls](/guides/phone-calls/).
 
-		{/* source: docs/CONFIG.md:370-375 @1e5604c; cli/teaport:9 @1e5604c */}
+		{/* source: systemd/teaport-sip.service.in:3-7#0d07b370; cli/teaport:9#3a503be3 */}
 	</Card>
 	<Card title="Connect the device to Wi-Fi" icon="wifi">
 		If the device has no internet connection, its Wi-Fi setup opens a
@@ -51,12 +51,12 @@ import { Card, CardGrid } from '@astrojs/starlight/components';
 		and type the password. See
 		[Connect the device to Wi-Fi](/guides/wifi-setup/).
 
-		{/* source: brain/teaport_brain/wifi_setup.py:3-5 @1e5604c */}
+		{/* source: brain/teaport_brain/wifi_setup.py:3-5#91575268 */}
 	</Card>
 	<Card title="Architecture" icon="puzzle">
 		How the engine, the brain, and the OpenClaw plugin work together. See
 		[Architecture](/reference/architecture/).
 
-		{/* source: README.md:31-32 @1e5604c */}
+		{/* source: README.md:31-32#0c03ffd7 */}
 	</Card>
 </CardGrid>

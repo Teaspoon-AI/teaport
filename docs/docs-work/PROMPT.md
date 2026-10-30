@@ -1,9 +1,9 @@
 # teaport docs: agent prompt
 
 You are a technical writer working on the teaport documentation site. teaport is a
-local voice assistant for the NVIDIA Jetson Orin. This repo
-(`~/Desktop/teaport-docs`) is an Astro Starlight site, and it is the canonical user
-documentation. The product code lives in another repo. The pages here describe the product
+local voice assistant for the NVIDIA Jetson Orin. This site is the `docs/` directory of the
+teaport product repo. It is an Astro Starlight site, and it is the canonical user
+documentation. The product code is in the same repo. The pages here described the product
 as it was in August 2026. Since then the product has changed by more than 300 commits, and
 several pages were never finished.
 
@@ -15,42 +15,38 @@ and nothing else.
 1. `docs-work/STYLE.md`: read all of it. Every rule applies to you.
 2. Your packet in the *Packets* section of this file.
 3. The current version of your page, if it exists.
-4. The sources your packet lists, read at the pinned commit (see *Source*).
+4. The sources your packet lists (see *Source*).
 
 `AGENTS.md` is also loaded for you. Its *Pipecat context hub* section doesn't apply to
 documentation work. Ignore it unless your packet says otherwise.
 
 ## Source
 
-The product repo is at `~/Desktop/teaport`. **Read only the pinned commit. Never read its
-working tree:** the checkout is behind, has untracked files, and has many worktrees under
-`.claude/worktrees/` that contain experimental code. Never read anything under
-`.claude/worktrees/`.
+The product files are in the same repo as this site, one level above `docs/`. Cite paths
+from the repo root. Read the working tree:
 
 ```bash
-PIN=1e5604c                     # origin/main, October 27, 2026
-R=~/Desktop/teaport
-git -C $R show "${PIN}:install.sh" | sed -n '370,390p'        # read lines 370-390
-git -C $R grep -n 'LLM_BASE_URL' "${PIN}" -- install.sh cli/   # search, with line numbers
-git -C $R ls-tree -r --name-only "${PIN}" -- systemd/          # list files
+R=$(git rev-parse --show-toplevel)
+sed -n '370,390p' "$R/install.sh"                 # read lines 370-390
+git -C "$R" grep -n 'LLM_BASE_URL' -- install.sh cli/   # search, with line numbers
+ls "$R/systemd/"                                  # list files
 ```
 
-Always write `"${PIN}:path"` with braces and quotes. In zsh, `$PIN:path` is parsed as a
-modifier and fails.
+Never read anything under `.claude/worktrees/`: it holds experimental code.
 
 Where the facts live:
 
 | Fact | Source of truth |
 |---|---|
 | Every setting: name, default, file, which service reads it, help text | `brain/teaport_brain/config_schema.toml` |
-| Generated settings tables (output of the schema) | `docs/CONFIG.md` (the part after the `<!-- generated from ... -->` marker) |
+| Generated settings tables (output of the schema) | `docs/src/content/docs/reference/settings.md` |
 | Installer steps, flags, environment overrides, paths | `install.sh` (the header comment at lines 1-60 lists the flags and overrides) |
 | CLI commands and options | `cli/teaport` (the header comment lists the commands) |
 | Services, ports, and users | `systemd/*.service.in` |
 | Release versions and downloads | `manifest/stable.json`, `manifest/beta.json` |
 | Product overview and status | `README.md` |
 
-The product's `docs/*.md` and `*/README.md` files are useful **drafts**: they explain
+The `*/README.md` files are useful **drafts**: they explain
 features at length. They are written in a different style and can be out of date. Use
 them to understand a feature. Then verify each fact you keep against the files in the
 table, and cite the file you verified it in.
@@ -59,17 +55,18 @@ table, and cite the file you verified it in.
 
 1. **Write only your packet's files**, plus your report at `docs-work/reports/PACKET.md`.
    Don't edit `astro.config.mjs`, other pages, `STYLE.md`, `PROMPT.md`, or `lint.mjs`.
-2. **The product repo is read-only.** Don't edit, commit, check out, pull, or run anything
-   in it, except the read commands in *Source*.
+2. **The product files are read-only.** Only the files in your packet change. Don't run
+   anything in the repo except the read commands in *Source* and the lint.
 3. **Don't touch hardware.** Don't connect to a Jetson with SSH. Don't run `install.sh` or
    `teaport`.
 4. **Don't commit.** Several agents work in this tree at the same time. The operator
    reviews and commits.
 5. **Don't invent.** If the source doesn't say it, don't write it. Put it under *Open
    questions* in your report. A short, correct page is better than a long, wrong one.
-6. **Cite every fact** with a `<!-- source: FILE:LINES @1e5604c -->` comment
-   (STYLE.md §1). Re-verify each source comment already on the page. Their line numbers
-   are from an older commit and are almost certainly wrong now.
+6. **Cite every fact** with a `<!-- source: FILE:LINES#HASH -->` comment
+   (STYLE.md §1). Re-verify each source comment already on the page, and read the lines it
+   cites. A matching hash shows that the cited lines did not change, not that the claim is
+   true.
 7. **Link, don't repeat.** If another packet's page owns a topic, write one sentence and
    link to that page. The packet list shows which page owns which topic. Links to pages
    that don't exist yet are fine. The *integrate* packet checks them.
@@ -78,8 +75,8 @@ table, and cite the file you verified it in.
 ## Work steps
 
 1. Read the files in *Read these first*.
-2. Make a list of the facts the page must state. For each fact, find it at the pinned
-   commit and write down the file and line numbers.
+2. Make a list of the facts the page must state. For each fact, find it in the
+   source and write down the file and line numbers.
 3. Write the page. Follow the page-type template in STYLE.md §5.
 4. Run the style lint on your page and fix every `ERROR`:
 
@@ -129,7 +126,7 @@ The last line of the lint output, and any WARN that you left, with the reason.
 
 Each packet names its files, its page type (STYLE.md §5), what it covers, what it must
 link to instead of covering, and where to start reading. All paths in *Read* are in the
-product repo at `PIN`.
+repo.
 
 The packets in **Wave 1** don't depend on each other. Run them in parallel. Run
 **Wave 2** after every Wave 1 packet is finished.
@@ -150,7 +147,7 @@ The packets in **Wave 1** don't depend on each other. Run them in parallel. Run
   page introduction, the H2 headings (sentence case), and one or two sentences that
   introduce each table.
 - Keep the generated marker comment and add a source comment that cites
-  `brain/teaport_brain/config_schema.toml @1e5604c`.
+  `brain/teaport_brain/config_schema.toml`.
 - Leave out the prose sections of `docs/CONFIG.md` that are procedures (SIP setup,
   turn-taking per front-end, one engine one conversation). Other packets own them.
 - Read: `brain/teaport_brain/config_schema.toml`, `docs/CONFIG.md`.
@@ -300,7 +297,7 @@ The packets in **Wave 1** don't depend on each other. Run them in parallel. Run
 
 - File: `src/content/docs/guides/troubleshooting.md` (keep the path)
 - Type: troubleshooting.
-- For each existing section: check the cause and the fix against the pinned source. Fix
+- For each existing section: check the cause and the fix against the source. Fix
   the source comments. Keep the section if the failure can still happen. Change each section
   to the Symptom, Cause, and Fix structure.
 - Add the failures that the new Wave 1 pages describe (phone calls, Wi-Fi setup, local audio,
@@ -314,7 +311,7 @@ The packets in **Wave 1** don't depend on each other. Run them in parallel. Run
 - File: `src/content/docs/guides/faq.md` (keep the path)
 - Type: concept. Use an H2 for each question, written as the reader would ask it. Each
   answer is two to five sentences and ends with a link to the page that owns the topic.
-- Start from `docs/FAQ.md` at the pinned commit. Check each answer against the Wave 1
+- Start from the current FAQ page. Check each answer against the Wave 1
   pages and the source.
 
 #### `index`: Home page (update)

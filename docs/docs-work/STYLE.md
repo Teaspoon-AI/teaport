@@ -13,19 +13,25 @@ is not enough by itself: the lint cannot tell whether a sentence is true.
 
 ## 1. Accuracy rules (these come before style)
 
-1. **Every fact comes from the pinned source.** Ports, paths, defaults, environment
+1. **Every fact comes from the product source.** Ports, paths, defaults, environment
    variables, flags, command names, file names, unit names, and version numbers must be
-   read from the product repo at the pinned commit (see `PROMPT.md` → *Source*). Never
-   write one from memory, from an old docs page, or from a guess.
+   read from the files in this repo (see `PROMPT.md` → *Source*). Never write one from
+   memory, from an old docs page, or from a guess.
 2. **Cite it.** Put a source comment right after the paragraph, list, or table that states
-   the fact. Use the file path, the line range, and the pinned commit:
+   the fact. Use the file path (from the repo root, not from `docs/`), the line ranges, and
+   a hash of the cited lines:
 
    ```markdown
-   <!-- source: install.sh:375-386 @1e5604c -->
+   <!-- source: install.sh:375-386#3f9a2c1b; brain/teaport_brain/tools.py:18-19,24#aa11bb22 -->
    ```
 
-   One comment can list several sources, separated by `;`. The comment is invisible on the
-   rendered page.
+   One comment can list several sources, separated by `; `. Ranges are comma-separated `N` or
+   `N-M`. `HASH` is the first 8 hex characters of the SHA-256 of the cited lines, joined with
+   newlines. Don't compute it by hand: write the item with its ranges and run
+   `node docs-work/lint.mjs --fix-sources`, or read the right hash from the lint error.
+   The lint fails when a cited line changes, so check that the claim is still true before you
+   update the hash. In `.mdx` pages, write `{/* source: ... */}`. The comment is invisible on
+   the rendered page.
 3. **If you can't verify it, don't write it.** Leave it out and record it under *Open
    questions* in your report. Don't soften a guess with "probably" or "usually".
 4. **Describe what exists now.** Don't pre-announce features. Don't write "coming soon",
@@ -33,7 +39,7 @@ is not enough by itself: the lint cannot tell whether a sentence is true.
    *Pre-launch scaffold* notes. If something is genuinely unavailable, say so in the
    present tense: "The hosted engine artifacts aren't published yet."
 5. **Keep what was learned the hard way.** The Troubleshooting and Installation pages record
-   failures seen on real boards. Keep each one unless the pinned source shows the failure
+   failures seen on real boards. Keep each one unless the source shows the failure
    can no longer happen. If you remove one, say why in your report.
 
 ---

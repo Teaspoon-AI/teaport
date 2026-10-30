@@ -1,17 +1,39 @@
 ## Source of truth
 
-This site is canonical for teaport's user-facing documentation. The product repo
-(`github.com/Teaspoon-AI/teaport`, checked out locally at `~/Desktop/teaport`)
-keeps only its README and license files; its `docs/` folder points here.
+This site is `docs/` in the teaport product repo (`github.com/Teaspoon-AI/teaport`), and it
+is canonical for teaport's user-facing documentation. Code and pages change in the same pull
+request. Run site commands (`astro dev`, `node docs-work/lint.mjs`) from `docs/`.
 
-Facts about ports, paths, defaults, and environment variables are defined in that repo's
+Facts about ports, paths, defaults, and environment variables are defined in the repo's
 `install.sh`, `cli/teaport`, `systemd/*.service.in`, and `manifest/stable.json`. When a
-page states one, cite the file, the lines, and the commit it was read at, so the next drift
-is detectable:
+page states one, cite the file, the lines, and a fingerprint of those lines, so the next
+drift is detectable:
 
 ```markdown
-<!-- source: install.sh:375-386 @1e5604c -->
+<!-- source: install.sh:375-386#3f9a2c1b; brain/teaport_brain/tools.py:18-19,24#aa11bb22 -->
 ```
+
+Each item is `path:ranges#HASH`, and items are separated by `; `. Paths are relative to the
+repo root, not to `docs/`. Ranges are comma-separated `N` or `N-M` line numbers, 1-based and
+inclusive. `HASH` is the first 8 hex characters of the SHA-256 of the cited lines: read the
+file as UTF-8, split it on newlines, take the cited lines in the order written, and join them
+with `\n` and no trailing newline. In `.mdx` pages the comment is `{/* source: ... */}`.
+
+`node docs-work/lint.mjs` checks every item against the working tree. It fails on an
+unparseable item, a missing file, a range past the end of the file, a missing hash, and a
+hash mismatch. A mismatch means the cited lines changed: re-check that the page's claim is
+still true, then update the item. `node docs-work/lint.mjs --fix-sources [PATH...]` helps:
+
+- It rewrites an old-form item (`path:ranges @commit`) to the new ranges and hash, by finding
+  the lines it cited at that commit as one contiguous block in the current file.
+- It relocates an item whose hash no longer matches, when an earlier version of the file in
+  git history has the cited lines with that hash and the block still exists in the file.
+- It leaves any item it cannot place as it was and lists it. Do not accept a listed item
+  without reading the current code: if the cited content changed, the page's claim can be
+  wrong even though a new hash would make the lint pass.
+
+The generated tables in `src/content/docs/reference/settings.md` carry the same citation
+format, written by the generator from `brain/teaport_brain/config_schema.toml`.
 
 ## Versions
 
