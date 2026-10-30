@@ -331,6 +331,29 @@ async def test_the_question_is_put_into_the_conversation_and_answered_by_the_too
     assert not prompt.pending and prompt.answer(False) == cp.CLOSED_TAKEN  # decided already
 
 
+async def test_the_phone_ringing_over_a_sentence_is_the_brains_own_cut():
+    """PR #240's review, finding 1: the question stops the sentence it rings over, as
+    say_last_line does (AgentSession.own_line). That cut is the brain's: the owed book
+    counts no cut telling for it and does not read the user's answer ("No, let it ring")
+    as their words on an owed answer it cut (owed.Owed.own_cut, #231)."""
+    session, prompt = _prompted()
+    book = SimpleNamespace(own_cut=False)
+    session.llm = SimpleNamespace(owed=book)
+    seen = []
+    queue = session.task.queue_frames
+
+    async def watched(frames):
+        seen.extend((type(f).__name__, book.own_cut) for f in frames)
+        await queue(frames)
+    session.task.queue_frames = watched
+    asking = asyncio.ensure_future(prompt.ask("Bob"))
+    await asyncio.sleep(0.4)
+    assert seen[:2] == [("InterruptionWorkerFrame", True), ("TTSSpeakFrame", True)], seen
+    prompt.answer(False)
+    assert await asyncio.wait_for(asking, 1) is False
+    assert book.own_cut is False, "the user's answer is theirs again"
+
+
 async def test_the_question_speaks_the_sessions_language_and_withholds_nothing_it_has_not():
     session, prompt = _prompted(lang_voice="ef_dora")
     asking = asyncio.ensure_future(prompt.ask(None))

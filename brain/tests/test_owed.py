@@ -2000,7 +2000,8 @@ async def test_a_telling_cut_twice_is_dropped():
     b, ctx, _ = cut_telling(FakeDecline(False))
     await judged(b)
     rec = b.record("call-hn")
-    b.settle(noted_reply(b, "caller"), "Tesla", cut=True, audio=True, text=None, rest=None)
+    b.settle(noted_reply(b, "caller"), "Tesla Roadster", cut=True, audio=True, text=None,
+             rest=None)
     assert rec.state == DROPPED
     # Heard at the second cut: the judges close it, as before.
     b, ctx, _ = cut_telling(FakeDecline(False))
@@ -2078,8 +2079,124 @@ def test_the_cut_count_survives_the_rooms_sleep():
     assert b.record("call-hn").cuts == 1
 
 
+async def test_a_reply_sharing_a_word_with_a_record_is_no_telling_of_it():
+    """The PR review's finding 4: a reply on another subject that shares one term with an
+    owed record (a Tesla charger, with a Tesla headline owed) is about it -- the judges
+    still read it and keep it owed -- but no telling of it (Record.tells): its cut counts
+    nothing, and a dismissal of that reply is not read against the record."""
+    dec = FakeDecline(True)
+    b, ctx, _ = book(judge=FakeJudge(False), gist=FakeGist(True), decline=dec)
+    b.land(HN_REQ, HN_RAW, "call-hn")
+    rec = b.record("call-hn")
+    other = "A Tesla charger at home takes about eight hours to fill the battery."
+    assert rec.about(other) and not rec.tells(other)
+    cut(b, noted_reply(b, "caller"), "A Tesla charger at home", other)
+    await judged(b)
+    assert rec.cuts == 0 and rec.decline is None and rec.state == OWED
+    says(ctx, "Okay, got it, thanks.")
+    await b.view(ctx, owed.COMMIT)
+    assert dec.calls == [] and rec.state == OWED
+
+
+async def test_a_correction_with_no_words_of_its_own_owes_the_corrected_answer():
+    """The PR review's finding 2: a web_search answer for the wrong place, cut by "No,
+    the other one." -- no terms of its own. The check declines the first answer, so the
+    turn is no re-lookup of it: the new search is an answer of its own, and its cut
+    telling is owed (before, it was filed under the declined record and nothing was)."""
+    b, _, _ = sync_book(judge=FakeJudge(False), gist=FakeGist(False),
+                        decline=FakeDecline(True))
+    msgs = round_msgs(W_REQ, W_RESULT, cid="w1")
+    b.settle(answer_reply(b, msgs), "Tomorrow in Austin looks", cut=True, audio=True,
+             text=W_TOLD)
+    await judged(b)
+    assert b.record("w1").decline is not None
+    msgs = msgs + [{"role": "assistant", "content": "Tomorrow in Austin looks"},
+                   {"role": "user", "content": "No, the other one."}]
+    c = Reply(owed.COMMIT)
+    _, keys = await b.view(LLMContext(msgs), owed.COMMIT)
+    b.noted(c, keys, msgs)
+    assert b.record("w1").state == owed.DECLINED and c.relook is None
+    c.calls = 1
+    b.called(c, ["w2"])
+    b.settle(c, None, cut=False, audio=False, text="")
+    msgs = msgs + round_msgs("No, the other one.",
+                             '{"results": [{"snippet": "Round Rock: high 80"}]}', cid="w2")[1:]
+    p = Reply(owed.POST)
+    _, keys = await b.view(LLMContext(msgs), owed.POST)
+    b.noted(p, keys, msgs)
+    assert p.fresh == ("w2",)
+    b.settle(p, "In Round Rock tomorrow it", cut=True, audio=True,
+             text="In Round Rock tomorrow it should reach a high of eighty.")
+    await judged(b)
+    assert [r.key for r in b.owed()] == ["w2"]
+
+
+async def test_the_lull_asks_only_from_a_window_still_quiet():
+    """The PR review's finding 3: the lull reads a due check before its re-offer, which
+    may take SETTLE_WAIT_S; the caller who starts talking meanwhile is not re-offered to
+    (Owed.tla Lull is one step)."""
+    saved = owed._LULL_TICK_S
+    owed._LULL_TICK_S = 0.01
+    try:
+        release = asyncio.Event()
+        b, ctx, gate = cut_telling(FakeDecline(False, release=release))
+        b._reoffer_quiet_s = 0.05
+        await judged(b)
+        says(ctx, "Hmm, okay.")
+        gate.quiet = 1.0
+        await asyncio.sleep(0.1)
+        reoffers = lambda: [k for k, purpose in gate.asked if purpose == owed.REOFFER]
+        assert reoffers() == [] and b.decline_due(), "the check is being read"
+        gate.quiet = 0.0
+        release.set()
+        await asyncio.sleep(0.1)
+        assert reoffers() == [], "re-offered into the caller's turn"
+        # Quiet again: the re-offer goes, from a window that is.
+        gate.quiet = 1.0
+        await asyncio.sleep(0.1)
+        assert reoffers() == [["call-hn"]]
+        b.close_session()
+    finally:
+        owed._LULL_TICK_S = saved
+
+
+async def test_a_decline_check_survives_the_rooms_sleep():
+    """The PR review's finding 5: a check due at the sleep (no words yet) reads the next
+    words after the wake; one being read at the sleep is read again from the saved
+    book, its words with it. The mark is not kept: the kept conversation is capped."""
+    b, ctx, _ = cut_telling(FakeDecline(False))
+    await judged(b)
+    b.close_session()
+    saved = b.snapshot()
+    assert saved[0]["decline"] is not None
+    b2, ctx2, _ = book(decline=FakeDecline(True))
+    b2.restore(saved)
+    says(ctx2, "Never mind that, it's fine.")
+    await b2.view(ctx2, owed.COMMIT)
+    assert b2.record("call-hn").state == owed.DECLINED
+    # Being read when the session ends.
+    release = asyncio.Event()
+    b, ctx, _ = cut_telling(FakeDecline(False, release=release))
+    await judged(b)
+    says(ctx, "Great, that's all I needed.")
+    reading = asyncio.ensure_future(b.view(ctx, owed.COMMIT))
+    await asyncio.sleep(0.05)
+    assert b.record("call-hn").decline is None and b.decline_due()
+    b.close_session()
+    saved = b.snapshot()
+    release.set()
+    await reading
+    assert b.record("call-hn").state == OWED, "a verdict on the closed book"
+    dec = FakeDecline(True)
+    b2, ctx2, _ = book(decline=dec)
+    b2.restore(saved)
+    await b2.view(ctx2, owed.COMMIT)
+    assert b2.record("call-hn").state == owed.DECLINED
+    assert dec.calls[0][3] == "Great, that's all I needed."
+
+
 def test_the_decline_checks_request_is_the_measured_one():
-    """The text the eval measured (2026-10-27, 200 cuts: 3/500 false DECLINED)."""
+    """The text the eval measured (2026-10-30, 286 cuts: 10/770 false DECLINED)."""
     msgs = owed.decline_judge_messages("Q?", "heard", "rest", "words")
     assert msgs[0]["content"] == owed.DECLINE_JUDGE_PROMPT
     assert msgs[1]["content"] == ('Their question: Q?\n\nWhat they heard:\n"heard"\n\n'

@@ -249,24 +249,38 @@ the re-offer is armed. That is §4 (a), the user's choice on 2026-10-16.
 Each is outside what the model checks, and each errs toward owed or toward silence:
 
 - **The decline check's wait** (#231). A render after a cut telling waits for the check on
-  the caller's words -- measured p50 0.36 s, p90 0.92 s, bounded by `SETTLE_WAIT_S` (2 s),
+  the caller's words -- measured p50 0.35 s, p90 0.79 s, bounded by `SETTLE_WAIT_S` (2 s),
   past which it is no verdict and the record stays owed. It is asked only for a record
   still owed after the cut's own verdicts, once per cut. That turn also gives up its
   speculative head start: a speculation rendered on interim words cannot stand for the
   check.
 - **What counts as a cut telling** (#231). A cut, after its audio began, of a reply whose
-  request carried the note and whose whole text is about the record (`Record.about`, as
-  the judges read it: a lead-in like "So, as I mentioned," is the very moment a repeat is
-  cut), or a run of ours for it: the model's `say ∈ {tell, part}`. Not a reply that is a
+  request carried the note and whose whole text tells the record (`Record.tells`: at
+  least two of its result's terms, or all it has, by the whole text as the judges read
+  it -- a lead-in like "So, as I mentioned," is the very moment a repeat is cut), a run
+  of ours for it, or its re-lookup's reply: the model's `say ∈ {tell, part}`. Merely
+  about it is not enough: a reply on another subject sharing a word with it ("warm
+  weather" in how a heat pump works, a forecast owed) is judged as before and stays
+  owed, but its cut counts nothing and its dismissal is not read against the record. The
+  cost: a re-telling that shares fewer than two of its result's terms is not counted
+  (the told-twice backstop still bounds the ones played through). Not a reply that is a
   fresh answer's telling -- by position (`_resolve`'s rule, `Owed._tells_fresh`) and about
   it (a term shared with what was asked for it): a term it shares with an older record
   is chance (an address's "fifty-five" and a forecast's low); the record its cut makes
   (`ORIGIN = "cut"`) starts with that cut counted. Position alone is not enough: it takes
   any reply with words of its own, and a re-telling of an older record after a "Yeah."
   would be hidden. Not a late settle of a
-  reply rendered before the record existed. The brain's own cut
-  (`AgentSession.say_last_line`, a call going on hold) counts as none (`Owed.own_cut`,
-  up for the whole line: input is muted, so no cut in that window is the caller's).
+  reply rendered before the record existed. The brain's own cut (`AgentSession.own_line`:
+  the session's last line, a call going on hold, the phone ringing over a sentence)
+  counts as none (`Owed.own_cut`, up until the line is said or answered, not a timer the
+  ledger's charting of the cut could lose to).
+- **After a decline** (#231). A turn right after a record's cut in words with no terms of
+  their own is that record's re-lookup -- unless those words declined it ("No, the other
+  one."): then its round is a new answer, owed in its own right. The lull asks for its
+  re-offer only if the line is still quiet and settled once the check is read (the
+  model's `Lull` is one step). Across the room's sleep a due check is kept, with the
+  caller's words if they were read (one being read when the session ends is read again
+  from the saved book), and re-anchored on the kept conversation, which is capped.
 
 - **Several records.** At most `MAX_RENDERED` (3) owed records render; a fourth evicts the
   oldest as `dropped` (not heard, its tool result kept, no note): never `closed`, which
@@ -413,6 +427,9 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_declineMiss_rest` | `DECMISS`, every other property | holds, `BoundedTellings` included | 320,970 states |
 | `ow_declineWrong` | the check answers DECLINED on words that wanted the rest | ✗ `DeclinedOnEvidence` | "wait, what was that?" read as DECLINED; the record ends unheard. Measured: 10/770 one call each |
 | `ow_cutsUncounted` | a cut telling counts toward nothing (before #231) | ✗ `BoundedTellings` | every caller turn's reply carries the note, tells it and is cut before its facts; a fourth telling begins |
+| `ow_cutRecord` | `ORIGIN = "cut"`: a sync answer's record made at the cut of its first telling (the issue's own cases), every safety property | holds | |
+| `ow_cutRecord_live` | `ORIGIN = "cut"`, `OwedResolves` under `FairSpec` | holds | |
+| `ow_cutRecordUnread` | the record made at a cut has nothing due (the first fix's gap, found in review) | ✗ `NoNoteAfterDecline` | "that's all I needed" cuts a web_search answer; the next request carries its note |
 
 `NoRedundantLookup` is a rate the model shows, not something the design guarantees.
 gpt-oss re-looked-up with the note in view 1/20 in round 1. The design's claim is the

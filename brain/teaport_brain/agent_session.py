@@ -17,6 +17,7 @@
 # GAINS the full stack by adopting the factory.
 #
 import asyncio
+import contextlib
 import dataclasses
 
 from loguru import logger
@@ -402,8 +403,32 @@ class AgentSession:
             return None
         return text
 
-    # How long say_last_line lets the interruption clear the way before the line goes in.
-    _LAST_LINE_SETTLE_S = 0.2
+    # How long own_line lets the interruption clear the way before the line goes in.
+    _OWN_LINE_SETTLE_S = 0.2
+
+    @contextlib.asynccontextmanager
+    async def own_line(self, line: str, *, append_to_context: bool):
+        """Stop whatever is being said and put `line` in its place, yielding the watch on
+        its delivery (FollowupGate.watch_delivery): the session's last line
+        (say_last_line), the phone ringing over a sentence (call_prompt.CallPrompt.ask).
+        The cut is the brain's, not the caller's: the owed book counts no cut telling and
+        reads no words for it (owed.Owed.own_cut, #231) -- for as long as the block runs,
+        not a timer the ledger's charting of the cut could lose to."""
+        owed = getattr(self.llm, "owed", None)
+        if owed is not None:
+            owed.own_cut = True
+        try:
+            await self.task.queue_frames([InterruptionWorkerFrame()])
+            await asyncio.sleep(self._OWN_LINE_SETTLE_S)
+            # Armed after the interruption has gone through (it settles every watched
+            # reply as cut) and before the line is queued.
+            delivery = self.followup_gate.watch_delivery()
+            await self.task.queue_frames([TTSSpeakFrame(line,
+                                                        append_to_context=append_to_context)])
+            yield delivery
+        finally:
+            if owed is not None:
+                owed.own_cut = False
 
     async def say_last_line(self, line: str, max_secs: float, *,
                             append_to_context: bool = False) -> bool:
@@ -416,21 +441,7 @@ class AgentSession:
         phone call), or puts it on hold (hold())."""
         if self.input_mute is not None:
             self.input_mute.muted = True
-        # The cut is ours, not the caller's: the owed book counts no cut telling and reads
-        # no words for it (owed.Owed.own_cut, #231) -- for as long as the line takes, not a
-        # timer the ledger's charting of the cut could lose to: input is muted throughout,
-        # so no cut in this window is the caller's.
-        owed = getattr(self.llm, "owed", None)
-        if owed is not None:
-            owed.own_cut = True
-        try:
-            await self.task.queue_frames([InterruptionWorkerFrame()])
-            await asyncio.sleep(self._LAST_LINE_SETTLE_S)
-            # Armed after the interruption has gone through (it settles every watched
-            # reply as cut) and before the line is queued.
-            delivery = self.followup_gate.watch_delivery()
-            await self.task.queue_frames([TTSSpeakFrame(line,
-                                                        append_to_context=append_to_context)])
+        async with self.own_line(line, append_to_context=append_to_context) as delivery:
             try:
                 await asyncio.wait_for(delivery.done.wait(), max_secs)
             except asyncio.TimeoutError:
@@ -439,9 +450,6 @@ class AgentSession:
                             "ending it anyway")
                 return False
             return not delivery.interrupted
-        finally:
-            if owed is not None:
-                owed.own_cut = False
 
     # --- On hold for a phone call (the session arbiter's PROMPT, issue #111) ------------
     # While held, the pipeline runs on with nothing to do: the engine's STT session is
