@@ -409,9 +409,9 @@ mechanism. Counterexample lengths vary with TLC's worker count.
 | `ow_gist_twice` | `TWICE`: the reply after one that gave no answer gives none again | ✗ `ClosedOnEvidence` | the run tells part; the re-offer tells part again; the backstop closes it (10 steps). The note was in view both times (X1: 18/20 answer) |
 | `ow_noDecline` | the words that cut a telling are not read (before #231) | ✗ `NoNoteAfterDecline` | the run is cut by "that's all I needed"; the commit's request carries the note |
 | `ow_declineAfter` | the decline check beside the render, not before it | ✗ `NoNoteAfterDecline` | the same: the reply to the dismissal renders before the check answers |
-| `ow_declineMiss` | `DECMISS`: the check answers WANTED, or not in time, on a dismissal | ✗ `NoNoteAfterDecline` | the dismissal is read as WANTED and the next request carries the note. Measured: 35/500 one call each |
+| `ow_declineMiss` | `DECMISS`: the check answers WANTED, or not in time, on a dismissal | ✗ `NoNoteAfterDecline` | the dismissal is read as WANTED and the next request carries the note. Measured: 35/660 one call each |
 | `ow_declineMiss_rest` | `DECMISS`, every other property | holds, `BoundedTellings` included | 320,970 states |
-| `ow_declineWrong` | the check answers DECLINED on words that wanted the rest | ✗ `DeclinedOnEvidence` | "wait, what was that?" read as DECLINED; the record ends unheard. Measured: 3/500 one call each |
+| `ow_declineWrong` | the check answers DECLINED on words that wanted the rest | ✗ `DeclinedOnEvidence` | "wait, what was that?" read as DECLINED; the record ends unheard. Measured: 10/770 one call each |
 | `ow_cutsUncounted` | a cut telling counts toward nothing (before #231) | ✗ `BoundedTellings` | every caller turn's reply carries the note, tells it and is cut before its facts; a fourth telling begins |
 
 `NoRedundantLookup` is a rate the model shows, not something the design guarantees.
@@ -490,11 +490,14 @@ it:
   are read before anything renders again: an LLM shown their question, what they heard,
   the rest and what they said answers DECLINED (a dismissal, an objection, a correction
   so the answer no longer fits) or WANTED (a follow-up, a repeat, a wait, a backchannel,
-  another request beside it). DECLINED ends the record `declined`: no note, no run, no
-  re-offer; its tool result stays. Measured on 200 synthetic cuts (10 tellings x 20 kinds
-  of words, gpt-oss-120b): one call each, 3/500 false DECLINED and 35/500 false WANTED
-  (most of them "why are you telling me about this now?" said during the first telling),
-  p50 0.36 s. The render waits for it (the user's choice: the reply to a dismissal must
+  another request beside it, a confirmation that this is the thing they meant).
+  DECLINED ends the record `declined`: no note, no run, no re-offer; its tool result
+  stays. Measured on 286 synthetic cuts (11 tellings x 26 kinds of words, gpt-oss-120b):
+  one call each, 10/770 false DECLINED and 35/660 false WANTED (most of them "why are you
+  telling me about this now?" said during the first telling), p50 0.35 s. A live try
+  found a confirmation over a telling ("yes, that's the one I meant") read as
+  a dismissal; the cases gained confirmations, and the wording gained an example each
+  way (60/770 false DECLINED before it). The render waits for it (the user's choice: the reply to a dismissal must
   not carry the note, `ow_declineAfter`); so does every other reader, or a turn that
   drops the dismissal's request and commits nothing leaves the lull to re-offer what was
   declined (the model's counterexample before every reader waited). A correction is a

@@ -187,21 +187,25 @@ def gist_judge_messages(question: str, outcome: str, heard: str) -> list:
 # The decline check (#231): the caller cut a telling of a record, and their words are read
 # before anything renders again -- do they still want the rest? A dismissal ("Great,
 # that's all I needed") or a correction ("No, I mean the one on Elm Street") ends the
-# record DECLINED; the rest of the time it stays owed. Measured on 200 synthetic cuts (10
-# tellings x 20 kinds of words, gpt-oss-120b, 2026-10-27): one call each, 3/500 false
-# DECLINED, 35/500 false WANTED ("Why are you telling me about this now?" during the
-# first telling, mostly), p50 0.36 s, p90 0.92 s; by majority of 5, 0/100 and 5/100.
+# record DECLINED; a confirmation ("Yes, that's the one") or anything else leaves it owed.
+# Measured on 286 synthetic cuts (11 tellings x 26 kinds of words, gpt-oss-120b,
+# 2026-10-30): one call each, 10/770 false DECLINED, 35/660 false WANTED ("Why are you
+# telling me about this now?" during the first telling, mostly), p50 0.35 s, p90 0.79 s;
+# by majority of 5, 1/154 and 6/132. The wording before the examples read confirmations
+# as dismissals: 60/770 false DECLINED.
 DECLINE_JUDGE_PROMPT = (
     "A voice assistant was answering someone on a phone call, and they cut in. You see "
     "their question, what they heard, the rest they did not hear, and what they said "
     "when they cut in. Decide whether they still want the rest. DECLINED: their words "
-    "show they don't want it -- they said they have what they need or already know it, "
-    "dismissed it, objected to being told it, told the assistant to stop or drop it, "
-    "or corrected their request so this answer no longer fits (they meant a different "
-    "place, thing or person). WANTED: anything else -- they asked about it, asked to "
-    "repeat it or to wait, only showed they are listening, or added another request or "
-    "turned to something else without saying they don't want this. Reply with exactly "
-    "one word: DECLINED or WANTED.")
+    "show they don't want it -- they said they have what they need or already know it "
+    "(\"got it, thanks\", \"that's all I needed\"), dismissed it, objected to being told "
+    "it, told the assistant to stop or drop it, or corrected their request so this "
+    "answer no longer fits (they meant a different place, thing or person). WANTED: "
+    "anything else -- they confirmed this is the thing they meant (\"yes, that's the "
+    "one\", \"that's it, that's what I asked for\"), asked about it, asked to repeat it "
+    "or to wait, only showed they are listening, or added another request or turned to "
+    "something else without saying they don't want this. Reply with exactly one word: "
+    "DECLINED or WANTED.")
 
 
 def decline_judge_messages(question: str, heard: str, rest: str, words: str) -> list:
