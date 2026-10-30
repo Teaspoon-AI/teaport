@@ -735,6 +735,112 @@ async def test_a_dropped_word_then_a_backstop_is_counted():
         stt_mod.logger.remove(sink)
 
 
+# ---- nothing waits on a final (the 2026-10-27 engine review) ----------------------------
+
+def _lines():
+    lines = []
+    return lines, stt_mod.logger.add(lambda m: lines.append(m.record["message"]), level="INFO")
+
+
+async def test_a_final_that_never_comes_times_out_on_the_decoded_clock():
+    # end_through_ms freezes through the pause (teagram-engine 03e4223): the turn settles
+    # as its provisional text once the decoder is _FINAL_TIMEOUT_MS past its position.
+    s = Service()
+    await created(s)
+    lines, sink = _lines()
+    try:
+        await turn(s)
+        await delta(s, " hi", 500)
+        await preview(s, 1000, " there")
+        assert s.finals() == [("hi there", 1)]
+        await progress(s, 520, decoded=2900)
+        assert len(s._turns) == 1, "settled before its timeout"
+        await progress(s, 520, decoded=3000)
+        assert not s._turns and s.corrections() == []
+        assert any("[TURN]" in m and "final timeout" in m and "provisional" in m
+                   for m in lines), lines
+    finally:
+        stt_mod.logger.remove(sink)
+
+
+async def test_the_next_turn_is_not_held_behind_a_final_that_never_came():
+    s = Service()
+    await created(s)
+    await turn(s)                           # at 1000
+    await turn(s)                           # at 2000
+    await delta(s, " one", 900)
+    await preview(s, 1000, "")
+    await preview(s, 2000, " two")
+    await progress(s, 500, decoded=3000)    # the first's final is overdue, not the second's
+    assert [t.at_ms for t in s._turns] == [2000]
+    await delta(s, " two", 1900)
+    await progress(s, 2000, decoded=3100)
+    assert not s._turns and s.corrections() == []
+
+
+async def test_a_final_times_out_on_the_wall_clock_too(monkeypatch=None):
+    saved = stt_mod._FINAL_TIMEOUT_MS
+    stt_mod._FINAL_TIMEOUT_MS = 200
+    try:
+        s = Service()
+        await created(s)
+        await turn(s)
+        await preview(s, 1000, " hello")
+        await asyncio.sleep(0.35)               # no progress at all: the engine stalled
+        assert not s._turns and s.corrections() == []
+        # And a barge-in waiting on its final closes on the words in hand, stamped.
+        s = Service()
+        await created(s)
+        await s.process_frame(BotStartedSpeakingFrame(), UP)
+        await vad_start(s)
+        await audio(s, 600)
+        await vad_stop(s)
+        await preview(s, 600, "")
+        await delta(s, " Stop.", 450)
+        assert s.finals() == [] and s.of(SegmentDoneFrame) == []
+        await asyncio.sleep(0.35)
+        assert s.finals() == [("Stop.", 1)]
+    finally:
+        stt_mod._FINAL_TIMEOUT_MS = saved
+
+
+async def test_a_cut_short_preview_is_no_preview_the_turn_closes_on_its_final():
+    s = Service(peeks=True)
+    await created(s)
+    lines, sink = _lines()
+    try:
+        await vad_start(s)
+        await audio(s, 1000)
+        await delta(s, " what's", 300)
+        await delta(s, " the", 600)
+        await vad_stop(s, stop_secs=0.2)
+        at = s._peek.at_ms
+        await s._handle_message({"type": "transcription.preview", "through_ms": at,
+                                 "delta": " wea", "complete": False, "main_through_ms": 0,
+                                 "credited_ms": 0})
+        assert s.of(SpeechPreviewFrame) == [], "speculated on a cut-short preview"
+        await complete(s)
+        assert s.finals() == [] and s.of(SegmentDoneFrame) == [], "closed on its pieces"
+        await delta(s, " weather", at - 50)
+        await progress(s, at)
+        assert s.finals() == [("what's the weather", 1)] and s.corrections() == []
+        assert any("cut short" in m for m in lines), lines
+        # A turn's (the preview at the verdict) the same.
+        s = Service()
+        await created(s)
+        await turn(s)
+        await delta(s, " so", 400)
+        await s._handle_message({"type": "transcription.preview", "through_ms": 1000,
+                                 "delta": " ye", "complete": False, "main_through_ms": 0,
+                                 "credited_ms": 0})
+        assert s.finals() == []
+        await delta(s, " yes", 900)
+        await progress(s, 1000)
+        assert s.finals() == [("so yes", 1)] and s.corrections() == []
+    finally:
+        stt_mod.logger.remove(sink)
+
+
 # ---- what slice mode turns off, and keeps ---------------------------------------------
 
 async def test_no_carry_and_the_hint_stays():

@@ -508,7 +508,22 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 #   * otherwise the empty provisional closed the turn wordless, and a final with words
 #     goes on as new words, stamped NO_STOP, through the close every final goes through
 #     (_close): the echo guard and the wake gate decide them as they would any.
-# The words are the caller's; a preview that missed them must not lose them.
+# The words are the caller's; a preview that missed them must not lose them. A preview
+# the engine could not take whole ("complete": false, PROTOCOL3 difference 7: its text is
+# a held word's pieces) is no preview: nothing is speculated on it, and the turn closes
+# on its final, as the one over the bot does -- the final decides.
+#
+# Nothing waits on a final: the provisional text is what the reply, the owed records and
+# the speculation run on, and the next turn is sliced whether the last is final or not.
+# Only the order of the finals does -- each settles after the one before -- and a final
+# can fail to come: an engine whose end_through_ms freezes through the pause after the
+# caller stops (teagram-engine 03e4223: until the next utterance starts) never passes a
+# commit sent more than ~1.3 s after the stop, and a session's last commit perhaps never.
+# So a turn's final has _FINAL_TIMEOUT_MS past its position, by the engine's
+# decoded_through_ms or by the wall clock since its commit went out, whichever comes
+# first; then the turn settles as its provisional text ("[TURN] ... final timeout") --
+# a turn that closes on its final (over the bot, above) closes on the words in hand --
+# and a word of it that comes later goes to the open turn, as one the bound let through.
 #
 # In slice mode a commit damages nothing, so what repaired its damage is off: the carry
 # (no segment opens behind a commit), with it the hint's re-prime floor, and the wait for
@@ -528,6 +543,11 @@ TURN_TEXT = setting("TEAPORT_STT_TURN_TEXT")
 # THE CUT'S MARGIN, in ms past a turn's position: how far past it a word the turn's
 # preview vouched for may end and still be the turn's.
 _VOUCH_MS = 200
+
+# How long past its position a turn's final may take (TURN TEXT: nothing waits on a
+# final), in audio ms: the final comes ~0.7 s after the preview at the 90th percentile
+# (jetson05, 288 turns).
+_FINAL_TIMEOUT_MS = 2000
 
 # THE PEEK: in slice mode, ask the preview at the VAD stop, while Smart Turn decides
 # (TEAPORT_STT_PREVIEW_AT_STOP).
@@ -791,7 +811,7 @@ class _Peek:
     previewed: bool = False
     asked: str = ""            # the provisional text: words in hand at its preview + its text
     asked_n: int = 0
-    msg: Optional[dict] = None    # the preview
+    msg: Optional[dict] = None    # the preview (an empty one, if the engine cut it short)
     seen: int = 0              # open words at its preview: later ones may be vouched for
     dropped: bool = False      # the caller resumed: it is no one's
     turn: Optional["_Turn"] = None    # the turn that adopted it
@@ -819,11 +839,13 @@ class _Turn:
     # yet: they may still come, past at_ms (THE CUT'S MARGIN).
     expect: list = field(default_factory=list)
     # Why nothing went on at its preview and it closes on its final, with this preview
-    # and commit (over the bot's reply with none of the caller's words), or "": it went
-    # on at its preview.
+    # and commit (over the bot's reply with an empty provisional, a preview cut short),
+    # or "": it went on at its preview.
     deferred: str = ""
     msg: Optional[dict] = None
     commit: Optional[_Commit] = None
+    # When its commit went out (the wall clock its final's timeout counts from).
+    sent_at: float = 0.0
 
 
 def _words_of(text: str) -> list:
@@ -988,6 +1010,14 @@ class TeaportSTTService(WebsocketSTTService):
         self._turn_differs = 0
         self._last_drop: Optional[tuple] = None
         self._drop_backstops = 0
+        # The engine's decoded_through_ms, the timer for the oldest turn's final and the
+        # turn it is for, the finals that timed out, and the lock that settles turns one
+        # at a time in order (the receive task and the timer both settle).
+        self._decoded_ms = -1
+        self._final_task = None
+        self._final_for: Optional[_Turn] = None
+        self._final_timeouts = 0
+        self._finals_lock = asyncio.Lock()
         # THE PEEK: the one outstanding (None: none, or adopted), and a VAD stop whose
         # peek waits for the commit in flight to be answered.
         self._peeks = self._slice_asked and PREVIEW_AT_STOP
@@ -2060,14 +2090,15 @@ class TeaportSTTService(WebsocketSTTService):
         """The commit just sent closes a turn (TURN TEXT) at its position, on the engine's
         session clock -- the audio sent on this socket, which the commit followed with
         nothing between (THE WIRE)."""
-        commit.turn = self._turn_at(self._session_ms(), commit.n)
+        commit.turn = self._turn_at(self._session_ms(), commit.n, commit.at)
 
-    def _turn_at(self, at: int, n: int) -> _Turn:
+    def _turn_at(self, at: int, n: int, sent_at: float) -> _Turn:
         """A turn closed at `at`: it takes the open words that end before it. Words
         ending at or after it stay open: the caller had resumed by then -- unless its
         preview vouches for them (THE CUT'S MARGIN)."""
         mine = [w for w in self._open_words if w[1] < at]
-        turn = _Turn(at_ms=at, stop_n=n, words=mine, since=self._seg_since if mine else None)
+        turn = _Turn(at_ms=at, stop_n=n, words=mine, since=self._seg_since if mine else None,
+                     sent_at=sent_at)
         self._turns.append(turn)
         self._keep_open([w for w in self._open_words if w[1] >= at])
         if (self._last_piece is not None and self._last_piece[2] is None
@@ -2109,7 +2140,7 @@ class TeaportSTTService(WebsocketSTTService):
         self._stop_answered(peek.n)
         # The words that came in after its preview: the preview may vouch for them.
         late = {id(w) for w in self._open_words[peek.seen:]} if peek.previewed else set()
-        peek.turn = self._turn_at(peek.at_ms, peek.n)
+        peek.turn = self._turn_at(peek.at_ms, peek.n, peek.commit.at)
         peek.commit.why = f"peek+{why}"
         logger.debug(f"{self}: VAD stop {peek.n}'s peek adopted ({why}), "
                      f"{'its preview in hand' if peek.previewed else 'its preview to come'}")
@@ -2146,13 +2177,16 @@ class TeaportSTTService(WebsocketSTTService):
                 last = self._last_piece
                 if last is not None and last[2] is None and follow[2] and follow[:2] == last[:2]:
                     self._last_piece = (*last[:2], turn)
-        if (commit.why == "bot-speaking"
+        if msg.get("complete") is False:
+            turn.deferred = "its preview cut short"
+        elif (commit.why == "bot-speaking"
               and not _words_of(self._callers(asked, turn.since))):
             # Nothing of the caller's: no words, or only the bot's own heard back.
             turn.deferred = "its preview over the bot's reply having had none of the caller's"
         if turn.deferred:
             # Nothing goes on now: the turn closes on its final -- over the bot still the
-            # barge-in its words are (TURN TEXT).
+            # barge-in its words are -- or, if that never comes, on the words in hand
+            # (TURN TEXT).
             turn.msg, turn.commit = msg, commit
             logger.debug(f"{self}: VAD stop {turn.stop_n}: {turn.deferred} -- the turn "
                          "closes on its final")
@@ -2243,8 +2277,9 @@ class TeaportSTTService(WebsocketSTTService):
             # The engine's end_through_ms promised this cannot come. Kept, not lost: the
             # open turn has it.
             self._warn_once("bound", f"a word ending at {end} ms arrived after the turn "
-                            f"through {self._final_through} ms was final -- the engine's "
-                            "end_through_ms did not hold; the open turn takes it")
+                            f"through {self._final_through} ms was settled -- the engine's "
+                            "end_through_ms did not hold, or that turn's final timed out; "
+                            "the open turn takes it")
         self._open_words.append(w)
         self._last_piece = (start, end, None)
         return False
@@ -2270,6 +2305,14 @@ class TeaportSTTService(WebsocketSTTService):
         if isinstance(through, (int, float)) and int(through) != at:
             self._warn_once("through", f"the engine placed a commit at {through} ms, this "
                             f"service at {at} ms -- the turns are sliced at ours")
+        cut = msg.get("complete") is False
+        if cut:
+            # The engine could not take the preview whole: its text is no one's. The turn
+            # closes on its final, and nothing is speculated on it (TURN TEXT).
+            n = turn.stop_n if turn is not None else peek.n
+            logger.info(f"{self}: VAD stop {n}'s preview came back cut short (complete: "
+                        "false) -- no preview: the turn closes on its final")
+            msg = {**msg, "delta": ""}
         # The provisional text: the words in hand that end before the position, then the
         # preview's.
         owner = turn if turn is not None else peek.turn
@@ -2287,7 +2330,7 @@ class TeaportSTTService(WebsocketSTTService):
                              "resumed -- no one's")
             elif peek.turn is not None:
                 await self._push_turn(peek.turn, peek.asked, peek.asked_n, msg, commit)
-            else:
+            elif not cut:
                 await self._offer_preview(peek)
         if self._peek_wanted is not None:
             # A stop waited for this answer to peek (one commit in flight).
@@ -2316,24 +2359,67 @@ class TeaportSTTService(WebsocketSTTService):
 
     async def _finalize_turns(self):
         """Settle every turn, oldest first, whose preview has come and whose position
-        end_through_ms has passed: no word of it can come any more (TURN TEXT)."""
-        while self._turns and self._turns[0].previewed:
-            turn = self._turns[0]
-            final = (turn.at_ms <= self._end_through if not turn.expect
-                     else (turn.at_ms + _VOUCH_MS <= self._end_through
-                           and turn.at_ms <= self._audio_through))
-            if not final:
-                break
-            self._turns.popleft()
-            self._final_through = turn.at_ms
-            await self._settle_turn(turn)
+        end_through_ms has passed -- no word of it can come any more -- or whose final
+        has timed out (TURN TEXT); then time the oldest still waiting."""
+        async with self._finals_lock:
+            while self._turns and self._turns[0].previewed:
+                turn = self._turns[0]
+                final = (turn.at_ms <= self._end_through if not turn.expect
+                         else (turn.at_ms + _VOUCH_MS <= self._end_through
+                               and turn.at_ms <= self._audio_through))
+                if not final and not self._final_overdue(turn):
+                    break
+                self._turns.popleft()
+                self._final_through = turn.at_ms
+                await self._settle_turn(turn, timed_out=not final)
+            await self._time_final()
 
-    async def _settle_turn(self, turn: _Turn):
+    def _final_overdue(self, turn: _Turn) -> bool:
+        """The turn's final has had _FINAL_TIMEOUT_MS past its position: by the engine's
+        decoded_through_ms, or by the wall clock since its commit went out."""
+        return (self._decoded_ms >= turn.at_ms + _FINAL_TIMEOUT_MS
+                or time.monotonic() >= turn.sent_at + _FINAL_TIMEOUT_MS / 1000)
+
+    async def _time_final(self):
+        """(Re)arm the timer for the oldest turn waiting for its final, if it changed."""
+        oldest = self._turns[0] if self._turns and self._turns[0].previewed else None
+        if oldest is self._final_for:
+            return
+        self._final_for = oldest
+        if oldest is None:
+            await self._cancel_timer("_final_task")
+        else:
+            await self._restart_timer("_final_task", self._final_after(oldest))
+
+    async def _final_after(self, turn: _Turn):
+        await asyncio.sleep(max(0.0, turn.sent_at + _FINAL_TIMEOUT_MS / 1000
+                                - time.monotonic()))
+        if self._fired("_final_task"):
+            self._final_for = None
+            await self._finalize_turns()
+
+    async def _settle_turn(self, turn: _Turn, timed_out: bool = False):
         """A turn's final is in: all its words. Compared with the provisional text it was
         pushed as, by words (case and punctuation aside, as measured); a difference goes
         downstream for turn_text.TurnTextCorrector to apply, and every outcome is one
-        [TURN] line."""
+        [TURN] line. `timed_out`: the final never came (_finalize_turns), and the turn
+        settles as its provisional text."""
         final = "".join(w[0] for w in turn.words).strip()
+        if timed_out:
+            self._final_timeouts += 1
+            head = (f"[TURN] VAD stop {turn.stop_n}: final timeout, "
+                    f"{time.monotonic() - turn.preview_at:.2f}s after the preview (position "
+                    f"{turn.at_ms} ms; end_through_ms {self._end_through}, "
+                    f"decoded_through_ms {self._decoded_ms}; "
+                    f"{len(turn.words) - turn.asked_n} word(s) since; "
+                    f"timeouts={self._final_timeouts})")
+            if turn.deferred:
+                logger.warning(f"{head} -- closed on the {len(_words_of(final))} word(s) in "
+                               f"hand, {turn.deferred}")
+                await self._close(turn.msg, turn.commit, final, final, turn.since)
+            else:
+                logger.warning(f"{head} -- settled as its provisional text")
+            return
         kind, added, dropped = compare_turn_text(turn.asked, final)
         late = len(turn.words) - turn.asked_n
         wait = time.monotonic() - turn.preview_at
@@ -2507,6 +2593,7 @@ class TeaportSTTService(WebsocketSTTService):
                 self._slicing = self._slice_asked
                 self._end_through = -1
                 self._audio_through = -1
+                self._decoded_ms = -1
                 self._final_through = 0
                 self._last_piece = None
                 # Handshake: the engine is single-model and just acknowledges this --
@@ -2604,6 +2691,8 @@ class TeaportSTTService(WebsocketSTTService):
             self._open_words = []
             self._last_piece = None
             self._turns.clear()
+            self._final_for = None
+            await self._cancel_timer("_final_task")
             self._peek = None
             self._peek_wanted = None
             # Per-session, like the buffer beside it: a run of 4 empty finals before a
@@ -2893,6 +2982,9 @@ class TeaportSTTService(WebsocketSTTService):
                 # end_through_ms is in hand. Asked for by the slices, so pushed on only
                 # where the stop strategy asked for the report too.
                 ms = msg.get("end_through_ms")
+                decoded = msg.get("decoded_through_ms")
+                if isinstance(decoded, (int, float)):
+                    self._decoded_ms = max(self._decoded_ms, int(decoded))
                 started = msg.get("audio_through_ms")
                 if isinstance(started, (int, float)):
                     self._audio_through = max(self._audio_through, int(started))
