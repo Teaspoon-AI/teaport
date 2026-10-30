@@ -36,8 +36,27 @@ def check_empty_note_on_every_default_cell() -> None:
     assert "= off" not in config_schema._default_cell({"name": "X", "type": "path", "default": "/x"})
 
 
+def check_docs_false_and_former_stay_out_of_the_tables() -> None:
+    # A retired or renamed name the brain still tolerates has no row in the docs; the
+    # sentence "Named X before" is not rendered either, so the page describes one release.
+    schema = {
+        "stores": {"s": {"path": "/etc/x.env", "services": ["x"], "apply": "restart"}},
+        "groups": [{"id": "g", "title": "G"}],
+        "settings": [
+            {"name": "KEEP", "group": "g", "store": "s", "type": "flag", "help": "Kept.",
+             "former": "OLD_KEEP"},
+            {"name": "OLD_KEEP", "group": "g", "store": "s", "type": "flag", "docs": False,
+             "help": "Renamed KEEP."},
+        ],
+    }
+    out = config_schema.render(schema)
+    assert "`KEEP`" in out and "`OLD_KEEP`" not in out, out
+    assert "Named" not in out and "before" not in out, out
+
+
 def main() -> int:
     check_empty_note_on_every_default_cell()
+    check_docs_false_and_former_stay_out_of_the_tables()
     if not config_schema.DOCS_PATH.exists():
         print(f"SKIP: {config_schema.DOCS_PATH} not present (not a repo checkout)")
         return appliance.SKIP_EXIT

@@ -108,9 +108,6 @@ def _desc_cell(row: dict) -> str:
         parts.append("One of " + ", ".join(f"`{v}`" if v else EMPTY for v in row["values"]) + ".")
     if "note" in row:
         parts.append(row["note"].strip())
-    if "former" in row:
-        parts.append(f"Named `{row['former']}` before; that name is still read, with a "
-                     "warning, while this one is unset.")
     if row.get("tier") == "installer":
         parts.append("*Set by the installer.*")
     if row.get("kept"):
@@ -138,7 +135,7 @@ def render(schema: dict) -> str:
 
     by_group = settings_by_group(schema)
     for g in schema["groups"]:
-        rows = by_group[g["id"]]
+        rows = [r for r in by_group[g["id"]] if r.get("docs", True)]
         if not rows:
             continue
         lines.append(f"## {g['title']}")
