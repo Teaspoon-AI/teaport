@@ -9,7 +9,7 @@ uv run teaport-brain --port 7861     # serves the OpenClaw plugin at ws://<host>
 ```
 
 Needs the engine reachable at `TEAPORT_URL` (STT + TTS); it is not started here.
-Config lives in the environment — see `docs/CONFIG.md`.
+Config lives in the environment — see the [Settings reference](https://docs.teaspoon.tech/reference/settings/).
 
 ## Layout
 

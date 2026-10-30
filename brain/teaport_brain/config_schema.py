@@ -1,33 +1,63 @@
 """The configuration schema: loader + docs renderer.
 
 config_schema.toml is the one table every consumer of teaport's settings reads —
-the config UI, `teaport doctor`, and the generated part of docs/CONFIG.md. This
-module is deliberately stdlib-only (tomllib) so `python -m teaport_brain.config_schema`
-runs anywhere the repo is checked out, with no venv and no pipecat.
+the config UI, `teaport doctor`, and the generated part of the Settings reference
+page of the docs site. This module is deliberately stdlib-only (tomllib) so
+`python -m teaport_brain.config_schema` runs anywhere the repo is checked out, with
+no venv and no pipecat.
 
-    python -m teaport_brain.config_schema            # rewrite docs/CONFIG.md in place
-    python -m teaport_brain.config_schema --check    # exit 1 if docs/CONFIG.md is stale
+    python -m teaport_brain.config_schema            # rewrite the Settings reference in place
+    python -m teaport_brain.config_schema --check    # exit 1 if it is stale
 
-docs/CONFIG.md keeps its hand-written prose (where config lives, SIP telephony,
-the single STT slot); only the region between the two marker comments is owned
-here. tests/test_config_docs.py runs --check so a schema edit without a docs
-regeneration fails the suite instead of shipping stale docs.
+The page is docs/src/content/docs/reference/settings.md (published at
+https://docs.teaspoon.tech/reference/settings/). It keeps its hand-written frontmatter and
+introduction; the region from the source comment to the closing marker is owned here. The
+source comment fingerprints the schema, so a page cut from an older schema is stale even
+when its tables happen to match. tests/test_config_docs.py runs --check so a schema edit
+without a docs regeneration fails the suite instead of shipping stale docs.
 """
 from __future__ import annotations
 
 import argparse
 import functools
+import hashlib
 import pathlib
+import re
 import sys
 import tomllib
 
 SCHEMA_PATH = pathlib.Path(__file__).with_name("config_schema.toml")
-DOCS_PATH = pathlib.Path(__file__).resolve().parents[2] / "docs" / "CONFIG.md"
+DOCS_PATH = pathlib.Path(__file__).resolve().parents[2] / "docs" / "src" / "content" / "docs" / "reference" / "settings.md"
 
 EMPTY = '`""`'  # how an empty-string value/enum member is shown
 
 BEGIN = "<!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->"
 END = "<!-- end generated -->"
+
+# Written by hand into the page's prose, so they live here with the rest of what
+# render() prints, not in the schema.
+STORES_SUMMARY = ("Every setting lives in one of the files in this table; the second column names "
+                  "the service that reads it, and the last says how a change takes effect.")
+CONSTRAINTS_SUMMARY = ("The settings in this section depend on one another; each item names the "
+                       "others that must change with it.")
+
+# The source comment that opens the generated region, just above BEGIN: any citation of the schema, so a
+# comment in an older form is replaced, not left above a new one.
+SOURCE_RE = re.compile(r"<!-- source: brain/teaport_brain/config_schema\.toml:[^>]*-->\n\n\Z")
+
+
+def source_comment() -> str:
+    """Cite the schema by line count and content fingerprint: `1-N#HASH`.
+
+    N counts real lines (a final newline ends one, it does not start another); HASH is
+    the first 8 hex digits of sha256 over lines 1..N joined with newlines, none trailing.
+    The docs lint computes the same fingerprint to tell whether the page still matches.
+    """
+    lines = SCHEMA_PATH.read_text(encoding="utf-8").split("\n")
+    if lines[-1] == "":
+        lines.pop()
+    digest = hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()[:8]
+    return f"<!-- source: brain/teaport_brain/config_schema.toml:1-{len(lines)}#{digest} -->"
 
 
 @functools.cache
@@ -121,9 +151,9 @@ def _store_for_group(schema: dict, rows: list[dict]) -> str | None:
 
 
 def render(schema: dict) -> str:
-    lines: list[str] = [BEGIN, ""]
+    lines: list[str] = [source_comment(), "", BEGIN, ""]
 
-    lines += ["## Where settings live", "",
+    lines += ["## Where settings live", "", STORES_SUMMARY, "",
               "| File | Read by | To apply a change |", "|---|---|---|"]
     for sid, st in schema["stores"].items():
         if not st["services"]:
@@ -140,6 +170,8 @@ def render(schema: dict) -> str:
             continue
         lines.append(f"## {g['title']}")
         lines.append("")
+        if "summary" in g:
+            lines += [g["summary"], ""]
         store = _store_for_group(schema, rows)
         sub = []
         if store:
@@ -155,7 +187,7 @@ def render(schema: dict) -> str:
 
     cons = schema.get("constraints", [])
     if cons:
-        lines += ["## Settings that constrain each other", ""]
+        lines += ["## Settings that constrain each other", "", CONSTRAINTS_SUMMARY, ""]
         for c in cons:
             lines.append(f"- {_md(c['message'])}")
         lines.append("")
@@ -165,11 +197,18 @@ def render(schema: dict) -> str:
 
 
 def splice(doc: str, generated: str) -> str:
-    """Replace the marked region of a CONFIG.md with `generated`."""
-    start = doc.find(BEGIN)
+    """Replace the generated region of the Settings page with `generated`.
+
+    The region runs from the source comment, when one sits just above BEGIN, to END.
+    """
+    begin = doc.find(BEGIN)
     end = doc.find(END)
-    if start < 0 or end < 0 or end < start:
+    if begin < 0 or end < 0 or end < begin:
         raise ValueError(f"{DOCS_PATH}: missing the generated-region markers")
+    start = begin
+    m = SOURCE_RE.search(doc[:begin])
+    if m:
+        start = m.start()
     end += len(END)
     # Consume the newline after END so the splice is idempotent.
     if doc[end:end + 1] == "\n":

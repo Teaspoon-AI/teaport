@@ -5,7 +5,7 @@ description: Every setting teaport reads, the file it lives in, its default, and
 
 This page lists every setting teaport reads, the file it lives in, and what it does. See [Configure teaport](/guides/configuration/) for the configuration page, the secret files, and how to apply a change.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1-2457 @5a98d87 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1-2480#030b837b -->
 
 <!-- generated from brain/teaport_brain/config_schema.toml — edit that, then: python -m teaport_brain.config_schema -->
 
@@ -300,7 +300,7 @@ In `/etc/teaport/engine.env`.
 
 These settings are the gateway's own conf: registration, the echo canceller, and the addresses it accepts SIP requests from.
 
-In `~/.config/teaport/teaport-sip.conf`. Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it; `teaport sip configure --fresh` keeps nothing and writes the template.
+In `~/.config/teaport/teaport-sip.conf`. Written by `teaport sip configure`; see "Turn on telephony" in the phone calls guide for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it; `teaport sip configure --fresh` keeps nothing and writes the template.
 
 | Setting | Default | Description |
 |---|---|---|
@@ -343,7 +343,7 @@ In `/etc/teaport/bridge.env`.
 
 These settings choose the sound card, tune its gain and echo handling, and set the wake words and session timers.
 
-In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client, and the brain holds one conversation at a time (docs/CONFIG.md, One engine, one conversation): it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB) — or, with wake words (LOCAL_AUDIO_WAKE_WORDS), it holds a session in which nothing the room says goes anywhere until a wake word is said. A dashboard (or other) Talk session takes the box only from a sleeping mic; while any other conversation is live the brain refuses the bridge (out loud if someone in the room asked to talk), and the bridge backs off while that conversation lasts (LOCAL_AUDIO_BACKOFF_SECS).
+In `/etc/teaport/local-audio.env`. Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client, and the brain holds one conversation at a time (see "One conversation at a time" in the architecture reference): it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB) — or, with wake words (LOCAL_AUDIO_WAKE_WORDS), it holds a session in which nothing the room says goes anywhere until a wake word is said. A dashboard (or other) Talk session takes the box only from a sleeping mic; while any other conversation is live the brain refuses the bridge (out loud if someone in the room asked to talk), and the bridge backs off while that conversation lasts (LOCAL_AUDIO_BACKOFF_SECS).
 
 | Setting | Default | Description |
 |---|---|---|

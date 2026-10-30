@@ -1,6 +1,6 @@
-# teaport configuration schema — the ONE table the config UI and the
-# docs/CONFIG.md generator read. Drafted 2026-09-16 from the actual read sites
-# in brain/teaport_brain/, install.sh, systemd/, cli/teaport and
+# teaport configuration schema — the ONE table the config UI and the generator of
+# docs/src/content/docs/reference/settings.md read. Drafted 2026-09-16 from the actual
+# read sites in brain/teaport_brain/, install.sh, systemd/, cli/teaport and
 # bridge/discord/index.js.
 #
 # A setting is not configurable until it has a row here. Adding an os.getenv()
@@ -46,6 +46,13 @@
 #
 # Fields per [stores.*] table: path, owner, services, apply (the docs' table), format
 # and mode (the SIP conf), and writer: the repo file that writes the store, if one does.
+#
+# Fields per [[groups]] entry:
+#   id, title  the section's key and heading
+#   summary    one sentence under the docs heading, before the group's tables: what the
+#              settings in it are for. The docs generator prints it first; the UI ignores it
+#   blurb      the longer note: a caveat or a pointer to the code, shown in the UI and
+#              the docs, after the store's path
 
 schema_version = 1
 
@@ -105,78 +112,94 @@ apply = "Read at the moment of use; the process env var of the same name shadows
 [[groups]]
 id = "llm"
 title = "Language model"
+summary = "These settings choose the large language model (LLM) endpoint and model, cap the completion, and add guards and spoken notices around the replies."
 
 [[groups]]
 id = "engine"
 title = "Speech engine connection"
+summary = "These settings point the brain at the engine's speech-to-text (STT) and text-to-speech (TTS) endpoints and keep a slow engine from hanging a reply."
 
 [[groups]]
 id = "tts_chunking"
 title = "TTS clause chunking"
+summary = "These settings cut each reply into clauses for the synthesizer and limit how far ahead of playback it works."
 blurb = "First-audio latency versus seam quality. Each is explained at length in engine_tts.py."
 
 [[groups]]
 id = "turn_taking"
 title = "Turn-taking"
+summary = "These settings decide when the caller's turn ends and when the bot hears an interruption, through voice activity detection (VAD), endpointing, and the Smart Turn verdicts."
 blurb = "Each is explained at length where it is read, in endpointing.py."
 
 [[groups]]
 id = "agent"
 title = "Agent consult and follow-ups"
+summary = "These settings choose the agent, time its consults, fill the wait with thinking sounds, and name the persona file a voice-only device uses."
 blurb = "TEAPORT_AGENT says whether the box has a co-resident OpenClaw gateway; every other row here applies only when it does."
 
 [[groups]]
 id = "tools"
 title = "Tools"
+summary = "These settings turn each of the voice model's tools on or off."
 blurb = "One switch per tool the voice model can call (tools.py, THE TOOL CONTRACT). A tool also needs what it works with: the OpenClaw gateway (TEAPORT_AGENT=openclaw) for web, memory and openclaw_agent_consult; the voice for the voice tools; and, for set_volume, restart_session and end_conversation, a client that can do it itself (the local audio bridge announces them; end_conversation only with wake words set); answer_phone_call is offered to Talk sessions and the room mic, never to a call. A tool that is off, or missing what it needs, is not offered to the model and not named in its instructions."
 
 [[groups]]
 id = "wifi_setup"
 title = "Wi-Fi setup"
+summary = "These settings name the Wi-Fi setup network and set its password."
 blurb = "Say \"set up Wi-Fi\" at the box (the local audio bridge) and it opens a temporary setup network, teaport-ab12 (the end of its Wi-Fi MAC), with a page where a phone picks the box's network and types the password; the box speaks the network, the password and the page's address. No LLM involved, so it works offline; and only offline does the phrase start it by itself — online, the model hears it like any other words and decides, through the wifi_setup tool (Tools), which is also its switch. These two are flash-time settings for the paper insert."
 
 [[groups]]
 id = "talk_client"
 title = "Talk client context notes"
+summary = "These settings cap the size, the count, and the rate of the context notes a Talk client sends."
 blurb = "Limits on the notes a Talk client adds to the voice LLM's context through the plugin's `teaport.talk.context` method (client_notes.py). Read only by teaport-brain."
 
 [[groups]]
 id = "busy_lamp"
 title = "Busy lamp"
+summary = "These settings drive the ReSpeaker XVF3800's LED ring as a busy lamp during phone calls."
 blurb = "The ReSpeaker XVF3800's LED ring as a busy lamp (BLF) for phone calls (xvf_led.py): breathing red while a call rings, solid red while it is live, then back to what it showed before, normally the firmware's own listening effect (the direction of the voice it hears). It follows the session arbiter's call claim, so it also goes back to normal when the call is torn down with the SIP front-end or the brain restarts or dies (the look to restore is kept in /run/teaport-busy-lamp until it is put back). The ring is driven by USB control transfers beside the audio streams; install.sh lays down a udev rule (/etc/udev/rules.d/60-teaport-xvf3800.rules) giving the device to the teaport-hw group, and puts the run user in it. A box without an XVF3800 does nothing. Read only by teaport-brain."
 
 [[groups]]
 id = "sip_brain"
 title = "SIP front-end"
+summary = "These settings time the answer, shape the caller's audio, and decide what a call does to a live conversation."
 blurb = "Read by teaport-brain's SIP front-end (phone calls): how a call is answered, and how it asks a live conversation (a Talk session, the room mic awake) to make way for it."
 
 [[groups]]
 id = "diag"
 title = "Diagnostics"
+summary = "These settings trace and record turns for the journal and name the engine's log file."
 blurb = "All off by default; log-only."
 
 [[groups]]
 id = "installer"
 title = "Installer-owned"
+summary = "The installer writes these values on each run."
 blurb = "Written by install.sh. Shown read-only."
 
 [[groups]]
 id = "engine_service"
 title = "Speech engine service"
+summary = "These settings configure the engine service itself: its port, its startup flags, and its memory reserve."
 
 [[groups]]
 id = "sip"
 title = "SIP gateway"
-blurb = "Written by `teaport sip configure`; see *SIP telephony (opt-in)* below for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it; `teaport sip configure --fresh` keeps nothing and writes the template."
+summary = "These settings are the gateway's own conf: registration, the echo canceller, and the addresses it accepts SIP requests from."
+blurb = "Written by `teaport sip configure`; see \"Turn on telephony\" in the phone calls guide for turning the line on. A re-run sets the trunk's keys (id_uri, registrar_uri, username, password, realm) and the units' (sip_port, uds_path, register, auto_answer) and keeps every other line of the conf as it was, so a setting made by hand, or by `teaport sip aec`, survives it; `teaport sip configure --fresh` keeps nothing and writes the template."
 
 [[groups]]
 id = "bridge"
 title = "Discord bridge"
+summary = "These settings identify the guild and user the bridge follows and configure its voice and its path to the brain."
 
 [[groups]]
 id = "local_audio"
 title = "Local audio bridge"
-blurb = "Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client, and the brain holds one conversation at a time (docs/CONFIG.md, One engine, one conversation): it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB) — or, with wake words (LOCAL_AUDIO_WAKE_WORDS), it holds a session in which nothing the room says goes anywhere until a wake word is said. A dashboard (or other) Talk session takes the box only from a sleeping mic; while any other conversation is live the brain refuses the bridge (out loud if someone in the room asked to talk), and the bridge backs off while that conversation lasts (LOCAL_AUDIO_BACKOFF_SECS)."
+summary = "These settings choose the sound card, tune its gain and echo handling, and set the wake words and session timers."
+blurb = "Talk to the agent through a sound card on the box (a USB mic array with a speaker on its jack). Opt-in: the unit stays inert until /etc/teaport/local-audio.env exists (`TEAPORT_ENABLE_LOCAL_AUDIO=1 ./install.sh`). It is a /talk client, and the brain holds one conversation at a time (see \"One conversation at a time\" in the architecture reference): it dials the brain when it starts, and after a session ends it redials only when someone speaks near it (LOCAL_AUDIO_WAKE_DB) — or, with wake words (LOCAL_AUDIO_WAKE_WORDS), it holds a session in which nothing the room says goes anywhere until a wake word is said. A dashboard (or other) Talk session takes the box only from a sleeping mic; while any other conversation is live the brain refuses the bridge (out loud if someone in the room asked to talk), and the bridge backs off while that conversation lasts (LOCAL_AUDIO_BACKOFF_SECS)."
 
 # ================================================================ brain.env
 
