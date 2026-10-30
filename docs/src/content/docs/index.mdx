@@ -1,0 +1,62 @@
+---
+title: Teaport
+description: Docs for teaport, a local voice assistant for the NVIDIA Jetson Orin.
+template: splash
+hero:
+  tagline: A voice assistant that runs on the Jetson. You talk to the device and it answers in speech. Your voice does not leave the device.
+  actions:
+    - text: Install teaport
+      link: /getting-started/installation/
+      icon: right-arrow
+    - text: View on GitHub
+      link: https://github.com/Teaspoon-AI/teaport
+      icon: external
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+{/* source: README.md:3-4 @1e5604c (hero tagline) */}
+
+<CardGrid stagger>
+	<Card title="Install teaport" icon="rocket">
+		One command installs teaport. The installer sets up the engine, the
+		brain, and the services, and ends with a self-test. See
+		[Install teaport](/getting-started/installation/).
+
+		{/* source: README.md:28-33 @1e5604c */}
+	</Card>
+	<Card title="Prepare the Jetson" icon="rocket">
+		Check the JetPack release and trim the desktop before you run the
+		installer. See [Prepare the Jetson](/getting-started/prepare-the-jetson/).
+
+		{/* source: docs/INSTALL.md:5-11 @1e5604c */}
+	</Card>
+	<Card title="Configure teaport" icon="setting">
+		Point the brain at its large language model. Change settings in the
+		configuration page. A restart applies the change; nothing hot-reloads.
+		See [Configure teaport](/guides/configuration/).
+
+		{/* source: install.sh:1506-1507 @1e5604c; brain/teaport_brain/gateway_server.py:27 @1e5604c; brain/teaport_brain/config_ui.py:27-28 @1e5604c */}
+	</Card>
+	<Card title="Set up phone calls" icon="phone">
+		Answer phone calls on the device over a SIP trunk. `teaport sip configure`
+		sets the line up. See [Set up phone calls](/guides/phone-calls/).
+
+		{/* source: docs/CONFIG.md:370-375 @1e5604c; cli/teaport:9 @1e5604c */}
+	</Card>
+	<Card title="Connect the device to Wi-Fi" icon="wifi">
+		If the device has no internet connection, its Wi-Fi setup opens a
+		temporary setup network. Join it from a phone, pick your Wi-Fi network,
+		and type the password. See
+		[Connect the device to Wi-Fi](/guides/wifi-setup/).
+
+		{/* source: brain/teaport_brain/wifi_setup.py:3-5 @1e5604c */}
+	</Card>
+	<Card title="Architecture" icon="puzzle">
+		How the engine, the brain, and the OpenClaw plugin work together. See
+		[Architecture](/reference/architecture/).
+
+		{/* source: README.md:31-32 @1e5604c */}
+	</Card>
+</CardGrid>
