@@ -2098,6 +2098,52 @@ async def test_a_reply_sharing_a_word_with_a_record_is_no_telling_of_it():
     assert dec.calls == [] and rec.state == OWED
 
 
+def test_a_telling_is_two_of_its_terms_or_the_rest_alone():
+    """The PR re-review's B: a re-telling is often the rest alone, one fact ("Also,
+    tomorrow it closes at six.") -- a telling, as the result's term is most of what it
+    says beyond the question. A reply on another subject with one of its terms among its
+    own is not."""
+    w = Record.make("w", "What's the weather in Denver this weekend?",
+                    "Saturday in Denver looks sunny with a high around sixty-eight, and "
+                    "Sunday turns cloudy with a high near fifty-nine.")
+    p = Record.make("p", "When does the pharmacy close today and tomorrow?",
+                    "The Main Street pharmacy closes at nine tonight, and tomorrow it closes "
+                    "at six in the evening.")
+    for rec, text in [(w, "And Sunday turns cloudy."), (w, "Like I said, it'll be sunny."),
+                      (p, "Also, tomorrow it closes at six."),
+                      (p, "Oh, and like I said, it closes at nine.")]:
+        assert rec.tells(text), text
+    for rec, text in [(w, "A heat pump moves heat from outside air even on sunny days, "
+                          "using a compressor and refrigerant."),
+                      (w, "Sure, let me pull that up again."),
+                      (p, "The pharmacy on Main Street is a CVS with a drive-through and a "
+                          "photo counter.")]:
+        assert not rec.tells(text), text
+
+
+async def test_a_re_lookups_own_line_before_its_call_is_no_telling():
+    """The PR re-review's A: the turn right after the weather's cut ("Hold on, hold on.")
+    is its re-lookup, and its reply says a line and calls the fetch. That line, cut, is
+    no telling of the weather -- nothing of it was said -- so it counts no second cut and
+    the record stays owed for the fetched answer to tell."""
+    b, _, _ = sync_book(judge=FakeJudge(False), gist=FakeGist(False),
+                        decline=FakeDecline(False))
+    msgs = await _owed_weather(b)
+    await judged(b)
+    assert b.record("w1").cuts == 1
+    msgs = msgs + [{"role": "user", "content": "Hold on, hold on."}]
+    _, keys = await b.view(LLMContext(msgs), owed.COMMIT)
+    c = Reply(owed.COMMIT)
+    b.noted(c, keys, msgs)
+    assert c.relook == "w1"
+    c.calls = 1
+    b.called(c, ["wf"])
+    b.settle(c, "Sure, let me", cut=True, audio=True, text="Sure, let me pull that up again.")
+    await judged(b)
+    rec = b.record("w1")
+    assert rec.state == OWED and rec.cuts == 1, (rec.state, rec.cuts)
+
+
 async def test_a_correction_with_no_words_of_its_own_owes_the_corrected_answer():
     """The PR review's finding 2: a web_search answer for the wrong place, cut by "No,
     the other one." -- no terms of its own. The check declines the first answer, so the

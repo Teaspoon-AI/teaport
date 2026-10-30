@@ -511,16 +511,21 @@ class Record:
     def tells(self, text: Optional[str]) -> bool:
         """Whether a reply's words are a telling of this record, not merely about it: a cut
         of one counts toward its bound and has the caller's words read against it (#231).
-        By its result's own terms, at least two of them (or all it has): a reply on
-        another subject that shares a word with its question, or one term by chance
-        ("warm weather" in how a heat pump works, with a forecast owed), is no telling of
-        it -- the judges, which read about(), keep it owed, but a cut counted or a
-        dismissal of that reply read against it would end it unheard. A result with no
-        terms (a failure's plain record) falls back on about()."""
+        By its result's own terms: two of them (or all it has), or the rest alone -- one
+        fact of it that is most of what the reply says beyond the question ("Also,
+        tomorrow it closes at six."). A reply on another subject that shares a word with
+        its question, or one term by chance ("sunny days" in how a heat pump works, with
+        a forecast owed), is no telling of it -- the judges, which read about(), keep it
+        owed, but a cut counted or a dismissal of that reply read against it would end it
+        unheard. A result with no terms (a failure's plain record) falls back on about()."""
         terms = self.terms - _POLARITY
         if not terms:
             return self.about(text)
-        return len(terms_of(text or "", "") & terms) >= min(2, len(terms))
+        shared = terms_of(text or "", "") & terms
+        if len(shared) >= min(2, len(terms)):
+            return True
+        own = terms_of(text or "", f"{self.request} {self.question}") | shared
+        return bool(shared) and 2 * len(shared) >= len(own)
 
     def heard_with(self, text: str) -> str:
         """What the caller will have heard of it with `text`: what the judges read."""
@@ -1304,11 +1309,12 @@ class Owed:
             # unless it is a fresh answer's telling (`fresh_telling`, above): then it was
             # that answer's (its record, if the cut makes one, counts it), and terms it
             # shares with an older record are chance (an address's "fifty-five" and a
-            # forecast's low). Its re-lookup's reply (`relook`) is its telling whatever
-            # the new result says.
+            # forecast's low). Its re-lookup's reply that tells the new result (`relook`,
+            # calling nothing) is its telling whatever that says -- not the turn's own "let
+            # me check" line before the call.
             if (mark is not None and key in reply.noted and cut and audio and heard
                     and heard.strip()
-                    and (mine or reply.relook == key
+                    and (mine or (reply.relook == key and not reply.calls)
                          or (not fresh_telling and rec.tells(text or heard)))):
                 # A telling of it cut after its audio began (#231, Owed.tla `cuts`): it
                 # counts, and the second ends it unless the judges find it heard

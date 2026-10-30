@@ -255,15 +255,18 @@ Each is outside what the model checks, and each errs toward owed or toward silen
   speculative head start: a speculation rendered on interim words cannot stand for the
   check.
 - **What counts as a cut telling** (#231). A cut, after its audio began, of a reply whose
-  request carried the note and whose whole text tells the record (`Record.tells`: at
-  least two of its result's terms, or all it has, by the whole text as the judges read
-  it -- a lead-in like "So, as I mentioned," is the very moment a repeat is cut), a run
-  of ours for it, or its re-lookup's reply: the model's `say ∈ {tell, part}`. Merely
-  about it is not enough: a reply on another subject sharing a word with it ("warm
-  weather" in how a heat pump works, a forecast owed) is judged as before and stays
-  owed, but its cut counts nothing and its dismissal is not read against the record. The
-  cost: a re-telling that shares fewer than two of its result's terms is not counted
-  (the told-twice backstop still bounds the ones played through). Not a reply that is a
+  request carried the note and whose whole text tells the record (`Record.tells`: two
+  of its result's terms, or all it has, or the rest alone -- one of them that is most of
+  what the reply says beyond the question, "Also, tomorrow it closes at six." -- by the
+  whole text as the judges read it: a lead-in like "So, as I mentioned," is the very
+  moment a repeat is cut), a run of ours for it, or its re-lookup's reply that tells the
+  new result (calling nothing: not the turn's own "let me check" line): the model's
+  `say ∈ {tell, part}`. Merely about it is not enough: a reply on another subject with
+  one of its terms among its own ("sunny days" in how a heat pump works, a forecast
+  owed) is judged as before and stays owed, but its cut counts nothing and its dismissal
+  is not read against the record. The cost: a re-telling that paraphrases every one of
+  its result's terms away is not counted (the told-twice backstop still bounds the ones
+  played through). Not a reply that is a
   fresh answer's telling -- by position (`_resolve`'s rule, `Owed._tells_fresh`) and about
   it (a term shared with what was asked for it): a term it shares with an older record
   is chance (an address's "fifty-five" and a forecast's low); the record its cut makes
