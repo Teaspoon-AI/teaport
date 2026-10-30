@@ -19,7 +19,7 @@ export default defineConfig({
 				{ icon: 'github', label: 'GitHub', href: 'https://github.com/Teaspoon-AI/teaport' },
 			],
 			editLink: {
-				baseUrl: 'https://github.com/Teaspoon-AI/teaport-docs/edit/main/',
+				baseUrl: 'https://github.com/Teaspoon-AI/teaport/edit/main/docs/',
 			},
 			sidebar: [
 				{
