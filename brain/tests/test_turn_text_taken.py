@@ -8,8 +8,13 @@
 #     judge while it judges -- since both hold endpointing.STT_FRAMES, one tuple for all.
 #     It used to overtake the held final, find it nowhere and push it again: "Okay sure
 #     Okay sure go ahead".
-#   * Words that go elsewhere -- taken by Wi-Fi setup or run control, judged a backchannel,
-#     dropped by the barge-in guard -- are on record (TakenWords), for the corrector.
+#   * The corrector never pushes words again. Words it finds nowhere were taken (Wi-Fi
+#     setup, run control), judged a backchannel, or dropped by the barge-in guard, each of
+#     which TakenWords records: its line says which, and the words stay where the policy
+#     put them. A re-push used to decide them a second time, under another state: a
+#     judged backchannel came back as a barge-in, a claimed utterance was acted on twice.
+#   * A commit the corrector has not seen go by (the aggregator's own commit, from its
+#     input task) is still found: commits are recorded as the aggregator writes them.
 #   * A speculation asked on a stop's preview ahead of any turn is stood down when the
 #     words are taken, and when a run of ours is asked.
 #
@@ -20,17 +25,20 @@
 import asyncio
 import os
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from pinned_pipecat import require_pinned  # noqa: E402
 
 require_pinned()
 
+from pipecat.frames.frames import TranscriptionFrame  # noqa: E402
 from pipecat.processors.frame_processor import FrameDirection  # noqa: E402
 
 import test_owed_render as render  # noqa: E402
 import test_run_control as rc  # noqa: E402
 import test_speculative_reply as specs  # noqa: E402
+import test_turn_text_correction as ttc  # noqa: E402
 from test_barge_judge import GateRig, _Judge, final as jfinal, interim as jinterim  # noqa: E402
 
 from teaport_brain import owed, services  # noqa: E402
@@ -76,7 +84,38 @@ async def test_the_barge_in_judge_holds_the_correction_behind_the_final_it_judge
         assert rig.out() == [("close", 3)] and passed[-1] is fix, rig.out()
 
 
-# ---- where words that go elsewhere went ------------------------------------------------
+# ---- the corrector never pushes words again --------------------------------------------
+
+async def test_words_placed_nowhere_are_logged_with_why_and_never_pushed_again():
+    user = ttc._user()
+    taken = TakenWords()
+    c = ttc.Corrector(user, taken_words=taken)
+    await taken.took("Okay sure", "judged a backchannel")
+    await c._apply(correction("Okay sure", "Okay sure go ahead", added=("go", "ahead")))
+    assert c.pushed == [] and c.unplaced == 1, c.pushed
+    assert c.last_unplaced == "judged a backchannel"
+    await c._apply(correction("so then", "so then yes", added=("yes",)))
+    assert c.pushed == [] and c.unplaced == 2 and c.last_unplaced is None
+
+
+async def test_a_commit_the_corrector_never_saw_go_by_is_still_found():
+    # The aggregator commits (its own task: the ceiling, the safety net, the watchdog)
+    # after the correction was forwarded: the commit's frame is behind the correction.
+    user = ttc._user()
+    c = ttc.Corrector(user)
+    pushed_at = time.monotonic()
+    await user._handle_transcription(TranscriptionFrame("so I was thinking", "u", "t"))
+    frames = []
+
+    async def push(frame, direction=DOWN):
+        frames.append(frame)
+    user.push_frame = push
+    await user._push_aggregation()
+    await c._apply(correction("so I was thinking", "so I was thinking about tea",
+                              added=("about", "tea"), pushed_at=pushed_at))
+    assert c.corrected == 1, c._tally()
+    assert user.context.get_messages()[-1]["content"] == "so I was thinking about tea"
+
 
 async def test_every_way_words_go_elsewhere_is_on_record():
     import test_wifi_voice as wvt

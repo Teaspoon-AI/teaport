@@ -21,13 +21,17 @@
 #              snapshot, if one holds that message, is rewritten the same way, so the
 #              next commit is not a ctx-changed miss over a correction the policy keeps
 #              anyway. A final with no words never empties a message.
-#   unplaced   The words are in neither: the provisional text was taken by something on
-#              the way (the barge-in guard dropped a one-word "Okay" over the bot; a
-#              backchannel judge kept the reply going). If the final ADDS words ("Okay,
-#              stop"), they go back up to the STT, which pushes the final as words of
-#              their own (stt.py, _push_unplaced): a caller's words are never lost to a
-#              preview that stopped short. A final that only drops words is the
-#              provisional's policy decision again, and changes nothing.
+#   unplaced   The words are in neither: the provisional final never reached the
+#              aggregator's words. Something took it on the way -- Wi-Fi setup or
+#              OpenClaw's run control (taken_turn.taken), the barge-in judge letting the
+#              reply carry on over it, the barge-in guard dropping it as too few words
+#              to cut the bot -- each of which TakenWords records, and the line says
+#              which; anything else is logged as having fit nowhere. The words are NOT
+#              pushed again: they were decided once, under the state they came in, and a
+#              second decision under another (the pause over, the run's answer in) once
+#              turned a judged backchannel into a barge-in and asked the relay twice.
+#              The one re-push there is is the STT's own, for a provisional that pushed
+#              no words at all (stt.py, _settle_turn).
 #
 # No restart of a reply already asked. Measured (~/rbf/RESULTS2.md, spike 2b, 288 turns):
 # the final beats the provisional by 3 word errors in ~3000 words (259 vs 256), and the
@@ -45,22 +49,36 @@
 # and owed.py's bookkeeping (it reads the context at a render, and nothing here renders)
 # see the same context they would have, with other words in one user message.
 #
+# The correction is one of endpointing.STT_FRAMES, so a processor that holds the STT's
+# frames above the aggregator (run control's claim, the barge-in judge) holds it behind
+# the final it corrects; and commits are recorded as the aggregator writes them
+# (on_user_turn_message_added), not when their frame passes here, so one the aggregator
+# makes while the correction is on its way (the ceiling, the safety net, the watchdog --
+# its own task) is found.
+#
 import time
 from collections import deque
 from dataclasses import dataclass
 
 from loguru import logger
 
-from pipecat.frames.frames import (
-    BotStartedSpeakingFrame,
-    LLMContextFrame,
-    SystemFrame,
-)
-from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.frames.frames import BotStartedSpeakingFrame, SystemFrame
+from pipecat.processors.frame_processor import FrameProcessor
 
-from teaport_brain.endpointing import _UninterruptibleData
+from teaport_brain.endpointing import TurnTextFinalFrame
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG
 from teaport_brain.heard_context import _set_msg_text, msg_text
+
+__all__ = ["TurnTextCorrector", "TurnTextFinalFrame"]
+
+
+@dataclass
+class TurnTextUnplacedFrame(SystemFrame):
+    """No longer pushed: the corrector never sends words back up (see unplaced above).
+    Kept only until the STT stops handling it, in the next change."""
+
+    stop_n: int
+    final: str
 
 # The commits a correction may look in: the latest few, each with when it passed and
 # the user message it carried. The final follows its provisional by ~0.5 s.
@@ -79,69 +97,46 @@ def _last_whole(text: str, part: str) -> int:
     return -1
 
 
-@dataclass
-class TurnTextFinalFrame(_UninterruptibleData):
-    """A sliced turn's final words differ from those pushed for it (stt.py, TURN TEXT).
-    Pushed DOWNSTREAM by the STT behind the final it corrects, so every processor has
-    handled that one first; data and uninterruptible like the STT's other bookkeeping
-    frames (a turn start must not flush it). Consumed by TurnTextCorrector.
-
-    `asked`: the text pushed as the turn's final (after the echo guard). `final`: the
-    final words, the same way. `kind`: "adds", "drops" or "changes"
-    (stt.compare_turn_text), with the words added and dropped."""
-
-    stop_n: int
-    asked: str
-    final: str
-    kind: str
-    added: tuple = ()
-    dropped: tuple = ()
-    # When `asked` was pushed (time.monotonic()): the commit that carries it came after.
-    pushed_at: float = 0.0
-
-
-@dataclass
-class TurnTextUnplacedFrame(SystemFrame):
-    """TurnTextCorrector found a final's words in no turn and no message, and the final
-    adds words: pushed UPSTREAM to the STT, which pushes them as a final of their own."""
-
-    stop_n: int
-    final: str
-
-
 class TurnTextCorrector(FrameProcessor):
     """Apply a sliced turn's final where it differs from its provisional text (see the
-    module header). Placed below the user aggregator (agent_session: after
-    SegmentDoneSink), only in slice mode."""
+    module header). Placed below the user aggregator, above SegmentDoneSink
+    (agent_session), only in slice mode. `taken_words`: the session's
+    taken_turn.TakenWords, which says where unplaced words went."""
 
-    def __init__(self, aggregator, *, speculator=None):
+    def __init__(self, aggregator, *, speculator=None, taken_words=None):
         super().__init__()
         self._agg = aggregator
         self.speculator = speculator
-        # The latest commits, (when it passed, the user message it carried), oldest first:
-        # where a committed turn's words are looked for. And the bot's latest start, for
-        # the line's "had the reply started playing".
+        self.taken_words = taken_words
+        # The latest commits, (when the aggregator wrote it, the user message), oldest
+        # first: where a committed turn's words are looked for. And the bot's latest
+        # start, for the line's "had the reply started playing".
         self._commits: deque = deque(maxlen=_COMMITS_KEPT)
         self._spoke_at = 0.0
+        aggregator.add_event_handler("on_user_turn_message_added", self._message_added)
         self.amended = 0
         self.corrected = 0
         self.unplaced = 0
+        # Where the latest unplaced words went (TakenWords), or None: fit nowhere.
+        self.last_unplaced = None
 
     async def process_frame(self, frame, direction):
         await super().process_frame(frame, direction)
         if isinstance(frame, TurnTextFinalFrame):
             await self._apply(frame)
             return
-        if isinstance(frame, LLMContextFrame) and direction == FrameDirection.DOWNSTREAM:
-            msgs = frame.context.get_messages()
-            if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
-                self.committed(msgs[-1])
-        elif isinstance(frame, BotStartedSpeakingFrame):
+        if isinstance(frame, BotStartedSpeakingFrame):
             self._spoke_at = time.monotonic()
         await self.push_frame(frame, direction)
 
+    async def _message_added(self, _aggregator, _message):
+        """The aggregator has just written a user turn: the newest user message."""
+        msgs = self._agg.context.get_messages()
+        if msgs and isinstance(msgs[-1], dict) and msgs[-1].get("role") == "user":
+            self.committed(msgs[-1])
+
     def committed(self, message: dict):
-        """A commit carrying the user message `message` has passed, now."""
+        """A commit wrote the user message `message`, now."""
         self._commits.append((time.monotonic(), message))
 
     def _tally(self) -> str:
@@ -162,15 +157,15 @@ class TurnTextCorrector(FrameProcessor):
                         f"kept ({self._tally()})")
             return
         self.unplaced += 1
-        if frame.added and frame.final.strip():
-            logger.info(f"{what} -> unplaced: the asked words went nowhere; the final adds "
-                        f"words, so it goes on as new words ({self._tally()})")
-            await self.push_frame(TurnTextUnplacedFrame(stop_n=frame.stop_n,
-                                                        final=frame.final),
-                                  FrameDirection.UPSTREAM)
+        why = self.taken_words.why(frame.asked) if self.taken_words is not None else None
+        self.last_unplaced = why
+        if why is not None:
+            logger.info(f"{what} -> unplaced: the asked words were {why}; they stay so "
+                        f"({self._tally()})")
         else:
-            logger.info(f"{what} -> unplaced: the asked words went nowhere and the final "
-                        f"adds none; nothing to do ({self._tally()})")
+            logger.warning(f"{what} -> unplaced: the asked words fit nowhere (not taken, "
+                           f"judged or dropped that this session knows of) -- logged only "
+                           f"({self._tally()})")
 
     def _amend(self, frame: TurnTextFinalFrame) -> bool:
         """The turn's words still in the aggregator (not committed): replace them -- or,
@@ -200,12 +195,16 @@ class TurnTextCorrector(FrameProcessor):
         newest = next((m for m in reversed(msgs)
                        if isinstance(m, dict) and m.get("role") == "user"
                        and not msg_text(m).startswith(SYSTEM_NOTICE_TAG)), None)
+        recorded = {id(m) for _, m in self._commits}
         after = [(at, m) for at, m in self._commits if at >= frame.pushed_at]
         looks = [(at, m) for at, m in after if id(m) in where]
-        if (newest is not None and len(looks) < len(after)
-                and all(m is not newest for _, m in looks)):
-            # A commit since has left the context: the reply hold folded it into the
-            # turn before it (HeardContextCorrector's merge), which is now the newest.
+        if (newest is not None and all(m is not newest for _, m in looks)
+                and (id(newest) not in recorded or len(looks) < len(after))):
+            # Looked in last, the newest caller message: a commit not on record yet (the
+            # aggregator wrote it, and its event's handler runs as a task of its own), or,
+            # where a commit since has left the context, the turn before it, into which
+            # the reply hold folded it (HeardContextCorrector's merge). Never one on
+            # record from before the words were pushed: a turn already answered.
             looks.append((float("inf"), newest))
         for n, (at, m) in enumerate(looks):
             i = where[id(m)]
@@ -223,6 +222,7 @@ class TurnTextCorrector(FrameProcessor):
                 self.speculator.amend(i, old, new)
             if m is not newest:
                 return "a turn already answered"
-            return ("its reply had started playing" if at != float("inf")
-                    and self._spoke_at > at else "its reply had not started playing")
+            since = at if at != float("inf") else frame.pushed_at
+            return ("its reply had started playing" if self._spoke_at > since
+                    else "its reply had not started playing")
         return None

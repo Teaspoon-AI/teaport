@@ -59,11 +59,7 @@ from teaport_brain.agent_session import user_aggregator_params  # noqa: E402
 from teaport_brain.barge_pause import PauseAwareMinWordsStrategy  # noqa: E402
 from teaport_brain.endpointing import CutReplyFence, SegmentDoneSink  # noqa: E402
 from teaport_brain.followup_gate import SYSTEM_NOTICE_TAG  # noqa: E402
-from teaport_brain.turn_text import (  # noqa: E402
-    TurnTextCorrector,
-    TurnTextFinalFrame,
-    TurnTextUnplacedFrame,
-)
+from teaport_brain.turn_text import TurnTextCorrector, TurnTextFinalFrame  # noqa: E402
 
 DOWN = FrameDirection.DOWNSTREAM
 UP = FrameDirection.UPSTREAM
@@ -211,14 +207,12 @@ async def test_an_injected_notice_is_never_taken_for_the_callers_words():
     assert ctx.get_messages()[-2]["content"] == "go ahead please"
 
 
-async def test_words_placed_nowhere_go_back_up_only_when_the_final_adds_some():
+async def test_words_placed_nowhere_are_logged_only():
+    # Never pushed again, whatever the final adds (test_turn_text_taken.py has why).
     user = _user()
     c = Corrector(user)
     await c._apply(final("okay", "okay stop", added=("stop",), stop_n=4))
-    [(frame, direction)] = c.pushed
-    assert isinstance(frame, TurnTextUnplacedFrame) and direction == UP
-    assert (frame.stop_n, frame.final) == (4, "okay stop") and c.unplaced == 1
-    c.pushed.clear()
+    assert c.pushed == [] and c.unplaced == 1 and c.last_unplaced is None
     await c._apply(final("go ahead and", "go ahead", kind="drops", dropped=("and",)))
     assert c.pushed == [] and c.unplaced == 2
 
@@ -289,7 +283,7 @@ async def test_over_the_real_pipeline_a_correction_while_the_reply_plays_asks_an
         await TurnTextCorrector.push_frame(corrector, frame, direction)
     corrector.push_frame = passing
     call.task = PipelineTask(Pipeline([
-        user, call.fence.head, SegmentDoneSink(), corrector, call.corrector,
+        user, call.fence.head, corrector, SegmentDoneSink(), call.corrector,
         call.llm, call.tts, call.gate, barge.Playout(), call.pair.assistant(),
         call.fence.tail,
     ]), observers=[call.ledger], cancel_on_idle_timeout=False)
@@ -308,7 +302,7 @@ async def test_over_the_real_pipeline_a_correction_while_the_reply_plays_asks_an
         assert corrector.corrected == 1
         assert len(call.llm.contexts) == 1, "the correction asked the model again"
         assert call.fence.waits == waits and call.requested == 0 and not call.merge.pending
-        assert not any(isinstance(f, (InterruptionFrame, TurnTextUnplacedFrame))
+        assert not any(isinstance(f, (InterruptionFrame, TranscriptionFrame))
                        for f, _ in pushed[since:]), "the correction cut or re-sent something"
         assert not any(u.interrupted for u in call.ledger.events
                        if u.speaker == "assistant")
