@@ -404,6 +404,8 @@ async def run_relay_bot(websocket: WebSocket):
         # Talk's own turn-taking (TALK_* over the shared knobs; endpointing.turn_settings),
         # or the room's (ROOM_*): across a room people pause mid-sentence (issue #159).
         front_end="room" if room else "talk",
+        # The Discord bridge (?client=discord) is Talk too, but relays someone far away.
+        via=client if not room and client in host_context.NAMED_CLIENTS else None,
         host=host,
     )
     session_holder["s"] = session

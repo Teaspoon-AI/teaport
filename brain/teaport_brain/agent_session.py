@@ -603,6 +603,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                         client_features: frozenset = frozenset(),
                         wake_gate=None,
                         front_end: str | None = None,
+                        via: str | None = None,
                         host=None,
                         run_control: bool = False) -> AgentSession:
     """Build the shared teaport brain around `transport` and return an AgentSession.
@@ -639,6 +640,10 @@ def build_agent_session(transport, *, voice: str | None = None,
       over the shared values). Only the turn-taking and a tool call's filler caption
       (charted ahead on "talk": captions.caption_ahead) tell "room" from "talk"; the
       call prompt below is offered to both.
+    - via: the named bridge a "talk" session comes through ("discord":
+      host_context.NAMED_CLIENTS, its ?client=), None for the plugin and the room. A
+      bridge relays someone far from the box: no tool that needs someone at it
+      (pair_device) is offered.
     - host: what the OpenClaw host composed for this session (host_context.HostContext:
       a Talk session's session_config frame, or what the plugin's voice-context route
       gives every other front end, host_context.fetch). Its instructions start the
@@ -703,7 +708,7 @@ def build_agent_session(transport, *, voice: str | None = None,
     tool_ctx = ToolContext(tts=tts, client_features=frozenset(client_features),
                            call_prompt=prompt,
                            host_schemas=host_tool_schemas(host.tools) if host else (),
-                           run_control=run_control, front_end=front_end)
+                           run_control=run_control, front_end=front_end, via=via)
     session_tools = active_tools(tool_ctx)
     if prompt is not None and not any(t.name == "answer_phone_call" for t in session_tools):
         prompt = None
@@ -1175,7 +1180,7 @@ def build_agent_session(transport, *, voice: str | None = None,
                    # OpenClaw's Talk relay stores every final in the session a
                    # consult starts from (captions.py, caption_ahead).
                    captions_ahead=front_end == "talk",
-                   front_end=front_end, pairing=pairing)
+                   front_end=front_end, via=via, pairing=pairing)
 
     if pairing is not None:
         @task.event_handler("on_pipeline_finished")

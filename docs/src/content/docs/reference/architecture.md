@@ -33,7 +33,7 @@ The heard-grounding ledger records what you actually heard, the endpointing poli
 
 One process serves every front end: the `/talk` WebSocket and the phone line live in `teaport-brain`. Each session still gets a pipeline of its own, so one session's failure ends that session only.
 
-<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:654-657#50aa8078 -->
+<!-- source: systemd/teaport-brain.service.in:1-2#4ed91011; brain/teaport_brain/sip_server.py:16-23#ee15f50c; brain/teaport_brain/agent_session.py:659-662#50aa8078 -->
 
 ## The plugin
 
@@ -109,7 +109,7 @@ Only Talk can stop or steer a request in flight, through the relay's spoken run 
 
 Every tool is one record: a schema for the model, a handler, an on and off switch named `TEAPORT_TOOL_<NAME>`, a call timeout, and the phrase the system prompt names it with. One function, `active_tools`, decides which tools a session gets, so the offered schema, the registered handlers, and the prompt name the same set. Every tool defaults on except `restart_session`.
 
-<!-- source: brain/teaport_brain/tools.py:14-31#a4e00bb0 -->
+<!-- source: brain/teaport_brain/tools.py:14-31#e4c5bffd -->
 
 The full set is `get_host_status`, `get_current_time`, `web_search`, `web_fetch`, `search_memory`, `remember`, `openclaw_agent_consult`, `openclaw_agent_control`, `list_voices`, `switch_voice`, `set_volume`, `restart_session`, `end_conversation`, `answer_phone_call`, `pair_device`, and `wifi_setup`.
 
@@ -119,9 +119,9 @@ In agent mode (`TEAPORT_AGENT=openclaw`), the brain calls the co-resident OpenCl
 
 <!-- source: brain/teaport_brain/tools.py:4-8#dcdda3e4; brain/teaport_brain/tools.py:40-42,510-511#0927ccf8; plugin/voice-context.js:23-25#5e69ee5b -->
 
-A tool appears in a session only when what it needs is there: the agent gateway behind `web_search`, `web_fetch`, the memory tools, and `openclaw_agent_consult`; the session's voice behind `list_voices` and `switch_voice`; a client that performs the tool itself behind `set_volume` and `restart_session`; the `teaport-wifi-setup` unit behind `wifi_setup`; a conversation that a phone call can ask to make way behind `answer_phone_call`; and the agent gateway plus a room or Talk conversation, never a phone call, behind `pair_device`. A tool that is off, or that lacks what it needs, is not offered, not registered, and not named. Voice-only mode (`TEAPORT_AGENT=none`) is the same rule with the agent's tools absent.
+A tool appears in a session only when what it needs is there: the agent gateway behind `web_search`, `web_fetch`, the memory tools, and `openclaw_agent_consult`; the session's voice behind `list_voices` and `switch_voice`; a client that performs the tool itself behind `set_volume` and `restart_session`; the `teaport-wifi-setup` unit behind `wifi_setup`; a conversation that a phone call can ask to make way behind `answer_phone_call`; and the agent gateway, a configured front door, and a room or Talk conversation behind `pair_device`, which is never offered on a phone call or through the Discord bridge. A tool that is off, or that lacks what it needs, is not offered, not registered, and not named. Voice-only mode (`TEAPORT_AGENT=none`) is the same rule with the agent's tools absent.
 
-<!-- source: brain/teaport_brain/tools.py:19-25,1419-1443,1456-1467,1468-1470,1473-1474,1480-1484,1485-1490#0160f3ed; brain/teaport_brain/wifi_voice.py:192-194#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
+<!-- source: brain/teaport_brain/tools.py:19-25,1432-1456,1469-1480,1481-1483,1486-1487,1493-1497,1498-1503#6cf4ebb0; brain/teaport_brain/wifi_voice.py:192-194#37ba731d; brain/teaport_brain/agent_backend.py:13-16#e7c24fbe -->
 
 Client tools run on the client, not in the brain: the client announces its features on `/talk` (`?features=volume,restart`), the brain sends a `client_tool` request, and the client returns the result. The room-microphone bridge is the only client that announces features; the plugin, the phone, and Discord announce none and never see these tools.
 

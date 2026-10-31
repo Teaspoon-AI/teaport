@@ -47,19 +47,22 @@ class _Screen:
 
 
 class _Pairing:
-    """pairing's interface: start() mints, wait() blocks until end() says how."""
+    """pairing's interface: start() mints (after `gate`, when set), wait() blocks until
+    end() says how. A start() supersedes the live offer first, as pairing's does."""
 
     def __init__(self, unavailable=None):
         self.unavailable = unavailable
         self.started, self.cancelled = [], []
         self._ends = {}
+        self.gate = None
 
     async def start(self):
         if self.unavailable:
             raise pairing.PairingUnavailable(self.unavailable)
         for live, fut in list(self._ends.items()):
-            if not fut.done():
-                self.cancel(live)  # one live offer per process
+            self.end(live, pd.SUPERSEDED)  # one live offer per process
+        if self.gate is not None:
+            await self.gate.wait()
         offer = pairing.Offer(f"c{len(self.started)}", LINK,
                               asyncio.get_running_loop().time() + 600)
         self.started.append(offer)
@@ -118,15 +121,32 @@ async def _turn():
 
 # ---- where it is offered ---------------------------------------------------------
 
-def _offered(front_end):
+@pytest.fixture(autouse=True)
+def _front_door(monkeypatch):
+    monkeypatch.setitem(tools.HOST_CHECKS, "pairing", lambda: True)
+
+
+def _offered(front_end, via=None):
     return "pair_device" in [t.name for t in tools.active_tools(
-        tools.ToolContext(has_tts=True, front_end=front_end))]
+        tools.ToolContext(has_tts=True, front_end=front_end, via=via))]
 
 
 def test_offered_in_the_room_and_on_talk_never_on_a_call(monkeypatch):
     monkeypatch.setattr(tools, "HAS_AGENT", True)
     assert _offered("room") and _offered("talk")
     assert not _offered("sip") and not _offered(None)
+
+
+def test_not_through_the_discord_bridge(monkeypatch):
+    """Discord connects to /talk, but relays someone far from the box's screen."""
+    monkeypatch.setattr(tools, "HAS_AGENT", True)
+    assert not _offered("talk", via="discord")
+
+
+def test_not_on_a_box_without_a_front_door(monkeypatch):
+    monkeypatch.setattr(tools, "HAS_AGENT", True)
+    monkeypatch.setitem(tools.HOST_CHECKS, "pairing", lambda: False)
+    assert not _offered("room") and not _offered("talk")
 
 
 def test_needs_the_gateway_and_its_switch(monkeypatch):
@@ -153,13 +173,14 @@ def test_the_prompt_names_it_in_its_own_sentence(monkeypatch):
 def test_the_session_builds_it_only_where_the_tool_is(monkeypatch):
     from test_client_notes import _Transport
     monkeypatch.setattr(tools, "HAS_AGENT", True)
-    for front_end, want in (("room", True), ("talk", True), ("sip", False)):
+    for front_end, via, want in (("room", None, True), ("talk", None, True),
+                                 ("talk", "discord", False), ("sip", None, False)):
         built = []
         real = pd.DevicePairing
         monkeypatch.setattr(agent_session, "DevicePairing",
                             lambda: built.append(real()) or built[-1])
         session = agent_session.build_agent_session(
-            _Transport(), context_notes=front_end != "sip", front_end=front_end)
+            _Transport(), context_notes=front_end != "sip", front_end=front_end, via=via)
         assert bool(built) is want, front_end
         if want:
             assert built[0].notes is session.client_notes is not None
@@ -280,25 +301,24 @@ def test_a_second_call_replaces_the_code_rather_than_stacking(monkeypatch):
         first = dp._watcher
         await _call(dp)
         await _turn()
-        state = (first.done(), dp.live, list(fake.started), list(fake.cancelled))
+        state = (first.done(), dp.live, dp._offer, list(fake.started), list(dp.notes.added))
         dp.close()
-        return state, dp, screen
+        return state, screen
 
-    (first_done, live, started, cancelled), dp, screen = asyncio.run(run())
-    assert first_done and live and len(started) == 2 and cancelled[0] is started[0]
-    shows = [c for c in screen.calls if c[0] == "show"]
-    assert len(shows) == 2 and ("clear",) not in screen.calls[:len(screen.calls) - 2], (
+    (first_done, live, offer, started, notes), screen = asyncio.run(run())
+    assert first_done and live and len(started) == 2 and offer is started[1]
+    assert len(_shown(screen)) == 2 and ("clear",) not in screen.calls[:-2], (
         "the screen blinked off between the two codes")
-    assert dp.notes is None or dp.notes.added == []
+    assert notes == [], "our own replacement was told as news"
 
 
 def test_another_sessions_code_is_left_on_the_screen(monkeypatch):
-    """pairing allows one live offer per process: another session's new one cancels
+    """pairing allows one live offer per process: another session's new one supersedes
     ours, and its screen (the same id) is not ours to take down."""
     async def run():
         dp, fake, screen = _session(monkeypatch)
         await _call(dp)
-        fake.end(fake.started[0], "cancelled")  # not through dp
+        fake.end(fake.started[0], pd.SUPERSEDED)  # not through dp
         await _turn()
         return dp, screen
 
@@ -306,6 +326,112 @@ def test_another_sessions_code_is_left_on_the_screen(monkeypatch):
     assert ("clear",) not in screen.calls and screen.calls[-1] == ("close", False)
     [(text, respond)] = dp.notes.added
     assert not respond and "nothing was paired" in text
+
+
+def test_a_cancel_not_ours_takes_the_code_down_and_says_nothing(monkeypatch):
+    """pairing's own cancel (or its wait failing) is not another session's code."""
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.end(fake.started[0], "cancelled")
+        await _turn()
+        return dp, screen
+
+    dp, screen = asyncio.run(run())
+    assert screen.calls[-2:] == [("clear",), ("close", True)]
+    assert dp.notes.added == []
+
+
+def test_wrong_tries_take_the_code_down_with_a_short_line(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.end(fake.started[0], pd.LOCKED)
+        await _turn()
+        return dp, screen
+
+    dp, screen = asyncio.run(run())
+    assert screen.calls[-2:] == [("clear",), ("close", True)]
+    [(text, respond)] = dp.notes.added
+    assert not respond and "wrong tries" in text
+
+
+def test_a_device_still_confirming_asks_the_user_to_wait(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        first = fake.started[0]
+        fake.unavailable = "still confirming the last device paired"
+        result = await _call(dp)
+        return result, dp, fake, screen, first
+
+    result, dp, fake, screen, first = asyncio.run(run())
+    assert result["ok"] is False and "wait a moment" in result["error"]
+    assert "confirming" not in result["error"], "the reason leaked"
+    assert dp.live and dp._offer is first and ("clear",) not in screen.calls, (
+        "the device being confirmed lost its code")
+
+
+def _shown(screen):
+    return [c for c in screen.calls if c[0] == "show"]
+
+
+def test_a_call_cut_off_while_its_code_is_made_leaves_no_dead_code(monkeypatch):
+    """A barge-in cancels the second call while it mints: the old code is superseded,
+    and its screen must not stay up re-sending it."""
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.gate = asyncio.Event()
+        second = asyncio.create_task(_call(dp))
+        await _turn()
+        assert screen.calls[-1][0] == "show", "the old code went before the new was made"
+        second.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await second
+        await _turn()
+        return dp, screen
+
+    dp, screen = asyncio.run(run())
+    assert not dp.live and dp._screen is None
+    assert screen.calls[-2:] == [("clear",), ("close", True)]
+    assert dp.notes.added == []
+
+
+def test_a_cancel_while_the_code_is_made_shows_nothing(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        fake.gate = asyncio.Event()
+        call = asyncio.create_task(_call(dp))
+        await _turn()
+        gone = await _call(dp, cancel=True)
+        fake.gate.set()
+        result = await call
+        return gone, result, dp, fake, screen
+
+    gone, result, dp, fake, screen = asyncio.run(run())
+    assert gone["ok"] and "off the screen" in gone["note"]
+    assert result["ok"] is False and not dp.live and _shown(screen) == []
+    assert fake.cancelled == fake.started, "the code made after the cancel stayed live"
+
+
+def test_a_session_closed_while_the_code_is_made_shows_nothing(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        fake.gate = asyncio.Event()
+        call = asyncio.create_task(dp.start())
+        await _turn()
+        dp.close()
+        fake.gate.set()
+        outcome = await call
+        again = await dp.start()
+        await _turn()
+        return outcome, again, dp, fake, screen
+
+    outcome, again, dp, fake, screen = asyncio.run(run())
+    assert outcome[0] == pd.STOPPED and again[0] == pd.STOPPED
+    assert not dp.live and dp._watcher is None and _shown(screen) == []
+    assert fake.cancelled == fake.started and len(fake.started) == 1
 
 
 def test_the_session_ending_leaves_no_code_and_no_task(monkeypatch):
