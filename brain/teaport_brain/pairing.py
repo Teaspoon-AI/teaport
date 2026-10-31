@@ -42,13 +42,17 @@
 # can take a few seconds"; the buttons go grey, as a second tap would find the code
 # spent and replace the handoff with "already used"). A mint that fails says so on the
 # page ("ask Teaport again") and ends the offer ("failed"), so the screen comes down.
+# The choice's POST is read up to MAX_FORM_BYTES and no further.
 #
 # One offer at a time, in memory only (a brain restart forgets it, and its code is then
 # "expired"): start() makes it, wait() follows it, cancel() ends it ("cancelled"),
 # withdraw() ends it too unless its code was spent (then the device is still looked
 # for, and the confirmation is worth keeping), and a second start() supersedes the
-# first ("superseded") -- unless the first's code was spent and its device is still
-# being looked for, when start() is refused instead of losing that confirmation. The
+# first ("superseded"). A spent first one is superseded too -- the person may be asking
+# again after trusting the certificate, or to switch from the app to the dashboard --
+# and the new offer keeps its snapshot, so a device the old code still brings in is new
+# to the new offer and is named by it. Any way out of a spent code's mint that is not
+# the handoff ends the offer ("failed"): a spent code is never left waiting. The
 # code works for OFFER_SECS from start() (OpenClaw's own handoffs, minted later, last
 # ten minutes, so ours is the bound). It is six characters from an alphabet a reader
 # cannot confuse aloud or on a small screen (no 0/O, 1/I/L); while it is live it is as
@@ -133,9 +137,6 @@ SUPERSEDED = "superseded"  # a newer start() replaced the offer before its link 
 LOCKED = "locked"          # MAX_WRONG wrong codes while it waited
 FAILED = "failed"          # the code was used, but OpenClaw could not make the handoff
 DASHBOARD, APP = "dashboard", "app"  # what the person chose on the /p/ page
-# PairingUnavailable.reason while an opened offer is still confirming its device (the
-# pair_device tool matches on this, not on the wording).
-STILL_CONFIRMING = "still confirming the last device paired"
 
 _clock = time.monotonic  # replaced in tests
 
@@ -280,12 +281,16 @@ async def _mint_setup_code() -> str:
     code = obj.get("setupCode") if obj else None
     if rc != 0 or not isinstance(code, str) or not code.strip():
         raise PairingUnavailable(f"openclaw qr failed (rc={rc})")
-    gateway = urllib.parse.urlsplit(str(obj.get("gatewayUrl") or ""))
-    if _is_loopback(gateway.hostname):
+    try:
+        gateway = urllib.parse.urlsplit(str(obj.get("gatewayUrl") or ""))
+        host = gateway.hostname
+    except ValueError:  # "wss://[fe80::1": not a URL a phone can use either
+        raise PairingUnavailable("openclaw qr named a gateway URL that does not parse") from None
+    if _is_loopback(host):
         raise PairingUnavailable("openclaw qr named a loopback gateway (device-pair "
                                  "publicUrl unset)")
     logger.info(f"pairing: app setup code made (access {obj.get('access') or '?'}, "
-                f"{gateway.scheme or '?'}://{gateway.hostname or '?'})")
+                f"{gateway.scheme or '?'}://{host or '?'})")
     return code.strip()
 
 
@@ -353,14 +358,17 @@ def available() -> bool:
 
 
 async def start() -> Offer:
-    """Mint a new offer, superseding one whose link is not used yet. Raises
-    PairingUnavailable, also while the last offer's link has been opened and its
-    device is still being looked for: ending that would lose its confirmation, and a
-    snapshot taken now could miss that device and later report it as the new one."""
+    """Make a new offer, superseding the live one ("superseded"). Raises
+    PairingUnavailable. When the live one's code was spent and its device is still
+    being looked for, the new offer takes over its snapshot instead of reading a fresh
+    one: a device that the old code is still bringing in (the person trusted the
+    certificate, switched from the app to the dashboard, asked again) is then still new
+    to this offer, and is caught and named by it rather than missed."""
     global _live, _minting
+    inherited = None
     if _live is not None and _live.ended is None:
         if _live.opened:
-            raise PairingUnavailable(STILL_CONFIRMING)
+            inherited = dict(_live.known)
         _end(_live, SUPERSEDED)
     _minting += 1
     mine = _minting
@@ -370,7 +378,7 @@ async def start() -> Offer:
     t0 = _clock()
     # The snapshot now, before any handoff exists: whatever pairs later is new. The
     # handoff itself is minted when the person chooses on the /p/ page (redeem).
-    known = _approvals(await _paired_devices())
+    known = inherited if inherited is not None else _approvals(await _paired_devices())
     now = _clock()
     expires_at = t0 + min(OFFER_SECS, OPENCLAW_HANDOFF_SECS - REDEEM_MARGIN_SECS)
     if mine != _minting:  # a newer start() came in while this one minted
@@ -641,6 +649,24 @@ def _find(code: str) -> tuple[str, _Live | None]:
 
 
 _NOT_FOUND = "Not Found"
+# The choice form is one short field. A body past this is not read on: no FastAPI or
+# uvicorn setting in the brain bounds a request body (the config page's JSON routes sit
+# behind the token), so this one, open to the network, reads at most this much.
+MAX_FORM_BYTES = 1024
+
+
+async def _small_form(request: Request) -> dict[str, list[str]] | None:
+    """The urlencoded form, or None when the body is (or says it is) over
+    MAX_FORM_BYTES."""
+    declared = (request.headers.get("content-length") or "").strip()
+    if declared and (not declared.isdigit() or int(declared) > MAX_FORM_BYTES):
+        return None
+    body = b""
+    async for chunk in request.stream():
+        body += chunk
+        if len(body) > MAX_FORM_BYTES:
+            return None
+    return urllib.parse.parse_qs(body.decode("utf-8", "replace"))
 router = APIRouter()
 
 
@@ -663,7 +689,9 @@ async def redeem(code: str, request: Request) -> Response:
     global _spent
     if not _via_front_door(request):
         return PlainTextResponse(_NOT_FOUND, status_code=404)
-    form = urllib.parse.parse_qs((await request.body()).decode("utf-8", "replace"))
+    form = await _small_form(request)
+    if form is None:  # before the code is looked at: spends nothing, guesses nothing
+        return PlainTextResponse("Payload Too Large", status_code=413)
     choice = (form.get("choice") or [""])[0]
     state, live = _find(code)
     if state != "live":
@@ -673,16 +701,27 @@ async def redeem(code: str, request: Request) -> Response:
     live.opened, live.choice = True, choice
     _spent = live.offer.code
     logger.info(f"pairing: the code was used ({choice}); making the handoff")
+    # The code is spent from here, so every way out either makes the handoff (ready) or
+    # ends the offer: an offer left spent with neither would be waited on for ever, and
+    # hold the screen with a dead code.
     try:
-        made = await (_mint() if choice == DASHBOARD else _mint_setup_code())
-    except PairingUnavailable as e:
-        logger.warning(f"pairing: {choice} handoff failed: {e.reason}")
-        _end(live, FAILED)
-        return _failed()
-    if live.ended is not None:  # cancelled while it minted: the screen is down
-        return _expired()
-    live.ready.set()  # wait() starts looking for the new device
-    if choice == DASHBOARD:
-        return RedirectResponse(front_door_url(made, FRONTDOOR_HOST), status_code=303,
-                                headers=_NO_STORE)
-    return _app_code(made)
+        try:
+            made = await (_mint() if choice == DASHBOARD else _mint_setup_code())
+            answer = (RedirectResponse(front_door_url(made, FRONTDOOR_HOST), status_code=303,
+                                       headers=_NO_STORE)
+                      if choice == DASHBOARD else _app_code(made))
+        except PairingUnavailable as e:
+            logger.warning(f"pairing: {choice} handoff failed: {e.reason}")
+            _end(live, FAILED)
+            return _failed()
+        except Exception as e:  # noqa: BLE001 — by its type: the message can hold the handoff
+            logger.warning(f"pairing: {choice} handoff failed: {type(e).__name__}")
+            _end(live, FAILED)
+            return _failed()
+        if live.ended is not None:  # cancelled or superseded while it minted
+            return _expired()
+        live.ready.set()  # wait() starts looking for the new device
+        return answer
+    finally:
+        if not live.ready.is_set():
+            _end(live, FAILED)  # the request itself was cancelled (the phone went away)

@@ -20,10 +20,10 @@
 # The screen text is ASCII English (the avatar's font, display.py), as Wi-Fi setup's is.
 #
 # One offer per session: a second pair_device call while one is up replaces it (pairing
-# allows one live offer per process anyway; its start() ends the one before, or says it
-# is still confirming a device that opened the last link, and then the old one stays).
-# The old code stays on the screen while the new one is minted (half a minute on the
-# box), and whatever ends the mint -- a code, no code, the call cancelled by a barge-in,
+# allows one live offer per process anyway; its start() ends the one before, even one
+# whose code was used and whose device is still awaited: the new offer then watches for
+# that device too). The old code stays on the screen while the new one is made (a few
+# seconds on the box), and whatever ends the mint -- a code, no code, the call cancelled by a barge-in,
 # cancel() or close() meanwhile -- leaves either the new code up or nothing: never a dead
 # code re-sent forever. cancel() takes it down; close(), at the session's end, does the
 # same silently and for good -- no task outlives the session, no code stays on the
@@ -43,8 +43,7 @@ PAIRED_SCREEN_SECS = 10.0
 DEVICE_MAX_CHARS = 24
 
 # What start() says.
-SHOWN, NO_SCREEN, UNAVAILABLE, BUSY, STOPPED = (
-    "shown", "no_screen", "unavailable", "busy", "stopped")
+SHOWN, NO_SCREEN, UNAVAILABLE, STOPPED = "shown", "no_screen", "unavailable", "stopped"
 # What cancel() says.
 GONE, CONFIRMING, NOTHING = "gone", "confirming", "nothing"
 
@@ -76,13 +75,6 @@ _ENDED = {
 SPENT_LINES = ["Finish on", "your device"]
 
 
-def _still_confirming(e: "pairing.PairingUnavailable") -> bool:
-    """pairing.start() refused because a device that opened the last link is still
-    being confirmed (that offer stays live)."""
-    named = getattr(pairing, "STILL_CONFIRMING", None)
-    return e.reason == named if named else "confirming" in e.reason.lower()
-
-
 class DevicePairing:
     """The session's pairing offer: start(), cancel(), close(). `notes` is the session's
     ClientNotes, set once it exists (agent_session.py); None, and the model is told
@@ -108,9 +100,9 @@ class DevicePairing:
         return self._offer is not None
 
     async def start(self) -> tuple[str, dict]:
-        """Put a new code up: (SHOWN, {"minutes": ...}), (NO_SCREEN, {}), (BUSY, {}: the
-        last device is still being confirmed), (STOPPED, {}: cancel() or a newer start()
-        came first) or (UNAVAILABLE, {"reason": ...}). One already up is replaced."""
+        """Put a new code up: (SHOWN, {"minutes": ...}), (NO_SCREEN, {}), (STOPPED, {}:
+        cancel() or a newer start() came first) or (UNAVAILABLE, {"reason": ...}). One
+        already up is replaced."""
         if self._closed:
             return STOPPED, {}
         self._gen += 1
@@ -130,7 +122,7 @@ class DevicePairing:
             self._after_failed_mint(mine)
             if mine != self._gen:
                 return STOPPED, {}  # cancelled, or a newer start() of ours is the one
-            return (BUSY, {}) if _still_confirming(e) else (UNAVAILABLE, {"reason": e.reason})
+            return UNAVAILABLE, {"reason": e.reason}
         except BaseException:
             self._after_failed_mint(mine)  # a barge-in cancelled the call, or worse
             raise
@@ -158,10 +150,10 @@ class DevicePairing:
 
     def _after_failed_mint(self, mine: int) -> None:
         """No new code: the screen comes down, unless a newer start() of ours owns it now
-        or the old code is still live (pairing kept it: still confirming). An old offer
-        pairing.start() superseded before it failed may not have reached its watcher yet
-        (a CLI that is not there fails without a pause): the watcher then takes the
-        screen down itself, as the end of our own (_watch)."""
+        or our old offer is still ours to end. pairing.start() supersedes the old offer
+        before it can fail, and its watcher may not have run yet (a CLI that is not there
+        fails without a pause): the watcher then takes the screen down itself, as the end
+        of our own (_watch)."""
         if mine == self._gen and self._offer is None:
             self._take_down()
 

@@ -436,20 +436,25 @@ def test_wrong_tries_take_the_code_down_with_a_short_line(monkeypatch):
     assert not respond and "wrong tries" in text
 
 
-def test_a_device_still_confirming_asks_the_user_to_wait(monkeypatch):
+def test_asking_again_after_the_code_was_used_puts_up_a_new_one_quietly(monkeypatch):
+    """The first code was used and its device is still awaited; the user asks again
+    (trusted the certificate, or wants the dashboard instead of the app). A new code
+    goes up, and the first one's end is ours: nothing is told about it."""
     async def run():
         dp, fake, screen = _session(monkeypatch)
         await _call(dp)
         first = fake.started[0]
-        fake.unavailable = "still confirming the last device paired"
+        fake.use(first)
+        await _turn()
         result = await _call(dp)
+        await _turn()
         return result, dp, fake, screen, first
 
     result, dp, fake, screen, first = asyncio.run(run())
-    assert result["ok"] is False and "wait a moment" in result["error"]
-    assert "confirming" not in result["error"], "the reason leaked"
-    assert dp.live and dp._offer is first and ("clear",) not in screen.calls, (
-        "the device being confirmed lost its code")
+    assert result["ok"] and "camera" in result["note"]
+    assert dp.live and dp._offer is fake.started[1] and dp._offer is not first
+    assert _shown(screen)[-1][4] == LINK  # the new QR code is up
+    assert dp.notes.added == [], dp.notes.added
 
 
 def _shown(screen):
@@ -583,6 +588,22 @@ def test_the_session_ending_stops_a_confirmation_too(monkeypatch):
 
     watcher, fake = asyncio.run(run())
     assert watcher.done() and fake.cancelled == fake.started
+
+
+def test_a_short_line_covers_the_wait_for_the_code(monkeypatch):
+    # Spoken only when the model called the tool without a word (tools._wrap).
+    for lang, want in (("en", "One moment, I'll put a code on my screen."),
+                       ("es", "Un momento, voy a poner un código en mi pantalla."),
+                       ("it", "Un attimo, metto un codice sul mio schermo."),
+                       ("cmn", "稍等，我在屏幕上给你显示一个码。"),
+                       ("fr", "One moment, I'll put a code on my screen.")):
+        line = tools._fallback_line("pair_device", {}, lang)
+        assert line == want, (lang, line)
+        # Nothing the tool's own note has the model say next, nothing technical.
+        assert "camera" not in line and "link" not in line.lower() and "QR" not in line
+    for cancel in (True, "true"):
+        assert tools._fallback_line("pair_device", {"cancel": cancel}, "en") is None
+    assert tools._fallback_line("pair_device", {"cancel": False}, "en")
 
 
 if __name__ == "__main__":
