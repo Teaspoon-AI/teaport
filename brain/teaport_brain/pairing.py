@@ -23,9 +23,9 @@
 #     browser never sends a fragment to a server, so the bootstrap reaches no access log
 #     on the way back either. It is never logged here, and the access log's request
 #     line has the code masked (gateway_server._RedactTokens: /p/<redacted>). /p/
-#     answers only what came
-#     through Caddy over HTTPS (_via_front_door); the brain's own port, open to the LAN
-#     for the config page, gets a 404 there that does not count as a guess.
+#     answers only what came through Caddy over HTTPS (_via_front_door); the brain's
+#     own port, open to the LAN for the config page, gets a 404 there that does not
+#     count as a guess.
 #
 # One offer at a time, in memory only (a brain restart forgets it, and its code is then
 # "expired"): start() mints, wait() follows it, cancel() ends it ("cancelled"),

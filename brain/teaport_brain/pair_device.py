@@ -47,8 +47,9 @@ SHOWN, NO_SCREEN, UNAVAILABLE, BUSY, STOPPED = (
 # What cancel() says.
 GONE, CONFIRMING, NOTHING = "gone", "confirming", "nothing"
 
-# pairing's outcomes beyond the four of its Result: another start() (another session's,
-# ours never reach the watcher) replaced the code, or wrong codes tried at /p/ ended it.
+# pairing's outcomes beyond the four of its Result: another start() replaced the code
+# (another session's; one of ours is told apart by the generation the code went up at),
+# or wrong codes tried at /p/ ended it.
 SUPERSEDED = getattr(pairing, "SUPERSEDED", "superseded")
 LOCKED = getattr(pairing, "LOCKED", "locked")
 
