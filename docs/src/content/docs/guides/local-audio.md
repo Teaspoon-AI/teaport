@@ -47,13 +47,13 @@ To send the bridge back to sleep when you are done, say "that's all", "goodnight
 
 On an XVF3800, the LED ring shows phone-call state: breathing red while a call rings, solid red while you are on it, and back to the ring's normal look after. The installer sets up the permissions this needs, a udev rule and the `teaport-hw` group, and a setting turns the behavior off.
 
-<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1105-1116#d37a478f; brain/teaport_brain/config_schema.toml:1673-1685#44d773d1 -->
+<!-- source: brain/teaport_brain/xvf_led.py:3-8#57bcea8d; install.sh:1105-1116#d37a478f; brain/teaport_brain/config_schema.toml:1683-1695#44d773d1 -->
 
 ## Echo
 
 The XVF3800 cancels echo in hardware, and the bridge keeps the chip's echo suppression following the measured echo: how loud the device's own voice is at the microphone, against yours. `LOCAL_AUDIO_ECHO_CONTROL`, `LOCAL_AUDIO_MIC_GAIN_DB`, and `LOCAL_AUDIO_ECHO_MARGIN_DB` adjust the behavior.
 
-<!-- source: brain/teaport_brain/xvf_echo.py:3-9#8c2619eb; brain/teaport_brain/config_schema.toml:2321-2361#c927325b -->
+<!-- source: brain/teaport_brain/xvf_echo.py:3-9#8c2619eb; brain/teaport_brain/config_schema.toml:2331-2371#c927325b -->
 
 ## What's next
 

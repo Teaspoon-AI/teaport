@@ -375,11 +375,13 @@ def tools_paragraph(tools, host: str | None = None) -> str:
     Standard tools: the tuned paragraph for that exact set, else a composed one. Client
     tools (performed by the connected device) get their own sentence after it, and so does
     answer_phone_call (only for a question the brain itself puts, so it leaves the tuned
-    paragraphs alone). Under OpenClaw's text the consult leaves the tools paragraph and
-    gets its own, last (_host_paragraph), and so does the control, which only a Talk
-    session has."""
+    paragraphs alone), and so do the box's own tools (needs "room_or_talk": pair_device,
+    which some sessions have and others not). Under OpenClaw's text the consult leaves the
+    tools paragraph and gets its own, last (_host_paragraph), and so does the control,
+    which only a Talk session has."""
     asides = [t for t in tools if "call_prompt" in t.needs]
-    tools = [t for t in tools if t not in asides]
+    box = [t for t in tools if "room_or_talk" in t.needs]
+    tools = [t for t in tools if t not in asides and t not in box]
     consult = any(t.name == _CONSULT for t in tools)
     control = any(t.name == _CONTROL for t in tools)
     if host:
@@ -401,6 +403,9 @@ def tools_paragraph(tools, host: str | None = None) -> str:
                  + ("also use " if standard else "use ")
                  + _join([t.hint or t.name for t in device])
                  + ": when they ask for one, call it directly, no preamble. ")
+    if box:
+        text += ("On the box itself you can also use " + _join([t.hint or t.name for t in box])
+                 + ": when the user asks for it, call it directly. ")
     if asides:
         text += ("When a phone call comes in, you may ask the user whether to step away "
                  "for it; give their answer with " + _join([t.hint or t.name for t in asides])

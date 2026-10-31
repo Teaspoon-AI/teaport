@@ -198,5 +198,13 @@ def test_a_qr_code_fits_only_within_what_the_avatar_says_it_draws(feats, text, f
     assert screen.fits_qr(text) is fits
 
 
+def test_a_screen_left_to_another_sender_is_not_taken_down():
+    screen, sent = _screen(refresh=60)
+    screen.show("Pair", ["a code"])
+    screen.close(take_down=False)
+    assert sent == [{"id": "t", "title": "Pair", "lines": ["a code"],
+                     "ttl": display.HOLD_TTL_SECS}]
+
+
 if __name__ == "__main__":
     raise SystemExit(pytest.main([__file__, "-q", "-p", "no:cacheprovider"]))

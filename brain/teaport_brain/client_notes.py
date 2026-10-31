@@ -68,7 +68,8 @@
 #
 # The brain's own notices take the same way in (add_notice): something the model should
 # know that no one said to it, such as how a Wi-Fi setup it handed over ended (issue #97,
-# wifi_voice.py). Same moments, same retention, never a reaction. They are ours, so they
+# wifi_voice.py). Same moments, same retention, and a reaction only when the brain asks
+# for one (a device just paired, pair_device.py: _NOTICE_ORDER). They are ours, so they
 # carry SYSTEM_NOTICE_TAG rather than the app-event tag, and no client limit or
 # context_result applies.
 #
@@ -147,6 +148,9 @@ REFILL_PER_S = 1.0
 _TAG = "[app event, not spoken by the user]"
 _REACT = ("React now, as yourself, in one short spoken sentence and without mentioning "
           "the app, notes or events, to this app event: {}")
+# The reaction order for a notice of the brain's own that asks to be said (add_notice
+# with respond: a device just paired, pair_device.py).
+_NOTICE_ORDER = ("Tell the user now, as yourself, in one short plain spoken sentence: {}")
 # How an update from OpenClaw about a request in progress is said: one plain sentence
 # about the user's request, in the user's words, never the operator's. Shared by the host
 # notes' order below and the result of the model's own openclaw_agent_control call
@@ -436,14 +440,18 @@ class ClientNotes(FrameProcessor):
                 reply["retry_after_ms"] = max(1, int(retry_after_s * 1000 + 0.999))
         await self.push_frame(OutputTransportMessageUrgentFrame(message=reply))
 
-    def add_notice(self, text: str):
+    def add_notice(self, text: str, respond: bool = False):
         """A notice of the brain's own into the context, at the next turn boundary like
-        a client's note (see the module comment); never spoken, never a turn of its own.
-        One line: what is not text is removed and whitespace folded."""
+        a client's note (see the module comment); never spoken itself. `respond`: the
+        model also says it, a reaction like a client note's (its order _NOTICE_ORDER);
+        else it is never a turn of its own. One line: what is not text is removed and
+        whitespace folded."""
         text = " ".join(_text_only(text).split())
         if not text:
             return
-        self._pending.append(_Note(text, False, None, 0.0, notice=True))
+        self._pending.append(_Note(text, respond, None,
+                                   self._clock() + self._react_max_wait if respond else 0.0,
+                                   notice=True))
         if len(self._pending) > self._max_notes:
             del self._pending[: len(self._pending) - self._max_notes]
         logger.info(f"brain notice ({len(text)} chars) -> "
@@ -551,9 +559,11 @@ class ClientNotes(FrameProcessor):
         # The order is OURS (or the host's), so it carries the tag the brain's own
         # messages carry (owed.py's note too), not the app-event tag SYSTEM_LINE says is
         # never an instruction.
+        last = asked[-1]
         body = (_HOST_ORDER.format(" then ".join(json.dumps(n.text, ensure_ascii=False)
                                                  for n in host)) if host
-                else _REACT.format(json.dumps(asked[-1].text, ensure_ascii=False)))
+                else (_NOTICE_ORDER if last.notice else _REACT).format(
+                    json.dumps(last.text, ensure_ascii=False)))
         msg = {"role": "user", "content": f"{SYSTEM_NOTICE_TAG}\n{body}"}
         context = self._context if context is None else context
         if at is None:
