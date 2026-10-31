@@ -5,10 +5,12 @@
 #
 # --full adds the rows too large for the default run: today six SttCommit rows (the
 # carry, the missed stop, the repaired final and the reset in their full environments) whose state
-# spaces are tens of millions, and SttSlice's peek with audio to 5 (formal/README.md).
+# spaces are tens of millions, and SttSlice's three-word rows and its peek with frozen
+# bounds (formal/README.md).
 # Nothing runs it automatically (CI runs the default on push and pull request): it is a
-# manual gate, to run before merging any change to SttCommit.tla or to the commit paths
-# it models (stt.py's commits, the hold, the backstop, the carry). About 30 min.
+# manual gate, to run before merging any change to SttCommit.tla or SttSlice.tla or to the
+# paths they model (stt.py's commits, the hold, the backstop, the carry; the slicing).
+# About an hour.
 #
 # Each row prints the design checked and its verdict, and is GATED against the
 # expectation in the last column: this script exits nonzero if any row misses it --
@@ -311,20 +313,39 @@ if [ "$FULL" = 1 ]; then
 fi
 echo
 echo "SttSlice.tla — sliced turn text: a turn is the words of one continuous transcript that end before its commit"
-run SttSlice.tla ss_shipped       "(expected: holds — AS SHIPPED, the preview at the verdict: sliced by end, filed late, final on end_through_ms, new words for an empty provisional)"
-run SttSlice.tla ss_peek          "(expected: holds — AS SHIPPED, the preview at the VAD stop (THE PEEK): dropped when the caller resumes, adopted by the turn's close)"
-run SttSlice.tla ss_shipped_late  "(expected: FAILS NoLateWord — witness: a final has words that came after its preview)"
-run SttSlice.tla ss_shipped_empty "(expected: FAILS NoEmptyProvisional — witness: an empty provisional's final has words)"
-run SttSlice.tla ss_peek_adopted  "(expected: FAILS NoAdoptedPeek — witness: a turn closes on a peek)"
-run SttSlice.tla ss_peek_dropped  "(expected: FAILS NoDroppedPeek — witness: the caller talks past a peek)"
-run SttSlice.tla ss_arrival       "(expected: FAILS RightTurn — a turn as the words received by its preview: its last word, sent after the commit, lands in the next turn)"
-run SttSlice.tla ss_interimAll    "(expected: FAILS NoLateInterim — every delta an interim: a committed turn's own late word would open a turn over its reply)"
-run SttSlice.tla ss_decoded       "(expected: FAILS FinalComplete — final on decoded_through_ms: a word the engine still holds comes after)"
-run SttSlice.tla ss_noNewWords    "(expected: FAILS NoLostWords — an empty provisional's final words dropped)"
-run SttSlice.tla ss_peekAsTurn    "(expected: FAILS NoSplitOnResume — the turn closed at the stop, as a commit there would: the caller resumes, the sentence is two turns)"
+run SttSlice.tla ss_shipped         "(expected: holds — AS SHIPPED, the preview at the verdict: sliced by end, a word the cut falls inside vouched for, final on both bounds)"
+run SttSlice.tla ss_peek            "(expected: holds — AS SHIPPED, the preview at the VAD stop (THE PEEK): dropped when the caller resumes, adopted by the turn's close)"
+run SttSlice.tla ss_shipped_freeze  "(expected: holds — AS SHIPPED, the bounds held back (03e4223) and previews lossy or cut short: the final's timeout)"
+run SttSlice.tla ss_shipped_late    "(expected: FAILS NoLateWord — witness: a final has words that came after its preview)"
+run SttSlice.tla ss_shipped_empty   "(expected: FAILS NoEmptyProvisional — witness: an empty provisional's final has words)"
+run SttSlice.tla ss_shipped_across  "(expected: FAILS NoWordAcrossCut — witness: a word the cut falls inside, vouched for, is its turn's)"
+run SttSlice.tla ss_shipped_timeout "(expected: FAILS NoTimedOut — witness: a final settled by its timeout)"
+run SttSlice.tla ss_peek_adopted    "(expected: FAILS NoAdoptedPeek — witness: a turn closes on a peek)"
+run SttSlice.tla ss_peek_dropped    "(expected: FAILS NoDroppedPeek — witness: the caller talks past a peek)"
+run SttSlice.tla ss_arrival         "(expected: FAILS RightTurn — a turn as the words received by its preview: its last word, sent after the commit, lands in the next turn)"
+run SttSlice.tla ss_endMargin       "(expected: FAILS RightTurn — every word ending within the margin is the turn's, vouched or not: the caller's next word taken back)"
+run SttSlice.tla ss_decoded         "(expected: FAILS FinalComplete — final on decoded_through_ms: a word the engine still holds comes after)"
+run SttSlice.tla ss_noStartWait     "(expected: FAILS FinalComplete — vouched by start, final on the end bound alone: the word the cut falls inside comes after)"
+run SttSlice.tla ss_noVouch         "(expected: FAILS NoDropAtCut — BEFORE 2026-10-27: sliced by end_ms alone, the turn's last word goes to the next turn)"
+run SttSlice.tla ss_endOnly         "(expected: FAILS NoDropAtCut — the first fix: vouched by end_ms alone, a word the cut falls inside goes to the next turn)"
+run SttSlice.tla ss_interimAll      "(expected: FAILS NoLateInterim — every delta an interim: a committed turn's own late word would open a turn over its reply)"
+run SttSlice.tla ss_peekAsTurn      "(expected: FAILS NoSplitOnResume — the turn closed at the stop, as a commit there would: the caller resumes, the sentence is two turns)"
+run SttSlice.tla ss_noDrop          "(expected: FAILS NoSplitOnResume — the peek not dropped when the caller resumes: a close adopts a stop they talked past)"
+run SttSlice.tla ss_noTimeout       "(expected: FAILS NoStuckFinal — a final waits for the bound however long: the bound froze)"
 if [ "$FULL" = 1 ]; then
-  run SttSlice.tla ss_peek_full   "(expected: holds — the peek, audio to 5: ~22M states)"
+  run SttSlice.tla ss_shipped_full  "(expected: holds — as shipped, three words: ~22M states)"
+  run SttSlice.tla ss_peek_full     "(expected: holds — the peek, three words: ~18M states)"
+  run SttSlice.tla ss_peek_freeze   "(expected: holds — the peek, the bounds held back and previews lossy or cut short)"
 fi
+echo
+echo "TurnText.tla — a sliced turn's final, from the STT through run control / the judge and the aggregator to the context"
+run TurnText.tla tt_shipped         "(expected: holds — AS SHIPPED: delivered, stamped, decided once, applied)"
+run TurnText.tla tt_noNewWords      "(expected: FAILS NoLostWords — an empty provisional's final words dropped)"
+run TurnText.tla tt_emptyCloses     "(expected: FAILS BargeStamped — BEFORE 2026-10-27: over the bot an empty preview closes the turn wordless, its words new words after the pause)"
+run TurnText.tla tt_echoCloses      "(expected: FAILS BargeStamped — the first fix: over the bot a provisional of the bot's own words still closes wordless)"
+run TurnText.tla tt_repush          "(expected: FAILS DecidedOnce — BEFORE 2026-10-27: a correction placed nowhere pushed back, words taken or judged reach the model)"
+run TurnText.tla tt_overtake        "(expected: FAILS CorrectionApplied — BEFORE 2026-10-27: the holder holds the words, not their correction, which overtakes them)"
+run TurnText.tla tt_byFrame         "(expected: FAILS CorrectionApplied — BEFORE 2026-10-27: commits recorded by their context frame, which trails the correction)"
 echo
 echo "SttSlot.tla — the engine's single STT slot: has the engine let go when the brain thinks so"
 run SttSlot.tla  stt_fixedSettle     "(expected: FAILS NoFalseBusy — two arbiters, before #58 step 2: one connect attempt)"
