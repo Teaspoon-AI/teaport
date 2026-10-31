@@ -2,32 +2,31 @@
 # teaport — pairing a laptop or phone, the session half (issue #243; the codes, the
 # /p/ link and the device watcher are pairing.py).
 #
-# The pair_device tool (tools.py) hands to the session's DevicePairing: it mints an
-# offer (pairing.start), puts its short link up as a QR code on the box's own screen
-# (display.Screen "pair") and returns at once -- the turn is never held for the minutes
-# a scan can take. A background task waits for the offer's end (pairing.wait), shows
-# "Finish on your device" once the code is used (pairing.spent: the QR code is of no
-# more use then), "Paired" for PAIRED_SCREEN_SECS or takes the screen down, and tells
-# the model how it went: one English line through the session's notes (client_notes.py, add_notice), as
-# Wi-Fi setup's end does (wifi_voice._ended, issue #97). A device paired asks for a
-# reaction too, so the voice says it is connected at the next quiet moment, in the
-# session's language, the way the model says everything else; the other endings are
-# context only, for the model to mention when it fits.
+# The pair_device tool (tools.py) hands to the session's DevicePairing: it asks pairing
+# for a code (pairing.start), puts its short link up as a QR code on the box's own
+# screen (display.Screen "pair") and returns at once -- the turn is never held for the
+# minutes a scan can take. A background task follows the pairing to its end
+# (pairing.wait), shows "Finish on your device" once the code on the screen can no
+# longer be used while the pairing still waits on something (pairing.spent), "Paired"
+# for PAIRED_SCREEN_SECS or takes the screen down, and tells the model how it went: one
+# English line through the session's notes (client_notes.py, add_notice), as Wi-Fi
+# setup's end does (wifi_voice._ended, issue #97). A device paired asks for a reaction
+# too, so the voice says it is connected at the next quiet moment, in the session's
+# language, the way the model says everything else; the other endings are context
+# only, for the model to mention when it fits.
 #
 # The code is only ever drawn, never spoken: a Talk user or a voice in the room could be
 # overheard, and the link is the owner's access. So without a screen that draws QR codes
-# (display.Screen.fits_qr) nothing is minted and the tool says the box cannot show it.
+# (display.Screen.fits_qr) nothing is asked for and the tool says the box cannot show it.
 # The screen text is ASCII English (the avatar's font, display.py), as Wi-Fi setup's is.
 #
-# One offer per session: a second pair_device call while one is up replaces it (pairing
-# allows one live offer per process anyway; its start() ends the one before, even one
-# whose code was used and whose device is still awaited: the new offer then watches for
-# that device too). The old code stays on the screen while the new one is made (a few
-# seconds on the box), and whatever ends the mint -- a code, no code, the call cancelled by a barge-in,
-# cancel() or close() meanwhile -- leaves either the new code up or nothing: never a dead
-# code re-sent forever. cancel() takes it down; close(), at the session's end, does the
-# same silently and for good -- no task outlives the session, no code stays on the
-# screen, and a mint still running then shows nothing.
+# Asking again while a pairing goes on puts its new code up (pairing gives a new code in
+# the same pairing, which goes on watching for a device the old code brings in), and the
+# one watcher goes on following it. Whatever ends a start() -- a code, no code, the call
+# cancelled by a barge-in, cancel() or close() meanwhile -- leaves either the new code
+# up or nothing new. cancel() takes the code down (a pairing with a handoff made still
+# watches, and its end is told); close(), at the session's end, ends the pairing,
+# silently and for good -- no task outlives the session, and no code stays up.
 #
 import asyncio
 import math
@@ -47,23 +46,16 @@ SHOWN, NO_SCREEN, UNAVAILABLE, STOPPED = "shown", "no_screen", "unavailable", "s
 # What cancel() says.
 GONE, CONFIRMING, NOTHING = "gone", "confirming", "nothing"
 
-# pairing's outcomes beyond the four of its Result: another start() replaced the code
-# (another session's; one of ours is told apart by the generation the code went up at),
-# or wrong codes tried at /p/ ended it.
-SUPERSEDED = getattr(pairing, "SUPERSEDED", "superseded")
-LOCKED = getattr(pairing, "LOCKED", "locked")
-FAILED = getattr(pairing, "FAILED", "failed")
+LOCKED, FAILED = pairing.LOCKED, pairing.FAILED
 
 # The model's line for each ending (English: it is context). None: no line -- a
-# "cancelled" this session did not cause is pairing's own (its wait failed, say), which
-# is nothing the user did or needs to hear about.
+# "cancelled" is ours (cancel(), close()), or pairing's own wait failing, which is
+# nothing the user did or needs to hear about.
 _ENDED = {
     "opened": "the link on the screen was opened, but the box could not confirm that a "
               "device was connected; if the user says it did not work, offer to try again.",
     "expired": "the code on the screen ran out before anyone used it; nothing was paired.",
     LOCKED: "the code was cancelled after several wrong tries; nothing was paired.",
-    SUPERSEDED: "a newer pairing request replaced the code on the screen; nothing was "
-                "paired here.",
     # Context only, as "opened" and LOCKED: the person is at their phone, whose page has
     # already told them to ask again.
     FAILED: "the code was used, but the box could not finish connecting the new device; "
@@ -76,60 +68,66 @@ SPENT_LINES = ["Finish on", "your device"]
 
 
 class DevicePairing:
-    """The session's pairing offer: start(), cancel(), close(). `notes` is the session's
+    """The session's pairing: start(), cancel(), close(). `notes` is the session's
     ClientNotes, set once it exists (agent_session.py); None, and the model is told
-    nothing of how an offer ended."""
+    nothing of how a pairing ended."""
 
     def __init__(self, notes=None, screen=lambda: display.Screen(SCREEN_ID),
                  clock=time.monotonic):
         self.notes = notes
         self._new_screen = screen
         self._clock = clock
-        self._offer: pairing.Offer | None = None
-        self._screen = None  # this session's, held while a code is up or being minted
-        self._watcher: asyncio.Task | None = None
-        # Bumped by every start(), cancel() and close(): a mint that finds it moved on
-        # shows nothing.
+        self._offer: pairing.Offer | None = None  # the code on the screen
+        self._last: pairing.Offer | None = None   # the followed pairing's latest code
+        self._screen = None  # this session's, held while a code is up or being asked for
+        self._watcher: asyncio.Task | None = None  # follows the pairing (pairing.wait)
+        self._spent: asyncio.Task | None = None    # follows the code on the screen
+        self._watched = 0                          # the pairing the watcher follows
+        # Bumped by every start(), cancel() and close(): a start() that finds it moved
+        # on shows nothing.
         self._gen = 0
-        self._shown_gen = 0  # _gen when the live offer went up
-        self._minting = 0
+        self._cancels = 0  # cancel()s: a start() it came during makes its code unusable
         self._closed = False
 
     @property
     def live(self) -> bool:
-        return self._offer is not None
+        """A pairing is being followed (a code up, or a handoff's device awaited)."""
+        return self._watcher is not None
 
     async def start(self) -> tuple[str, dict]:
-        """Put a new code up: (SHOWN, {"minutes": ...}), (NO_SCREEN, {}), (STOPPED, {}:
-        cancel() or a newer start() came first) or (UNAVAILABLE, {"reason": ...}). One
-        already up is replaced."""
+        """Put a code up: (SHOWN, {"minutes": ...}), (NO_SCREEN, {}), (STOPPED, {}:
+        cancel(), close() or a newer start() came first) or (UNAVAILABLE, {"reason": ...}).
+        One already up is replaced, in the same pairing."""
         if self._closed:
             return STOPPED, {}
         self._gen += 1
-        mine = self._gen
+        mine, cancels = self._gen, self._cancels
         screen = self._screen = self._screen or self._new_screen()
         if not screen.draws("qr"):
-            # Asked before minting: an offer nobody can see is nothing to open.
+            # Asked before anything is made: a code nobody can see is nothing to open.
             logger.info("pair_device: no screen that draws QR codes")
-            self._end_offer()
-            self._take_down()
+            self._withdraw()
             return NO_SCREEN, {}
-        self._minting += 1
         try:
             offer = await pairing.start()
         except pairing.PairingUnavailable as e:
             logger.warning(f"pair_device: no code: {e.reason}")
-            self._after_failed_mint(mine)
             if mine != self._gen:
-                return STOPPED, {}  # cancelled, or a newer start() of ours is the one
+                return STOPPED, {}
+            if self._offer is None and not self.live:
+                self._take_down()
             return UNAVAILABLE, {"reason": e.reason}
         except BaseException:
-            self._after_failed_mint(mine)  # a barge-in cancelled the call, or worse
+            if mine == self._gen and self._offer is None and not self.live:
+                self._take_down()  # a barge-in cancelled the call, or worse
             raise
-        finally:
-            self._minting -= 1
         if mine != self._gen or self._closed:
-            pairing.cancel(offer)
+            # close() or cancel() came meanwhile: this code is not to be used. (A newer
+            # start() alone needs nothing: its code replaces this one.)
+            if self._closed:
+                pairing.cancel(offer)
+            elif self._cancels != cancels:
+                pairing.withdraw(offer)
             logger.info("pair_device: stopped while the code was being made")
             return STOPPED, {}
         minutes = max(1, math.ceil((offer.expires_at - self._clock()) / 60))
@@ -138,80 +136,93 @@ class DevicePairing:
                                                f"Open for {minutes} min"], qr=offer.link)):
             # The avatar went, or draws smaller codes than this one.
             logger.info("pair_device: the screen cannot draw this code")
-            pairing.cancel(offer)
-            self._end_offer()
-            self._take_down()
+            self._offer = offer
+            self._withdraw()
             return NO_SCREEN, {}
-        self._end_offer(cancel=False)  # pairing.start() has ended the one before
-        self._offer, self._shown_gen = offer, mine
-        self._watcher = asyncio.create_task(self._watch(offer), name="pair-device")
+        self._show(offer)
         logger.info(f"pair_device: code shown for {minutes} min")
         return SHOWN, {"minutes": minutes}
 
-    def _after_failed_mint(self, mine: int) -> None:
-        """No new code: the screen comes down, unless a newer start() of ours owns it now
-        or our old offer is still ours to end. pairing.start() supersedes the old offer
-        before it can fail, and its watcher may not have run yet (a CLI that is not there
-        fails without a pause): the watcher then takes the screen down itself, as the end
-        of our own (_watch)."""
-        if mine == self._gen and self._offer is None:
-            self._take_down()
+    def _show(self, offer: pairing.Offer) -> None:
+        """`offer` is the code on the screen: follow its pairing (one watcher per
+        pairing) and its code (one spent() per code)."""
+        self._offer, self._last = offer, offer
+        if self._spent is not None:
+            self._spent.cancel()
+        self._spent = asyncio.create_task(self._on_spent(offer), name="pair-device-spent")
+        if self._watcher is not None and self._watched != offer.session:
+            # A new pairing: the last one ended just before it was asked for, and its
+            # watcher had not run yet. Its end is old news beside the new code.
+            self._watcher.cancel()
+            self._watcher = None
+        if self._watcher is None:
+            self._watched = offer.session
+            self._watcher = asyncio.create_task(self._watch(offer), name="pair-device")
+
+    def _withdraw(self) -> bool:
+        """The code comes off the screen (pairing.withdraw): True when the pairing goes
+        on watching for a handoff's device."""
+        offer, self._offer = self._offer, None
+        if self._spent is not None:
+            self._spent.cancel()
+            self._spent = None
+        confirming = offer is not None and pairing.withdraw(offer)
+        self._take_down()
+        return confirming
 
     def cancel(self) -> str:
         """Take the code off the screen, and stop one still being made: GONE, or NOTHING
-        when there was neither. CONFIRMING: its link was already opened, so the device
-        is still being looked for, and the outcome is told as usual (pairing.withdraw)."""
+        when there was neither. CONFIRMING: a handoff was made, so the device is still
+        looked for, and the outcome is told as usual (pairing.withdraw)."""
         self._gen += 1
-        confirming = self._offer is not None and pairing.withdraw(self._offer)
-        # withdraw() has already cancelled an offer whose link was not opened.
-        had = (confirming or self._end_offer(cancel=False) or self._minting > 0
-               or self._screen is not None)
-        self._take_down()
+        self._cancels += 1
+        had = self._offer is not None or self._screen is not None
+        confirming = self._withdraw()
         if had:
             logger.info("pair_device: code taken down"
                         + (", still confirming the device" if confirming else ""))
         return CONFIRMING if confirming else GONE if had else NOTHING
 
     def close(self) -> None:
-        """The session is over: whatever is up goes (a confirmation too: no task outlives
+        """The session is over: the pairing ends (a confirmation too: no task outlives
         the session), nothing is told, and nothing is shown after."""
         self._closed = True
         self.notes = None
         self._gen += 1
-        self._end_offer()
+        last, self._last, self._offer = self._last, None, None
+        for task in (self._spent, self._watcher):
+            if task is not None and task is not asyncio.current_task():
+                task.cancel()
+        self._spent = self._watcher = None
+        if last is not None:
+            pairing.cancel(last)
         self._take_down()
 
-    # -- the offer's end
-    async def _spent(self, offer: pairing.Offer) -> None:
-        """The code was used: the QR code makes way for SPENT_LINES until the end."""
+    # -- the pairing's end
+    async def _on_spent(self, offer: pairing.Offer) -> None:
+        """The code on the screen can no longer be used, and the pairing still waits on
+        something: the QR code makes way for SPENT_LINES until the end."""
         if await pairing.spent(offer) and self._offer is offer and self._screen is not None:
             self._screen.show(SCREEN_TITLE, SPENT_LINES)
 
     async def _watch(self, offer: pairing.Offer) -> None:
-        spent = asyncio.create_task(self._spent(offer), name="pair-device-spent")
         try:
             result = await pairing.wait(offer)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # noqa: BLE001 — the screen must still come down
-            logger.warning(f"pair_device: waiting on the code failed: {e!r}")
-            result = pairing.Result("cancelled")
-        finally:
-            spent.cancel()  # no task outlives the offer
-        if self._offer is not offer:
-            return  # replaced or taken down meanwhile
-        self._offer, self._watcher = None, None
+            logger.warning(f"pair_device: waiting on the pairing failed: {e!r}")
+            result = pairing.Result(pairing.CANCELLED)
+        if self._watcher is not asyncio.current_task():
+            return  # close() meanwhile
+        self._watcher = None
+        if self._spent is not None:
+            self._spent.cancel()
+            self._spent = None
+        self._offer = None
         logger.info(f"pair_device: {result.outcome}")
-        ours = self._gen != self._shown_gen  # a start() or cancel() of ours since
-        if result.outcome in ("cancelled", SUPERSEDED) and (self._minting or ours):
-            # Our own new code ended this one: its screen stays up while the new one is
-            # made (the mint's end takes it down if none comes), or comes down now when
-            # that mint is already over without one. Nothing to tell.
-            if not self._minting:
-                self._take_down()
-            return
         screen, self._screen = self._screen, None
-        if result.outcome == "paired":
+        if result.outcome == pairing.PAIRED:
             # A screen taken down meanwhile (cancel() while the device was confirmed)
             # still says so.
             screen = screen or self._new_screen()
@@ -227,12 +238,7 @@ class DevicePairing:
             self._tell(f"Your {result.device} is now connected." if result.device
                        else "Your new device is now connected.", respond=True)
             return
-        if screen is None:
-            pass  # already down (cancel() while the device was confirmed)
-        elif result.outcome == SUPERSEDED:
-            # Another session's new code is on the same screen now: not ours to take down.
-            screen.close(take_down=False)
-        else:
+        if screen is not None:
             screen.clear()
             screen.close()
         if _ENDED.get(result.outcome):
@@ -244,20 +250,7 @@ class DevicePairing:
             self.notes.add_notice(outcome if respond else f"Pairing a device ended: {outcome}",
                                   respond=respond)
 
-    # -- the screen and the task
-    def _end_offer(self, cancel: bool = True) -> bool:
-        """Stop waiting on the live offer and (`cancel`) cancel it, the screen left as it
-        is. False when there was none."""
-        offer, watcher = self._offer, self._watcher
-        self._offer, self._watcher = None, None
-        if watcher is not None and watcher is not asyncio.current_task():
-            watcher.cancel()
-        if offer is None:
-            return False
-        if cancel:
-            pairing.cancel(offer)
-        return True
-
+    # -- the screen
     def _take_down(self) -> None:
         """This session's screen, held or not, comes down and is let go."""
         screen, self._screen = self._screen, None

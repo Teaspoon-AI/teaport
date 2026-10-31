@@ -252,7 +252,9 @@ token or a terminal.
    connected, the screen shows **Paired**, and the device says so.
    The app gets limited access: everything except the administrator's settings.
 
-The code works one time, and for 5 minutes at most. If you need a new code, ask again.
+The code works one time, and for 5 minutes at most. If you need a new code, ask again:
+the screen shows a new code, the old one stops working, and a device that is still
+connecting with the old code is still recognized.
 Either choice can take a few seconds to start.
 
 The link opens over HTTPS. A phone that has not trusted the device's certificate yet

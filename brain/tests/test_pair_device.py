@@ -47,47 +47,57 @@ class _Screen:
 
 
 class _Pairing:
-    """pairing's interface: start() mints (after `gate`, when set), wait() blocks until
-    end() says how. A start() supersedes the live offer first, as pairing's does."""
+    """pairing's interface, one pairing at a time: start() opens one (after `gate`, when
+    set) or gives the live one a new code; wait() blocks until end() says how; a code
+    in `opened` means a handoff was made in its pairing (withdraw() then keeps it)."""
 
     def __init__(self, unavailable=None):
         self.unavailable = unavailable
         self.started, self.cancelled = [], []
-        self._ends = {}
         self.gate = None
-        self.opened = set()       # offers whose link was opened (still confirming)
-        self._used = {}
-        self.fail_after = None    # a reason to raise with once the live offer is ended
+        self.opened = set()       # offers whose pairing has a handoff made
+        self.fail_after = None    # a reason to raise with on the next start()
+        self._pairings = 0
+        self._ends = {}           # pairing id -> future Result
+        self._used = {}           # offer -> future bool (spent())
+
+    def _live(self, sid):
+        fut = self._ends.get(sid)
+        return fut is not None and not fut.done()
 
     async def start(self):
         if self.unavailable:
             raise pairing.PairingUnavailable(self.unavailable)
-        for live, fut in list(self._ends.items()):
-            self.end(live, pd.SUPERSEDED)  # one live offer per process
         if self.fail_after:
-            # As pairing's own when the CLI is missing: no pause between the two.
             raise pairing.PairingUnavailable(self.fail_after)
         if self.gate is not None:
             await self.gate.wait()
-        offer = pairing.Offer(f"c{len(self.started)}", LINK,
-                              asyncio.get_running_loop().time() + 600)
+        loop = asyncio.get_running_loop()
+        if not self._live(self._pairings):
+            self._pairings += 1
+            self._ends[self._pairings] = loop.create_future()
+        for old in self.started:  # a new code: the one before cannot be used
+            fut = self._used.get(old)
+            if old.session == self._pairings and fut is not None and not fut.done():
+                fut.set_result(False)
+        offer = pairing.Offer(f"c{len(self.started)}", LINK, loop.time() + 600,
+                              session=self._pairings)
         self.started.append(offer)
-        self._ends[offer] = asyncio.get_running_loop().create_future()
         return offer
 
     async def wait(self, offer):
-        return await self._ends[offer]
+        return await self._ends[offer.session]
 
     async def spent(self, offer):
-        """True once use() says the code was used, False once the offer ends first."""
+        """True once use() says the code was used, False once the pairing ends or a new
+        code replaces this one."""
         used = self._used.setdefault(offer, asyncio.get_running_loop().create_future())
-        done, _ = await asyncio.wait({used, self._ends[offer]},
-                                     return_when=asyncio.FIRST_COMPLETED)
-        return used in done
+        await asyncio.wait({used, self._ends[offer.session]},
+                           return_when=asyncio.FIRST_COMPLETED)
+        return used.done() and used.result()
 
     def use(self, offer):
         """The code was spent on a choice at /p/ (pairing.redeem)."""
-        self.opened.add(offer)
         fut = self._used.setdefault(offer, asyncio.get_running_loop().create_future())
         if not fut.done():
             fut.set_result(True)
@@ -97,14 +107,13 @@ class _Pairing:
         self.end(offer, "cancelled")
 
     def withdraw(self, offer):
-        fut = self._ends.get(offer)
-        if fut is not None and not fut.done() and offer in self.opened:
+        if self._live(offer.session) and any(o.session == offer.session for o in self.opened):
             return True
         self.cancel(offer)
         return False
 
     def end(self, offer, outcome, device=None):
-        fut = self._ends.get(offer)
+        fut = self._ends.get(offer.session)
         if fut is not None and not fut.done():
             fut.set_result(pairing.Result(outcome, device))
 
@@ -381,31 +390,18 @@ def test_a_second_call_replaces_the_code_rather_than_stacking(monkeypatch):
         first = dp._watcher
         await _call(dp)
         await _turn()
-        state = (first.done(), dp.live, dp._offer, list(fake.started), list(dp.notes.added))
+        state = (dp._watcher is first and not first.done(), dp.live, dp._offer,
+                 list(fake.started), list(dp.notes.added))
         dp.close()
         return state, screen
 
-    (first_done, live, offer, started, notes), screen = asyncio.run(run())
-    assert first_done and live and len(started) == 2 and offer is started[1]
+    (one_watcher, live, offer, started, notes), screen = asyncio.run(run())
+    assert one_watcher, "a new code in the same pairing is followed by the same watcher"
+    assert live and len(started) == 2 and offer is started[1]
+    assert started[0].session == started[1].session
     assert len(_shown(screen)) == 2 and ("clear",) not in screen.calls[:-2], (
         "the screen blinked off between the two codes")
     assert notes == [], "our own replacement was told as news"
-
-
-def test_another_sessions_code_is_left_on_the_screen(monkeypatch):
-    """pairing allows one live offer per process: another session's new one supersedes
-    ours, and its screen (the same id) is not ours to take down."""
-    async def run():
-        dp, fake, screen = _session(monkeypatch)
-        await _call(dp)
-        fake.end(fake.started[0], pd.SUPERSEDED)  # not through dp
-        await _turn()
-        return dp, screen
-
-    dp, screen = asyncio.run(run())
-    assert ("clear",) not in screen.calls and screen.calls[-1] == ("close", False)
-    [(text, respond)] = dp.notes.added
-    assert not respond and "nothing was paired" in text
 
 
 def test_a_cancel_not_ours_takes_the_code_down_and_says_nothing(monkeypatch):
@@ -461,9 +457,9 @@ def _shown(screen):
     return [c for c in screen.calls if c[0] == "show"]
 
 
-def test_a_call_cut_off_while_its_code_is_made_leaves_no_dead_code(monkeypatch):
-    """A barge-in cancels the second call while it mints: the old code is superseded,
-    and its screen must not stay up re-sending it."""
+def test_a_call_cut_off_while_its_code_is_made_keeps_the_code_that_is_up(monkeypatch):
+    """A barge-in cancels the second call while its code is made: no new code came, so
+    the one up is still the pairing's, and stays up and followed."""
     async def run():
         dp, fake, screen = _session(monkeypatch)
         await _call(dp)
@@ -478,8 +474,8 @@ def test_a_call_cut_off_while_its_code_is_made_leaves_no_dead_code(monkeypatch):
         return dp, screen
 
     dp, screen = asyncio.run(run())
-    assert not dp.live and dp._screen is None
-    assert screen.calls[-2:] == [("clear",), ("close", True)]
+    assert dp.live and dp._offer.code == "c0" and dp._screen is not None
+    assert ("clear",) not in screen.calls and screen.calls[-1][0] == "show"
     assert dp.notes.added == []
 
 
@@ -536,10 +532,9 @@ def test_the_session_ending_leaves_no_code_and_no_task(monkeypatch):
     assert notes.added == []
 
 
-def test_a_mint_that_fails_at_once_after_superseding_leaves_no_dead_code(monkeypatch):
-    """pairing.start() supersedes the old offer and can fail before it pauses (a missing
-    CLI): the old offer's watcher has not run yet when the tool answers "couldn't
-    start". It must still take the old code down, and tell no "replaced" line."""
+def test_a_new_code_that_cannot_be_had_leaves_the_one_up(monkeypatch):
+    """Asking again fails (pairing.start() raises): the code up is still the pairing's,
+    so it stays, followed as before, and nothing is told."""
     async def run():
         dp, fake, screen = _session(monkeypatch)
         await _call(dp)
@@ -550,9 +545,8 @@ def test_a_mint_that_fails_at_once_after_superseding_leaves_no_dead_code(monkeyp
 
     result, dp, screen = asyncio.run(run())
     assert result["ok"] is False and "try again" in result["error"]
-    assert not dp.live and dp._screen is None
-    assert screen.calls[-2:] == [("clear",), ("close", True)], screen.calls
-    assert dp.notes.added == [], "a replacement nobody made was told"
+    assert dp.live and dp._offer.code == "c0" and ("clear",) not in screen.calls
+    assert dp.notes.added == []
 
 
 def test_cancel_after_the_link_was_opened_still_tells_if_it_connects(monkeypatch):
@@ -588,6 +582,26 @@ def test_the_session_ending_stops_a_confirmation_too(monkeypatch):
 
     watcher, fake = asyncio.run(run())
     assert watcher.done() and fake.cancelled == fake.started
+
+
+def test_a_new_pairing_after_one_ended_unseen_gets_its_own_watcher(monkeypatch):
+    """The last pairing ended (its watcher not run yet) just as the user asks again:
+    the new code is a new pairing, followed by a new watcher; the old end is not told
+    over the new code, nor does it take the new code down."""
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        old = dp._watcher
+        fake.end(fake.started[0], "expired")  # ended; old watcher has not run
+        await _call(dp)
+        await _turn()
+        return dp, fake, screen, old
+
+    dp, fake, screen, old = asyncio.run(run())
+    assert fake.started[1].session != fake.started[0].session
+    assert old.done() and dp._watcher is not None and dp._watcher is not old
+    assert dp.live and dp._offer is fake.started[1] and screen.calls[-1][0] == "show"
+    assert dp.notes.added == []
 
 
 def test_a_short_line_covers_the_wait_for_the_code(monkeypatch):

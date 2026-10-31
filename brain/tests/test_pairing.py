@@ -14,16 +14,21 @@
 #     gets "expired". Only what came through Caddy over HTTPS (a loopback peer saying
 #     X-Forwarded-Proto https, or uvicorn's proxy-headers scheme) is answered; the rest
 #     is a 404 that is not a wrong guess.
-#   - available() needs a front door. The offer expires; a new start() supersedes the
-#     old one ("superseded"), cancel() is "cancelled", a handful of wrong codes while it
-#     is live lock it ("locked"). A start() while a spent offer is still confirming its
-#     device replaces it too, keeping its snapshot, so that device is still caught.
-#   - A spent code's mint that ends any way but the handoff (an unexpected error, the
-#     request cancelled) ends the offer "failed"; a POST body past 1 KiB is a 413 that
-#     spends nothing and is no guess.
-#   - A device new since the mint (or approved again) is "paired" with its listed
-#     name; an opened link with nothing new is "opened"; nothing is polled before the
-#     link is opened, and polls are ~5 s apart for at most ~2 minutes.
+#   - available() needs a front door. One pairing at a time: its first start() reads
+#     the device list once; asking again gives a new code in the same pairing (the old
+#     one "already used" if tapped, else "expired", never a guess), and the pairing
+#     goes on watching for a device an earlier code brings in -- "paired" even if the
+#     new code is never used, "opened" (not "expired") when a handoff's watch outlasts
+#     the code, with spent() saying "finish on your device". cancel() ends it,
+#     in-flight taps included (no 303 after it); withdraw() keeps a pairing with a
+#     handoff made; wrong codes lock the code ("locked" when nothing else is left).
+#   - A tap's mint that ends any way but the handoff drops the tap; the pairing is
+#     "failed" only when that leaves nothing to wait for and no handoff was made. No
+#     poll runs beside a mint. A POST body past 1 KiB is a 413 that spends nothing and
+#     is no guess.
+#   - A device new since the snapshot (or approved again) is "paired" with its listed
+#     name; nothing is polled before a handoff is made, and polls are ~5 s apart for
+#     at most ~2 minutes (5 for the app).
 #   - A devices list without "paired" is a failed read, not an empty box; banners
 #     before the CLI's JSON are skipped by the one parser (openclaw_client.cli_json),
 #     which the consult uses too.
@@ -90,8 +95,10 @@ class FakeCli:
 def _setup(cli: FakeCli, host="teaport.local"):
     pairing._cli = cli
     pairing.FRONTDOOR_HOST = host
-    pairing._live = None
-    pairing._spent = None
+    pairing._session = None
+    pairing._ended = None
+    pairing._creating = None
+    pairing._spent.clear()
     pairing._clock = time.monotonic
     pairing.POLL_SECS = 0.01
     pairing.OPENED_WAIT_SECS = 0.3
@@ -189,7 +196,7 @@ def test_no_agent_and_a_failed_cli_are_unavailable():
             raise AssertionError("an offer with no snapshot")
         except pairing.PairingUnavailable as e:
             assert "devices list failed" in e.reason, e.reason
-        assert pairing._live is None
+        assert pairing._session is None
     asyncio.run(go())
 
 
@@ -251,7 +258,7 @@ def test_the_offer_expires():
             async with _client() as c:
                 r = await c.get(f"/p/{offer.code}")
             assert r.status_code == 410 and "expired" in r.text
-            assert pairing._live is None
+            assert pairing._session is None
             # Never opened: devices list ran once, for the snapshot.
             assert cli.calls.count(("devices", "list", "--json")) == 1
         finally:
@@ -284,21 +291,26 @@ def test_a_handoff_that_is_already_expiring_fails_at_the_tap():
     asyncio.run(go())
 
 
-def test_a_new_start_supersedes_the_old_offer():
+def test_asking_again_gives_a_new_code_in_the_same_pairing():
     async def go():
-        _setup(FakeCli([DEV_A]))
+        cli = FakeCli([DEV_A])
+        _setup(cli)
         first = await pairing.start()
         waiter = asyncio.ensure_future(pairing.wait(first))
         await asyncio.sleep(0)
         second = await pairing.start()
-        assert (await waiter) == pairing.Result("superseded", None)
+        assert second.session == first.session and second.code != first.code
+        assert cli.calls.count(("devices", "list", "--json")) == 1  # one snapshot
+        assert not waiter.done()  # the same pairing goes on
         async with _client() as c:
-            if first.code != second.code:  # 1 in 31^6 they are the same
-                assert (await c.get(f"/p/{first.code}")).status_code == 410
+            r = await c.get(f"/p/{first.code}")
+            assert r.status_code == 410 and "expired" in r.text  # untapped: "expired"
+            assert pairing._session.wrong == 0  # its own old code is no guess
             assert (await _take(c, second.code)).status_code == 303
-        assert (await pairing.wait(first)) == pairing.Result("superseded", None)
-        pairing.cancel(second)
-        assert (await pairing.wait(second)) == pairing.Result("cancelled", None)
+            r = await c.get(f"/p/{second.code}")
+            assert "already used" in r.text
+        assert (await asyncio.wait_for(waiter, 2)) == pairing.Result("opened", None)
+        assert (await pairing.wait(second)) == pairing.Result("opened", None)  # its Result
     asyncio.run(go())
 
 
@@ -329,7 +341,7 @@ def test_a_new_device_after_the_link_is_paired():
         async with _client() as c:
             assert (await _take(c, offer.code)).status_code == 303
         assert (await waiter) == pairing.Result("paired", "Chrome on Pixel")
-        assert pairing._live is None
+        assert pairing._session is None
     asyncio.run(go())
 
 
@@ -550,7 +562,7 @@ def test_p_answers_only_through_the_front_door():
                 assert (await plain.get("/p/WRONG2")).status_code == 404
             assert (await lan.get(f"/p/{offer.code}")).status_code == 404
             assert (await plain.get(f"/p/{offer.code}")).status_code == 404
-        assert pairing._live.wrong == 0 and pairing._live.ended is None
+        assert pairing._session.wrong == 0 and pairing._session.result is None
         async with _client() as c:
             assert (await _take(c, offer.code)).status_code == 303
         pairing.cancel(offer)
@@ -603,7 +615,7 @@ def test_a_devices_list_without_paired_is_a_failure_not_an_empty_box():
             return await cli(args, timeout)
         pairing._cli = banner_first
         offer = await pairing.start()
-        assert pairing._live.known == {"dev-a": 1000}
+        assert pairing._session.known == {"dev-a": 1000}
         pairing.cancel(offer)
     asyncio.run(go())
 
@@ -639,8 +651,8 @@ def test_a_get_spends_nothing_and_shows_the_two_choices():
         assert r.headers["cache-control"] == "no-store"
         assert r.headers["referrer-policy"] == "no-referrer"
         assert BOOTSTRAP not in r.text and SETUP_CODE not in r.text
-        live = pairing._live
-        assert not live.opened and live.wrong == 0 and live.ended is None
+        live = pairing._session
+        assert live.code_usable() and not live.taps and live.wrong == 0 and live.result is None
         assert cli.calls == [("devices", "list", "--json")]  # nothing minted, nothing polled
         # A post that chooses nothing spends nothing either.
         async with _client() as c:
@@ -704,7 +716,7 @@ def test_a_failed_app_mint_ends_the_offer_and_says_so():
                 assert "Ask Teaport again" in r.text and SETUP_CODE not in r.text
                 assert "already used" in (await c.get(f"/p/{offer.code}")).text
             assert (await pairing.wait(offer)) == pairing.Result("failed", None)
-            assert pairing._live is None
+            assert pairing._session is None
             # The screen came down, so a new offer can be made at once.
             pairing.cancel(await pairing.start())
     asyncio.run(go())
@@ -719,9 +731,9 @@ def test_wrong_codes_count_the_same_on_get_and_post():
             for i in range(pairing.MAX_WRONG - 1):
                 r = await (c.get(f"/p/{wrong}") if i % 2 else _take(c, wrong, "app"))
                 assert r.status_code == 410
-            assert pairing._live.wrong == pairing.MAX_WRONG - 1
+            assert pairing._session.wrong == pairing.MAX_WRONG - 1
             assert (await c.get(f"/p/{offer.code}")).status_code == 200  # not a guess
-            assert pairing._live.wrong == pairing.MAX_WRONG - 1
+            assert pairing._session.wrong == pairing.MAX_WRONG - 1
             assert (await _take(c, wrong)).status_code == 410
         assert (await pairing.wait(offer)) == pairing.Result("locked", None)
     asyncio.run(go())
@@ -739,8 +751,8 @@ def test_a_post_answers_only_through_the_front_door():
                     assert (await _take(c, offer.code, choice)).status_code == 404
                 for _ in range(pairing.MAX_WRONG + 1):
                     assert (await _take(c, "WRONG2")).status_code == 404
-        live = pairing._live
-        assert not live.opened and live.wrong == 0 and live.ended is None
+        live = pairing._session
+        assert live.code_usable() and not live.taps and live.wrong == 0 and live.result is None
         assert cli.calls == [("devices", "list", "--json")]
         pairing.cancel(offer)
     asyncio.run(go())
@@ -821,82 +833,132 @@ def test_spent_says_when_the_code_was_used_and_ends_with_the_offer():
     asyncio.run(go())
 
 
-def test_a_new_start_replaces_a_confirming_offer_and_keeps_its_snapshot():
-    """Asked again while the first code's device is still awaited (after trusting the
-    certificate, or to switch from the app to the dashboard): the new offer takes over,
-    and a late device from the first code is caught by it, by name."""
-    async def go():
-        cli = FakeCli()
-        cli.devices = [[DEV_A], [DEV_A]]
-        _setup(cli)
-        pairing.APP_WAIT_SECS = 30
-        first = await pairing.start()
-        async with _client() as c:
-            assert (await _take(c, first.code, "app")).status_code == 200
-        waiter = asyncio.ensure_future(pairing.wait(first))
-        await asyncio.sleep(0.05)
-        lists = cli.calls.count(("devices", "list", "--json"))
-        second = await pairing.start()
-        assert (await asyncio.wait_for(waiter, 1)) == pairing.Result("superseded", None)
-        assert pairing._live.known == {"dev-a": 1000}
-        # The first's snapshot, not a fresh one (which could already hold its device).
-        assert cli.calls.count(("devices", "list", "--json")) == lists
-        # Unused, the new code keeps the first's device out of sight until it is used.
-        cli.devices = [[DEV_A, DEV_PHONE]]
-        async with _client() as c:
-            assert "already used" in (await c.get(f"/p/{first.code}")).text
-            assert (await _take(c, second.code)).status_code == 303
-        assert (await pairing.wait(second)) == pairing.Result("paired", "iPhone")
-    asyncio.run(go())
-
-
-def test_a_device_from_the_first_code_pairs_the_new_offer_even_if_its_code_is_unused():
+def test_a_device_from_an_earlier_code_ends_the_pairing_paired():
     """The review's late_device: the app chosen, the user asks again, then pastes the
-    first setup code after all. The new offer was watching from its start: "paired",
-    though its own code was never used."""
+    first setup code after all. The same pairing was watching: "paired", though the new
+    code was never used."""
     async def go():
         cli = FakeCli([DEV_A])
         _setup(cli)
         pairing.APP_WAIT_SECS = 5
         first = await pairing.start()
-        w1 = asyncio.ensure_future(pairing.wait(first))
+        waiter = asyncio.ensure_future(pairing.wait(first))
         async with _client() as c:
             assert (await _take(c, first.code, "app")).status_code == 200
         await asyncio.sleep(0.05)
         second = await pairing.start()
-        assert (await asyncio.wait_for(w1, 1)) == pairing.Result("superseded", None)
-        w2 = asyncio.ensure_future(pairing.wait(second))
+        new_code_spent = asyncio.ensure_future(pairing.spent(second))
         await asyncio.sleep(0.05)
-        polls = cli.calls.count(("devices", "list", "--json"))
+        assert cli.calls.count(("devices", "list", "--json")) >= 2  # still watching
         cli.devices = [[DEV_A, DEV_PHONE]]  # the first code's app pairs
-        assert (await asyncio.wait_for(w2, 2)) == pairing.Result("paired", "iPhone")
-        assert cli.calls.count(("devices", "list", "--json")) > polls
+        assert (await asyncio.wait_for(waiter, 2)) == pairing.Result("paired", "iPhone")
+        assert (await pairing.wait(second)) == pairing.Result("paired", "iPhone")
+        assert (await new_code_spent) is False  # never used; the pairing ended
         assert not any(c[:1] == ("dashboard",) for c in cli.calls)
     asyncio.run(go())
 
 
-def test_the_inherited_watch_ends_and_an_unused_new_code_then_expires():
+def test_a_watch_outlasting_the_code_ends_opened_and_spent_says_finish():
+    """The review's watch_outlasts_expiry: the current code runs out while a handoff's
+    watch still runs. The screen is told "finish on your device", the pairing ends
+    "opened" (never "nothing was paired"), and the dead code is not used again."""
     async def go():
         cli = FakeCli([DEV_A])
         _setup(cli)
-        pairing.APP_WAIT_SECS = 0.3
+        pairing.APP_WAIT_SECS = 0.6
         first = await pairing.start()
         async with _client() as c:
             await _take(c, first.code, "app")
-        pairing.OFFER_SECS = 0.8
+        pairing.OFFER_SECS = 0.2
         try:
             second = await pairing.start()
-            t0 = time.monotonic()
-            w2 = asyncio.ensure_future(pairing.wait(second))
-            await asyncio.sleep(0.5)
-            polls = cli.calls.count(("devices", "list", "--json"))
-            assert polls >= 2, polls  # watched from the start
-            assert (await asyncio.wait_for(w2, 2)) == pairing.Result("expired", None)
-            assert time.monotonic() - t0 >= 0.7
-            # No polls after the inherited watch ended: only the code's own expiry.
-            assert cli.calls.count(("devices", "list", "--json")) == polls
         finally:
             pairing.OFFER_SECS = 300.0
+        waiter = asyncio.ensure_future(pairing.wait(second))
+        finish = asyncio.ensure_future(pairing.spent(second))
+        assert (await asyncio.wait_for(finish, 1)) is True  # ran out, the watch goes on
+        assert not waiter.done()
+        async with _client() as c:
+            r = await c.get(f"/p/{second.code}")
+            assert r.status_code == 410 and "expired" in r.text
+        assert (await asyncio.wait_for(waiter, 2)) == pairing.Result("opened", None)
+    asyncio.run(go())
+
+
+def test_a_failed_tap_drops_its_claim_and_the_pairing_ends_as_the_rest_decides():
+    """A tap of an earlier code fails while a newer code is up: the pairing goes on (a
+    code can still be used), stops waiting on that tap, and with nothing else ends
+    "expired". "failed" only when the failure leaves nothing to wait for."""
+    async def go():
+        cli = FakeCli([DEV_A])
+        gate = asyncio.Event()
+
+        async def slow_fail(args, timeout):
+            if args[:1] == ["qr"]:
+                await gate.wait()
+                return 1, b"", b"no route"
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = slow_fail
+        first = await pairing.start()
+        waiter = asyncio.ensure_future(pairing.wait(first))
+        async with _client() as c:
+            tap = asyncio.ensure_future(_take(c, first.code, "app"))
+            await asyncio.sleep(0.05)
+            pairing.OFFER_SECS = 0.4
+            try:
+                second = await pairing.start()
+            finally:
+                pairing.OFFER_SECS = 300.0
+            gate.set()
+            r = await asyncio.wait_for(tap, 1)
+            assert r.status_code == 503 and "could not start" in r.text
+        s = pairing._session
+        assert s.result is None and not s.taps and not s.live_claim()
+        before = cli.calls.count(("devices", "list", "--json"))
+        assert (await asyncio.wait_for(waiter, 2)) == pairing.Result("expired", None)
+        assert cli.calls.count(("devices", "list", "--json")) == before  # nothing polled
+        assert second.session == first.session
+    asyncio.run(go())
+
+
+def test_no_poll_beside_a_mint_and_cancel_stops_an_inflight_tap():
+    """The review's overlap_and_close: a tap minting while a handoff is watched -- no
+    poll runs beside the mint CLI; then cancel() (close()): the pairing ends
+    "cancelled", and the minting phone gets "expired", not a 303."""
+    async def go():
+        cli = FakeCli([DEV_A])
+        log, gate, dashboards = [], asyncio.Event(), []
+
+        async def logged(args, timeout):
+            log.append(("start", args[0]))
+            if args[:1] == ["dashboard"]:
+                dashboards.append(1)
+                if len(dashboards) == 2:
+                    await gate.wait()
+            out = await cli(args, timeout)
+            log.append(("end", args[0]))
+            return out
+        _setup(cli)
+        pairing._cli = logged
+        pairing.OPENED_WAIT_SECS = 5
+        first = await pairing.start()
+        waiter = asyncio.ensure_future(pairing.wait(first))
+        async with _client() as c:
+            assert (await _take(c, first.code)).status_code == 303  # watched from here
+            await asyncio.sleep(0.05)
+            second = await pairing.start()
+            tap = asyncio.ensure_future(_take(c, second.code))  # mints, held
+            await asyncio.sleep(0.05)
+            mark = len(log)
+            await asyncio.sleep(0.2)
+            assert ("start", "devices") not in log[mark:], log[mark:]
+            pairing.cancel(second)
+            assert (await asyncio.wait_for(waiter, 1)) == pairing.Result("cancelled", None)
+            gate.set()
+            r = await asyncio.wait_for(tap, 1)
+            assert r.status_code == 410 and "expired" in r.text, r.status_code
+            assert "location" not in r.headers
     asyncio.run(go())
 
 
@@ -949,67 +1011,6 @@ def test_asking_again_during_a_tap_keeps_the_tapped_phones_handoff():
     asyncio.run(go())
 
 
-def test_a_failed_superseded_tap_withdraws_the_watch_it_handed_on():
-    """Asked again while the first code's handoff mints, and that mint then fails: the
-    new, unused offer stops polling (nothing else extended its watch) and later ends
-    "expired". A successful one still extends it (the test above)."""
-    async def go():
-        cli = FakeCli([DEV_A])
-        gate = asyncio.Event()
-
-        async def slow_fail(args, timeout):
-            if args[:1] == ["qr"]:
-                await gate.wait()
-                return 1, b"", b"no route"
-            return await cli(args, timeout)
-        _setup(cli)
-        pairing._cli = slow_fail
-        pairing.APP_WAIT_SECS = 30
-        first = await pairing.start()
-        pairing.OFFER_SECS = 0.8
-        try:
-            async with _client() as c:
-                tap = asyncio.ensure_future(_take(c, first.code, "app"))
-                await asyncio.sleep(0.05)
-                second = await pairing.start()
-                assert pairing._live.watch.running()  # the in-flight tap's claim
-                w2 = asyncio.ensure_future(pairing.wait(second))
-                await asyncio.sleep(0.1)
-                polled = cli.calls.count(("devices", "list", "--json"))
-                assert polled >= 2, polled  # watching for the tapped phone's device
-                gate.set()
-                r = await asyncio.wait_for(tap, 1)
-                assert r.status_code == 503 and "could not start" in r.text
-            assert not pairing._live.watch.running() and not pairing._live.watch.claims
-            await asyncio.sleep(0.05)
-            after = cli.calls.count(("devices", "list", "--json"))
-            assert (await asyncio.wait_for(w2, 2)) == pairing.Result("expired", None)
-            assert cli.calls.count(("devices", "list", "--json")) <= after + 1, (
-                "kept polling for a tap that failed")
-        finally:
-            pairing.OFFER_SECS = 300.0
-    asyncio.run(go())
-
-
-def test_a_watch_handed_on_twice_keeps_the_latest_claim():
-    async def go():
-        cli = FakeCli([DEV_A])
-        _setup(cli)
-        pairing.APP_WAIT_SECS = 30
-        first = await pairing.start()
-        async with _client() as c:
-            await _take(c, first.code, "app")
-        watch = pairing._live.watch
-        second = await pairing.start()
-        third = await pairing.start()  # second never used, but still watching
-        assert pairing._live.watch is watch and watch.running()
-        assert len(watch.claims) == 1  # the first tap's, carried through both
-        pairing.cancel(third)
-        for o in (first, second, third):
-            await pairing.wait(o)
-    asyncio.run(go())
-
-
 def test_a_confirming_offer_is_still_stopped_by_cancel():
     async def go():
         _setup(FakeCli([DEV_A]))
@@ -1022,7 +1023,7 @@ def test_a_confirming_offer_is_still_stopped_by_cancel():
         assert pairing.withdraw(offer) is True and not waiter.done()  # spent: kept
         pairing.cancel(offer)  # pair_device's close()
         assert (await asyncio.wait_for(waiter, 1)) == pairing.Result("cancelled", None)
-        assert pairing._live is None
+        assert pairing._session is None
     asyncio.run(go())
 
 
@@ -1070,7 +1071,8 @@ def test_any_failure_after_the_code_is_spent_ends_the_offer():
         pairing._cli = hanging
         offer = await pairing.start()
         spent = asyncio.ensure_future(pairing.spent(offer))
-        live = pairing._live
+        live = pairing._session
+        waiter = asyncio.ensure_future(pairing.wait(offer))
 
         class _Req:
             url = type("U", (), {"scheme": "https"})()
@@ -1081,12 +1083,12 @@ def test_any_failure_after_the_code_is_spent_ends_the_offer():
                 yield b"choice=app"
         handler = asyncio.ensure_future(pairing.redeem(offer.code, _Req()))
         await asyncio.sleep(0.05)
-        assert live.opened and not handler.done()
+        assert live.taps and not handler.done()
+        assert (await asyncio.wait_for(spent, 1)) is True  # "finish on your device"
         handler.cancel()
         await asyncio.gather(handler, return_exceptions=True)
-        assert live.ended == "failed"
-        assert (await asyncio.wait_for(pairing.wait(offer), 1)) == pairing.Result("failed")
-        assert (await asyncio.wait_for(spent, 1)) is False  # the dead QR comes down
+        assert live.result == pairing.Result("failed") and not live.taps
+        assert (await asyncio.wait_for(waiter, 1)) == pairing.Result("failed")
     asyncio.run(go())
 
 
@@ -1108,8 +1110,8 @@ def test_a_big_post_is_refused_unread_and_spends_nothing():
                     yield b"choice=app&pad=" + b"x" * 300
             r = await c.post(f"/p/{offer.code}", content=chunks())
             assert r.status_code == 413, r.status_code
-            live = pairing._live
-            assert not live.opened and live.wrong == 0 and live.ended is None
+            live = pairing._session
+            assert live.code_usable() and not live.taps and live.wrong == 0 and live.result is None
             assert not any(call[:1] == ("qr",) for call in cli.calls)
             assert (await _take(c, offer.code, "app")).status_code == 200  # still usable
         pairing.cancel(offer)
