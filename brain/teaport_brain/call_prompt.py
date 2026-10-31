@@ -31,7 +31,6 @@
 import asyncio
 
 from loguru import logger
-from pipecat.frames.frames import InterruptionWorkerFrame, TTSSpeakFrame
 
 from teaport_brain import session_arbiter as arb
 from teaport_brain.settings import setting
@@ -46,9 +45,6 @@ ANSWER_GRACE_SECS = 5.0
 QUESTION_MAX_SECS = 12.0
 # How long the line said on the way to the hold ("back in a moment") may take.
 STEP_AWAY_MAX_SECS = 8.0
-# How long whatever was being said gets to stop before the question is put.
-_SETTLE_SECS = 0.2
-
 # What answer() made of the user's answer. TAKEN / DECLINED: it answered the question.
 # Once the question has closed, an answer changes nothing and is told what did happen:
 # CLOSED_TAKEN (the call was taken: nobody answered in time, or the caller was already
@@ -85,18 +81,15 @@ class CallPrompt:
         self._pending, self._last = fut, None
         try:
             line = arb.prompt_line(caller, self._lang())
-            # A phone ringing stops the sentence it rings over.
-            await session.task.queue_frames([InterruptionWorkerFrame()])
-            await asyncio.sleep(_SETTLE_SECS)
-            delivery = session.followup_gate.watch_delivery()
-            await session.task.queue_frames([TTSSpeakFrame(line)])
-            said = asyncio.ensure_future(delivery.done.wait())
-            try:
-                await asyncio.wait({fut, said}, timeout=QUESTION_MAX_SECS,
-                                   return_when=asyncio.FIRST_COMPLETED)
-            finally:
-                said.cancel()
-                session.followup_gate.drop_delivery(delivery)
+            # A phone ringing stops the sentence it rings over: the brain's own cut.
+            async with session.own_line(line, append_to_context=True) as delivery:
+                said = asyncio.ensure_future(delivery.done.wait())
+                try:
+                    await asyncio.wait({fut, said}, timeout=QUESTION_MAX_SECS,
+                                       return_when=asyncio.FIRST_COMPLETED)
+                finally:
+                    said.cancel()
+                    session.followup_gate.drop_delivery(delivery)
             if not fut.done():
                 try:
                     await asyncio.wait_for(asyncio.shield(fut), PROMPT_SECS)
