@@ -107,7 +107,12 @@ class _Pairing:
         self.end(offer, "cancelled")
 
     def withdraw(self, offer):
-        if self._live(offer.session) and any(o.session == offer.session for o in self.opened):
+        made = self._live(offer.session) and any(o.session == offer.session
+                                                 for o in self.opened)
+        latest = [o for o in self.started if o.session == offer.session][-1:]
+        if latest != [offer]:
+            return made  # an older code: the one up now is not the one taken down
+        if made:
             return True
         self.cancel(offer)
         return False
@@ -602,6 +607,40 @@ def test_a_new_pairing_after_one_ended_unseen_gets_its_own_watcher(monkeypatch):
     assert old.done() and dp._watcher is not None and dp._watcher is not old
     assert dp.live and dp._offer is fake.started[1] and screen.calls[-1][0] == "show"
     assert dp.notes.added == []
+
+
+def test_a_code_got_but_never_shown_does_not_stay_usable(monkeypatch):
+    """The review's r4: start A waits for its code; start B finds the screen gone and
+    returns at once. A's code then comes, unshown: it is taken out of use (here the
+    pairing ends), not left open for minutes with nobody following it."""
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        fake.gate = asyncio.Event()
+        a = asyncio.create_task(dp.start())
+        await _turn()
+        screen.qr = False
+        b = await dp.start()
+        fake.gate.set()
+        return b, await a, fake
+
+    b, a, fake = asyncio.run(run())
+    assert b[0] == pd.NO_SCREEN and a[0] == pd.STOPPED
+    assert fake.cancelled == fake.started and len(fake.started) == 1
+
+
+def test_a_newer_start_replaces_an_unshown_code_without_ending_the_pairing(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        fake.gate = asyncio.Event()
+        a = asyncio.create_task(dp.start())
+        b = asyncio.create_task(dp.start())
+        await _turn()
+        fake.gate.set()
+        return await a, await b, dp, fake
+
+    a, b, dp, fake = asyncio.run(run())
+    assert a[0] == pd.STOPPED and b[0] == pd.SHOWN
+    assert fake.cancelled == [] and dp._offer is fake.started[-1]
 
 
 def test_a_short_line_covers_the_wait_for_the_code(monkeypatch):

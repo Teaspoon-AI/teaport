@@ -24,8 +24,10 @@
 # the same pairing, which goes on watching for a device the old code brings in), and the
 # one watcher goes on following it. Whatever ends a start() -- a code, no code, the call
 # cancelled by a barge-in, cancel() or close() meanwhile -- leaves either the new code
-# up or nothing new. cancel() takes the code down (a pairing with a handoff made still
-# watches, and its end is told); close(), at the session's end, ends the pairing,
+# up or nothing new: a code a start() got and did not show is taken out of use once no
+# start() of ours is left in flight, unless a newer code replaced it. cancel() takes
+# the code down and stops whatever is still being minted (a pairing with a handoff made
+# still watches, and its end is told); close(), at the session's end, ends the pairing,
 # silently and for good -- no task outlives the session, and no code stays up.
 #
 import asyncio
@@ -86,7 +88,8 @@ class DevicePairing:
         # Bumped by every start(), cancel() and close(): a start() that finds it moved
         # on shows nothing.
         self._gen = 0
-        self._cancels = 0  # cancel()s: a start() it came during makes its code unusable
+        self._pending = 0  # start()s waiting on pairing.start()
+        self._unshown: list[pairing.Offer] = []  # codes they got and did not show
         self._closed = False
 
     @property
@@ -101,47 +104,60 @@ class DevicePairing:
         if self._closed:
             return STOPPED, {}
         self._gen += 1
-        mine, cancels = self._gen, self._cancels
+        mine = self._gen
         screen = self._screen = self._screen or self._new_screen()
         if not screen.draws("qr"):
             # Asked before anything is made: a code nobody can see is nothing to open.
             logger.info("pair_device: no screen that draws QR codes")
             self._withdraw()
             return NO_SCREEN, {}
+        self._pending += 1
         try:
-            offer = await pairing.start()
-        except pairing.PairingUnavailable as e:
-            logger.warning(f"pair_device: no code: {e.reason}")
-            if mine != self._gen:
+            try:
+                offer = await pairing.start()
+            except pairing.PairingUnavailable as e:
+                logger.warning(f"pair_device: no code: {e.reason}")
+                if mine != self._gen:
+                    return STOPPED, {}
+                if self._offer is None and not self.live:
+                    self._take_down()
+                return UNAVAILABLE, {"reason": e.reason}
+            except BaseException:
+                if mine == self._gen and self._offer is None and not self.live:
+                    self._take_down()  # a barge-in cancelled the call, or worse
+                raise
+            if mine != self._gen or self._closed:
+                # A newer start(), cancel() or close() came meanwhile: this code is not
+                # shown. Unless a newer code replaces it, it must not stay usable (the
+                # last start() to finish sees to it, below).
+                if self._closed:
+                    pairing.cancel(offer)
+                else:
+                    self._unshown.append(offer)
+                logger.info("pair_device: stopped while the code was being made")
                 return STOPPED, {}
-            if self._offer is None and not self.live:
-                self._take_down()
-            return UNAVAILABLE, {"reason": e.reason}
-        except BaseException:
-            if mine == self._gen and self._offer is None and not self.live:
-                self._take_down()  # a barge-in cancelled the call, or worse
-            raise
-        if mine != self._gen or self._closed:
-            # close() or cancel() came meanwhile: this code is not to be used. (A newer
-            # start() alone needs nothing: its code replaces this one.)
-            if self._closed:
-                pairing.cancel(offer)
-            elif self._cancels != cancels:
-                pairing.withdraw(offer)
-            logger.info("pair_device: stopped while the code was being made")
-            return STOPPED, {}
-        minutes = max(1, math.ceil((offer.expires_at - self._clock()) / 60))
-        if not (screen.fits_qr(offer.link)
-                and screen.show(SCREEN_TITLE, ["Point your camera", "at this code",
-                                               f"Open for {minutes} min"], qr=offer.link)):
-            # The avatar went, or draws smaller codes than this one.
-            logger.info("pair_device: the screen cannot draw this code")
-            self._offer = offer
-            self._withdraw()
-            return NO_SCREEN, {}
-        self._show(offer)
-        logger.info(f"pair_device: code shown for {minutes} min")
-        return SHOWN, {"minutes": minutes}
+            minutes = max(1, math.ceil((offer.expires_at - self._clock()) / 60))
+            if not (screen.fits_qr(offer.link)
+                    and screen.show(SCREEN_TITLE, ["Point your camera", "at this code",
+                                                   f"Open for {minutes} min"], qr=offer.link)):
+                # The avatar went, or draws smaller codes than this one.
+                logger.info("pair_device: the screen cannot draw this code")
+                self._offer = offer
+                self._withdraw()
+                return NO_SCREEN, {}
+            self._show(offer)
+            logger.info(f"pair_device: code shown for {minutes} min")
+            return SHOWN, {"minutes": minutes}
+        finally:
+            self._pending -= 1
+            if self._pending == 0:
+                # No start() of ours left in flight: a code one of them got but did not
+                # show is taken out of use, unless a newer one replaced it (withdraw()
+                # leaves an older code's pairing alone).
+                unshown, self._unshown = self._unshown, []
+                for offer in unshown:
+                    if offer is not self._offer:
+                        pairing.withdraw(offer)
 
     def _show(self, offer: pairing.Offer) -> None:
         """`offer` is the code on the screen: follow its pairing (one watcher per
@@ -175,7 +191,6 @@ class DevicePairing:
         when there was neither. CONFIRMING: a handoff was made, so the device is still
         looked for, and the outcome is told as usual (pairing.withdraw)."""
         self._gen += 1
-        self._cancels += 1
         had = self._offer is not None or self._screen is not None
         confirming = self._withdraw()
         if had:

@@ -822,14 +822,15 @@ def test_spent_says_when_the_code_was_used_and_ends_with_the_offer():
         assert (await asyncio.wait_for(unused, 1)) is False
         await pairing.wait(offer)
         assert (await pairing.spent(offer)) is False
-        # A failed handoff is not "spent" either: the screen just comes down.
+        # A tap is "spent" from the tap (the phone is busy with it while it mints); its
+        # failure then ends the pairing, and the screen comes down.
         _setup(FakeCli([DEV_A], qr_rc=1, qr={}))
         offer = await pairing.start()
         failed = asyncio.ensure_future(pairing.spent(offer))
         async with _client() as c:
             await _take(c, offer.code, "app")
-        assert (await asyncio.wait_for(failed, 1)) is False
-        await pairing.wait(offer)
+        assert (await asyncio.wait_for(failed, 1)) is True
+        assert (await pairing.wait(offer)) == pairing.Result("failed")
     asyncio.run(go())
 
 
@@ -1115,6 +1116,217 @@ def test_a_big_post_is_refused_unread_and_spends_nothing():
             assert not any(call[:1] == ("qr",) for call in cli.calls)
             assert (await _take(c, offer.code, "app")).status_code == 200  # still usable
         pairing.cancel(offer)
+    asyncio.run(go())
+
+
+class _CountingCli(FakeCli):
+    """FakeCli that counts CLIs running at once, each taking `delay` seconds."""
+
+    def __init__(self, *a, delay=0.05, **k):
+        super().__init__(*a, **k)
+        self.delay, self.active, self.most = delay, 0, 0
+
+    async def __call__(self, args, timeout):
+        self.active += 1
+        self.most = max(self.most, self.active)
+        try:
+            await asyncio.sleep(self.delay)
+            return await super().__call__(args, timeout)
+        finally:
+            self.active -= 1
+
+
+def test_never_two_clis_at_once_a_poll_gives_way_to_a_tap():
+    """The review's r1: a tap made while a poll runs. The poll is cut short (its CLI
+    killed) and the mint runs after it, never beside it; the poll's wait wakes on the
+    tap too."""
+    async def go():
+        cli = _CountingCli([DEV_A], delay=0.2)
+        _setup(cli)
+        pairing.POLL_SECS, pairing.OPENED_WAIT_SECS = 0.05, 5
+        first = await pairing.start()
+        waiter = asyncio.ensure_future(pairing.wait(first))
+        async with _client() as c:
+            assert (await _take(c, first.code)).status_code == 303
+            await asyncio.sleep(0.05)  # wait() is inside a 0.2 s poll now
+            second = await pairing.start()
+            t0 = time.monotonic()
+            assert (await _take(c, second.code, "app")).status_code == 200
+            assert time.monotonic() - t0 < 0.6  # the poll gave way, not waited out
+        pairing.cancel(second)
+        await waiter
+        assert cli.most == 1, cli.most
+    asyncio.run(go())
+
+
+def test_a_tap_still_minting_when_the_pairing_ends_paired_gets_no_handoff():
+    async def go():
+        cli = FakeCli([DEV_A])
+        gate = asyncio.Event()
+        mint_cancelled = []
+
+        async def held(args, timeout):
+            if args[:1] == ["qr"]:
+                try:
+                    await gate.wait()
+                except asyncio.CancelledError:
+                    mint_cancelled.append(True)
+                    raise
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = held
+        pairing.OPENED_WAIT_SECS = 5
+        first = await pairing.start()
+        waiter = asyncio.ensure_future(pairing.wait(first))
+        async with _client() as c:
+            assert (await _take(c, first.code)).status_code == 303
+            second = await pairing.start()
+            tap = asyncio.ensure_future(_take(c, second.code, "app"))
+            await asyncio.sleep(0.05)
+            # The first tap's browser pairs; the pairing ends while the second mints.
+            pairing._end(pairing._session, pairing.Result("paired", "Chrome on Pixel"))
+            r = await asyncio.wait_for(tap, 1)
+        assert r.status_code == 410 and SETUP_CODE not in r.text
+        assert mint_cancelled == [True]  # its CLI was stopped, not run out
+        assert (await waiter) == pairing.Result("paired", "Chrome on Pixel")
+    asyncio.run(go())
+
+
+def test_the_users_stop_stops_minting_taps_with_or_without_a_handoff():
+    """The review's r2: cancel (withdraw) while a tap mints. No handoff after the stop,
+    either way; a handoff already made goes on being watched."""
+    async def go():
+        for earlier_handoff in (False, True):
+            cli = FakeCli([DEV_A])
+            gate = asyncio.Event()
+
+            async def held(args, timeout, cli=cli, gate=gate):
+                if args[:1] == ["qr"]:
+                    await gate.wait()
+                return await cli(args, timeout)
+            _setup(cli)
+            pairing._cli = held
+            pairing.OPENED_WAIT_SECS = 5
+            offer = await pairing.start()
+            waiter = asyncio.ensure_future(pairing.wait(offer))
+            async with _client() as c:
+                if earlier_handoff:
+                    assert (await _take(c, offer.code)).status_code == 303
+                    offer = await pairing.start()
+                tap = asyncio.ensure_future(_take(c, offer.code, "app"))
+                await asyncio.sleep(0.05)
+                kept = pairing.withdraw(offer)
+                gate.set()
+                r = await asyncio.wait_for(tap, 1)
+            assert r.status_code == 410 and SETUP_CODE not in r.text, earlier_handoff
+            assert kept is earlier_handoff
+            if earlier_handoff:
+                assert not waiter.done()  # the dashboard's device is still looked for
+                cli.devices = [[DEV_A, DEV_NEW]]
+                assert (await asyncio.wait_for(waiter, 2)) == pairing.Result(
+                    "paired", "Chrome on Pixel")
+            else:
+                assert (await waiter) == pairing.Result("cancelled", None)
+    asyncio.run(go())
+
+
+def test_locked_is_per_code_and_an_old_locked_code_is_no_guess():
+    """The review's r3: a code locked by wrong guesses, then asked again: the next code
+    running out unused is "expired", not "locked"; the locked code scanned again counts
+    nothing against the new one. (A tap minting keeps the pairing going meanwhile.)"""
+    async def go():
+        cli = FakeCli([DEV_A])
+        gate = asyncio.Event()
+
+        async def held_fail(args, timeout):
+            if args[:1] == ["qr"]:
+                await gate.wait()
+                return 1, b"", b"no route"
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = held_fail
+        first = await pairing.start()
+        waiter = asyncio.ensure_future(pairing.wait(first))
+        async with _client() as c:
+            tap = asyncio.ensure_future(_take(c, first.code, "app"))  # keeps it going
+            await asyncio.sleep(0.05)
+            second = await pairing.start()
+            wrong = "".join(x for x in pairing.CODE_ALPHABET
+                            if x not in first.code + second.code)[:6]
+            for _ in range(pairing.MAX_WRONG):
+                await c.get(f"/p/{wrong}")
+            s = pairing._session
+            assert s.locked and not s.code_usable()
+            pairing.OFFER_SECS = 0.3
+            try:
+                third = await pairing.start()
+            finally:
+                pairing.OFFER_SECS = 300.0
+            assert not s.locked and s.code_usable() and s.wrong == 0
+            for _ in range(pairing.MAX_WRONG + 1):  # the locked code, scanned again
+                assert (await c.get(f"/p/{second.code}")).status_code == 410
+            assert s.wrong == 0 and s.code_usable()
+            gate.set()
+            assert (await asyncio.wait_for(tap, 1)).status_code == 503
+        assert (await asyncio.wait_for(waiter, 2)) == pairing.Result("expired", None)
+        assert third.session == first.session
+    asyncio.run(go())
+
+
+def test_a_pairing_nobody_follows_is_not_lent_to_the_next_ask():
+    """The review's r4, pairing's side: a pairing left with nothing to wait for and no
+    waiter is ended by the next start(), which opens a fresh one (a fresh snapshot);
+    one past SESSION_MAX_SECS too, whatever it still had."""
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        pairing.OFFER_SECS = 0.05
+        try:
+            stale = await pairing.start()
+        finally:
+            pairing.OFFER_SECS = 300.0
+        await asyncio.sleep(0.1)  # its code ran out, nobody waited
+        cli.devices = [[DEV_A, DEV_PHONE]]  # paired meanwhile, some other way
+        fresh = await pairing.start()
+        assert fresh.session != stale.session
+        assert pairing._session.known == {"dev-a": 1000, "dev-p": 3000}
+        assert (await pairing.wait(stale)) == pairing.Result("expired", None)
+        # Past the bound: a fresh pairing even with a usable code.
+        old_max = pairing.SESSION_MAX_SECS
+        pairing.SESSION_MAX_SECS = 0.05
+        try:
+            await asyncio.sleep(0.1)
+            newest = await pairing.start()
+        finally:
+            pairing.SESSION_MAX_SECS = old_max
+        assert newest.session != fresh.session
+        pairing.cancel(newest)
+    asyncio.run(go())
+
+
+def test_cancel_kills_a_minting_cli():
+    async def go():
+        cli = FakeCli([DEV_A])
+        cancelled = []
+
+        async def hangs(args, timeout):
+            if args[:1] == ["dashboard"]:
+                try:
+                    await asyncio.sleep(30)
+                except asyncio.CancelledError:
+                    cancelled.append(True)
+                    raise
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = hangs
+        offer = await pairing.start()
+        async with _client() as c:
+            tap = asyncio.ensure_future(_take(c, offer.code))
+            await asyncio.sleep(0.05)
+            pairing.cancel(offer)  # close()
+            r = await asyncio.wait_for(tap, 1)
+        assert r.status_code == 410 and "location" not in r.headers
+        assert cancelled == [True]
     asyncio.run(go())
 
 
