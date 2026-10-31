@@ -55,12 +55,17 @@ class _Pairing:
         self.started, self.cancelled = [], []
         self._ends = {}
         self.gate = None
+        self.opened = set()       # offers whose link was opened (still confirming)
+        self.fail_after = None    # a reason to raise with once the live offer is ended
 
     async def start(self):
         if self.unavailable:
             raise pairing.PairingUnavailable(self.unavailable)
         for live, fut in list(self._ends.items()):
             self.end(live, pd.SUPERSEDED)  # one live offer per process
+        if self.fail_after:
+            # As pairing's own when the CLI is missing: no pause between the two.
+            raise pairing.PairingUnavailable(self.fail_after)
         if self.gate is not None:
             await self.gate.wait()
         offer = pairing.Offer(f"c{len(self.started)}", LINK,
@@ -75,6 +80,13 @@ class _Pairing:
     def cancel(self, offer):
         self.cancelled.append(offer)
         self.end(offer, "cancelled")
+
+    def withdraw(self, offer):
+        fut = self._ends.get(offer)
+        if fut is not None and not fut.done() and offer in self.opened:
+            return True
+        self.cancel(offer)
+        return False
 
     def end(self, offer, outcome, device=None):
         fut = self._ends.get(offer)
@@ -100,7 +112,7 @@ class _Params:
 
 def _session(monkeypatch, screen=None, **kw):
     fake = _Pairing(**kw)
-    for name in ("start", "wait", "cancel"):
+    for name in ("start", "wait", "cancel", "withdraw"):
         monkeypatch.setattr(pd.pairing, name, getattr(fake, name))
     screen = screen or _Screen()
     dp = pd.DevicePairing(notes=_Notes(), screen=lambda: screen,
@@ -449,6 +461,60 @@ def test_the_session_ending_leaves_no_code_and_no_task(monkeypatch):
     assert fake.cancelled == fake.started
     assert screen.calls[-2:] == [("clear",), ("close", True)]
     assert notes.added == []
+
+
+def test_a_mint_that_fails_at_once_after_superseding_leaves_no_dead_code(monkeypatch):
+    """pairing.start() supersedes the old offer and can fail before it pauses (a missing
+    CLI): the old offer's watcher has not run yet when the tool answers "couldn't
+    start". It must still take the old code down, and tell no "replaced" line."""
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.fail_after = "openclaw CLI did not start (No such file or directory)"
+        result = await _call(dp)
+        await _turn()
+        return result, dp, screen
+
+    result, dp, screen = asyncio.run(run())
+    assert result["ok"] is False and "try again" in result["error"]
+    assert not dp.live and dp._screen is None
+    assert screen.calls[-2:] == [("clear",), ("close", True)], screen.calls
+    assert dp.notes.added == [], "a replacement nobody made was told"
+
+
+def test_cancel_after_the_link_was_opened_still_tells_if_it_connects(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        offer = fake.started[0]
+        fake.opened.add(offer)
+        result = await _call(dp, cancel=True)
+        down = list(screen.calls)
+        fake.end(offer, "paired", "Firefox on Linux")
+        await _turn()
+        return result, down, dp, fake, screen
+
+    result, down, dp, fake, screen = asyncio.run(run())
+    assert result["ok"] and "off the screen" in result["note"] and "notice" in result["note"]
+    assert "nothing was paired" not in result["note"]
+    assert down[-2:] == [("clear",), ("close", True)] and fake.cancelled == []
+    assert screen.calls[-2][:3] == ("show", "Pair", ["Paired", "Firefox on Linux"])
+    [(text, respond)] = dp.notes.added
+    assert respond and "connected" in text
+
+
+def test_the_session_ending_stops_a_confirmation_too(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.opened.add(fake.started[0])
+        watcher = dp._watcher
+        dp.close()
+        await _turn()
+        return watcher, fake
+
+    watcher, fake = asyncio.run(run())
+    assert watcher.done() and fake.cancelled == fake.started
 
 
 if __name__ == "__main__":

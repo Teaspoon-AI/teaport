@@ -44,6 +44,8 @@ DEVICE_MAX_CHARS = 24
 # What start() says.
 SHOWN, NO_SCREEN, UNAVAILABLE, BUSY, STOPPED = (
     "shown", "no_screen", "unavailable", "busy", "stopped")
+# What cancel() says.
+GONE, CONFIRMING, NOTHING = "gone", "confirming", "nothing"
 
 # pairing's outcomes beyond the four of its Result: another start() (another session's,
 # ours never reach the watcher) replaced the code, or wrong codes tried at /p/ ended it.
@@ -86,6 +88,7 @@ class DevicePairing:
         # Bumped by every start(), cancel() and close(): a mint that finds it moved on
         # shows nothing.
         self._gen = 0
+        self._shown_gen = 0  # _gen when the live offer went up
         self._minting = 0
         self._closed = False
 
@@ -137,33 +140,43 @@ class DevicePairing:
             self._take_down()
             return NO_SCREEN, {}
         self._end_offer(cancel=False)  # pairing.start() has ended the one before
-        self._offer = offer
+        self._offer, self._shown_gen = offer, mine
         self._watcher = asyncio.create_task(self._watch(offer), name="pair-device")
         logger.info(f"pair_device: code shown for {minutes} min")
         return SHOWN, {"minutes": minutes}
 
     def _after_failed_mint(self, mine: int) -> None:
         """No new code: the screen comes down, unless a newer start() of ours owns it now
-        or the old code is still live (pairing kept it: still confirming)."""
+        or the old code is still live (pairing kept it: still confirming). An old offer
+        pairing.start() superseded before it failed may not have reached its watcher yet
+        (a CLI that is not there fails without a pause): the watcher then takes the
+        screen down itself, as the end of our own (_watch)."""
         if mine == self._gen and self._offer is None:
             self._take_down()
 
-    def cancel(self) -> bool:
-        """Take the code down, and stop one still being made. False when there was
-        neither."""
+    def cancel(self) -> str:
+        """Take the code off the screen, and stop one still being made: GONE, or NOTHING
+        when there was neither. CONFIRMING: its link was already opened, so the device
+        is still being looked for, and the outcome is told as usual (pairing.withdraw)."""
         self._gen += 1
-        had = self._end_offer() or self._minting > 0 or self._screen is not None
+        confirming = self._offer is not None and pairing.withdraw(self._offer)
+        # withdraw() has already cancelled an offer whose link was not opened.
+        had = (confirming or self._end_offer(cancel=False) or self._minting > 0
+               or self._screen is not None)
         self._take_down()
         if had:
-            logger.info("pair_device: code taken down")
-        return had
+            logger.info("pair_device: code taken down"
+                        + (", still confirming the device" if confirming else ""))
+        return CONFIRMING if confirming else GONE if had else NOTHING
 
     def close(self) -> None:
-        """The session is over: whatever is up goes, nothing is told, and nothing is
-        shown after."""
+        """The session is over: whatever is up goes (a confirmation too: no task outlives
+        the session), nothing is told, and nothing is shown after."""
         self._closed = True
         self.notes = None
-        self.cancel()
+        self._gen += 1
+        self._end_offer()
+        self._take_down()
 
     # -- the offer's end
     async def _watch(self, offer: pairing.Offer) -> None:
@@ -178,12 +191,19 @@ class DevicePairing:
             return  # replaced or taken down meanwhile
         self._offer, self._watcher = None, None
         logger.info(f"pair_device: {result.outcome}")
-        if self._minting and result.outcome in ("cancelled", SUPERSEDED):
-            # Our own new code being made ended this one: its screen stays up until the
-            # new code replaces it (or the mint's end takes it down).
+        ours = self._gen != self._shown_gen  # a start() or cancel() of ours since
+        if result.outcome in ("cancelled", SUPERSEDED) and (self._minting or ours):
+            # Our own new code ended this one: its screen stays up while the new one is
+            # made (the mint's end takes it down if none comes), or comes down now when
+            # that mint is already over without one. Nothing to tell.
+            if not self._minting:
+                self._take_down()
             return
         screen, self._screen = self._screen, None
         if result.outcome == "paired":
+            # A screen taken down meanwhile (cancel() while the device was confirmed)
+            # still says so.
+            screen = screen or self._new_screen()
             device = display.fold_ascii(result.device or "", fallback="")[:DEVICE_MAX_CHARS]
             # Up for a while on its own: the held code goes with it, and close() below
             # has nothing held left to take down.
@@ -193,7 +213,9 @@ class DevicePairing:
             what = f"the user's {result.device}" if result.device else "the user's device"
             self._tell(f"{what} is now connected to the box.", respond=True)
             return
-        if result.outcome == SUPERSEDED:
+        if screen is None:
+            pass  # already down (cancel() while the device was confirmed)
+        elif result.outcome == SUPERSEDED:
             # Another session's new code is on the same screen now: not ours to take down.
             screen.close(take_down=False)
         else:

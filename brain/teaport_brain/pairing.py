@@ -21,12 +21,16 @@
 #     (router, below; Caddy routes /p/* to the brain) answers its first hit with a 302
 #     to the rewritten browserUrl. The fragment rides in the Location header, and a
 #     browser never sends a fragment to a server, so the bootstrap reaches no access log
-#     on the way back either. It is never logged here. /p/ answers only what came
+#     on the way back either. It is never logged here, and the access log's request
+#     line has the code masked (gateway_server._RedactTokens: /p/<redacted>). /p/
+#     answers only what came
 #     through Caddy over HTTPS (_via_front_door); the brain's own port, open to the LAN
 #     for the config page, gets a 404 there that does not count as a guess.
 #
 # One offer at a time, in memory only (a brain restart forgets it, and its code is then
-# "expired"): start() mints, wait() follows it, cancel() ends it ("cancelled"), and a
+# "expired"): start() mints, wait() follows it, cancel() ends it ("cancelled"),
+# withdraw() ends it too unless its link was opened (then the device is still looked
+# for: the code is spent, and the confirmation is worth keeping), and a
 # second start() supersedes the first ("superseded") -- unless the first's link has
 # been opened and its device is still being looked for, when start() is refused
 # instead of losing that confirmation. The offer ends at whichever comes first
@@ -318,6 +322,19 @@ def cancel(offer: Offer) -> None:
     live = _live
     if live is not None and live.offer is offer:
         _end(live, CANCELLED)
+
+
+def withdraw(offer: Offer) -> bool:
+    """Take `offer`'s code out of use, as when it comes off the screen. A link not
+    opened yet is cancelled, as cancel() does (False); one already opened is spent, and
+    is left to confirm its device: its wait() still says how (True)."""
+    live = _live
+    if live is None or live.offer is not offer or live.ended is not None:
+        return False
+    if live.opened:
+        return True
+    _end(live, CANCELLED)
+    return False
 
 
 def _end(live: _Live, why: str) -> None:

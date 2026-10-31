@@ -22,7 +22,8 @@
 #   - A devices list without "paired" is a failed read, not an empty box; banners
 #     before the CLI's JSON are skipped by the one parser (openclaw_client.cli_json),
 #     which the consult uses too.
-#   - The browserUrl, its fragment and the live code never reach the log.
+#   - The browserUrl, its fragment and the live code never reach the log (the access
+#     log's /p/<code> is masked by gateway_server: test_local_audio's uvicorn test).
 #   - The real subprocess path (openclaw_client._run_openclaw) runs a stub CLI.
 #
 # Run: python test_pairing.py   (or via pytest)
@@ -327,6 +328,27 @@ def test_cancel_while_polling_stops_the_wait():
         await asyncio.sleep(0.05)
         pairing.cancel(offer)
         assert (await asyncio.wait_for(waiter, 1)) == pairing.Result("cancelled", None)
+    asyncio.run(go())
+
+
+def test_withdraw_cancels_an_unopened_offer_and_keeps_a_confirmation():
+    """The code off the screen: one nobody opened is cancelled; one already opened is
+    spent, and its device is still looked for (pair_device's cancel)."""
+    async def go():
+        cli = FakeCli()
+        cli.devices = [[DEV_A], [DEV_A], [DEV_A], [DEV_A, DEV_NEW]]
+        _setup(cli)
+        offer = await pairing.start()
+        assert pairing.withdraw(offer) is False
+        assert (await pairing.wait(offer)) == pairing.Result("cancelled", None)
+        assert pairing.withdraw(offer) is False  # no longer live: nothing to do
+
+        offer = await pairing.start()
+        async with _client() as c:
+            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+        assert pairing.withdraw(offer) is True
+        assert (await asyncio.wait_for(pairing.wait(offer), 5)) == pairing.Result(
+            "paired", "Chrome on Pixel")
     asyncio.run(go())
 
 

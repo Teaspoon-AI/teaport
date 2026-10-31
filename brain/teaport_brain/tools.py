@@ -1372,10 +1372,13 @@ async def _pair_device(params: FunctionCallParams, pairing=None, front_end=None)
         await params.result_callback({"ok": False, "error": "pairing is not available here"})
         return
     if _flag(args.get("cancel", False)):
-        gone = pairing.cancel()
+        stopped = pairing.cancel()
         await params.result_callback(
             {"ok": True, "note": "The code is off the screen; nothing was paired. Say so in "
-                                 "a few words."} if gone else
+                                 "a few words."} if stopped == pd.GONE else
+            {"ok": True, "note": "The code is off the screen, but it was already opened on a "
+                                 "device, which may still connect; you get a notice if it "
+                                 "does. Say so in a few words."} if stopped == pd.CONFIRMING else
             {"ok": True, "note": "No code was on the screen; nothing to stop."})
         return
     outcome, info = await pairing.start()
