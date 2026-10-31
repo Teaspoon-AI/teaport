@@ -305,8 +305,13 @@ def _not_voice(pid: int):
 async def _run_openclaw(args: list[str], *, timeout: float, capture: bool) -> tuple[int, bytes, bytes]:
     """Run the `openclaw` CLI as a subprocess, returning (returncode, stdout, stderr).
     Adds the CLI's dir to PATH (it needs its sibling node). Cancellable — kills the child
-    on CancelledError so a barge-in can abort an in-flight consult. Raises on spawn/timeout."""
-    env = dict(os.environ)
+    on CancelledError so a barge-in can abort an in-flight consult. Raises on spawn/timeout.
+    OPENCLAW_GATEWAY_URL is left out of the child's environment: here it is the brain's
+    own setting (the HTTP lane, brain.env), but the CLI reads the same name as a gateway
+    override and then refuses its configured credentials ("gateway url override requires
+    explicit credentials", rc 1). Without it the CLI talks to the gateway its own config
+    names, as it does when an operator runs it."""
+    env = {k: v for k, v in os.environ.items() if k != "OPENCLAW_GATEWAY_URL"}
     env["PATH"] = os.path.dirname(OPENCLAW_BIN) + os.pathsep + env.get("PATH", "")
     proc = await asyncio.create_subprocess_exec(
         OPENCLAW_BIN, *args,

@@ -405,6 +405,41 @@ def test_the_real_subprocess_runs_a_stub_cli():
     asyncio.run(go())
 
 
+def test_the_brains_gateway_url_is_not_handed_to_the_cli():
+    # brain.env sets OPENCLAW_GATEWAY_URL for the brain's HTTP lane. The CLI reads the
+    # same name as an override and then refuses its configured credentials (rc 1), so
+    # the stub fails the same way when it sees it.
+    async def go():
+        d = tempdir("pairing-cli-env-")
+        stub = os.path.join(d, "openclaw")
+        with open(stub, "w") as f:
+            f.write(f"#!{sys.executable}\n"
+                    "import json, os, sys\n"
+                    "if 'OPENCLAW_GATEWAY_URL' in os.environ:\n"
+                    "    print('gateway url override requires explicit credentials',"
+                    " file=sys.stderr); sys.exit(1)\n"
+                    "if sys.argv[1] == 'dashboard':\n"
+                    f"    print(json.dumps({{'ok': True, 'browserUrl': {BROWSER_URL!r}}}))\n"
+                    "else:\n"
+                    "    print(json.dumps({'pending': [], 'paired': []}))\n")
+        os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
+        old_bin, old_url = openclaw_client.OPENCLAW_BIN, os.environ.get("OPENCLAW_GATEWAY_URL")
+        _setup(FakeCli())
+        pairing._cli = REAL_CLI
+        openclaw_client.OPENCLAW_BIN = stub
+        os.environ["OPENCLAW_GATEWAY_URL"] = "http://127.0.0.1:18789"
+        try:
+            offer = await pairing.start()
+            pairing.cancel(offer)
+        finally:
+            openclaw_client.OPENCLAW_BIN = old_bin
+            if old_url is None:
+                os.environ.pop("OPENCLAW_GATEWAY_URL", None)
+            else:
+                os.environ["OPENCLAW_GATEWAY_URL"] = old_url
+    asyncio.run(go())
+
+
 def test_available_needs_a_front_door():
     _setup(FakeCli([DEV_A]), host="")
     assert pairing.available() is False
