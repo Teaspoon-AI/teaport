@@ -438,9 +438,10 @@ async def test_no_typing_is_heard_while_a_control_call_waits():
             function_name="openclaw_agent_control", tool_call_id="k1")]))
         await asyncio.sleep(0.1)
         mark = len(out)
-        assert await _soon(lambda: _said(out[mark:], "keys")), "the face types on"
+        await asyncio.sleep(0.3)                             # a fixed window, heard as quiet
         assert not _audio(out[mark:])
         assert not _said(out[mark:], "typing"), "the consult's typing goes on"
+        assert await _soon(lambda: _said(out[mark:], "keys")), "the face types on"
         await _send(bed, settle)
         assert await _soon(lambda: _audio(out[mark:])), type(settle).__name__
     # Neither ever comes by: heard again past the brain's own wait.
@@ -451,7 +452,7 @@ async def test_no_typing_is_heard_while_a_control_call_waits():
         await _send(bed, FunctionCallsStartedFrame(function_calls=[SimpleNamespace(
             function_name="openclaw_agent_control", tool_call_id="k2")]))
         assert await _soon(lambda: _audio(out[mark:]))
-        assert _audio(out[mark:])[0] - t0 >= ts._CONTROL_MAX_S
+        assert ts._CONTROL_MAX_S <= _audio(out[mark:])[0] - t0 < ts._CONTROL_MAX_S + 0.4
     finally:
         ts._CONTROL_MAX_S = saved
     await _send(bed, _working("c1", done=True))
