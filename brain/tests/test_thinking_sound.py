@@ -214,6 +214,18 @@ def _said(out, kind):
             and f.message.get("type") == kind]
 
 
+async def _soon(check, within=1.5):
+    """Whether check() comes true within `within` seconds. For what the bed does at its
+    own pace: the typist pauses between words (up to ~0.7 s without a keystroke), and a
+    slow machine renders fewer chunks in a fixed window."""
+    end = time.monotonic() + within
+    while not check():
+        if time.monotonic() > end:
+            return False
+        await asyncio.sleep(0.02)
+    return True
+
+
 @_with(grace=0.1)
 async def test_a_background_consult_types_from_its_start_to_its_answer():
     bed, out = _bed()
@@ -426,22 +438,20 @@ async def test_no_typing_is_heard_while_a_control_call_waits():
             function_name="openclaw_agent_control", tool_call_id="k1")]))
         await asyncio.sleep(0.1)
         mark = len(out)
-        await asyncio.sleep(0.3)
-        assert not _audio(out[mark:]) and _said(out[mark:], "keys")
+        assert await _soon(lambda: _said(out[mark:], "keys")), "the face types on"
+        assert not _audio(out[mark:])
         assert not _said(out[mark:], "typing"), "the consult's typing goes on"
         await _send(bed, settle)
-        await asyncio.sleep(0.2)
-        assert _audio(out[mark:]), type(settle).__name__
+        assert await _soon(lambda: _audio(out[mark:])), type(settle).__name__
     # Neither ever comes by: heard again past the brain's own wait.
     saved = ts._CONTROL_MAX_S
     ts._CONTROL_MAX_S = 0.2
     try:
+        mark, t0 = len(out), time.monotonic()
         await _send(bed, FunctionCallsStartedFrame(function_calls=[SimpleNamespace(
             function_name="openclaw_agent_control", tool_call_id="k2")]))
-        await asyncio.sleep(0.05)
-        mark = len(out)
-        await asyncio.sleep(0.4)
-        assert _audio(out[mark:])
+        assert await _soon(lambda: _audio(out[mark:]))
+        assert _audio(out[mark:])[0] - t0 >= ts._CONTROL_MAX_S
     finally:
         ts._CONTROL_MAX_S = saved
     await _send(bed, _working("c1", done=True))
