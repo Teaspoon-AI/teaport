@@ -345,7 +345,7 @@ does not permit operator commands.
 
 **Cause** Each pairing code works one time, for 5 minutes at most. The page says
 **already used** when the code opened a browser before, for example when a second
-device scanned it. The page says **expired** when the 10 minutes passed, or when the
+device scanned it. The page says **expired** when the 5 minutes passed, or when the
 device restarted after it showed the code.
 
 **Fix** Ask the device again, for example "add my laptop", and scan the new code.
