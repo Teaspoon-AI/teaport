@@ -6,8 +6,9 @@
 # offer (pairing.start), puts its short link up as a QR code on the box's own screen
 # (display.Screen "pair") and returns at once -- the turn is never held for the minutes
 # a scan can take. A background task waits for the offer's end (pairing.wait), shows
-# "Paired" for PAIRED_SCREEN_SECS or takes the screen down, and tells the model how it
-# went: one English line through the session's notes (client_notes.py, add_notice), as
+# "Finish on your device" once the code is used (pairing.spent: the QR code is of no
+# more use then), "Paired" for PAIRED_SCREEN_SECS or takes the screen down, and tells
+# the model how it went: one English line through the session's notes (client_notes.py, add_notice), as
 # Wi-Fi setup's end does (wifi_voice._ended, issue #97). A device paired asks for a
 # reaction too, so the voice says it is connected at the next quiet moment, in the
 # session's language, the way the model says everything else; the other endings are
@@ -52,6 +53,7 @@ GONE, CONFIRMING, NOTHING = "gone", "confirming", "nothing"
 # or wrong codes tried at /p/ ended it.
 SUPERSEDED = getattr(pairing, "SUPERSEDED", "superseded")
 LOCKED = getattr(pairing, "LOCKED", "locked")
+FAILED = getattr(pairing, "FAILED", "failed")
 
 # The model's line for each ending (English: it is context). None: no line -- a
 # "cancelled" this session did not cause is pairing's own (its wait failed, say), which
@@ -63,7 +65,15 @@ _ENDED = {
     LOCKED: "the code was cancelled after several wrong tries; nothing was paired.",
     SUPERSEDED: "a newer pairing request replaced the code on the screen; nothing was "
                 "paired here.",
+    # Context only, as "opened" and LOCKED: the person is at their phone, whose page has
+    # already told them to ask again.
+    FAILED: "the code was used, but the box could not finish connecting the new device; "
+            "nothing was paired. If the user asks, offer to try again.",
 }
+
+# The screen once the code is used (pairing.spent): the QR code is of no more use, and
+# the device is being looked for while the person finishes on it.
+SPENT_LINES = ["Finish on", "your device"]
 
 
 def _still_confirming(e: "pairing.PairingUnavailable") -> bool:
@@ -180,7 +190,13 @@ class DevicePairing:
         self._take_down()
 
     # -- the offer's end
+    async def _spent(self, offer: pairing.Offer) -> None:
+        """The code was used: the QR code makes way for SPENT_LINES until the end."""
+        if await pairing.spent(offer) and self._offer is offer and self._screen is not None:
+            self._screen.show(SCREEN_TITLE, SPENT_LINES)
+
     async def _watch(self, offer: pairing.Offer) -> None:
+        spent = asyncio.create_task(self._spent(offer), name="pair-device-spent")
         try:
             result = await pairing.wait(offer)
         except asyncio.CancelledError:
@@ -188,6 +204,8 @@ class DevicePairing:
         except Exception as e:  # noqa: BLE001 — the screen must still come down
             logger.warning(f"pair_device: waiting on the code failed: {e!r}")
             result = pairing.Result("cancelled")
+        finally:
+            spent.cancel()  # no task outlives the offer
         if self._offer is not offer:
             return  # replaced or taken down meanwhile
         self._offer, self._watcher = None, None

@@ -53,6 +53,7 @@ BROWSER_URL = ("http://127.0.0.1:18789/#bootstrapToken=" + BOOTSTRAP
 
 REAL_CLI = pairing._cli
 DEFAULT_POLL_SECS, DEFAULT_OPENED_WAIT_SECS = pairing.POLL_SECS, pairing.OPENED_WAIT_SECS
+DEFAULT_APP_WAIT_SECS = pairing.APP_WAIT_SECS
 
 
 class FakeCli:
@@ -91,6 +92,7 @@ def _setup(cli: FakeCli, host="teaport.local"):
     pairing._clock = time.monotonic
     pairing.POLL_SECS = 0.01
     pairing.OPENED_WAIT_SECS = 0.3
+    pairing.APP_WAIT_SECS = 0.3
     agent_backend.HAS_AGENT = True
 
 
@@ -791,10 +793,86 @@ def test_a_double_tap_finds_the_code_spent_while_the_first_mints():
     asyncio.run(go())
 
 
+def test_the_app_is_watched_longer_than_the_dashboard():
+    async def go():
+        for choice, window in (("dashboard", 0.2), ("app", 1.0)):
+            cli = FakeCli([DEV_A])
+            _setup(cli)
+            pairing.OPENED_WAIT_SECS, pairing.APP_WAIT_SECS = 0.2, 1.0
+            offer = await pairing.start()
+            async with _client() as c:
+                await _take(c, offer.code, choice)
+            t0 = time.monotonic()
+            assert (await pairing.wait(offer)) == pairing.Result("opened", None)
+            took = time.monotonic() - t0
+            assert window - 0.05 <= took < window + 0.5, (choice, took)
+    asyncio.run(go())
+
+
+def test_an_app_confirmation_is_stopped_by_cancel_and_holds_off_a_new_start():
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        pairing.APP_WAIT_SECS = 30
+        offer = await pairing.start()
+        async with _client() as c:
+            await _take(c, offer.code, "app")
+        waiter = asyncio.ensure_future(pairing.wait(offer))
+        await asyncio.sleep(0.05)
+        # Still confirming: a new offer is refused, and withdraw() keeps the watch.
+        try:
+            await pairing.start()
+            raise AssertionError("a new offer while the app is being confirmed")
+        except pairing.PairingUnavailable as e:
+            assert e.reason == pairing.STILL_CONFIRMING
+        assert pairing.withdraw(offer) is True and not waiter.done()
+        # cancel() (pair_device's close()) stops it at once.
+        pairing.cancel(offer)
+        assert (await asyncio.wait_for(waiter, 1)) == pairing.Result("cancelled", None)
+        assert pairing._live is None
+        pairing.cancel(await pairing.start())
+    asyncio.run(go())
+
+
+def test_spent_says_when_the_code_was_used_and_ends_with_the_offer():
+    async def go():
+        _setup(FakeCli([DEV_A]))
+        offer = await pairing.start()
+        used = asyncio.ensure_future(pairing.spent(offer))
+        await asyncio.sleep(0.02)
+        assert not used.done()  # a GET spends nothing
+        async with _client() as c:
+            await c.get(f"/p/{offer.code}")
+            await asyncio.sleep(0.02)
+            assert not used.done()
+            await _take(c, offer.code, "app")
+        assert (await asyncio.wait_for(used, 1)) is True
+        await pairing.wait(offer)
+        # An offer that ends unused: False, and nothing is left waiting.
+        offer = await pairing.start()
+        unused = asyncio.ensure_future(pairing.spent(offer))
+        await asyncio.sleep(0.02)
+        pairing.cancel(offer)
+        assert (await asyncio.wait_for(unused, 1)) is False
+        await pairing.wait(offer)
+        assert (await pairing.spent(offer)) is False
+        # A failed handoff is not "spent" either: the screen just comes down.
+        _setup(FakeCli([DEV_A], qr_rc=1, qr={}))
+        offer = await pairing.start()
+        failed = asyncio.ensure_future(pairing.spent(offer))
+        async with _client() as c:
+            await _take(c, offer.code, "app")
+        assert (await asyncio.wait_for(failed, 1)) is False
+        await pairing.wait(offer)
+    asyncio.run(go())
+
+
 def test_polls_are_spaced_and_bounded():
     # Each poll is a cold OpenClaw CLI: ~5 s apart, for ~2 minutes after the link opens.
     assert DEFAULT_POLL_SECS >= 5.0 and DEFAULT_OPENED_WAIT_SECS <= 120.0
     assert DEFAULT_OPENED_WAIT_SECS / DEFAULT_POLL_SECS <= 24
+    # The app's paste takes longer: five minutes, at most 60 cold CLI runs, one at a time.
+    assert DEFAULT_APP_WAIT_SECS == 300.0 and DEFAULT_APP_WAIT_SECS / DEFAULT_POLL_SECS <= 60
 
 
 if __name__ == "__main__":

@@ -248,7 +248,8 @@ token or a terminal.
      the OpenClaw app, open **Add Gateway** from its menu (or **Settings**, then
      **Gateway**, if the app already has a gateway), paste the code, and connect. Paste
      it within a few minutes: it works one time.
-4. The screen shows **Paired**, and the device says that the new device is connected.
+4. After you choose, the screen shows **Finish on your device**. When the new device is
+   connected, the screen shows **Paired**, and the device says so.
    The app gets limited access: everything except the administrator's settings.
 
 The code works one time, and for 5 minutes at most. If you need a new code, ask again.

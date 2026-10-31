@@ -56,6 +56,7 @@ class _Pairing:
         self._ends = {}
         self.gate = None
         self.opened = set()       # offers whose link was opened (still confirming)
+        self._used = {}
         self.fail_after = None    # a reason to raise with once the live offer is ended
 
     async def start(self):
@@ -76,6 +77,20 @@ class _Pairing:
 
     async def wait(self, offer):
         return await self._ends[offer]
+
+    async def spent(self, offer):
+        """True once use() says the code was used, False once the offer ends first."""
+        used = self._used.setdefault(offer, asyncio.get_running_loop().create_future())
+        done, _ = await asyncio.wait({used, self._ends[offer]},
+                                     return_when=asyncio.FIRST_COMPLETED)
+        return used in done
+
+    def use(self, offer):
+        """The code was spent on a choice at /p/ (pairing.redeem)."""
+        self.opened.add(offer)
+        fut = self._used.setdefault(offer, asyncio.get_running_loop().create_future())
+        if not fut.done():
+            fut.set_result(True)
 
     def cancel(self, offer):
         self.cancelled.append(offer)
@@ -112,7 +127,7 @@ class _Params:
 
 def _session(monkeypatch, screen=None, **kw):
     fake = _Pairing(**kw)
-    for name in ("start", "wait", "cancel", "withdraw"):
+    for name in ("start", "wait", "cancel", "withdraw", "spent"):
         monkeypatch.setattr(pd.pairing, name, getattr(fake, name))
     screen = screen or _Screen()
     dp = pd.DevicePairing(notes=_Notes(), screen=lambda: screen,
@@ -273,7 +288,7 @@ def test_paired_shows_it_for_a_while_and_asks_the_voice_to_say_it(monkeypatch):
     assert respond and text == "Your Firefox on Linux is now connected."
 
 
-@pytest.mark.parametrize("outcome", ["expired", "opened"])
+@pytest.mark.parametrize("outcome", ["expired", "opened", pd.FAILED])
 def test_other_endings_take_the_code_down_and_are_context_only(monkeypatch, outcome):
     async def run():
         dp, fake, screen = _session(monkeypatch)
@@ -287,6 +302,59 @@ def test_other_endings_take_the_code_down_and_are_context_only(monkeypatch, outc
     [(text, respond)] = dp.notes.added
     assert not respond and text.startswith("Pairing a device ended:")
     assert text.isascii() and "token" not in text
+
+
+def test_a_failed_handoff_says_so_and_offers_another_try(monkeypatch):
+    # pairing's FAILED: the code was used, the dashboard link or the app's setup code
+    # could not be made. Context only, as the other endings at the phone are: its page
+    # has already told the person to ask again.
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.use(fake.started[0])
+        await _turn()
+        fake.end(fake.started[0], pd.FAILED)
+        await _turn()
+        return dp, screen
+
+    dp, screen = asyncio.run(run())
+    assert not dp.live and screen.calls[-2:] == [("clear",), ("close", True)]
+    [(text, respond)] = dp.notes.added
+    assert not respond and "could not finish connecting" in text
+    assert "try again" in text and text.isascii()
+
+
+def test_a_used_code_makes_way_for_finish_on_your_device(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        offer = fake.started[0]
+        before = list(screen.calls)
+        fake.use(offer)
+        await _turn()
+        during = screen.calls[len(before):]
+        fake.end(offer, "paired", "iPhone")
+        await _turn()
+        return dp, screen, during
+
+    dp, screen, during = asyncio.run(run())
+    assert during == [("show", "Pair", pd.SPENT_LINES, None, None)], during
+    assert all(line.isascii() for line in pd.SPENT_LINES)
+    assert screen.calls[-2] == ("show", "Pair", ["Paired", "iPhone"], pd.PAIRED_SCREEN_SECS, None)
+
+
+def test_an_unused_code_keeps_its_qr_and_leaves_no_task(monkeypatch):
+    async def run():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.end(fake.started[0], "expired")
+        await _turn()
+        tasks = [t for t in asyncio.all_tasks() if t.get_name().startswith("pair-device")]
+        return screen, tasks
+
+    screen, tasks = asyncio.run(run())
+    assert not any(c[0] == "show" and c[2] == pd.SPENT_LINES for c in screen.calls)
+    assert not tasks, tasks
 
 
 def test_cancel_takes_it_down_quietly(monkeypatch):

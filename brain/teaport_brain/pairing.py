@@ -59,13 +59,17 @@
 # --json` is snapshotted at start() ({deviceId: approvedAtMs}; a list without its
 # "paired" key is a failed read, never an empty box), and once a handoff has been made,
 # and only then, it is polled every POLL_SECS (one CLI at a time, the next started
-# POLL_SECS after the last ended, so at most ~24 in OPENED_WAIT_SECS) for a device that
-# is new, or approved again since (the browser handoff can also repair a browser that
-# was paired before). The app pairs as a device of its own (deviceFamily "iPhone"), its
+# POLL_SECS after the last ended) for OPENED_WAIT_SECS after the dashboard choice, at
+# most 24 runs, or APP_WAIT_SECS after the app's, at most 60 (pasting a code into
+# another app takes longer than a browser redirect), for a device that is new, or
+# approved again since (the browser handoff can also repair a browser that was paired
+# before). The app pairs as a device of its own (deviceFamily "iPhone"), its
 # node and operator roles one entry with a token per role; were they ever two entries,
 # the newest approval names it. Found: "paired", with device_name(). Nothing within
-# OPENED_WAIT_SECS: "opened" -- the code was used, and what happened on that phone is
+# that window: "opened" -- the code was used, and what happened on that phone is
 # not ours to see (an untrusted certificate, a setup code never pasted, a closed tab).
+# spent() tells the screen's owner when the code has been used, so the QR code, of no
+# more use, can make way for "finish on your phone" while the device is looked for.
 #
 # Lean on purpose (box RAM is tight): no thread, no task of its own, nothing polled
 # until a handoff is made; the polling runs inside the caller's wait(), each poll is a
@@ -113,7 +117,12 @@ REDEEM_MARGIN_SECS = 20.0      # the browser still has to load the UI and redeem
 OFFER_SECS = 300.0             # ours: the screen holds the code no longer than this
 MAX_WRONG = 5
 POLL_SECS = 5.0                # each poll is a cold OpenClaw CLI
-OPENED_WAIT_SECS = 120.0
+OPENED_WAIT_SECS = 120.0       # after the dashboard choice: the browser pairs in seconds
+# After the app choice: copy the code, switch to the app, open Add Gateway, paste. Five
+# minutes covers a slow hand and is the "next few minutes" the page promises; the setup
+# code itself lasts ten, which would double the polls for the rare late paste (that one
+# still pairs, and is told as "opened").
+APP_WAIT_SECS = 300.0
 DASHBOARD_TIMEOUT_SECS = 30.0  # a cold CLI through the NemoClaw shim takes ~14 s
 DEVICES_TIMEOUT_SECS = 20.0
 QR_TIMEOUT_SECS = 30.0
@@ -158,6 +167,7 @@ class _Live:
     offer: Offer
     known: dict[str, int]       # deviceId -> approvedAtMs at mint
     opened: bool = False        # the code was spent on a choice (DASHBOARD or APP)
+    choice: str | None = None   # which one
     ended: str | None = None    # CANCELLED | SUPERSEDED | LOCKED | FAILED once ended early
     wrong: int = 0
     ready: asyncio.Event = field(default_factory=asyncio.Event)    # the handoff was made
@@ -399,13 +409,14 @@ def _end(live: _Live, why: str) -> None:
         live.stopped.set()
 
 
-async def _or_cancelled(live: _Live, aw, timeout: float):
+async def _or_cancelled(live: _Live, aw, timeout: float | None):
     """(done, value): `aw`'s value, unless the offer is cancelled or `timeout` passes
     first, when `aw` is cancelled (a CLI child is killed) and done is False."""
     task = asyncio.ensure_future(aw)
     stop = asyncio.ensure_future(live.stopped.wait())
     try:
-        await asyncio.wait({task, stop}, timeout=max(0.0, timeout),
+        await asyncio.wait({task, stop},
+                           timeout=None if timeout is None else max(0.0, timeout),
                            return_when=asyncio.FIRST_COMPLETED)
     finally:
         for t in (task, stop):
@@ -437,7 +448,8 @@ async def wait(offer: Offer) -> Result:
         if live.ended:
             return Result(live.ended)
         # (start() refuses while this polls, and wrong codes no longer count.)
-        deadline = _clock() + OPENED_WAIT_SECS
+        window = APP_WAIT_SECS if live.choice == APP else OPENED_WAIT_SECS
+        deadline = _clock() + window
         while _clock() < deadline:
             done, devices = await _or_cancelled(live, _poll(), deadline - _clock())
             if live.ended:
@@ -450,11 +462,24 @@ async def wait(offer: Offer) -> Result:
             await _or_cancelled(live, asyncio.sleep(POLL_SECS), deadline - _clock())
             if live.ended:
                 return Result(live.ended)
-        logger.info(f"pairing: link opened, no new device within {OPENED_WAIT_SECS:.0f} s")
+        logger.info(f"pairing: code used ({live.choice}), no new device within {window:.0f} s")
         return Result(OPENED, None)
     finally:
+        live.stopped.set()  # spent() waits on it too
         if _live is live:
             _live = None
+
+
+async def spent(offer: Offer) -> bool:
+    """Wait until `offer`'s code is spent and its handoff made (True: the person is
+    finishing on their phone, and the code on the screen is of no more use), or the
+    offer is over first (False). For the screen; how the offer ends is wait()'s."""
+    live = _live
+    if live is None or live.offer is not offer:
+        return False
+    if not live.ready.is_set() and not live.stopped.is_set():
+        await _or_cancelled(live, live.ready.wait(), None)
+    return live.ready.is_set() and live.ended is None
 
 
 async def _poll() -> list[dict] | None:
@@ -645,7 +670,7 @@ async def redeem(code: str, request: Request) -> Response:
         return _used() if state == "used" else _expired()
     if choice not in (DASHBOARD, APP):
         return _choose(live.offer.code)  # nothing chosen: nothing spent
-    live.opened = True
+    live.opened, live.choice = True, choice
     _spent = live.offer.code
     logger.info(f"pairing: the code was used ({choice}); making the handoff")
     try:
