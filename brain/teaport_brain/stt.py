@@ -519,11 +519,17 @@ _CARRY_MS = setting("TEAPORT_STT_CARRY_MS")
 # can fail to come: an engine whose end_through_ms freezes through the pause after the
 # caller stops (teagram-engine 03e4223: until the next utterance starts) never passes a
 # commit sent more than ~1.3 s after the stop, and a session's last commit perhaps never.
-# So a turn's final has _FINAL_TIMEOUT_MS past its position, by the engine's
-# decoded_through_ms or by the wall clock since its commit went out, whichever comes
-# first; then the turn settles as its provisional text ("[TURN] ... final timeout") --
-# a turn that closes on its final (over the bot, above) closes on the words in hand --
-# and a word of it that comes later goes to the open turn, as one the bound let through.
+# So a turn's final has _FINAL_TIMEOUT_MS past its position on the engine's
+# decoded_through_ms; then the turn settles as its provisional text ("[TURN] ... final
+# timeout") -- a turn that closes on its final (over the bot, above) closes on the words
+# in hand. The decoder's clock, not the wall's: the engine sends every word before it
+# has decoded 2 s past the word's start (SttSlice.tla's premise), so that timeout loses
+# none, while the decoder can run well behind real time -- live 2026-10-31 on the box's
+# Orin Nano, a 2 s wall-clock timeout fired with the decoder 89 ms past the turn's cut,
+# and the word the turn waited for came 0.2 s later, alone, as a turn of its own. The
+# wall clock is only the backstop for an engine that stops reporting at all
+# (_FINAL_BACKSTOP_SECS). A word of a settled turn that comes later goes to the open turn,
+# as one the bound let through.
 #
 # In slice mode a commit damages nothing, so what repaired its damage is off: the carry
 # (no segment opens behind a commit), with it the hint's re-prime floor, and the wait for
@@ -545,9 +551,12 @@ TURN_TEXT = setting("TEAPORT_STT_TURN_TEXT")
 _VOUCH_MS = 200
 
 # How long past its position a turn's final may take (TURN TEXT: nothing waits on a
-# final), in audio ms: the final comes ~0.7 s after the preview at the 90th percentile
-# (jetson05, 288 turns).
+# final), in the engine's decoded ms: the final comes ~0.7 s after the preview at the 90th
+# percentile (jetson05, 288 turns). And, in wall-clock seconds since its commit went out,
+# the backstop for an engine that stops reporting: well past the decoder's lag behind
+# real time on the Orin Nano (~1.9 s, live 2026-10-31) plus that timeout.
 _FINAL_TIMEOUT_MS = 2000
+_FINAL_BACKSTOP_SECS = 6.0
 
 # THE PEEK: in slice mode, ask the preview at the VAD stop, while Smart Turn decides
 # (TEAPORT_STT_PREVIEW_AT_STOP).
@@ -1004,8 +1013,9 @@ class TeaportSTTService(WebsocketSTTService):
         self._final_through = 0
         self._warned: set = set()
         # Turns whose final equalled what was pushed, and those whose did not. And the
-        # newest turn's final, where it dropped words the provisional had, until the next
-        # turn closes: a backstop commit before then is counted (THE CUT'S MARGIN).
+        # newest turn's final, where it dropped words the provisional had (or timed out
+        # with words its preview vouched for still to come), until the next turn closes: a
+        # backstop commit before then is counted (THE CUT'S MARGIN).
         self._turn_same = 0
         self._turn_differs = 0
         self._last_drop: Optional[tuple] = None
@@ -1829,10 +1839,10 @@ class TeaportSTTService(WebsocketSTTService):
             # The countable shape of a cut too close to the speech end (THE CUT'S
             # MARGIN): the last turn's final dropped words, and the open words they may
             # be are now committed as a turn of their own.
-            n, dropped = self._last_drop
+            n, words, what = self._last_drop
             self._drop_backstops += 1
-            logger.info(f"[TURN] VAD stop {n}'s final dropped {list(dropped)}, and the "
-                        f"backstop now commits the open words as a turn of their own "
+            logger.info(f"[TURN] VAD stop {n}'s {what} {list(words)}, and the backstop now "
+                        f"commits the open words as a turn of their own "
                         f"(dropped-then-backstop={self._drop_backstops})")
         await self._send_commit(final=True, why="backstop")
 
@@ -2375,10 +2385,11 @@ class TeaportSTTService(WebsocketSTTService):
             await self._time_final()
 
     def _final_overdue(self, turn: _Turn) -> bool:
-        """The turn's final has had _FINAL_TIMEOUT_MS past its position: by the engine's
-        decoded_through_ms, or by the wall clock since its commit went out."""
+        """The turn's final has had _FINAL_TIMEOUT_MS past its position by the engine's
+        decoded_through_ms -- or, the engine having stopped reporting, _FINAL_BACKSTOP_SECS
+        of the wall clock since its commit went out."""
         return (self._decoded_ms >= turn.at_ms + _FINAL_TIMEOUT_MS
-                or time.monotonic() >= turn.sent_at + _FINAL_TIMEOUT_MS / 1000)
+                or time.monotonic() >= turn.sent_at + _FINAL_BACKSTOP_SECS)
 
     async def _time_final(self):
         """(Re)arm the timer for the oldest turn waiting for its final, if it changed."""
@@ -2392,8 +2403,7 @@ class TeaportSTTService(WebsocketSTTService):
             await self._restart_timer("_final_task", self._final_after(oldest))
 
     async def _final_after(self, turn: _Turn):
-        await asyncio.sleep(max(0.0, turn.sent_at + _FINAL_TIMEOUT_MS / 1000
-                                - time.monotonic()))
+        await asyncio.sleep(max(0.0, turn.sent_at + _FINAL_BACKSTOP_SECS - time.monotonic()))
         if self._fired("_final_task"):
             self._final_for = None
             await self._finalize_turns()
@@ -2410,9 +2420,16 @@ class TeaportSTTService(WebsocketSTTService):
             head = (f"[TURN] VAD stop {turn.stop_n}: final timeout, "
                     f"{time.monotonic() - turn.preview_at:.2f}s after the preview (position "
                     f"{turn.at_ms} ms; end_through_ms {self._end_through}, "
+                    f"audio_through_ms {self._audio_through}, "
                     f"decoded_through_ms {self._decoded_ms}; "
-                    f"{len(turn.words) - turn.asked_n} word(s) since; "
+                    f"{len(turn.words) - turn.asked_n} word(s) since, "
+                    f"{len(turn.expect)} its preview still vouches for; "
                     f"timeouts={self._final_timeouts})")
+            if turn.expect and not self._turns:
+                # Words the preview had are still to come: if the backstop commits the
+                # open words before another turn closes, that is counted
+                # (_commit_stranded).
+                self._last_drop = (turn.stop_n, tuple(turn.expect), "final timed out without")
             if turn.deferred:
                 logger.warning(f"{head} -- closed on the {len(_words_of(final))} word(s) in "
                                f"hand, {turn.deferred}")
@@ -2443,7 +2460,7 @@ class TeaportSTTService(WebsocketSTTService):
         if dropped and not self._turns:
             # The newest turn's final drops words: if the backstop commits the open words
             # before another turn closes, that is counted (_commit_stranded).
-            self._last_drop = (turn.stop_n, dropped)
+            self._last_drop = (turn.stop_n, dropped, "final dropped")
         if turn.pushed is None and _words_of(turn.asked):
             # The wake gate slept through words: nothing went on, and a wake phrase only
             # the final has is not re-offered (the gate's carry has moved on). Counts,

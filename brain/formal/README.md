@@ -796,8 +796,8 @@ on two cores).
 
 ### Known limits of this model
 
-- Text is sets of word ids. A preview that has a different word than the main stream (the
-  live "specific" for "specifically") is not expressible; the brain matches by word text
+- Text is sets of word ids. A preview that has a different word than the main stream (a
+  preview's "light" where the main stream has "lighthouse") is not expressible; the brain matches by word text
   (the main word's first piece a prefix of the preview's), unit-tested in
   `test_stt_turn_text.py`. Pieces are not modelled: a word arrives whole, as its pieces do
   (PROTOCOL3 section 2); that its later pieces follow it is unit-tested.

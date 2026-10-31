@@ -778,9 +778,52 @@ async def test_the_next_turn_is_not_held_behind_a_final_that_never_came():
     assert not s._turns and s.corrections() == []
 
 
+async def test_a_decoder_behind_real_time_does_not_time_a_final_out():
+    # Live 2026-10-31 on the Orin Nano: the end bound past the cut, the start bound not
+    # yet (a word the preview vouched for, begun before the cut, still to come), and the
+    # decoder 2 s behind real time. The turn waits for the word, on the decoder's clock.
+    s = Service()
+    await created(s)
+    lines, sink = _lines()
+    try:
+        await turn(s)                                  # at 1000
+        await delta(s, " in", 400, start=200)
+        await delta(s, " the", 600, start=400)
+        await preview(s, 1000, " kitchen.")
+        await progress(s, 1250, decoded=1089, audio=700)
+        await asyncio.sleep(2.2)                       # 2 s of wall clock past the commit
+        assert s._turns, "timed out on the wall clock with the decoder behind"
+        await delta(s, " kitchen", 1300, start=800)
+        await delta(s, ".", 1300, start=800)
+        await progress(s, 1400, decoded=1500, audio=1100)
+        assert not s._turns and s.corrections() == [] and not s._open_words
+        assert not any("final timeout" in m for m in lines), lines
+    finally:
+        stt_mod.logger.remove(sink)
+
+
+async def test_a_timeout_says_what_it_waited_for_and_a_backstop_after_it_is_counted():
+    s = Service()
+    await created(s)
+    lines, sink = _lines()
+    try:
+        await turn(s)                                  # at 1000
+        await delta(s, " in", 400, start=200)
+        await preview(s, 1000, " the kitchen.")
+        await progress(s, 1250, decoded=3000, audio=700)
+        [line] = [m for m in lines if "final timeout" in m]
+        assert "audio_through_ms 700" in line and "2 its preview still vouches for" in line
+        await delta(s, " kitchen", 3100, start=3000)   # late: the open turn's now
+        await asyncio.sleep(stt_mod._STRANDED_INTERIM_SECS + 0.1)
+        assert any("[TURN]" in m and "timed out without" in m and "backstop" in m
+                   for m in lines), lines
+    finally:
+        stt_mod.logger.remove(sink)
+
+
 async def test_a_final_times_out_on_the_wall_clock_too(monkeypatch=None):
-    saved = stt_mod._FINAL_TIMEOUT_MS
-    stt_mod._FINAL_TIMEOUT_MS = 200
+    saved = stt_mod._FINAL_BACKSTOP_SECS
+    stt_mod._FINAL_BACKSTOP_SECS = 0.2
     try:
         s = Service()
         await created(s)
@@ -801,7 +844,7 @@ async def test_a_final_times_out_on_the_wall_clock_too(monkeypatch=None):
         await asyncio.sleep(0.35)
         assert s.finals() == [("Stop.", 1)]
     finally:
-        stt_mod._FINAL_TIMEOUT_MS = saved
+        stt_mod._FINAL_BACKSTOP_SECS = saved
 
 
 async def test_a_cut_short_preview_is_no_preview_the_turn_closes_on_its_final():
