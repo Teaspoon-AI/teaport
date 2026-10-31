@@ -103,6 +103,9 @@ PAIRED, OPENED, EXPIRED = "paired", "opened", "expired"
 CANCELLED = "cancelled"    # cancel() was called
 SUPERSEDED = "superseded"  # a newer start() replaced the offer before its link was used
 LOCKED = "locked"          # MAX_WRONG wrong codes while it waited
+# PairingUnavailable.reason while an opened offer is still confirming its device (the
+# pair_device tool matches on this, not on the wording).
+STILL_CONFIRMING = "still confirming the last device paired"
 
 _clock = time.monotonic  # replaced in tests
 
@@ -284,7 +287,7 @@ async def start() -> Offer:
     global _live, _minting
     if _live is not None and _live.ended is None:
         if _live.opened:
-            raise PairingUnavailable("still confirming the last device paired")
+            raise PairingUnavailable(STILL_CONFIRMING)
         _end(_live, SUPERSEDED)
     _minting += 1
     mine = _minting

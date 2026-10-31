@@ -448,7 +448,7 @@ def test_start_refuses_while_the_last_device_is_being_confirmed():
             await pairing.start()
             raise AssertionError("a new offer while the last device is still being confirmed")
         except pairing.PairingUnavailable as e:
-            assert "still confirming" in e.reason, e.reason
+            assert e.reason == pairing.STILL_CONFIRMING, e.reason
         # The first offer's confirmation is not lost.
         assert (await waiter) == pairing.Result("paired", "Chrome on Pixel")
         # Once it has ended, a new offer can be made, snapshotting the new device.
