@@ -1,68 +1,82 @@
 #
-# teaport — pair a laptop or phone browser by scanning a QR code on the box (issue #243).
+# teaport — pair a laptop or phone by scanning a QR code on the box (issues #243, #244).
 #
-# OpenClaw already has the handoff: `openclaw dashboard --json` mints a browserUrl, a
+# OpenClaw already has the handoffs. `openclaw dashboard --json` mints a browserUrl, a
 # link to the Control UI whose URL fragment carries a single-use, ten-minute owner
-# bootstrap. The browser that opens it is left paired as an administrator device, with
-# no `openclaw devices approve` step. Two things stand between that link and a phone
-# camera, and this module is both:
+# bootstrap: the browser that opens it is left paired as an administrator device, with
+# no `openclaw devices approve` step. `openclaw qr --json --limited` mints a setup code
+# for the OpenClaw phone app (its node token and an operator token without
+# operator.admin), which the app's Add Gateway takes pasted; the official app is
+# approved by itself. What stands between those and a phone camera is this module:
 #
-#   - the link points at loopback. The gateway listens on 127.0.0.1 behind the front
-#     door (Caddy, install.sh write_caddyfile), so the minted
+#   - the browserUrl points at loopback. The gateway listens on 127.0.0.1 behind the
+#     front door (Caddy, install.sh write_caddyfile), so the minted
 #     http://127.0.0.1:18789/#bootstrapToken=...&bootstrapProfile=owner&gatewayUrl=ws%3A%2F%2F127.0.0.1%3A18789
 #     is rewritten as OpenClaw's own docs say (web/control-ui/connect-and-pair.md): its
 #     base becomes https://<front door>/ and its gatewayUrl fragment value wss://<front
 #     door>, every other fragment value kept byte for byte. The front door is
-#     TEAPORT_FRONTDOOR_HOST, never a request's Host header: the link is built before
-#     any request, and a Host header is whatever the asker typed.
-#   - the link is far too long for the OLED. The avatar draws a scannable QR code of at
-#     most 53 bytes (display.Screen.fits_qr), and the bootstrap alone is longer. So the
-#     screen shows https://<front door>/p/<code> instead, ~30 bytes, and /p/<code>
-#     (router, below; Caddy routes /p/* to the brain) answers its first hit with a 302
-#     to the rewritten browserUrl. The fragment rides in the Location header, and a
-#     browser never sends a fragment to a server, so the bootstrap reaches no access log
-#     on the way back either. It is never logged here, and the access log's request
-#     line has the code masked (gateway_server._RedactTokens: /p/<redacted>). /p/
-#     answers only what came through Caddy over HTTPS (_via_front_door); the brain's
-#     own port, open to the LAN for the config page, gets a 404 there that does not
-#     count as a guess.
+#     TEAPORT_FRONTDOOR_HOST, never a request's Host header (whatever the asker typed).
+#     The setup code needs no rewrite: the device-pair plugin's publicUrl, which the
+#     installer sets to wss://<front door>, is already its gateway URL; one that names
+#     loopback is refused.
+#   - both are far too long for the OLED. The avatar draws a scannable QR code of at
+#     most 53 bytes (display.Screen.fits_qr); the bootstrap alone is longer, and a setup
+#     code is ~160 bytes. So the screen shows https://<front door>/p/<code> instead, ~30
+#     bytes, and /p/<code> (router, below; Caddy routes /p/* to the brain) is a page in
+#     the phone's browser with two buttons: "Open the dashboard here" and "Use the
+#     OpenClaw app". The GET spends nothing, so a link preview or a prefetch cannot use
+#     the code up; the button's POST spends it, and only then is the handoff minted:
+#     the dashboard's answered with a 303 to the rewritten browserUrl (the fragment
+#     rides in the Location header, and a browser never sends a fragment to a server),
+#     the app's with a page that shows the setup code once, with a Copy button and the
+#     app's steps. Neither is ever logged, the access log's request line has the code
+#     masked (gateway_server._RedactTokens: /p/<redacted>), and both pages are
+#     no-store. /p/ answers only what came through Caddy over HTTPS
+#     (_via_front_door); the brain's own port, open to the LAN for the config page,
+#     gets a 404 there that does not count as a guess.
+#
+# Minting at the tap, not at start(), is the choice made in #244: the screen shows the
+# code as soon as the device list is read (a few seconds, not the ~13 s a dashboard
+# mint took on the box), no owner bootstrap exists for a code nobody uses, and only the
+# handoff the person chose is made. The wait moves behind the button ("Starting, this
+# can take a few seconds"; the buttons go grey, as a second tap would find the code
+# spent and replace the handoff with "already used"). A mint that fails says so on the
+# page ("ask Teaport again") and ends the offer ("failed"), so the screen comes down.
 #
 # One offer at a time, in memory only (a brain restart forgets it, and its code is then
-# "expired"): start() mints, wait() follows it, cancel() ends it ("cancelled"),
-# withdraw() ends it too unless its link was opened (then the device is still looked
-# for: the code is spent, and the confirmation is worth keeping), and a
-# second start() supersedes the first ("superseded") -- unless the first's link has
-# been opened and its device is still being looked for, when start() is refused
-# instead of losing that confirmation. The offer ends at whichever comes first
-# of OpenClaw's own deadline (browserBootstrapExpiresAtMs, less a margin for the
-# browser to load the page and redeem it) and OFFER_SECS, both counted from before the
-# CLI ran. The code is six characters from an alphabet a reader cannot confuse aloud or
-# on a small screen (no 0/O, 1/I/L); while it is live it is as good as an admin
-# password, so it is not logged, and a handful of wrong codes while an offer waits
-# (MAX_WRONG) end it ("locked"): guessing gets a few tries out of 31^6, not all night.
+# "expired"): start() makes it, wait() follows it, cancel() ends it ("cancelled"),
+# withdraw() ends it too unless its code was spent (then the device is still looked
+# for, and the confirmation is worth keeping), and a second start() supersedes the
+# first ("superseded") -- unless the first's code was spent and its device is still
+# being looked for, when start() is refused instead of losing that confirmation. The
+# code works for OFFER_SECS from start() (OpenClaw's own handoffs, minted later, last
+# ten minutes, so ours is the bound). It is six characters from an alphabet a reader
+# cannot confuse aloud or on a small screen (no 0/O, 1/I/L); while it is live it is as
+# good as an admin password, so it is not logged, and a handful of wrong codes while an
+# offer waits (MAX_WRONG) end it ("locked"): guessing gets a few tries out of 31^6.
 #
-# Whether the new browser actually paired is OpenClaw's to say: `openclaw devices list
-# --json` is snapshotted at mint ({deviceId: approvedAtMs}; a list without its
-# "paired" key is a failed read, never an empty box), and once the link has been
-# opened, and only then, it is polled every POLL_SECS (one CLI at a time, the next
-# started POLL_SECS after the last ended, so at most ~20 in OPENED_WAIT_SECS) for a device that is new, or approved again
-# since (the handoff can also repair a browser that was paired before). Found:
-# "paired", with the name `devices list` itself shows (operator label, then the
-# client's display name, then its client id, then the device id). Nothing within
-# OPENED_WAIT_SECS: "opened" -- the link was used, and what happened in that browser
-# is not ours to see (an untrusted certificate the phone would not click through, a
-# private window, a closed tab).
+# Whether the new device actually paired is OpenClaw's to say: `openclaw devices list
+# --json` is snapshotted at start() ({deviceId: approvedAtMs}; a list without its
+# "paired" key is a failed read, never an empty box), and once a handoff has been made,
+# and only then, it is polled every POLL_SECS (one CLI at a time, the next started
+# POLL_SECS after the last ended, so at most ~24 in OPENED_WAIT_SECS) for a device that
+# is new, or approved again since (the browser handoff can also repair a browser that
+# was paired before). The app pairs as a device of its own (deviceFamily "iPhone"), its
+# node and operator roles one entry with a token per role; were they ever two entries,
+# the newest approval names it. Found: "paired", with device_name(). Nothing within
+# OPENED_WAIT_SECS: "opened" -- the code was used, and what happened on that phone is
+# not ours to see (an untrusted certificate, a setup code never pasted, a closed tab).
 #
 # Lean on purpose (box RAM is tight): no thread, no task of its own, nothing polled
-# while no link is opened; the polling runs inside the caller's wait(), each poll is a
-# cold OpenClaw CLI that exits, and when the offer ends its browserUrl is dropped (it
-# already is at redemption). What stays is the last redeemed code, six characters, so
-# a second scan of a used QR says "already used" rather than "expired".
+# until a handoff is made; the polling runs inside the caller's wait(), each poll is a
+# cold OpenClaw CLI that exits, and nothing minted is kept (the handoff goes straight
+# into the response). What stays is the last spent code, six characters, so a second
+# scan of a used QR says "already used" rather than "expired".
 #
 # The pages are English. The phone page of Wi-Fi setup follows Accept-Language through
 # i18n.py, but every string there is translated in every catalog (the i18n tests hold
-# it to that); two short pages a user sees only when something went wrong
-# are not worth that until the voice side of pairing is translated too.
+# it to that); these pages are not worth that until the voice side of pairing is
+# translated too.
 #
 # No Pipecat import: the router rides gateway_server.py's app, and nothing here needs
 # the pipeline.
@@ -102,11 +116,14 @@ POLL_SECS = 5.0                # each poll is a cold OpenClaw CLI
 OPENED_WAIT_SECS = 120.0
 DASHBOARD_TIMEOUT_SECS = 30.0  # a cold CLI through the NemoClaw shim takes ~14 s
 DEVICES_TIMEOUT_SECS = 20.0
+QR_TIMEOUT_SECS = 30.0
 
 PAIRED, OPENED, EXPIRED = "paired", "opened", "expired"
 CANCELLED = "cancelled"    # cancel() was called
 SUPERSEDED = "superseded"  # a newer start() replaced the offer before its link was used
 LOCKED = "locked"          # MAX_WRONG wrong codes while it waited
+FAILED = "failed"          # the code was used, but OpenClaw could not make the handoff
+DASHBOARD, APP = "dashboard", "app"  # what the person chose on the /p/ page
 # PairingUnavailable.reason while an opened offer is still confirming its device (the
 # pair_device tool matches on this, not on the wording).
 STILL_CONFIRMING = "still confirming the last device paired"
@@ -132,19 +149,19 @@ class Offer:
 
 @dataclass(frozen=True)
 class Result:
-    outcome: str        # PAIRED | OPENED | EXPIRED | CANCELLED | SUPERSEDED | LOCKED
+    outcome: str        # PAIRED | OPENED | EXPIRED | CANCELLED | SUPERSEDED | LOCKED | FAILED
     device: str | None = None  # the new device's display name when PAIRED
 
 
 @dataclass(eq=False)
 class _Live:
     offer: Offer
-    url: str | None             # the rewritten browserUrl; None once redeemed
     known: dict[str, int]       # deviceId -> approvedAtMs at mint
-    opened: bool = False
-    ended: str | None = None    # CANCELLED | SUPERSEDED | LOCKED once ended early
+    opened: bool = False        # the code was spent on a choice (DASHBOARD or APP)
+    ended: str | None = None    # CANCELLED | SUPERSEDED | LOCKED | FAILED once ended early
     wrong: int = 0
-    changed: asyncio.Event = field(default_factory=asyncio.Event)  # opened or ended
+    ready: asyncio.Event = field(default_factory=asyncio.Event)    # the handoff was made
+    stopped: asyncio.Event = field(default_factory=asyncio.Event)  # ended early
 
 
 _live: _Live | None = None
@@ -217,9 +234,9 @@ def _new_device(devices: list[dict], known: dict[str, int]) -> dict | None:
     return max(fresh, key=lambda d: int(d.get("approvedAtMs") or 0), default=None)
 
 
-async def _mint() -> tuple[str, float]:
-    """(browserUrl, OpenClaw's own deadline as seconds left). Raises PairingUnavailable;
-    the reason is OpenClaw's own {"ok": false, "reason"} when it gave one."""
+async def _mint() -> str:
+    """A fresh browserUrl. Raises PairingUnavailable; the reason is OpenClaw's own
+    {"ok": false, "reason"} when it gave one."""
     try:
         rc, out, _ = await _cli(["dashboard", "--json"], DASHBOARD_TIMEOUT_SECS)
     except asyncio.TimeoutError:
@@ -232,11 +249,34 @@ async def _mint() -> tuple[str, float]:
         reason = obj.get("reason")
         raise PairingUnavailable(f"openclaw dashboard failed: {reason}" if isinstance(reason, str)
                                  else f"openclaw dashboard failed (rc={rc})")
-    left = OPENCLAW_HANDOFF_SECS
     expires_ms = obj.get("browserBootstrapExpiresAtMs")
-    if isinstance(expires_ms, (int, float)):
-        left = min(left, expires_ms / 1000.0 - time.time())
-    return url, left
+    if isinstance(expires_ms, (int, float)) and expires_ms / 1000.0 - time.time() <= REDEEM_MARGIN_SECS:
+        raise PairingUnavailable("OpenClaw's handoff expired as it was minted")
+    return url
+
+
+async def _mint_setup_code() -> str:
+    """A setup code for the OpenClaw app (`openclaw qr --json --limited`: the app's node
+    and operator tokens, without operator.admin). Raises PairingUnavailable, also when
+    the code would send the app to a loopback gateway, which a phone cannot reach (the
+    device-pair plugin's publicUrl, wss://<front door>, is not set)."""
+    try:
+        rc, out, _ = await _cli(["qr", "--json", "--limited"], QR_TIMEOUT_SECS)
+    except asyncio.TimeoutError:
+        raise PairingUnavailable("openclaw qr timed out") from None
+    except OSError as e:
+        raise PairingUnavailable(f"openclaw CLI did not start ({e.strerror or e})") from None
+    obj = openclaw_client.cli_json(out, lambda d: "setupCode" in d)
+    code = obj.get("setupCode") if obj else None
+    if rc != 0 or not isinstance(code, str) or not code.strip():
+        raise PairingUnavailable(f"openclaw qr failed (rc={rc})")
+    gateway = urllib.parse.urlsplit(str(obj.get("gatewayUrl") or ""))
+    if _is_loopback(gateway.hostname):
+        raise PairingUnavailable("openclaw qr named a loopback gateway (device-pair "
+                                 "publicUrl unset)")
+    logger.info(f"pairing: app setup code made (access {obj.get('access') or '?'}, "
+                f"{gateway.scheme or '?'}://{gateway.hostname or '?'})")
+    return code.strip()
 
 
 # ------------------------------------------------------------------ the link
@@ -318,19 +358,16 @@ async def start() -> Offer:
         raise PairingUnavailable("no agent on this box (TEAPORT_AGENT=none)")
     host = _check_host(FRONTDOOR_HOST)
     t0 = _clock()
-    # The snapshot first: a device that pairs between the two calls is then still new.
+    # The snapshot now, before any handoff exists: whatever pairs later is new. The
+    # handoff itself is minted when the person chooses on the /p/ page (redeem).
     known = _approvals(await _paired_devices())
-    browser_url, openclaw_left = await _mint()
     now = _clock()
-    expires_at = min(t0 + OFFER_SECS, t0 + OPENCLAW_HANDOFF_SECS - REDEEM_MARGIN_SECS,
-                     now + openclaw_left - REDEEM_MARGIN_SECS)
-    if expires_at <= now:
-        raise PairingUnavailable("OpenClaw's handoff expired as it was minted")
+    expires_at = t0 + min(OFFER_SECS, OPENCLAW_HANDOFF_SECS - REDEEM_MARGIN_SECS)
     if mine != _minting:  # a newer start() came in while this one minted
         raise PairingUnavailable("superseded by a newer pairing request")
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
     offer = Offer(code=code, link=_link(host, code), expires_at=expires_at)
-    _live = _Live(offer=offer, url=front_door_url(browser_url, host), known=known)
+    _live = _Live(offer=offer, known=known)
     logger.info(f"pairing: offer made, {expires_at - now:.0f} s to scan "
                 f"({len(known)} device(s) paired before)")
     return offer
@@ -359,15 +396,14 @@ def withdraw(offer: Offer) -> bool:
 def _end(live: _Live, why: str) -> None:
     if live.ended is None:
         live.ended = why
-        live.url = None
-        live.changed.set()
+        live.stopped.set()
 
 
 async def _or_cancelled(live: _Live, aw, timeout: float):
     """(done, value): `aw`'s value, unless the offer is cancelled or `timeout` passes
     first, when `aw` is cancelled (a CLI child is killed) and done is False."""
     task = asyncio.ensure_future(aw)
-    stop = asyncio.ensure_future(live.changed.wait())
+    stop = asyncio.ensure_future(live.stopped.wait())
     try:
         await asyncio.wait({task, stop}, timeout=max(0.0, timeout),
                            return_when=asyncio.FIRST_COMPLETED)
@@ -390,17 +426,16 @@ async def wait(offer: Offer) -> Result:
     if live is None or live.offer is not offer:
         return Result(SUPERSEDED)
     try:
-        if not live.opened and live.ended is None:
-            try:
-                await asyncio.wait_for(live.changed.wait(), max(0.0, offer.expires_at - _clock()))
-            except asyncio.TimeoutError:
-                pass
+        # Until the handoff is made: the code unused until it expires, or spent and its
+        # handoff being minted (bounded by the CLI's timeout, which then ends the offer).
+        while not live.ready.is_set() and live.ended is None:
+            left = offer.expires_at - _clock()
+            if left <= 0 and not live.opened:
+                logger.info("pairing: the code expired unused")
+                return Result(EXPIRED, None)
+            await _or_cancelled(live, live.ready.wait(), max(left, POLL_SECS))
         if live.ended:
             return Result(live.ended)
-        if not live.opened:
-            logger.info("pairing: the code expired unused")
-            return Result(EXPIRED, None)
-        live.changed.clear()  # from here it is set only by cancel()
         # (start() refuses while this polls, and wrong codes no longer count.)
         deadline = _clock() + OPENED_WAIT_SECS
         while _clock() < deadline:
@@ -418,7 +453,6 @@ async def wait(offer: Offer) -> Result:
         logger.info(f"pairing: link opened, no new device within {OPENED_WAIT_SECS:.0f} s")
         return Result(OPENED, None)
     finally:
-        live.url = None
         if _live is live:
             _live = None
 
@@ -440,7 +474,32 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="referrer" content="no-referrer"><title>{title}</title><style>{css}</style></head>
 <body><main><div class="logo">{logo}</div>
 <h1>{heading}</h1>
-<p>{body}</p></main></body></html>"""
+{body}</main>{script}</body></html>"""
+
+# A second choice under the first, and the setup code's box: on top of the Wi-Fi setup
+# page's look (wifi.PAGE_CSS).
+_EXTRA_CSS = """
+form{margin:0}button.alt{background:var(--surface);color:var(--text);border:1px solid var(--border-strong)}
+button[disabled]{opacity:.6}ol{color:var(--muted);padding-left:1.4em;margin:0 0 16px}
+textarea{width:100%;box-sizing:border-box;min-height:7.5em;padding:10px 12px;font:13px/1.4 ui-monospace,monospace;
+border:1px solid var(--border-strong);border-radius:var(--radius);background:var(--surface);color:inherit;
+word-break:break-all;resize:none}.small{font-size:14px}"""
+
+# The choice page's buttons go grey on the first tap: a second tap would post again,
+# find the code spent, and replace the first answer (the handoff) with "already used".
+_ONE_TAP = """<script>document.querySelectorAll("form").forEach(function(f){f.addEventListener("submit",
+function(){f.parentNode.querySelectorAll("button").forEach(function(b){b.disabled=true});
+var w=document.getElementById("wait");if(w)w.hidden=false})})</script>"""
+
+# Copy with the clipboard API; where it is missing or refused, select the text so the
+# phone's own Copy is one tap away (and execCommand, for older browsers).
+_COPY = """<script>(function(){var t=document.getElementById("code"),b=document.getElementById("copy");
+function sel(){t.focus();t.select();t.setSelectionRange(0,t.value.length)}
+function done(){b.textContent="Copied"}
+b.addEventListener("click",function(){sel();
+if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t.value).then(done,
+function(){try{document.execCommand("copy")&&done()}catch(e){}})}
+else{try{document.execCommand("copy")&&done()}catch(e){}}})})()</script>"""
 
 
 def _ca_link() -> str:
@@ -448,28 +507,75 @@ def _ca_link() -> str:
     return f'<a href="{url}">Teaport\'s certificate</a>'
 
 
-def _page(heading: str, body: str, status: int) -> HTMLResponse:
-    """`body` is HTML: plain text through html.escape plus _ca_link()."""
-    return HTMLResponse(_PAGE.format(title=html.escape(heading), css=PAGE_CSS, logo=logo_html(),
-                                     heading=html.escape(heading), body=body),
+def _p(*parts: str) -> str:
+    """A paragraph of plain text (escaped) with HTML pieces: _p("text ", _ca_link())."""
+    return "<p>" + "".join(x if x.startswith("<") else html.escape(x) for x in parts) + "</p>"
+
+
+def _page(heading: str, body: str, status: int = 200, script: str = "") -> HTMLResponse:
+    """`body` is HTML, built from _p() and fixed markup."""
+    return HTMLResponse(_PAGE.format(title=html.escape(heading), css=PAGE_CSS + _EXTRA_CSS,
+                                     logo=logo_html(), heading=html.escape(heading),
+                                     body=body, script=script),
                         status_code=status, headers=_NO_STORE)
 
 
+def _choose(code: str) -> HTMLResponse:
+    """The landing for a live code: nothing is spent until a button is pressed (a link
+    preview or a prefetch is a GET)."""
+    action = html.escape(f"/p/{code}", quote=True)
+
+    def button(choice: str, label: str, cls: str = "") -> str:
+        return (f'<form method="post" action="{action}"><input type="hidden" name="choice" '
+                f'value="{choice}"><button type="submit"{cls}>{html.escape(label)}</button></form>')
+
+    return _page("Connect this device to Teaport", "".join((
+        _p("Choose how you want to use Teaport on this device. The code works once."),
+        button(DASHBOARD, "Open the dashboard here"),
+        button(APP, "Use the OpenClaw app", ' class="alt"'),
+        '<p id="wait" class="small" hidden>Starting, this can take a few seconds…</p>',
+        _p("If your phone warns that the connection is not private, install ", _ca_link(),
+           " first, then scan a new code."))), script=_ONE_TAP)
+
+
+def _app_code(setup_code: str) -> HTMLResponse:
+    """The setup code, shown once (no-store): the app's Add Gateway takes it pasted."""
+    return _page("Add Teaport to the OpenClaw app", "".join((
+        _p("Copy this code and paste it into the app. It works once, so paste it in the "
+           "next few minutes."),
+        f'<textarea id="code" readonly autocomplete="off" autocapitalize="none" '
+        f'spellcheck="false" aria-label="Setup code">{html.escape(setup_code)}</textarea>',
+        '<button type="button" id="copy">Copy code</button>',
+        "<ol><li>Open the OpenClaw app.</li>"
+        "<li>Open <strong>Add Gateway</strong> from the app's menu (or "
+        "<strong>Settings</strong>, then <strong>Gateway</strong>, if it already has one).</li>"
+        "<li>Paste the code and connect.</li></ol>",
+        _p("The app connects only if this phone trusts the box: install ", _ca_link(),
+           " and turn on full trust for it in the phone's settings first. Then ask Teaport "
+           "for a new code if this one has run out."))), script=_COPY)
+
+
+def _failed() -> HTMLResponse:
+    return _page("Teaport could not start the connection",
+                 _p("Something went wrong on the box. Ask Teaport again for a new code."), 503)
+
+
+
+
 def _used() -> HTMLResponse:
-    # The scan that used the code was redirected at once, so this is the page a phone
-    # sees when it scans again -- most often because the dashboard did not open the
-    # first time, and the usual reason is a phone that does not trust the box yet.
-    return _page("This code was already used",
-                 html.escape("Each code connects one device. If the dashboard did not open "
-                             "on this phone, it needs to trust the box first: install ")
-                 + _ca_link() + html.escape(", then ask Teaport for a new code."), 410)
+    # The page a phone sees when it scans again -- most often because the dashboard did
+    # not open the first time, and the usual reason is a phone that does not trust the
+    # box yet.
+    return _page("This code was already used", _p(
+        "Each code connects one device. If the dashboard did not open on this phone, it "
+        "needs to trust the box first: install ", _ca_link(),
+        ", then ask Teaport for a new code."), 410)
 
 
 def _expired() -> HTMLResponse:
-    return _page("This code has expired",
-                 html.escape("Ask Teaport for a new one, and scan it within a few minutes. "
-                             "If your phone warns that the connection is not private, install ")
-                 + _ca_link() + html.escape(" first."), 410)
+    return _page("This code has expired", _p(
+        "Ask Teaport for a new one, and scan it within a few minutes. If your phone warns "
+        "that the connection is not private, install ", _ca_link(), " first."), 410)
 
 
 def _via_front_door(request: Request) -> bool:
@@ -487,31 +593,71 @@ def _via_front_door(request: Request) -> bool:
             and request.headers.get("x-forwarded-proto", "").strip().lower() == "https")
 
 
+def _find(code: str) -> tuple[str, _Live | None]:
+    """("used" | "expired" | "live", the live offer when "live") for a code at /p/. A
+    code that is neither the last one used nor the live one is a wrong guess while an
+    offer waits, and MAX_WRONG of them lock it. The live code itself, asked again, is
+    never one."""
+    code = code.strip().upper()
+    if _spent is not None and hmac.compare_digest(code.encode(), _spent.encode()):
+        return "used", None  # a second scan of a used code is not a guess
+    live = _live
+    if live is None or live.ended is not None or live.opened:
+        return "expired", None
+    if _clock() >= live.offer.expires_at:
+        return "expired", None
+    if hmac.compare_digest(code.encode(), live.offer.code.encode()):
+        return "live", live
+    live.wrong += 1
+    if live.wrong >= MAX_WRONG:
+        logger.warning(f"pairing: {live.wrong} wrong codes; offer locked")
+        _end(live, LOCKED)
+    return "expired", None
+
+
+_NOT_FOUND = "Not Found"
 router = APIRouter()
 
 
 @router.get("/p/{code}")
+async def landing(code: str, request: Request) -> Response:
+    """Unauthenticated: the browser asking has no token yet; the code is the grant.
+    A GET spends nothing: it shows the two choices."""
+    if not _via_front_door(request):
+        return PlainTextResponse(_NOT_FOUND, status_code=404)  # not a guess either
+    state, live = _find(code)
+    if state == "live":
+        return _choose(live.offer.code)
+    return _used() if state == "used" else _expired()
+
+
+@router.post("/p/{code}")
 async def redeem(code: str, request: Request) -> Response:
-    """Unauthenticated: the browser asking has no token yet; the code is the grant."""
+    """The choice: the code is spent here, before the handoff is minted (a second post
+    while the first mints finds it used), and the handoff is made for what was chosen."""
     global _spent
     if not _via_front_door(request):
-        return PlainTextResponse("Not Found", status_code=404)  # not a guess either
-    code = code.strip().upper()
-    if _spent is not None and hmac.compare_digest(code.encode(), _spent.encode()):
-        return _used()  # a second scan of a used code is not a guess
-    live = _live
-    if live is not None and live.ended is None and not live.opened:
-        if _clock() >= live.offer.expires_at:
-            return _expired()
-        if hmac.compare_digest(code.encode(), live.offer.code.encode()) and live.url:
-            url, live.url = live.url, None
-            live.opened = True
-            _spent = live.offer.code
-            live.changed.set()
-            logger.info("pairing: the code was used; waiting for the new device")
-            return RedirectResponse(url, status_code=302, headers=_NO_STORE)
-        live.wrong += 1
-        if live.wrong >= MAX_WRONG:
-            logger.warning(f"pairing: {live.wrong} wrong codes; offer locked")
-            _end(live, LOCKED)
-    return _expired()
+        return PlainTextResponse(_NOT_FOUND, status_code=404)
+    form = urllib.parse.parse_qs((await request.body()).decode("utf-8", "replace"))
+    choice = (form.get("choice") or [""])[0]
+    state, live = _find(code)
+    if state != "live":
+        return _used() if state == "used" else _expired()
+    if choice not in (DASHBOARD, APP):
+        return _choose(live.offer.code)  # nothing chosen: nothing spent
+    live.opened = True
+    _spent = live.offer.code
+    logger.info(f"pairing: the code was used ({choice}); making the handoff")
+    try:
+        made = await (_mint() if choice == DASHBOARD else _mint_setup_code())
+    except PairingUnavailable as e:
+        logger.warning(f"pairing: {choice} handoff failed: {e.reason}")
+        _end(live, FAILED)
+        return _failed()
+    if live.ended is not None:  # cancelled while it minted: the screen is down
+        return _expired()
+    live.ready.set()  # wait() starts looking for the new device
+    if choice == DASHBOARD:
+        return RedirectResponse(front_door_url(made, FRONTDOOR_HOST), status_code=303,
+                                headers=_NO_STORE)
+    return _app_code(made)

@@ -7,7 +7,9 @@
 #     a front door too long for it is refused before anything is minted.
 #   - The loopback browserUrl is rewritten to the front door (base and gatewayUrl) with
 #     every other fragment value kept byte for byte; a non-loopback one is left alone.
-#   - /p/<code> redirects once (Location keeps the fragment, no-store, no-referrer);
+#   - /p/<code>: a GET shows two choices and spends nothing; the POST of a choice
+#     spends the code and mints then: the dashboard 303s (Location keeps the fragment,
+#     no-store, no-referrer), the app gets its setup code once; a failed mint ends it;
 #     then "already used", which says to trust the box first; an unknown or late code
 #     gets "expired". Only what came through Caddy over HTTPS (a loopback peer saying
 #     X-Forwarded-Proto https, or uvicorn's proxy-headers scheme) is answered; the rest
@@ -44,6 +46,7 @@ import appliance
 from tempdirs import tempdir
 
 BOOTSTRAP = "bt-SECRET_xyz.123~"
+SETUP_CODE = "eyJ1cmwiOiJ3c3M6Ly90ZWFwb3J0LmxvY2FsIiwiYm9vdHN0cmFwVG9rZW4iOiJTRVRVUC1TRUNSRVQifQ"
 BROWSER_URL = ("http://127.0.0.1:18789/#bootstrapToken=" + BOOTSTRAP
                + "&bootstrapProfile=owner&gatewayUrl=ws%3A%2F%2F127.0.0.1%3A18789")
 
@@ -53,9 +56,9 @@ DEFAULT_POLL_SECS, DEFAULT_OPENED_WAIT_SECS = pairing.POLL_SECS, pairing.OPENED_
 
 
 class FakeCli:
-    """openclaw dashboard --json / devices list --json, scripted."""
+    """openclaw dashboard --json / qr --json --limited / devices list --json, scripted."""
 
-    def __init__(self, devices=None, dashboard=None, rc=0):
+    def __init__(self, devices=None, dashboard=None, rc=0, qr=None, qr_rc=0):
         self.devices = [list(devices or [])]  # one list per call; the last repeats
         self.dashboard = dashboard or {
             "ok": True, "url": "http://127.0.0.1:18789/", "httpUrl": "http://127.0.0.1:18789/",
@@ -63,12 +66,18 @@ class FakeCli:
             "browserUrl": BROWSER_URL,
             "browserBootstrapExpiresAtMs": int(time.time() * 1000) + 600_000}
         self.rc = rc
+        self.qr = qr or {"setupCode": SETUP_CODE, "gatewayUrl": "wss://teaport.local",
+                         "auth": "token", "urlSource": "plugins.entries.device-pair.config.publicUrl",
+                         "access": "limited"}
+        self.qr_rc = qr_rc
         self.calls = []
 
     async def __call__(self, args, timeout):
         self.calls.append(tuple(args))
         if args[:1] == ["dashboard"]:
             return self.rc, ("plugin noise\n" + json.dumps(self.dashboard)).encode(), b""
+        if args[:1] == ["qr"]:
+            return self.qr_rc, json.dumps(self.qr, indent=2).encode(), b""
         lists = self.devices
         current = lists.pop(0) if len(lists) > 1 else lists[0]
         return 0, json.dumps({"pending": [], "paired": current}, indent=2).encode(), b""
@@ -94,6 +103,11 @@ def _client(peer="127.0.0.1", proto="https"):
                              headers={"X-Forwarded-Proto": proto} if proto else {})
 
 
+async def _take(c, code, choice="dashboard"):
+    """Press a button on the /p/ page."""
+    return await c.post(f"/p/{code}", data={"choice": choice})
+
+
 class _Logs:
     def __enter__(self):
         self.lines = []
@@ -109,6 +123,11 @@ class _Logs:
 
 
 DEV_A = {"deviceId": "dev-a", "displayName": "Old laptop", "approvedAtMs": 1000}
+# The OpenClaw iPhone app: a device of its own, node and operator roles on one entry.
+DEV_PHONE = {"deviceId": "dev-p", "deviceFamily": "iPhone", "platform": "iOS 19.1",
+             "clientId": "openclaw-ios", "approvedAtMs": 3000,
+             "tokens": [{"role": "node", "scopes": []},
+                        {"role": "operator", "scopes": ["operator.read", "operator.write"]}]}
 DEV_NEW = {"deviceId": "dev-b", "displayName": "Chrome on Pixel", "clientId": "openclaw-control-ui",
            "approvedAtMs": 2000}
 
@@ -154,12 +173,17 @@ def test_no_agent_and_a_failed_cli_are_unavailable():
             raise AssertionError("minted with no agent")
         except pairing.PairingUnavailable as e:
             assert "agent" in e.reason
-        _setup(FakeCli([DEV_A], dashboard={"ok": False, "reason": "Gateway not ready"}, rc=1))
+        # A devices list that fails: no offer.
+        cli = FakeCli([DEV_A])
+        async def broken(args, timeout):
+            return 1, b"", b"gateway closed"
+        _setup(cli)
+        pairing._cli = broken
         try:
             await pairing.start()
-            raise AssertionError("an offer from a failed mint")
+            raise AssertionError("an offer with no snapshot")
         except pairing.PairingUnavailable as e:
-            assert e.reason == "openclaw dashboard failed: Gateway not ready", e.reason
+            assert "devices list failed" in e.reason, e.reason
         assert pairing._live is None
     asyncio.run(go())
 
@@ -187,8 +211,8 @@ def test_the_code_is_single_use():
         _setup(FakeCli([DEV_A]))
         offer = await pairing.start()
         async with _client() as c:
-            r = await c.get(f"/p/{offer.code.lower()}")
-            assert r.status_code == 302, r.status_code
+            r = await _take(c, offer.code.lower())
+            assert r.status_code == 303, r.status_code
             assert r.headers["location"] == pairing.front_door_url(BROWSER_URL, "teaport.local")
             assert "#bootstrapToken=" in r.headers["location"]
             assert r.headers["cache-control"] == "no-store"
@@ -200,7 +224,7 @@ def test_the_code_is_single_use():
             assert 'href="http://teaport.local/teaport-ca.crt"' in again.text
             assert "ask Teaport for a new code" in again.text
             assert BOOTSTRAP not in again.text
-            assert pairing._live.url is None  # dropped at redemption
+            assert (await _take(c, offer.code, "app")).status_code == 410  # spent for both
             pairing.cancel(offer)
             await pairing.wait(offer)
             # The offer is over, and a second scan still says "used", not "expired".
@@ -230,15 +254,28 @@ def test_the_offer_expires():
     asyncio.run(go())
 
 
-def test_openclaws_deadline_bounds_the_offer():
+def test_the_offer_is_bounded_by_ours_and_nothing_is_minted_up_front():
     async def go():
         cli = FakeCli([DEV_A])
-        cli.dashboard["browserBootstrapExpiresAtMs"] = int(time.time() * 1000) + 60_000
         _setup(cli)
         offer = await pairing.start()
         left = offer.expires_at - time.monotonic()
-        assert 60 - pairing.REDEEM_MARGIN_SECS - 2 < left <= 60 - pairing.REDEEM_MARGIN_SECS, left
+        assert pairing.OFFER_SECS - 2 < left <= pairing.OFFER_SECS, left
+        assert cli.calls == [("devices", "list", "--json")]  # no handoff until a tap
         pairing.cancel(offer)
+    asyncio.run(go())
+
+
+def test_a_handoff_that_is_already_expiring_fails_at_the_tap():
+    async def go():
+        cli = FakeCli([DEV_A])
+        cli.dashboard["browserBootstrapExpiresAtMs"] = int(time.time() * 1000) + 5_000
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client() as c:
+            r = await _take(c, offer.code)
+        assert r.status_code == 503 and "Ask Teaport again" in r.text
+        assert (await pairing.wait(offer)) == pairing.Result("failed", None)
     asyncio.run(go())
 
 
@@ -253,7 +290,7 @@ def test_a_new_start_supersedes_the_old_offer():
         async with _client() as c:
             if first.code != second.code:  # 1 in 31^6 they are the same
                 assert (await c.get(f"/p/{first.code}")).status_code == 410
-            assert (await c.get(f"/p/{second.code}")).status_code == 302
+            assert (await _take(c, second.code)).status_code == 303
         assert (await pairing.wait(first)) == pairing.Result("superseded", None)
         pairing.cancel(second)
         assert (await pairing.wait(second)) == pairing.Result("cancelled", None)
@@ -285,7 +322,7 @@ def test_a_new_device_after_the_link_is_paired():
         await asyncio.sleep(0.05)
         assert cli.calls.count(("devices", "list", "--json")) == 1  # no poll before the link
         async with _client() as c:
-            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(c, offer.code)).status_code == 303
         assert (await waiter) == pairing.Result("paired", "Chrome on Pixel")
         assert pairing._live is None
     asyncio.run(go())
@@ -299,7 +336,7 @@ def test_a_repaired_device_counts_and_its_label_wins():
         _setup(cli)
         offer = await pairing.start()
         async with _client() as c:
-            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(c, offer.code)).status_code == 303
         assert (await pairing.wait(offer)) == pairing.Result("paired", "Kitchen Mac")
     asyncio.run(go())
 
@@ -310,7 +347,7 @@ def test_an_opened_link_with_nothing_new_is_opened():
         _setup(cli)
         offer = await pairing.start()
         async with _client() as c:
-            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(c, offer.code)).status_code == 303
         assert (await pairing.wait(offer)) == pairing.Result("opened", None)
         assert cli.calls.count(("devices", "list", "--json")) >= 3
     asyncio.run(go())
@@ -323,7 +360,7 @@ def test_cancel_while_polling_stops_the_wait():
         pairing.OPENED_WAIT_SECS = 30
         offer = await pairing.start()
         async with _client() as c:
-            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(c, offer.code)).status_code == 303
         waiter = asyncio.ensure_future(pairing.wait(offer))
         await asyncio.sleep(0.05)
         pairing.cancel(offer)
@@ -345,7 +382,7 @@ def test_withdraw_cancels_an_unopened_offer_and_keeps_a_confirmation():
 
         offer = await pairing.start()
         async with _client() as c:
-            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(c, offer.code)).status_code == 303
         assert pairing.withdraw(offer) is True
         assert (await asyncio.wait_for(pairing.wait(offer), 5)) == pairing.Result(
             "paired", "Chrome on Pixel")
@@ -362,18 +399,32 @@ def test_the_fragment_and_the_code_are_never_logged():
             async with _client() as c:
                 await c.get("/p/WRONG2")
                 await c.get(f"/p/{offer.code}")
+                await _take(c, offer.code)
                 await c.get(f"/p/{offer.code}")
             await pairing.wait(offer)
+            codes = [offer.code]
+            # The app's setup code: shown on the page, never logged.
+            cli = FakeCli()
+            cli.devices = [[DEV_A], [DEV_A, DEV_PHONE]]
+            _setup(cli)
+            offer = await pairing.start()
+            async with _client() as c:
+                page = await _take(c, offer.code, "app")
+            assert SETUP_CODE in page.text
+            await pairing.wait(offer)
+            codes.append(offer.code)
             # A failed mint is logged by its reason, never by what the CLI printed.
-            bad = FakeCli([DEV_A], rc=1)
-            bad.dashboard = {"ok": False, "browserUrl": BROWSER_URL}
-            _setup(bad)
-            try:
-                await pairing.start()
-            except pairing.PairingUnavailable as e:
-                logger.warning(f"pair_device: {e.reason}")
+            for bad in (FakeCli([DEV_A], rc=1, dashboard={"ok": False, "browserUrl": BROWSER_URL}),
+                        FakeCli([DEV_A], qr_rc=1, qr={"setupCode": SETUP_CODE})):
+                _setup(bad)
+                offer = await pairing.start()
+                async with _client() as c:
+                    await _take(c, offer.code, "dashboard" if bad.rc else "app")
+                await pairing.wait(offer)
+                codes.append(offer.code)
         assert "pairing: paired" in logs.text, logs.text
-        for secret in (BOOTSTRAP, "bootstrapToken", "#", offer.code):
+        assert "handoff failed" in logs.text, logs.text
+        for secret in (BOOTSTRAP, "bootstrapToken", "#", SETUP_CODE, "SETUP-SECRET", *codes):
             assert secret not in logs.text, (secret, logs.text)
     asyncio.run(go())
 
@@ -389,6 +440,8 @@ def test_the_real_subprocess_runs_a_stub_cli():
                     "import json, sys\n"
                     "if sys.argv[1] == 'dashboard':\n"
                     f"    print(json.dumps({{'ok': True, 'browserUrl': {BROWSER_URL!r}}}))\n"
+                    "elif sys.argv[1:] == ['qr', '--json', '--limited']:\n"
+                    f"    print(json.dumps({{'setupCode': {SETUP_CODE!r}, 'gatewayUrl': 'wss://teaport.local'}}))\n"
                     "else:\n"
                     "    print(json.dumps({'pending': [], 'paired': []}))\n")
         os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
@@ -397,9 +450,17 @@ def test_the_real_subprocess_runs_a_stub_cli():
         pairing._cli = REAL_CLI
         openclaw_client.OPENCLAW_BIN = stub
         try:
-            offer = await pairing.start()
-            assert pairing._live.url.startswith("https://teaport.local/#bootstrapToken=")
-            pairing.cancel(offer)
+            for choice in ("dashboard", "app"):
+                offer = await pairing.start()
+                async with _client() as c:
+                    r = await _take(c, offer.code, choice)
+                if choice == "dashboard":
+                    assert r.status_code == 303, r.status_code
+                    assert r.headers["location"].startswith("https://teaport.local/#bootstrapToken=")
+                else:
+                    assert r.status_code == 200 and SETUP_CODE in r.text, r.status_code
+                pairing.cancel(offer)
+                await pairing.wait(offer)
         finally:
             openclaw_client.OPENCLAW_BIN = old_bin
     asyncio.run(go())
@@ -420,6 +481,8 @@ def test_the_brains_gateway_url_is_not_handed_to_the_cli():
                     " file=sys.stderr); sys.exit(1)\n"
                     "if sys.argv[1] == 'dashboard':\n"
                     f"    print(json.dumps({{'ok': True, 'browserUrl': {BROWSER_URL!r}}}))\n"
+                    "elif sys.argv[1:] == ['qr', '--json', '--limited']:\n"
+                    f"    print(json.dumps({{'setupCode': {SETUP_CODE!r}, 'gatewayUrl': 'wss://teaport.local'}}))\n"
                     "else:\n"
                     "    print(json.dumps({'pending': [], 'paired': []}))\n")
         os.chmod(stub, os.stat(stub).st_mode | stat.S_IXUSR)
@@ -430,7 +493,10 @@ def test_the_brains_gateway_url_is_not_handed_to_the_cli():
         os.environ["OPENCLAW_GATEWAY_URL"] = "http://127.0.0.1:18789"
         try:
             offer = await pairing.start()
+            async with _client() as c:
+                assert (await _take(c, offer.code, "app")).status_code == 200
             pairing.cancel(offer)
+            await pairing.wait(offer)
         finally:
             openclaw_client.OPENCLAW_BIN = old_bin
             if old_url is None:
@@ -481,7 +547,7 @@ def test_p_answers_only_through_the_front_door():
             assert (await plain.get(f"/p/{offer.code}")).status_code == 404
         assert pairing._live.wrong == 0 and pairing._live.ended is None
         async with _client() as c:
-            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(c, offer.code)).status_code == 303
         pairing.cancel(offer)
     asyncio.run(go())
 
@@ -505,7 +571,7 @@ def test_uvicorns_proxy_headers_still_let_caddy_through():
         async with client("192.168.1.9") as lan:  # not trusted: the headers are ignored
             assert (await lan.get(f"/p/{offer.code}")).status_code == 404
         async with client("127.0.0.1") as caddy:
-            assert (await caddy.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(caddy, offer.code)).status_code == 303
         pairing.cancel(offer)
     asyncio.run(go())
 
@@ -517,7 +583,7 @@ def test_start_refuses_while_the_last_device_is_being_confirmed():
         _setup(cli)
         offer = await pairing.start()
         async with _client() as c:
-            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+            assert (await _take(c, offer.code)).status_code == 303
         waiter = asyncio.ensure_future(pairing.wait(offer))
         await asyncio.sleep(0)
         try:
@@ -574,6 +640,155 @@ def test_cli_json_is_the_one_parser_for_cli_output():
     out = b'[plugins] loaded\n{\n  "payloads": [\n    {\n      "text": " hi "\n    }\n  ]\n}\n'
     assert openclaw_client._consult_payload_text(out) == "hi"
     assert openclaw_client._consult_payload_text(b'{"result": {"payloads": [{"text": "r"}]}}') == "r"
+
+
+def test_a_get_spends_nothing_and_shows_the_two_choices():
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client() as c:
+            # A link preview, a prefetch, the phone opening the link twice.
+            for _ in range(pairing.MAX_WRONG + 2):
+                r = await c.get(f"/p/{offer.code}")
+                assert r.status_code == 200, r.status_code
+        assert "Open the dashboard here" in r.text and "Use the OpenClaw app" in r.text
+        assert f'action="/p/{offer.code}"' in r.text and 'method="post"' in r.text
+        assert 'href="http://teaport.local/teaport-ca.crt"' in r.text
+        assert r.headers["cache-control"] == "no-store"
+        assert r.headers["referrer-policy"] == "no-referrer"
+        assert BOOTSTRAP not in r.text and SETUP_CODE not in r.text
+        live = pairing._live
+        assert not live.opened and live.wrong == 0 and live.ended is None
+        assert cli.calls == [("devices", "list", "--json")]  # nothing minted, nothing polled
+        # A post that chooses nothing spends nothing either.
+        async with _client() as c:
+            r = await c.post(f"/p/{offer.code}", data={"choice": "other"})
+            assert r.status_code == 200 and "Use the OpenClaw app" in r.text
+            assert (await _take(c, offer.code)).status_code == 303
+        pairing.cancel(offer)
+    asyncio.run(go())
+
+
+def test_the_app_choice_spends_the_code_and_shows_the_setup_code_once():
+    async def go():
+        cli = FakeCli()
+        cli.devices = [[DEV_A], [DEV_A], [DEV_A, DEV_PHONE]]
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client() as c:
+            r = await _take(c, offer.code, "app")
+            assert r.status_code == 200, r.status_code
+            assert SETUP_CODE in r.text and 'id="copy"' in r.text
+            assert "navigator.clipboard" in r.text and "select()" in r.text
+            assert "Add Gateway" in r.text and "Paste the code" in r.text
+            assert "works once" in r.text and "next few minutes" in r.text
+            assert 'href="http://teaport.local/teaport-ca.crt"' in r.text
+            assert r.headers["cache-control"] == "no-store"
+            assert ("qr", "--json", "--limited") in cli.calls
+            assert not any(call[:1] == ("dashboard",) for call in cli.calls)
+            # Shown once: the code is spent, for both choices and for a plain GET.
+            for again in (await c.get(f"/p/{offer.code}"), await _take(c, offer.code, "app"),
+                          await _take(c, offer.code)):
+                assert again.status_code == 410 and "already used" in again.text
+                assert SETUP_CODE not in again.text
+        # The phone's app pairs as a device of its own, named for its kind.
+        assert (await pairing.wait(offer)) == pairing.Result("paired", "iPhone")
+    asyncio.run(go())
+
+
+def test_the_apps_node_and_operator_as_two_entries_are_one_pairing():
+    async def go():
+        node = {"deviceId": "dev-n", "deviceFamily": "iPhone", "approvedAtMs": 3000}
+        operator = {"deviceId": "dev-o", "displayName": "Ana's iPhone", "approvedAtMs": 3001}
+        cli = FakeCli()
+        cli.devices = [[DEV_A], [DEV_A, node, operator]]
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client() as c:
+            assert (await _take(c, offer.code, "app")).status_code == 200
+        assert (await pairing.wait(offer)) == pairing.Result("paired", "Ana's iPhone")
+    asyncio.run(go())
+
+
+def test_a_failed_app_mint_ends_the_offer_and_says_so():
+    async def go():
+        for cli in (FakeCli([DEV_A], qr_rc=1, qr={"error": "no route"}),
+                    FakeCli([DEV_A], qr={"setupCode": SETUP_CODE, "gatewayUrl": "ws://127.0.0.1:18789"})):
+            _setup(cli)
+            offer = await pairing.start()
+            async with _client() as c:
+                r = await _take(c, offer.code, "app")
+                assert r.status_code == 503 and "could not start" in r.text, r.status_code
+                assert "Ask Teaport again" in r.text and SETUP_CODE not in r.text
+                assert "already used" in (await c.get(f"/p/{offer.code}")).text
+            assert (await pairing.wait(offer)) == pairing.Result("failed", None)
+            assert pairing._live is None
+            # The screen came down, so a new offer can be made at once.
+            pairing.cancel(await pairing.start())
+    asyncio.run(go())
+
+
+def test_wrong_codes_count_the_same_on_get_and_post():
+    async def go():
+        _setup(FakeCli([DEV_A]))
+        offer = await pairing.start()
+        wrong = "".join(c for c in pairing.CODE_ALPHABET if c not in offer.code)[:6]
+        async with _client() as c:
+            for i in range(pairing.MAX_WRONG - 1):
+                r = await (c.get(f"/p/{wrong}") if i % 2 else _take(c, wrong, "app"))
+                assert r.status_code == 410
+            assert pairing._live.wrong == pairing.MAX_WRONG - 1
+            assert (await c.get(f"/p/{offer.code}")).status_code == 200  # not a guess
+            assert pairing._live.wrong == pairing.MAX_WRONG - 1
+            assert (await _take(c, wrong)).status_code == 410
+        assert (await pairing.wait(offer)) == pairing.Result("locked", None)
+    asyncio.run(go())
+
+
+def test_a_post_answers_only_through_the_front_door():
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client(peer="192.168.1.9", proto="https") as lan, \
+                _client(proto=None) as plain:
+            for c in (lan, plain):
+                for choice in ("dashboard", "app"):
+                    assert (await _take(c, offer.code, choice)).status_code == 404
+                for _ in range(pairing.MAX_WRONG + 1):
+                    assert (await _take(c, "WRONG2")).status_code == 404
+        live = pairing._live
+        assert not live.opened and live.wrong == 0 and live.ended is None
+        assert cli.calls == [("devices", "list", "--json")]
+        pairing.cancel(offer)
+    asyncio.run(go())
+
+
+def test_a_double_tap_finds_the_code_spent_while_the_first_mints():
+    async def go():
+        cli = FakeCli([DEV_A])
+        slow = asyncio.Event()
+
+        async def slow_cli(args, timeout):
+            if args[:1] == ["qr"]:
+                await slow.wait()
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = slow_cli
+        offer = await pairing.start()
+        async with _client() as c:
+            first = asyncio.ensure_future(_take(c, offer.code, "app"))
+            await asyncio.sleep(0.05)
+            second = await _take(c, offer.code, "dashboard")
+            assert second.status_code == 410 and "already used" in second.text
+            slow.set()
+            assert (await first).status_code == 200
+        assert [call[:1] for call in cli.calls].count(("qr",)) == 1
+        assert not any(call[:1] == ("dashboard",) for call in cli.calls)
+        pairing.cancel(offer)
+        await pairing.wait(offer)
+    asyncio.run(go())
 
 
 def test_polls_are_spaced_and_bounded():

@@ -306,7 +306,9 @@ certificate. A browser lets you accept a warning; an application does not.
    the profile.
 3. Open Settings. Select General. Select About. Select **Certificate Trust
    Settings**. Switch the certificate on.
-4. Make a new code on the Jetson, and scan it:
+4. Make a new code. Say "connect my phone" to the device, scan the code on its
+   screen, and choose **Use the OpenClaw app**; that pairs the app with no approval
+   step. Or make one on the Jetson, and scan it:
 
    ```bash
    openclaw qr
@@ -343,18 +345,23 @@ does not permit operator commands.
 
 ## The pairing code says expired or already used
 
-**Cause** Each pairing code works one time, for 5 minutes at most. The first scan
-uses the code up, even when the dashboard then does not open. The page says
-**already used** when the code was scanned before: by a second device, or by this
-phone when the dashboard did not open the first time. That is most often a phone
-that does not trust the device's certificate yet. The page says **expired** when
-the 5 minutes passed, when the device restarted after it showed the code, or when
+**Cause** Each pairing code works one time, for 5 minutes at most. Opening the link
+uses nothing; pressing **Open the dashboard here** or **Use the OpenClaw app** uses
+the code up, even when the dashboard or the app then does not connect. The page says
+**already used** when a choice was pressed before: on a second device, or on this
+phone when the dashboard or the app did not connect the first time. That is most often
+a phone that does not trust the device's certificate yet. The page says **expired**
+when the 5 minutes passed, when the device restarted after it showed the code, or when
 someone tried several wrong codes, which ends the code for safety.
 
-**Fix** If the dashboard did not open, install the device's certificate first: open
-`http://teaport.local/teaport-ca.crt` on the phone (the page links it) and trust it.
-Then ask the device again, for example "add my laptop", and scan the new code. Do
-not scan a photograph of an old code.
+**Fix** If the dashboard or the app did not connect, trust the device's certificate
+first, as in [The phone does not pair](#the-phone-does-not-pair), steps 1 to 3 (the
+page links the certificate). Then ask the device again, for example "connect my
+phone", and scan the new code. Do not scan a photograph of an old code.
+
+If the page says that the connection could not start, the device could not make
+the dashboard link or the app's setup code. The code is over and the screen clears. Ask
+again; if it keeps failing, check the gateway with `openclaw gateway status`.
 
 Pairing links work only through the front door, `https://teaport.local/p/...`. The
 same path on the brain's own port, `http://<device>:7861/p/...`, answers
