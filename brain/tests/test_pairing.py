@@ -949,6 +949,67 @@ def test_asking_again_during_a_tap_keeps_the_tapped_phones_handoff():
     asyncio.run(go())
 
 
+def test_a_failed_superseded_tap_withdraws_the_watch_it_handed_on():
+    """Asked again while the first code's handoff mints, and that mint then fails: the
+    new, unused offer stops polling (nothing else extended its watch) and later ends
+    "expired". A successful one still extends it (the test above)."""
+    async def go():
+        cli = FakeCli([DEV_A])
+        gate = asyncio.Event()
+
+        async def slow_fail(args, timeout):
+            if args[:1] == ["qr"]:
+                await gate.wait()
+                return 1, b"", b"no route"
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = slow_fail
+        pairing.APP_WAIT_SECS = 30
+        first = await pairing.start()
+        pairing.OFFER_SECS = 0.8
+        try:
+            async with _client() as c:
+                tap = asyncio.ensure_future(_take(c, first.code, "app"))
+                await asyncio.sleep(0.05)
+                second = await pairing.start()
+                assert pairing._live.watch.running()  # the in-flight tap's claim
+                w2 = asyncio.ensure_future(pairing.wait(second))
+                await asyncio.sleep(0.1)
+                polled = cli.calls.count(("devices", "list", "--json"))
+                assert polled >= 2, polled  # watching for the tapped phone's device
+                gate.set()
+                r = await asyncio.wait_for(tap, 1)
+                assert r.status_code == 503 and "could not start" in r.text
+            assert not pairing._live.watch.running() and not pairing._live.watch.claims
+            await asyncio.sleep(0.05)
+            after = cli.calls.count(("devices", "list", "--json"))
+            assert (await asyncio.wait_for(w2, 2)) == pairing.Result("expired", None)
+            assert cli.calls.count(("devices", "list", "--json")) <= after + 1, (
+                "kept polling for a tap that failed")
+        finally:
+            pairing.OFFER_SECS = 300.0
+    asyncio.run(go())
+
+
+def test_a_watch_handed_on_twice_keeps_the_latest_claim():
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        pairing.APP_WAIT_SECS = 30
+        first = await pairing.start()
+        async with _client() as c:
+            await _take(c, first.code, "app")
+        watch = pairing._live.watch
+        second = await pairing.start()
+        third = await pairing.start()  # second never used, but still watching
+        assert pairing._live.watch is watch and watch.running()
+        assert len(watch.claims) == 1  # the first tap's, carried through both
+        pairing.cancel(third)
+        for o in (first, second, third):
+            await pairing.wait(o)
+    asyncio.run(go())
+
+
 def test_a_confirming_offer_is_still_stopped_by_cancel():
     async def go():
         _setup(FakeCli([DEV_A]))

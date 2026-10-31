@@ -54,7 +54,7 @@
 # the old watch's end, used or not, so a device the old code still brings in (the first
 # setup code pasted after all) ends the new offer "paired", by name. A tap whose handoff
 # is still being minted then is not thrown away: the phone gets it, and its device is
-# caught the same way. Any way out of a spent code's mint that is not
+# caught the same way; if that mint fails, its share of the watch is withdrawn (_Watch). Any way out of a spent code's mint that is not
 # the handoff ends the offer ("failed"): a spent code is never left waiting. The
 # code works for OFFER_SECS from start() (OpenClaw's own handoffs, minted later, last
 # ten minutes, so ours is the bound). It is six characters from an alphabet a reader
@@ -176,25 +176,31 @@ class _Live:
     wrong: int = 0
     ready: asyncio.Event = field(default_factory=asyncio.Event)    # the handoff was made
     stopped: asyncio.Event = field(default_factory=asyncio.Event)  # ended early
-    # Until when the device list is polled: set when this offer's handoff is made, or
-    # taken over from the spent offer it replaced (start()).
-    watch_until: float | None = None
+    # Until when the device list is polled (see _Watch); shared with the offer that
+    # replaces this one while it is still running (start()).
+    watch: "_Watch" = field(default_factory=lambda: _Watch())
+
+
+@dataclass(eq=False)
+class _Watch:
+    """How long the device list is polled: the latest of the claims on it, one per tap
+    (keyed by its offer). A tap claims, while its handoff is minted, as long as the mint
+    can take plus its choice's window; made, the window from then; failed, nothing (the
+    claim is withdrawn). An offer that replaces a watching one shares its _Watch, so a
+    tap of the old code still in flight extends -- or, failing, no longer extends -- the
+    new offer's watch, with no pointer between the two offers."""
+    claims: dict = field(default_factory=dict)
+
+    def until(self) -> float | None:
+        return max(self.claims.values(), default=None)
+
+    def running(self) -> bool:
+        until = self.until()
+        return until is not None and _clock() < until
 
 
 def _window(choice: str | None) -> float:
     return APP_WAIT_SECS if choice == APP else OPENED_WAIT_SECS
-
-
-def _watching(live: _Live) -> float | None:
-    """The watch `live` hands on to an offer that replaces it: its own, an inherited one
-    still running, or -- its handoff still being minted -- one from now, as long as the
-    mint can take plus the choice's window."""
-    now = _clock()
-    if live.opened and not live.ready.is_set():
-        return now + max(DASHBOARD_TIMEOUT_SECS, QR_TIMEOUT_SECS) + _window(live.choice)
-    if live.watch_until is not None and live.watch_until > now:
-        return live.watch_until
-    return None
 
 
 _live: _Live | None = None
@@ -390,11 +396,10 @@ async def start() -> Offer:
     code whose handoff is still being minted is not thrown away either: its phone gets
     the handoff (redeem), and the device it pairs is caught here."""
     global _live, _minting
-    inherited, watch_until = None, None
+    inherited, watch = None, _Watch()
     if _live is not None and _live.ended is None:
-        watch_until = _watching(_live)
-        if watch_until is not None:
-            inherited = dict(_live.known)
+        if _live.watch.running():
+            inherited, watch = dict(_live.known), _live.watch
         _end(_live, SUPERSEDED)
     _minting += 1
     mine = _minting
@@ -411,7 +416,7 @@ async def start() -> Offer:
         raise PairingUnavailable("superseded by a newer pairing request")
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
     offer = Offer(code=code, link=_link(host, code), expires_at=expires_at)
-    _live = _Live(offer=offer, known=known, watch_until=watch_until)
+    _live = _Live(offer=offer, known=known, watch=watch)
     logger.info(f"pairing: offer made, {expires_at - now:.0f} s to scan "
                 f"({len(known)} device(s) paired before)")
     return offer
@@ -477,8 +482,8 @@ async def wait(offer: Offer) -> Result:
                 # Its own handoff is being minted (bounded by the CLI's timeout, which
                 # then ends the offer); no poll beside that CLI.
                 await _or_cancelled(live, live.ready.wait(), POLL_SECS)
-            elif live.watch_until is not None and now < live.watch_until:
-                done, devices = await _or_cancelled(live, _poll(), live.watch_until - now)
+            elif live.watch.running():
+                done, devices = await _or_cancelled(live, _poll(), live.watch.until() - now)
                 if live.ended:
                     break
                 found = _new_device(devices, live.known) if done and devices is not None else None
@@ -487,7 +492,7 @@ async def wait(offer: Offer) -> Result:
                     logger.info(f"pairing: paired {name!r}")
                     return Result(PAIRED, name)
                 await _or_cancelled(live, asyncio.sleep(POLL_SECS),
-                                    min(POLL_SECS, live.watch_until - _clock()))
+                                    min(POLL_SECS, (live.watch.until() or 0.0) - _clock()))
             elif live.ready.is_set():
                 logger.info(f"pairing: code used ({live.choice}), no new device in time")
                 return Result(OPENED, None)
@@ -724,6 +729,8 @@ async def redeem(code: str, request: Request) -> Response:
     if choice not in (DASHBOARD, APP):
         return _choose(live.offer.code)  # nothing chosen: nothing spent
     live.opened, live.choice = True, choice
+    live.watch.claims[live] = (_clock() + max(DASHBOARD_TIMEOUT_SECS, QR_TIMEOUT_SECS)
+                               + _window(choice))
     _spent = live.offer.code
     logger.info(f"pairing: the code was used ({choice}); making the handoff")
     # The code is spent from here, so every way out either makes the handoff (ready) or
@@ -745,12 +752,15 @@ async def redeem(code: str, request: Request) -> Response:
             return _failed()
         # Superseded while it minted (asked again meanwhile): the phone still gets what it
         # tapped for, and the offer that replaced this one watches for its device
-        # (start(), _watching). Cancelled: the box's session is over, the screen down.
+        # (start(), _Watch). Cancelled: the box's session is over, the screen down.
         if live.ended is not None and live.ended != SUPERSEDED:
             return _expired()
-        live.watch_until = max(live.watch_until or 0.0, _clock() + _window(choice))
+        live.watch.claims[live] = _clock() + _window(choice)
         live.ready.set()  # wait() starts looking for the new device
         return answer
     finally:
         if not live.ready.is_set():
+            # No handoff: this tap's claim goes, so a watch it was extending (its own, or
+            # the one the offer that replaced it shares) shrinks back to the others'.
+            live.watch.claims.pop(live, None)
             _end(live, FAILED)  # the request itself was cancelled (the phone went away)
