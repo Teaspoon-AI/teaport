@@ -592,15 +592,17 @@ def test_the_session_ending_stops_a_confirmation_too(monkeypatch):
 
 def test_a_short_line_covers_the_wait_for_the_code(monkeypatch):
     # Spoken only when the model called the tool without a word (tools._wrap).
-    for lang, want in (("en", "One moment, I'll put a code on my screen."),
-                       ("es", "Un momento, voy a poner un código en mi pantalla."),
-                       ("it", "Un attimo, metto un codice sul mio schermo."),
-                       ("cmn", "稍等，我在屏幕上给你显示一个码。"),
-                       ("fr", "One moment, I'll put a code on my screen.")):
+    for lang, want in (("en", "One moment, let me set that up."),
+                       ("es", "Un momento, déjame prepararlo."),
+                       ("it", "Un attimo, lo preparo."),
+                       ("cmn", "稍等，我来准备一下。"),
+                       ("fr", "One moment, let me set that up.")):
         line = tools._fallback_line("pair_device", {}, lang)
         assert line == want, (lang, line)
-        # Nothing the tool's own note has the model say next, nothing technical.
-        assert "camera" not in line and "link" not in line.lower() and "QR" not in line
+        # It promises nothing the outcome may contradict (no screen, unavailable,
+        # stopped), and says nothing the tool's own note has the model say next.
+        for word in ("code", "screen", "camera", "link", "QR", "código", "codice", "码"):
+            assert word not in line, (lang, word)
     for cancel in (True, "true"):
         assert tools._fallback_line("pair_device", {"cancel": cancel}, "en") is None
     assert tools._fallback_line("pair_device", {"cancel": False}, "en")

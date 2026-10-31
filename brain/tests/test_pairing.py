@@ -850,6 +850,105 @@ def test_a_new_start_replaces_a_confirming_offer_and_keeps_its_snapshot():
     asyncio.run(go())
 
 
+def test_a_device_from_the_first_code_pairs_the_new_offer_even_if_its_code_is_unused():
+    """The review's late_device: the app chosen, the user asks again, then pastes the
+    first setup code after all. The new offer was watching from its start: "paired",
+    though its own code was never used."""
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        pairing.APP_WAIT_SECS = 5
+        first = await pairing.start()
+        w1 = asyncio.ensure_future(pairing.wait(first))
+        async with _client() as c:
+            assert (await _take(c, first.code, "app")).status_code == 200
+        await asyncio.sleep(0.05)
+        second = await pairing.start()
+        assert (await asyncio.wait_for(w1, 1)) == pairing.Result("superseded", None)
+        w2 = asyncio.ensure_future(pairing.wait(second))
+        await asyncio.sleep(0.05)
+        polls = cli.calls.count(("devices", "list", "--json"))
+        cli.devices = [[DEV_A, DEV_PHONE]]  # the first code's app pairs
+        assert (await asyncio.wait_for(w2, 2)) == pairing.Result("paired", "iPhone")
+        assert cli.calls.count(("devices", "list", "--json")) > polls
+        assert not any(c[:1] == ("dashboard",) for c in cli.calls)
+    asyncio.run(go())
+
+
+def test_the_inherited_watch_ends_and_an_unused_new_code_then_expires():
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        pairing.APP_WAIT_SECS = 0.3
+        first = await pairing.start()
+        async with _client() as c:
+            await _take(c, first.code, "app")
+        pairing.OFFER_SECS = 0.8
+        try:
+            second = await pairing.start()
+            t0 = time.monotonic()
+            w2 = asyncio.ensure_future(pairing.wait(second))
+            await asyncio.sleep(0.5)
+            polls = cli.calls.count(("devices", "list", "--json"))
+            assert polls >= 2, polls  # watched from the start
+            assert (await asyncio.wait_for(w2, 2)) == pairing.Result("expired", None)
+            assert time.monotonic() - t0 >= 0.7
+            # No polls after the inherited watch ended: only the code's own expiry.
+            assert cli.calls.count(("devices", "list", "--json")) == polls
+        finally:
+            pairing.OFFER_SECS = 300.0
+    asyncio.run(go())
+
+
+def test_asking_again_during_a_tap_keeps_the_tapped_phones_handoff():
+    """Re-asked while the first code's handoff is being minted: the phone that tapped in
+    time still gets its setup code, and the new offer catches its device."""
+    async def go():
+        cli = FakeCli([DEV_A])
+        gate = asyncio.Event()
+
+        async def slow(args, timeout):
+            if args[:1] == ["qr"]:
+                await gate.wait()
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = slow
+        pairing.APP_WAIT_SECS = 5
+        first = await pairing.start()
+        async with _client() as c:
+            tap = asyncio.ensure_future(_take(c, first.code, "app"))
+            await asyncio.sleep(0.05)
+            second = await pairing.start()  # asked again while it mints
+            w2 = asyncio.ensure_future(pairing.wait(second))
+            await asyncio.sleep(0.05)
+            assert not tap.done()
+            gate.set()
+            r = await asyncio.wait_for(tap, 1)
+            assert r.status_code == 200 and SETUP_CODE in r.text, r.status_code
+        cli.devices = [[DEV_A, DEV_PHONE]]
+        assert (await asyncio.wait_for(w2, 2)) == pairing.Result("paired", "iPhone")
+        # And the dashboard: its redirect is kept the same way.
+        cli2 = FakeCli([DEV_A])
+        gate2 = asyncio.Event()
+
+        async def slow2(args, timeout):
+            if args[:1] == ["dashboard"]:
+                await gate2.wait()
+            return await cli2(args, timeout)
+        _setup(cli2)
+        pairing._cli = slow2
+        first = await pairing.start()
+        async with _client() as c:
+            tap = asyncio.ensure_future(_take(c, first.code))
+            await asyncio.sleep(0.05)
+            second = await pairing.start()
+            gate2.set()
+            r = await asyncio.wait_for(tap, 1)
+            assert r.status_code == 303 and "#bootstrapToken=" in r.headers["location"]
+        pairing.cancel(second)
+    asyncio.run(go())
+
+
 def test_a_confirming_offer_is_still_stopped_by_cancel():
     async def go():
         _setup(FakeCli([DEV_A]))

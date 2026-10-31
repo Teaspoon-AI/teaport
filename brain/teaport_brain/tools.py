@@ -1661,14 +1661,14 @@ def _fallback_line(name: str, args: dict, lang: str) -> str | None:
     if name == "pair_device":
         # The code takes a few seconds to come up (pairing reads the device list first),
         # and the model mostly calls this without a word, leaving the room in silence.
-        # Nothing about the camera here: the tool's result has the model say that once
-        # the code is up. A cancel is instant and says its own line.
+        # A plain "one moment" that promises nothing: the outcome (a code up, no screen,
+        # unavailable, stopped) is not known yet, and the tool's result has the model
+        # say what to do. A cancel is instant and says its own line.
         if _flag(args.get("cancel", False)):
             return None
-        return {"es": "Un momento, voy a poner un código en mi pantalla.",
-                "it": "Un attimo, metto un codice sul mio schermo.",
-                "cmn": "稍等，我在屏幕上给你显示一个码。"}.get(
-                    lang, "One moment, I'll put a code on my screen.")
+        return {"es": "Un momento, déjame prepararlo.",
+                "it": "Un attimo, lo preparo.",
+                "cmn": "稍等，我来准备一下。"}.get(lang, "One moment, let me set that up.")
     return None  # instant tools: speaking would take longer than the call
 
 
