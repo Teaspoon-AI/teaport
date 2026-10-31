@@ -792,12 +792,12 @@ trim (`_past_earlier`) both turns are asked on it (seen twice in 301 turns on 37
   timeout (`ss_shipped_timeout`), a turn closed on a peek (`ss_peek_adopted`) and a peek
   the caller talked past (`ss_peek_dropped`).
 
-Run (TLC 2.19, six cores): `ss_shipped` ~2.3M distinct states (two words, audio to 4, a
-word's end up to two steps past its start), ~40 s; `ss_peek` ~2.0M (two words, audio to 3),
+Run (TLC 2.19, six cores): `ss_shipped` ~2.2M distinct states (two words, audio to 4, a
+word's end up to two steps past its start), ~40 s; `ss_peek` ~1.9M (two words, audio to 3),
 ~20 s; `ss_shipped_freeze` ~9.4M (the bounds frozen or moving, previews lossy), ~1-3 min; the
 witnesses and rejected rows under 1.2M each. `--full` adds three words: `ss_shipped_full`
-~22M (audio to 5), `ss_peek_full` ~18M (audio to 4), and `ss_peek_freeze` ~87M (two words, audio to 4, frozen bounds and lossy previews: 37 min
-on two cores).
+~19M (audio to 5), `ss_peek_full` ~16M (audio to 4), and `ss_peek_freeze` ~78M (two words, audio to 4, frozen bounds and lossy previews: ~18 min
+on five cores).
 
 ### Known limits of this model
 
