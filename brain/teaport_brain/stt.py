@@ -839,8 +839,8 @@ class _Turn:
     # yet: they may still come, past at_ms (THE CUT'S MARGIN).
     expect: list = field(default_factory=list)
     # Why nothing went on at its preview and it closes on its final, with this preview
-    # and commit (over the bot's reply with an empty provisional, a preview cut short),
-    # or "": it went on at its preview.
+    # and commit (over the bot's reply with none of the caller's words, or a preview cut
+    # short), or "": it went on at its preview.
     deferred: str = ""
     msg: Optional[dict] = None
     commit: Optional[_Commit] = None
