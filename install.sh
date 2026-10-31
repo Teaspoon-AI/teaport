@@ -1661,10 +1661,16 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # ~12-hour leaves under a 10-year root, so a copy would be a snapshot of something that rotates
 # twice a day, and would go stale silently if the CA were ever regenerated. The path matcher is
 # exact and rewrites to a fixed file, so root.key next to it stays unreachable.
+#
+# /p/* is the one brain path the front door serves: the short pairing links the OLED shows
+# as a QR code (#243), which redirect to OpenClaw's one-time owner handoff. Only that
+# prefix, and only over HTTPS (the code is a bearer secret until used); the rest of the
+# brain (the config page, /talk) stays off the front door, and the http block above never
+# matches it, so a cleartext /p/ hit is just redirected to https first.
 write_caddyfile() {
   local path="$1"
   if [ "$DRY_RUN" = 1 ]; then
-    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, tls internal, + http://%s/teaport-ca.crt)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$FRONTDOOR_HOST"; return
+    printf '  [dry-run] write %s  (%s -> 127.0.0.1:%s, /p/* -> brain 127.0.0.1:%s, tls internal, + http://%s/teaport-ca.crt)\n' "$path" "$FRONTDOOR_HOST" "$GATEWAY_PORT" "$BRAIN_PORT" "$FRONTDOOR_HOST"; return
   fi
   printf '%s\n' \
     "# teaport front door — rendered by install.sh. Edit the tls/upstream here, then:" \
@@ -1686,7 +1692,13 @@ write_caddyfile() {
     "" \
     "$FRONTDOOR_HOST {" \
     "    tls internal" \
-    "    reverse_proxy 127.0.0.1:$GATEWAY_PORT" \
+    "    # Pairing short links (#243) go to the brain; nothing else of the brain is exposed." \
+    "    handle /p/* {" \
+    "        reverse_proxy 127.0.0.1:$BRAIN_PORT" \
+    "    }" \
+    "    handle {" \
+    "        reverse_proxy 127.0.0.1:$GATEWAY_PORT" \
+    "    }" \
     "}" | SUDO tee "$path" >/dev/null
 }
 
@@ -1743,7 +1755,10 @@ phase_services() {
   # loses its gateway is switched on the page.
   local agent=("?TEAPORT_AGENT=none")
   if [ -n "$AGENT_MODE" ]; then
-    agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT")
+    # TEAPORT_FRONTDOOR_HOST: the name the pairing links (#243) are built on; phase_frontdoor
+    # fronts exactly these installs (any agent), so it is written exactly here.
+    agent=("TEAPORT_AGENT=openclaw" "OPENCLAW_GATEWAY_URL=http://127.0.0.1:$GATEWAY_PORT"
+           "TEAPORT_FRONTDOOR_HOST=$FRONTDOOR_HOST")
   fi
   write_env "$ETC/brain.env" \
     "BRAIN_PORT=$BRAIN_PORT" \

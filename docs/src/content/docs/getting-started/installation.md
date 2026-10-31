@@ -114,7 +114,7 @@ The installer asks you:
 3. **Your Discord server and user IDs, and the bot token.** The installer asks these only
    when you set `TEAPORT_ENABLE_BRIDGE=1` to add the Discord bridge.
 
-<!-- source: install.sh:41,64,207-211,1510-1517,1919-1921#8861cd83 -->
+<!-- source: install.sh:41,64,207-211,1510-1517,1934-1936#8861cd83 -->
 
 For OpenRouter, the base URL is `https://openrouter.ai/api/v1`.
 
@@ -149,7 +149,7 @@ The installer does these tasks:
   `https://teaport.local`.
 - It starts the services and checks the installation.
 
-<!-- source: install.sh:59,266,1026,1436,1449,2414,2572,2578,1534,1695#4cd8d53b; manifest/stable.json:5-21#db7e6194 -->
+<!-- source: install.sh:59,266,1026,1436,1449,2429,2587,2593,1534,1707#4cd8d53b; manifest/stable.json:5-21#db7e6194 -->
 
 ## Optional components
 
@@ -165,7 +165,7 @@ teaport has three optional components. The installer sets up none of them by def
   and speaks without a phone. Turn it on with `TEAPORT_ENABLE_LOCAL_AUDIO=1`. See
   [Use a microphone on the device](/guides/local-audio/).
 
-<!-- source: install.sh:43,46,2387#2f2e05c5; cli/teaport:227#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
+<!-- source: install.sh:43,46,2402#2f2e05c5; cli/teaport:227#2b50b5c9; systemd/teaport-local-audio.service.in:10#c9bc2a05 -->
 
 ## Check the installation
 
@@ -211,7 +211,7 @@ The installer printed a web address at the end, similar to the following:
 browser: open https://teaport.local/#token=a-long-token from a LAN device (accept the one-time cert).
 ```
 
-<!-- source: install.sh:2462-2463#a405b36e -->
+<!-- source: install.sh:2477-2478#a405b36e -->
 
 Open that address on the phone or laptop. Accept the certificate warning once: the device
 signs its own certificate, and the browser needs HTTPS before it allows the microphone.
@@ -228,10 +228,29 @@ device, run the sandbox command that the installer printed instead. The token is
 `~/.openclaw/openclaw.json` under `gateway.auth.token`.
 :::
 
-<!-- source: install.sh:2466-2468,1409-1417#8d3dea6b -->
+<!-- source: install.sh:2481-2483,1409-1417#8d3dea6b -->
 
 Start a Talk session in the page and speak. The device answers through the phone or the
 laptop's microphone and speaker.
+
+## Pair another laptop or phone
+
+You can add a browser to the device without the token or a terminal.
+
+1. In a conversation with the device, say "add my laptop" or "connect my phone". The
+   request works in the room and in a Talk session. It does not work on a phone call.
+2. The device shows a QR code on its screen. Point the laptop's or the phone's camera at
+   the screen, and open the link.
+3. The browser opens the dashboard and is paired. The screen shows **Paired**, and the
+   device says that the new device is connected.
+
+The code works one time, and for 10 minutes at most. If you need a new code, ask again.
+
+The link opens over HTTPS. A phone that has not trusted the device's certificate yet
+must do that first: see [The phone does not pair](/guides/troubleshooting/#the-phone-does-not-pair),
+steps 1 to 3.
+
+<!-- source: install.sh:1695-1701#4326c857 -->
 
 ## What's next
 
