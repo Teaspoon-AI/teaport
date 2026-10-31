@@ -99,6 +99,7 @@ def _setup(cli: FakeCli, host="teaport.local"):
     pairing._ended = None
     pairing._creating = None
     pairing._spent.clear()
+    pairing._recent.clear()
     pairing._clock = time.monotonic
     pairing.POLL_SECS = 0.01
     pairing.OPENED_WAIT_SECS = 0.3
@@ -1301,6 +1302,48 @@ def test_a_pairing_nobody_follows_is_not_lent_to_the_next_ask():
             pairing.SESSION_MAX_SECS = old_max
         assert newest.session != fresh.session
         pairing.cancel(newest)
+    asyncio.run(go())
+
+
+def test_the_bound_spares_a_pairing_with_work_in_progress():
+    """Past SESSION_MAX_SECS, a pairing still watching a handoff (or minting) gets a new
+    code as usual, its snapshot kept; one with nothing in progress is replaced."""
+    async def go():
+        cli = FakeCli([DEV_A])
+        _setup(cli)
+        pairing.OPENED_WAIT_SECS = 5
+        first = await pairing.start()
+        async with _client() as c:
+            assert (await _take(c, first.code)).status_code == 303
+        old_max = pairing.SESSION_MAX_SECS
+        pairing.SESSION_MAX_SECS = 0.05
+        try:
+            await asyncio.sleep(0.1)
+            again = await pairing.start()
+            assert again.session == first.session  # the watch goes on
+            assert cli.calls.count(("devices", "list", "--json")) == 1
+            cli.devices = [[DEV_A, DEV_NEW]]
+            assert (await asyncio.wait_for(pairing.wait(again), 2)) == pairing.Result(
+                "paired", "Chrome on Pixel")
+        finally:
+            pairing.SESSION_MAX_SECS = old_max
+    asyncio.run(go())
+
+
+def test_a_code_from_an_earlier_pairing_is_no_guess():
+    async def go():
+        _setup(FakeCli([DEV_A]))
+        old = await pairing.start()
+        pairing.cancel(old)
+        await pairing.wait(old)
+        new = await pairing.start()
+        assert new.session != old.session
+        async with _client() as c:
+            for _ in range(pairing.MAX_WRONG + 2):  # a photo of the old QR
+                assert (await c.get(f"/p/{old.code}")).status_code == 410
+        s = pairing._session
+        assert s.wrong == 0 and s.code_usable() and not s.locked
+        pairing.cancel(new)
     asyncio.run(go())
 
 

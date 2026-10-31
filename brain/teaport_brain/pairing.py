@@ -46,9 +46,10 @@
 #
 # One pairing at a time, in memory only (a brain restart forgets it, and its codes are
 # then "expired"): a _Session, from the first start() to its Result, for at most
-# SESSION_MAX_SECS (a start() after that, or after the pairing was left with nothing to
-# wait for and nobody waiting, ends it and opens a fresh one: no snapshot is lent to a
-# later ask). It owns
+# SESSION_MAX_SECS while nothing is in progress (a start() after that with no tap
+# minting and no watch running, or after the pairing was left with nothing to wait for
+# and nobody waiting, ends it and opens a fresh one: no snapshot is lent to a later ask;
+# one still at work gets a new code, and its watch is what is bounded). It owns
 #
 #   - the snapshot: `openclaw devices list --json`, read once, at that first start()
 #     ({deviceId: approvedAtMs}; a list without its "paired" key is a failed read,
@@ -60,7 +61,8 @@
 #     characters from an alphabet a reader cannot confuse aloud or on a small screen
 #     (no 0/O, 1/I/L); while it can be used it is as good as an admin password, so it
 #     is not logged, and MAX_WRONG wrong codes end it, that code alone (guessing gets a
-#     few tries out of 31^6; an earlier code of the pairing is never a guess);
+#     few tries out of 31^6; any of the last few dozen codes issued, of this pairing
+#     or an earlier one, is never a guess);
 #   - every tap: a choice pressed on a code, minting its handoff, then made and watched
 #     for its window (OPENED_WAIT_SECS for the dashboard, APP_WAIT_SECS for the app:
 #     pasting a code into another app takes longer than a redirect), or failed and
@@ -206,7 +208,6 @@ class _Session:
     wrong: int = 0             # wrong codes against the current one
     taps: list[_Tap] = field(default_factory=list)
     made: bool = False         # any tap's handoff was made
-    old_codes: set[str] = field(default_factory=set)  # every earlier code (no guesses)
     result: Result | None = None
     stopped: asyncio.Event = field(default_factory=asyncio.Event)  # result is set
     changed: asyncio.Event = field(default_factory=asyncio.Event)  # pulsed (_pulse)
@@ -250,6 +251,9 @@ _sessions = 0                             # ids
 _creating: asyncio.Future | None = None   # a first start() reading the device list
 # Codes tapped lately, for "already used" (the current session's and the one before).
 _spent: collections.deque = collections.deque(maxlen=8)
+# Every code issued lately, by any pairing: scanning one again (a photo of an old QR) is
+# never a wrong guess against the current code.
+_recent: collections.deque = collections.deque(maxlen=32)
 
 
 def _pulse(s: _Session) -> None:
@@ -459,6 +463,7 @@ def available() -> bool:
 
 def _new_code(s_id: int, host: str) -> Offer:
     code = "".join(secrets.choice(CODE_ALPHABET) for _ in range(CODE_LEN))
+    _recent.append(code)
     expires_at = _clock() + min(OFFER_SECS, OPENCLAW_HANDOFF_SECS - REDEEM_MARGIN_SECS)
     return Offer(code=code, link=_link(host, code), expires_at=expires_at, session=s_id)
 
@@ -481,14 +486,17 @@ async def start() -> Offer:
     if s is not None and s.result is None:
         # A pairing nobody follows any more (nothing left to wait for), or one past its
         # bound, ends here rather than lend a new code its old snapshot.
+        # The bound ends only a pairing with nothing in progress (no tap minting, no
+        # watch running); one still at work gets a new code as usual, its snapshot
+        # kept -- the watch is what is bounded there (OPENED_WAIT_SECS, APP_WAIT_SECS).
         ending = s.over() or (Result(OPENED if s.made else EXPIRED)
-                              if _clock() - s.opened_at >= SESSION_MAX_SECS else None)
+                              if _clock() - s.opened_at >= SESSION_MAX_SECS
+                              and not s.live_claim() else None)
         if ending is not None:
             logger.info(f"pairing: ended {ending.outcome} before a new one opened")
             _end(s, ending)
     s = _session
     if s is not None and s.result is None:
-        s.old_codes.add(s.code.code)
         s.code, s.code_dead, s.locked, s.wrong = _new_code(s.id, host), False, False, 0
         _pulse(s)
         logger.info(f"pairing: a new code in the same pairing ({len(s.taps)} tap(s) so far)")
@@ -790,11 +798,11 @@ def _find(code: str) -> tuple[str, _Session | None]:
     s = _session
     if s is None or s.result is not None:
         return "expired", None
-    if code in s.old_codes:
-        return "expired", None
     usable = s.code_usable()
     if hmac.compare_digest(code.encode(), s.code.code.encode()):
         return ("live", s) if usable else ("expired", None)
+    if any(hmac.compare_digest(code.encode(), c.encode()) for c in _recent):
+        return "expired", None  # an earlier code, of this pairing or one before
     if usable:
         s.wrong += 1
         if s.wrong >= MAX_WRONG:

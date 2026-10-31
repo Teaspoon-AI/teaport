@@ -57,6 +57,7 @@ class _Pairing:
         self.gate = None
         self.opened = set()       # offers whose pairing has a handoff made
         self.fail_after = None    # a reason to raise with on the next start()
+        self.replace_with = None  # the next start() ends the live pairing so (its bound)
         self._pairings = 0
         self._ends = {}           # pairing id -> future Result
         self._used = {}           # offer -> future bool (spent())
@@ -70,6 +71,12 @@ class _Pairing:
             raise pairing.PairingUnavailable(self.unavailable)
         if self.fail_after:
             raise pairing.PairingUnavailable(self.fail_after)
+        if self.replace_with and self._live(self._pairings):
+            # As pairing.start() past SESSION_MAX_SECS: the old pairing ends, and a fresh
+            # one is opened after a device list is read.
+            self._ends[self._pairings].set_result(pairing.Result(self.replace_with))
+            self.replace_with = None
+            await asyncio.sleep(0)
         if self.gate is not None:
             await self.gate.wait()
         loop = asyncio.get_running_loop()
@@ -641,6 +648,71 @@ def test_a_newer_start_replaces_an_unshown_code_without_ending_the_pairing(monke
     a, b, dp, fake = asyncio.run(run())
     assert a[0] == pd.STOPPED and b[0] == pd.SHOWN
     assert fake.cancelled == [] and dp._offer is fake.started[-1]
+
+
+def test_asking_again_past_the_bound_hands_the_screen_over_quietly(monkeypatch):
+    """The review's r5: the re-ask ends the old pairing inside pairing.start() and waits
+    for a fresh device list. The old pairing's end is our own replacement: not told,
+    and the new code goes on a screen that is ours and open, which cancel() can take
+    down."""
+    made = []
+
+    class _Tracked(_Screen):
+        def __init__(self):
+            super().__init__()
+            self.closed = False
+            made.append(self)
+
+        def show(self, *a, **k):
+            assert not self.closed, "drawn on a closed screen"
+            return super().show(*a, **k)
+
+        def close(self, take_down=True):
+            self.closed = True
+            super().close(take_down)
+
+    async def run():
+        fake = _Pairing()
+        for name in ("start", "wait", "cancel", "withdraw", "spent"):
+            monkeypatch.setattr(pd.pairing, name, getattr(fake, name))
+        dp = pd.DevicePairing(notes=_Notes(), screen=_Tracked,
+                              clock=lambda: asyncio.get_running_loop().time())
+        await _call(dp)
+        fake.replace_with = "expired"
+        fake.gate = asyncio.Event()
+        again = asyncio.create_task(_call(dp))
+        await _turn()
+        fake.gate.set()
+        result = await again
+        await _turn()
+        up = dp._screen
+        gone = dp.cancel()
+        return dp, fake, result, up, gone
+
+    dp, fake, result, up, gone = asyncio.run(run())
+    assert result["ok"] and "camera" in result["note"]
+    assert dp.notes.added == [], "our own replacement was told as news"
+    assert up is not None and up is made[-1] and _shown(up)[-1][4] == LINK
+    assert fake.started[1].session != fake.started[0].session
+    assert gone == pd.GONE and up.calls[-2:] == [("clear",), ("close", True)]
+
+
+def test_a_re_ask_that_gets_no_code_takes_the_old_screen_down(monkeypatch):
+    """The old pairing ended just before the re-ask, which then gets no code: the old
+    QR does not stay up."""
+    async def run2():
+        dp, fake, screen = _session(monkeypatch)
+        await _call(dp)
+        fake.end(fake.started[0], "expired")  # ended; its watcher has not run yet
+        fake.fail_after = "openclaw devices list failed (rc=1)"
+        task = asyncio.create_task(_call(dp))
+        await _turn()
+        return await task, dp, screen
+
+    result, dp, screen = asyncio.run(run2())
+    assert result["ok"] is False
+    assert not dp.live and dp._screen is None
+    assert screen.calls[-2:] == [("clear",), ("close", True)]
 
 
 def test_a_short_line_covers_the_wait_for_the_code(monkeypatch):

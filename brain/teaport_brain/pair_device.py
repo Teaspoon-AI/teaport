@@ -105,8 +105,8 @@ class DevicePairing:
             return STOPPED, {}
         self._gen += 1
         mine = self._gen
-        screen = self._screen = self._screen or self._new_screen()
-        if not screen.draws("qr"):
+        probe = self._screen = self._screen or self._new_screen()
+        if not probe.draws("qr"):
             # Asked before anything is made: a code nobody can see is nothing to open.
             logger.info("pair_device: no screen that draws QR codes")
             self._withdraw()
@@ -136,6 +136,9 @@ class DevicePairing:
                     self._unshown.append(offer)
                 logger.info("pair_device: stopped while the code was being made")
                 return STOPPED, {}
+            # The screen as it is now, not as it was before the await: an ending of the
+            # pairing this start() replaced may have let it go meanwhile (_watch).
+            screen = self._screen = self._screen or self._new_screen()
             minutes = max(1, math.ceil((offer.expires_at - self._clock()) / 60))
             if not (screen.fits_qr(offer.link)
                     and screen.show(SCREEN_TITLE, ["Point your camera", "at this code",
@@ -236,6 +239,12 @@ class DevicePairing:
             self._spent = None
         self._offer = None
         logger.info(f"pair_device: {result.outcome}")
+        if self._pending and result.outcome != pairing.PAIRED:
+            # A start() of ours is in flight: this pairing ended because that start()
+            # replaced it (pairing.start(): nothing left, or past its bound). Our own
+            # replacement, not news: nothing is told, and the screen is handed over to
+            # the new code, not taken down (that start() takes it down if no code comes).
+            return
         screen, self._screen = self._screen, None
         if result.outcome == pairing.PAIRED:
             # A screen taken down meanwhile (cancel() while the device was confirmed)
