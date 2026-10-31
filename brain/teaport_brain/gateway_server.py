@@ -53,6 +53,7 @@ from pipecat.transports.websocket.fastapi import (
 from teaport_brain.agent_session import build_agent_session
 from teaport_brain import agent_backend, audio_dump, config_ui, display, reply_hold, sdnotify, wake_gate, xvf_led
 from teaport_brain import host_context
+from teaport_brain import pairing
 from teaport_brain import run_control
 from teaport_brain import sip_server
 from teaport_brain import session_arbiter as arb
@@ -551,6 +552,9 @@ app = FastAPI(lifespan=_lifespan)
 # own: on the 8 GB box a second Python service is memory the engine reserve
 # wants. They share /talk's GATEWAY_TOKEN. See config_ui.py.
 app.include_router(config_ui.router)
+# /p/<code>, the short link a pairing QR code holds (pairing.py): unauthenticated, as a
+# fresh browser has no token; Caddy routes /p/* here.
+app.include_router(pairing.router)
 
 
 @app.get("/health")

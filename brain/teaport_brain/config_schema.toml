@@ -1235,6 +1235,17 @@ tier = "installer"
 help = "The openclaw CLI used as the consult fallback. Auto-detected; the host might have none when OpenClaw runs only inside the sandbox."
 
 [[settings]]
+name = "TEAPORT_FRONTDOOR_HOST"
+store = "brain_env"
+group = "agent"
+type = "string"
+default = "teaport.local"
+read = "startup"
+tier = "installer"
+help = "The name browsers reach the box's front door (Caddy, HTTPS) by. Pairing a laptop or phone shows a QR code of https://<this>/p/<code> and points the new browser's dashboard at wss://<this>; the installer writes the name it gave the front door."
+note = "The QR code holds at most 53 bytes, so a name longer than 36 characters (ASCII) cannot be paired from the screen."
+
+[[settings]]
 name = "TEAPORT_AGENT_FIRST"
 store = "brain_env"
 group = "agent"
