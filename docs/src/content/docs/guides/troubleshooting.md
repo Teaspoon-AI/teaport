@@ -176,7 +176,7 @@ and some corporate networks block it.
 
    Caddy must listen on port 443, and the gateway on `127.0.0.1:18789`.
 
-<!-- source: install.sh:1529#2ca3ef5a; install.sh:1660-1686#dac4d4f2 -->
+<!-- source: install.sh:1529#2ca3ef5a; install.sh:1660-1689#54a4a6c0 -->
 
 ## The page opens but nothing happens
 
@@ -330,7 +330,7 @@ cause.
 Each code carries a token. The token stops after 10 minutes. Every `openclaw qr`
 makes a new code. Do not scan a photograph of an old code.
 
-<!-- source: install.sh:1660-1686#dac4d4f2 -->
+<!-- source: install.sh:1660-1689#54a4a6c0 -->
 
 ### The phone pairs, but it has no permissions
 
@@ -343,13 +343,22 @@ does not permit operator commands.
 
 ## The pairing code says expired or already used
 
-**Cause** Each pairing code works one time, for 5 minutes at most. The page says
-**already used** when the code opened a browser before, for example when a second
-device scanned it. The page says **expired** when the 5 minutes passed, or when the
-device restarted after it showed the code.
+**Cause** Each pairing code works one time, for 5 minutes at most. The first scan
+uses the code up, even when the dashboard then does not open. The page says
+**already used** when the code was scanned before: by a second device, or by this
+phone when the dashboard did not open the first time. That is most often a phone
+that does not trust the device's certificate yet. The page says **expired** when
+the 5 minutes passed, when the device restarted after it showed the code, or when
+someone tried several wrong codes, which ends the code for safety.
 
-**Fix** Ask the device again, for example "add my laptop", and scan the new code.
-Do not scan a photograph of an old code.
+**Fix** If the dashboard did not open, install the device's certificate first: open
+`http://teaport.local/teaport-ca.crt` on the phone (the page links it) and trust it.
+Then ask the device again, for example "add my laptop", and scan the new code. Do
+not scan a photograph of an old code.
+
+Pairing links work only through the front door, `https://teaport.local/p/...`. The
+same path on the brain's own port, `http://<device>:7861/p/...`, answers
+**Not Found**.
 
 ### The pairing link does not open
 
@@ -361,7 +370,7 @@ door's configuration or `brain.env`.
 [Install teaport](/getting-started/installation/#install-teaport). A re-run repairs
 the installation and keeps your settings. You do this one time.
 
-<!-- source: install.sh:1695-1701#4326c857; install.sh:1760-1761#ee5dc2d7 -->
+<!-- source: install.sh:1698-1704#4326c857; install.sh:1763-1764#ee5dc2d7 -->
 
 ## Phone calls go unanswered
 

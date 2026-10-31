@@ -1666,7 +1666,10 @@ write_env() {  # write_env <path> <lines...>  (SUDO, mode 640)
 # as a QR code (#243), which redirect to OpenClaw's one-time owner handoff. Only that
 # prefix, and only over HTTPS (the code is a bearer secret until used); the rest of the
 # brain (the config page, /talk) stays off the front door, and the http block above never
-# matches it, so a cleartext /p/ hit is just redirected to https first.
+# matches it, so a cleartext /p/ hit is just redirected to https first. The brain's own
+# port is open to the LAN (the config page), so the brain itself answers /p/ only to a
+# loopback peer that says X-Forwarded-Proto https -- this proxy, which sets that header
+# itself -- and gives anything else a 404 (pairing.py _via_front_door).
 write_caddyfile() {
   local path="$1"
   if [ "$DRY_RUN" = 1 ]; then

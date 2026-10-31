@@ -21,21 +21,27 @@
 #     (router, below; Caddy routes /p/* to the brain) answers its first hit with a 302
 #     to the rewritten browserUrl. The fragment rides in the Location header, and a
 #     browser never sends a fragment to a server, so the bootstrap reaches no access log
-#     on the way back either. It is never logged here.
+#     on the way back either. It is never logged here. /p/ answers only what came
+#     through Caddy over HTTPS (_via_front_door); the brain's own port, open to the LAN
+#     for the config page, gets a 404 there that does not count as a guess.
 #
-# One offer at a time, in memory only: start() mints, wait() follows it, cancel() ends
-# it, and a second start() cancels the first. The offer ends at whichever comes first
+# One offer at a time, in memory only (a brain restart forgets it, and its code is then
+# "expired"): start() mints, wait() follows it, cancel() ends it ("cancelled"), and a
+# second start() supersedes the first ("superseded") -- unless the first's link has
+# been opened and its device is still being looked for, when start() is refused
+# instead of losing that confirmation. The offer ends at whichever comes first
 # of OpenClaw's own deadline (browserBootstrapExpiresAtMs, less a margin for the
 # browser to load the page and redeem it) and OFFER_SECS, both counted from before the
 # CLI ran. The code is six characters from an alphabet a reader cannot confuse aloud or
 # on a small screen (no 0/O, 1/I/L); while it is live it is as good as an admin
 # password, so it is not logged, and a handful of wrong codes while an offer waits
-# (MAX_WRONG) cancel it: guessing gets a few tries out of 31^6, not all night.
+# (MAX_WRONG) end it ("locked"): guessing gets a few tries out of 31^6, not all night.
 #
 # Whether the new browser actually paired is OpenClaw's to say: `openclaw devices list
-# --json` is snapshotted at mint ({deviceId: approvedAtMs}), and once the link has been
+# --json` is snapshotted at mint ({deviceId: approvedAtMs}; a list without its
+# "paired" key is a failed read, never an empty box), and once the link has been
 # opened, and only then, it is polled every POLL_SECS (one CLI at a time, the next
-# started POLL_SECS after the last ended) for a device that is new, or approved again
+# started POLL_SECS after the last ended, so at most ~20 in OPENED_WAIT_SECS) for a device that is new, or approved again
 # since (the handoff can also repair a browser that was paired before). Found:
 # "paired", with the name `devices list` itself shows (operator label, then the
 # client's display name, then its client id, then the device id). Nothing within
@@ -61,22 +67,23 @@ import asyncio
 import hmac
 import html
 import ipaddress
-import json
 import re
 import secrets
 import time
 import urllib.parse
 from dataclasses import dataclass, field
 
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse, RedirectResponse, Response
+from fastapi import APIRouter, Request
+from fastapi.responses import HTMLResponse, PlainTextResponse, RedirectResponse, Response
 from loguru import logger
 
 from teaport_brain import agent_backend, openclaw_client
 from teaport_brain.settings import setting
 from teaport_brain.wifi import PAGE_CSS, logo_html
 
-FRONTDOOR_HOST = setting("TEAPORT_FRONTDOOR_HOST")
+# Unset: no front door is known (a voice-only install, or one from before #243), and
+# pairing is not offered at all (available()).
+FRONTDOOR_HOST = (setting("TEAPORT_FRONTDOOR_HOST") or "").strip()
 
 # The avatar's QR limit (display.Screen.fits_qr reads the live one; this is what every
 # avatar that draws QR codes says, and the link is sized for it up front).
@@ -87,12 +94,15 @@ OPENCLAW_HANDOFF_SECS = 600.0  # `dashboard` docs: "a single-use, ten-minute boo
 REDEEM_MARGIN_SECS = 20.0      # the browser still has to load the UI and redeem it
 OFFER_SECS = 300.0             # ours: the screen holds the code no longer than this
 MAX_WRONG = 5
-POLL_SECS = 2.0
+POLL_SECS = 5.0                # each poll is a cold OpenClaw CLI
 OPENED_WAIT_SECS = 120.0
 DASHBOARD_TIMEOUT_SECS = 30.0  # a cold CLI through the NemoClaw shim takes ~14 s
 DEVICES_TIMEOUT_SECS = 20.0
 
-PAIRED, OPENED, EXPIRED, CANCELLED = "paired", "opened", "expired", "cancelled"
+PAIRED, OPENED, EXPIRED = "paired", "opened", "expired"
+CANCELLED = "cancelled"    # cancel() was called
+SUPERSEDED = "superseded"  # a newer start() replaced the offer before its link was used
+LOCKED = "locked"          # MAX_WRONG wrong codes while it waited
 
 _clock = time.monotonic  # replaced in tests
 
@@ -115,8 +125,8 @@ class Offer:
 
 @dataclass(frozen=True)
 class Result:
-    outcome: str        # PAIRED | OPENED | EXPIRED | CANCELLED
-    device: str | None  # the new device's display name when PAIRED
+    outcome: str        # PAIRED | OPENED | EXPIRED | CANCELLED | SUPERSEDED | LOCKED
+    device: str | None = None  # the new device's display name when PAIRED
 
 
 @dataclass(eq=False)
@@ -125,9 +135,9 @@ class _Live:
     url: str | None             # the rewritten browserUrl; None once redeemed
     known: dict[str, int]       # deviceId -> approvedAtMs at mint
     opened: bool = False
-    cancelled: bool = False
+    ended: str | None = None    # CANCELLED | SUPERSEDED | LOCKED once ended early
     wrong: int = 0
-    changed: asyncio.Event = field(default_factory=asyncio.Event)  # opened or cancelled
+    changed: asyncio.Event = field(default_factory=asyncio.Event)  # opened or ended
 
 
 _live: _Live | None = None
@@ -144,22 +154,6 @@ async def _cli(args: list[str], timeout: float) -> tuple[int, bytes, bytes]:
     return await openclaw_client._run_openclaw(args, timeout=timeout, capture=True)
 
 
-def _json_object(out: bytes) -> dict | None:
-    """The one JSON object the CLI printed, skipping anything a plugin printed before
-    it."""
-    text = out.decode(errors="replace")
-    start = text.find("{")
-    while start != -1:
-        try:
-            obj, _ = json.JSONDecoder().raw_decode(text, start)
-            if isinstance(obj, dict):
-                return obj
-        except ValueError:
-            pass
-        start = text.find("{", start + 1)
-    return None
-
-
 async def _paired_devices() -> list[dict]:
     """`openclaw devices list --json`'s paired list. Raises PairingUnavailable."""
     try:
@@ -168,10 +162,12 @@ async def _paired_devices() -> list[dict]:
         raise PairingUnavailable("openclaw devices list timed out") from None
     except OSError as e:
         raise PairingUnavailable(f"openclaw CLI did not start ({e.strerror or e})") from None
-    obj = _json_object(out)
-    if rc != 0 or obj is None or not isinstance(obj.get("paired", []), list):
+    # "paired" must be there: an object without it (a banner, an error) read as no
+    # devices would make every device already paired look new at the next poll.
+    obj = openclaw_client.cli_json(out, lambda d: isinstance(d.get("paired"), list))
+    if rc != 0 or obj is None:
         raise PairingUnavailable(f"openclaw devices list failed (rc={rc})")
-    return [d for d in obj.get("paired", []) if isinstance(d, dict) and d.get("deviceId")]
+    return [d for d in obj["paired"] if isinstance(d, dict) and d.get("deviceId")]
 
 
 def _approvals(devices: list[dict]) -> dict[str, int]:
@@ -204,7 +200,7 @@ async def _mint() -> tuple[str, float]:
         raise PairingUnavailable("openclaw dashboard timed out") from None
     except OSError as e:
         raise PairingUnavailable(f"openclaw CLI did not start ({e.strerror or e})") from None
-    obj = _json_object(out) or {}
+    obj = openclaw_client.cli_json(out, lambda d: "ok" in d) or {}
     url = obj.get("browserUrl")
     if rc != 0 or obj.get("ok") is not True or not isinstance(url, str) or "#" not in url:
         reason = obj.get("reason")
@@ -275,11 +271,21 @@ def _check_host(host: str) -> str:
 
 # ------------------------------------------------------------------ the offer
 
+def available() -> bool:
+    """Whether pairing can be offered at all: the front door's name is known."""
+    return bool(FRONTDOOR_HOST)
+
+
 async def start() -> Offer:
-    """Mint a new offer, cancelling the one before it. Raises PairingUnavailable."""
+    """Mint a new offer, superseding one whose link is not used yet. Raises
+    PairingUnavailable, also while the last offer's link has been opened and its
+    device is still being looked for: ending that would lose its confirmation, and a
+    snapshot taken now could miss that device and later report it as the new one."""
     global _live, _minting
-    if _live is not None:
-        cancel(_live.offer)
+    if _live is not None and _live.ended is None:
+        if _live.opened:
+            raise PairingUnavailable("still confirming the last device paired")
+        _end(_live, SUPERSEDED)
     _minting += 1
     mine = _minting
     if not agent_backend.HAS_AGENT:
@@ -307,8 +313,13 @@ async def start() -> Offer:
 def cancel(offer: Offer) -> None:
     """End `offer` if it is still the live one; its wait() says "cancelled"."""
     live = _live
-    if live is not None and live.offer is offer and not live.cancelled:
-        live.cancelled = True
+    if live is not None and live.offer is offer:
+        _end(live, CANCELLED)
+
+
+def _end(live: _Live, why: str) -> None:
+    if live.ended is None:
+        live.ended = why
         live.url = None
         live.changed.set()
 
@@ -332,37 +343,39 @@ async def _or_cancelled(live: _Live, aw, timeout: float):
 
 
 async def wait(offer: Offer) -> Result:
-    """Follow `offer` to its end. An offer that is no longer the live one (a newer
-    start() replaced it) is "cancelled". One waiter per offer."""
+    """Follow `offer` to its end. An offer that is no longer the live one (its wait()
+    already returned, or a newer start() replaced it) is "superseded". One waiter per
+    offer."""
     global _live
     live = _live
     if live is None or live.offer is not offer:
-        return Result(CANCELLED, None)
+        return Result(SUPERSEDED)
     try:
-        if not live.opened and not live.cancelled:
+        if not live.opened and live.ended is None:
             try:
                 await asyncio.wait_for(live.changed.wait(), max(0.0, offer.expires_at - _clock()))
             except asyncio.TimeoutError:
                 pass
-        if live.cancelled:
-            return Result(CANCELLED, None)
+        if live.ended:
+            return Result(live.ended)
         if not live.opened:
             logger.info("pairing: the code expired unused")
             return Result(EXPIRED, None)
         live.changed.clear()  # from here it is set only by cancel()
+        # (start() refuses while this polls, and wrong codes no longer count.)
         deadline = _clock() + OPENED_WAIT_SECS
         while _clock() < deadline:
             done, devices = await _or_cancelled(live, _poll(), deadline - _clock())
-            if live.cancelled:
-                return Result(CANCELLED, None)
+            if live.ended:
+                return Result(live.ended)
             found = _new_device(devices, live.known) if done and devices is not None else None
             if found is not None:
                 name = device_name(found)
                 logger.info(f"pairing: paired {name!r}")
                 return Result(PAIRED, name)
             await _or_cancelled(live, asyncio.sleep(POLL_SECS), deadline - _clock())
-            if live.cancelled:
-                return Result(CANCELLED, None)
+            if live.ended:
+                return Result(live.ended)
         logger.info(f"pairing: link opened, no new device within {OPENED_WAIT_SECS:.0f} s")
         return Result(OPENED, None)
     finally:
@@ -388,43 +401,67 @@ _PAGE = """<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="referrer" content="no-referrer"><title>{title}</title><style>{css}</style></head>
 <body><main><div class="logo">{logo}</div>
 <h1>{heading}</h1>
-<p>{body}</p>
-<p>{ca}</p></main></body></html>"""
+<p>{body}</p></main></body></html>"""
+
+
+def _ca_link() -> str:
+    url = html.escape(f"http://{FRONTDOOR_HOST}/teaport-ca.crt", quote=True)
+    return f'<a href="{url}">Teaport\'s certificate</a>'
 
 
 def _page(heading: str, body: str, status: int) -> HTMLResponse:
-    ca_url = f"http://{FRONTDOOR_HOST}/teaport-ca.crt"
-    ca = (f"If your phone warns that the connection is not private, install "
-          f'<a href="{html.escape(ca_url, quote=True)}">Teaport\'s certificate</a> first, '
-          f"then scan a new code.")
+    """`body` is HTML: plain text through html.escape plus _ca_link()."""
     return HTMLResponse(_PAGE.format(title=html.escape(heading), css=PAGE_CSS, logo=logo_html(),
-                                     heading=html.escape(heading), body=html.escape(body), ca=ca),
+                                     heading=html.escape(heading), body=body),
                         status_code=status, headers=_NO_STORE)
 
 
 def _used() -> HTMLResponse:
+    # The scan that used the code was redirected at once, so this is the page a phone
+    # sees when it scans again -- most often because the dashboard did not open the
+    # first time, and the usual reason is a phone that does not trust the box yet.
     return _page("This code was already used",
-                 "Each code connects one device. To connect another one, ask Teaport for a "
-                 "new code.", 410)
+                 html.escape("Each code connects one device. If the dashboard did not open "
+                             "on this phone, it needs to trust the box first: install ")
+                 + _ca_link() + html.escape(", then ask Teaport for a new code."), 410)
 
 
 def _expired() -> HTMLResponse:
     return _page("This code has expired",
-                 "Ask Teaport for a new one, and scan it within a few minutes.", 410)
+                 html.escape("Ask Teaport for a new one, and scan it within a few minutes. "
+                             "If your phone warns that the connection is not private, install ")
+                 + _ca_link() + html.escape(" first."), 410)
+
+
+def _via_front_door(request: Request) -> bool:
+    """Whether the request came through Caddy over HTTPS. The brain listens on every
+    interface (http://<box>:7861 is the config page), so without this anyone on the
+    LAN could reach /p/ in cleartext, or burn a live offer with wrong guesses. uvicorn
+    trusts X-Forwarded-* only from 127.0.0.1 (its forwarded_allow_ips default) and then
+    sets the scheme from X-Forwarded-Proto, so "https" here means Caddy said so. Run
+    without that middleware, the same rule is checked by hand: a loopback peer that
+    says https."""
+    if request.url.scheme == "https":
+        return True
+    peer = request.client.host if request.client else None
+    return (_is_loopback(peer)
+            and request.headers.get("x-forwarded-proto", "").strip().lower() == "https")
 
 
 router = APIRouter()
 
 
 @router.get("/p/{code}")
-async def redeem(code: str) -> Response:
+async def redeem(code: str, request: Request) -> Response:
     """Unauthenticated: the browser asking has no token yet; the code is the grant."""
     global _spent
+    if not _via_front_door(request):
+        return PlainTextResponse("Not Found", status_code=404)  # not a guess either
     code = code.strip().upper()
     if _spent is not None and hmac.compare_digest(code.encode(), _spent.encode()):
         return _used()  # a second scan of a used code is not a guess
     live = _live
-    if live is not None and not live.cancelled and not live.opened:
+    if live is not None and live.ended is None and not live.opened:
         if _clock() >= live.offer.expires_at:
             return _expired()
         if hmac.compare_digest(code.encode(), live.offer.code.encode()) and live.url:
@@ -436,6 +473,6 @@ async def redeem(code: str) -> Response:
             return RedirectResponse(url, status_code=302, headers=_NO_STORE)
         live.wrong += 1
         if live.wrong >= MAX_WRONG:
-            logger.warning(f"pairing: {live.wrong} wrong codes; offer cancelled")
-            cancel(live.offer)
+            logger.warning(f"pairing: {live.wrong} wrong codes; offer locked")
+            _end(live, LOCKED)
     return _expired()

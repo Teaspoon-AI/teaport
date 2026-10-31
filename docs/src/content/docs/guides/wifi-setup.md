@@ -22,7 +22,7 @@ Say "set up Wi-Fi" or "connect to Wi-Fi" at the device. While the device has no 
 
 If the device is already online, the phrase is ordinary speech. The agent hears it and can start the same procedure with its Wi-Fi setup tool; ask the agent to run it.
 
-<!-- source: brain/teaport_brain/config_schema.toml:1643-1650#5be20f46 -->
+<!-- source: brain/teaport_brain/config_schema.toml:1642-1649#5be20f46 -->
 
 ## Join the setup network
 
@@ -32,7 +32,7 @@ If the device is already online, the phrase is ordinary speech. The agent hears 
 
 The setup network uses WPA2. Its password is the one printed on the paper insert, stored on the device as `WIFI_SETUP_PASSWORD` in `/etc/teaport/wifi-setup.env`. Without that stored password, the device speaks fresh random digits for each run, so listen for it in the announcement.
 
-<!-- source: brain/teaport_brain/wifi_setup.py:7-22#cfde57cc; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2318#c8f9533e -->
+<!-- source: brain/teaport_brain/wifi_setup.py:7-22#cfde57cc; brain/teaport_brain/config_schema.toml:98-101#61c30a35; install.sh:2321#c8f9533e -->
 
 ## If the device connects
 

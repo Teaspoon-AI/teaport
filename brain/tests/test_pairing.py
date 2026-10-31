@@ -8,12 +8,20 @@
 #   - The loopback browserUrl is rewritten to the front door (base and gatewayUrl) with
 #     every other fragment value kept byte for byte; a non-loopback one is left alone.
 #   - /p/<code> redirects once (Location keeps the fragment, no-store, no-referrer);
-#     then "already used"; an unknown or late code gets "expired".
-#   - The offer expires; a new start() cancels the old one; a handful of wrong codes
-#     while it is live cancel it.
+#     then "already used", which says to trust the box first; an unknown or late code
+#     gets "expired". Only what came through Caddy over HTTPS (a loopback peer saying
+#     X-Forwarded-Proto https, or uvicorn's proxy-headers scheme) is answered; the rest
+#     is a 404 that is not a wrong guess.
+#   - available() needs a front door. The offer expires; a new start() supersedes the
+#     old one ("superseded"), cancel() is "cancelled", a handful of wrong codes while it
+#     is live lock it ("locked"); start() is refused while an opened offer is still
+#     confirming its device.
 #   - A device new since the mint (or approved again) is "paired" with its listed
 #     name; an opened link with nothing new is "opened"; nothing is polled before the
-#     link is opened.
+#     link is opened, and polls are ~5 s apart for at most ~2 minutes.
+#   - A devices list without "paired" is a failed read, not an empty box; banners
+#     before the CLI's JSON are skipped by the one parser (openclaw_client.cli_json),
+#     which the consult uses too.
 #   - The browserUrl, its fragment and the live code never reach the log.
 #   - The real subprocess path (openclaw_client._run_openclaw) runs a stub CLI.
 #
@@ -40,6 +48,7 @@ BROWSER_URL = ("http://127.0.0.1:18789/#bootstrapToken=" + BOOTSTRAP
 
 
 REAL_CLI = pairing._cli
+DEFAULT_POLL_SECS, DEFAULT_OPENED_WAIT_SECS = pairing.POLL_SECS, pairing.OPENED_WAIT_SECS
 
 
 class FakeCli:
@@ -75,10 +84,13 @@ def _setup(cli: FakeCli, host="teaport.local"):
     agent_backend.HAS_AGENT = True
 
 
-def _client():
+def _client(peer="127.0.0.1", proto="https"):
+    """A client as Caddy is one: a loopback peer that says X-Forwarded-Proto https."""
     app = FastAPI()
     app.include_router(pairing.router)
-    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://box")
+    return httpx.AsyncClient(transport=httpx.ASGITransport(app=app, client=(peer, 40000)),
+                             base_url="http://box",
+                             headers={"X-Forwarded-Proto": proto} if proto else {})
 
 
 class _Logs:
@@ -182,7 +194,10 @@ def test_the_code_is_single_use():
             assert r.headers["referrer-policy"] == "no-referrer"
             again = await c.get(f"/p/{offer.code}")
             assert again.status_code == 410 and "already used" in again.text
-            assert "http://teaport.local/teaport-ca.crt" in again.text
+            # Said plainly: the likely reason a phone scans twice, and what to do.
+            assert "did not open" in again.text and "trust the box first" in again.text
+            assert 'href="http://teaport.local/teaport-ca.crt"' in again.text
+            assert "ask Teaport for a new code" in again.text
             assert BOOTSTRAP not in again.text
             assert pairing._live.url is None  # dropped at redemption
             pairing.cancel(offer)
@@ -226,24 +241,25 @@ def test_openclaws_deadline_bounds_the_offer():
     asyncio.run(go())
 
 
-def test_a_new_start_cancels_the_old_offer():
+def test_a_new_start_supersedes_the_old_offer():
     async def go():
         _setup(FakeCli([DEV_A]))
         first = await pairing.start()
         waiter = asyncio.ensure_future(pairing.wait(first))
         await asyncio.sleep(0)
         second = await pairing.start()
-        assert (await waiter) == pairing.Result("cancelled", None)
+        assert (await waiter) == pairing.Result("superseded", None)
         async with _client() as c:
             if first.code != second.code:  # 1 in 31^6 they are the same
                 assert (await c.get(f"/p/{first.code}")).status_code == 410
             assert (await c.get(f"/p/{second.code}")).status_code == 302
-        assert (await pairing.wait(first)) == pairing.Result("cancelled", None)
+        assert (await pairing.wait(first)) == pairing.Result("superseded", None)
         pairing.cancel(second)
+        assert (await pairing.wait(second)) == pairing.Result("cancelled", None)
     asyncio.run(go())
 
 
-def test_wrong_codes_cancel_a_live_offer():
+def test_wrong_codes_lock_a_live_offer():
     async def go():
         _setup(FakeCli([DEV_A]))
         offer = await pairing.start()
@@ -252,7 +268,7 @@ def test_wrong_codes_cancel_a_live_offer():
         async with _client() as c:
             for _ in range(pairing.MAX_WRONG):
                 assert (await c.get(f"/p/{wrong}")).status_code == 410
-            assert (await waiter) == pairing.Result("cancelled", None)
+            assert (await waiter) == pairing.Result("locked", None)
             r = await c.get(f"/p/{offer.code}")
             assert r.status_code == 410 and "expired" in r.text
     asyncio.run(go())
@@ -365,6 +381,129 @@ def test_the_real_subprocess_runs_a_stub_cli():
         finally:
             openclaw_client.OPENCLAW_BIN = old_bin
     asyncio.run(go())
+
+
+def test_available_needs_a_front_door():
+    _setup(FakeCli([DEV_A]), host="")
+    assert pairing.available() is False
+    _setup(FakeCli([DEV_A]))
+    assert pairing.available() is True
+
+
+def test_p_answers_only_through_the_front_door():
+    async def go():
+        _setup(FakeCli([DEV_A]))
+        offer = await pairing.start()
+        # The brain's own port, from the LAN: cleartext, or a forged header from a
+        # peer that is not loopback. 404, and no number of them is a wrong guess.
+        async with _client(peer="192.168.1.9", proto="https") as lan, \
+                _client(proto=None) as plain:
+            for _ in range(pairing.MAX_WRONG + 2):
+                assert (await lan.get("/p/WRONG2")).status_code == 404
+                assert (await plain.get("/p/WRONG2")).status_code == 404
+            assert (await lan.get(f"/p/{offer.code}")).status_code == 404
+            assert (await plain.get(f"/p/{offer.code}")).status_code == 404
+        assert pairing._live.wrong == 0 and pairing._live.ended is None
+        async with _client() as c:
+            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+        pairing.cancel(offer)
+    asyncio.run(go())
+
+
+def test_uvicorns_proxy_headers_still_let_caddy_through():
+    # In the brain, uvicorn's ProxyHeadersMiddleware (trusting 127.0.0.1) has already
+    # turned Caddy's headers into the scheme and the phone's address.
+    from uvicorn.middleware.proxy_headers import ProxyHeadersMiddleware
+
+    async def go():
+        _setup(FakeCli([DEV_A]))
+        offer = await pairing.start()
+        app = FastAPI()
+        app.include_router(pairing.router)
+        wrapped = ProxyHeadersMiddleware(app, trusted_hosts="127.0.0.1")
+        def client(peer):
+            return httpx.AsyncClient(
+                transport=httpx.ASGITransport(app=wrapped, client=(peer, 40000)),
+                base_url="http://box",
+                headers={"X-Forwarded-Proto": "https", "X-Forwarded-For": "192.168.1.50"})
+        async with client("192.168.1.9") as lan:  # not trusted: the headers are ignored
+            assert (await lan.get(f"/p/{offer.code}")).status_code == 404
+        async with client("127.0.0.1") as caddy:
+            assert (await caddy.get(f"/p/{offer.code}")).status_code == 302
+        pairing.cancel(offer)
+    asyncio.run(go())
+
+
+def test_start_refuses_while_the_last_device_is_being_confirmed():
+    async def go():
+        cli = FakeCli()
+        cli.devices = [[DEV_A], [DEV_A], [DEV_A], [DEV_A, DEV_NEW]]
+        _setup(cli)
+        offer = await pairing.start()
+        async with _client() as c:
+            assert (await c.get(f"/p/{offer.code}")).status_code == 302
+        waiter = asyncio.ensure_future(pairing.wait(offer))
+        await asyncio.sleep(0)
+        try:
+            await pairing.start()
+            raise AssertionError("a new offer while the last device is still being confirmed")
+        except pairing.PairingUnavailable as e:
+            assert "still confirming" in e.reason, e.reason
+        # The first offer's confirmation is not lost.
+        assert (await waiter) == pairing.Result("paired", "Chrome on Pixel")
+        # Once it has ended, a new offer can be made, snapshotting the new device.
+        second = await pairing.start()
+        assert "dev-b" in pairing._live.known
+        pairing.cancel(second)
+    asyncio.run(go())
+
+
+def test_a_devices_list_without_paired_is_a_failure_not_an_empty_box():
+    async def go():
+        cli = FakeCli([DEV_A])
+        async def no_paired(args, timeout):
+            if args[:1] == ["devices"]:
+                return 0, b'{"level": "info", "msg": "plugin loaded"}\n{"pending": []}\n', b""
+            return await cli(args, timeout)
+        _setup(cli)
+        pairing._cli = no_paired
+        try:
+            await pairing.start()
+            raise AssertionError("snapshot taken from an object with no paired list")
+        except pairing.PairingUnavailable as e:
+            assert "devices list failed" in e.reason
+        # A banner object before the real one is skipped, not read as the result.
+        async def banner_first(args, timeout):
+            if args[:1] == ["devices"]:
+                body = json.dumps({"pending": [], "paired": [DEV_A]}, indent=2)
+                return 0, ('{"level": "info"}\n' + body + "\n").encode(), b""
+            return await cli(args, timeout)
+        pairing._cli = banner_first
+        offer = await pairing.start()
+        assert pairing._live.known == {"dev-a": 1000}
+        pairing.cancel(offer)
+    asyncio.run(go())
+
+
+def test_cli_json_is_the_one_parser_for_cli_output():
+    found = openclaw_client.cli_json(
+        b'banner\n{"level": "info"}\n{\n  "paired": [\n    {\n      "deviceId": "x"\n    }\n  ]\n}\n',
+        lambda d: isinstance(d.get("paired"), list))
+    assert found == {"paired": [{"deviceId": "x"}]}, found
+    # Nested objects are not candidates on their own.
+    assert openclaw_client.cli_json(b'{\n  "a": [\n    {\n "paired": []\n }\n  ]\n}\n',
+                                    lambda d: "paired" in d) is None
+    assert openclaw_client.cli_json(b"no json here") is None
+    # The consult reads its payload through it, banners and all.
+    out = b'[plugins] loaded\n{\n  "payloads": [\n    {\n      "text": " hi "\n    }\n  ]\n}\n'
+    assert openclaw_client._consult_payload_text(out) == "hi"
+    assert openclaw_client._consult_payload_text(b'{"result": {"payloads": [{"text": "r"}]}}') == "r"
+
+
+def test_polls_are_spaced_and_bounded():
+    # Each poll is a cold OpenClaw CLI: ~5 s apart, for ~2 minutes after the link opens.
+    assert DEFAULT_POLL_SECS >= 5.0 and DEFAULT_OPENED_WAIT_SECS <= 120.0
+    assert DEFAULT_OPENED_WAIT_SECS / DEFAULT_POLL_SECS <= 24
 
 
 if __name__ == "__main__":
