@@ -440,6 +440,25 @@ def test_the_brains_gateway_url_is_not_handed_to_the_cli():
     asyncio.run(go())
 
 
+def test_a_device_is_named_for_a_person_never_by_its_client_id():
+    # The shapes `openclaw devices list --json` gave on the box: a Control UI browser has
+    # no name of its own, only clientId "openclaw-control-ui" and navigator.platform.
+    ui = {"deviceId": "d1", "clientId": "openclaw-control-ui"}
+    assert pairing.device_name({**ui, "platform": "iPhone"}) == "iPhone"
+    assert pairing.device_name({**ui, "platform": "MacIntel"}) == "Mac"
+    assert pairing.device_name({**ui, "platform": "Win32"}) == "Windows PC"
+    assert pairing.device_name({**ui, "platform": "Linux x86_64"}) == "Linux computer"
+    assert pairing.device_name({**ui, "platform": "web"}) == ""
+    assert pairing.device_name(ui) == ""
+    # A native app's family wins over its OS string; a real label wins over both.
+    assert pairing.device_name({"clientId": "openclaw-ios", "platform": "iOS 18.3.2",
+                                "deviceFamily": "iPhone"}) == "iPhone"
+    assert pairing.device_name({"displayName": "Grokani viewer",
+                                "platform": "Linux x86_64"}) == "Grokani viewer"
+    assert pairing.device_name({"operatorLabel": "Kitchen tablet", "displayName": "x",
+                                "platform": "iPad"}) == "Kitchen tablet"
+
+
 def test_available_needs_a_front_door():
     _setup(FakeCli([DEV_A]), host="")
     assert pairing.available() is False

@@ -182,11 +182,30 @@ def _approvals(devices: list[dict]) -> dict[str, int]:
 
 
 def device_name(device: dict) -> str:
-    """The name `openclaw devices list` shows for a paired device."""
-    for key in ("operatorLabel", "displayName", "clientId", "deviceId"):
+    """What to call a paired device on the screen and to the user: its operator label or
+    the name the client gave itself, else what kind of device it is ("iPhone", "Mac"),
+    else "". Never clientId or deviceId: every Control UI browser is
+    "openclaw-control-ui", which says nothing to a person (seen on the box, 10-31)."""
+    for key in ("operatorLabel", "displayName"):
         value = str(device.get(key) or "").strip()
         if value:
             return value
+    return _device_kind(device)
+
+
+# A browser's navigator.platform (what the Control UI reports as "platform"), or a native
+# app's deviceFamily, to the kind of device a person would name. First match wins.
+_KINDS = (("iphone", "iPhone"), ("ipad", "iPad"), ("android", "Android phone"),
+          ("mac", "Mac"), ("win", "Windows PC"), ("cros", "Chromebook"),
+          ("linux", "Linux computer"))
+
+
+def _device_kind(device: dict) -> str:
+    for key in ("deviceFamily", "platform"):
+        value = str(device.get(key) or "").strip().lower()
+        for needle, kind in _KINDS:
+            if needle in value:
+                return kind
     return ""
 
 

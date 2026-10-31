@@ -270,7 +270,7 @@ def test_paired_shows_it_for_a_while_and_asks_the_voice_to_say_it(monkeypatch):
                                 pd.PAIRED_SCREEN_SECS, None)
     assert screen.calls[-1] == ("close", True)
     [(text, respond)] = dp.notes.added
-    assert respond and "Firefox on Linux" in text and "connected" in text
+    assert respond and text == "Your Firefox on Linux is now connected."
 
 
 @pytest.mark.parametrize("outcome", ["expired", "opened"])
@@ -500,7 +500,7 @@ def test_cancel_after_the_link_was_opened_still_tells_if_it_connects(monkeypatch
     assert down[-2:] == [("clear",), ("close", True)] and fake.cancelled == []
     assert screen.calls[-2][:3] == ("show", "Pair", ["Paired", "Firefox on Linux"])
     [(text, respond)] = dp.notes.added
-    assert respond and "connected" in text
+    assert respond and text == "Your Firefox on Linux is now connected."
 
 
 def test_the_session_ending_stops_a_confirmation_too(monkeypatch):

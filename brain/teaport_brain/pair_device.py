@@ -211,8 +211,11 @@ class DevicePairing:
             screen.show(SCREEN_TITLE, ["Paired", device] if device else ["Paired"],
                         secs=PAIRED_SCREEN_SECS)
             screen.close()
-            what = f"the user's {result.device}" if result.device else "the user's device"
-            self._tell(f"{what} is now connected to the box.", respond=True)
+            # Said to the user as it stands more often than not (the order asks for one
+            # plain sentence, and the model may just read the notice out), so it is
+            # written to be heard: no "the user's", no client ids (pairing.device_name).
+            self._tell(f"Your {result.device} is now connected." if result.device
+                       else "Your new device is now connected.", respond=True)
             return
         if screen is None:
             pass  # already down (cancel() while the device was confirmed)
@@ -227,7 +230,9 @@ class DevicePairing:
 
     def _tell(self, outcome: str, respond: bool = False) -> None:
         if self.notes is not None:
-            self.notes.add_notice(f"Pairing a device ended: {outcome}", respond=respond)
+            # A spoken one (respond) stands alone; a context-only one says what it is about.
+            self.notes.add_notice(outcome if respond else f"Pairing a device ended: {outcome}",
+                                  respond=respond)
 
     # -- the screen and the task
     def _end_offer(self, cancel: bool = True) -> bool:
